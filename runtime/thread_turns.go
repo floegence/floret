@@ -52,9 +52,13 @@ func (h *InterruptedTurnRecoveryHost) RecoverInterruptedTurn(ctx context.Context
 	if err := validateThreadTurnFailureForStatus(status, failure); err != nil {
 		return RecoverInterruptedTurnResult{}, fmt.Errorf("%w: %v", ErrAuthorityCorrupt, err)
 	}
-	return RecoverInterruptedTurnResult{
+	out := RecoverInterruptedTurnResult{
 		ThreadID: ThreadID(result.ThreadID), TurnID: TurnID(result.TurnID), RunID: RunID(result.RunID), Status: status, Failure: failure, Replayed: result.Replayed,
-	}, nil
+	}
+	if err := out.Validate(); err != nil {
+		return RecoverInterruptedTurnResult{}, invalidPublicResult("interrupted recovery result", err)
+	}
+	return out, nil
 }
 
 func interruptedRecoveryTurnStatus(marker sessiontree.TurnMarkerStatus, failure *ThreadTurnFailure) TurnStatus {
@@ -442,7 +446,7 @@ func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req
 		})
 	}
 	if err := turn.Validate(); err != nil {
-		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public turn snapshot: %v", ErrAuthorityCorrupt, err)
+		return ThreadTurnSnapshot{}, invalidPublicResult("thread turn snapshot", err)
 	}
 	return turn, nil
 }
@@ -489,7 +493,7 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 	}
 	thread := threadSnapshot(overview.Thread)
 	if err := thread.Validate(); err != nil {
-		return ThreadOverview{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
+		return ThreadOverview{}, invalidPublicResult("thread snapshot", err)
 	}
 	events := threadDetailEvents(overview.LatestTurn.Events)
 	turns, _, err := projectThreadTurnSnapshots(threadID, events)
@@ -509,7 +513,7 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 		result.LatestTurn = &latest
 	}
 	if err := result.Validate(); err != nil {
-		return ThreadOverview{}, fmt.Errorf("%w: invalid public thread overview: %v", ErrAuthorityCorrupt, err)
+		return ThreadOverview{}, invalidPublicResult("thread overview", err)
 	}
 	return result, nil
 }
@@ -538,7 +542,7 @@ func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarnes
 	}
 	publicThread := threadSnapshot(thread)
 	if err := publicThread.Validate(); err != nil {
-		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
+		return ThreadTurnSnapshot{}, invalidPublicResult("thread snapshot", err)
 	}
 	latest := turns[0]
 	if latest.TurnID != publicThread.LatestTurnID || latest.RunID != publicThread.LatestRunID || latest.ThroughOrdinal > publicThread.ThroughOrdinal {
@@ -546,7 +550,7 @@ func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarnes
 	}
 	applyLatestThreadLifecycle(&latest, publicThread)
 	if err := latest.Validate(); err != nil {
-		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public turn snapshot: %v", ErrAuthorityCorrupt, err)
+		return ThreadTurnSnapshot{}, invalidPublicResult("thread turn snapshot", err)
 	}
 	return latest, nil
 }
@@ -657,7 +661,7 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 		page.BeforeCursor = &encoded
 	}
 	if err := page.Validate(); err != nil {
-		return ThreadTurnsPage{}, fmt.Errorf("%w: invalid public turn page: %v", ErrAuthorityCorrupt, err)
+		return ThreadTurnsPage{}, invalidPublicResult("thread turns page", err)
 	}
 	return page, nil
 }

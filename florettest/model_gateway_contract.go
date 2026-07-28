@@ -164,17 +164,12 @@ func RunModelGatewayContract(t *testing.T, factory ModelGatewayFactory) {
 
 	t.Run("capability mismatch", func(t *testing.T) {
 		fixture := newContractGateway(t, factory, []ModelStep{{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDone, Reason: "stop"}}}})
-		turnFactory := newContractTurnFactory(t)
-		_, err := turnFactory.NewHost(context.Background(), runtime.TurnExecutionHostOptions{
-			Config: config.Config{
-				SystemPrompt:  "Exercise a missing capability declaration.",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			ModelGateway: fixture,
-			ModelGatewayIdentity: runtime.ModelGatewayIdentity{
-				Provider: "florettest", Model: "contract-model", StateCompatibilityKey: "florettest:contract-model",
-			},
-		})
+		_, err := runtime.NewTurnExecutionHostOptions(config.Config{
+			SystemPrompt:  "Exercise a missing capability declaration.",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+		}, runtime.WithTurnModelGateway(fixture, runtime.ModelGatewayIdentity{
+			Provider: "florettest", Model: "contract-model", StateCompatibilityKey: "florettest:contract-model",
+		}, runtime.ModelGatewayCapabilities{}))
 		if err == nil || !strings.Contains(err.Error(), "reasoning capability is required") {
 			t.Fatalf("NewHost capability mismatch error=%v", err)
 		}
@@ -239,30 +234,35 @@ type contractTurnOutcome struct {
 }
 
 func newContractTurnHost(t testing.TB, gateway runtime.ModelGateway) *runtime.TurnExecutionHost {
-	return newContractTurnHostWithOptions(t, runtime.TurnExecutionHostOptions{
-		ModelGateway: gateway,
-	})
+	return newContractTurnHostWithOptions(t, gateway)
 }
 
-func newContractTurnHostWithOptions(t testing.TB, options runtime.TurnExecutionHostOptions) *runtime.TurnExecutionHost {
+func newContractTurnHostWithOptions(t testing.TB, gateway runtime.ModelGateway, extra ...runtime.TurnExecutionOption) *runtime.TurnExecutionHost {
 	t.Helper()
 	factory := newContractTurnFactory(t)
 	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
 	var idMu sync.Mutex
 	nextID := 0
-	options.Config = config.Config{
+	options := []runtime.TurnExecutionOption{
+		runtime.WithTurnModelGateway(gateway, runtime.ModelGatewayIdentity{
+			Provider: "florettest", Model: "contract-model", StateCompatibilityKey: "florettest:contract-model",
+		}, runtime.ModelGatewayCapabilities{Reasoning: &reasoning}),
+		runtime.WithTurnIDGenerator(func(prefix string) string {
+			idMu.Lock()
+			defer idMu.Unlock()
+			nextID++
+			return fmt.Sprintf("%s-%d", prefix, nextID)
+		}),
+	}
+	options = append(options, extra...)
+	hostOptions, err := runtime.NewTurnExecutionHostOptions(config.Config{
 		SystemPrompt:  "Exercise the public Floret contract.",
 		ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, options...)
+	if err != nil {
+		t.Fatalf("construct turn host options: %v", err)
 	}
-	options.ModelGatewayIdentity = runtime.ModelGatewayIdentity{Provider: "florettest", Model: "contract-model", StateCompatibilityKey: "florettest:contract-model"}
-	options.ModelGatewayCapabilities = runtime.ModelGatewayCapabilities{Reasoning: &reasoning}
-	options.IDGenerator = func(prefix string) string {
-		idMu.Lock()
-		defer idMu.Unlock()
-		nextID++
-		return fmt.Sprintf("%s-%d", prefix, nextID)
-	}
-	host, err := factory.NewHost(context.Background(), options)
+	host, err := factory.NewHost(context.Background(), hostOptions)
 	if err != nil {
 		t.Fatalf("create turn host: %v", err)
 	}

@@ -28,8 +28,8 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 		return runtimeGatewayEvents("main turn completed"), nil
 	})
 	cfg := runtimeGatewayConfig("gateway system")
-	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
-	reasoning := ReasoningCapability{
+	cfg.Reasoning = config.ReasoningSelection{Level: config.ReasoningLevelHigh}
+	reasoning := config.ReasoningCapability{
 		Kind:             "effort",
 		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel:     config.ReasoningLevelHigh,
@@ -68,10 +68,10 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 			t.Fatal("timed out waiting for model gateway requests")
 		}
 	}
-	if mainRequest.Reasoning.Level != ReasoningLevelHigh {
+	if mainRequest.Reasoning.Level != config.ReasoningLevelHigh {
 		t.Fatalf("main reasoning = %#v, want high", mainRequest.Reasoning)
 	}
-	if titleRequest.MaxOutputTokens != 64 || titleRequest.Reasoning.Level != ReasoningLevelOff {
+	if titleRequest.MaxOutputTokens != 64 || titleRequest.Reasoning.Level != config.ReasoningLevelOff {
 		t.Fatalf("title request = %#v, want 64 tokens with reasoning off", titleRequest)
 	}
 }
@@ -95,8 +95,8 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 		return runtimeGatewayEvents("child completed"), nil
 	})
 	cfg := runtimeGatewayConfig("gateway system")
-	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
-	reasoning := ReasoningCapability{
+	cfg.Reasoning = config.ReasoningSelection{Level: config.ReasoningLevelHigh}
+	reasoning := config.ReasoningCapability{
 		Kind: config.ReasoningKindEffort, SupportedLevels: []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel: config.ReasoningLevelHigh, DisableSupported: true,
 	}
@@ -105,8 +105,8 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := factory.NewHost(ctx, SubAgentHostOptions{
-		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"),
-		ModelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning},
+		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"),
+		modelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for subagent model gateway request")
 	}
-	if mainRequest.Reasoning.Level != ReasoningLevelHigh {
+	if mainRequest.Reasoning.Level != config.ReasoningLevelHigh {
 		t.Fatalf("subagent main reasoning = %#v, want high", mainRequest.Reasoning)
 	}
 }
@@ -153,8 +153,8 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 		return runtimeGatewayEvents("turn completed"), nil
 	})
 	cfg := runtimeCompactionTestConfig()
-	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
-	reasoning := ReasoningCapability{
+	cfg.Reasoning = config.ReasoningSelection{Level: config.ReasoningLevelHigh}
+	reasoning := config.ReasoningCapability{
 		Kind: config.ReasoningKindEffort, SupportedLevels: []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel: config.ReasoningLevelHigh, DisableSupported: true,
 	}
@@ -164,7 +164,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), ModelGatewayCapabilities: gatewayCapabilities,
+		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), modelGatewayCapabilities: gatewayCapabilities, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
-		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), ModelGatewayCapabilities: gatewayCapabilities,
+		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), modelGatewayCapabilities: gatewayCapabilities, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 			t.Fatal("timed out waiting for compaction model gateway request")
 		}
 	}
-	if compactionRequest.Reasoning.Level != ReasoningLevelOff {
+	if compactionRequest.Reasoning.Level != config.ReasoningLevelOff {
 		t.Fatalf("compaction reasoning = %#v, want off", compactionRequest.Reasoning)
 	}
 }
@@ -542,7 +542,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	if err != nil {
 		t.Fatalf("ReadThreadOverview immediately after RunTurn: %v", err)
 	}
-	if overview.Thread.TitleStatus != string(sessiontree.ThreadTitleFailed) || overview.Thread.TitleError != automaticTitleInterruptedForRuntimeTest {
+	if overview.Thread.TitleStatus != ThreadTitleStatus(sessiontree.ThreadTitleFailed) || overview.Thread.TitleError != automaticTitleInterruptedForRuntimeTest {
 		t.Fatalf("title at RunTurn return = %#v, want failed", overview.Thread)
 	}
 }
@@ -655,7 +655,7 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	if overview.LatestTurn == nil || overview.LatestTurn.Status != TurnStatusCancelled {
 		t.Fatalf("canonical latest turn = %#v, want cancelled", overview.LatestTurn)
 	}
-	if overview.Thread.TitleStatus != string(sessiontree.ThreadTitleFailed) || overview.Thread.TitleError != automaticTitleInterruptedForRuntimeTest {
+	if overview.Thread.TitleStatus != ThreadTitleStatus(sessiontree.ThreadTitleFailed) || overview.Thread.TitleError != automaticTitleInterruptedForRuntimeTest {
 		t.Fatalf("canonical title = %#v, want settled failure", overview.Thread)
 	}
 	store.lifetimeMu.Lock()

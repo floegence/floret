@@ -78,7 +78,7 @@ func readArtifact(ctx context.Context, store *Store, req sessiontree.ArtifactRea
 	if err != nil {
 		return ArtifactContent{}, runtimeHostError(err)
 	}
-	return ArtifactContent{
+	out := ArtifactContent{
 		Ref: ArtifactRef{
 			ID:        ArtifactID(content.Ref.ID),
 			SafeLabel: content.Ref.SafeLabel,
@@ -88,5 +88,9 @@ func readArtifact(ctx context.Context, store *Store, req sessiontree.ArtifactRea
 			SHA256:    content.Ref.SHA256,
 		},
 		Text: content.Text,
-	}, nil
+	}
+	if err := out.Validate(); err != nil {
+		return ArtifactContent{}, invalidPublicResult("artifact content", err)
+	}
+	return out, nil
 }

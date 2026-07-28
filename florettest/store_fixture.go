@@ -82,20 +82,21 @@ func PopulateStoreFixture(ctx context.Context, store *runtime.Store, input Store
 		if request.TurnID == "" || request.RunID == "" {
 			return StoreFixtureResult{}, fmt.Errorf("florettest: Store fixture turn %d requires turn and run identities", index)
 		}
-		host, err := factory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-			Config: config.Config{
-				SystemPrompt:  "Populate a public Floret Store fixture.",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			ModelGateway: NewScriptedModelGateway(turn.ModelSteps...),
-			ModelGatewayIdentity: runtime.ModelGatewayIdentity{
+		hostOptions, err := runtime.NewTurnExecutionHostOptions(config.Config{
+			SystemPrompt:  "Populate a public Floret Store fixture.",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+		},
+			runtime.WithTurnModelGateway(NewScriptedModelGateway(turn.ModelSteps...), runtime.ModelGatewayIdentity{
 				Provider: "florettest", Model: "store-fixture", StateCompatibilityKey: "florettest:store-fixture:v1",
-			},
-			ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
-			IDGenerator: func(prefix string) string {
+			}, runtime.ModelGatewayCapabilities{Reasoning: &reasoning}),
+			runtime.WithTurnIDGenerator(func(prefix string) string {
 				return fmt.Sprintf("%s-store-fixture-%d", prefix, generated.Add(1))
-			},
-		})
+			}),
+		)
+		if err != nil {
+			return StoreFixtureResult{}, fmt.Errorf("florettest: construct Store fixture turn %d options: %w", index, err)
+		}
+		host, err := factory.NewHost(ctx, hostOptions)
 		if err != nil {
 			return StoreFixtureResult{}, fmt.Errorf("florettest: create Store fixture turn %d host: %w", index, err)
 		}

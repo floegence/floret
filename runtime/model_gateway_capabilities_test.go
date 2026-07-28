@@ -26,11 +26,11 @@ func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: runtimeGatewayConfig("missing capability"),
-		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		config: runtimeGatewayConfig("missing capability"),
+		modelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
 			return runtimeGatewayEvents("unused"), nil
 		}),
-		ModelGatewayIdentity: runtimeGatewayIdentity("model"),
+		modelGatewayIdentity: runtimeGatewayIdentity("model"), initialized: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "model gateway reasoning capability is required") {
 		t.Fatalf("NewHost error = %v, want missing model gateway reasoning capability", err)
@@ -43,10 +43,10 @@ func TestModelGatewayCapabilitiesValidateExplicitAuthority(t *testing.T) {
 	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
 		return runtimeGatewayEvents("unused"), nil
 	})
-	none := ReasoningCapability{Kind: config.ReasoningKindNone}
-	zero := ReasoningCapability{}
-	unknown := ReasoningCapability{Kind: "typo"}
-	negativeBudget := ReasoningCapability{Kind: config.ReasoningKindBudget, Budget: config.ReasoningBudget{MinTokens: -1}}
+	none := config.ReasoningCapability{Kind: config.ReasoningKindNone}
+	zero := config.ReasoningCapability{}
+	unknown := config.ReasoningCapability{Kind: "typo"}
+	negativeBudget := config.ReasoningCapability{Kind: config.ReasoningKindBudget, Budget: config.ReasoningBudget{MinTokens: -1}}
 	tests := []struct {
 		name         string
 		gateway      ModelGateway

@@ -131,14 +131,14 @@ func (s ThreadSummary) Validate() error {
 
 func validateThreadSnapshotResult(snapshot ThreadSnapshot) (ThreadSnapshot, error) {
 	if err := snapshot.Validate(); err != nil {
-		return ThreadSnapshot{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
+		return ThreadSnapshot{}, invalidPublicResult("thread snapshot", err)
 	}
 	return snapshot, nil
 }
 
 func validateThreadSummaryResult(summary ThreadSummary) (ThreadSummary, error) {
 	if err := summary.Validate(); err != nil {
-		return ThreadSummary{}, fmt.Errorf("%w: invalid public thread summary: %v", ErrAuthorityCorrupt, err)
+		return ThreadSummary{}, invalidPublicResult("thread summary", err)
 	}
 	return summary, nil
 }
@@ -146,8 +146,8 @@ func validateThreadSummaryResult(summary ThreadSummary) (ThreadSummary, error) {
 func validateThreadSnapshotState(
 	threadID ThreadID,
 	title string,
-	titleStatusRaw string,
-	titleSourceRaw string,
+	titleStatus ThreadTitleStatus,
+	titleSource ThreadTitleSource,
 	titleUpdatedAt time.Time,
 	titleError string,
 	titleGeneration int64,
@@ -177,17 +177,15 @@ func validateThreadSnapshotState(
 	); err != nil {
 		return err
 	}
-	return validateThreadTitleSnapshot(title, titleStatusRaw, titleSourceRaw, titleUpdatedAt, titleError, titleGeneration)
+	return validateThreadTitleSnapshot(title, titleStatus, titleSource, titleUpdatedAt, titleError, titleGeneration)
 }
 
-func validateThreadTitleSnapshot(title, statusRaw, sourceRaw string, updatedAt time.Time, titleError string, generation int64) error {
-	status, err := ParseThreadTitleStatus(statusRaw)
-	if err != nil {
-		return err
+func validateThreadTitleSnapshot(title string, status ThreadTitleStatus, source ThreadTitleSource, updatedAt time.Time, titleError string, generation int64) error {
+	if !status.Valid() {
+		return fmt.Errorf("unsupported thread title status %q", status)
 	}
-	source, err := ParseThreadTitleSource(sourceRaw)
-	if err != nil {
-		return err
+	if !source.Valid() {
+		return fmt.Errorf("unsupported thread title source %q", source)
 	}
 	return sessiontree.ValidateThreadTitleProjection(sessiontree.ThreadTitleProjection{
 		Title: title, Status: sessiontree.ThreadTitleStatus(status), Source: sessiontree.ThreadTitleSource(source),

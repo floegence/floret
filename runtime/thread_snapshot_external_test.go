@@ -250,7 +250,7 @@ func publicIdleThreadSnapshot(now time.Time) floretruntime.ThreadSnapshot {
 	}
 }
 
-func withPublicThreadTitle(snapshot floretruntime.ThreadSnapshot, title, status, source, titleError string, generation int64, updatedAt time.Time) floretruntime.ThreadSnapshot {
+func withPublicThreadTitle(snapshot floretruntime.ThreadSnapshot, title string, status floretruntime.ThreadTitleStatus, source floretruntime.ThreadTitleSource, titleError string, generation int64, updatedAt time.Time) floretruntime.ThreadSnapshot {
 	snapshot.Title = title
 	snapshot.TitleStatus = status
 	snapshot.TitleSource = source

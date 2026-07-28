@@ -932,26 +932,41 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	toolSurface := func(context.Context, flruntime.ToolSurfaceRequest) (flruntime.ToolSurface, error) {
 		return currentToolSurface, nil
 	}
-	hostOptions := flruntime.TurnExecutionHostOptions{
-		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity, ModelGatewayCapabilities: gatewayCapabilities,
-		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
-		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
-		LoopLimits: flruntime.LoopLimits{
-			MaxEmptyProviderRetries: runtimeConfig.MaxEmptyProviderRetries,
-			NoProgressLimit:         runtimeConfig.NoProgressLimit, DuplicateToolLimit: runtimeConfig.DuplicateToolLimit, WallTime: runtimeConfig.WallTime,
-		},
-		ThreadTitleMode: flruntime.ThreadTitleModeProvider,
+	loopLimits := flruntime.LoopLimits{
+		MaxEmptyProviderRetries: runtimeConfig.MaxEmptyProviderRetries,
+		NoProgressLimit:         runtimeConfig.NoProgressLimit, DuplicateToolLimit: runtimeConfig.DuplicateToolLimit, WallTime: runtimeConfig.WallTime,
+	}
+	hostOptions, err := flruntime.NewTurnExecutionHostOptions(
+		hostConfig,
+		flruntime.WithTurnModelGateway(gateway, gatewayIdentity, gatewayCapabilities),
+		flruntime.WithTurnEffectfulTools(registry, testUIRuntimeEffectAuthorizationGate{}),
+		flruntime.WithTurnEventSink(rec),
+		flruntime.WithTurnDynamicToolSurface(toolSurface),
+		flruntime.WithTurnIDGenerator(idGenerator),
+		flruntime.WithTurnLoopLimits(loopLimits),
+		flruntime.WithTurnThreadTitleMode(flruntime.ThreadTitleModeProvider),
+	)
+	if err != nil {
+		return agentSessionRuntime{}, err
 	}
 	turn, err := sess.turnFactory.NewHost(ctx, hostOptions)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
-	subagent, err := sess.subagentFactory.NewHost(ctx, flruntime.SubAgentHostOptions{
-		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity, ModelGatewayCapabilities: gatewayCapabilities,
-		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
-		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
-		LoopLimits: hostOptions.LoopLimits, ThreadTitleMode: flruntime.ThreadTitleModeProvider,
-	})
+	subAgentOptions, err := flruntime.NewSubAgentHostOptions(
+		hostConfig,
+		flruntime.WithSubAgentModelGateway(gateway, gatewayIdentity, gatewayCapabilities),
+		flruntime.WithSubAgentEffectfulTools(registry, testUIRuntimeEffectAuthorizationGate{}),
+		flruntime.WithSubAgentEventSink(rec),
+		flruntime.WithSubAgentDynamicToolSurface(toolSurface),
+		flruntime.WithSubAgentIDGenerator(idGenerator),
+		flruntime.WithSubAgentLoopLimits(loopLimits),
+		flruntime.WithSubAgentThreadTitleMode(flruntime.ThreadTitleModeProvider),
+	)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	subagent, err := sess.subagentFactory.NewHost(ctx, subAgentOptions)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
@@ -3134,23 +3149,27 @@ func testuiCompactionHost(ctx context.Context, threadID flruntime.ThreadID, sink
 		return nil, err
 	}
 	config := testuiProjectedCompactionConfig(256000, 100, true)
-	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
-		Config:                   config,
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
-		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
-		Sink:                     sink,
-	})
+	turnOptions, err := flruntime.NewTurnExecutionHostOptions(
+		config,
+		flruntime.WithTurnModelGateway(gateway, testuiModelGatewayIdentity(), testuiNoReasoningGatewayCapabilities()),
+		flruntime.WithTurnEventSink(sink),
+	)
 	if err != nil {
 		return nil, err
 	}
-	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
-		Config:                   testuiProjectedCompactionConfig(256000, 100, true),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
-		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
-		Sink:                     sink,
-	})
+	turn, err := turnFactory.NewHost(ctx, turnOptions)
+	if err != nil {
+		return nil, err
+	}
+	compactionOptions, err := flruntime.NewThreadCompactionHostOptions(
+		testuiProjectedCompactionConfig(256000, 100, true),
+		flruntime.WithThreadCompactionModelGateway(gateway, testuiModelGatewayIdentity(), testuiNoReasoningGatewayCapabilities()),
+		flruntime.WithThreadCompactionEventSink(sink),
+	)
+	if err != nil {
+		return nil, err
+	}
+	compaction, err := compactionFactory.NewHost(ctx, compactionOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -3167,23 +3186,27 @@ func testuiCompactionNoopHost(ctx context.Context, threadID flruntime.ThreadID, 
 		return nil, err
 	}
 	config := testuiProjectedCompactionConfig(256000, 0, false)
-	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
-		Config:                   config,
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
-		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
-		Sink:                     sink,
-	})
+	turnOptions, err := flruntime.NewTurnExecutionHostOptions(
+		config,
+		flruntime.WithTurnModelGateway(gateway, testuiModelGatewayIdentity(), testuiNoReasoningGatewayCapabilities()),
+		flruntime.WithTurnEventSink(sink),
+	)
 	if err != nil {
 		return nil, err
 	}
-	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
-		Config:                   testuiProjectedCompactionConfig(256000, 0, false),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
-		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
-		Sink:                     sink,
-	})
+	turn, err := turnFactory.NewHost(ctx, turnOptions)
+	if err != nil {
+		return nil, err
+	}
+	compactionOptions, err := flruntime.NewThreadCompactionHostOptions(
+		testuiProjectedCompactionConfig(256000, 0, false),
+		flruntime.WithThreadCompactionModelGateway(gateway, testuiModelGatewayIdentity(), testuiNoReasoningGatewayCapabilities()),
+		flruntime.WithThreadCompactionEventSink(sink),
+	)
+	if err != nil {
+		return nil, err
+	}
+	compaction, err := compactionFactory.NewHost(ctx, compactionOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -3223,7 +3246,7 @@ func testuiCompactionCapabilities(store *flruntime.Store, threadID flruntime.Thr
 	return create, turnFactory, compactionFactory, nil
 }
 
-func testuiTurnHost(ctx context.Context, store *flruntime.Store, threadID flruntime.ThreadID, intentID flruntime.CreateIntentID, opts flruntime.TurnExecutionHostOptions) (*flruntime.TurnExecutionHost, error) {
+func testuiTurnHost(ctx context.Context, store *flruntime.Store, threadID flruntime.ThreadID, intentID flruntime.CreateIntentID, cfg config.Config, options ...flruntime.TurnExecutionOption) (*flruntime.TurnExecutionHost, error) {
 	var createBinder *flruntime.ThreadCreateHostBinder
 	var turnBinder *flruntime.TurnExecutionHostBinder
 	err := flruntime.ConfigureHostCapabilities(store, func(bootstrap *flruntime.HostBootstrap) error {
@@ -3248,7 +3271,11 @@ func testuiTurnHost(ctx context.Context, store *flruntime.Store, threadID flrunt
 	if err != nil {
 		return nil, err
 	}
-	return factory.NewHost(ctx, opts)
+	hostOptions, err := flruntime.NewTurnExecutionHostOptions(cfg, options...)
+	if err != nil {
+		return nil, err
+	}
+	return factory.NewHost(ctx, hostOptions)
 }
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {
@@ -3454,21 +3481,17 @@ func (r *Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse 
 	defer store.Close()
 	sink := &runtimeEventSink{}
 	threadID := flruntime.ThreadID("testui-eval-demo")
-	host, err := testuiTurnHost(ctx, store, threadID, "testui-eval-demo-create", flruntime.TurnExecutionHostOptions{
-		Config: config.Config{
-			SystemPrompt:       "You are a deterministic Floret eval agent.",
-			DuplicateToolLimit: 3,
-			ContextPolicy: config.ContextPolicy{
-				ContextWindowTokens: config.DefaultContextWindowTokens,
-			},
+	host, err := testuiTurnHost(ctx, store, threadID, "testui-eval-demo-create", config.Config{
+		SystemPrompt:       "You are a deterministic Floret eval agent.",
+		DuplicateToolLimit: 3,
+		ContextPolicy: config.ContextPolicy{
+			ContextWindowTokens: config.DefaultContextWindowTokens,
 		},
-		ModelGateway:             &testuiEvalModelGateway{},
-		ModelGatewayIdentity:     flruntime.ModelGatewayIdentity{Provider: "scripted", Model: "scripted-eval", StateCompatibilityKey: "scripted:eval-v1"},
-		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
-		Tools:                    registry,
-		EffectAuthorizationGate:  testUIRuntimeEffectAuthorizationGate{},
-		Sink:                     sink,
-	})
+	},
+		flruntime.WithTurnModelGateway(&testuiEvalModelGateway{}, flruntime.ModelGatewayIdentity{Provider: "scripted", Model: "scripted-eval", StateCompatibilityKey: "scripted:eval-v1"}, testuiNoReasoningGatewayCapabilities()),
+		flruntime.WithTurnEffectfulTools(registry, testUIRuntimeEffectAuthorizationGate{}),
+		flruntime.WithTurnEventSink(sink),
+	)
 	if err != nil {
 		return r.failAgent(resp, err)
 	}
@@ -3539,10 +3562,14 @@ func (r *Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunResp
 	defer store.Close()
 	sink := &runtimeEventSink{}
 	threadID := flruntime.ThreadID(runID)
-	host, err := testuiTurnHost(ctx, store, threadID, flruntime.CreateIntentID("testui-provider-create:"+runID), flruntime.TurnExecutionHostOptions{
-		Config: cfg,
-		Sink:   sink,
-	})
+	host, err := testuiTurnHost(
+		ctx,
+		store,
+		threadID,
+		flruntime.CreateIntentID("testui-provider-create:"+runID),
+		cfg,
+		flruntime.WithTurnEventSink(sink),
+	)
 	if err != nil {
 		return r.failAgent(resp, err)
 	}

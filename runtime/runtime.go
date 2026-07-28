@@ -39,31 +39,6 @@ type CreateIntentID string
 type PromptScopeID string
 type TraceID string
 
-type FinishReason = observation.FinishReason
-type CompletionReason = observation.CompletionReason
-type ContinuationReason = observation.ContinuationReason
-
-const (
-	FinishReasonUnknown       = observation.FinishReasonUnknown
-	FinishReasonStop          = observation.FinishReasonStop
-	FinishReasonToolCalls     = observation.FinishReasonToolCalls
-	FinishReasonLength        = observation.FinishReasonLength
-	FinishReasonContentFilter = observation.FinishReasonContentFilter
-	FinishReasonError         = observation.FinishReasonError
-	FinishReasonCancelled     = observation.FinishReasonCancelled
-
-	CompletionReasonNaturalStop = observation.CompletionReasonNaturalStop
-	CompletionReasonToolSignal  = observation.CompletionReasonToolSignal
-	CompletionReasonHookStop    = observation.CompletionReasonHookStop
-
-	ContinuationReasonToolResults       = observation.ContinuationReasonToolResults
-	ContinuationReasonCompaction        = observation.ContinuationReasonCompaction
-	ContinuationReasonProviderTruncated = observation.ContinuationReasonProviderTruncated
-	ContinuationReasonRetryEmpty        = observation.ContinuationReasonRetryEmpty
-	ContinuationReasonNoProgress        = observation.ContinuationReasonNoProgress
-	ContinuationReasonHook              = observation.ContinuationReasonHook
-)
-
 var (
 	// ErrThreadNotFound reports that a requested durable thread was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
@@ -183,6 +158,13 @@ type RequestConflictError struct {
 	Err       error
 }
 
+// ContractError identifies a corrupt public result contract. Contract names
+// the root DTO or projection without exposing internal Store records.
+type ContractError struct {
+	Contract string
+	Err      error
+}
+
 type StoreSchemaIdentity struct {
 	Version     string `json:"version"`
 	Fingerprint string `json:"fingerprint"`
@@ -243,6 +225,31 @@ func requestConflictError(err error, operation, requestID string) error {
 		err = existing.Err
 	}
 	return &RequestConflictError{Operation: strings.TrimSpace(operation), RequestID: strings.TrimSpace(requestID), Err: err}
+}
+
+func (e *ContractError) Error() string {
+	if e == nil {
+		return ErrAuthorityCorrupt.Error()
+	}
+	name := strings.TrimSpace(e.Contract)
+	if name == "" {
+		name = "public result"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("%s: invalid %s", ErrAuthorityCorrupt, name)
+	}
+	return fmt.Sprintf("%s: invalid %s: %v", ErrAuthorityCorrupt, name, e.Err)
+}
+
+func (e *ContractError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *ContractError) Is(target error) bool {
+	return target == ErrAuthorityCorrupt || e != nil && errors.Is(e.Err, target)
 }
 
 func (e *CommittedCleanupError) Error() string {
@@ -367,6 +374,17 @@ type ForkThreadResult struct {
 	Thread      ThreadSummary   `json:"thread"`
 }
 
+// Validate checks one public fork result.
+func (r ForkThreadResult) Validate() error {
+	if !trimStableNonEmpty(string(r.OperationID)) {
+		return errors.New("fork result requires an operation identity")
+	}
+	if err := r.Thread.Validate(); err != nil {
+		return fmt.Errorf("fork result thread: %w", err)
+	}
+	return nil
+}
+
 type RecoverInterruptedTurnResult struct {
 	ThreadID ThreadID           `json:"thread_id"`
 	TurnID   TurnID             `json:"turn_id"`
@@ -374,6 +392,20 @@ type RecoverInterruptedTurnResult struct {
 	Status   TurnStatus         `json:"status"`
 	Failure  *ThreadTurnFailure `json:"failure,omitempty"`
 	Replayed bool               `json:"replayed"`
+}
+
+// Validate checks one public interrupted-turn recovery result.
+func (r RecoverInterruptedTurnResult) Validate() error {
+	if !trimStableNonEmpty(string(r.ThreadID)) || !trimStableNonEmpty(string(r.TurnID)) || !trimStableNonEmpty(string(r.RunID)) {
+		return errors.New("interrupted recovery result requires thread, turn, and run identities")
+	}
+	if !r.Status.Valid() || !r.Status.IsTerminal() {
+		return fmt.Errorf("interrupted recovery result requires a terminal status, got %q", r.Status)
+	}
+	if err := validateThreadTurnFailureForStatus(r.Status, r.Failure); err != nil {
+		return fmt.Errorf("interrupted recovery result failure: %w", err)
+	}
+	return nil
 }
 
 // TurnSupplementalContextItem is host-provided context that is visible only to
@@ -599,7 +631,7 @@ type RunTurnRequest struct {
 	Completion          TurnCompletionPolicy
 	Signals             TurnSignalSpec
 	Limits              TurnLimits
-	Reasoning           ReasoningSelection
+	Reasoning           config.ReasoningSelection
 	ManualCompactions   ManualCompactionSource
 	ToolSurfaceProvider ToolSurfaceProvider
 }
@@ -624,7 +656,7 @@ type CompactThreadRequest struct {
 	Source    string
 	Labels    RunLabels
 	Limits    TurnLimits
-	Reasoning ReasoningSelection
+	Reasoning config.ReasoningSelection
 }
 
 // ReadTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
@@ -759,6 +791,24 @@ type PendingToolSettlementTarget struct {
 	ToolName        string   `json:"tool_name"`
 	Handle          string   `json:"handle"`
 	EffectAttemptID string   `json:"effect_attempt_id,omitempty"`
+}
+
+// Validate checks the exact identity required to settle one pending tool.
+func (t PendingToolSettlementTarget) Validate() error {
+	if !trimStableNonEmpty(string(t.ThreadID)) || !trimStableNonEmpty(string(t.TurnID)) || !trimStableNonEmpty(string(t.RunID)) {
+		return errors.New("pending tool target requires trim-stable thread, turn, and run identities")
+	}
+	for name, value := range map[string]string{
+		"tool call id": t.ToolCallID, "tool name": t.ToolName, "handle": t.Handle,
+	} {
+		if !trimStableNonEmpty(value) {
+			return fmt.Errorf("pending tool target requires a trim-stable %s", name)
+		}
+	}
+	if t.EffectAttemptID != strings.TrimSpace(t.EffectAttemptID) {
+		return errors.New("pending tool target effect attempt id must be trim-stable")
+	}
+	return nil
 }
 
 // ListSubAgentPendingToolSettlementTargetsRequest identifies one direct child
@@ -1368,6 +1418,20 @@ type ArtifactRef struct {
 	SHA256    string     `json:"sha256,omitempty"`
 }
 
+// Validate checks one public artifact reference.
+func (r ArtifactRef) Validate() error {
+	if !trimStableNonEmpty(string(r.ID)) || !trimStableNonEmpty(r.Kind) || !trimStableNonEmpty(r.SafeLabel) {
+		return errors.New("artifact reference requires trim-stable identity, kind, and safe label")
+	}
+	if r.SizeBytes < 0 {
+		return errors.New("artifact reference size must not be negative")
+	}
+	if r.MIME != strings.TrimSpace(r.MIME) || r.SHA256 != strings.TrimSpace(r.SHA256) {
+		return errors.New("artifact reference metadata must be trim-stable")
+	}
+	return nil
+}
+
 type ReadArtifactRequest struct {
 	ThreadID   ThreadID   `json:"thread_id"`
 	ArtifactID ArtifactID `json:"artifact_id"`
@@ -1378,49 +1442,57 @@ type ArtifactContent struct {
 	Text string      `json:"text"`
 }
 
+// Validate checks one public artifact content result.
+func (c ArtifactContent) Validate() error {
+	if err := c.Ref.Validate(); err != nil {
+		return fmt.Errorf("artifact content reference: %w", err)
+	}
+	return nil
+}
+
 type RunLabels struct {
 	Correlation map[string]string
 	Host        map[string]string
 }
 
 type ThreadSnapshot struct {
-	ID               ThreadID     `json:"id"`
-	Title            string       `json:"title,omitempty"`
-	TitleStatus      string       `json:"title_status,omitempty"`
-	TitleSource      string       `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
-	TitleError       string       `json:"title_error,omitempty"`
-	TitleGeneration  int64        `json:"title_generation,omitempty"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
-	Phase            ThreadPhase  `json:"phase"`
-	Status           ThreadStatus `json:"status"`
-	LatestTurnID     TurnID       `json:"latest_turn_id,omitempty"`
-	LatestRunID      RunID        `json:"latest_run_id,omitempty"`
-	ThroughOrdinal   int64        `json:"through_ordinal"`
-	WaitingPrompt    string       `json:"waiting_prompt,omitempty"`
-	Recoverable      bool         `json:"recoverable"`
-	CanAppendMessage bool         `json:"can_append_message"`
-	CanRetry         bool         `json:"can_retry"`
+	ID               ThreadID          `json:"id"`
+	Title            string            `json:"title,omitempty"`
+	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
+	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time         `json:"title_updated_at,omitempty"`
+	TitleError       string            `json:"title_error,omitempty"`
+	TitleGeneration  int64             `json:"title_generation,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	Phase            ThreadPhase       `json:"phase"`
+	Status           ThreadStatus      `json:"status"`
+	LatestTurnID     TurnID            `json:"latest_turn_id,omitempty"`
+	LatestRunID      RunID             `json:"latest_run_id,omitempty"`
+	ThroughOrdinal   int64             `json:"through_ordinal"`
+	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
+	Recoverable      bool              `json:"recoverable"`
+	CanAppendMessage bool              `json:"can_append_message"`
+	CanRetry         bool              `json:"can_retry"`
 }
 
 type ThreadSummary struct {
-	ID               ThreadID     `json:"id"`
-	Title            string       `json:"title,omitempty"`
-	TitleStatus      string       `json:"title_status,omitempty"`
-	TitleSource      string       `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
-	TitleError       string       `json:"title_error,omitempty"`
-	TitleGeneration  int64        `json:"title_generation,omitempty"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
-	Phase            ThreadPhase  `json:"phase"`
-	Status           ThreadStatus `json:"status"`
-	LatestTurnID     TurnID       `json:"latest_turn_id,omitempty"`
-	WaitingPrompt    string       `json:"waiting_prompt,omitempty"`
-	Recoverable      bool         `json:"recoverable"`
-	CanAppendMessage bool         `json:"can_append_message"`
-	CanRetry         bool         `json:"can_retry"`
+	ID               ThreadID          `json:"id"`
+	Title            string            `json:"title,omitempty"`
+	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
+	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time         `json:"title_updated_at,omitempty"`
+	TitleError       string            `json:"title_error,omitempty"`
+	TitleGeneration  int64             `json:"title_generation,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	Phase            ThreadPhase       `json:"phase"`
+	Status           ThreadStatus      `json:"status"`
+	LatestTurnID     TurnID            `json:"latest_turn_id,omitempty"`
+	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
+	Recoverable      bool              `json:"recoverable"`
+	CanAppendMessage bool              `json:"can_append_message"`
+	CanRetry         bool              `json:"can_retry"`
 }
 
 type TurnResult struct {
@@ -1529,7 +1601,7 @@ func (r TurnResult) Validate() error {
 }
 
 func (r PendingToolSettlementResult) Validate() error {
-	if err := validatePendingToolSettlementTarget(r.Target); err != nil {
+	if err := r.Target.Validate(); err != nil {
 		return fmt.Errorf("invalid pending tool settlement target: %w", err)
 	}
 	if r.Event.ThreadID != r.Target.ThreadID || r.Event.TurnID != r.Target.TurnID {
@@ -2490,7 +2562,7 @@ func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadReq
 	if !created.Replayed {
 		return validateThreadSummaryResult(ThreadSummary{
 			ID: ThreadID(created.Thread.ID), Title: created.Thread.Title,
-			TitleStatus: string(created.Thread.TitleStatus), TitleSource: string(created.Thread.TitleSource),
+			TitleStatus: ThreadTitleStatus(created.Thread.TitleStatus), TitleSource: ThreadTitleSource(created.Thread.TitleSource),
 			TitleUpdatedAt: created.Thread.TitleUpdatedAt, TitleError: created.Thread.TitleError,
 			CreatedAt: created.Thread.CreatedAt, UpdatedAt: created.Thread.UpdatedAt,
 			Phase: ThreadPhaseIdle, Status: ThreadStatusIdle, CanAppendMessage: true,
@@ -2535,6 +2607,11 @@ func (h *ThreadForkHost) ForkThread(ctx context.Context, req ForkThreadRequest) 
 		return ForkThreadResult{}, err
 	}
 	result, err := forkThread(ctx, h.harness, req)
+	if err == nil {
+		if validationErr := result.Validate(); validationErr != nil {
+			return ForkThreadResult{}, invalidPublicResult("fork result", validationErr)
+		}
+	}
 	return result, requestConflictError(err, "fork", string(req.OperationID))
 }
 
@@ -2638,13 +2715,17 @@ func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarn
 	if err != nil {
 		return ThreadDetailEvents{}, runtimeHostError(err)
 	}
-	return ThreadDetailEvents{
+	out := ThreadDetailEvents{
 		Events:       publicThreadDetailEvents(detail.Events),
 		NextOrdinal:  detail.NextOrdinal,
 		HasMore:      detail.HasMore,
 		RetainedFrom: detail.RetainedFrom,
-		GeneratedAt:  detail.GeneratedAt,
-	}, nil
+		GeneratedAt:  detail.GeneratedAt.UTC(),
+	}
+	if err := out.Validate(); err != nil {
+		return ThreadDetailEvents{}, invalidPublicResult("thread detail page", err)
+	}
+	return out, nil
 }
 
 func (h *providerHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
@@ -2670,7 +2751,7 @@ func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, 
 	}
 	out := subAgentDetailContext(string(threadID), contextSnapshot)
 	if err := out.Validate(); err != nil {
-		return ThreadContextSnapshot{}, err
+		return ThreadContextSnapshot{}, invalidPublicResult("thread context snapshot", err)
 	}
 	return out, nil
 }
@@ -2699,7 +2780,11 @@ func readThreadAgentTodos(ctx context.Context, store *Store, threadID ThreadID) 
 	if err != nil {
 		return ThreadAgentTodoState{}, runtimeHostError(err)
 	}
-	return threadAgentTodoState(state), nil
+	out := threadAgentTodoState(state)
+	if err := out.Validate(); err != nil {
+		return ThreadAgentTodoState{}, invalidPublicResult("agent todo state", err)
+	}
+	return out, nil
 }
 
 func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
@@ -2744,7 +2829,11 @@ func updateThreadAgentTodos(ctx context.Context, store *Store, req UpdateThreadA
 	if err != nil {
 		return ThreadAgentTodoState{}, runtimeHostError(err)
 	}
-	return threadAgentTodoState(state), nil
+	out := threadAgentTodoState(state)
+	if err := out.Validate(); err != nil {
+		return ThreadAgentTodoState{}, invalidPublicResult("agent todo state", err)
+	}
+	return out, nil
 }
 
 func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.JournalRepo, req UpdateThreadAgentTodosRequest) error {
@@ -2817,7 +2906,7 @@ func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, 
 	}
 	out := approvalQueue(result)
 	if err := out.Validate(); err != nil {
-		return ApprovalQueue{}, fmt.Errorf("validate approval queue: %w", err)
+		return ApprovalQueue{}, invalidPublicResult("approval queue", err)
 	}
 	return out, nil
 }
@@ -2845,7 +2934,7 @@ func (h *providerHost) ResolveApproval(ctx context.Context, req ResolveApprovalR
 		Approval: approvalRecord(result.Approval), Replayed: result.Replayed,
 	}
 	if err := out.Validate(); err != nil {
-		return ResolveApprovalResult{}, fmt.Errorf("validate approval result: %w", err)
+		return ResolveApprovalResult{}, invalidPublicResult("approval result", err)
 	}
 	return out, nil
 }
@@ -2956,6 +3045,12 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
 	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
+	if err := out.Validate(); err != nil {
+		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
+			return out, runtimeHostError(runErr)
+		}
+		return TurnResult{}, invalidPublicResult("turn result", err)
+	}
 	return out, runtimeHostError(runErr)
 }
 
@@ -3067,6 +3162,12 @@ func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (Tur
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
 	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
+	if err := out.Validate(); err != nil {
+		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
+			return out, runtimeHostError(runErr)
+		}
+		return TurnResult{}, invalidPublicResult("retry turn result", err)
+	}
 	return out, runtimeHostError(runErr)
 }
 
@@ -3144,7 +3245,7 @@ func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadReque
 		}, events, time.Now().UnixMilli()),
 	}
 	if err := out.Validate(); err != nil {
-		return CompactThreadResult{}, err
+		return CompactThreadResult{}, invalidPublicResult("compact thread result", err)
 	}
 	return out, runtimeHostError(compactErr)
 }
@@ -3198,6 +3299,12 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	}
 	if result.AdmissionRunning {
 		out.Status = TurnStatusRunning
+		if err := out.Validate(); err != nil {
+			if out.Status == "" && runErr != nil {
+				return out, runtimeHostError(runErr)
+			}
+			return PendingToolCompletionResult{}, invalidPublicResult("pending tool completion result", err)
+		}
 		return out, runtimeHostError(runErr)
 	}
 	turn := turnResult(result, string(req.Target.ThreadID), nil, time.Now().UnixMilli())
@@ -3206,6 +3313,12 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	_ = h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn, result.CanonicalEvents)
 	out.Status = turn.Status
 	out.Turn = &turn
+	if err := out.Validate(); err != nil {
+		if out.Status == "" && runErr != nil {
+			return out, runtimeHostError(runErr)
+		}
+		return PendingToolCompletionResult{}, invalidPublicResult("pending tool completion result", err)
+	}
 	return out, runtimeHostError(runErr)
 }
 
@@ -3366,11 +3479,17 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 	if err != nil {
 		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		out.ProjectionError = runtimeHostError(err).Error()
+		if validationErr := out.Validate(); validationErr != nil {
+			return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
+		}
 		return out, nil
 	}
 	if !found {
 		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		out.ProjectionError = runtimeHostError(sessiontree.ErrAuthorityCorrupt).Error()
+		if validationErr := out.Validate(); validationErr != nil {
+			return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
+		}
 		return out, nil
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -3382,6 +3501,9 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 	})
 	out.ProjectionAvailability = TurnProjectionAvailabilityReady
 	out.Projection = &projection
+	if validationErr := out.Validate(); validationErr != nil {
+		return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
+	}
 	return out, nil
 }
 
@@ -3410,7 +3532,7 @@ func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
 	}
-	return subAgentSnapshot(snapshot), nil
+	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
 func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
@@ -3434,7 +3556,7 @@ func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentIn
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
 	}
-	return subAgentSnapshot(snapshot), nil
+	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
 func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
@@ -3470,7 +3592,7 @@ func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context,
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
 	}
-	return subAgentSnapshot(snapshot), nil
+	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
 func rejectReferenceOnlyInputWithoutSupplemental(input TurnInput, operation string) error {
@@ -3489,7 +3611,11 @@ func (h *providerHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsReque
 	if err != nil {
 		return WaitSubAgentsResult{}, runtimeHostError(err)
 	}
-	return waitSubAgentsResult(result), nil
+	out := waitSubAgentsResult(result)
+	if err := out.Validate(); err != nil {
+		return WaitSubAgentsResult{}, invalidPublicResult("subagent wait result", err)
+	}
+	return out, nil
 }
 
 func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
@@ -3517,7 +3643,7 @@ func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, pare
 	for _, snapshot := range snapshots {
 		out = append(out, subAgentSnapshot(snapshot))
 	}
-	return out, nil
+	return validateSubAgentSnapshotsResult(out)
 }
 
 func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
@@ -3530,7 +3656,7 @@ func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentReque
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
 	}
-	return subAgentSnapshot(snapshot), nil
+	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
 func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
@@ -3554,11 +3680,15 @@ func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.Age
 	if err != nil {
 		return SubAgentActivityTimelineResult{}, runtimeHostError(err)
 	}
-	generatedAt := time.Now()
-	return SubAgentActivityTimelineResult{
+	generatedAt := time.Now().UTC()
+	out := SubAgentActivityTimelineResult{
 		Timeline:    subAgentActivityTimeline(req.Meta, snapshots, generatedAt),
 		GeneratedAt: generatedAt,
-	}, nil
+	}
+	if err := out.Validate(); err != nil {
+		return SubAgentActivityTimelineResult{}, invalidPublicResult("subagent activity timeline", err)
+	}
+	return out, nil
 }
 
 func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
@@ -3637,7 +3767,11 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 	if err != nil {
 		return SubAgentDetail{}, runtimeHostError(err)
 	}
-	return subAgentDetail(detail), nil
+	out := subAgentDetail(detail)
+	if err := out.Validate(); err != nil {
+		return SubAgentDetail{}, invalidPublicResult("subagent detail", err)
+	}
+	return out, nil
 }
 
 func (h *ThreadDeleteHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
@@ -3692,8 +3826,8 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 	out := ThreadSnapshot{
 		ID:               ThreadID(in.ID),
 		Title:            in.Title,
-		TitleStatus:      in.TitleStatus,
-		TitleSource:      in.TitleSource,
+		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
+		TitleSource:      ThreadTitleSource(in.TitleSource),
 		TitleUpdatedAt:   in.TitleUpdatedAt,
 		TitleError:       in.TitleError,
 		TitleGeneration:  in.TitleGeneration,
@@ -3716,8 +3850,8 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 	return ThreadSummary{
 		ID:               ThreadID(in.ID),
 		Title:            in.Title,
-		TitleStatus:      in.TitleStatus,
-		TitleSource:      in.TitleSource,
+		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
+		TitleSource:      ThreadTitleSource(in.TitleSource),
 		TitleUpdatedAt:   in.TitleUpdatedAt,
 		TitleError:       in.TitleError,
 		TitleGeneration:  in.TitleGeneration,
@@ -4164,7 +4298,7 @@ func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 		NextOrdinal:      in.NextOrdinal,
 		HasMore:          in.HasMore,
 		RetainedFrom:     in.RetainedFrom,
-		GeneratedAt:      in.GeneratedAt,
+		GeneratedAt:      in.GeneratedAt.UTC(),
 	}
 }
 

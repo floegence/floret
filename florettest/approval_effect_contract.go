@@ -200,9 +200,17 @@ func newApprovalContractHost(t testing.TB, options approvalContractOptions) *run
 		{Type: runtime.ModelEventDelta, Text: "approval contract complete"},
 		{Type: runtime.ModelEventDone, Reason: "stop"},
 	}})
-	return newContractTurnHostWithOptions(t, runtime.TurnExecutionHostOptions{
-		ModelGateway: NewScriptedModelGateway(steps...), Tools: registry, EffectAuthorizationGate: options.gate,
-	})
+	gate := options.gate
+	if gate == nil {
+		gate = runtime.EffectAuthorizationGateFunc(func(context.Context, runtime.EffectAuthorizationRequest, runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+			return runtime.EffectDispatchResult{}, runtime.ErrEffectUnauthorized
+		})
+	}
+	return newContractTurnHostWithOptions(
+		t,
+		NewScriptedModelGateway(steps...),
+		runtime.WithTurnEffectfulTools(registry, gate),
+	)
 }
 
 func contractAuthorizationProof(req runtime.EffectAuthorizationRequest, approvalID string) runtime.EffectAuthorizationProof {

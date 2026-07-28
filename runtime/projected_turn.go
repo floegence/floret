@@ -138,7 +138,7 @@ type ModelRequest struct {
 	Tools           []tools.ToolDefinition
 	HostedTools     []HostedToolDefinition
 	MaxOutputTokens int64
-	Reasoning       ReasoningSelection
+	Reasoning       config.ReasoningSelection
 	PreviousState   *ModelState
 	Labels          RunLabels
 }
@@ -492,7 +492,7 @@ func normalizeModelGatewayIdentity(identity ModelGatewayIdentity) (ModelGatewayI
 	return identity, nil
 }
 
-func projectedReasoningSelection(requested ReasoningSelection, fallback ReasoningSelection) provider.ReasoningSelection {
+func projectedReasoningSelection(requested config.ReasoningSelection, fallback config.ReasoningSelection) provider.ReasoningSelection {
 	requested = config.NormalizeReasoningSelection(requested)
 	if !requested.IsZero() {
 		return configbridge.ReasoningSelection(requested)

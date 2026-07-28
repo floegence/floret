@@ -84,6 +84,87 @@ type SQLiteStoreVerification struct {
 	Checks     []SQLiteStoreVerificationCheck `json:"checks"`
 }
 
+// Validate checks one self-contained Store inspection contract.
+func (i SQLiteStoreInspection) Validate() error {
+	switch i.Kind {
+	case SQLiteStoreKindUnknown, SQLiteStoreKindFloret:
+	default:
+		return fmt.Errorf("unsupported sqlite store kind %q", i.Kind)
+	}
+	switch i.State {
+	case SQLiteStoreStateMissing, SQLiteStoreStateEmpty, SQLiteStoreStateCurrent, SQLiteStoreStateUpgradeable,
+		SQLiteStoreStateUnsupportedOlder, SQLiteStoreStateFuture, SQLiteStoreStateDrifted, SQLiteStoreStateCorrupt,
+		SQLiteStoreStateBusy, SQLiteStoreStatePermissionDenied, SQLiteStoreStateIOError:
+	default:
+		return fmt.Errorf("unsupported sqlite store state %q", i.State)
+	}
+	if strings.TrimSpace(i.Current.Version) == "" || strings.TrimSpace(i.Current.Fingerprint) == "" {
+		return errors.New("sqlite store inspection requires current schema identity")
+	}
+	if err := i.RequestedLeasePolicy.Validate(); err != nil {
+		return fmt.Errorf("sqlite store requested lease policy: %w", err)
+	}
+	if i.PersistedLeasePolicy != nil {
+		if err := i.PersistedLeasePolicy.Validate(); err != nil {
+			return fmt.Errorf("sqlite store persisted lease policy: %w", err)
+		}
+		if i.LeasePolicyState == SQLiteStoreLeasePolicyUnavailable {
+			return errors.New("sqlite store persisted lease policy has unavailable comparison state")
+		}
+	} else if i.LeasePolicyState != SQLiteStoreLeasePolicyUnavailable {
+		return errors.New("sqlite store lease comparison requires persisted policy")
+	}
+	if i.LeasePolicyState != SQLiteStoreLeasePolicyUnavailable && i.LeasePolicyState != SQLiteStoreLeasePolicyMatches && i.LeasePolicyState != SQLiteStoreLeasePolicyMismatch {
+		return fmt.Errorf("unsupported sqlite store lease policy state %q", i.LeasePolicyState)
+	}
+	if i.State == SQLiteStoreStateMissing && (i.Exists || i.Empty) {
+		return errors.New("missing sqlite store inspection has inconsistent existence state")
+	}
+	if i.State == SQLiteStoreStateEmpty && (!i.Exists || !i.Empty) {
+		return errors.New("empty sqlite store inspection has inconsistent existence state")
+	}
+	seenActions := make(map[SQLiteStoreAction]struct{}, len(i.Actions))
+	for _, action := range i.Actions {
+		switch action {
+		case SQLiteStoreActionRetryInspection, SQLiteStoreActionMigrate, SQLiteStoreActionRequiresNewerReader, SQLiteStoreActionExportDiagnostics:
+		default:
+			return fmt.Errorf("unsupported sqlite store action %q", action)
+		}
+		if _, duplicate := seenActions[action]; duplicate {
+			return fmt.Errorf("sqlite store inspection repeats action %q", action)
+		}
+		seenActions[action] = struct{}{}
+	}
+	for index, source := range i.Migratable {
+		if strings.TrimSpace(source.Identity.Version) == "" {
+			return fmt.Errorf("sqlite migration source %d has incomplete identity", index)
+		}
+		if source.Requirement != StoreSchemaMigrationRequirementNone && source.Requirement != StoreSchemaMigrationRequirementQuiescentAuthority {
+			return fmt.Errorf("sqlite migration source %d has unsupported requirement %q", index, source.Requirement)
+		}
+	}
+	return nil
+}
+
+// Validate checks one self-contained Store verification contract.
+func (v SQLiteStoreVerification) Validate() error {
+	if err := v.Inspection.Validate(); err != nil {
+		return fmt.Errorf("sqlite store verification inspection: %w", err)
+	}
+	seen := make(map[string]struct{}, len(v.Checks))
+	for index, check := range v.Checks {
+		code := strings.TrimSpace(check.Code)
+		if code == "" || code != check.Code {
+			return fmt.Errorf("sqlite store verification check %d has invalid code", index)
+		}
+		if _, duplicate := seen[code]; duplicate {
+			return fmt.Errorf("sqlite store verification repeats check %q", code)
+		}
+		seen[code] = struct{}{}
+	}
+	return nil
+}
+
 type SQLiteStoreMigrationMode string
 
 const (
@@ -157,6 +238,36 @@ type SQLiteStoreMigrationResult struct {
 	Retryable   bool                         `json:"retryable"`
 	SafeToRetry bool                         `json:"safe_to_retry"`
 	Reason      SQLiteStoreReason            `json:"reason,omitempty"`
+}
+
+// Validate checks one self-contained Store migration result.
+func (r SQLiteStoreMigrationResult) Validate() error {
+	if !trimStableNonEmpty(r.OperationID) {
+		return errors.New("sqlite store migration result requires operation id")
+	}
+	if r.Mode != SQLiteStoreMigrationPlan && r.Mode != SQLiteStoreMigrationApply {
+		return fmt.Errorf("unsupported sqlite store migration mode %q", r.Mode)
+	}
+	switch r.Status {
+	case SQLiteStoreMaintenanceRunning, SQLiteStoreMaintenanceReady, SQLiteStoreMaintenanceFailed, SQLiteStoreMaintenanceCancelled:
+	default:
+		return fmt.Errorf("unsupported sqlite store maintenance status %q", r.Status)
+	}
+	if err := r.Before.Validate(); err != nil {
+		return fmt.Errorf("sqlite store migration before inspection: %w", err)
+	}
+	if err := r.After.Validate(); err != nil {
+		return fmt.Errorf("sqlite store migration after inspection: %w", err)
+	}
+	if r.Committed && r.RolledBack {
+		return errors.New("sqlite store migration cannot be committed and rolled back")
+	}
+	for index, step := range r.Steps {
+		if !trimStableNonEmpty(step.Code) || strings.TrimSpace(step.From.Version) == "" || strings.TrimSpace(step.To.Version) == "" {
+			return fmt.Errorf("sqlite store migration step %d is invalid", index)
+		}
+	}
+	return nil
 }
 
 type SQLiteStoreMaintenanceOperation string
@@ -246,6 +357,30 @@ type SQLiteStartupResult struct {
 	Migration    *SQLiteStoreMigrationResult
 }
 
+// Validate checks the maintenance facts carried by one Store startup result.
+func (r SQLiteStartupResult) Validate() error {
+	if r.Inspection == nil {
+		return errors.New("sqlite startup result requires inspection")
+	}
+	if err := r.Inspection.Validate(); err != nil {
+		return fmt.Errorf("sqlite startup inspection: %w", err)
+	}
+	if r.Verification != nil {
+		if err := r.Verification.Validate(); err != nil {
+			return fmt.Errorf("sqlite startup verification: %w", err)
+		}
+	}
+	if r.Migration != nil {
+		if err := r.Migration.Validate(); err != nil {
+			return fmt.Errorf("sqlite startup migration: %w", err)
+		}
+	}
+	if r.Store != nil && r.Inspection.State != SQLiteStoreStateMissing && r.Inspection.State != SQLiteStoreStateEmpty && r.Verification == nil {
+		return errors.New("opened existing sqlite startup result requires verification")
+	}
+	return nil
+}
+
 type sqliteStoreStartupAPI interface {
 	Inspect(context.Context, string, ...SQLiteStoreOption) (SQLiteStoreInspection, error)
 	Verify(context.Context, string, ...SQLiteStoreOption) (SQLiteStoreVerification, error)
@@ -294,7 +429,11 @@ func InspectSQLiteStore(ctx context.Context, path string, options ...SQLiteStore
 	if err != nil {
 		return SQLiteStoreInspection{}, maintenanceError(SQLiteStoreOperationInspect, err)
 	}
-	return mapSQLiteStoreInspection(inspection), nil
+	mapped := mapSQLiteStoreInspection(inspection)
+	if err := mapped.Validate(); err != nil {
+		return SQLiteStoreInspection{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationInspect, SQLiteStoreReasonContract, false, false, err)
+	}
+	return mapped, nil
 }
 
 func VerifySQLiteStore(ctx context.Context, path string, options ...SQLiteStoreOption) (SQLiteStoreVerification, error) {
@@ -310,7 +449,11 @@ func VerifySQLiteStore(ctx context.Context, path string, options ...SQLiteStoreO
 	for index, check := range verification.Checks {
 		checks[index] = SQLiteStoreVerificationCheck{Code: check.Code, Passed: check.Passed, SafeDetail: check.SafeDetail}
 	}
-	return SQLiteStoreVerification{Inspection: mapSQLiteStoreInspection(verification.Inspection), Checks: checks}, nil
+	mapped := SQLiteStoreVerification{Inspection: mapSQLiteStoreInspection(verification.Inspection), Checks: checks}
+	if err := mapped.Validate(); err != nil {
+		return SQLiteStoreVerification{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationVerify, SQLiteStoreReasonContract, false, false, err)
+	}
+	return mapped, nil
 }
 
 // StartSQLiteStore runs the safe maintenance state machine and returns an
@@ -335,7 +478,18 @@ func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupReq
 		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, err)
 	}
 	stableOptions := []SQLiteStoreOption{func(target *sqliteStoreOptions) { *target = configured }}
-	return startSQLiteStoreWithAPI(ctx, path, request, policy, stableOptions, publicSQLiteStoreStartupAPI{})
+	result, err := startSQLiteStoreWithAPI(ctx, path, request, policy, stableOptions, publicSQLiteStoreStartupAPI{})
+	if err != nil {
+		return result, err
+	}
+	if validationErr := result.Validate(); validationErr != nil {
+		if result.Store != nil {
+			_ = result.Store.Close()
+			result.Store = nil
+		}
+		return result, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonContract, false, false, validationErr)
+	}
+	return result, nil
 }
 
 func startSQLiteStoreWithAPI(ctx context.Context, path string, request SQLiteStartupRequest, policy SQLiteMigrationPolicy, options []SQLiteStoreOption, api sqliteStoreStartupAPI) (SQLiteStartupResult, error) {
@@ -626,12 +780,19 @@ func MigrateSQLiteStore(ctx context.Context, path string, request SQLiteStoreMig
 	if err != nil {
 		return mapped, maintenanceError(SQLiteStoreOperationMigrate, err)
 	}
+	if err := mapped.Validate(); err != nil {
+		return SQLiteStoreMigrationResult{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationMigrate, SQLiteStoreReasonContract, false, false, err)
+	}
 	return mapped, nil
 }
 
 func mapSQLiteStoreInspection(inspection sqlite.MaintenanceInspection) SQLiteStoreInspection {
+	kind := SQLiteStoreKind(inspection.Kind)
+	if kind == "" {
+		kind = SQLiteStoreKindUnknown
+	}
 	mapped := SQLiteStoreInspection{
-		Kind: SQLiteStoreKind(inspection.Kind), State: SQLiteStoreState(inspection.State), Exists: inspection.Exists, Empty: inspection.Empty,
+		Kind: kind, State: SQLiteStoreState(inspection.State), Exists: inspection.Exists, Empty: inspection.Empty,
 		Observed: mapStoreSchemaIdentity(inspection.Observed), Current: mapStoreSchemaIdentity(inspection.Current),
 		Migratable:           mapStoreSchemaMigrationSources(inspection.Migratable),
 		RequestedLeasePolicy: publicStoreLeasePolicy(inspection.RequestedLeasePolicy),

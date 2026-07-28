@@ -103,7 +103,7 @@ func (h *ThreadInventoryHost) ListRootThreads(ctx context.Context, req ListRootT
 		}
 	}
 	if err := page.Validate(); err != nil {
-		return RootThreadsPage{}, fmt.Errorf("%w: invalid root thread page: %v", ErrAuthorityCorrupt, err)
+		return RootThreadsPage{}, invalidPublicResult("root thread page", err)
 	}
 	return page, nil
 }

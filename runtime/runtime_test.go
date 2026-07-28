@@ -316,7 +316,7 @@ func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, e
 		opts.EffectAuthorizationGate = allowRuntimeEffectGate{}
 	}
 	if opts.ModelGateway != nil && opts.ModelGatewayCapabilities.Reasoning == nil {
-		reasoning := ReasoningCapability{
+		reasoning := config.ReasoningCapability{
 			Kind:             "effort",
 			SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
 			DefaultLevel:     config.ReasoningLevelHigh,
@@ -945,7 +945,7 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snapshot.TitleStatus == string(sessiontree.ThreadTitleReady) {
+		if snapshot.TitleStatus == ThreadTitleStatus(sessiontree.ThreadTitleReady) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -953,7 +953,7 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if snapshot.Title != "Generated title" || snapshot.TitleStatus != string(sessiontree.ThreadTitleReady) {
+	if snapshot.Title != "Generated title" || snapshot.TitleStatus != ThreadTitleStatus(sessiontree.ThreadTitleReady) {
 		t.Fatalf("provider title snapshot = %#v", snapshot)
 	}
 	mu.Lock()
@@ -1020,7 +1020,7 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snapshot.TitleStatus == string(sessiontree.ThreadTitleReady) {
+		if snapshot.TitleStatus == ThreadTitleStatus(sessiontree.ThreadTitleReady) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1029,7 +1029,7 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 		time.Sleep(time.Millisecond)
 	}
 	if snapshot.Title != "修复终端任务" || utf8.RuneCountInString(snapshot.Title) > 16 ||
-		snapshot.TitleSource != string(sessiontree.ThreadTitleSourceProvider) {
+		snapshot.TitleSource != ThreadTitleSource(sessiontree.ThreadTitleSourceProvider) {
 		t.Fatalf("Chinese title snapshot=%#v", snapshot)
 	}
 	select {
@@ -1140,7 +1140,7 @@ func TestHostBootstrapRecoversOrphanedAutomaticTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.TitleStatus != string(sessiontree.ThreadTitleFailed) || snapshot.TitleError != automaticTitleRestartedForRuntimeTest {
+	if snapshot.TitleStatus != ThreadTitleStatus(sessiontree.ThreadTitleFailed) || snapshot.TitleError != automaticTitleRestartedForRuntimeTest {
 		t.Fatalf("recovered title snapshot = %#v", snapshot)
 	}
 }
@@ -1167,7 +1167,7 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Title != "Manual title" || first.TitleStatus != string(sessiontree.ThreadTitleReady) || first.TitleSource != string(sessiontree.ThreadTitleSourceHost) || first.TitleUpdatedAt.IsZero() {
+	if first.Title != "Manual title" || first.TitleStatus != ThreadTitleStatus(sessiontree.ThreadTitleReady) || first.TitleSource != ThreadTitleSource(sessiontree.ThreadTitleSourceHost) || first.TitleUpdatedAt.IsZero() {
 		t.Fatalf("first title snapshot = %#v", first)
 	}
 	second, err := host.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread", Title: "Manual title"})
@@ -1741,7 +1741,7 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		ThreadID:  "thread",
 		TurnID:    "turn-1",
 		Input:     TurnInput{Text: "first"},
-		Reasoning: ReasoningSelection{Level: ReasoningLevelHigh},
+		Reasoning: config.ReasoningSelection{Level: config.ReasoningLevelHigh},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1756,8 +1756,8 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		ThreadID: "thread",
 		TurnID:   "turn-2",
 		Input:    TurnInput{Text: "second"},
-		Reasoning: ReasoningSelection{
-			Level: ReasoningLevelLow,
+		Reasoning: config.ReasoningSelection{
+			Level: config.ReasoningLevelLow,
 		},
 	})
 	if err != nil {
@@ -1786,10 +1786,10 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing third gateway request: %#v", requests)
 	}
-	if firstReq.Model != "model-a" || firstReq.Reasoning.Level != ReasoningLevelHigh || firstReq.PreviousState != nil {
+	if firstReq.Model != "model-a" || firstReq.Reasoning.Level != config.ReasoningLevelHigh || firstReq.PreviousState != nil {
 		t.Fatalf("first gateway request = %#v", firstReq)
 	}
-	if secondReq.Model != "model-a" || secondReq.Reasoning.Level != ReasoningLevelLow {
+	if secondReq.Model != "model-a" || secondReq.Reasoning.Level != config.ReasoningLevelLow {
 		t.Fatalf("second gateway request model/reasoning = %#v", secondReq)
 	}
 	if secondReq.PreviousState == nil || secondReq.PreviousState.Kind != "responses" || secondReq.PreviousState.ID != "state-turn-1" || secondReq.PreviousState.Attributes["cursor"] != "turn-1" || secondReq.PreviousState.Attributes["model"] != "model-a" {
@@ -4629,7 +4629,7 @@ func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote, err := remoteFactory.NewHost(ctx, SubAgentHostOptions{
-		Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(), IDGenerator: deterministicIDs(),
+		config: runtimeGatewayConfig("test"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), modelGatewayCapabilities: runtimeGatewayCapabilities(), idGenerator: deterministicIDs(), initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5296,13 +5296,13 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	forkTurn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: config.Config{
+		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
 			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		IDGenerator: deterministicIDs(),
+		idGenerator: deterministicIDs(), initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5740,12 +5740,12 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	forkSubAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
-		Config: config.Config{
+		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
 			FakeResponse: "done",
 			SystemPrompt: "test",
-		},
+		}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -6375,13 +6375,13 @@ func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-		Config:                   runtimeGatewayConfig("test"),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     runtimeGatewayIdentity("fake-model"),
-		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Tools:                    registry,
-		EffectAuthorizationGate:  allowRuntimeEffectGate{approver: allowRuntimeTools},
-		IDGenerator:              deterministicIDs(),
+		config:                   runtimeGatewayConfig("test"),
+		modelGateway:             gateway,
+		modelGatewayIdentity:     runtimeGatewayIdentity("fake-model"),
+		modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		tools:                    registry,
+		effectAuthorizationGate:  allowRuntimeEffectGate{approver: allowRuntimeTools},
+		idGenerator:              deterministicIDs(), initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8152,8 +8152,8 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 				t.Fatal(err)
 			}
 			turnHost, err = factory.NewHost(ctx, TurnExecutionHostOptions{
-				Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("model-a"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-				Tools: registry, EffectAuthorizationGate: allowRuntimeEffectGate{}, IDGenerator: deterministicIDs(),
+				config: runtimeGatewayConfig("test"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("model-a"), modelGatewayCapabilities: runtimeGatewayCapabilities(),
+				tools: registry, effectAuthorizationGate: allowRuntimeEffectGate{}, idGenerator: deterministicIDs(), initialized: true,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -8432,7 +8432,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 				return runtimeGatewayEvents("must not run"), nil
 			})
 			turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-				Config: runtimeGatewayConfig("close"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+				config: runtimeGatewayConfig("close"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -8464,7 +8464,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 			if _, err := capabilities.subAgent.Bind("thread"); !errors.Is(err, ErrStoreClosed) {
 				t.Fatalf("retained subagent binder err=%v, want ErrStoreClosed", err)
 			}
-			if _, err := factory.NewHost(ctx, TurnExecutionHostOptions{Config: runtimeGatewayConfig("closed")}); !errors.Is(err, ErrStoreClosed) {
+			if _, err := factory.NewHost(ctx, TurnExecutionHostOptions{config: runtimeGatewayConfig("closed"), initialized: true}); !errors.Is(err, ErrStoreClosed) {
 				t.Fatalf("retained factory construction err=%v, want ErrStoreClosed", err)
 			}
 			if _, err := read.ReadThread(ctx, "thread"); !errors.Is(err, ErrStoreClosed) {
@@ -8512,7 +8512,7 @@ func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: runtimeGatewayConfig("close active"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-active"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+		config: runtimeGatewayConfig("close active"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close-active"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8591,7 +8591,7 @@ func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) 
 		t.Fatal(err)
 	}
 	host, err := factory.NewHost(ctx, SubAgentHostOptions{
-		Config: runtimeGatewayConfig("close child"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-child"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+		config: runtimeGatewayConfig("close child"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close-child"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8674,9 +8674,9 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			host, err := factory.NewHost(ctx, SubAgentHostOptions{Config: config.Config{
+			host, err := factory.NewHost(ctx, SubAgentHostOptions{config: config.Config{
 				Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
-			}})
+			}, initialized: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -8891,7 +8891,7 @@ func runtimeGatewayIdentity(model string) ModelGatewayIdentity {
 }
 
 func runtimeGatewayCapabilities() ModelGatewayCapabilities {
-	reasoning := ReasoningCapability{
+	reasoning := config.ReasoningCapability{
 		Kind:             "effort",
 		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel:     config.ReasoningLevelHigh,
@@ -9016,7 +9016,7 @@ func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 		if err != nil {
 			t.Fatal(err)
 		}
-		childHost, err := factory.NewHost(ctx, SubAgentHostOptions{Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}})
+		childHost, err := factory.NewHost(ctx, SubAgentHostOptions{config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}, initialized: true})
 		if err != nil {
 			t.Fatal(err)
 		}

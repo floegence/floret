@@ -175,12 +175,8 @@ func TestPublicRuntimeErrorsSupportErrorsIsWithoutInternalImports(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-			Config:                   publicGatewayConfig(),
-			ModelGateway:             gateway,
-			ModelGatewayIdentity:     publicGatewayIdentity(),
-			ModelGatewayCapabilities: publicGatewayCapabilities(),
-		})
+		options := publicTurnOptions(t, publicGatewayConfig(), gateway, nil, nil)
+		host, err := factory.NewHost(ctx, options)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +226,11 @@ func TestPublicRuntimeErrorsSupportErrorsIsWithoutInternalImports(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		host, err := factory.NewHost(ctx, floretruntime.SubAgentHostOptions{Config: publicFakeConfig()})
+		options, optionsErr := floretruntime.NewSubAgentHostOptions(publicFakeConfig())
+		if optionsErr != nil {
+			t.Fatal(optionsErr)
+		}
+		host, err := factory.NewHost(ctx, options)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -324,14 +324,8 @@ func TestTerminalRunTurnReturnReleasesAuthorityForPendingToolRecovery(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-				Config:                   publicGatewayConfig(),
-				ModelGateway:             gateway,
-				ModelGatewayIdentity:     publicGatewayIdentity(),
-				ModelGatewayCapabilities: publicGatewayCapabilities(),
-				Tools:                    registry,
-				EffectAuthorizationGate:  effectGate,
-			})
+			options := publicTurnOptions(t, publicGatewayConfig(), gateway, registry, effectGate)
+			host, err := factory.NewHost(ctx, options)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -489,14 +483,8 @@ func newPublicPendingTurnHost(t *testing.T, binder *floretruntime.TurnExecutionH
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := factory.NewHost(context.Background(), floretruntime.TurnExecutionHostOptions{
-		Config:                   publicGatewayConfig(),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     publicGatewayIdentity(),
-		ModelGatewayCapabilities: publicGatewayCapabilities(),
-		Tools:                    registry,
-		EffectAuthorizationGate:  effectGate,
-	})
+	options := publicTurnOptions(t, publicGatewayConfig(), gateway, registry, effectGate)
+	host, err := factory.NewHost(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,11 +521,31 @@ func newPublicFakeTurnHost(t *testing.T, binder *floretruntime.TurnExecutionHost
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := factory.NewHost(context.Background(), floretruntime.TurnExecutionHostOptions{Config: publicFakeConfig()})
+	options, optionsErr := floretruntime.NewTurnExecutionHostOptions(publicFakeConfig())
+	if optionsErr != nil {
+		t.Fatal(optionsErr)
+	}
+	host, err := factory.NewHost(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return host
+}
+
+func publicTurnOptions(t *testing.T, cfg config.Config, gateway floretruntime.ModelGateway, registry *tools.Registry, gate floretruntime.EffectAuthorizationGate) floretruntime.TurnExecutionHostOptions {
+	t.Helper()
+	options := make([]floretruntime.TurnExecutionOption, 0, 2)
+	if gateway != nil {
+		options = append(options, floretruntime.WithTurnModelGateway(gateway, publicGatewayIdentity(), publicGatewayCapabilities()))
+	}
+	if registry != nil || gate != nil {
+		options = append(options, floretruntime.WithTurnEffectfulTools(registry, gate))
+	}
+	built, err := floretruntime.NewTurnExecutionHostOptions(cfg, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return built
 }
 
 func publicSettlementRequest(toolCallID, toolName, handle string, status floretruntime.PendingToolSettlementStatus) floretruntime.PendingToolSettlementRequest {

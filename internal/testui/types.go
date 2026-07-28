@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/testing/eval"
 	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/runtime"
 )
 
 type ConfigInfo struct {
@@ -576,8 +577,8 @@ type ObservedSessionEntry struct {
 type AgentSessionSnapshot struct {
 	ID                      string                          `json:"id"`
 	Title                   string                          `json:"title,omitempty"`
-	TitleStatus             string                          `json:"title_status,omitempty"`
-	TitleSource             string                          `json:"title_source,omitempty"`
+	TitleStatus             runtime.ThreadTitleStatus       `json:"title_status,omitempty"`
+	TitleSource             runtime.ThreadTitleSource       `json:"title_source,omitempty"`
 	TitleUpdatedAt          time.Time                       `json:"title_updated_at,omitempty"`
 	TitleError              string                          `json:"title_error,omitempty"`
 	Status                  string                          `json:"status"`

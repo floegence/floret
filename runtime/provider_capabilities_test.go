@@ -177,7 +177,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 					return err
 				}
 				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
-					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
 			},
@@ -191,7 +191,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 					return err
 				}
 				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
-					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
 			},
@@ -205,7 +205,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 					return err
 				}
 				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
-					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Sink: events,
+					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), sink: events, initialized: true,
 				})
 				return err
 			},
@@ -219,7 +219,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 					return err
 				}
 				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
-					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Sink: events,
+					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), sink: events, initialized: true,
 				})
 				return err
 			},
@@ -233,7 +233,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 					return err
 				}
 				_, err = factory.NewHost(ctx, SubAgentHostOptions{
-					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
 			},
@@ -337,7 +337,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{Config: providerConfig})
+	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{Config: providerConfig})
+	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{Config: providerConfig})
+	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,11 +518,11 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 		t.Fatal(err)
 	}
 	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
-		Config:                   runtimeGatewayConfig("test"),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
-		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Sink:                     events,
+		config:                   runtimeGatewayConfig("test"),
+		modelGateway:             gateway,
+		modelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
+		modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		sink:                     events, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -532,11 +532,11 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 		t.Fatal(err)
 	}
 	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
-		Config:                   runtimeCompactionTestConfig(),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
-		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Sink:                     events,
+		config:                   runtimeCompactionTestConfig(),
+		modelGateway:             gateway,
+		modelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
+		modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		sink:                     events, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -629,14 +629,14 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{Config: providerConfig}); !errors.Is(err, ErrSubAgentParentRequired) {
+	if _, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
 		t.Fatalf("turn NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
 	}
 	compactionFactory, err := capabilities.compaction.Bind("child")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{Config: providerConfig}); !errors.Is(err, ErrSubAgentParentRequired) {
+	if _, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
 		t.Fatalf("compaction NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
 	}
 	constructors := []struct {
@@ -763,12 +763,12 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
-		Config: config.Config{
+		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
 			FakeResponse: "done",
 			SystemPrompt: "test",
-		},
+		}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -912,12 +912,12 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: config.Config{
+		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
 			FakeResponse: "done",
 			SystemPrompt: "test",
-		},
+		}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -956,12 +956,12 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
-		Config: config.Config{
+		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
 			FakeResponse: "done",
 			SystemPrompt: "test",
-		},
+		}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
