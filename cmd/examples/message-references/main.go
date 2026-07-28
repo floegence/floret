@@ -76,17 +76,16 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	turnHost, err := turnFactory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-		Config: config.Config{
-			SystemPrompt:  "Inspect the supplied context.",
-			ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-		},
-		ModelGateway: gateway,
-		ModelGatewayIdentity: floretruntime.ModelGatewayIdentity{
-			Provider: "reference-example", Model: "local-scripted-model", StateCompatibilityKey: "reference-example:v1",
-		},
-		ModelGatewayCapabilities: floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning},
-	})
+	turnOptions, err := floretruntime.NewTurnExecutionHostOptions(config.Config{
+		SystemPrompt:  "Inspect the supplied context.",
+		ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, floretruntime.WithTurnModelGateway(gateway, floretruntime.ModelGatewayIdentity{
+		Provider: "reference-example", Model: "local-scripted-model", StateCompatibilityKey: "reference-example:v1",
+	}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}))
+	if err != nil {
+		return err
+	}
+	turnHost, err := turnFactory.NewHost(ctx, turnOptions)
 	if err != nil {
 		return err
 	}

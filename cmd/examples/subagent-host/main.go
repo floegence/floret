@@ -51,13 +51,16 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	host, err := factory.NewHost(ctx, floretruntime.SubAgentHostOptions{
-		Config: config.Config{
-			Provider: config.ProviderFake, Model: "fake-model",
-			FakeResponse: "The child review is complete.", SystemPrompt: "Return a concise handoff.",
-		},
-		SubAgentRunTimeout: 2 * time.Second,
-	})
+	hostOptions, err := floretruntime.NewSubAgentHostOptions(config.Config{
+		Provider: config.ProviderFake, Model: "fake-model",
+		FakeResponse: "The child review is complete.", SystemPrompt: "Return a concise handoff.",
+	},
+		floretruntime.WithSubAgentRunTimeout(2*time.Second),
+	)
+	if err != nil {
+		return err
+	}
+	host, err := factory.NewHost(ctx, hostOptions)
 	if err != nil {
 		return err
 	}

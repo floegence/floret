@@ -155,18 +155,19 @@ func runCrashChild(ctx context.Context, databasePath string) error {
 	if err != nil {
 		return err
 	}
-	host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-		Config: config.Config{
-			SystemPrompt:  "Start the requested job.",
-			ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-		},
-		ModelGateway: &crashGateway{},
-		ModelGatewayIdentity: floretruntime.ModelGatewayIdentity{
+	turnOptions, err := floretruntime.NewTurnExecutionHostOptions(config.Config{
+		SystemPrompt:  "Start the requested job.",
+		ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	},
+		floretruntime.WithTurnModelGateway(&crashGateway{}, floretruntime.ModelGatewayIdentity{
 			Provider: "recovery-example", Model: "local-scripted-model", StateCompatibilityKey: "recovery-example:v1",
-		},
-		ModelGatewayCapabilities: floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning},
-		Tools:                    registry, EffectAuthorizationGate: allowGate{},
-	})
+		}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}),
+		floretruntime.WithTurnEffectfulTools(registry, allowGate{}),
+	)
+	if err != nil {
+		return err
+	}
+	host, err := factory.NewHost(ctx, turnOptions)
 	if err != nil {
 		return err
 	}

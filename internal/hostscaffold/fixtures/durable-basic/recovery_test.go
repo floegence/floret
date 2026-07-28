@@ -93,14 +93,16 @@ func TestDurableBasicInterruptedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
-	host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-		Config:       config.Config{SystemPrompt: "test", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
-		ModelGateway: durableBasicCrashGateway{},
-		ModelGatewayIdentity: floretruntime.ModelGatewayIdentity{
+	hostOptions, err := floretruntime.NewTurnExecutionHostOptions(
+		config.Config{SystemPrompt: "test", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
+		floretruntime.WithTurnModelGateway(durableBasicCrashGateway{}, floretruntime.ModelGatewayIdentity{
 			Provider: "fixture", Model: "crash", StateCompatibilityKey: "fixture:crash:v1",
-		},
-		ModelGatewayCapabilities: floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning},
-	})
+		}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := factory.NewHost(ctx, hostOptions)
 	if err != nil {
 		t.Fatal(err)
 	}

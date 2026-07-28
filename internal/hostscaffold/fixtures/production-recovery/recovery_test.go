@@ -96,10 +96,10 @@ func TestProductionRecoveryTraversesGrandchildAndSettlesCanonicalPendingTarget(t
 	cfg := config.Config{SystemPrompt: "Complete the assigned task.", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}
 	composition, err := openFloretComposition(
 		ctx, databasePath, floretruntime.SQLiteStartupRequest{}, nil, nestedPendingCatalog{}, nil, cfg,
-		floretruntime.WithModelGateway(gateway, floretruntime.ModelGatewayIdentity{
+		withFloretModelGateway(gateway, floretruntime.ModelGatewayIdentity{
 			Provider: "fixture", Model: "scripted", StateCompatibilityKey: "fixture:scripted:v1",
 		}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}),
-		floretruntime.WithEffectfulTools(registry, nestedPendingGate{}),
+		withFloretEffectfulTools(registry, nestedPendingGate{}),
 	)
 	if err != nil {
 		t.Fatal(err)

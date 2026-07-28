@@ -138,18 +138,19 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	turnHost, err := turnFactory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-		Config: config.Config{
-			SystemPrompt:  "Use the write tool when asked.",
-			ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-		},
-		ModelGateway: toolGateway{},
-		ModelGatewayIdentity: floretruntime.ModelGatewayIdentity{
+	turnOptions, err := floretruntime.NewTurnExecutionHostOptions(config.Config{
+		SystemPrompt:  "Use the write tool when asked.",
+		ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	},
+		floretruntime.WithTurnModelGateway(toolGateway{}, floretruntime.ModelGatewayIdentity{
 			Provider: "approval-example", Model: "local-scripted-model", StateCompatibilityKey: "approval-example:v1",
-		},
-		ModelGatewayCapabilities: floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning},
-		Tools:                    registry, EffectAuthorizationGate: gate,
-	})
+		}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}),
+		floretruntime.WithTurnEffectfulTools(registry, gate),
+	)
+	if err != nil {
+		return err
+	}
+	turnHost, err := turnFactory.NewHost(ctx, turnOptions)
 	if err != nil {
 		return err
 	}

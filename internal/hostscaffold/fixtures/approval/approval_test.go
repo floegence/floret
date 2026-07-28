@@ -79,7 +79,7 @@ func TestFloretGeneratedApprovalLifecycle(t *testing.T) {
 		config.Config{SystemPrompt: "Use the write tool.", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
 		registry,
 		gate,
-		floretruntime.WithModelGateway(floretApprovalFixtureGateway{}, floretruntime.ModelGatewayIdentity{
+		withFloretModelGateway(floretApprovalFixtureGateway{}, floretruntime.ModelGatewayIdentity{
 			Provider: "generated", Model: "approval", StateCompatibilityKey: "generated:approval:v1",
 		}, floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}),
 	)

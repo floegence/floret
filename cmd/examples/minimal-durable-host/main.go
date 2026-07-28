@@ -78,7 +78,7 @@ func run(ctx context.Context, databasePath string) error {
 		_ = store.Close()
 		return err
 	}
-	turnOptions, err := floretruntime.NewTurnExecutionOptions(config.Config{
+	turnOptions, err := floretruntime.NewTurnExecutionHostOptions(config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
 		FakeResponse: "The durable turn is complete.",

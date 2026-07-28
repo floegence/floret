@@ -6,19 +6,108 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/floegence/floret/config"
 	floretruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/tools"
 )
 
+type floretHostOption func(*floretHostOptionSet) error
+
+type floretHostOptionSet struct {
+	turn     []floretruntime.TurnExecutionOption
+	subAgent []floretruntime.SubAgentOption
+}
+
+func withFloretModelGateway(gateway floretruntime.ModelGateway, identity floretruntime.ModelGatewayIdentity, capabilities floretruntime.ModelGatewayCapabilities) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnModelGateway(gateway, identity, capabilities))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentModelGateway(gateway, identity, capabilities))
+		return nil
+	}
+}
+
+func withFloretReadOnlyTools(items ...tools.Tool) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnReadOnlyTools(items...))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentReadOnlyTools(items...))
+		return nil
+	}
+}
+
+func withFloretEffectfulTools(registry *tools.Registry, gate floretruntime.EffectAuthorizationGate) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnEffectfulTools(registry, gate))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentEffectfulTools(registry, gate))
+		return nil
+	}
+}
+
+func withFloretEventSink(sink floretruntime.EventSink) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnEventSink(sink))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentEventSink(sink))
+		return nil
+	}
+}
+
+func withFloretDynamicToolSurface(surface floretruntime.ToolSurfaceProvider) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnDynamicToolSurface(surface))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentDynamicToolSurface(surface))
+		return nil
+	}
+}
+
+func withFloretIDGenerator(generator func(string) string) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnIDGenerator(generator))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentIDGenerator(generator))
+		return nil
+	}
+}
+
+func withFloretLoopLimits(limits floretruntime.LoopLimits) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnLoopLimits(limits))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentLoopLimits(limits))
+		return nil
+	}
+}
+
+func withFloretCapabilities(capabilities floretruntime.CapabilityOptions) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnCapabilities(capabilities))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentCapabilities(capabilities))
+		return nil
+	}
+}
+
+func withFloretThreadTitleMode(mode floretruntime.ThreadTitleMode) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.turn = append(options.turn, floretruntime.WithTurnThreadTitleMode(mode))
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentThreadTitleMode(mode))
+		return nil
+	}
+}
+
+func withFloretSubAgentRunTimeout(timeout time.Duration) floretHostOption {
+	return func(options *floretHostOptionSet) error {
+		options.subAgent = append(options.subAgent, floretruntime.WithSubAgentRunTimeout(timeout))
+		return nil
+	}
+}
+
 type floretComposition struct {
-	store        *floretruntime.Store
-	create       *floretruntime.ThreadCreateHostBinder
-	read         *floretruntime.ThreadReadHostBinder
-	turn         *floretruntime.TurnExecutionHostBinder
-	turnOptions  floretruntime.TurnExecutionHostOptions
-	subAgent     *floretruntime.SubAgentHostBinder
-	subAgentRead *floretruntime.SubAgentReadHostBinder
+	store           *floretruntime.Store
+	create          *floretruntime.ThreadCreateHostBinder
+	read            *floretruntime.ThreadReadHostBinder
+	turn            *floretruntime.TurnExecutionHostBinder
+	turnOptions     floretruntime.TurnExecutionHostOptions
+	subAgentOptions floretruntime.SubAgentHostOptions
+	subAgent        *floretruntime.SubAgentHostBinder
+	subAgentRead    *floretruntime.SubAgentReadHostBinder
 }
 
 type floretThreadCreator interface {
@@ -40,12 +129,25 @@ type floretSubAgentRunner interface {
 	CloseSubAgent(context.Context, floretruntime.CloseSubAgentRequest) (floretruntime.SubAgentSnapshot, error)
 }
 
-func openFloretComposition(ctx context.Context, cfg config.Config, options ...floretruntime.TurnExecutionOption) (*floretComposition, error) {
-	turnOptions, err := floretruntime.NewTurnExecutionOptions(cfg, options...)
+func openFloretComposition(ctx context.Context, cfg config.Config, options ...floretHostOption) (*floretComposition, error) {
+	optionSet := floretHostOptionSet{}
+	for index, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("floret host option %d is invalid", index)
+		}
+		if err := option(&optionSet); err != nil {
+			return nil, fmt.Errorf("floret host option %d: %w", index, err)
+		}
+	}
+	turnOptions, err := floretruntime.NewTurnExecutionHostOptions(cfg, optionSet.turn...)
 	if err != nil {
 		return nil, err
 	}
-	composition := &floretComposition{store: floretruntime.NewMemoryStore(), turnOptions: turnOptions}
+	subAgentOptions, err := floretruntime.NewSubAgentHostOptions(cfg, optionSet.subAgent...)
+	if err != nil {
+		return nil, err
+	}
+	composition := &floretComposition{store: floretruntime.NewMemoryStore(), turnOptions: turnOptions, subAgentOptions: subAgentOptions}
 	err = floretruntime.ConfigureHostCapabilities(composition.store, func(bootstrap *floretruntime.HostBootstrap) error {
 		if composition.create, err = floretruntime.NewThreadCreateHostBinder(bootstrap); err != nil {
 			return err
@@ -110,20 +212,7 @@ func (composition *floretComposition) bindSubAgentHost(ctx context.Context, pare
 	if err != nil {
 		return nil, err
 	}
-	return factory.NewHost(ctx, floretruntime.SubAgentHostOptions{
-		Config:                   composition.turnOptions.Config,
-		ModelGateway:             composition.turnOptions.ModelGateway,
-		ModelGatewayIdentity:     composition.turnOptions.ModelGatewayIdentity,
-		ModelGatewayCapabilities: composition.turnOptions.ModelGatewayCapabilities,
-		Tools:                    composition.turnOptions.Tools,
-		EffectAuthorizationGate:  composition.turnOptions.EffectAuthorizationGate,
-		Sink:                     composition.turnOptions.Sink,
-		ToolSurfaceProvider:      composition.turnOptions.ToolSurfaceProvider,
-		IDGenerator:              composition.turnOptions.IDGenerator,
-		LoopLimits:               composition.turnOptions.LoopLimits,
-		Capabilities:             composition.turnOptions.Capabilities,
-		ThreadTitleMode:          composition.turnOptions.ThreadTitleMode,
-	})
+	return factory.NewHost(ctx, composition.subAgentOptions)
 }
 
 func validateFloretTurnOutcome(result floretruntime.TurnResult, runErr error) error {
