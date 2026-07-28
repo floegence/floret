@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix the post-release API compatibility gate to resolve the complete tagged
+  module package graph before running the fixed-version `apidiff` comparison.
+
 ## v1.0.0 - 2026-07-29
 
 - Freeze `config`, `runtime`, `tools`, and `observation` as the production

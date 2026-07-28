@@ -27,7 +27,7 @@ trap cleanup_root EXIT
 mkdir -p "${root}/baseline"
 pushd "${root}/baseline" >/dev/null
 go mod init example.com/floret-v1-api-baseline >/dev/null
-go get "${module_path}@${baseline_tag}" >/dev/null
+go get "${module_path}/...@${baseline_tag}" >/dev/null
 go run "${apidiff_package}" -m -w "${root}/v1.api" "${module_path}"
 popd >/dev/null
 
