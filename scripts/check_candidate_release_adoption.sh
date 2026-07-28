@@ -44,6 +44,49 @@ export GOMODCACHE="${root}/modcache"
 export GOCACHE="${root}/buildcache"
 mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}"
 
+mkdir -p "${root}/legacy-fixture"
+pushd "${root}/legacy-fixture" >/dev/null
+go mod init example.com/floret-v0312-fixture
+go get "${module_path}@v0.31.2"
+cat >main.go <<'EOF'
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/floegence/floret/florettest"
+	"github.com/floegence/floret/runtime"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		panic("fixture path is required")
+	}
+	ctx := context.Background()
+	startup, err := runtime.StartSQLiteStore(ctx, os.Args[1], runtime.SQLiteStartupRequest{})
+	if err != nil {
+		panic(err)
+	}
+	_, err = florettest.PopulateStoreFixture(ctx, startup.Store, florettest.StoreFixtureInput{
+		ThreadID: "v0312-thread", CreateIntentID: "v0312-create",
+		Turns: []florettest.StoreFixtureTurn{{
+			Request: runtime.RunTurnRequest{TurnID: "v0312-turn", RunID: "v0312-run", Input: runtime.TurnInput{Text: "persist schema v16"}},
+			ModelSteps: []florettest.ModelStep{{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "v0312"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}},
+		}},
+	})
+	if err != nil {
+		_ = startup.Store.Close()
+		panic(err)
+	}
+	if err := startup.Store.Close(); err != nil {
+		panic(err)
+	}
+}
+EOF
+go run . "${root}/v0312-schema-v16.db"
+popd >/dev/null
+
 pushd "${root}/consumer" >/dev/null
 go mod init example.com/floret-candidate-adoption
 go get "${module_path}@${version}"
@@ -60,6 +103,7 @@ package adoption_test
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -115,12 +159,18 @@ func TestCandidateExactReadSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
-	execHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-		Config: config.Config{SystemPrompt: "candidate", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
-		ModelGateway: florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
-		ModelGatewayIdentity: runtime.ModelGatewayIdentity{Provider: "candidate", Model: "candidate", StateCompatibilityKey: "candidate:v1"},
-		ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
-	})
+	turnOptions, err := runtime.NewTurnExecutionHostOptions(
+		config.Config{SystemPrompt: "candidate", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
+		runtime.WithTurnModelGateway(
+			florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
+			runtime.ModelGatewayIdentity{Provider: "candidate", Model: "candidate", StateCompatibilityKey: "candidate:v1"},
+			runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execHost, err := turnFactory.NewHost(ctx, turnOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +191,13 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	if _, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "candidate-thread", TurnID: "missing"}); !errors.Is(err, runtime.ErrTurnNotFound) {
 		t.Fatalf("unknown exact turn error = %v", err)
 	}
-	subAgentOptions := runtime.SubAgentHostOptions{Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "candidate child"}, SubAgentRunTimeout: 2 * time.Second}
+	subAgentOptions, err := runtime.NewSubAgentHostOptions(
+		config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "candidate child"},
+		runtime.WithSubAgentRunTimeout(2*time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rootFactory, err := subAgentBinder.Bind("candidate-thread")
 	if err != nil {
 		t.Fatal(err)
@@ -206,13 +262,52 @@ func TestCandidateExactReadSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestCandidateReopensV0312SchemaV16(t *testing.T) {
+	ctx := context.Background()
+	startup, err := runtime.StartSQLiteStore(ctx, os.Getenv("FLORET_V0312_FIXTURE"), runtime.SQLiteStartupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startup.Store == nil || startup.Migration != nil || startup.Verification == nil || startup.Verification.Inspection.State != runtime.SQLiteStoreStateCurrent {
+		t.Fatalf("v0.31.2 reopen = %#v", startup)
+	}
+	defer startup.Store.Close()
+	var readBinder *runtime.ThreadReadHostBinder
+	if err := runtime.ConfigureHostCapabilities(startup.Store, func(bootstrap *runtime.HostBootstrap) error {
+		var configureErr error
+		readBinder, configureErr = runtime.NewThreadReadHostBinder(bootstrap)
+		return configureErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readBinder.NewHost(ctx, "v0312-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "v0312-thread", TurnID: "v0312-turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := turn.Validate(); err != nil || turn.RunID != "v0312-run" {
+		t.Fatalf("v0.31.2 exact turn = %#v, err = %v", turn, err)
+	}
+}
 EOF
 go mod tidy
-GOFLAGS=-mod=readonly go test ./...
+FLORET_V0312_FIXTURE="${root}/v0312-schema-v16.db" GOFLAGS=-mod=readonly go test ./...
 if grep -Eq '(^|[[:space:]])replace([[:space:]]|$)' go.mod; then
   printf 'candidate release adoption: generated consumer contains replace\n' >&2
   exit 1
 fi
+candidate_dir=$(go list -m -f '{{.Dir}}' "${module_path}")
 popd >/dev/null
 
-printf 'candidate release adoption: clean committed HEAD packaged as %s and compiled without workspace or replace wiring\n' "${version}"
+for example in custom-model-gateway message-references minimal-durable-host startup-recovery store-maintenance-host subagent-host tool-effect-approval; do
+	(
+		cd "${candidate_dir}"
+		go run "./cmd/examples/${example}"
+	)
+done
+
+printf 'candidate release adoption: clean committed HEAD packaged as %s, reopened v0.31.2 schema-v16, and ran generated hosts and examples without workspace or replace wiring\n' "${version}"

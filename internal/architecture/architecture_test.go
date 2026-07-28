@@ -2,6 +2,7 @@ package floret_test
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -565,10 +566,15 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 			}
 		}
 	}
-	compactionOptions := reflect.TypeOf(floretRuntime.ThreadCompactionHostOptions{})
-	for _, forbidden := range []string{"Tools", "Approver", "ToolSurfaceProvider", "SubAgentRunTimeout", "Capabilities", "ThreadTitleMode"} {
-		if _, ok := compactionOptions.FieldByName(forbidden); ok {
-			t.Fatalf("ThreadCompactionHostOptions exposes unrelated field %q", forbidden)
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
+		reflect.TypeOf(floretRuntime.ThreadCompactionHostOptions{}),
+		reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
+	} {
+		for index := 0; index < typ.NumField(); index++ {
+			if typ.Field(index).PkgPath == "" {
+				t.Fatalf("%s exposes field %q; host options must remain opaque", typ.Name(), typ.Field(index).Name)
+			}
 		}
 	}
 	exactFields := func(name string, typ reflect.Type, want ...string) {
@@ -583,15 +589,6 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 			t.Fatalf("%s fields = %#v, want %#v", name, got, want)
 		}
 	}
-	exactFields("TurnExecutionHostOptions", reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
-		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink", "ThreadTitleMode", "ToolSurfaceProvider", "Tools")
-	exactFields("ThreadCompactionHostOptions", compactionOptions,
-		"Config", "IDGenerator", "LoopLimits", "ModelGateway", "ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink")
-	exactFields("SubAgentHostOptions", reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
-		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink", "SubAgentRunTimeout", "ThreadTitleMode",
-		"ToolSurfaceProvider", "Tools")
 	exactFields("ArtifactRef", reflect.TypeOf(floretRuntime.ArtifactRef{}),
 		"ID", "Kind", "MIME", "SHA256", "SafeLabel", "SizeBytes")
 	exactFields("ReadArtifactRequest", reflect.TypeOf(floretRuntime.ReadArtifactRequest{}),
@@ -876,6 +873,39 @@ func TestRuntimeHostOptionsDoNotCarryAuthorityRoots(t *testing.T) {
 	}
 }
 
+func TestV1PublicAPISurfaceMatchesBaseline(t *testing.T) {
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "run", "./internal/architecture/apibaseline", "-root", root)
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOWORK=off")
+	actual, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generate public API baseline: %v\n%s", err, actual)
+	}
+	expected, err := os.ReadFile(filepath.Join(root, "internal", "architecture", "testdata", "v1.0.0-public-api.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(expected) {
+		t.Fatalf("public API differs from v1.0.0 baseline; update the baseline only with API decision docs and compatibility review\n%s", firstSurfaceDifference(string(expected), string(actual)))
+	}
+}
+
+func firstSurfaceDifference(expected, actual string) string {
+	expectedLines := strings.Split(expected, "\n")
+	actualLines := strings.Split(actual, "\n")
+	count := min(len(expectedLines), len(actualLines))
+	for index := 0; index < count; index++ {
+		if expectedLines[index] != actualLines[index] {
+			return fmt.Sprintf("line %d\n- %s\n+ %s", index+1, expectedLines[index], actualLines[index])
+		}
+	}
+	return fmt.Sprintf("line count changed from %d to %d", len(expectedLines), len(actualLines))
+}
+
 func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 	allowedConstructors := map[string]bool{
 		"NewPendingToolRecoveryHostBinder":     true,
@@ -963,7 +993,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 				if returnsCapability && !allowedConstructors[typed.Name.Name] {
 					t.Fatalf("runtime exposes unreviewed authority constructor %s", typed.Name.Name)
 				}
-				if typed.Recv == nil && ast.IsExported(typed.Name.Name) && strings.HasPrefix(typed.Name.Name, "New") && strings.Contains(typed.Name.Name, "Host") {
+				if typed.Recv == nil && ast.IsExported(typed.Name.Name) && strings.HasPrefix(typed.Name.Name, "New") && strings.Contains(typed.Name.Name, "Host") && !strings.HasSuffix(typed.Name.Name, "HostOptions") {
 					if !allowedConstructors[typed.Name.Name] {
 						t.Fatalf("runtime exposes unreviewed host constructor %s", typed.Name.Name)
 					}

@@ -47,6 +47,9 @@ jobs:
       - name: Exercise public conformance helpers
         run: go test ./florettest
 
+      - name: Enforce the v1 public API baseline
+        run: scripts/check_v1_api_compatibility.sh
+
       - name: Compile generated hosts from a proposed module zip
         run: scripts/check_candidate_release_adoption.sh
 
