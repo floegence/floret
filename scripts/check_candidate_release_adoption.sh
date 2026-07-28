@@ -84,6 +84,7 @@ func main() {
 	}
 }
 EOF
+go mod tidy
 go run . "${root}/v0312-schema-v16.db"
 popd >/dev/null
 
