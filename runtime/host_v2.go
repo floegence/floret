@@ -66,6 +66,7 @@ type Host struct {
 
 type hostBinders struct {
 	create       *threadCreateBinder
+	inventory    *threadInventoryCapability
 	read         *threadReadBinder
 	title        *threadTitleBinder
 	fork         *threadForkBinder
@@ -108,6 +109,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		constructors := []func() error{
 			func() (err error) { host.binders.create, err = newThreadCreateBinder(bootstrap); return err },
+			func() (err error) { host.binders.inventory, err = newThreadInventoryCapability(bootstrap); return err },
 			func() (err error) { host.binders.read, err = newThreadReadBinder(bootstrap); return err },
 			func() (err error) { host.binders.title, err = newThreadTitleBinder(bootstrap); return err },
 			func() (err error) { host.binders.fork, err = newThreadForkBinder(bootstrap); return err },

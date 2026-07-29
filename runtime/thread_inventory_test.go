@@ -68,7 +68,7 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 	}
 }
 
-func assertRootInventoryPages(t *testing.T, ctx context.Context, inventory *ThreadInventoryHost) {
+func assertRootInventoryPages(t *testing.T, ctx context.Context, inventory *threadInventoryCapability) {
 	t.Helper()
 	seen := map[ThreadID]bool{}
 	var cursor ThreadInventoryCursor

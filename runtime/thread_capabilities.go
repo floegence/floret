@@ -41,9 +41,9 @@ type threadReadBinder struct {
 	lease *capabilityLease
 }
 
-// ThreadInventoryHost lists canonical root threads for composition and
+// threadInventoryCapability lists canonical root threads for composition and
 // maintenance coordinators. It is not reachable from a normal run.
-type ThreadInventoryHost struct {
+type threadInventoryCapability struct {
 	store   *Store
 	harness *agentharness.AgentHarness
 	lease   *capabilityLease
@@ -244,7 +244,7 @@ func newThreadReadBinder(bootstrap *hostBootstrap) (*threadReadBinder, error) {
 
 // newThreadInventoryCapability constructs the store-wide canonical root inventory
 // capability for a composition owner.
-func newThreadInventoryCapability(bootstrap *hostBootstrap) (*ThreadInventoryHost, error) {
+func newThreadInventoryCapability(bootstrap *hostBootstrap) (*threadInventoryCapability, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func newThreadInventoryCapability(bootstrap *hostBootstrap) (*ThreadInventoryHos
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadInventoryHost{store: store, harness: harness, lease: lease}, nil
+	return &threadInventoryCapability{store: store, harness: harness, lease: lease}, nil
 }
 
 // NewHost constructs read authority for exactly one root thread.

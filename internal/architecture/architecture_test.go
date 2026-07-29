@@ -514,8 +514,9 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	}
 
 	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
-		"Close", "SubAgentManager", "SubAgentReader", "ThreadCompactor", "ThreadCreator",
-		"ThreadDeleter", "ThreadForker", "ThreadReader", "ThreadTitleEditor", "TurnRunner")
+		"Close", "InterruptedTurnRecovery", "PendingToolRecovery", "SubAgentManager", "SubAgentReader",
+		"ThreadCompactor", "ThreadCreator", "ThreadDeleter", "ThreadForker", "ThreadInventory",
+		"ThreadReader", "ThreadTitleEditor", "TurnRunner")
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("ThreadCreator", reflect.TypeOf((*floretRuntime.ThreadCreator)(nil)), "Create")
 	exact("ThreadReader", reflect.TypeOf((*floretRuntime.ThreadReader)(nil)), "Read", "ReadTurn")
@@ -528,19 +529,25 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"Close", "PublishPendingToolCompletion", "SendInput", "Spawn", "Wait")
 	exact("SubAgentReader", reflect.TypeOf((*floretRuntime.SubAgentReader)(nil)),
 		"ActivityTimeline", "List", "ReadDetail")
+	exact("PendingToolRecovery", reflect.TypeOf((*floretRuntime.PendingToolRecovery)(nil)), "Settle")
+	exact("InterruptedTurnRecovery", reflect.TypeOf((*floretRuntime.InterruptedTurnRecovery)(nil)), "Recover")
+	exact("ThreadInventory", reflect.TypeOf((*floretRuntime.ThreadInventory)(nil)), "List")
 
 	for name, typ := range map[string]reflect.Type{
-		"Host":              reflect.TypeOf(floretRuntime.Host{}),
-		"Agent":             reflect.TypeOf(floretRuntime.Agent{}),
-		"ThreadCreator":     reflect.TypeOf(floretRuntime.ThreadCreator{}),
-		"ThreadReader":      reflect.TypeOf(floretRuntime.ThreadReader{}),
-		"ThreadTitleEditor": reflect.TypeOf(floretRuntime.ThreadTitleEditor{}),
-		"ThreadForker":      reflect.TypeOf(floretRuntime.ThreadForker{}),
-		"ThreadDeleter":     reflect.TypeOf(floretRuntime.ThreadDeleter{}),
-		"TurnRunner":        reflect.TypeOf(floretRuntime.TurnRunner{}),
-		"ThreadCompactor":   reflect.TypeOf(floretRuntime.ThreadCompactor{}),
-		"SubAgentManager":   reflect.TypeOf(floretRuntime.SubAgentManager{}),
-		"SubAgentReader":    reflect.TypeOf(floretRuntime.SubAgentReader{}),
+		"Host":                    reflect.TypeOf(floretRuntime.Host{}),
+		"Agent":                   reflect.TypeOf(floretRuntime.Agent{}),
+		"ThreadCreator":           reflect.TypeOf(floretRuntime.ThreadCreator{}),
+		"ThreadReader":            reflect.TypeOf(floretRuntime.ThreadReader{}),
+		"ThreadTitleEditor":       reflect.TypeOf(floretRuntime.ThreadTitleEditor{}),
+		"ThreadForker":            reflect.TypeOf(floretRuntime.ThreadForker{}),
+		"ThreadDeleter":           reflect.TypeOf(floretRuntime.ThreadDeleter{}),
+		"TurnRunner":              reflect.TypeOf(floretRuntime.TurnRunner{}),
+		"ThreadCompactor":         reflect.TypeOf(floretRuntime.ThreadCompactor{}),
+		"SubAgentManager":         reflect.TypeOf(floretRuntime.SubAgentManager{}),
+		"SubAgentReader":          reflect.TypeOf(floretRuntime.SubAgentReader{}),
+		"PendingToolRecovery":     reflect.TypeOf(floretRuntime.PendingToolRecovery{}),
+		"InterruptedTurnRecovery": reflect.TypeOf(floretRuntime.InterruptedTurnRecovery{}),
+		"ThreadInventory":         reflect.TypeOf(floretRuntime.ThreadInventory{}),
 	} {
 		for index := 0; index < typ.NumField(); index++ {
 			if typ.Field(index).PkgPath == "" {
@@ -646,6 +653,7 @@ func TestBoundHandleRequestsDoNotRepeatBoundIdentity(t *testing.T) {
 		"WaitSubAgents":                        {reflect.TypeOf(floretRuntime.WaitSubAgents{}), []string{"ParentThreadID"}},
 		"CloseSubAgent":                        {reflect.TypeOf(floretRuntime.CloseSubAgent{}), []string{"ParentThreadID"}},
 		"SubAgentDetailRequest":                {reflect.TypeOf(floretRuntime.SubAgentDetailRequest{}), []string{"ParentThreadID"}},
+		"PendingToolRecoveryRequest":           {reflect.TypeOf(floretRuntime.PendingToolRecoveryRequest{}), []string{"ThreadID", "ParentThreadID", "Target", "TurnID", "RunID", "ToolCallID"}},
 	} {
 		for _, field := range contract.forbidden {
 			if _, ok := contract.typ.FieldByName(field); ok {
@@ -727,7 +735,8 @@ func TestRuntimeCapabilityRootsAndAggregatesStayExplicit(t *testing.T) {
 		"Host": true, "Agent": true, "ThreadCreator": true, "ThreadReader": true,
 		"ThreadTitleEditor": true, "ThreadForker": true, "ThreadDeleter": true,
 		"TurnRunner": true, "ThreadCompactor": true, "SubAgentManager": true,
-		"SubAgentReader": true,
+		"SubAgentReader": true, "PendingToolRecovery": true,
+		"InterruptedTurnRecovery": true, "ThreadInventory": true,
 	}
 	allowedConstructors := map[string]bool{"Open": true, "NewAgent": true}
 	foundConstructors := map[string]bool{}

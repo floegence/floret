@@ -614,6 +614,9 @@ method *Host.Close func() error
 method *Host.ThreadCreator func(threadID github.com/floegence/floret/v2/runtime.ThreadID, createIntentID github.com/floegence/floret/v2/runtime.CreateIntentID) (*github.com/floegence/floret/v2/runtime.ThreadCreator, error)
 method *Host.ThreadReader func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.ThreadReader, error)
 method *Host.TurnRunner func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID, agent *github.com/floegence/floret/v2/runtime.Agent) (*github.com/floegence/floret/v2/runtime.TurnRunner, error)
+method *Host.PendingToolRecovery func(ctx context.Context, target github.com/floegence/floret/v2/runtime.PendingToolRecoveryTarget, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.PendingToolRecovery, error)
+method *Host.InterruptedTurnRecovery func(ctx context.Context, target github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryTarget, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecovery, error)
+method *Host.ThreadInventory func(ctx context.Context) (*github.com/floegence/floret/v2/runtime.ThreadInventory, error)
 type HostedToolDefinition struct
 field HostedToolDefinition.Name string tag="json:\"name\""
 field HostedToolDefinition.Type string tag="json:\"type\""
@@ -621,6 +624,12 @@ field HostedToolDefinition.Description string tag="json:\"description,omitempty\
 field HostedToolDefinition.Parameters map[string]any tag="json:\"parameters,omitempty\""
 field HostedToolDefinition.Options map[string]any tag="json:\"options,omitempty\""
 func InspectSQLiteStore func(ctx context.Context, path string, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStoreInspection, error)
+type InterruptedTurnRecovery struct
+method *InterruptedTurnRecovery.Recover func(ctx context.Context) (github.com/floegence/floret/v2/runtime.RecoverInterruptedTurnResult, error)
+type InterruptedTurnRecoveryTarget struct
+field InterruptedTurnRecoveryTarget.ParentThreadID github.com/floegence/floret/v2/runtime.ThreadID
+field InterruptedTurnRecoveryTarget.ThreadID github.com/floegence/floret/v2/runtime.ThreadID
+method InterruptedTurnRecoveryTarget.Validate func() error
 type ListRootThreadsRequest struct
 field ListRootThreadsRequest.Cursor github.com/floegence/floret/v2/runtime.ThreadInventoryCursor tag="json:\"cursor,omitempty\""
 field ListRootThreadsRequest.Limit int tag="json:\"limit,omitempty\""
@@ -826,6 +835,17 @@ field PendingToolCompletionResult.Replayed bool tag="json:\"replayed,omitempty\"
 field PendingToolCompletionResult.Turn *github.com/floegence/floret/v2/runtime.TurnResult tag="json:\"turn,omitempty\""
 method PendingToolCompletionResult.Validate func() error
 type PendingToolCompletionStatus string
+type PendingToolRecovery struct
+method *PendingToolRecovery.Settle func(ctx context.Context, request github.com/floegence/floret/v2/runtime.PendingToolRecoveryRequest) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
+type PendingToolRecoveryRequest struct
+field PendingToolRecoveryRequest.Status github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus
+field PendingToolRecoveryRequest.Summary string
+field PendingToolRecoveryRequest.Output string
+field PendingToolRecoveryRequest.Activity *github.com/floegence/floret/v2/observation.ActivityPresentation
+type PendingToolRecoveryTarget struct
+field PendingToolRecoveryTarget.ParentThreadID github.com/floegence/floret/v2/runtime.ThreadID
+field PendingToolRecoveryTarget.Target github.com/floegence/floret/v2/runtime.PendingToolSettlementTarget
+method PendingToolRecoveryTarget.Validate func() error
 const PendingToolSettlementCanceled github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "canceled"
 const PendingToolSettlementCompleted github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "completed"
 const PendingToolSettlementFailed github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "failed"
@@ -1433,9 +1453,9 @@ field ThreadForkRequest.DestinationThreadID github.com/floegence/floret/v2/runti
 type ThreadForker struct
 method *ThreadForker.Fork func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ThreadForkRequest) (github.com/floegence/floret/v2/runtime.ForkThreadResult, error)
 type ThreadID string
+type ThreadInventory struct
+method *ThreadInventory.List func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ListRootThreadsRequest) (github.com/floegence/floret/v2/runtime.RootThreadsPage, error)
 type ThreadInventoryCursor string
-type ThreadInventoryHost struct
-method *ThreadInventoryHost.ListRootThreads func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListRootThreadsRequest) (github.com/floegence/floret/v2/runtime.RootThreadsPage, error)
 type ThreadOverview struct
 field ThreadOverview.Thread github.com/floegence/floret/v2/runtime.ThreadSnapshot tag="json:\"thread\""
 field ThreadOverview.LatestTurn *github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot tag="json:\"latest_turn,omitempty\""

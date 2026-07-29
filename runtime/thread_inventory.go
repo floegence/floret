@@ -48,7 +48,7 @@ type threadInventoryCursorPayload struct {
 
 // ListRootThreads returns one stable page of canonical root threads, including
 // archived roots. Product visibility and ordering remain host-owned concerns.
-func (h *ThreadInventoryHost) ListRootThreads(ctx context.Context, req ListRootThreadsRequest) (RootThreadsPage, error) {
+func (h *threadInventoryCapability) ListRootThreads(ctx context.Context, req ListRootThreadsRequest) (RootThreadsPage, error) {
 	if h == nil {
 		return RootThreadsPage{}, errors.New("thread inventory host is required")
 	}
