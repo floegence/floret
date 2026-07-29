@@ -1,33 +1,23 @@
 ---
-type: Maintainer Workflow
-title: Change Public API
-description: Public API changes must preserve Floret's compact downstream surface and update documentation, tests, and OKF knowledge together.
-resource: /internal/architecture/architecture_test.go
-tags: [workflow, public-api, maintenance]
-timestamp: 2026-06-20T00:00:00Z
+type: Workflow
+title: Change The V2 Public API
+description: Review and verify deliberate changes to exported v2 contracts.
+resource: /internal/architecture/testdata/v2-public-api.txt
+tags: [workflow, api, compatibility]
+timestamp: 2026-07-29T00:00:00Z
 ---
 
-# When To Use
+# Change The V2 Public API
 
-Use this workflow when changing exported contracts in `config`, `runtime`,
-`tools`, or `observation`, or when considering a new public package.
+1. Decide whether the capability belongs in `config`, `provider`, `runtime`,
+   `storage`, `tools`, `observation`, or test-only `florettest`.
+2. Add external-package compile and behavioral tests before implementation.
+3. Keep runtime authority identity-bound and prevent provider, SQLite, or host
+   product types from entering runtime contracts.
+4. Add Go documentation for every exported symbol.
+5. Update README, OKF, changelog, and the generated v2 API baseline.
+6. Run `scripts/check_v2_api_compatibility.sh` and the blank-module adoption
+   gate. After v2.0.0, incompatible changes require the next major version.
 
-# Steps
-
-1. Confirm the capability is product-neutral and belongs in Floret.
-2. Keep implementation details behind the public facade.
-3. Run `scripts/check_v1_api_compatibility.sh` and update the generated v1 API
-   baseline only after the compatibility and design review is explicit.
-4. Update package tests and architecture boundary tests.
-5. Update README public API guidance and `CHANGELOG.md` when downstream usage changes.
-6. Update this OKF bundle when the change affects integration guidance or
-   project knowledge.
-7. Run the repository quality gate.
-
-# Guardrails
-
-Do not expose implementation packages as downstream contracts. Do not add a
-new public package without updating the public package allowlist and
-documentation. A compatible addition is still a governed API change. Do not
-delete, rename, narrow accepted inputs, change JSON values, or reclassify
-documented errors within v1.
+Do not add aliases, deprecated facades, dual shapes, silent parsing, or fallback
+execution paths to preserve an incorrect pre-release contract.

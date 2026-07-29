@@ -21,8 +21,10 @@ multi-agent orchestration framework, or a product UI framework.
 
 Hosts integrate through a small public surface:
 
-* [config](api/config.md) resolves provider, prompt, and context policy.
-* [runtime](api/runtime.md) runs durable threads or projected turns.
+* [config](api/config.md) defines provider-neutral Agent policy.
+* [provider](api/provider.md) defines the only model transport boundary.
+* [runtime](api/runtime.md) owns durable Hosts, immutable Agents, and bound handles.
+* [storage](api/storage.md) defines the opaque transactional Backend SPI.
 * [tools](api/tools.md) defines and dispatches host-provided local tools.
 * [observation](api/observation.md) projects sanitized runtime facts for hosts.
 
@@ -33,5 +35,7 @@ provider profile persistence, and UI rendering stay in the downstream host.
 
 * [README](/README.md)
 * [Repository Guide](/AGENTS.md)
-* [Runtime Package](/runtime/runtime.go)
-* [Projected Turns](/runtime/projected_turn.go)
+* [Runtime Host](/runtime/host_v2.go)
+* [Immutable Agent](/runtime/agent.go)
+* [Provider Contract](/provider/provider.go)
+* [Storage Contract](/storage/backend.go)

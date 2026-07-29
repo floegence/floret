@@ -341,7 +341,11 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 
 func TestReadmeOnlyDocumentsDownstreamIntegrationSurface(t *testing.T) {
 	text := readTextFile(t, "README.md")
-	for _, want := range []string{"runtime.ConfigureHostCapabilities", "runtime.NewTurnExecutionHostBinder", "runtime.TurnExecutionHost", "runtime.NewThreadCompactionHostBinder", "runtime.NewSubAgentHostBinder", "runtime.CompactThreadRequest", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
+	for _, want := range []string{
+		"runtime.Open", "runtime.NewAgent", "runtime.Host", "TurnRunner",
+		"provider.Gateway", "storage.Backend", "storage.Memory", "storage.SQLite",
+		"tools", "observation", "migrate-v2 --path",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README downstream integration surface is missing API %q", want)
 		}
@@ -363,7 +367,11 @@ func TestCurrentCapabilityDocsDoNotAdvertiseRemovedFacade(t *testing.T) {
 		filepath.Join("okf", "decisions", "public-api-boundary.md"),
 	} {
 		text := readTextFile(t, file)
-		for _, forbidden := range []string{"`runtime.Host`", "runtime.NewHost(", "`HostOptions`", "`HostRuntime`", "ThreadCapabilityOptions", "ThreadMaintenanceHost", "NewThreadMaintenanceHost", "ThreadMaintenanceHostOptions"} {
+		for _, forbidden := range []string{
+			"HostBootstrap", "HostBinder", "HostFactory", "HostOptions",
+			"ConfigureHostCapabilities", "floret-host-init", "ProviderFake", "FakeResponse",
+			"runtime.NewHost(", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore",
+		} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s advertises removed capability facade %q", file, forbidden)
 			}
@@ -721,6 +729,28 @@ func TestV2RemovesLegacyHostCapabilityGraph(t *testing.T) {
 	}
 }
 
+func TestProductionProviderCatalogHasNoFakeExecutionPreset(t *testing.T) {
+	for _, file := range []string{
+		filepath.Join("internal", "provider", "catalog", "catalog.go"),
+		filepath.Join("internal", "provider", "catalog", "builtin.go"),
+		filepath.Join("internal", "provider", "adapters", "factory.go"),
+		filepath.Join("internal", "provider", "adapters", "fake.go"),
+	} {
+		text, err := os.ReadFile(file)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"ProviderFake", "APIFake", "fake-model", "FakeProvider"} {
+			if strings.Contains(string(text), forbidden) {
+				t.Fatalf("production provider file %s retains test execution preset %q", file, forbidden)
+			}
+		}
+	}
+}
+
 func firstSurfaceDifference(expected, actual string) string {
 	expectedLines := strings.Split(expected, "\n")
 	actualLines := strings.Split(actual, "\n")
@@ -933,18 +963,13 @@ func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
 	}
 }
 
-func TestReadmeKeepsPolishedPresentation(t *testing.T) {
+func TestReadmePresentsTheCompleteV2Boundary(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{
-		"pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg",
-		"img.shields.io/badge/license-MIT",
-		`<a href="#-why-floret">Why Floret</a>`,
-		"## \U00002728 Why Floret",
-		"## \U0001F9ED At a glance",
-		"## \U0001F4E6 Downstream integration surface",
-		"| You need to... | Use... |",
-		"| Tool concern | Floret handles | Host handles |",
-		"Host UI/API",
+		"github.com/floegence/floret/v2", "## Quick Start", "## Public Packages",
+		"## Composition Boundary", "## Agent Immutability", "## Storage",
+		"## v1 Migration", "## Source Of Truth", "provider.Gateway",
+		"florettest.RunBackendContract", "runtime.MigrationRequiredError",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README lost polished presentation marker %q", want)
@@ -1587,7 +1612,6 @@ func forbiddenDownstreamImportPaths() []string {
 		modulePath + "/agentharness",
 		modulePath + "/engine",
 		modulePath + "/event",
-		modulePath + "/provider",
 		modulePath + "/session",
 		modulePath + "/sessiontree",
 		modulePath + "/runtime/storage",

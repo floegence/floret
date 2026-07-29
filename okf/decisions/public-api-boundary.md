@@ -1,123 +1,27 @@
 ---
 type: Architecture Decision
-title: Public API Boundary
-description: Floret exposes only a compact set of supported downstream packages and keeps implementation contracts internal.
+title: V2 Public API Boundary
+description: Use one Gateway, one Backend kernel, immutable Agents, and identity-bound Host handles.
 resource: /README.md
-tags: [decision, public-api, boundary]
-timestamp: 2026-06-20T00:00:00Z
+tags: [decision, public-api, v2]
+timestamp: 2026-07-29T00:00:00Z
 ---
 
 # Decision
 
-Production downstream projects integrate through `config`, `runtime`, `tools`,
-and `observation`. `florettest` is test-only. Implementation packages remain
-under `internal/`.
+The v2 production packages are `config`, `provider`, `runtime`, `storage`,
+`tools`, and `observation`; `florettest` is test-only. The module uses semantic
+import path `/v2`.
 
-# Reason
+All model execution uses `provider.Gateway`. All durable implementations use
+the same domain kernel over `storage.Backend`. `runtime.Agent` is immutable.
+`runtime.Host` remains at the composition root and issues identity-bound narrow
+handles.
 
-The boundary lets Floret evolve provider loops, storage implementation,
-compaction, prompt cache, testing harnesses, and event internals without making
-those details downstream contracts.
+v1 bootstrap, binder, factory, Host-options, Store, fake provider, generator,
+automatic migration, and adapter fallback contracts are deleted rather than
+aliased or deprecated. v1 is preserved only by its Git tag.
 
-# Consequences
-
-New host-facing capabilities need public API, tests, README guidance, and OKF
-updates. Contributor-facing documentation may explain internals, but downstream
-examples must use public packages.
-The committed `go/types` v1 baseline records exported symbols, signatures,
-fields, methods, constant values, and the package set. Every compatible
-addition requires an explicit baseline and documentation update; incompatible
-changes wait for v2. After `v1.0.0` is published, fixed-version `apidiff`
-compares that module with `HEAD` in addition to the local baseline test.
-Durable cross-store coordination uses explicit public operation identities and
-results; downstream hosts must not import internal storage contracts.
-Runtime constructors return concrete capability pointers. Interface ownership
-stays with the caller, which declares the smallest capability set needed by
-each responsibility instead of inheriting a framework interface.
-Public query cursors are opaque tokens scoped to their domain and mode. A host
-may retain and return them, but storage anchors, retry entry authority, and
-compaction window topology remain internal. Canonical `UserEntryID` is retained
-only as an opaque presentation anchor and never grants Store access. Canonical
-user-message provenance is a closed `ThreadUserMessageOrigin` value on typed
-turn snapshots; hosts never parse SubAgent input IDs or detail metadata to
-reconstruct it.
-
-Progressive disclosure is implemented through safe single-family constructors
-and host-owned generated composition, not a public `Client`, `App`, or aggregate
-runtime facade. `floret-host-init` keeps Store, bootstrap, and binder fields in
-one package-private composition owner, returns only local narrow interfaces or
-exact bound handles, and generates a deterministic fake-provider smoke test.
-Durable profiles accept Store options explicitly, refuse overwrite by default,
-and never create workspace, replacement, sibling, backup-file, or backup-branch
-wiring.
-
-The durable runtime capability surface is intentionally split at lifecycle boundaries.
-`ConfigureHostCapabilities` exposes `HostBootstrap` only during one callback,
-then seals it. The Store rejects a second configuration and rejects value-copy
-reuse. Bootstrap copies share the same sealed state, and binders are published
-only when the callback returns successfully. The callback issues narrow
-binders; no surviving public object can mint
-more than one capability family. Provider binders receive a root or parent
-identity before returning a factory whose `NewHost` method accepts provider
-configuration but cannot select another authority.
-Binders are composition-root issuers, not service or run dependencies. The
-composition root must bind the exact root or parent identity before handing a
-factory or handle to the operation owner.
-Provider-backed work is split into a
-thread-bound `TurnExecutionHost`, a thread-bound `ThreadCompactionHost`, and a
-parent-bound `SubAgentHost`. Provider-free `ThreadCreateHost`,
-`ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
-parent-bound `SubAgentReadHost`, `PendingToolRecoveryHost`, and exact
-`InterruptedTurnRecoveryHost` are created through their
-responsibility-specific binders and expose only their named operation. Active
-pending settlement remains on the exact turn/SubAgent execution owner. Every bound
-request keeps its explicit identity and fails on a mismatch. This makes
-canonical Agent lifecycle ownership visible in method
-sets and authority identities instead of relying on a downstream caller to
-ignore methods on a shared Store or facade.
-
-Provider-backed Host options are opaque validated values. Each family has its
-own constructor and scoped options, and no family can derive its configuration
-or authority from another opaque value. Generated compositions retain
-independently constructed Turn and SubAgent values from the same explicit
-host-owned inputs. ID generators are correlation/test injection only and never
-derive durable execution identities.
-
-The one store-wide read exception is `ThreadInventoryHost`, constructed and
-retained only by the composition owner. It exposes bounded canonical root
-discovery for startup recovery and reconciliation, never product visibility or
-run authority. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same
-typed read model as roots after complete descendant validation. Known-turn
-membership and reload paths use the same parent-bound
-`SubAgentReadHost.ReadThreadTurn` exact read; detail events remain a separate
-diagnostic and audit surface.
-
-Recovery discovery also stays a Floret fact. Public read capabilities expose
-complete typed canonical pending settlement targets for a root or one directly
-parent-bound child. Hosts and scaffolds must not infer that authority from
-paginated detail events, audit records, UI projections, or storage tables.
-
-`ParentThreadID` means SubAgent ownership only. Ordinary fork lineage is stored
-only in `ForkedFromThreadID`; child ownership metadata is written atomically
-with a child fork. Root capabilities reject parent-owned threads, and root
-deletion follows only the SubAgent ownership tree.
-
-Authority changes are also serialized as one lifecycle boundary. Root create,
-ordinary fork, SubAgent spawn, and root tree delete share one Store-level gate;
-delete retains that authority through descendant discovery and storage commit.
-This prevents a narrow method set from being undermined by concurrent mutations
-through another legitimate capability. SQLite does not trust that in-process
-snapshot: its delete contract accepts only the root identity and derives the
-current ownership tree again inside the write transaction.
-
-Production `AgentHarness` receives only the journal read/append surface required
-by an admitted run. It cannot create or delete threads, prepare forks, acquire
-leases, move leaves, or write provider state through a broad repository. Those
-transitions are available only to their semantic storage owners. Provider state
-changes only with atomic turn finalization, and root deletion preserves generic
-host metadata outside Floret's Agent authority.
-
-# Related
-
-* [Boundaries](../architecture/boundaries.md)
-* [Change Public API](../workflows/change-public-api.md)
+Public additions require external-package tests, API baseline review, README
+and OKF updates, changelog entry, backend conformance where relevant, and a
+blank-module adoption gate. Green compatibility tooling is not design approval.

@@ -1,6 +1,23 @@
 # Floret OKF Update Log
 
 ## 2026-07-29
+* **Public API**: Established `/v2` packages for config, provider, runtime,
+  storage, tools, observation, and test-only florettest; deleted the v1
+  bootstrap/binder/factory and generator surface without aliases.
+* **Runtime**: Added a composition-root-only Host, immutable Agent, and exact
+  identity-bound handles for conversation, SubAgent, inventory, and recovery
+  authority.
+* **Provider**: Unified every model call on `provider.Gateway`; deterministic
+  fake behavior now exists only in `florettest.ScriptedGateway`.
+* **Storage**: Unified memory and SQLite on the Backend domain kernel and added
+  the third-party conformance suite.
+* **Migration**: Added an explicit exact schema-v16 to v2 transaction with
+  replay identity, authority/count/hash verification, metadata rejection, and
+  failure/cancellation/panic rollback tests. Normal startup never migrates.
+* **Release**: Replaced v1 compatibility and generated-host gates with a v2 API
+  baseline plus blank-module candidate and published adoption checks.
+
+## 2026-07-29
 * **v1 public contract**: Removed runtime reasoning and lifecycle-reason
   aliases, made thread title status/source fields typed without changing JSON,
   and preserved schema-v16 plus v3-v15 migration semantics.

@@ -5,7 +5,7 @@
 * [Compose a Durable Host](compose-durable-host.md) - Build the composition root and distribute only authority-bound capabilities.
 * [Integrate a Model Gateway](integrate-model-gateway.md) - Keep transport and credentials in the host while Floret owns the model loop.
 * [Authorize a Tool Effect](authorize-tool-effect.md) - Connect product approval policy to Floret's generic effect lifecycle.
-* [Maintain a SQLite Store](maintain-sqlite-store.md) - Inspect, verify, plan, and explicitly apply Store migration.
+* [Maintain a SQLite Store](maintain-sqlite-store.md) - Run the one exact offline schema-v16 to v2 migration.
 * [Recover an Interrupted Turn](recover-interrupted-turn.md) - Reconcile one exact interrupted authority without heuristic repair.
 * [Render a Turn Projection](render-turn-projection.md) - Combine transient live updates with canonical durable reloads.
 

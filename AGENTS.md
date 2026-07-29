@@ -147,11 +147,11 @@ Rules:
   - `fix(provider): disable reasoning for title summaries`
   - `docs(repo): document commit message format`
 
-### v1 Semantic Versioning
+### v2 Semantic Versioning
 
-- `v1.0.0` freezes the exported contracts in `config`, `runtime`, `tools`,
-  `observation`, and the test-only `florettest` package.
-- Within v1, do not delete or rename exported symbols, narrow previously
+- `v2.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
+  `storage`, `tools`, `observation`, and the test-only `florettest` package.
+- Within v2, do not delete or rename exported symbols, narrow previously
   accepted valid inputs, change established JSON field names or values, or
   change documented `errors.Is` / `errors.As` classifications.
 - Deprecations must remain available for at least one complete minor release
@@ -162,9 +162,10 @@ Rules:
 - Security emergency changes must document their compatibility and migration
   impact explicitly. Do not preserve or replace unsafe behavior through a
   silent fallback, substitute path, or unsupported transitional shape.
-- Run `scripts/check_v1_api_compatibility.sh` for every public API change. Once
-  `v1.0.0` exists, it compares the published module baseline with `HEAD` using
-  the fixed `apidiff` tool version in that script.
+- Run the v2 `go/types` baseline test and published-release adoption gate for
+  every public API change. After `v2.0.0` is published, compatibility checks
+  compare the exact published module with `HEAD`; v1 remains only in its Git
+  tag and must not be reintroduced through aliases or deprecated facades.
 
 ### Conflict Resolution Principles
 
@@ -355,8 +356,8 @@ invent near-synonyms when a concept below already fits.
   records, and session-tree entries.
 - `Artifact` is durable tool or run output. Artifact ownership must use explicit
   `ThreadID`, `TurnID`, `RunID`, and `TraceID` fields where applicable.
-- `internal/storage` defines storage contracts. `internal/storage/sqlite` is one
-  implementation. Public storage creation goes through `runtime.Store`. Storage APIs must name the domain object they delete or load,
+- `internal/storage` defines the shared domain kernel. Public physical storage
+  implements `storage.Backend`, and runtime ownership starts at `runtime.Open`. Storage APIs must name the domain object they delete or load,
   such as thread data, prompt scopes, metadata, or transcripts.
 
 ### Profiles and Capabilities

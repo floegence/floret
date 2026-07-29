@@ -2,8 +2,20 @@
 
 ## Unreleased
 
-- Fix the post-release API compatibility gate to resolve the complete tagged
-  module package graph before running the fixed-version `apidiff` comparison.
+- **Breaking:** Move the module to `github.com/floegence/floret/v2` and remove
+  every v1 bootstrap, binder, factory, Host-options, Store facade, host
+  generator, alias, and fake-provider configuration contract.
+- Add composition-root-owned `runtime.Host`, immutable `runtime.Agent`, and
+  identity-bound thread, turn, SubAgent, inventory, and recovery handles.
+- Make `provider.Gateway` the only model execution path and expose official
+  OpenAI-compatible and Anthropic adapters through the same public contract.
+- Add the third-party `storage.Source` and `storage.Backend` SPI, a shared
+  domain kernel for memory and SQLite, and `florettest.RunBackendContract`.
+- Add the explicit atomic `floret-store migrate-v2` path for exact v1
+  schema-v16. Runtime startup never migrates or dual-reads legacy state.
+- Freeze the reviewed v2 `go/types` surface and validate candidate and
+  published releases from blank modules without workspace, replacement, or
+  sibling repository wiring.
 
 ## v1.0.0 - 2026-07-29
 
