@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/testing/tooltest"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/internal/testing/tooltest"
+	"github.com/floegence/floret/v2/tools"
 )
 
 func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {

@@ -15,12 +15,12 @@ import (
 	"strings"
 	"testing"
 
-	floretRuntime "github.com/floegence/floret/runtime"
-	floretTools "github.com/floegence/floret/tools"
+	floretRuntime "github.com/floegence/floret/v2/runtime"
+	floretTools "github.com/floegence/floret/v2/tools"
 )
 
 const (
-	modulePath        = "github.com/floegence/floret"
+	modulePath        = "github.com/floegence/floret/v2"
 	redevenModulePath = "github.com/floegence/redeven"
 )
 
@@ -61,7 +61,9 @@ func TestPublicPackageAllowlist(t *testing.T) {
 	}
 	allowed := map[string]bool{
 		modulePath + "/config":      true,
+		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
+		modulePath + "/storage":     true,
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 	}
@@ -80,7 +82,7 @@ func TestPublicPackageAllowlist(t *testing.T) {
 }
 
 func TestProductionPublicPackagesHavePackageDocumentation(t *testing.T) {
-	for _, dir := range []string{"config", "runtime", "tools", "observation"} {
+	for _, dir := range []string{"config", "provider", "runtime", "storage", "tools", "observation"} {
 		fset := token.NewFileSet()
 		packages, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
 			return !strings.HasSuffix(info.Name(), "_test.go")
@@ -109,7 +111,9 @@ func TestFloretTestIsTheOnlyTestOnlyPublicPackage(t *testing.T) {
 	imports := packageImports(t, "florettest", false, true)
 	allowedFloretImports := map[string]bool{
 		modulePath + "/config":      true,
+		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
+		modulePath + "/storage":     true,
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 		modulePath + "/florettest":  true,
@@ -143,8 +147,10 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 		"internal":    true,
 		"observation": true,
 		"okf":         true,
+		"provider":    true,
 		"runtime":     true,
 		"scripts":     true,
+		"storage":     true,
 		"tools":       true,
 	}
 	entries, err := os.ReadDir(".")
@@ -170,7 +176,6 @@ func TestImplementationPackagesAreInternalOnly(t *testing.T) {
 		"agentharness",
 		"engine",
 		"event",
-		"provider",
 		"session",
 		"sessiontree",
 		filepath.Join("runtime", "storage"),
@@ -271,7 +276,7 @@ func TestFloretStoreCommandUsesOnlyPublicRuntime(t *testing.T) {
 }
 
 func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
-	for _, pkg := range []string{"./config", "./runtime", "./tools", "./observation"} {
+	for _, pkg := range []string{"./config", "./provider", "./runtime", "./storage", "./tools", "./observation"} {
 		out, err := exec.Command("go", "doc", "-all", pkg).CombinedOutput()
 		if err != nil {
 			t.Fatalf("go doc -all %s: %v\n%s", pkg, err, out)
@@ -287,11 +292,9 @@ func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
 			"engine.",
 			"event.",
 			"mcp.",
-			"provider.",
 			"session.",
 			"sessiontree.",
 			"skills.",
-			"storage.",
 		} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s public docs expose internal contract %q", pkg, forbidden)
@@ -314,6 +317,16 @@ func TestRootPackageIsNotPublicAPI(t *testing.T) {
 		t.Fatalf("root package must not expose public downstream API")
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+func TestModuleUsesV2SemanticImportPath(t *testing.T) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "module github.com/floegence/floret/v2\n") {
+		t.Fatal("Floret v2 must use the /v2 semantic import path")
 	}
 }
 
@@ -873,7 +886,7 @@ func TestRuntimeHostOptionsDoNotCarryAuthorityRoots(t *testing.T) {
 	}
 }
 
-func TestV1PublicAPISurfaceMatchesBaseline(t *testing.T) {
+func TestV2PublicAPISurfaceMatchesBaseline(t *testing.T) {
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -885,12 +898,12 @@ func TestV1PublicAPISurfaceMatchesBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate public API baseline: %v\n%s", err, actual)
 	}
-	expected, err := os.ReadFile(filepath.Join(root, "internal", "architecture", "testdata", "v1.0.0-public-api.txt"))
+	expected, err := os.ReadFile(filepath.Join(root, "internal", "architecture", "testdata", "v2-public-api.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(actual) != string(expected) {
-		t.Fatalf("public API differs from v1.0.0 baseline; update the baseline only with API decision docs and compatibility review\n%s", firstSurfaceDifference(string(expected), string(actual)))
+		t.Fatalf("public API differs from the v2 baseline; update the baseline only with API decision docs and compatibility review\n%s", firstSurfaceDifference(string(expected), string(actual)))
 	}
 }
 
@@ -1065,6 +1078,9 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 							continue
 						}
 						for _, field := range shape.Fields.List {
+							if len(field.Names) > 0 && !ast.IsExported(field.Names[0].Name) {
+								continue
+							}
 							containsCapability := false
 							ast.Inspect(field.Type, func(node ast.Node) bool {
 								ident, ok := node.(*ast.Ident)
@@ -1098,7 +1114,6 @@ func TestRuntimePublicAPIDoesNotExposeForkIdentityMapsOrDuplicateSubAgentPages(t
 		source.WriteByte('\n')
 	}
 	for _, forbidden := range []string{
-		"type Host struct",
 		"func NewHost(",
 		"type HostOptions struct",
 		"ForkedTurnRef",
@@ -1201,7 +1216,7 @@ func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
 func TestReadmeKeepsPolishedPresentation(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{
-		"pkg.go.dev/badge/github.com/floegence/floret/runtime.svg",
+		"pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg",
 		"img.shields.io/badge/license-MIT",
 		`<a href="#-why-floret">Why Floret</a>`,
 		"## \U00002728 Why Floret",
@@ -1367,12 +1382,15 @@ func TestProviderSDKImportsStayInInternalAdapters(t *testing.T) {
 	}
 }
 
-func TestSQLiteDriverImportsStayInInternalStorage(t *testing.T) {
+func TestSQLiteDriverImportsStayInOfficialStorage(t *testing.T) {
 	for _, file := range goFiles(t, ".") {
 		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "storage", "sqlite")+string(filepath.Separator)) {
+			continue
+		}
+		if file == filepath.Join("storage", "sqlite.go") {
 			continue
 		}
 		text := readTextFile(t, file)
@@ -1381,7 +1399,7 @@ func TestSQLiteDriverImportsStayInInternalStorage(t *testing.T) {
 			"modernc.org/sqlite",
 		} {
 			if strings.Contains(text, marker) {
-				t.Fatalf("sqlite driver import %q outside internal/storage/sqlite: %s", marker, file)
+				t.Fatalf("sqlite driver import %q outside official storage implementations: %s", marker, file)
 			}
 		}
 	}

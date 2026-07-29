@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/tools"
 )
 
 func TestProviderCapabilitiesRequireBoundAuthority(t *testing.T) {

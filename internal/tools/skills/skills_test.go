@@ -2,9 +2,9 @@ package skills_test
 
 import (
 	"context"
-	"github.com/floegence/floret/internal/testing/tooltest"
-	"github.com/floegence/floret/internal/tools/skills"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/internal/testing/tooltest"
+	"github.com/floegence/floret/v2/internal/tools/skills"
+	"github.com/floegence/floret/v2/tools"
 	"os"
 	"path/filepath"
 	"strings"

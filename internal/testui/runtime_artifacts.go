@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/floegence/floret/internal/session/artifact"
-	flruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	flruntime "github.com/floegence/floret/v2/runtime"
 )
 
 const agentArtifactRoutePrefix = "/api/agent/artifacts/"

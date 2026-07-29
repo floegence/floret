@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly module_path="github.com/floegence/floret"
+readonly module_path="github.com/floegence/floret/v2"
 readonly version="v0.0.0-candidate"
 
 if [[ -n $(git status --porcelain --untracked-files=all) ]]; then
@@ -55,8 +55,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func main() {
@@ -108,9 +108,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func TestCandidateExactReadSurface(t *testing.T) {

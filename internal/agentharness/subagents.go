@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/observation"
 )
 
 var (

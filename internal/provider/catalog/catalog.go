@@ -4,8 +4,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
 )
 
 const (

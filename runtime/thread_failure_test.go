@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestCanonicalTurnFailureRequiresStableCodeAndMessage(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/observation"
 )
 
 type admissionReadEventSink struct {

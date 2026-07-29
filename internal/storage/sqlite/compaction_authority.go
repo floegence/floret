@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) ReadCompaction(ctx context.Context, threadID, requestID string) (sessiontree.CompactionOperation, bool, error) {

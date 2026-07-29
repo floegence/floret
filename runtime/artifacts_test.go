@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {

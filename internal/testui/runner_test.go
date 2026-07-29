@@ -16,24 +16,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/provider/catalog"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/compaction"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/internal/storage/sqlite"
-	"github.com/floegence/floret/internal/testing/harness"
-	"github.com/floegence/floret/internal/tools/mcp"
-	"github.com/floegence/floret/observation"
-	flruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/searchcap"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/compaction"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/sessionlifecycle"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/storage/sqlite"
+	"github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v2/internal/tools/mcp"
+	"github.com/floegence/floret/v2/observation"
+	flruntime "github.com/floegence/floret/v2/runtime"
 )
 
 type cancelRaceApprovalTurnHost struct {
@@ -168,11 +168,11 @@ func TestRunnerParsesGoTestJSON(t *testing.T) {
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
 		return []byte(strings.Join([]string{
-			`{"Action":"run","Package":"github.com/floegence/floret/internal/engine","Test":"TestOne"}`,
-			`{"Action":"pass","Package":"github.com/floegence/floret/internal/engine","Test":"TestOne","Elapsed":0.01}`,
-			`{"Action":"run","Package":"github.com/floegence/floret/internal/engine","Test":"TestSkip"}`,
-			`{"Action":"skip","Package":"github.com/floegence/floret/internal/engine","Test":"TestSkip","Elapsed":0.01}`,
-			`{"Action":"pass","Package":"github.com/floegence/floret/internal/engine","Elapsed":0.03}`,
+			`{"Action":"run","Package":"github.com/floegence/floret/v2/internal/engine","Test":"TestOne"}`,
+			`{"Action":"pass","Package":"github.com/floegence/floret/v2/internal/engine","Test":"TestOne","Elapsed":0.01}`,
+			`{"Action":"run","Package":"github.com/floegence/floret/v2/internal/engine","Test":"TestSkip"}`,
+			`{"Action":"skip","Package":"github.com/floegence/floret/v2/internal/engine","Test":"TestSkip","Elapsed":0.01}`,
+			`{"Action":"pass","Package":"github.com/floegence/floret/v2/internal/engine","Elapsed":0.03}`,
 		}, "\n")), 0
 	}
 
@@ -194,7 +194,7 @@ func TestRunnerReportsFailedCommand(t *testing.T) {
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
-		return []byte(`{"Action":"fail","Package":"github.com/floegence/floret/internal/engine","Elapsed":0.01}`), 1
+		return []byte(`{"Action":"fail","Package":"github.com/floegence/floret/v2/internal/engine","Elapsed":0.01}`), 1
 	}
 
 	result := runner.Run(context.Background(), TargetRace)
@@ -408,7 +408,7 @@ func TestRunnerFullSuiteAggregatesParts(t *testing.T) {
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
-		return []byte(`{"Action":"pass","Package":"github.com/floegence/floret","Elapsed":0.01}`), 0
+		return []byte(`{"Action":"pass","Package":"github.com/floegence/floret/v2","Elapsed":0.01}`), 0
 	}
 
 	result := runner.Run(context.Background(), TargetAll)

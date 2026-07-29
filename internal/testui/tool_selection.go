@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/tools/builtin"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/searchcap"
+	"github.com/floegence/floret/v2/internal/tools/builtin"
+	"github.com/floegence/floret/v2/tools"
 )
 
 type AgentToolOption struct {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/provider"
-	flruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/internal/provider"
+	flruntime "github.com/floegence/floret/v2/runtime"
 )
 
 type blockingTestProvider struct {

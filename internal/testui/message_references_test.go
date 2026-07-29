@@ -5,10 +5,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
-	flruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	flruntime "github.com/floegence/floret/v2/runtime"
 )
 
 func TestObservedSessionMessagesPreserveCanonicalAttachmentsAndReferences(t *testing.T) {

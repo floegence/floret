@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func rejectSQLiteThreadWriteLifecycle(meta sessiontree.ThreadMeta) error {

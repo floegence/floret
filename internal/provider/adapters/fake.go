@@ -3,8 +3,8 @@ package adapters
 import (
 	"context"
 
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
 )
 
 type FakeProvider struct {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) SettlePendingToolRecovery(ctx context.Context, req sessiontree.SettlePendingToolRecoveryRequest) (sessiontree.SettlePendingToolRecoveryResult, error) {

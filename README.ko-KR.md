@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go 레퍼런스" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go 레퍼런스" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="라이선스" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ Floret의 경계는 의도적으로 좁습니다. 엔진의 동작 원리는 Flo
 다운스트림 애플리케이션용 안정 패키지를 설치합니다.
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ go run ./cmd/floret-test-ui
 다운스트림 애플리케이션은 다음 공개 패키지만 import해야 합니다.
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-`internal/` 아래는 구현 세부 사항입니다. API의 기준은 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime)이며, 기여자는 [OKF 지식 번들](okf/index.md)에서 런타임 아키텍처와 용어를 확인할 수 있습니다.
+`internal/` 아래는 구현 세부 사항입니다. API의 기준은 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime)이며, 기여자는 [OKF 지식 번들](okf/index.md)에서 런타임 아키텍처와 용어를 확인할 수 있습니다.
 
 ## 라이선스
 

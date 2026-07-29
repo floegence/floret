@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/v2/internal/session"
 )
 
 func TestMemoryForkSubAgentPublicationBindsExactParentAndChildAuthority(t *testing.T) {

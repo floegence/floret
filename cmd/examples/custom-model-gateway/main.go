@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/config"
-	floretruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 type scriptedGateway struct {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 type sqliteSubAgentPendingToolCompletionLedger struct {

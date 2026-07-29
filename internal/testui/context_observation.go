@@ -5,14 +5,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/configbridge"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/configbridge"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/observation"
 )
 
 func contextStatusFromProviderRequest(req ObservedProviderRequest) ObservedContextStatus {

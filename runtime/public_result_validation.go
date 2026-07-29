@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/observation"
 )
 
 func (s SubAgentStatus) valid() bool {

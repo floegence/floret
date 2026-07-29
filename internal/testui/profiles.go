@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/configbridge"
-	"github.com/floegence/floret/internal/provider/catalog"
-	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/configbridge"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/searchcap"
 )
 
 const (

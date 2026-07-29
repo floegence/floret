@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessionlifecycle"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 const (

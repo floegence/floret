@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go-Referenz" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go-Referenz" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="Lizenz" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ So können eine Betriebskonsole, eine Coding-Umgebung, ein Support-Tool oder ein
 Installiere die stabilen Pakete für Downstream-Anwendungen:
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ Die lokale Testkonsole dient Beitragenden zur Prüfung von Fake-Provider-Sitzung
 Downstream-Anwendungen sollen ausschließlich diese öffentlichen Pakete importieren:
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-Alles unter `internal/` ist Implementierungsdetail. Die API-Referenz auf [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) ist maßgeblich; im [OKF-Wissenspaket](okf/index.md) finden Beitragende Architektur und Vokabular der Laufzeit.
+Alles unter `internal/` ist Implementierungsdetail. Die API-Referenz auf [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) ist maßgeblich; im [OKF-Wissenspaket](okf/index.md) finden Beitragende Architektur und Vokabular der Laufzeit.
 
 ## Lizenz
 

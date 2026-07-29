@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
 )
 
 func TestPrepareRequiresExplicitSummaryGenerator(t *testing.T) {

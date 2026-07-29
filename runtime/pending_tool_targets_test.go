@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/v2/config"
 )
 
 func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {

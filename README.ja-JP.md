@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go リファレンス" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go リファレンス" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="ライセンス" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ Floret の責務は意図的に絞られています。エンジンの仕組み�
 下流アプリケーション向けの安定パッケージをインストールします。
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ go run ./cmd/floret-test-ui
 下流アプリケーションが import すべき公開パッケージは次の四つだけです。
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-`internal/` 配下は実装詳細です。API の正本は [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) です。コントリビューターは [OKF ナレッジバンドル](okf/index.md) で実行基盤のアーキテクチャーと用語を確認できます。
+`internal/` 配下は実装詳細です。API の正本は [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) です。コントリビューターは [OKF ナレッジバンドル](okf/index.md) で実行基盤のアーキテクチャーと用語を確認できます。
 
 ## ライセンス
 

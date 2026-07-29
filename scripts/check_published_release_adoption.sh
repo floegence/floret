@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly module_path="github.com/floegence/floret"
+readonly module_path="github.com/floegence/floret/v2"
 readonly smoke_examples=(
 	"minimal-durable-host"
 	"custom-model-gateway"
@@ -54,9 +54,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func TestPublishedModelGatewayContract(t *testing.T) {
@@ -603,8 +603,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func main() {

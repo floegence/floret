@@ -1,0 +1,519 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/provider"
+	publicstorage "github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v2/tools"
+)
+
+const (
+	logicalSchemaNamespace   = "floret.system"
+	logicalSchemaKey         = "logical-schema"
+	logicalSchemaVersion     = "2"
+	logicalSchemaFingerprint = "sha256:3343ff9e64073d543e491de34b1d1aaee222ca7099f3d321de9c66f266b90e03"
+)
+
+var (
+	// ErrMigrationRequired reports an exact legacy schema that runtime.Open
+	// refuses to migrate implicitly.
+	ErrMigrationRequired = errors.New("floret storage migration required")
+	// ErrUnsupportedSchema reports a nonempty schema outside the v2 contract.
+	ErrUnsupportedSchema = errors.New("unsupported floret logical schema")
+)
+
+// MigrationRequiredError identifies the exact legacy logical schema observed
+// by runtime.Open.
+type MigrationRequiredError struct {
+	Version string
+}
+
+// Error describes the required explicit migration.
+func (failure *MigrationRequiredError) Error() string {
+	if failure == nil {
+		return ErrMigrationRequired.Error()
+	}
+	return fmt.Sprintf("%s: observed schema %q", ErrMigrationRequired, failure.Version)
+}
+
+// Is classifies MigrationRequiredError with ErrMigrationRequired.
+func (failure *MigrationRequiredError) Is(target error) bool {
+	return target == ErrMigrationRequired
+}
+
+// Options configures one runtime Host.
+type Options struct {
+	Storage publicstorage.Source
+}
+
+// Host is the composition-root owner of Floret storage and narrow capability
+// issuance. Application services must retain only handles issued by Host.
+type Host struct {
+	store    *Store
+	backend  publicstorage.Backend
+	binders  hostBinders
+	closeMu  sync.Mutex
+	closed   bool
+	closeErr error
+}
+
+type hostBinders struct {
+	create       *ThreadCreateHostBinder
+	read         *ThreadReadHostBinder
+	title        *ThreadTitleHostBinder
+	fork         *ThreadForkHostBinder
+	delete       *ThreadDeleteHostBinder
+	turn         *TurnExecutionHostBinder
+	compact      *ThreadCompactionHostBinder
+	subAgent     *SubAgentHostBinder
+	subAgentRead *SubAgentReadHostBinder
+	pending      *PendingToolRecoveryHostBinder
+	interrupted  *InterruptedTurnRecoveryHostBinder
+}
+
+type logicalSchemaEnvelope struct {
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// Open validates the exact v2 logical schema, initializes an empty Backend,
+// and transfers exclusive backend lifecycle ownership to a new Host.
+func Open(ctx context.Context, options Options) (*Host, error) {
+	if ctx == nil {
+		return nil, errors.New("runtime open context is required")
+	}
+	if options.Storage == nil {
+		return nil, errors.New("runtime storage source is required")
+	}
+	backend, err := options.Storage.Open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if backend == nil {
+		return nil, errors.New("runtime storage source returned a nil backend")
+	}
+	if err := ensureLogicalSchema(ctx, backend); err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
+	store := NewMemoryStore()
+	host := &Host{store: store, backend: backend}
+	if err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+		constructors := []func() error{
+			func() (err error) { host.binders.create, err = NewThreadCreateHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.read, err = NewThreadReadHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.title, err = NewThreadTitleHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.fork, err = NewThreadForkHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.delete, err = NewThreadDeleteHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.turn, err = NewTurnExecutionHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.compact, err = NewThreadCompactionHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.subAgent, err = NewSubAgentHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.subAgentRead, err = NewSubAgentReadHostBinder(bootstrap); return err },
+			func() (err error) {
+				host.binders.pending, err = NewPendingToolRecoveryHostBinder(bootstrap)
+				return err
+			},
+			func() (err error) {
+				host.binders.interrupted, err = NewInterruptedTurnRecoveryHostBinder(bootstrap)
+				return err
+			},
+		}
+		for _, construct := range constructors {
+			if err := construct(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		_ = store.Close()
+		_ = backend.Close()
+		return nil, err
+	}
+	return host, nil
+}
+
+// Close waits for active runtime work, then closes the owned Backend. It is
+// idempotent.
+func (host *Host) Close() error {
+	if host == nil {
+		return nil
+	}
+	host.closeMu.Lock()
+	defer host.closeMu.Unlock()
+	if host.closed {
+		return host.closeErr
+	}
+	host.closed = true
+	host.closeErr = errors.Join(host.store.Close(), host.backend.Close())
+	return host.closeErr
+}
+
+// ThreadCreator binds root-thread and create-intent identity before creation.
+func (host *Host) ThreadCreator(threadID ThreadID, createIntentID CreateIntentID) (*ThreadCreator, error) {
+	if err := host.available(); err != nil {
+		return nil, err
+	}
+	inner, err := host.binders.create.Bind(threadID, createIntentID)
+	if err != nil {
+		return nil, err
+	}
+	return &ThreadCreator{inner: inner}, nil
+}
+
+// ThreadReader binds all canonical reads to one root thread.
+func (host *Host) ThreadReader(ctx context.Context, threadID ThreadID) (*ThreadReader, error) {
+	if err := host.available(); err != nil {
+		return nil, err
+	}
+	inner, err := host.binders.read.NewHost(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	return &ThreadReader{inner: inner, threadID: threadID}, nil
+}
+
+// TurnRunner binds one immutable Agent to one root thread.
+func (host *Host) TurnRunner(ctx context.Context, threadID ThreadID, agent *Agent) (*TurnRunner, error) {
+	if err := host.available(); err != nil {
+		return nil, err
+	}
+	if agent == nil {
+		return nil, errors.New("turn runner requires an Agent")
+	}
+	factory, err := host.binders.turn.Bind(threadID)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := factory.NewHost(ctx, agent.turnExecutionOptions())
+	if err != nil {
+		return nil, err
+	}
+	return &TurnRunner{inner: inner, threadID: threadID}, nil
+}
+
+func (host *Host) available() error {
+	if host == nil {
+		return errors.New("runtime Host is required")
+	}
+	host.closeMu.Lock()
+	defer host.closeMu.Unlock()
+	if host.closed {
+		return ErrStoreClosed
+	}
+	return nil
+}
+
+// ThreadCreator is exact root-thread creation authority.
+type ThreadCreator struct {
+	inner *ThreadCreateHost
+}
+
+// Create creates or replays the bound root thread.
+func (creator *ThreadCreator) Create(ctx context.Context) (ThreadSummary, error) {
+	if creator == nil || creator.inner == nil {
+		return ThreadSummary{}, errors.New("thread creator is required")
+	}
+	return creator.inner.CreateThread(ctx, CreateThreadRequest{})
+}
+
+// ThreadReader is read authority for one exact root thread.
+type ThreadReader struct {
+	inner    *ThreadReadHost
+	threadID ThreadID
+}
+
+// Read returns the current canonical thread snapshot.
+func (reader *ThreadReader) Read(ctx context.Context) (ThreadSnapshot, error) {
+	if reader == nil || reader.inner == nil {
+		return ThreadSnapshot{}, errors.New("thread reader is required")
+	}
+	return reader.inner.ReadThread(ctx, reader.threadID)
+}
+
+// ReadTurn returns one canonical turn from the bound thread.
+func (reader *ThreadReader) ReadTurn(ctx context.Context, turnID TurnID) (ThreadTurnSnapshot, error) {
+	if reader == nil || reader.inner == nil {
+		return ThreadTurnSnapshot{}, errors.New("thread reader is required")
+	}
+	return reader.inner.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: reader.threadID, TurnID: turnID})
+}
+
+// TurnRequest describes one provider execution after ThreadID is bound by a
+// TurnRunner.
+type TurnRequest struct {
+	RunID               RunID
+	TurnID              TurnID
+	Input               TurnInput
+	SupplementalContext []TurnSupplementalContextItem
+	Labels              RunLabels
+	Completion          TurnCompletionPolicy
+	Signals             TurnSignalSpec
+	Limits              TurnLimits
+	Reasoning           config.ReasoningSelection
+	ManualCompactions   ManualCompactionSource
+	ToolSurfaceProvider ToolSurfaceProvider
+}
+
+// TurnRunner owns provider-backed execution for one exact root thread.
+type TurnRunner struct {
+	inner    *TurnExecutionHost
+	threadID ThreadID
+}
+
+// Run admits and executes one turn on the bound thread.
+func (runner *TurnRunner) Run(ctx context.Context, request TurnRequest) (TurnResult, error) {
+	if runner == nil || runner.inner == nil {
+		return TurnResult{}, errors.New("turn runner is required")
+	}
+	return runner.inner.RunTurn(ctx, RunTurnRequest{
+		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		Input: request.Input, SupplementalContext: request.SupplementalContext,
+		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
+		Limits: request.Limits, Reasoning: request.Reasoning,
+		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
+	})
+}
+
+func ensureLogicalSchema(ctx context.Context, backend publicstorage.Backend) error {
+	return backend.Update(ctx, func(tx publicstorage.WriteTx) error {
+		encoded, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey))
+		if errors.Is(err, publicstorage.ErrNotFound) {
+			envelope, marshalErr := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
+		}
+		if err != nil {
+			return err
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.DisallowUnknownFields()
+		var envelope logicalSchemaEnvelope
+		if err := decoder.Decode(&envelope); err != nil {
+			return fmt.Errorf("%w: invalid schema envelope: %v", ErrUnsupportedSchema, err)
+		}
+		if decoder.More() {
+			return fmt.Errorf("%w: trailing schema data", ErrUnsupportedSchema)
+		}
+		if envelope.Version == "16" {
+			return &MigrationRequiredError{Version: envelope.Version}
+		}
+		if envelope.Version != logicalSchemaVersion || envelope.Fingerprint != logicalSchemaFingerprint {
+			return fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+		}
+		return nil
+	})
+}
+
+func (agent *Agent) turnExecutionOptions() TurnExecutionHostOptions {
+	identity := agent.gateway.Identity()
+	capabilities := agent.gateway.Capabilities()
+	reasoning := capabilities.ReasoningCapability
+	if capabilities.Reasoning == provider.ReasoningUnsupported {
+		reasoning = config.ReasoningCapability{Kind: config.ReasoningKindNone}
+	}
+	attachmentMode := ModelGatewayAttachmentPayloadDescriptors
+	if capabilities.AttachmentPayload == provider.AttachmentExpanded {
+		attachmentMode = ModelGatewayAttachmentPayloadExpanded
+	}
+	profile := agent.configuration.Profile
+	profile.SystemPrompt = agent.configuration.SystemPrompt
+	return TurnExecutionHostOptions{
+		config: config.Config{
+			SystemPrompt: agent.configuration.SystemPrompt, AgentProfile: profile,
+			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,
+		},
+		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
+		modelGatewayIdentity:     ModelGatewayIdentity(identity),
+		modelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode},
+		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
+		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
+		loopLimits: agent.loopLimits, capabilities: agent.capabilities,
+		threadTitleMode: agent.threadTitleMode, initialized: true,
+	}
+}
+
+type agentGatewayAdapter struct {
+	gateway provider.Gateway
+}
+
+func (adapter agentGatewayAdapter) StreamModel(ctx context.Context, request ModelRequest) (<-chan ModelEvent, error) {
+	stream, err := adapter.gateway.Stream(ctx, providerRequest(request))
+	if err != nil {
+		return nil, err
+	}
+	return modelEventStream(ctx, stream), nil
+}
+
+func (adapter agentGatewayAdapter) PrepareModelRequest(ctx context.Context, request ModelRequest) (PreparedModelRequest, error) {
+	preparer, ok := adapter.gateway.(provider.RequestPreparer)
+	if !ok {
+		return nil, errors.New("provider gateway does not prepare requests")
+	}
+	prepared, err := preparer.Prepare(ctx, providerRequest(request))
+	if err != nil {
+		return nil, err
+	}
+	if prepared == nil {
+		return nil, errors.New("provider gateway returned a nil prepared request")
+	}
+	return agentPreparedRequest{prepared: prepared}, nil
+}
+
+type agentPreparedRequest struct {
+	prepared provider.PreparedRequest
+}
+
+func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan ModelEvent, error) {
+	stream, err := request.prepared.Stream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return modelEventStream(ctx, stream), nil
+}
+
+func (request agentPreparedRequest) TokenEstimate() ModelRequestTokenEstimate {
+	estimate := request.prepared.TokenEstimate()
+	return ModelRequestTokenEstimate{
+		PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
+		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
+		Source: estimate.Source, Method: estimate.Method, Confidence: estimate.Confidence,
+		Coverage: ModelRequestTokenEstimateCoverage(estimate.Coverage),
+	}
+}
+
+func (request agentPreparedRequest) RenderedPayloadFingerprint() string {
+	return request.prepared.RenderedPayloadFingerprint()
+}
+
+func (request agentPreparedRequest) Close() error { return request.prepared.Close() }
+
+func providerRequest(request ModelRequest) provider.Request {
+	messages := make([]provider.Message, len(request.Messages))
+	for index, message := range request.Messages {
+		messages[index] = providerMessage(message)
+	}
+	definitions := make([]provider.ToolDefinition, len(request.Tools))
+	for index, definition := range request.Tools {
+		definitions[index] = provider.ToolDefinition{
+			Name: definition.Name, Title: definition.Title, Description: definition.Description,
+			InputSchema: definition.InputSchema, OutputSchema: definition.OutputSchema,
+			Strict: definition.Strict, Annotations: definition.Annotations,
+		}
+	}
+	hosted := make([]provider.HostedToolDefinition, len(request.HostedTools))
+	for index, definition := range request.HostedTools {
+		hosted[index] = provider.HostedToolDefinition(definition)
+	}
+	return provider.Request{
+		RunID: string(request.RunID), ThreadID: string(request.ThreadID), TurnID: string(request.TurnID),
+		TraceID: string(request.TraceID), PromptScopeID: string(request.PromptScopeID), Step: request.Step,
+		Messages: messages, Tools: definitions, HostedTools: hosted, MaxOutputTokens: request.MaxOutputTokens,
+		Reasoning: request.Reasoning, PreviousState: gatewayProviderState(request.PreviousState),
+		Labels: provider.Labels{Correlation: request.Labels.Correlation, Host: request.Labels.Host},
+	}
+}
+
+func providerMessage(message ModelMessage) provider.Message {
+	attachments := make([]provider.Attachment, len(message.Attachments))
+	for index, attachment := range message.Attachments {
+		attachments[index] = provider.Attachment{
+			ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType, SizeBytes: attachment.SizeBytes,
+		}
+		if attachment.TextStats != nil {
+			attachments[index].TextStats = &provider.AttachmentTextStats{
+				UnicodeCodePointCount: attachment.TextStats.UnicodeCodePointCount,
+				LogicalLineCount:      attachment.TextStats.LogicalLineCount,
+			}
+		}
+	}
+	calls := make([]provider.ToolCall, len(message.ToolCalls))
+	for index, call := range message.ToolCalls {
+		calls[index] = provider.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args}
+	}
+	var result *provider.ToolResult
+	if message.ToolResult != nil {
+		result = &provider.ToolResult{CallID: message.ToolResult.CallID, ToolName: message.ToolResult.ToolName, Text: message.ToolResult.Text}
+	}
+	return provider.Message{
+		Role: provider.MessageRole(message.Role), Text: message.Text, Attachments: attachments,
+		Reasoning: message.Reasoning, ToolCalls: calls, ToolResult: result,
+	}
+}
+
+func gatewayProviderState(state *ModelState) *provider.State {
+	if state == nil {
+		return nil
+	}
+	attributes := make(map[string]string, len(state.Attributes))
+	for key, value := range state.Attributes {
+		attributes[key] = value
+	}
+	return &provider.State{Kind: state.Kind, ID: state.ID, Attributes: attributes}
+}
+
+func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan ModelEvent {
+	output := make(chan ModelEvent)
+	go func() {
+		defer close(output)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-source:
+				if !ok {
+					return
+				}
+				select {
+				case output <- modelEvent(event):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return output
+}
+
+func modelEvent(event provider.Event) ModelEvent {
+	calls := make([]tools.ToolCall, len(event.ToolCalls))
+	for index, call := range event.ToolCalls {
+		calls[index] = tools.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args}
+	}
+	sources := make([]SourceRef, len(event.Sources))
+	for index, source := range event.Sources {
+		sources[index] = SourceRef{Title: source.Title, URL: source.URL}
+	}
+	var stream *ModelToolCallStream
+	if event.ToolCallStream != nil {
+		stream = &ModelToolCallStream{ID: event.ToolCallStream.ID, Name: event.ToolCallStream.Name}
+	}
+	var state *ModelState
+	if event.ResponseState != nil {
+		attributes := make(map[string]string, len(event.ResponseState.Attributes))
+		for key, value := range event.ResponseState.Attributes {
+			attributes[key] = value
+		}
+		state = &ModelState{Kind: event.ResponseState.Kind, ID: event.ResponseState.ID, Attributes: attributes}
+	}
+	return ModelEvent{
+		Type: ModelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		Sources: sources, Reason: event.Reason,
+		Usage: ProviderUsage{
+			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
+			ReasoningTokens: event.Usage.ReasoningTokens, CacheReadTokens: event.Usage.CacheReadTokens,
+			CacheWriteTokens: event.Usage.CacheWriteTokens, TotalTokens: event.Usage.TotalTokens,
+			CostUSD: event.Usage.CostUSD, Source: event.Usage.Source, Available: event.Usage.Available,
+			WindowInputTokens: event.Usage.WindowInputTokens,
+		},
+		ResponseID: event.ResponseID, ResponseState: state, Err: event.Err,
+	}
+}

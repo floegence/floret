@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/floegence/floret/internal/storage"
-	"github.com/floegence/floret/internal/storage/sqlite"
+	"github.com/floegence/floret/v2/internal/storage"
+	"github.com/floegence/floret/v2/internal/storage/sqlite"
 )
 
 type SQLiteStoreState string

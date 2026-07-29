@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go 文档" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go 文档" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="许可证" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -77,9 +77,9 @@ Floret 的边界刻意保持紧凑：它负责引擎机制，产品决策始终�
 安装面向下游应用的稳定包：
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 
-go run github.com/floegence/floret/cmd/floret-host-init@v1.0.0 \
+go run github.com/floegence/floret/v2/cmd/floret-host-init@v1.0.0 \
   --profile memory --package main --dir .
 # 首次只显示 dry-run diff；确认后增加 --write。
 ```
@@ -156,13 +156,13 @@ go run ./cmd/floret-test-ui
 下游应用只应导入以下公开包：
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-`internal/` 下的内容均为实现细节。API 以 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) 为准；贡献者可通过 [OKF 知识包](okf/index.md) 了解运行时架构和术语。
+`internal/` 下的内容均为实现细节。API 以 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) 为准；贡献者可通过 [OKF 知识包](okf/index.md) 了解运行时架构和术语。
 
 ## 许可证
 

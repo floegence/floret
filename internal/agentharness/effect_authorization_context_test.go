@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/internal/storage/sqlite"
-	"github.com/floegence/floret/internal/testing/harness"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/storage/sqlite"
+	"github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v2/tools"
 )
 
 type effectExecutionContextKey struct{}

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/floegence/floret/runtime"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/runtime"
+	"github.com/floegence/floret/v2/tools"
 )
 
 // ErrModelScriptExhausted reports a ModelGateway request for which no scripted

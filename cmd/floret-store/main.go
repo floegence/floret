@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"strings"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 const envelopeSchemaVersion = "1"

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) ReadArtifact(ctx context.Context, req sessiontree.ArtifactReadRequest) (sessiontree.ArtifactContent, error) {

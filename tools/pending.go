@@ -6,7 +6,7 @@ import (
 	"html"
 	"strings"
 
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/observation"
 )
 
 type PendingToolResultState string

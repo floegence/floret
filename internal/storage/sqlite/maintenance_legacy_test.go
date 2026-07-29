@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestInspectPublishedLegacySQLiteSchemasIsFileNeutral(t *testing.T) {

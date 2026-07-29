@@ -6,8 +6,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) ReadCanonicalTurn(ctx context.Context, threadID, turnID string) (sessiontree.CanonicalTurnRead, error) {

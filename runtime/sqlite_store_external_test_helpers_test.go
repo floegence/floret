@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 func openPublicSQLiteStoreForTest(path string, options ...floretruntime.SQLiteStoreOption) (*floretruntime.Store, error) {

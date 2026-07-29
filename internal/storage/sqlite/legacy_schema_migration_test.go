@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/sessionlifecycle"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestSQLiteStoreMigratesQuiescentNonEmptySchemaVersion13(t *testing.T) {

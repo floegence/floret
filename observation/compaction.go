@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/v2/config"
 )
 
 const (

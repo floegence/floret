@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) PrepareSubAgentClose(ctx context.Context, req sessiontree.PrepareSubAgentCloseRequest) (sessiontree.PrepareSubAgentCloseResult, error) {

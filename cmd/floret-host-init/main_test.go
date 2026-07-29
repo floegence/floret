@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/internal/hostscaffold"
+	"github.com/floegence/floret/v2/internal/hostscaffold"
 )
 
 func TestRunDefaultsToDryRunAndWriteRefusesOverwrite(t *testing.T) {

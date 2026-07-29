@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 type maintenanceFunctions struct {

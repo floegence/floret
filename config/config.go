@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/provider/catalog"
-	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
 )
 
 const (

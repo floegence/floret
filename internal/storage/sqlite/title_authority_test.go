@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestSQLiteMigratesSchemaVersion15ThreadTitleAuthority(t *testing.T) {

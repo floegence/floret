@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/internal/storage"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/storage"
 )
 
 type turnAuthorityTestRepo interface {

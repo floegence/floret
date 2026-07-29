@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func TestPopulateStoreFixtureUsesPublicInputs(t *testing.T) {

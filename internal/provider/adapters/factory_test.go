@@ -12,15 +12,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/provider/catalog"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/searchcap"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/tools"
 )
 
 func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {

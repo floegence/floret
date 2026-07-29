@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/tools"
 )
 
 // ThreadCompactionOption configures one thread compaction host.

@@ -7,7 +7,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func (s *Store) SetThreadTitle(ctx context.Context, req sessiontree.SetThreadTitleRequest) (sessiontree.ThreadTitleMutationResult, error) {

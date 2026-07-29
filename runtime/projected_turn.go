@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/configbridge"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/adapters"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/compaction"
-	"github.com/floegence/floret/observation"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/configbridge"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/adapters"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/compaction"
+	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v2/tools"
 )
 
 type ManualCompactionPollRequest struct {

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/floegence/floret/internal/hostscaffold"
+	"github.com/floegence/floret/v2/internal/hostscaffold"
 )
 
 func main() {

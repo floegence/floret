@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/floegence/floret/internal/storage/sqlite"
-	flruntime "github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/internal/storage/sqlite"
+	flruntime "github.com/floegence/floret/v2/runtime"
 )
 
 const (

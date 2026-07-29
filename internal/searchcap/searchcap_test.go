@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
 )
 
 func TestResolveUsesCapabilityAndCatalogWireShapeNotProviderName(t *testing.T) {

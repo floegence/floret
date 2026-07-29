@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/session/compaction"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/internal/storage"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/session/compaction"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/storage"
 )
 
 func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {

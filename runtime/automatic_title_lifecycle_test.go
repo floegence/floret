@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {

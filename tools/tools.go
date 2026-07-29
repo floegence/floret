@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/observation"
 )
 
 var ErrRejected = errors.New("tool call rejected")

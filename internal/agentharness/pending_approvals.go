@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 type ResolveApprovalOptions struct {

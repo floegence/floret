@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Referencia de Go" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Referencia de Go" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="Licencia" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ Así, una consola de operaciones, un entorno de programación, una herramienta d
 Instala los paquetes estables para aplicaciones downstream:
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ La consola de pruebas local es una herramienta para colaboradores que inspeccion
 Las aplicaciones downstream solo deben importar estos paquetes públicos:
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-Todo lo que está bajo `internal/` es un detalle de implementación. La referencia de API en [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) es la fuente de verdad; el [bundle de conocimiento OKF](okf/index.md) explica a los colaboradores la arquitectura y el vocabulario del runtime.
+Todo lo que está bajo `internal/` es un detalle de implementación. La referencia de API en [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) es la fuente de verdad; el [bundle de conocimiento OKF](okf/index.md) explica a los colaboradores la arquitectura y el vocabulario del runtime.
 
 ## Licencia
 

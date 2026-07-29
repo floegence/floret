@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -120,14 +120,14 @@ the same product.
 Install the downstream packages:
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 Generate the memory composition into your application. The command is a dry
 run by default, so the first invocation only shows the proposed source:
 
 ```bash
-go run github.com/floegence/floret/cmd/floret-host-init@v1.0.0 \
+go run github.com/floegence/floret/v2/cmd/floret-host-init@v1.0.0 \
   --profile memory --package main --dir .
 # Review the diff, then repeat with --write.
 ```
@@ -440,14 +440,14 @@ downstream integration surface.
 Downstream applications should import only these public packages:
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
 Everything under `internal/` is implementation detail. The package reference at
-[pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) is the API
+[pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) is the API
 source of truth; [the OKF knowledge bundle](okf/index.md) explains the runtime's
 architecture and vocabulary for contributors.
 

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/v2/internal/session"
 )
 
 const (

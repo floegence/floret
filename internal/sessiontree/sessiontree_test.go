@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/session/compaction"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/session/compaction"
 )
 
 func TestMemoryRepoAppendUpdatesLeafAndBuildContextFiltersEntries(t *testing.T) {

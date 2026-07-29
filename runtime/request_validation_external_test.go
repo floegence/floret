@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 func TestCreateThreadRequestValidateRequiresExplicitRetryIdentities(t *testing.T) {

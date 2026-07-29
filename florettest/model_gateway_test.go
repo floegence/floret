@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/florettest"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/florettest"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 func TestScriptedModelGateway(t *testing.T) {

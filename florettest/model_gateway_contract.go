@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/runtime"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/runtime"
 )
 
 // ModelGatewayFactory creates a gateway that implements the supplied steps.

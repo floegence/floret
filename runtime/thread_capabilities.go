@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 // HostBootstrap is an active, one-time composition scope for one opened Store.

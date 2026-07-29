@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/testing/harness"
-	"github.com/floegence/floret/internal/tools/builtin"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/searchcap"
+	"github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v2/internal/tools/builtin"
 )
 
 type runOptions struct {

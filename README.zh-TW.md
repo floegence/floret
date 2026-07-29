@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Go 文件" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Go 文件" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="授權條款" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ Floret 的邊界刻意保持精簡：它負責引擎機制，產品決策永遠�
 安裝下游應用可用的穩定套件：
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ go run ./cmd/floret-test-ui
 下游應用程式只應匯入以下公開套件：
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-`internal/` 下的內容皆為實作細節。API 以 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) 為準；貢獻者可透過 [OKF 知識套件](okf/index.md) 了解執行環境架構和術語。
+`internal/` 下的內容皆為實作細節。API 以 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime) 為準；貢獻者可透過 [OKF 知識套件](okf/index.md) 了解執行環境架構和術語。
 
 ## 授權條款
 

@@ -13,17 +13,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/catalog"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/internal/testing/harness"
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/engine"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/catalog"
+	"github.com/floegence/floret/v2/internal/searchcap"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/sessionlifecycle"
+	"github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v2/observation"
 )
 
 func serveInitialAgentSessionTurn(t *testing.T, handler http.Handler, createBody string) *httptest.ResponseRecorder {
@@ -57,7 +57,7 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
-		return []byte(`{"Action":"pass","Package":"github.com/floegence/floret","Elapsed":0.01}`), 0
+		return []byte(`{"Action":"pass","Package":"github.com/floegence/floret/v2","Elapsed":0.01}`), 0
 	}
 	server, err := NewServer(runner)
 	if err != nil {

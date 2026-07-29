@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/agentharness"
 )
 
 //go:embed static/*

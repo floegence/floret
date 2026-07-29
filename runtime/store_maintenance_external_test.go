@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 func TestPublicOpenSQLiteStoreCreatesOnlyFromEmptyFacts(t *testing.T) {

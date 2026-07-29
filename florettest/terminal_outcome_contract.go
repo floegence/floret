@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/floegence/floret/runtime"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/runtime"
+	"github.com/floegence/floret/v2/tools"
 )
 
 // ContractPrerequisite identifies a black-box condition that cannot be

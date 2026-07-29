@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/floegence/floret/observation"
+import "github.com/floegence/floret/v2/observation"
 
 type ToolCall struct {
 	ID        string

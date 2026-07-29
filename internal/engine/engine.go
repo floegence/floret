@@ -12,17 +12,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/internal/control"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/memory"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
-	"github.com/floegence/floret/internal/session/compaction"
-	"github.com/floegence/floret/internal/session/contextpolicy"
-	"github.com/floegence/floret/observation"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/internal/control"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/memory"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/provider/cache"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v2/internal/session/compaction"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v2/tools"
 )
 
 var (

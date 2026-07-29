@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/contextpolicy"
 )
 
 const SummarySchemaVersion = "floret.compaction.summary.v1"

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v2/tools"
 )
 
 // TurnExecutionOption is an opaque option for one turn execution capability.

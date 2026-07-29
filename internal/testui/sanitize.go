@@ -9,12 +9,12 @@ import (
 	"io"
 	"strings"
 
-	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v2/internal/event"
+	"github.com/floegence/floret/v2/internal/provider"
+	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v2/observation"
 )
 
 func publicRunResponse(resp RunResponse) RunResponse {

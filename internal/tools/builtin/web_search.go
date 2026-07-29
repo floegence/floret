@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/v2/tools"
 )
 
 const (

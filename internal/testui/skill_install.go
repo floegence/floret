@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/internal/tools/skills"
+	"github.com/floegence/floret/v2/internal/tools/skills"
 )
 
 const (

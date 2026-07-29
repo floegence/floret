@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/floegence/floret/internal/testui"
+	"github.com/floegence/floret/v2/internal/testui"
 )
 
 func main() {

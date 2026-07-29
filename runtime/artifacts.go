@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
 // ReadArtifact reads one artifact owned by the exact root thread bound to this

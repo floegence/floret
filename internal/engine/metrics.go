@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/floegence/floret/internal/provider"
+import "github.com/floegence/floret/v2/internal/provider"
 
 type StepMetrics struct {
 	Step               int            `json:"step"`

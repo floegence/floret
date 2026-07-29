@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/observation"
+	"github.com/floegence/floret/v2/observation"
 )
 
 func TestSanitizeActivityPresentationDropsNonFiniteNumbers(t *testing.T) {

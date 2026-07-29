@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	floretruntime "github.com/floegence/floret/runtime"
+	floretruntime "github.com/floegence/floret/v2/runtime"
 )
 
 func TestStartSQLiteStoreCreatesAndReopensExactStore(t *testing.T) {

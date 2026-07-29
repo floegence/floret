@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
-    <img alt="Справочник Go" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  <a href="https://pkg.go.dev/github.com/floegence/floret/v2/runtime">
+    <img alt="Справочник Go" src="https://pkg.go.dev/badge/github.com/floegence/floret/v2/runtime.svg" />
   </a>
   <a href="./LICENSE">
     <img alt="Лицензия" src="https://img.shields.io/badge/license-MIT-16a34a" />
@@ -69,7 +69,7 @@ Floret дает эту runtime-основу, не присваивая себе 
 Установите стабильные пакеты для downstream-приложений:
 
 ```bash
-go get github.com/floegence/floret@v1.0.0
+go get github.com/floegence/floret/v2@v1.0.0
 ```
 
 ```go
@@ -154,13 +154,13 @@ go run ./cmd/floret-test-ui
 Downstream-приложения должны импортировать только эти публичные пакеты:
 
 ```text
-github.com/floegence/floret/config
-github.com/floegence/floret/runtime
-github.com/floegence/floret/tools
-github.com/floegence/floret/observation
+github.com/floegence/floret/v2/config
+github.com/floegence/floret/v2/runtime
+github.com/floegence/floret/v2/tools
+github.com/floegence/floret/v2/observation
 ```
 
-Все, что находится в `internal/`, - деталь реализации. Источником истины для API служит [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime); [база знаний OKF](okf/index.md) объясняет участникам архитектуру и словарь runtime.
+Все, что находится в `internal/`, - деталь реализации. Источником истины для API служит [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/v2/runtime); [база знаний OKF](okf/index.md) объясняет участникам архитектуру и словарь runtime.
 
 ## Лицензия
 
