@@ -76,8 +76,8 @@ or validation failures require a canonical reload rather than event replay.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
-  the call but do not expose argument text; local tool execution remains a
-  separate activity timeline concern.
+  the call through public `runtime.ToolCallStream` but do not expose argument
+  text; local tool execution remains a separate activity timeline concern.
 * The public runtime event sink contains only finite `observation.EventType`
   values. Agent-harness lifecycle notifications such as thread resume, turn
   start, and entry append remain on the internal harness sink and are not

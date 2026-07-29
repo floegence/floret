@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Export `runtime.ToolCallStream` so downstream event sinks can construct and test tool-call stream observations through the public API.
+
 ## v2.1.0 - 2026-07-29
 
 - Complete the identity-bound `ThreadReader` surface for canonical overview,

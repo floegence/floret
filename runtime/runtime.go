@@ -1850,7 +1850,7 @@ func (t StreamObservationType) Valid() bool {
 type StreamObservation struct {
 	Type            StreamObservationType    `json:"type"`
 	Text            string                   `json:"text,omitempty"`
-	ToolCallStream  *modelToolCallStream     `json:"tool_call_stream,omitempty"`
+	ToolCallStream  *ToolCallStream          `json:"tool_call_stream,omitempty"`
 	Reason          string                   `json:"reason,omitempty"`
 	FinishReason    observation.FinishReason `json:"finish_reason,omitempty"`
 	RawFinishReason string                   `json:"raw_finish_reason,omitempty"`
@@ -5187,7 +5187,7 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	var streamType StreamObservationType
 	var text string
 	var reason string
-	var toolCallStream *modelToolCallStream
+	var toolCallStream *ToolCallStream
 	switch ev.Type {
 	case event.ProviderDelta:
 		streamType = StreamObservationAssistantDelta
@@ -5238,13 +5238,13 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	return out
 }
 
-func runtimeModelToolCallStream(ev event.Event) *modelToolCallStream {
+func runtimeModelToolCallStream(ev event.Event) *ToolCallStream {
 	id := strings.TrimSpace(ev.ToolID)
 	name := strings.TrimSpace(ev.ToolName)
 	if id == "" && name == "" {
 		return nil
 	}
-	return &modelToolCallStream{
+	return &ToolCallStream{
 		ID:   id,
 		Name: name,
 	}

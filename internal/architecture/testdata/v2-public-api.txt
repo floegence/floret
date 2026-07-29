@@ -971,7 +971,7 @@ field SpawnSubAgentRequest.Labels github.com/floegence/floret/v2/runtime.RunLabe
 type StreamObservation struct
 field StreamObservation.Type github.com/floegence/floret/v2/runtime.StreamObservationType tag="json:\"type\""
 field StreamObservation.Text string tag="json:\"text,omitempty\""
-field StreamObservation.ToolCallStream *github.com/floegence/floret/v2/runtime.modelToolCallStream tag="json:\"tool_call_stream,omitempty\""
+field StreamObservation.ToolCallStream *github.com/floegence/floret/v2/runtime.ToolCallStream tag="json:\"tool_call_stream,omitempty\""
 field StreamObservation.Reason string tag="json:\"reason,omitempty\""
 field StreamObservation.FinishReason github.com/floegence/floret/v2/observation.FinishReason tag="json:\"finish_reason,omitempty\""
 field StreamObservation.RawFinishReason string tag="json:\"raw_finish_reason,omitempty\""
@@ -1374,6 +1374,9 @@ const ThreadUserMessageOriginDelegatedMission github.com/floegence/floret/v2/run
 const ThreadUserMessageOriginPendingToolCompletion github.com/floegence/floret/v2/runtime.ThreadUserMessageOrigin = "pending_tool_completion"
 const ThreadUserMessageOriginSubAgentInput github.com/floegence/floret/v2/runtime.ThreadUserMessageOrigin = "subagent_input"
 const ThreadUserMessageOriginUser github.com/floegence/floret/v2/runtime.ThreadUserMessageOrigin = "user"
+type ToolCallStream struct
+field ToolCallStream.ID string tag="json:\"id,omitempty\""
+field ToolCallStream.Name string tag="json:\"name,omitempty\""
 type ToolSurface struct
 field ToolSurface.Tools *github.com/floegence/floret/v2/tools.Registry
 field ToolSurface.ToolDefinitions []github.com/floegence/floret/v2/tools.ToolDefinition

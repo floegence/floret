@@ -2266,9 +2266,9 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 		switch req.Step {
 		case 1:
 			events <- modelEvent{Type: modelEventDelta, Text: "I will inspect first. "}
-			events <- modelEvent{Type: modelEventToolCallStart, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
-			events <- modelEvent{Type: modelEventToolCallDelta, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
-			events <- modelEvent{Type: modelEventToolCallEnd, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCallStart, ToolCallStream: &ToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCallDelta, ToolCallStream: &ToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCallEnd, ToolCallStream: &ToolCallStream{ID: "read-1", Name: "read"}}
 			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"text":"alpha"}`}}}
 			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:

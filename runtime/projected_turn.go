@@ -272,10 +272,10 @@ const (
 	modelEventError            modelEventType = "error"
 )
 
-// modelToolCallStream identifies a tool call while the model is still
+// ToolCallStream identifies a tool call while the model is still
 // generating it. The final executable tool calls are delivered separately by
 // modelEventToolCalls.
-type modelToolCallStream struct {
+type ToolCallStream struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
@@ -284,7 +284,7 @@ type modelToolCallStream struct {
 type modelEvent struct {
 	Type           modelEventType                   `json:"type"`
 	Text           string                           `json:"text,omitempty"`
-	ToolCallStream *modelToolCallStream             `json:"tool_call_stream,omitempty"`
+	ToolCallStream *ToolCallStream                  `json:"tool_call_stream,omitempty"`
 	ToolCalls      []tools.ToolCall                 `json:"tool_calls,omitempty"`
 	HostedToolCall *publicprovider.ToolCall         `json:"hosted_tool_call,omitempty"`
 	HostedResult   *publicprovider.HostedToolResult `json:"hosted_result,omitempty"`
@@ -1027,7 +1027,7 @@ func internalHostedToolResult(result *publicprovider.HostedToolResult) provider.
 	}
 }
 
-func providerToolCallStream(call *modelToolCallStream) provider.ToolCallStream {
+func providerToolCallStream(call *ToolCallStream) provider.ToolCallStream {
 	if call == nil {
 		return provider.ToolCallStream{}
 	}

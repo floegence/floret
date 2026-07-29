@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-29
+* **Runtime observation API**: Exported `runtime.ToolCallStream` so downstream
+  event sinks can construct and test provider-neutral tool-call stream facts.
+
+## 2026-07-29
 * **v2.1 public API**: Completed the identity-bound canonical read, approval,
   todo, pending-work, artifact, retry, and SubAgent handle surfaces required by
   downstream hosts while keeping bound root identities out of requests.

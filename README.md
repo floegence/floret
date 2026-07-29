@@ -153,6 +153,11 @@ construction time; an Agent has no mutating API afterward.
 Provider API keys, base URLs, provider names, and fake responses are not Agent
 configuration. They belong to the gateway constructed by the host.
 
+Runtime event sinks receive provider-neutral stream observations. The public
+`runtime.ToolCallStream` identifies in-progress tool calls without exposing
+arguments, so downstream hosts can render and test start/delta/end events
+without depending on provider or internal runtime types.
+
 ## Storage
 
 `storage.Source` and `storage.Backend` are the complete third-party persistence

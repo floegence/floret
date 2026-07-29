@@ -493,9 +493,9 @@ func projectModelEvent(event provider.Event) modelEvent {
 		calls[index] = tools.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args}
 	}
 	sources := append([]provider.Source(nil), event.Sources...)
-	var stream *modelToolCallStream
+	var stream *ToolCallStream
 	if event.ToolCallStream != nil {
-		stream = &modelToolCallStream{ID: event.ToolCallStream.ID, Name: event.ToolCallStream.Name}
+		stream = &ToolCallStream{ID: event.ToolCallStream.ID, Name: event.ToolCallStream.Name}
 	}
 	var state *modelStateEnvelope
 	if event.ResponseState != nil {
