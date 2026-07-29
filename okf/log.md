@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-07-29
+* **v2.1 public API**: Completed the identity-bound canonical read, approval,
+  todo, pending-work, artifact, retry, and SubAgent handle surfaces required by
+  downstream hosts while keeping bound root identities out of requests.
+
+## 2026-07-29
 * **Public API**: Established `/v2` packages for config, provider, runtime,
   storage, tools, observation, and test-only florettest; deleted the v1
   bootstrap/binder/factory and generator surface without aliases.

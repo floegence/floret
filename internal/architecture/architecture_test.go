@@ -514,16 +514,19 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"ThreadReader", "ThreadTitleEditor", "TurnRunner")
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("ThreadCreator", reflect.TypeOf((*floretRuntime.ThreadCreator)(nil)), "Create")
-	exact("ThreadReader", reflect.TypeOf((*floretRuntime.ThreadReader)(nil)), "Read", "ReadTurn")
+	exact("ThreadReader", reflect.TypeOf((*floretRuntime.ThreadReader)(nil)),
+		"ListDetailEvents", "ListPendingToolTargets", "ListTurns", "Read", "ReadAgentTodos",
+		"ReadApprovalQueue", "ReadArtifact", "ReadContext", "ReadOverview", "ReadProjection", "ReadTurn")
 	exact("ThreadTitleEditor", reflect.TypeOf((*floretRuntime.ThreadTitleEditor)(nil)), "Set")
 	exact("ThreadForker", reflect.TypeOf((*floretRuntime.ThreadForker)(nil)), "Fork")
 	exact("ThreadDeleter", reflect.TypeOf((*floretRuntime.ThreadDeleter)(nil)), "Delete")
-	exact("TurnRunner", reflect.TypeOf((*floretRuntime.TurnRunner)(nil)), "Run")
+	exact("TurnRunner", reflect.TypeOf((*floretRuntime.TurnRunner)(nil)),
+		"CompletePendingTool", "ResolveApproval", "Retry", "Run", "SettlePendingTool", "UpdateAgentTodos")
 	exact("ThreadCompactor", reflect.TypeOf((*floretRuntime.ThreadCompactor)(nil)), "Compact")
 	exact("SubAgentManager", reflect.TypeOf((*floretRuntime.SubAgentManager)(nil)),
-		"Close", "PublishPendingToolCompletion", "SendInput", "Spawn", "Wait")
+		"Close", "PublishPendingToolCompletion", "SendInput", "SettlePendingTool", "Spawn", "Wait")
 	exact("SubAgentReader", reflect.TypeOf((*floretRuntime.SubAgentReader)(nil)),
-		"ActivityTimeline", "List", "ReadDetail")
+		"ActivityTimeline", "List", "ListPendingToolTargets", "ListTurns", "ReadArtifact", "ReadDetail", "ReadTurn")
 	exact("PendingToolRecovery", reflect.TypeOf((*floretRuntime.PendingToolRecovery)(nil)), "Settle")
 	exact("InterruptedTurnRecovery", reflect.TypeOf((*floretRuntime.InterruptedTurnRecovery)(nil)), "Recover")
 	exact("ThreadInventory", reflect.TypeOf((*floretRuntime.ThreadInventory)(nil)), "List")
@@ -649,6 +652,12 @@ func TestBoundHandleRequestsDoNotRepeatBoundIdentity(t *testing.T) {
 		"CloseSubAgent":                        {reflect.TypeOf(floretRuntime.CloseSubAgent{}), []string{"ParentThreadID"}},
 		"SubAgentDetailRequest":                {reflect.TypeOf(floretRuntime.SubAgentDetailRequest{}), []string{"ParentThreadID"}},
 		"PendingToolRecoveryRequest":           {reflect.TypeOf(floretRuntime.PendingToolRecoveryRequest{}), []string{"ThreadID", "ParentThreadID", "Target", "TurnID", "RunID", "ToolCallID"}},
+		"ThreadTurnsRequest":                   {reflect.TypeOf(floretRuntime.ThreadTurnsRequest{}), []string{"ThreadID"}},
+		"ThreadDetailRequest":                  {reflect.TypeOf(floretRuntime.ThreadDetailRequest{}), []string{"ThreadID"}},
+		"AgentTodoUpdateRequest":               {reflect.TypeOf(floretRuntime.AgentTodoUpdateRequest{}), []string{"ThreadID"}},
+		"ApprovalResolutionRequest":            {reflect.TypeOf(floretRuntime.ApprovalResolutionRequest{}), []string{"ThreadID", "ExpectedRootThreadID"}},
+		"ActivePendingToolCompletion":          {reflect.TypeOf(floretRuntime.ActivePendingToolCompletion{}), []string{"ThreadID"}},
+		"ActivePendingToolSettlement":          {reflect.TypeOf(floretRuntime.ActivePendingToolSettlement{}), []string{"ThreadID"}},
 	} {
 		for _, field := range contract.forbidden {
 			if _, ok := contract.typ.FieldByName(field); ok {

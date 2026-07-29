@@ -130,6 +130,36 @@ func TestHostIssuesIdentityBoundHandlesAndOwnsBackend(t *testing.T) {
 	if turn.RunID != "run-1" || projectedAssistantText(turn.Projection) != "done" {
 		t.Fatalf("canonical turn = %#v", turn)
 	}
+	overview, err := reader.ReadOverview(ctx)
+	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != "turn-1" {
+		t.Fatalf("thread overview = %#v, err = %v", overview, err)
+	}
+	turns, err := reader.ListTurns(ctx, floretruntime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(turns.Turns) != 1 || turns.Turns[0].TurnID != "turn-1" {
+		t.Fatalf("thread turns = %#v, err = %v", turns, err)
+	}
+	detail, err := reader.ListDetailEvents(ctx, floretruntime.ThreadDetailRequest{Limit: 100})
+	if err != nil || len(detail.Events) == 0 {
+		t.Fatalf("thread detail = %#v, err = %v", detail, err)
+	}
+	if targets, err := reader.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("pending tool targets = %#v, err = %v", targets, err)
+	}
+	if todos, err := reader.ReadAgentTodos(ctx); err != nil || todos.ThreadID != "thread-1" {
+		t.Fatalf("Agent todos = %#v, err = %v", todos, err)
+	}
+	if contextSnapshot, err := reader.ReadContext(ctx); err != nil || contextSnapshot.ThreadID != "thread-1" {
+		t.Fatalf("thread context = %#v, err = %v", contextSnapshot, err)
+	}
+	if approvals, err := reader.ReadApprovalQueue(ctx); err != nil || approvals.RootThreadID != "thread-1" {
+		t.Fatalf("approval queue = %#v, err = %v", approvals, err)
+	}
+	if projection, err := reader.ReadProjection(ctx, "turn-1", "run-1"); err != nil || projectedAssistantText(projection) != "done" {
+		t.Fatalf("turn projection = %#v, err = %v", projection, err)
+	}
+	if artifact, err := reader.ReadArtifact(ctx, "missing"); !errors.Is(err, floretruntime.ErrArtifactNotFound) || artifact != (floretruntime.ArtifactContent{}) {
+		t.Fatalf("missing artifact = %#v, err = %v", artifact, err)
+	}
 	forker, err := host.ThreadForker(ctx, floretruntime.ThreadID("thread-1"))
 	if err != nil {
 		t.Fatal(err)
@@ -178,12 +208,53 @@ func TestBoundRequestsContainNoThreadIdentity(t *testing.T) {
 		floretruntime.SpawnSubAgent{}, floretruntime.SendSubAgentInput{},
 		floretruntime.WaitSubAgents{}, floretruntime.CloseSubAgent{},
 	} {
-		if _, exists := reflect.TypeOf(request).FieldByName("ParentThreadID"); exists {
+		requestType := reflect.TypeOf(request)
+		if _, exists := requestType.FieldByName("ParentThreadID"); exists {
 			t.Fatalf("%T repeats the bound parent ThreadID", request)
+		}
+	}
+	for _, request := range []any{
+		floretruntime.ThreadTurnsRequest{}, floretruntime.ThreadDetailRequest{},
+		floretruntime.AgentTodoUpdateRequest{}, floretruntime.ApprovalResolutionRequest{},
+		floretruntime.ActivePendingToolCompletion{}, floretruntime.ActivePendingToolSettlement{},
+	} {
+		requestType := reflect.TypeOf(request)
+		if _, exists := requestType.FieldByName("ThreadID"); exists {
+			t.Fatalf("%T repeats the bound ThreadID", request)
 		}
 	}
 	method, exists := reflect.TypeOf((*floretruntime.ThreadCreator)(nil)).MethodByName("Create")
 	if !exists || method.Type.NumIn() != 2 {
 		t.Fatalf("ThreadCreator.Create signature = %v", method.Type)
 	}
+}
+
+func TestHostHandlesExposeCompleteDurableLifecycleSurface(t *testing.T) {
+	ctx := context.Background()
+	var reader *floretruntime.ThreadReader
+	_, _ = reader.ReadOverview(ctx)
+	_, _ = reader.ListTurns(ctx, floretruntime.ThreadTurnsRequest{})
+	_, _ = reader.ListDetailEvents(ctx, floretruntime.ThreadDetailRequest{})
+	_, _ = reader.ListPendingToolTargets(ctx)
+	_, _ = reader.ReadAgentTodos(ctx)
+	_, _ = reader.ReadContext(ctx)
+	_, _ = reader.ReadApprovalQueue(ctx)
+	_, _ = reader.ReadProjection(ctx, "turn-1", "run-1")
+	_, _ = reader.ReadArtifact(ctx, "artifact-1")
+
+	var runner *floretruntime.TurnRunner
+	_, _ = runner.Retry(ctx, floretruntime.RetryRequest{})
+	_, _ = runner.CompletePendingTool(ctx, floretruntime.ActivePendingToolCompletion{})
+	_, _ = runner.ResolveApproval(ctx, floretruntime.ApprovalResolutionRequest{})
+	_, _ = runner.UpdateAgentTodos(ctx, floretruntime.AgentTodoUpdateRequest{})
+	_, _ = runner.SettlePendingTool(ctx, floretruntime.ActivePendingToolSettlement{})
+
+	var manager *floretruntime.SubAgentManager
+	_, _ = manager.SettlePendingTool(ctx, floretruntime.PendingToolSettlementRequest{})
+
+	var subagents *floretruntime.SubAgentReader
+	_, _ = subagents.ReadTurn(ctx, "child-1", "turn-1")
+	_, _ = subagents.ListTurns(ctx, "child-1", floretruntime.ThreadTurnsRequest{})
+	_, _ = subagents.ListPendingToolTargets(ctx, "child-1")
+	_, _ = subagents.ReadArtifact(ctx, "child-1", "artifact-1")
 }

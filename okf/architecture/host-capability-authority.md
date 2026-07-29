@@ -27,5 +27,12 @@ The store-wide `ThreadInventory` is limited to bounded root discovery for
 startup reconciliation. It does not grant run, mutation, or product visibility
 authority.
 
+Canonical read completeness does not widen authority. `ThreadReader` can read
+every Floret-owned lifecycle projection only for its bound root.
+`SubAgentReader` selects descendants only under its bound parent, while child
+identity remains explicit because it is not the authority already fixed by the
+handle. Active approvals, todos, retries, and pending-work settlement stay on
+the Agent-bound execution handle instead of a provider-free mutation facade.
+
 No public aggregate can reissue Host authority. Public constructors returning
 capabilities are limited to `runtime.Open` and `runtime.NewAgent`.

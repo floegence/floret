@@ -35,6 +35,13 @@ Request types omit identities already fixed by a handle. There is no public
 bootstrap, binder, factory, family-specific Host options, Store facade, or host
 generator.
 
+`ThreadReader` exposes all provider-free canonical facts for its bound root:
+overview, exact and paged turns, detail events, approvals, todos, context,
+projections, artifacts, and pending settlement targets. `TurnRunner` owns
+provider-backed retry and the active approval, todo, and pending-work mutation
+surface. Parent-bound `SubAgentReader` and `SubAgentManager` expose corresponding
+child reads and settlement without granting arbitrary root authority.
+
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect
 gate, event sink, dynamic tool surface, loop limits, title mode, capabilities,

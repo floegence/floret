@@ -63,6 +63,14 @@ func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
 	if err != nil || len(children) != 1 || children[0].ThreadID != "child" {
 		t.Fatalf("children = %#v, err = %v", children, err)
 	}
+	turns, err := reader.ListTurns(ctx, child.ThreadID, runtime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(turns.Turns) != 1 || turns.Turns[0].UserMessageOrigin != runtime.ThreadUserMessageOriginDelegatedMission {
+		t.Fatalf("child turns = %#v, err = %v", turns, err)
+	}
+	turn, err := reader.ReadTurn(ctx, child.ThreadID, turns.Turns[0].TurnID)
+	if err != nil || turn.RunID != turns.Turns[0].RunID {
+		t.Fatalf("child turn = %#v, err = %v", turn, err)
+	}
 }
 
 func TestPublishedSQLiteRestartUsesCanonicalRead(t *testing.T) {
@@ -98,6 +106,10 @@ func TestPublishedSQLiteRestartUsesCanonicalRead(t *testing.T) {
 	reader, err := reopened.ThreadReader(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
+	}
+	overview, err := reader.ReadOverview(ctx)
+	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != "turn" {
+		t.Fatalf("overview = %#v, err = %v", overview, err)
 	}
 	turn, err := reader.ReadTurn(ctx, "turn")
 	if err != nil || turn.RunID != "run" || assistantText(turn.Projection) != "persisted" {

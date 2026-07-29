@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v2.1.0 - 2026-07-29
+
+- Complete the identity-bound `ThreadReader` surface for canonical overview,
+  turn pages, detail events, pending work, approvals, todos, context,
+  projections, and artifacts.
+- Complete active `TurnRunner` control for retries, pending work, approvals,
+  and Agent todos, plus parent-bound SubAgent turn, artifact, and pending-work
+  reads.
+- Keep every new root-bound request free of a caller-supplied `ThreadID`; the
+  issuing handle injects its immutable authority identity.
+
+## v2.0.0 - 2026-07-29
+
 - **Breaking:** Move the module to `github.com/floegence/floret/v2` and remove
   every v1 bootstrap, binder, factory, Host-options, Store facade, host
   generator, alias, and fake-provider configuration contract.

@@ -311,6 +311,29 @@ field Usage.Available bool tag="json:\"available,omitempty\""
 field Usage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
 
 package github.com/floegence/floret/v2/runtime
+type ActivePendingToolCompletion struct
+field ActivePendingToolCompletion.CompletionRequestID string
+field ActivePendingToolCompletion.Target github.com/floegence/floret/v2/runtime.ActivePendingToolTarget
+field ActivePendingToolCompletion.ContinuationTurnID github.com/floegence/floret/v2/runtime.TurnID
+field ActivePendingToolCompletion.ContinuationRunID github.com/floegence/floret/v2/runtime.RunID
+field ActivePendingToolCompletion.Status github.com/floegence/floret/v2/runtime.PendingToolCompletionStatus
+field ActivePendingToolCompletion.Summary string
+field ActivePendingToolCompletion.Output string
+field ActivePendingToolCompletion.Input github.com/floegence/floret/v2/runtime.TurnInput
+field ActivePendingToolCompletion.Labels github.com/floegence/floret/v2/runtime.RunLabels
+type ActivePendingToolSettlement struct
+field ActivePendingToolSettlement.Target github.com/floegence/floret/v2/runtime.ActivePendingToolTarget
+field ActivePendingToolSettlement.Status github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus
+field ActivePendingToolSettlement.Summary string
+field ActivePendingToolSettlement.Output string
+field ActivePendingToolSettlement.Activity *github.com/floegence/floret/v2/observation.ActivityPresentation
+type ActivePendingToolTarget struct
+field ActivePendingToolTarget.TurnID github.com/floegence/floret/v2/runtime.TurnID
+field ActivePendingToolTarget.RunID github.com/floegence/floret/v2/runtime.RunID
+field ActivePendingToolTarget.ToolCallID string
+field ActivePendingToolTarget.ToolName string
+field ActivePendingToolTarget.Handle string
+field ActivePendingToolTarget.EffectAttemptID string
 type Agent struct
 method *Agent.Config func() github.com/floegence/floret/v2/config.AgentConfig
 method *Agent.ProviderIdentity func() github.com/floegence/floret/v2/provider.Identity
@@ -325,6 +348,12 @@ const AgentTodoInProgress github.com/floegence/floret/v2/runtime.AgentTodoStatus
 const AgentTodoPending github.com/floegence/floret/v2/runtime.AgentTodoStatus = "pending"
 type AgentTodoStatus string
 method AgentTodoStatus.Valid func() bool
+type AgentTodoUpdateRequest struct
+field AgentTodoUpdateRequest.ExpectedVersion int64
+field AgentTodoUpdateRequest.Items []github.com/floegence/floret/v2/runtime.AgentTodo
+field AgentTodoUpdateRequest.TurnID github.com/floegence/floret/v2/runtime.TurnID
+field AgentTodoUpdateRequest.RunID github.com/floegence/floret/v2/runtime.RunID
+field AgentTodoUpdateRequest.ToolCallID string
 type ApprovalDecision string
 const ApprovalDecisionApprove github.com/floegence/floret/v2/runtime.ApprovalDecision = "approve"
 type ApprovalDecisionReceipt struct
@@ -391,6 +420,13 @@ field ApprovalRecord.Destructive bool tag="json:\"destructive,omitempty\""
 field ApprovalRecord.OpenWorld bool tag="json:\"open_world,omitempty\""
 field ApprovalRecord.Reason string tag="json:\"reason,omitempty\""
 method ApprovalRecord.Validate func() error
+type ApprovalResolutionRequest struct
+field ApprovalResolutionRequest.DecisionID string
+field ApprovalResolutionRequest.ExpectedGeneration int64
+field ApprovalResolutionRequest.ExpectedRevision int64
+field ApprovalResolutionRequest.ExpectedCurrent github.com/floegence/floret/v2/runtime.ApprovalIdentity
+field ApprovalResolutionRequest.ExpectedApprovalRevision int64
+field ApprovalResolutionRequest.Decision github.com/floegence/floret/v2/runtime.ApprovalDecision
 type ApprovalResource struct
 field ApprovalResource.Kind string tag="json:\"kind,omitempty\""
 field ApprovalResource.Value string tag="json:\"value,omitempty\""
@@ -844,6 +880,9 @@ field ResolveApprovalResult.Queue github.com/floegence/floret/v2/runtime.Approva
 field ResolveApprovalResult.Approval github.com/floegence/floret/v2/runtime.ApprovalRecord tag="json:\"approval\""
 field ResolveApprovalResult.Replayed bool tag="json:\"replayed,omitempty\""
 method ResolveApprovalResult.Validate func() error
+type RetryRequest struct
+field RetryRequest.Reason string
+field RetryRequest.Labels github.com/floegence/floret/v2/runtime.RunLabels
 type RetryTurnRequest struct
 field RetryTurnRequest.ThreadID github.com/floegence/floret/v2/runtime.ThreadID
 field RetryTurnRequest.Reason string
@@ -978,10 +1017,15 @@ method *SubAgentManager.SendInput func(ctx context.Context, request github.com/f
 method *SubAgentManager.PublishPendingToolCompletion func(ctx context.Context, request github.com/floegence/floret/v2/runtime.PublishSubAgentPendingToolCompletion) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentManager.Wait func(ctx context.Context, request github.com/floegence/floret/v2/runtime.WaitSubAgents) (github.com/floegence/floret/v2/runtime.WaitSubAgentsResult, error)
 method *SubAgentManager.Close func(ctx context.Context, request github.com/floegence/floret/v2/runtime.CloseSubAgent) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
+method *SubAgentManager.SettlePendingTool func(ctx context.Context, request github.com/floegence/floret/v2/runtime.PendingToolSettlementRequest) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
 type SubAgentReader struct
 method *SubAgentReader.List func(ctx context.Context) ([]github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentReader.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v2/runtime.SubAgentDetailRequest) (github.com/floegence/floret/v2/runtime.SubAgentDetail, error)
 method *SubAgentReader.ActivityTimeline func(ctx context.Context, meta github.com/floegence/floret/v2/observation.ActivityRunMeta) (github.com/floegence/floret/v2/runtime.SubAgentActivityTimelineResult, error)
+method *SubAgentReader.ReadTurn func(ctx context.Context, childThreadID github.com/floegence/floret/v2/runtime.ThreadID, turnID github.com/floegence/floret/v2/runtime.TurnID) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
+method *SubAgentReader.ListTurns func(ctx context.Context, childThreadID github.com/floegence/floret/v2/runtime.ThreadID, request github.com/floegence/floret/v2/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnsPage, error)
+method *SubAgentReader.ListPendingToolTargets func(ctx context.Context, childThreadID github.com/floegence/floret/v2/runtime.ThreadID) ([]github.com/floegence/floret/v2/runtime.PendingToolSettlementTarget, error)
+method *SubAgentReader.ReadArtifact func(ctx context.Context, childThreadID github.com/floegence/floret/v2/runtime.ThreadID, artifactID github.com/floegence/floret/v2/runtime.ArtifactID) (github.com/floegence/floret/v2/runtime.ArtifactContent, error)
 type SubAgentSnapshot struct
 field SubAgentSnapshot.ThreadID github.com/floegence/floret/v2/runtime.ThreadID tag="json:\"thread_id\""
 field SubAgentSnapshot.Path string tag="json:\"path\""
@@ -1124,6 +1168,10 @@ field ThreadDetailMessage.Attachments []github.com/floegence/floret/v2/runtime.M
 field ThreadDetailMessage.References []github.com/floegence/floret/v2/runtime.MessageReference tag="json:\"references,omitempty\""
 field ThreadDetailMessage.Reasoning string tag="json:\"reasoning,omitempty\""
 field ThreadDetailMessage.Activity *github.com/floegence/floret/v2/observation.ActivityPresentation tag="json:\"activity,omitempty\""
+type ThreadDetailRequest struct
+field ThreadDetailRequest.AfterOrdinal int64
+field ThreadDetailRequest.Limit int
+field ThreadDetailRequest.IncludeRaw bool
 type ThreadDetailToolCall struct
 field ThreadDetailToolCall.ID string tag="json:\"id,omitempty\""
 field ThreadDetailToolCall.Name string tag="json:\"name,omitempty\""
@@ -1167,6 +1215,15 @@ method ThreadPhase.Valid func() bool
 const ThreadPhaseIdle github.com/floegence/floret/v2/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v2/runtime.ThreadPhase = "turn"
 type ThreadReader struct
+method *ThreadReader.ReadOverview func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadOverview, error)
+method *ThreadReader.ListTurns func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnsPage, error)
+method *ThreadReader.ListDetailEvents func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ThreadDetailRequest) (github.com/floegence/floret/v2/runtime.ThreadDetailEvents, error)
+method *ThreadReader.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v2/runtime.PendingToolSettlementTarget, error)
+method *ThreadReader.ReadAgentTodos func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadAgentTodoState, error)
+method *ThreadReader.ReadContext func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadContextSnapshot, error)
+method *ThreadReader.ReadApprovalQueue func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ApprovalQueue, error)
+method *ThreadReader.ReadProjection func(ctx context.Context, turnID github.com/floegence/floret/v2/runtime.TurnID, runID github.com/floegence/floret/v2/runtime.RunID) (github.com/floegence/floret/v2/runtime.ThreadTurnProjection, error)
+method *ThreadReader.ReadArtifact func(ctx context.Context, artifactID github.com/floegence/floret/v2/runtime.ArtifactID) (github.com/floegence/floret/v2/runtime.ArtifactContent, error)
 method *ThreadReader.Read func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadSnapshot, error)
 method *ThreadReader.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v2/runtime.TurnID) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
 type ThreadSnapshot struct
@@ -1307,6 +1364,11 @@ field ThreadTurnsPage.HasMore bool tag="json:\"has_more,omitempty\""
 field ThreadTurnsPage.ThroughOrdinal int64 tag="json:\"through_ordinal\""
 field ThreadTurnsPage.GeneratedAt time.Time tag="json:\"generated_at\""
 method ThreadTurnsPage.Validate func() error
+type ThreadTurnsRequest struct
+field ThreadTurnsRequest.BeforeCursor *github.com/floegence/floret/v2/runtime.ThreadTurnCursor
+field ThreadTurnsRequest.SinceCursor *github.com/floegence/floret/v2/runtime.ThreadTurnCursor
+field ThreadTurnsRequest.Tail int
+field ThreadTurnsRequest.Limit int
 type ThreadUserMessageOrigin string
 const ThreadUserMessageOriginDelegatedMission github.com/floegence/floret/v2/runtime.ThreadUserMessageOrigin = "delegated_mission"
 const ThreadUserMessageOriginPendingToolCompletion github.com/floegence/floret/v2/runtime.ThreadUserMessageOrigin = "pending_tool_completion"
@@ -1386,6 +1448,11 @@ field TurnResult.ProjectionError string tag="json:\"projection_error,omitempty\"
 field TurnResult.Replayed bool tag="json:\"replayed,omitempty\""
 method TurnResult.Validate func() error
 type TurnRunner struct
+method *TurnRunner.Retry func(ctx context.Context, request github.com/floegence/floret/v2/runtime.RetryRequest) (github.com/floegence/floret/v2/runtime.TurnResult, error)
+method *TurnRunner.CompletePendingTool func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ActivePendingToolCompletion) (github.com/floegence/floret/v2/runtime.PendingToolCompletionResult, error)
+method *TurnRunner.ResolveApproval func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ApprovalResolutionRequest) (github.com/floegence/floret/v2/runtime.ResolveApprovalResult, error)
+method *TurnRunner.UpdateAgentTodos func(ctx context.Context, request github.com/floegence/floret/v2/runtime.AgentTodoUpdateRequest) (github.com/floegence/floret/v2/runtime.ThreadAgentTodoState, error)
+method *TurnRunner.SettlePendingTool func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ActivePendingToolSettlement) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
 method *TurnRunner.Run func(ctx context.Context, request github.com/floegence/floret/v2/runtime.TurnRequest) (github.com/floegence/floret/v2/runtime.TurnResult, error)
 type TurnSignal struct
 field TurnSignal.Disposition github.com/floegence/floret/v2/runtime.SignalDisposition tag="json:\"disposition\""

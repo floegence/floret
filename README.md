@@ -135,6 +135,13 @@ Requests do not repeat identities already bound by a handle. Services should
 declare local minimal interfaces and must not retain `*runtime.Host` or recover
 it through type assertions.
 
+`ThreadReader` is the complete provider-free read surface for its bound root:
+overview, exact and paged turns, detail events, approvals, todos, context,
+projections, artifacts, and pending settlement targets. `TurnRunner` owns the
+matching provider-backed retry, approval, todo, and active pending-work writes.
+`SubAgentReader` and `SubAgentManager` expose the same child facts and effects
+only through their bound parent authority.
+
 ## Agent Immutability
 
 `runtime.NewAgent` requires a non-empty `config.AgentProfile`, system prompt,
