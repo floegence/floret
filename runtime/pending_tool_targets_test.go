@@ -5,15 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v2/config"
 )
 
 func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"},
-		Store:  store,
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"},
+		store:  store,
 	})
 	if err != nil {
 		t.Fatal(err)

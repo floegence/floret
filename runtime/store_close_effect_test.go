@@ -34,7 +34,7 @@ func TestStoreCloseWaitsForDispatchedEffectBeforeTerminalSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{
+	store := &runtimeStore{
 		repo: repo, prompt: repo, forkOperations: repo, agentTodos: repo, rootAuthority: repo,
 		deleteCleanup: func(context.Context, []string) error { return nil }, close: repo.Close,
 	}
@@ -50,7 +50,7 @@ func TestStoreCloseWaitsForDispatchedEffectBeforeTerminalSQLite(t *testing.T) {
 	assertClosedEffectJournal(t, reopened)
 }
 
-func runStoreCloseEffectScenario(t *testing.T, store *Store, repo sessiontree.Repo, policy sessiontree.LeasePolicy) {
+func runStoreCloseEffectScenario(t *testing.T, store *runtimeStore, repo sessiontree.Repo, policy sessiontree.LeasePolicy) {
 	t.Helper()
 	ctx := context.Background()
 	capabilities := mustTestCapabilities(t, store)
@@ -76,21 +76,21 @@ func runStoreCloseEffectScenario(t *testing.T, store *Store, repo sessiontree.Re
 	)); err != nil {
 		t.Fatal(err)
 	}
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 2)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
 		if req.Step == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-close-effect", Name: "shell", Args: `{"text":"late"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-close-effect", Name: "shell", Args: `{"text":"late"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "unexpected"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "unexpected"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("store close effect"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-effect"),
-		Store: store, Tools: registry, EffectAuthorizationGate: allowRuntimeEffectGate{}, IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("store close effect"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close-effect"),
+		store: store, Tools: registry, EffectAuthorizationGate: allowRuntimeEffectGate{}, IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)

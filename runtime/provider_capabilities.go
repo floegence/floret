@@ -34,46 +34,46 @@ type subAgentCapability struct {
 
 // turnExecutionBinder issues only thread-bound turn factories.
 type turnExecutionBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadCompactionBinder issues only thread-bound compaction factories.
 type threadCompactionBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // subAgentBinder issues only parent-bound interactive child factories.
 type subAgentBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // turnExecutionFactory issues thread-bound turn execution capabilities.
 type turnExecutionFactory struct {
-	store    *Store
+	store    *runtimeStore
 	threadID ThreadID
 }
 
 // threadCompactionFactory issues thread-bound compaction capabilities.
 type threadCompactionFactory struct {
-	store    *Store
+	store    *runtimeStore
 	threadID ThreadID
 }
 
 // subAgentFactory issues parent-bound interactive child capabilities.
 type subAgentFactory struct {
-	store          *Store
+	store          *runtimeStore
 	parentThreadID ThreadID
 }
 
 // turnExecutionOptions configures one thread-bound turn capability.
 type turnExecutionOptions struct {
-	config                   config.Config
-	modelGateway             ModelGateway
-	modelGatewayIdentity     ModelGatewayIdentity
-	modelGatewayCapabilities ModelGatewayCapabilities
+	config                   runtimeConfig
+	modelGateway             modelGateway
+	modelGatewayIdentity     modelGatewayIdentity
+	modelGatewayCapabilities modelGatewayCapabilities
 	tools                    *tools.Registry
 	effectAuthorizationGate  EffectAuthorizationGate
 	sink                     EventSink
@@ -87,10 +87,10 @@ type turnExecutionOptions struct {
 
 // threadCompactionOptions configures one thread-bound compaction capability.
 type threadCompactionOptions struct {
-	config                   config.Config
-	modelGateway             ModelGateway
-	modelGatewayIdentity     ModelGatewayIdentity
-	modelGatewayCapabilities ModelGatewayCapabilities
+	config                   runtimeConfig
+	modelGateway             modelGateway
+	modelGatewayIdentity     modelGatewayIdentity
+	modelGatewayCapabilities modelGatewayCapabilities
 	sink                     EventSink
 	idGenerator              func(string) string
 	loopLimits               LoopLimits
@@ -99,10 +99,10 @@ type threadCompactionOptions struct {
 
 // subAgentOptions configures one parent-bound interactive child capability.
 type subAgentOptions struct {
-	config                   config.Config
-	modelGateway             ModelGateway
-	modelGatewayIdentity     ModelGatewayIdentity
-	modelGatewayCapabilities ModelGatewayCapabilities
+	config                   runtimeConfig
+	modelGateway             modelGateway
+	modelGatewayIdentity     modelGatewayIdentity
+	modelGatewayCapabilities modelGatewayCapabilities
 	tools                    *tools.Registry
 	effectAuthorizationGate  EffectAuthorizationGate
 	sink                     EventSink
@@ -115,24 +115,24 @@ type subAgentOptions struct {
 	initialized              bool
 }
 
-// ModelGatewayCapabilities describes host-resolved behavior for a gateway model.
+// modelGatewayCapabilities describes host-resolved behavior for a gateway model.
 // A nil Reasoning means the host did not resolve the capability; an explicit
 // Kind="none" value means the host resolved that reasoning is unsupported.
-type ModelGatewayCapabilities struct {
+type modelGatewayCapabilities struct {
 	Reasoning         *config.ReasoningCapability
-	AttachmentPayload ModelGatewayAttachmentPayloadMode
+	AttachmentPayload modelGatewayAttachmentPayloadMode
 }
 
-type ModelGatewayAttachmentPayloadMode string
+type modelGatewayAttachmentPayloadMode string
 
 const (
-	ModelGatewayAttachmentPayloadDescriptors ModelGatewayAttachmentPayloadMode = ""
-	ModelGatewayAttachmentPayloadExpanded    ModelGatewayAttachmentPayloadMode = "expanded"
+	modelGatewayAttachmentPayloadDescriptors modelGatewayAttachmentPayloadMode = ""
+	modelGatewayAttachmentPayloadExpanded    modelGatewayAttachmentPayloadMode = "expanded"
 )
 
-func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
+func (c modelGatewayCapabilities) validate(gateway modelGateway) error {
 	if gateway == nil {
-		if c.Reasoning != nil || c.AttachmentPayload != ModelGatewayAttachmentPayloadDescriptors {
+		if c.Reasoning != nil || c.AttachmentPayload != modelGatewayAttachmentPayloadDescriptors {
 			return errors.New("native provider host must not provide model gateway capabilities")
 		}
 		return nil
@@ -147,11 +147,11 @@ func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
 	if err := reasoning.Validate(); err != nil {
 		return fmt.Errorf("invalid model gateway reasoning capability: %w", err)
 	}
-	if c.AttachmentPayload != ModelGatewayAttachmentPayloadDescriptors && c.AttachmentPayload != ModelGatewayAttachmentPayloadExpanded {
+	if c.AttachmentPayload != modelGatewayAttachmentPayloadDescriptors && c.AttachmentPayload != modelGatewayAttachmentPayloadExpanded {
 		return fmt.Errorf("unsupported model gateway attachment payload mode %q", c.AttachmentPayload)
 	}
-	if c.AttachmentPayload == ModelGatewayAttachmentPayloadExpanded {
-		if _, ok := gateway.(ModelGatewayRequestPreparer); !ok {
+	if c.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
+		if _, ok := gateway.(modelGatewayRequestPreparer); !ok {
 			return errors.New("model gateway attachment expansion requires prepared request support")
 		}
 	}
@@ -263,10 +263,10 @@ func (f *turnExecutionFactory) NewHost(ctx context.Context, opts turnExecutionOp
 	}
 	host, err := newProviderHost(providerHostOptions{
 		Config:                   opts.config,
-		ModelGateway:             opts.modelGateway,
-		ModelGatewayIdentity:     opts.modelGatewayIdentity,
-		ModelGatewayCapabilities: opts.modelGatewayCapabilities,
-		Store:                    f.store,
+		modelGateway:             opts.modelGateway,
+		modelGatewayIdentity:     opts.modelGatewayIdentity,
+		modelGatewayCapabilities: opts.modelGatewayCapabilities,
+		store:                    f.store,
 		Tools:                    opts.tools,
 		EffectAuthorizationGate:  opts.effectAuthorizationGate,
 		Sink:                     opts.sink,
@@ -300,10 +300,10 @@ func (f *threadCompactionFactory) NewHost(ctx context.Context, opts threadCompac
 	}
 	host, err := newProviderHost(providerHostOptions{
 		Config:                   opts.config,
-		ModelGateway:             opts.modelGateway,
-		ModelGatewayIdentity:     opts.modelGatewayIdentity,
-		ModelGatewayCapabilities: opts.modelGatewayCapabilities,
-		Store:                    f.store,
+		modelGateway:             opts.modelGateway,
+		modelGatewayIdentity:     opts.modelGatewayIdentity,
+		modelGatewayCapabilities: opts.modelGatewayCapabilities,
+		store:                    f.store,
 		Sink:                     opts.sink,
 		IDGenerator:              opts.idGenerator,
 		LoopLimits:               opts.loopLimits,
@@ -332,10 +332,10 @@ func (f *subAgentFactory) NewHost(ctx context.Context, opts subAgentOptions) (*s
 	}
 	host, err := newProviderHost(providerHostOptions{
 		Config:                   opts.config,
-		ModelGateway:             opts.modelGateway,
-		ModelGatewayIdentity:     opts.modelGatewayIdentity,
-		ModelGatewayCapabilities: opts.modelGatewayCapabilities,
-		Store:                    f.store,
+		modelGateway:             opts.modelGateway,
+		modelGatewayIdentity:     opts.modelGatewayIdentity,
+		modelGatewayCapabilities: opts.modelGatewayCapabilities,
+		store:                    f.store,
 		Tools:                    opts.tools,
 		EffectAuthorizationGate:  opts.effectAuthorizationGate,
 		Sink:                     opts.sink,
@@ -559,14 +559,14 @@ func validateBoundThreadID(bound, requested ThreadID, owner string) error {
 	return nil
 }
 
-func validateBoundRootThreadAuthority(ctx context.Context, store *Store, bound, requested ThreadID, owner string) error {
+func validateBoundRootThreadAuthority(ctx context.Context, store *runtimeStore, bound, requested ThreadID, owner string) error {
 	if err := validateBoundThreadID(bound, requested, owner); err != nil {
 		return err
 	}
 	return validateRootThreadAuthority(ctx, store, requested)
 }
 
-func validateSubAgentParentAuthority(ctx context.Context, store *Store, parentThreadID ThreadID) error {
+func validateSubAgentParentAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
 	if strings.TrimSpace(string(parentThreadID)) == "" {
 		return errors.New("parent thread id is required")
 	}
@@ -577,7 +577,7 @@ func validateSubAgentParentAuthority(ctx context.Context, store *Store, parentTh
 	return validateLiveThreadLifecycle(snapshot.Thread)
 }
 
-func validateRootHostConstructionAuthority(ctx context.Context, store *Store, threadID ThreadID) error {
+func validateRootHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
 	if err := validateRootBoundAuthority(ctx, store, threadID); err != nil {
 		return err
 	}
@@ -591,7 +591,7 @@ func validateRootHostConstructionAuthority(ctx context.Context, store *Store, th
 	return nil
 }
 
-func validateRootBoundAuthority(ctx context.Context, store *Store, threadID ThreadID) error {
+func validateRootBoundAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, threadID)
 	if err != nil {
 		return err
@@ -605,7 +605,7 @@ func validateRootBoundAuthority(ctx context.Context, store *Store, threadID Thre
 	return nil
 }
 
-func validateSubAgentParentConstructionAuthority(ctx context.Context, store *Store, parentThreadID ThreadID) error {
+func validateSubAgentParentConstructionAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
 	if err := validateParentBoundAuthority(ctx, store, parentThreadID); err != nil {
 		return err
 	}
@@ -627,7 +627,7 @@ func authorityBusyForSnapshot(snapshot sessiontree.ThreadAuthoritySnapshot) erro
 	return &AuthorityBusyError{Kind: kind}
 }
 
-func validateParentBoundAuthority(ctx context.Context, store *Store, parentThreadID ThreadID) error {
+func validateParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, parentThreadID)
 	if err != nil {
 		return err
@@ -638,7 +638,7 @@ func validateParentBoundAuthority(ctx context.Context, store *Store, parentThrea
 	return nil
 }
 
-func validateReadableParentBoundAuthority(ctx context.Context, store *Store, parentThreadID ThreadID) error {
+func validateReadableParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, parentThreadID)
 	if err != nil {
 		return err
@@ -653,7 +653,7 @@ func validateReadableParentBoundAuthority(ctx context.Context, store *Store, par
 	}
 }
 
-func validateDeleteHostConstructionAuthority(ctx context.Context, store *Store, threadID ThreadID) error {
+func validateDeleteHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
 	if err := validateRootBoundAuthority(ctx, store, threadID); err == nil {
 		return nil
 	} else if !errors.Is(err, ErrThreadDeleted) {
@@ -669,7 +669,7 @@ func validateDeleteHostConstructionAuthority(ctx context.Context, store *Store, 
 	return nil
 }
 
-func inspectThreadAuthority(ctx context.Context, store *Store, threadID ThreadID) (sessiontree.ThreadAuthoritySnapshot, error) {
+func inspectThreadAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) (sessiontree.ThreadAuthoritySnapshot, error) {
 	if store == nil || store.repo == nil {
 		return sessiontree.ThreadAuthoritySnapshot{}, errors.New("runtime store is required")
 	}
@@ -681,7 +681,7 @@ func inspectThreadAuthority(ctx context.Context, store *Store, threadID ThreadID
 	return snapshot, runtimeHostError(err)
 }
 
-func inspectSubAgentThreadAuthority(ctx context.Context, store *Store, parentThreadID, childThreadID ThreadID) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
+func inspectSubAgentThreadAuthority(ctx context.Context, store *runtimeStore, parentThreadID, childThreadID ThreadID) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
 	if store == nil || store.repo == nil {
 		return sessiontree.SubAgentThreadAuthoritySnapshot{}, errors.New("runtime store is required")
 	}

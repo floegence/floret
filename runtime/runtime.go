@@ -24,9 +24,9 @@ import (
 	"github.com/floegence/floret/v2/internal/session/contextpolicy"
 	"github.com/floegence/floret/v2/internal/sessiontree"
 	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
 	"github.com/floegence/floret/v2/internal/tools/skills"
 	"github.com/floegence/floret/v2/observation"
+	publicprovider "github.com/floegence/floret/v2/provider"
 	publicstorage "github.com/floegence/floret/v2/storage"
 	"github.com/floegence/floret/v2/tools"
 )
@@ -93,7 +93,7 @@ var (
 	ErrEffectOutcomeUnknown = errors.New("floret effect outcome is unknown")
 	// ErrAuthorizationContract reports a host gate that did not return the closure's sealed result.
 	ErrAuthorizationContract = errors.New("floret effect authorization contract failed")
-	// ErrStoreClosed reports that the Store has started closing.
+	// ErrStoreClosed reports that the store has started closing.
 	ErrStoreClosed = errors.New("floret store is closed")
 	// ErrSubAgentParentRequired reports that a child operation used a root-thread capability.
 	ErrSubAgentParentRequired = errors.New("floret subagent operation requires parent authority")
@@ -160,33 +160,10 @@ type RequestConflictError struct {
 }
 
 // ContractError identifies a corrupt public result contract. Contract names
-// the root DTO or projection without exposing internal Store records.
+// the root DTO or projection without exposing internal store records.
 type ContractError struct {
 	Contract string
 	Err      error
-}
-
-type StoreSchemaIdentity struct {
-	Version     string `json:"version"`
-	Fingerprint string `json:"fingerprint"`
-}
-
-type StoreSchemaMigrationRequirement string
-
-const (
-	StoreSchemaMigrationRequirementNone               StoreSchemaMigrationRequirement = "none"
-	StoreSchemaMigrationRequirementQuiescentAuthority StoreSchemaMigrationRequirement = "quiescent_authority"
-)
-
-type StoreSchemaMigrationSource struct {
-	Identity    StoreSchemaIdentity             `json:"identity"`
-	Requirement StoreSchemaMigrationRequirement `json:"requirement"`
-}
-
-type StoreLeasePolicy struct {
-	TTL                time.Duration `json:"ttl"`
-	RenewInterval      time.Duration `json:"renew_interval"`
-	ClockSkewAllowance time.Duration `json:"clock_skew_allowance"`
 }
 
 func (e *RequestConflictError) Error() string {
@@ -287,11 +264,29 @@ func (e *CommittedEffectError) Unwrap() error {
 }
 
 type providerHost struct {
-	cfg                       config.Config
-	store                     *Store
+	cfg                       runtimeConfig
+	store                     *runtimeStore
 	sink                      EventSink
 	harness                   *agentharness.AgentHarness
 	supportsOpaqueAttachments bool
+}
+
+type runtimeConfig struct {
+	Provider                string
+	Model                   string
+	FakeResponse            string
+	PromptCacheRetention    string
+	SystemPrompt            string
+	ContextPolicy           config.ContextPolicy
+	Reasoning               config.ReasoningSelection
+	SkillsEnabled           bool
+	SkillSources            []string
+	SkillPromptBudgetBytes  int
+	MaxOutputTokensSet      bool
+	MaxEmptyProviderRetries int
+	NoProgressLimit         int
+	DuplicateToolLimit      int
+	WallTime                time.Duration
 }
 
 // ThreadTitleMode selects who owns durable thread title generation.
@@ -314,11 +309,11 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 }
 
 type providerHostOptions struct {
-	Config                   config.Config
-	ModelGateway             ModelGateway
-	ModelGatewayIdentity     ModelGatewayIdentity
-	ModelGatewayCapabilities ModelGatewayCapabilities
-	Store                    *Store
+	Config                   runtimeConfig
+	modelGateway             modelGateway
+	modelGatewayIdentity     modelGatewayIdentity
+	modelGatewayCapabilities modelGatewayCapabilities
+	store                    *runtimeStore
 	Tools                    *tools.Registry
 	EffectAuthorizationGate  EffectAuthorizationGate
 	Sink                     EventSink
@@ -424,7 +419,7 @@ type TurnSupplementalContextItem struct {
 
 // MessageAttachment identifies one host-owned resource attached to a durable
 // user message. ResourceRef is opaque to Floret and is resolved only by the
-// host's ModelGateway implementation.
+// host's modelGateway implementation.
 type MessageAttachment struct {
 	ResourceRef string                      `json:"resource_ref"`
 	Name        string                      `json:"name"`
@@ -1701,7 +1696,7 @@ type Event struct {
 	ContextStatus      *observation.ContextStatus        `json:"context_status,omitempty"`
 	Compaction         *observation.CompactionEvent      `json:"compaction,omitempty"`
 	CompactionDebug    *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Sources            []SourceRef                       `json:"sources,omitempty"`
+	Sources            []publicprovider.Source           `json:"sources,omitempty"`
 	Metadata           map[string]any                    `json:"metadata,omitempty"`
 	Timestamp          time.Time                         `json:"timestamp,omitempty"`
 }
@@ -1856,7 +1851,7 @@ func (t StreamObservationType) Valid() bool {
 type StreamObservation struct {
 	Type            StreamObservationType    `json:"type"`
 	Text            string                   `json:"text,omitempty"`
-	ToolCallStream  *ModelToolCallStream     `json:"tool_call_stream,omitempty"`
+	ToolCallStream  *modelToolCallStream     `json:"tool_call_stream,omitempty"`
 	Reason          string                   `json:"reason,omitempty"`
 	FinishReason    observation.FinishReason `json:"finish_reason,omitempty"`
 	RawFinishReason string                   `json:"raw_finish_reason,omitempty"`
@@ -2000,8 +1995,8 @@ func validateThreadTurnFailureForStatus(status TurnStatus, failure *ThreadTurnFa
 	return nil
 }
 
-type Store struct {
-	self              *Store
+type runtimeStore struct {
+	self              *runtimeStore
 	repo              sessiontree.Repo
 	prompt            cache.Store
 	forkOperations    storage.ForkOperationStore
@@ -2034,11 +2029,11 @@ const (
 	storeLifetimeClosed  storeLifetimeState = "closed"
 )
 
-func newMemoryStore() *Store {
+func newMemoryStore() *runtimeStore {
 	repo := sessiontree.NewMemoryRepo()
 	prompt := cache.NewMemoryStore()
 	forkOperations := storage.NewMemoryForkOperationStore(repo)
-	store := &Store{
+	store := &runtimeStore{
 		repo:           repo,
 		prompt:         prompt,
 		forkOperations: forkOperations,
@@ -2056,12 +2051,12 @@ func newMemoryStore() *Store {
 	return store
 }
 
-func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) (*Store, error) {
+func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) (*runtimeStore, error) {
 	kernel, err := storage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{
+	store := &runtimeStore{
 		repo: kernel, prompt: kernel, forkOperations: kernel,
 		agentTodos: kernel, rootAuthority: kernel,
 		deleteCleanup: func(context.Context, []string) error { return nil },
@@ -2071,46 +2066,7 @@ func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) 
 	return store, nil
 }
 
-// openSQLiteStore opens or creates a Store only when its live state still
-// matches a prior maintenance inspection. It never performs an implicit schema
-// migration.
-func openSQLiteStore(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
-	if ctx == nil {
-		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, errors.New("sqlite store open context is required"))
-	}
-	if strings.TrimSpace(path) == "" || path == ":memory:" {
-		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, errors.New("sqlite store open requires a file path"))
-	}
-	precondition := sqlite.OpenPrecondition{
-		State: sqlite.MaintenanceState(request.ExpectedState),
-		Observed: storage.StoreSchemaIdentity{
-			Version: request.ExpectedSchema.Version, Fingerprint: request.ExpectedSchema.Fingerprint,
-		},
-	}
-	configured, err := resolveSQLiteStoreOptions(options)
-	if err != nil {
-		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, err)
-	}
-	sqliteOptions := []sqlite.Option{sqlite.WithLeasePolicy(configured.leasePolicy), sqlite.WithOpenPrecondition(precondition)}
-	sqliteStore, err := sqlite.OpenContext(ctx, path, sqliteOptions...)
-	if err != nil {
-		return nil, maintenanceError(SQLiteStoreOperationOpen, err)
-	}
-	store := &Store{
-		repo:           sqliteStore,
-		prompt:         sqliteStore,
-		forkOperations: sqliteStore,
-		agentTodos:     sqliteStore,
-		rootAuthority:  sqliteStore,
-		deleteCleanup:  func(context.Context, []string) error { return nil },
-		close:          sqliteStore.Close,
-	}
-	store.self = store
-	store.initLifetime()
-	return store, nil
-}
-
-func (s *Store) Close() error {
+func (s *runtimeStore) Close() error {
 	if s == nil {
 		return nil
 	}
@@ -2161,7 +2117,7 @@ func (s *Store) Close() error {
 	return err
 }
 
-func (s *Store) reportBackgroundError(err error) {
+func (s *runtimeStore) reportBackgroundError(err error) {
 	if s == nil || err == nil {
 		return
 	}
@@ -2170,7 +2126,7 @@ func (s *Store) reportBackgroundError(err error) {
 	s.lifetimeMu.Unlock()
 }
 
-func (s *Store) validate() error {
+func (s *runtimeStore) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
@@ -2189,13 +2145,13 @@ func (s *Store) validate() error {
 	return nil
 }
 
-func (s *Store) initLifetime() {
+func (s *runtimeStore) initLifetime() {
 	s.lifetimeMu.Lock()
 	defer s.lifetimeMu.Unlock()
 	s.initLifetimeLocked()
 }
 
-func (s *Store) initLifetimeLocked() {
+func (s *runtimeStore) initLifetimeLocked() {
 	if s.lifetimeCond == nil {
 		s.lifetimeCond = sync.NewCond(&s.lifetimeMu)
 	}
@@ -2207,7 +2163,7 @@ func (s *Store) initLifetimeLocked() {
 	}
 }
 
-func (s *Store) validateOpen() error {
+func (s *runtimeStore) validateOpen() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
@@ -2220,7 +2176,7 @@ func (s *Store) validateOpen() error {
 	return nil
 }
 
-func (s *Store) beginOperation() (func(), error) {
+func (s *runtimeStore) beginOperation() (func(), error) {
 	if err := s.validateIdentity(); err != nil {
 		return nil, err
 	}
@@ -2242,7 +2198,7 @@ func (s *Store) beginOperation() (func(), error) {
 	}, nil
 }
 
-func (s *Store) beginOperationContext(ctx context.Context) (context.Context, func(), error) {
+func (s *runtimeStore) beginOperationContext(ctx context.Context) (context.Context, func(), error) {
 	done, err := s.beginOperation()
 	if err != nil {
 		return nil, nil, err
@@ -2266,7 +2222,7 @@ func (s *Store) beginOperationContext(ctx context.Context) (context.Context, fun
 	return operationCtx, finish, nil
 }
 
-func (s *Store) recoverPendingAutomaticThreadTitles(harness *agentharness.AgentHarness) error {
+func (s *runtimeStore) recoverPendingAutomaticThreadTitles(harness *agentharness.AgentHarness) error {
 	if s == nil || harness == nil {
 		return errors.New("automatic title recovery requires store and harness")
 	}
@@ -2287,7 +2243,7 @@ func (s *Store) recoverPendingAutomaticThreadTitles(harness *agentharness.AgentH
 	return nil
 }
 
-func (s *Store) registerTurnExecution(lease sessiontree.TurnLease) error {
+func (s *runtimeStore) registerTurnExecution(lease sessiontree.TurnLease) error {
 	if err := lease.Validate(); err != nil || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
 		return sessiontree.ErrStaleAuthority
 	}
@@ -2303,7 +2259,7 @@ func (s *Store) registerTurnExecution(lease sessiontree.TurnLease) error {
 	return nil
 }
 
-func (s *Store) renewTurnExecution(previous, renewed sessiontree.TurnLease) error {
+func (s *runtimeStore) renewTurnExecution(previous, renewed sessiontree.TurnLease) error {
 	s.turnExecutionMu.Lock()
 	defer s.turnExecutionMu.Unlock()
 	current, ok := s.turnExecutions[previous.ThreadID]
@@ -2316,7 +2272,7 @@ func (s *Store) renewTurnExecution(previous, renewed sessiontree.TurnLease) erro
 	return nil
 }
 
-func (s *Store) unregisterTurnExecution(lease sessiontree.TurnLease) {
+func (s *runtimeStore) unregisterTurnExecution(lease sessiontree.TurnLease) {
 	s.turnExecutionMu.Lock()
 	if current, ok := s.turnExecutions[lease.ThreadID]; ok && sessiontree.SameTurnLease(current, lease) {
 		delete(s.turnExecutions, lease.ThreadID)
@@ -2324,21 +2280,21 @@ func (s *Store) unregisterTurnExecution(lease sessiontree.TurnLease) {
 	s.turnExecutionMu.Unlock()
 }
 
-func (s *Store) activeTurnExecution(threadID string) (sessiontree.TurnLease, bool) {
+func (s *runtimeStore) activeTurnExecution(threadID string) (sessiontree.TurnLease, bool) {
 	s.turnExecutionMu.Lock()
 	defer s.turnExecutionMu.Unlock()
 	lease, ok := s.turnExecutions[strings.TrimSpace(threadID)]
 	return lease, ok
 }
 
-func (s *Store) turnExecutionRegistry() *agentharness.TurnExecutionRegistry {
+func (s *runtimeStore) turnExecutionRegistry() *agentharness.TurnExecutionRegistry {
 	return &agentharness.TurnExecutionRegistry{
 		Register: s.registerTurnExecution, Renew: s.renewTurnExecution,
 		Unregister: s.unregisterTurnExecution, Active: s.activeTurnExecution,
 	}
 }
 
-func (s *Store) beginLifetimeOperationContext() (context.Context, func(), error) {
+func (s *runtimeStore) beginLifetimeOperationContext() (context.Context, func(), error) {
 	done, err := s.beginOperation()
 	if err != nil {
 		return nil, nil, err
@@ -2357,7 +2313,7 @@ func (s *Store) beginLifetimeOperationContext() (context.Context, func(), error)
 	return operationCtx, finish, nil
 }
 
-func (s *Store) validateIdentity() error {
+func (s *runtimeStore) validateIdentity() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
@@ -2367,7 +2323,7 @@ func (s *Store) validateIdentity() error {
 	return nil
 }
 
-func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
+func (s *runtimeStore) deleteThreadData(ctx context.Context, threadID string) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
@@ -2382,7 +2338,7 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 }
 
 func newProviderHost(opts providerHostOptions) (*providerHost, error) {
-	if err := opts.ModelGatewayCapabilities.validate(opts.ModelGateway); err != nil {
+	if err := opts.modelGatewayCapabilities.validate(opts.modelGateway); err != nil {
 		return nil, err
 	}
 	titleMode, err := normalizeThreadTitleMode(opts.ThreadTitleMode)
@@ -2393,7 +2349,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := opts.Store
+	store := opts.store
 	if store == nil {
 		return nil, errors.New("runtime store is required")
 	}
@@ -2401,7 +2357,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:                    store,
+		store:                    store,
 		Tools:                    opts.Tools,
 		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
 		Sink:                     newRuntimeEventSink(opts.Sink),
@@ -2412,7 +2368,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
 		Capabilities:             opts.Capabilities,
 		ThreadTitleMode:          titleMode,
-		ModelGatewayCapabilities: opts.ModelGatewayCapabilities,
+		modelGatewayCapabilities: opts.modelGatewayCapabilities,
 		StateCompatibilityKey:    runtimeStateCompatibilityKey(cfg, opts),
 	})
 	if err != nil {
@@ -2423,33 +2379,25 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		store:                     store,
 		sink:                      opts.Sink,
 		harness:                   harness,
-		supportsOpaqueAttachments: opts.ModelGateway != nil,
+		supportsOpaqueAttachments: opts.modelGateway != nil,
 	}, nil
 }
 
-func resolveHostConfigAndProvider(opts providerHostOptions) (config.Config, provider.Provider, error) {
-	if opts.ModelGateway != nil {
-		identity, err := normalizeModelGatewayIdentity(opts.ModelGatewayIdentity)
-		if err != nil {
-			return config.Config{}, nil, err
-		}
-		cfg, err := resolveModelGatewayHostConfig(opts.Config, identity)
-		if err != nil {
-			return config.Config{}, nil, err
-		}
-		modelProvider, err := projectedModelProvider(cfg, opts.ModelGateway, identity, opts.ModelGatewayCapabilities)
-		if err != nil {
-			return config.Config{}, nil, err
-		}
-		return cfg, modelProvider, nil
+func resolveHostConfigAndProvider(opts providerHostOptions) (runtimeConfig, provider.Provider, error) {
+	if opts.modelGateway == nil {
+		return runtimeConfig{}, nil, errors.New("provider gateway is required")
 	}
-	cfg, err := config.Resolve(opts.Config, nil)
+	identity, err := normalizeModelGatewayIdentity(opts.modelGatewayIdentity)
 	if err != nil {
-		return config.Config{}, nil, err
+		return runtimeConfig{}, nil, err
 	}
-	modelProvider, err := projectedModelProvider(cfg, nil, ModelGatewayIdentity{}, ModelGatewayCapabilities{})
+	cfg, err := resolveModelGatewayHostConfig(opts.Config, identity)
 	if err != nil {
-		return config.Config{}, nil, err
+		return runtimeConfig{}, nil, err
+	}
+	modelProvider, err := projectedModelProvider(cfg, opts.modelGateway, identity, opts.modelGatewayCapabilities)
+	if err != nil {
+		return runtimeConfig{}, nil, err
 	}
 	return cfg, modelProvider, nil
 }
@@ -2788,7 +2736,7 @@ func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadI
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
-func readThreadAgentTodos(ctx context.Context, store *Store, threadID ThreadID) (ThreadAgentTodoState, error) {
+func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID ThreadID) (ThreadAgentTodoState, error) {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return ThreadAgentTodoState{}, errors.New("thread id is required")
 	}
@@ -2807,7 +2755,7 @@ func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThr
 	return updateThreadAgentTodos(ctx, h.store, req)
 }
 
-func updateThreadAgentTodos(ctx context.Context, store *Store, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadAgentTodoState{}, errors.New("thread id is required")
 	}
@@ -3021,7 +2969,7 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	input := validated.input
 	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
-		return TurnResult{}, errors.New("opaque message attachments require a ModelGateway host")
+		return TurnResult{}, errors.New("opaque message attachments require a modelGateway host")
 	}
 	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
@@ -3288,7 +3236,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 		return PendingToolCompletionResult{}, err
 	}
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
-		return PendingToolCompletionResult{}, errors.New("opaque message attachments require a ModelGateway host")
+		return PendingToolCompletionResult{}, errors.New("opaque message attachments require a modelGateway host")
 	}
 	thread, err := h.harness.ResumeThread(ctx, string(req.Target.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
@@ -3758,7 +3706,7 @@ func pendingToolSettlementTargets(in []sessiontree.PendingToolSettlementTarget) 
 	return out
 }
 
-func validateRootThreadAuthority(ctx context.Context, store *Store, threadID ThreadID) error {
+func validateRootThreadAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return errors.New("thread id is required")
 	}
@@ -3804,7 +3752,7 @@ func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID Thre
 	return deleteThread(ctx, h.store, threadID)
 }
 
-func deleteThread(ctx context.Context, store *Store, threadID ThreadID) error {
+func deleteThread(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
 		return errors.New("thread id is required")
@@ -4675,14 +4623,14 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store                    *Store
+	store                    *runtimeStore
 	Tools                    *tools.Registry
 	EffectAuthorizationGate  EffectAuthorizationGate
 	Sink                     event.Sink
 	SinkPolicy               event.SinkPolicy
 	Title                    agentharness.TitleGenerator
 	ThreadTitleMode          ThreadTitleMode
-	ModelGatewayCapabilities ModelGatewayCapabilities
+	modelGatewayCapabilities modelGatewayCapabilities
 	NewID                    func(string) string
 	LoopLimits               LoopLimits
 	SubAgentRunTimeout       time.Duration
@@ -4691,9 +4639,8 @@ type harnessOptions struct {
 	StateCompatibilityKey    string
 }
 
-func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
-	cfg = config.ResolvePrompt(cfg)
-	store := opts.Store
+func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
+	store := opts.store
 	if store == nil {
 		return nil, errors.New("runtime store is required")
 	}
@@ -4706,9 +4653,9 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	if err != nil {
 		return nil, err
 	}
-	cacheRetention, err := config.PromptCacheRetention(cfg)
-	if err != nil {
-		return nil, err
+	cacheRetention := strings.TrimSpace(cfg.PromptCacheRetention)
+	if cacheRetention == "" {
+		cacheRetention = "in_memory"
 	}
 	turnPolicy := agentharness.TurnPolicy{
 		ContextPolicy:  configbridge.ContextPolicy(cfg.ContextPolicy),
@@ -4734,8 +4681,8 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		loopLimits.WallTime = opts.LoopLimits.WallTime
 	}
 	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
-	if opts.ModelGatewayCapabilities.Reasoning != nil {
-		model.Reasoning = configbridge.ReasoningCapability(*opts.ModelGatewayCapabilities.Reasoning)
+	if opts.modelGatewayCapabilities.Reasoning != nil {
+		model.Reasoning = configbridge.ReasoningCapability(*opts.modelGatewayCapabilities.Reasoning)
 	}
 	titleGenerator := opts.Title
 	if titleGenerator == nil && opts.ThreadTitleMode == ThreadTitleModeProvider {
@@ -4777,20 +4724,11 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	return harness, nil
 }
 
-func runtimeStateCompatibilityKey(cfg config.Config, opts providerHostOptions) string {
-	if opts.ModelGateway != nil {
-		return strings.TrimSpace(opts.ModelGatewayIdentity.StateCompatibilityKey)
-	}
-	raw := strings.Join([]string{
-		strings.TrimSpace(cfg.Provider),
-		strings.TrimSpace(cfg.Model),
-		strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
-	}, "\x00")
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+func runtimeStateCompatibilityKey(cfg runtimeConfig, opts providerHostOptions) string {
+	return strings.TrimSpace(opts.modelGatewayIdentity.StateCompatibilityKey)
 }
 
-func mergeCapabilityOptions(cfg config.Config, explicit CapabilityOptions) CapabilityOptions {
+func mergeCapabilityOptions(cfg runtimeConfig, explicit CapabilityOptions) CapabilityOptions {
 	out := explicit
 	if !out.SkillsEnabled {
 		out.SkillsEnabled = cfg.SkillsEnabled
@@ -5250,7 +5188,7 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	var streamType StreamObservationType
 	var text string
 	var reason string
-	var toolCallStream *ModelToolCallStream
+	var toolCallStream *modelToolCallStream
 	switch ev.Type {
 	case event.ProviderDelta:
 		streamType = StreamObservationAssistantDelta
@@ -5301,25 +5239,25 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	return out
 }
 
-func runtimeModelToolCallStream(ev event.Event) *ModelToolCallStream {
+func runtimeModelToolCallStream(ev event.Event) *modelToolCallStream {
 	id := strings.TrimSpace(ev.ToolID)
 	name := strings.TrimSpace(ev.ToolName)
 	if id == "" && name == "" {
 		return nil
 	}
-	return &ModelToolCallStream{
+	return &modelToolCallStream{
 		ID:   id,
 		Name: name,
 	}
 }
 
-func runtimeSourceRefs(in []event.SourceRef) []SourceRef {
-	out := make([]SourceRef, 0, len(in))
+func runtimeSourceRefs(in []event.SourceRef) []publicprovider.Source {
+	out := make([]publicprovider.Source, 0, len(in))
 	for _, ref := range in {
 		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
 			continue
 		}
-		out = append(out, SourceRef{
+		out = append(out, publicprovider.Source{
 			Title: strings.TrimSpace(ref.Title),
 			URL:   strings.TrimSpace(ref.URL),
 		})

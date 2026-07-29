@@ -22,7 +22,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var path string
 			var err error
 			if backend == "sqlite" {
@@ -35,9 +35,9 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 				t.Fatal(err)
 			}
 			var requestsMu sync.Mutex
-			var requests []ModelRequest
-			gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-				req.Messages = append([]ModelMessage(nil), req.Messages...)
+			var requests []modelRequest
+			gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+				req.Messages = append([]modelMessage(nil), req.Messages...)
 				requestsMu.Lock()
 				requests = append(requests, req)
 				call := len(requests)
@@ -53,10 +53,10 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 					return nil, fmt.Errorf("unexpected model request %d", call)
 				}
 			})
-			newHost := func(current *Store) *testProviderFacade {
+			newHost := func(current *runtimeStore) *testProviderFacade {
 				host, hostErr := newTestHost(t, providerHostOptions{
-					Config: runtimeGatewayConfig("durable retry context"), ModelGateway: gateway,
-					ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: current, IDGenerator: deterministicIDs(),
+					Config: runtimeGatewayConfig("durable retry context"), modelGateway: gateway,
+					modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: current, IDGenerator: deterministicIDs(),
 				})
 				if hostErr != nil {
 					t.Fatal(hostErr)
@@ -125,7 +125,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 			}
 
 			requestsMu.Lock()
-			captured := append([]ModelRequest(nil), requests...)
+			captured := append([]modelRequest(nil), requests...)
 			requestsMu.Unlock()
 			if len(captured) != 3 {
 				t.Fatalf("model requests=%#v", captured)
@@ -142,7 +142,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 	}
 }
 
-func assertRetryResetModelContext(t *testing.T, messages []ModelMessage) {
+func assertRetryResetModelContext(t *testing.T, messages []modelMessage) {
 	t.Helper()
 	var text strings.Builder
 	for _, message := range messages {
@@ -180,7 +180,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var path string
 			var err error
 			if backend == "sqlite" {
@@ -195,18 +195,18 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			calls := 0
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeGatewayConfig("retry canonical turn"),
-				ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+				modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 					calls++
 					if calls == 1 {
-						events := make(chan ModelEvent, 1)
-						events <- ModelEvent{Type: ModelEventError, Err: errors.New("provider failed")}
+						events := make(chan modelEvent, 1)
+						events <- modelEvent{Type: modelEventError, Err: errors.New("provider failed")}
 						close(events)
 						return events, nil
 					}
 					return runtimeGatewayEvents("retry answer"), nil
 				}),
-				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-				Store:                store,
+				modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				store:                store,
 				IDGenerator:          deterministicIDs(),
 			})
 			if err != nil {
@@ -509,7 +509,7 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))

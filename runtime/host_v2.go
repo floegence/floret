@@ -56,7 +56,7 @@ type Options struct {
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
-	store    *Store
+	store    *runtimeStore
 	backend  publicstorage.Backend
 	binders  hostBinders
 	closeMu  sync.Mutex
@@ -326,20 +326,18 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 	if capabilities.Reasoning == provider.ReasoningUnsupported {
 		reasoning = config.ReasoningCapability{Kind: config.ReasoningKindNone}
 	}
-	attachmentMode := ModelGatewayAttachmentPayloadDescriptors
+	attachmentMode := modelGatewayAttachmentPayloadDescriptors
 	if capabilities.AttachmentPayload == provider.AttachmentExpanded {
-		attachmentMode = ModelGatewayAttachmentPayloadExpanded
+		attachmentMode = modelGatewayAttachmentPayloadExpanded
 	}
-	profile := agent.configuration.Profile
-	profile.SystemPrompt = agent.configuration.SystemPrompt
 	return turnExecutionOptions{
-		config: config.Config{
-			SystemPrompt: agent.configuration.SystemPrompt, AgentProfile: profile,
+		config: runtimeConfig{
+			SystemPrompt:  agent.configuration.SystemPrompt,
 			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,
 		},
 		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
-		modelGatewayIdentity:     ModelGatewayIdentity(identity),
-		modelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode},
+		modelGatewayIdentity:     modelGatewayIdentity(identity),
+		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
 		loopLimits: agent.loopLimits, capabilities: agent.capabilities,
@@ -351,7 +349,7 @@ type agentGatewayAdapter struct {
 	gateway provider.Gateway
 }
 
-func (adapter agentGatewayAdapter) StreamModel(ctx context.Context, request ModelRequest) (<-chan ModelEvent, error) {
+func (adapter agentGatewayAdapter) StreamModel(ctx context.Context, request modelRequest) (<-chan modelEvent, error) {
 	stream, err := adapter.gateway.Stream(ctx, providerRequest(request))
 	if err != nil {
 		return nil, err
@@ -359,7 +357,7 @@ func (adapter agentGatewayAdapter) StreamModel(ctx context.Context, request Mode
 	return modelEventStream(ctx, stream), nil
 }
 
-func (adapter agentGatewayAdapter) PrepareModelRequest(ctx context.Context, request ModelRequest) (PreparedModelRequest, error) {
+func (adapter agentGatewayAdapter) PrepareModelRequest(ctx context.Context, request modelRequest) (preparedModelRequest, error) {
 	preparer, ok := adapter.gateway.(provider.RequestPreparer)
 	if !ok {
 		return nil, errors.New("provider gateway does not prepare requests")
@@ -378,7 +376,7 @@ type agentPreparedRequest struct {
 	prepared provider.PreparedRequest
 }
 
-func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan ModelEvent, error) {
+func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan modelEvent, error) {
 	stream, err := request.prepared.Stream(ctx)
 	if err != nil {
 		return nil, err
@@ -386,13 +384,13 @@ func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan Mod
 	return modelEventStream(ctx, stream), nil
 }
 
-func (request agentPreparedRequest) TokenEstimate() ModelRequestTokenEstimate {
+func (request agentPreparedRequest) TokenEstimate() modelRequestTokenEstimate {
 	estimate := request.prepared.TokenEstimate()
-	return ModelRequestTokenEstimate{
+	return modelRequestTokenEstimate{
 		PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
 		Source: estimate.Source, Method: estimate.Method, Confidence: estimate.Confidence,
-		Coverage: ModelRequestTokenEstimateCoverage(estimate.Coverage),
+		Coverage: modelRequestTokenEstimateCoverage(estimate.Coverage),
 	}
 }
 
@@ -402,7 +400,7 @@ func (request agentPreparedRequest) RenderedPayloadFingerprint() string {
 
 func (request agentPreparedRequest) Close() error { return request.prepared.Close() }
 
-func providerRequest(request ModelRequest) provider.Request {
+func providerRequest(request modelRequest) provider.Request {
 	messages := make([]provider.Message, len(request.Messages))
 	for index, message := range request.Messages {
 		messages[index] = providerMessage(message)
@@ -415,10 +413,7 @@ func providerRequest(request ModelRequest) provider.Request {
 			Strict: definition.Strict, Annotations: definition.Annotations,
 		}
 	}
-	hosted := make([]provider.HostedToolDefinition, len(request.HostedTools))
-	for index, definition := range request.HostedTools {
-		hosted[index] = provider.HostedToolDefinition(definition)
-	}
+	hosted := append([]provider.HostedToolDefinition(nil), request.HostedTools...)
 	return provider.Request{
 		RunID: string(request.RunID), ThreadID: string(request.ThreadID), TurnID: string(request.TurnID),
 		TraceID: string(request.TraceID), PromptScopeID: string(request.PromptScopeID), Step: request.Step,
@@ -428,7 +423,7 @@ func providerRequest(request ModelRequest) provider.Request {
 	}
 }
 
-func providerMessage(message ModelMessage) provider.Message {
+func providerMessage(message modelMessage) provider.Message {
 	attachments := make([]provider.Attachment, len(message.Attachments))
 	for index, attachment := range message.Attachments {
 		attachments[index] = provider.Attachment{
@@ -455,7 +450,7 @@ func providerMessage(message ModelMessage) provider.Message {
 	}
 }
 
-func gatewayProviderState(state *ModelState) *provider.State {
+func gatewayProviderState(state *modelStateEnvelope) *provider.State {
 	if state == nil {
 		return nil
 	}
@@ -466,8 +461,8 @@ func gatewayProviderState(state *ModelState) *provider.State {
 	return &provider.State{Kind: state.Kind, ID: state.ID, Attributes: attributes}
 }
 
-func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan ModelEvent {
-	output := make(chan ModelEvent)
+func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan modelEvent {
+	output := make(chan modelEvent)
 	go func() {
 		defer close(output)
 		for {
@@ -479,7 +474,7 @@ func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan 
 					return
 				}
 				select {
-				case output <- modelEvent(event):
+				case output <- projectModelEvent(event):
 				case <-ctx.Done():
 					return
 				}
@@ -489,37 +484,48 @@ func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan 
 	return output
 }
 
-func modelEvent(event provider.Event) ModelEvent {
+func projectModelEvent(event provider.Event) modelEvent {
 	calls := make([]tools.ToolCall, len(event.ToolCalls))
 	for index, call := range event.ToolCalls {
 		calls[index] = tools.ToolCall{ID: call.ID, Name: call.Name, Args: call.Args}
 	}
-	sources := make([]SourceRef, len(event.Sources))
-	for index, source := range event.Sources {
-		sources[index] = SourceRef{Title: source.Title, URL: source.URL}
-	}
-	var stream *ModelToolCallStream
+	sources := append([]provider.Source(nil), event.Sources...)
+	var stream *modelToolCallStream
 	if event.ToolCallStream != nil {
-		stream = &ModelToolCallStream{ID: event.ToolCallStream.ID, Name: event.ToolCallStream.Name}
+		stream = &modelToolCallStream{ID: event.ToolCallStream.ID, Name: event.ToolCallStream.Name}
 	}
-	var state *ModelState
+	var state *modelStateEnvelope
 	if event.ResponseState != nil {
 		attributes := make(map[string]string, len(event.ResponseState.Attributes))
 		for key, value := range event.ResponseState.Attributes {
 			attributes[key] = value
 		}
-		state = &ModelState{Kind: event.ResponseState.Kind, ID: event.ResponseState.ID, Attributes: attributes}
+		state = &modelStateEnvelope{Kind: event.ResponseState.Kind, ID: event.ResponseState.ID, Attributes: attributes}
 	}
-	return ModelEvent{
-		Type: ModelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+	var hostedCall *provider.ToolCall
+	if event.HostedToolCall != nil {
+		call := *event.HostedToolCall
+		hostedCall = &call
+	}
+	var hostedResult *provider.HostedToolResult
+	if event.HostedResult != nil {
+		result := *event.HostedResult
+		result.Results = append([]provider.HostedToolResultItem(nil), event.HostedResult.Results...)
+		if event.HostedResult.Error != nil {
+			resultError := *event.HostedResult.Error
+			result.Error = &resultError
+		}
+		result.Metadata = cloneAnyMap(event.HostedResult.Metadata)
+		for index := range result.Results {
+			result.Results[index].Metadata = cloneAnyMap(result.Results[index].Metadata)
+		}
+		hostedResult = &result
+	}
+	return modelEvent{
+		Type: modelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		HostedToolCall: hostedCall, HostedResult: hostedResult,
 		Sources: sources, Reason: event.Reason,
-		Usage: ProviderUsage{
-			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
-			ReasoningTokens: event.Usage.ReasoningTokens, CacheReadTokens: event.Usage.CacheReadTokens,
-			CacheWriteTokens: event.Usage.CacheWriteTokens, TotalTokens: event.Usage.TotalTokens,
-			CostUSD: event.Usage.CostUSD, Source: event.Usage.Source, Available: event.Usage.Available,
-			WindowInputTokens: event.Usage.WindowInputTokens,
-		},
+		Usage:      event.Usage,
 		ResponseID: event.ResponseID, ResponseState: state, Err: event.Err,
 	}
 }

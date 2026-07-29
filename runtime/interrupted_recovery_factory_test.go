@@ -552,7 +552,7 @@ func TestInterruptedTurnRecoveryFactoryAllowsClosingSubAgentTarget(t *testing.T)
 	}
 }
 
-func newInterruptedRecoveryTestStore(t *testing.T, backend string, policy sessiontree.LeasePolicy, now func() time.Time) *Store {
+func newInterruptedRecoveryTestStore(t *testing.T, backend string, policy sessiontree.LeasePolicy, now func() time.Time) *runtimeStore {
 	t.Helper()
 	switch backend {
 	case "memory":
@@ -571,7 +571,7 @@ func newInterruptedRecoveryTestStore(t *testing.T, backend string, policy sessio
 		if err != nil {
 			t.Fatal(err)
 		}
-		store := &Store{
+		store := &runtimeStore{
 			repo: repo, prompt: repo, forkOperations: repo, agentTodos: repo, rootAuthority: repo,
 			deleteCleanup: func(context.Context, []string) error { return nil }, close: repo.Close,
 		}
@@ -597,7 +597,7 @@ func createTestRoot(t *testing.T, ctx context.Context, capabilities *testCapabil
 	}
 }
 
-func admitInterruptedRecoveryTestTurn(t *testing.T, ctx context.Context, store *Store, threadID, turnID, runID, ownerID string) sessiontree.AdmitTurnResult {
+func admitInterruptedRecoveryTestTurn(t *testing.T, ctx context.Context, store *runtimeStore, threadID, turnID, runID, ownerID string) sessiontree.AdmitTurnResult {
 	t.Helper()
 	repo, ok := store.repo.(sessiontree.TurnAuthorityRepo)
 	if !ok {
@@ -613,7 +613,7 @@ func admitInterruptedRecoveryTestTurn(t *testing.T, ctx context.Context, store *
 	return result
 }
 
-func threadEntriesForRecoveryTest(t *testing.T, ctx context.Context, store *Store, threadID string) []sessiontree.Entry {
+func threadEntriesForRecoveryTest(t *testing.T, ctx context.Context, store *runtimeStore, threadID string) []sessiontree.Entry {
 	t.Helper()
 	entries, err := store.repo.Entries(ctx, threadID)
 	if err != nil {
@@ -622,7 +622,7 @@ func threadEntriesForRecoveryTest(t *testing.T, ctx context.Context, store *Stor
 	return entries
 }
 
-func assertRecoveryFailureHadNoSideEffects(t *testing.T, ctx context.Context, store *Store, threadID string, before []sessiontree.Entry, events *runtimeEventRecorder) {
+func assertRecoveryFailureHadNoSideEffects(t *testing.T, ctx context.Context, store *runtimeStore, threadID string, before []sessiontree.Entry, events *runtimeEventRecorder) {
 	t.Helper()
 	after := threadEntriesForRecoveryTest(t, ctx, store, threadID)
 	if !reflect.DeepEqual(after, before) {

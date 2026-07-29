@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
 	"github.com/floegence/floret/v2/internal/sessiontree"
 	"github.com/floegence/floret/v2/tools"
 )
@@ -166,12 +165,12 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 	tests := []struct {
 		name      string
 		wantError error
-		newHost   func(*tools.Registry, *runtimeEventRecorder, ModelGateway) error
+		newHost   func(*tools.Registry, *runtimeEventRecorder, modelGateway) error
 	}{
 		{
 			name:      "turn missing root",
 			wantError: ErrThreadNotFound,
-			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway modelGateway) error {
 				factory, err := capabilities.turn.Bind("missing-root")
 				if err != nil {
 					return err
@@ -185,7 +184,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 		{
 			name:      "turn canonical child",
 			wantError: ErrSubAgentParentRequired,
-			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway modelGateway) error {
 				factory, err := capabilities.turn.Bind("child")
 				if err != nil {
 					return err
@@ -199,7 +198,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 		{
 			name:      "compaction missing root",
 			wantError: ErrThreadNotFound,
-			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway modelGateway) error {
 				factory, err := capabilities.compaction.Bind("missing-root")
 				if err != nil {
 					return err
@@ -213,7 +212,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 		{
 			name:      "compaction canonical child",
 			wantError: ErrSubAgentParentRequired,
-			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway modelGateway) error {
 				factory, err := capabilities.compaction.Bind("child")
 				if err != nil {
 					return err
@@ -227,7 +226,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 		{
 			name:      "subagent missing parent",
 			wantError: ErrThreadNotFound,
-			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway modelGateway) error {
 				factory, err := capabilities.subAgent.Bind("missing-parent")
 				if err != nil {
 					return err
@@ -245,7 +244,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 			registry := tools.NewRegistry()
 			events := &runtimeEventRecorder{}
 			var gatewayCalls atomic.Int64
-			gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 				gatewayCalls.Add(1)
 				return runtimeGatewayEvents("unexpected"), nil
 			})
@@ -271,10 +270,10 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		store func(*testing.T) *Store
+		store func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", store: func(t *testing.T) *Store {
+		{name: "memory", store: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
 				t.Fatal(err)
@@ -327,17 +326,11 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	providerConfig := config.Config{
-		Provider:     config.ProviderFake,
-		Model:        "fake-model",
-		FakeResponse: "done",
-		SystemPrompt: "test",
-	}
 	turnFactory, err := capabilities.turn.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{config: providerConfig, initialized: true})
+	turn, err := turnFactory.NewHost(ctx, testTurnExecutionOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +363,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ctx, threadCompactionOptions{config: providerConfig, initialized: true})
+	compaction, err := compactionFactory.NewHost(ctx, testThreadCompactionOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +375,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{config: providerConfig, initialized: true})
+	subAgents, err := subAgentFactory.NewHost(ctx, testSubAgentOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +501,7 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 	}
 
 	var gatewayCalls atomic.Int64
-	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 		gatewayCalls.Add(1)
 		return runtimeGatewayEvents("unexpected"), nil
 	})
@@ -615,7 +608,7 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	if _, err := create.CreateThread(ctx, parentCreateRequest); err != nil {
 		t.Fatal(err)
 	}
-	providerConfig := config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}
+	providerConfig := runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}
 	publishTestSubAgentFixture(t, ctx, store, "publication-root-child", "parent", "child", "")
 	childCreateRequest := testCreateThreadRequest("child")
 	childCreate, err := capabilities.create.Bind(childCreateRequest.ThreadID, childCreateRequest.CreateIntentID)
@@ -677,10 +670,10 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		store func(*testing.T) *Store
+		store func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", store: func(t *testing.T) *Store {
+		{name: "memory", store: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
 				t.Fatal(err)
@@ -762,14 +755,7 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
-		config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "done",
-			SystemPrompt: "test",
-		}, initialized: true,
-	})
+	subAgents, err := subAgentFactory.NewHost(ctx, testSubAgentOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,14 +897,7 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
-		config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "done",
-			SystemPrompt: "test",
-		}, initialized: true,
-	})
+	turn, err := turnFactory.NewHost(ctx, testTurnExecutionOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -955,14 +934,7 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
-		config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "done",
-			SystemPrompt: "test",
-		}, initialized: true,
-	})
+	subAgents, err := subAgentFactory.NewHost(ctx, testSubAgentOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}

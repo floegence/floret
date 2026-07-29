@@ -14,7 +14,7 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var path string
 			var err error
 			if backend == "sqlite" {

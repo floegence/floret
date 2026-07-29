@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/floret/v2/internal/testing/harness"
 	"github.com/floegence/floret/v2/internal/testing/tooltest"
 	"github.com/floegence/floret/v2/observation"
+	publicprovider "github.com/floegence/floret/v2/provider"
 	"github.com/floegence/floret/v2/tools"
 )
 
@@ -46,7 +47,7 @@ type testMaintenanceFacade struct {
 	title  *threadTitleBinder
 	fork   *threadForkBinder
 	delete *threadDeleteBinder
-	store  *Store
+	store  *runtimeStore
 }
 
 type testCapabilitySet struct {
@@ -142,10 +143,10 @@ func (r legacySubAgentUserOriginRepo) ReadSubAgentInput(ctx context.Context, inp
 
 var testCapabilities = struct {
 	sync.Mutex
-	byStore map[*Store]*testCapabilitySet
-}{byStore: make(map[*Store]*testCapabilitySet)}
+	byStore map[*runtimeStore]*testCapabilitySet
+}{byStore: make(map[*runtimeStore]*testCapabilitySet)}
 
-func mustTestCapabilities(t *testing.T, store *Store) *testCapabilitySet {
+func mustTestCapabilities(t *testing.T, store *runtimeStore) *testCapabilitySet {
 	t.Helper()
 	testCapabilities.Lock()
 	defer testCapabilities.Unlock()
@@ -206,7 +207,7 @@ func testCreateThreadRequest(threadID ThreadID) CreateThreadRequest {
 	}
 }
 
-func publishTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store, publicationID string, parentThreadID, childThreadID ThreadID, parentTurnID TurnID) sessiontree.PublishSubAgentResult {
+func publishTestSubAgentFixture(t *testing.T, ctx context.Context, store *runtimeStore, publicationID string, parentThreadID, childThreadID ThreadID, parentTurnID TurnID) sessiontree.PublishSubAgentResult {
 	t.Helper()
 	if strings.TrimSpace(publicationID) == "" {
 		t.Fatal("test subagent fixture requires an explicit publication id")
@@ -248,7 +249,7 @@ func publishTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store,
 	return result
 }
 
-func publishTestSubAgentFixtureWithMeta(t *testing.T, ctx context.Context, store *Store, publicationID string, childMeta sessiontree.ThreadMeta, message string) sessiontree.PublishSubAgentResult {
+func publishTestSubAgentFixtureWithMeta(t *testing.T, ctx context.Context, store *runtimeStore, publicationID string, childMeta sessiontree.ThreadMeta, message string) sessiontree.PublishSubAgentResult {
 	t.Helper()
 	if strings.TrimSpace(publicationID) == "" {
 		t.Fatal("test subagent fixture requires an explicit publication id")
@@ -278,7 +279,7 @@ func publishTestSubAgentFixtureWithMeta(t *testing.T, ctx context.Context, store
 	return result
 }
 
-func completeTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store, parentThreadID, childThreadID ThreadID) {
+func completeTestSubAgentFixture(t *testing.T, ctx context.Context, store *runtimeStore, parentThreadID, childThreadID ThreadID) {
 	t.Helper()
 	authority, ok := store.repo.(sessiontree.SubAgentInputAuthorityRepo)
 	if !ok {
@@ -312,23 +313,36 @@ func completeTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store
 
 func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, error) {
 	t.Helper()
+	if opts.Config.ContextPolicy.ContextWindowTokens <= 0 {
+		opts.Config.ContextPolicy.ContextWindowTokens = config.DefaultContextWindowTokens
+	}
 	if opts.EffectAuthorizationGate == nil {
 		opts.EffectAuthorizationGate = allowRuntimeEffectGate{}
 	}
-	if opts.ModelGateway != nil && opts.ModelGatewayCapabilities.Reasoning == nil {
+	if opts.modelGateway == nil {
+		response := opts.Config.FakeResponse
+		if response == "" {
+			response = "ok"
+		}
+		opts.modelGateway = runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
+			return runtimeGatewayEvents(response), nil
+		})
+		opts.modelGatewayIdentity = modelGatewayIdentity{Provider: "test", Model: "test", StateCompatibilityKey: "test/test"}
+	}
+	if opts.modelGatewayCapabilities.Reasoning == nil {
 		reasoning := config.ReasoningCapability{
 			Kind:             "effort",
 			SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
 			DefaultLevel:     config.ReasoningLevelHigh,
 			DisableSupported: true,
 		}
-		opts.ModelGatewayCapabilities = ModelGatewayCapabilities{Reasoning: &reasoning}
+		opts.modelGatewayCapabilities = modelGatewayCapabilities{Reasoning: &reasoning}
 	}
 	host, err := newProviderHost(opts)
 	if err != nil {
 		return nil, err
 	}
-	capabilities := mustTestCapabilities(t, opts.Store)
+	capabilities := mustTestCapabilities(t, opts.store)
 	return &testProviderFacade{
 		providerHost: host,
 		create:       capabilities.create,
@@ -443,7 +457,7 @@ func (g *recordingRuntimeEffectGate) effectAttemptID(callID string) string {
 	return g.byCallID[callID]
 }
 
-func newTestMaintenanceHost(t *testing.T, store *Store) (*testMaintenanceFacade, error) {
+func newTestMaintenanceHost(t *testing.T, store *runtimeStore) (*testMaintenanceFacade, error) {
 	t.Helper()
 	capabilities := mustTestCapabilities(t, store)
 	return &testMaintenanceFacade{
@@ -456,7 +470,7 @@ func newTestMaintenanceHost(t *testing.T, store *Store) (*testMaintenanceFacade,
 	}, nil
 }
 
-func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID) *subAgentReadCapability {
+func newTestSubAgentReadHost(t *testing.T, store *runtimeStore, parentThreadID ThreadID) *subAgentReadCapability {
 	t.Helper()
 	host, err := mustTestCapabilities(t, store).subAgentRead.NewHost(context.Background(), parentThreadID)
 	if err != nil {
@@ -465,7 +479,7 @@ func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID
 	return host
 }
 
-func newTestPendingToolRecoveryHost(t *testing.T, store *Store, threadID ThreadID) *pendingToolRecoveryCapability {
+func newTestPendingToolRecoveryHost(t *testing.T, store *runtimeStore, threadID ThreadID) *pendingToolRecoveryCapability {
 	t.Helper()
 	host, err := mustTestCapabilities(t, store).recovery.NewThreadHost(context.Background(), threadID, nil)
 	if err != nil {
@@ -616,13 +630,13 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -676,13 +690,13 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	store.agentTodos = repo
 	recorder := &terminalProjectionFailureRecorder{repo: repo}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		Sink:        recorder,
 		IDGenerator: deterministicIDs(),
 	})
@@ -714,13 +728,13 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -784,13 +798,13 @@ func TestHostRunTurnRejectsTakeoverEligibleInterruptedLeaseWithoutExplicitRecove
 	store.agentTodos = leaseAuthority
 	store.forkOperations = storage.NewMemoryForkOperationStore(leaseAuthority)
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "continued",
 			SystemPrompt: "test",
 		},
-		Store: store,
+		store: store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -856,8 +870,8 @@ func TestHostRunTurnRejectsTakeoverEligibleInterruptedLeaseWithoutExplicitRecove
 func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
@@ -865,9 +879,9 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -896,7 +910,7 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	if req.Provider != "runtime-test-gateway" || req.Model != "fake-model" {
 		t.Fatalf("gateway request provider/model = %#v", req)
 	}
-	if slices.ContainsFunc(requests, func(req ModelRequest) bool { return strings.HasSuffix(string(req.RunID), ":thread-title") }) {
+	if slices.ContainsFunc(requests, func(req modelRequest) bool { return strings.HasSuffix(string(req.RunID), ":thread-title") }) {
 		t.Fatalf("host-owned title mode issued a title request: %#v", requests)
 	}
 	snapshot, err := host.ReadThread(ctx, "thread")
@@ -911,8 +925,8 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
@@ -923,9 +937,9 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		ThreadTitleMode:      ThreadTitleModeProvider,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -957,9 +971,9 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 		t.Fatalf("provider title snapshot = %#v", snapshot)
 	}
 	mu.Lock()
-	gotRequests := append([]ModelRequest(nil), requests...)
+	gotRequests := append([]modelRequest(nil), requests...)
 	mu.Unlock()
-	if len(gotRequests) != 2 || !slices.ContainsFunc(gotRequests, func(req ModelRequest) bool {
+	if len(gotRequests) != 2 || !slices.ContainsFunc(gotRequests, func(req modelRequest) bool {
 		return strings.HasSuffix(string(req.RunID), ":thread-title")
 	}) {
 		t.Fatalf("gateway requests = %#v, want turn and title", gotRequests)
@@ -971,7 +985,7 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 	mainStarted := make(chan struct{})
 	mainRelease := make(chan struct{})
 	var mainOnce sync.Once
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			return runtimeGatewayEvents("修复终端任务"), nil
 		}
@@ -985,9 +999,9 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		ThreadTitleMode:      ThreadTitleModeProvider,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -1054,7 +1068,7 @@ func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
 	release := make(chan struct{})
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			close(started)
 			<-ctx.Done()
@@ -1066,9 +1080,9 @@ func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ThreadTitleMode:      ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -1090,11 +1104,11 @@ func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 	select {
 	case <-cancelled:
 	case <-time.After(time.Second):
-		t.Fatal("Store.Close did not cancel automatic title worker")
+		t.Fatal("store.Close did not cancel automatic title worker")
 	}
 	select {
 	case err := <-closeDone:
-		t.Fatalf("Store.Close returned before title worker finished: %v", err)
+		t.Fatalf("store.Close returned before title worker finished: %v", err)
 	default:
 	}
 	close(release)
@@ -1104,7 +1118,7 @@ func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Store.Close did not join automatic title worker")
+		t.Fatal("store.Close did not join automatic title worker")
 	}
 	meta, err := store.repo.Thread(context.Background(), "thread")
 	if err != nil {
@@ -1129,8 +1143,8 @@ func TestHostBootstrapRecoversOrphanedAutomaticTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "unused"},
-		Store:  store,
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+		store:  store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1149,12 +1163,12 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	recorder := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "configured",
 		},
-		Store: newMemoryStore(),
+		store: newMemoryStore(),
 		Sink:  recorder,
 	})
 	if err != nil {
@@ -1201,19 +1215,19 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
 		return runtimeGatewayEvents("attachment accepted"), nil
 	})
-	newHost := func(store *Store) *testProviderFacade {
+	newHost := func(store *runtimeStore) *testProviderFacade {
 		host, err := newTestHost(t, providerHostOptions{
 			Config:               runtimeGatewayConfig("gateway system"),
-			ModelGateway:         gateway,
-			ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-			Store:                store,
+			modelGateway:         gateway,
+			modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+			store:                store,
 			IDGenerator:          deterministicIDs(),
 		})
 		if err != nil {
@@ -1282,9 +1296,9 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 	}
 	forkHost, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                reopened,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                reopened,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1302,35 +1316,21 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 
 func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
-	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "configured"},
-		Store:  newMemoryStore(),
+	store := newMemoryStore()
+	_, err := newProviderHost(providerHostOptions{
+		Config: runtimeGatewayConfig("test"), store: store,
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "gateway is required") {
+		t.Fatalf("newProviderHost error = %v, want explicit gateway requirement", err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = host.RunTurn(ctx, RunTurnRequest{
-		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1",
-		Input: TurnInput{Attachments: []MessageAttachment{{ResourceRef: "upload:asset-1", Name: "file.txt", MIMEType: "text/plain"}}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "ModelGateway") {
-		t.Fatalf("RunTurn error = %v, want explicit attachment transport error", err)
-	}
-	overview, err := host.ReadThreadOverview(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if overview.LatestTurn != nil || overview.Thread.ThroughOrdinal != 0 {
-		t.Fatalf("rejected attachment was admitted: %#v", overview)
+	if _, readErr := store.repo.Thread(ctx, "thread"); !errors.Is(readErr, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("rejected host construction persisted a thread: %v", readErr)
 	}
 }
 
 func TestNewHostRejectsUnknownThreadTitleMode(t *testing.T) {
 	_, err := newTestHost(t, providerHostOptions{
-		Config:          config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok"},
+		Config:          runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "ok"},
 		ThreadTitleMode: ThreadTitleMode("automatic"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "thread title mode") {
@@ -1412,19 +1412,19 @@ func TestRuntimeEventLifecycleReasonsJSONRoundTrip(t *testing.T) {
 
 func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 	ctx := context.Background()
-	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
-		events <- ModelEvent{Type: ModelEventUsage, Usage: ProviderUsage{InputTokens: 101, OutputTokens: 500, TotalTokens: 601, Available: true}}
-		events <- ModelEvent{Type: ModelEventDelta, Text: "over budget"}
-		events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+	gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
+		events <- modelEvent{Type: modelEventUsage, Usage: publicprovider.Usage{InputTokens: 101, OutputTokens: 500, TotalTokens: 601, Available: true}}
+		events <- modelEvent{Type: modelEventDelta, Text: "over budget"}
+		events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1454,8 +1454,8 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	ctx := context.Background()
 	store := newMemoryStore()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
@@ -1463,9 +1463,9 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1524,14 +1524,14 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	supplementalContent := ""
 	inputCount := 0
 	for i, msg := range firstReq.Messages {
-		if msg.Role == ModelMessageRoleUser && msg.Text == "what is this process" {
+		if msg.Role == modelMessageRoleUser && msg.Text == "what is this process" {
 			inputIndex = i
 			inputCount++
 		}
 		if strings.Contains(msg.Text, "Host-provided supplemental context") {
 			supplementalIndex = i
 			supplementalContent = msg.Text
-			if msg.Role != ModelMessageRoleUser {
+			if msg.Role != modelMessageRoleUser {
 				t.Fatalf("supplemental message role = %q, want user", msg.Role)
 			}
 		}
@@ -1567,8 +1567,8 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 func TestHostRunTurnRejectsEmptySupplementalContextBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
@@ -1576,9 +1576,9 @@ func TestHostRunTurnRejectsEmptySupplementalContextBeforeAdmission(t *testing.T)
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1614,84 +1614,34 @@ func TestHostRunTurnRejectsEmptySupplementalContextBeforeAdmission(t *testing.T)
 }
 
 func TestHostModelGatewayRequiresExplicitIdentity(t *testing.T) {
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		return runtimeGatewayEvents("ok"), nil
 	})
 	cases := []struct {
 		name     string
-		config   config.Config
-		identity ModelGatewayIdentity
+		config   runtimeConfig
+		identity modelGatewayIdentity
 		want     string
 	}{
 		{
 			name:     "missing provider identity",
 			config:   runtimeGatewayConfig("gateway system"),
-			identity: ModelGatewayIdentity{Model: "fake-model"},
+			identity: modelGatewayIdentity{Model: "fake-model"},
 			want:     "model gateway identity provider is required",
 		},
 		{
 			name:     "missing model identity",
 			config:   runtimeGatewayConfig("gateway system"),
-			identity: ModelGatewayIdentity{Provider: "runtime-test-gateway"},
+			identity: modelGatewayIdentity{Provider: "runtime-test-gateway"},
 			want:     "model gateway identity model is required",
-		},
-		{
-			name: "provider transport field",
-			config: config.Config{
-				Provider:      config.ProviderFake,
-				SystemPrompt:  "gateway system",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			identity: runtimeGatewayIdentity("fake-model"),
-			want:     "must not set provider transport fields",
-		},
-		{
-			name: "model transport field",
-			config: config.Config{
-				Model:         "fake-model",
-				SystemPrompt:  "gateway system",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			identity: runtimeGatewayIdentity("fake-model"),
-			want:     "must not set provider transport fields",
-		},
-		{
-			name: "base url transport field",
-			config: config.Config{
-				BaseURL:       "https://example.invalid",
-				SystemPrompt:  "gateway system",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			identity: runtimeGatewayIdentity("fake-model"),
-			want:     "must not set provider transport fields",
-		},
-		{
-			name: "api key transport field",
-			config: config.Config{
-				APIKey:        "token",
-				SystemPrompt:  "gateway system",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			identity: runtimeGatewayIdentity("fake-model"),
-			want:     "must not set provider transport fields",
-		},
-		{
-			name: "fake response transport field",
-			config: config.Config{
-				FakeResponse:  "ok",
-				SystemPrompt:  "gateway system",
-				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-			},
-			identity: runtimeGatewayIdentity("fake-model"),
-			want:     "must not set provider transport fields",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := newTestHost(t, providerHostOptions{
 				Config:               tc.config,
-				ModelGateway:         gateway,
-				ModelGatewayIdentity: tc.identity,
+				modelGateway:         gateway,
+				modelGatewayIdentity: tc.identity,
 			}); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("NewHost err = %v, want %q", err, tc.want)
 			}
@@ -1703,17 +1653,17 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventDelta, Text: "ok " + string(req.TurnID)}
-		events <- ModelEvent{
-			Type:          ModelEventDone,
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventDelta, Text: "ok " + string(req.TurnID)}
+		events <- modelEvent{
+			Type:          modelEventDone,
 			Reason:        "stop",
-			ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID), Attributes: map[string]string{"cursor": string(req.TurnID), "model": req.Model}},
+			ResponseState: &modelStateEnvelope{Kind: "responses", ID: "state-" + string(req.TurnID), Attributes: map[string]string{"cursor": string(req.TurnID), "model": req.Model}},
 		}
 		close(events)
 		return events, nil
@@ -1722,9 +1672,9 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		t.Helper()
 		host, err := newTestHost(t, providerHostOptions{
 			Config:               runtimeGatewayConfig("gateway system"),
-			ModelGateway:         gateway,
-			ModelGatewayIdentity: runtimeGatewayIdentity(model),
-			Store:                store,
+			modelGateway:         gateway,
+			modelGatewayIdentity: runtimeGatewayIdentity(model),
+			store:                store,
 			IDGenerator:          deterministicIDs(),
 		})
 		if err != nil {
@@ -1804,24 +1754,24 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventDelta, Text: "ok"}
-		events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventDelta, Text: "ok"}
+		events <- modelEvent{Type: modelEventDone, Reason: "stop", ResponseState: &modelStateEnvelope{Kind: "responses", ID: "state-" + string(req.TurnID)}}
 		close(events)
 		return events, nil
 	})
-	newHost := func(store *Store) *testProviderFacade {
+	newHost := func(store *runtimeStore) *testProviderFacade {
 		t.Helper()
 		host, err := newTestHost(t, providerHostOptions{
 			Config:               runtimeGatewayConfig("test"),
-			ModelGateway:         gateway,
-			ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-			Store:                store,
+			modelGateway:         gateway,
+			modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+			store:                store,
 			IDGenerator:          deterministicIDs(),
 		})
 		if err != nil {
@@ -1875,16 +1825,16 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventDelta, Text: "ok"}
-		done := ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventDelta, Text: "ok"}
+		done := modelEvent{Type: modelEventDone, Reason: "stop"}
 		if req.TurnID == "turn-1" {
-			done.ResponseState = &ModelState{Kind: "responses", ID: "state-turn-1"}
+			done.ResponseState = &modelStateEnvelope{Kind: "responses", ID: "state-turn-1"}
 		}
 		events <- done
 		close(events)
@@ -1892,9 +1842,9 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1926,18 +1876,18 @@ func TestHostProviderStatePersistenceFailureRecordsFailedTurnFinalization(t *tes
 	store := newMemoryStore()
 	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo), failFinishPut: true}
 	store.repo = providerStates
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventDelta, Text: "provider answer"}
-		events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-1"}}
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventDelta, Text: "provider answer"}
+		events <- modelEvent{Type: modelEventDone, Reason: "stop", ResponseState: &modelStateEnvelope{Kind: "responses", ID: "state-1"}}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1966,16 +1916,16 @@ func TestHostProviderStatePersistenceFailureRecordsFailedTurnFinalization(t *tes
 func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventDelta, Text: "short answer"}
-		done := ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventDelta, Text: "short answer"}
+		done := modelEvent{Type: modelEventDone, Reason: "stop"}
 		if req.TurnID == "turn-1" {
-			done.ResponseState = &ModelState{Kind: "responses", ID: "state-turn-1"}
+			done.ResponseState = &modelStateEnvelope{Kind: "responses", ID: "state-turn-1"}
 		}
 		events <- done
 		close(events)
@@ -1983,9 +1933,9 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -2021,27 +1971,27 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
+		events := make(chan modelEvent, 2)
 		if req.TurnID == "" {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "compacted summary"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "compacted summary"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "turn answer"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+			events <- modelEvent{Type: modelEventDelta, Text: "turn answer"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop", ResponseState: &modelStateEnvelope{Kind: "responses", ID: "state-" + string(req.TurnID)}}
 		}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeCompactionTestConfig(),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -2101,23 +2051,23 @@ func TestHostCompactionDefersIncompatibleProviderStateCleanupToTurnFinish(t *tes
 	store := newMemoryStore()
 	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo)}
 	store.repo = providerStates
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 2)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
 		if req.TurnID == "" {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "compacted summary"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "compacted summary"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "turn answer"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+			events <- modelEvent{Type: modelEventDelta, Text: "turn answer"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop", ResponseState: &modelStateEnvelope{Kind: "responses", ID: "state-" + string(req.TurnID)}}
 		}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeCompactionTestConfig(),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -2170,7 +2120,7 @@ func TestRuntimeModelMessagesGroupsAssistantToolCallsAndPreservesResponseBoundar
 		t.Fatalf("model messages = %#v, want 7 grouped messages", messages)
 	}
 	group := messages[2]
-	if group.Role != ModelMessageRoleAssistant || group.Text != "I will inspect. " || group.Reasoning != "shared reasoning" || len(group.ToolCalls) != 2 {
+	if group.Role != modelMessageRoleAssistant || group.Text != "I will inspect. " || group.Reasoning != "shared reasoning" || len(group.ToolCalls) != 2 {
 		t.Fatalf("assistant tool group = %#v", group)
 	}
 	if group.ToolCalls[0].ID != "call-1" || group.ToolCalls[1].ID != "call-2" || group.ToolCalls[0].Reasoning != "shared reasoning" {
@@ -2253,20 +2203,20 @@ func TestRuntimeModelMessagesRejectsInvalidToolSequences(t *testing.T) {
 func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		return runtimeGatewayEvents("gateway hosted thread"), nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
+		Config: runtimeConfig{
 			SystemPrompt: "gateway system",
 			ContextPolicy: config.ContextPolicy{
 				ContextWindowTokens: config.DefaultContextWindowTokens,
 				MaxOutputTokens:     1024,
 			},
 		},
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -2310,19 +2260,19 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 6)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 6)
 		switch req.Step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "I will inspect first. "}
-			events <- ModelEvent{Type: ModelEventToolCallStart, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
-			events <- ModelEvent{Type: ModelEventToolCallDelta, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
-			events <- ModelEvent{Type: ModelEventToolCallEnd, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"text":"alpha"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDelta, Text: "I will inspect first. "}
+			events <- modelEvent{Type: modelEventToolCallStart, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCallDelta, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCallEnd, ToolCallStream: &modelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"text":"alpha"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Read returned alpha."}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "Read returned alpha."}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -2340,9 +2290,9 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2392,19 +2342,19 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
 		switch req.Step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{
 				ID:   "exec-1",
 				Name: "terminal.exec",
 				Args: `{"text":"sleep 10s"}`,
 			}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -2447,9 +2397,9 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2547,18 +2497,18 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 
 func TestHostCommitsParallelToolResultsInCanonicalCallOrder(t *testing.T) {
 	ctx := context.Background()
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
 		switch req.Step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{
 				{ID: "read-1", Name: "slow_read", Args: `{"text":"wait"}`},
 				{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"curl https://example.test"}`},
 			}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -2628,9 +2578,9 @@ func TestHostCommitsParallelToolResultsInCanonicalCallOrder(t *testing.T) {
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Tools:                registry,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2682,17 +2632,17 @@ func TestHostCommitsParallelToolResultsInCanonicalCallOrder(t *testing.T) {
 }
 
 func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests = append(requests, req)
-		events := make(chan ModelEvent, 3)
+		events := make(chan modelEvent, 3)
 		switch req.Step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -2731,16 +2681,16 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("base"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			if req.Step >= 2 && req.Phase == "provider_request" {
 				return ToolSurface{
 					Tools:        full,
 					SystemPrompt: "full surface",
 					Epoch:        "full",
-					HostedToolDefinitions: []HostedToolDefinition{{
+					HostedToolDefinitions: []publicprovider.HostedToolDefinition{{
 						Name:    "hosted_search",
 						Type:    "web_search",
 						Options: map[string]any{"limit": float64(5)},
@@ -2791,17 +2741,17 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
-	var modelRequests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var modelRequests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		modelRequests = append(modelRequests, req)
-		events := make(chan ModelEvent, 3)
+		events := make(chan modelEvent, 3)
 		switch req.Step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -2834,9 +2784,9 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	var approval tooltest.ApprovalRequest
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			surfaceRequests = append(surfaceRequests, req)
 			return ToolSurface{
@@ -2898,7 +2848,7 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 		result.ActivityTimeline.TraceID != "run-parent" {
 		t.Fatalf("activity timeline identity = %#v", result.ActivityTimeline)
 	}
-	var turnModelRequests []ModelRequest
+	var turnModelRequests []modelRequest
 	for _, req := range modelRequests {
 		if req.Step <= 0 {
 			continue
@@ -2998,20 +2948,20 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	var mu sync.Mutex
 	requests := 0
 	secondRequestStarted := make(chan struct{})
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests++
 		step := requests
 		mu.Unlock()
 		switch step {
 		case 1:
-			events := make(chan ModelEvent, 2)
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events := make(chan modelEvent, 2)
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 			close(events)
 			return events, nil
 		default:
-			events := make(chan ModelEvent)
+			events := make(chan modelEvent)
 			close(secondRequestStarted)
 			go func() {
 				<-ctx.Done()
@@ -3024,9 +2974,9 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   newMemoryStore(),
+		modelGateway:            gateway,
+		modelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		store:                   newMemoryStore(),
 		Tools:                   registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
 		Sink:                    rec,
@@ -3174,8 +3124,8 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		mu.Unlock()
@@ -3183,9 +3133,9 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -3258,13 +3208,13 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -3352,7 +3302,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 func TestSubAgentTurnReadsExposeTypedUserMessageOrigin(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
@@ -3372,7 +3322,7 @@ func TestSubAgentTurnReadsRecoverTypedOriginFromV029DurableInput(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite_reopen"} {
 		t.Run(backend, func(t *testing.T) {
 			ctx := context.Background()
-			var store *Store
+			var store *runtimeStore
 			if backend == "sqlite_reopen" {
 				path := filepath.Join(t.TempDir(), "floret.db")
 				var err error
@@ -3483,7 +3433,7 @@ func TestLegacySubAgentOriginRecoveryRejectsMismatchedDurableAuthority(t *testin
 func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
@@ -3497,10 +3447,10 @@ func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *
 
 			ctx := context.Background()
 			host, err := newTestHost(t, providerHostOptions{
-				Config: config.Config{
-					Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+				Config: runtimeConfig{
+					Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
 				},
-				Store: store, IDGenerator: deterministicIDs(),
+				store: store, IDGenerator: deterministicIDs(),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -3544,7 +3494,7 @@ func TestLegacySubAgentOriginRecoveryFollowsDeepFullPathLineage(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			ctx := context.Background()
 			path := filepath.Join(t.TempDir(), "floret.db")
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite_reopen" {
 				store, err = openSQLiteStoreForTest(path)
@@ -3640,7 +3590,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite_reopen"} {
 		t.Run(backend, func(t *testing.T) {
 			ctx := context.Background()
-			var store *Store
+			var store *runtimeStore
 			var sqlitePath string
 			if backend == "sqlite_reopen" {
 				sqlitePath = filepath.Join(t.TempDir(), "floret.db")
@@ -3654,10 +3604,10 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 			}
 
 			host, err := newTestHost(t, providerHostOptions{
-				Config: config.Config{
-					Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+				Config: runtimeConfig{
+					Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
 				},
-				Store: store, IDGenerator: deterministicIDs(),
+				store: store, IDGenerator: deterministicIDs(),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -3730,17 +3680,17 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 	}
 }
 
-func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *Store) {
+func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 	t.Helper()
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -3828,18 +3778,18 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
 	requests := 0
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests++
 		request := requests
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
+		events := make(chan modelEvent, 2)
 		if request == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "child summary"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "child summary"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -3883,9 +3833,9 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		Tools:                registry,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -4053,13 +4003,13 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	longAnswer := "complete subagent report " + strings.Repeat("evidence section ", 80) + "https://example.test/full-final-output"
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: longAnswer,
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4182,13 +4132,13 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: longAnswer,
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4210,13 +4160,13 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "unused",
 			SystemPrompt: "test",
 		},
-		Store: reopenedStore,
+		store: reopenedStore,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4241,13 +4191,13 @@ func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "restart child done",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4352,15 +4302,15 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := 0
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests++
-		events := make(chan ModelEvent, 2)
+		events := make(chan modelEvent, 2)
 		if requests == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -4389,9 +4339,9 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
-		Store:                   store,
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		store:                   store,
+		modelGateway:            gateway,
+		modelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
 		Tools:                   registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
 		IDGenerator:             deterministicIDs(),
@@ -4415,12 +4365,12 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			SystemPrompt: "test",
 		},
-		Store: reopenedStore,
+		store: reopenedStore,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4449,11 +4399,11 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 
 func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	ctx := context.Background()
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if req.ThreadID == "completed" {
 			return runtimeGatewayEvents("completed child"), nil
 		}
-		events := make(chan ModelEvent)
+		events := make(chan modelEvent)
 		go func() {
 			defer close(events)
 			<-ctx.Done()
@@ -4462,9 +4412,9 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -4505,18 +4455,18 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		switch req.ThreadID {
 		case "parent":
-			events := make(chan ModelEvent, 2)
-			events <- ModelEvent{Type: ModelEventDelta, Text: "starting children"}
-			events <- ModelEvent{Type: ModelEventError, Err: errors.New("parent failed")}
+			events := make(chan modelEvent, 2)
+			events <- modelEvent{Type: modelEventDelta, Text: "starting children"}
+			events <- modelEvent{Type: modelEventError, Err: errors.New("parent failed")}
 			close(events)
 			return events, nil
 		case "completed":
 			return runtimeGatewayEvents("completed child"), nil
 		default:
-			events := make(chan ModelEvent)
+			events := make(chan modelEvent)
 			go func() {
 				defer close(events)
 				<-ctx.Done()
@@ -4526,9 +4476,9 @@ func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -4582,8 +4532,8 @@ func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent)
 		go func() {
 			defer close(events)
 			<-ctx.Done()
@@ -4592,9 +4542,9 @@ func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 	})
 	owner, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -4668,13 +4618,13 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "persisted",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4695,13 +4645,13 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err = newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       reopened,
+		store:       reopened,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4718,13 +4668,13 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 
 func TestHostRejectsZeroValueStore(t *testing.T) {
 	_, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store: &Store{},
+		store: &runtimeStore{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "runtime store must be created") {
 		t.Fatalf("err = %v, want zero store rejection", err)
@@ -4740,20 +4690,20 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 	t.Cleanup(func() { _ = sqliteStore.Close() })
 	for _, tc := range []struct {
 		name  string
-		store *Store
+		store *runtimeStore
 	}{
 		{name: "memory", store: newMemoryStore()},
 		{name: "sqlite", store: sqliteStore},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, err := newTestHost(t, providerHostOptions{
-				Config: config.Config{
-					Provider:     config.ProviderFake,
+				Config: runtimeConfig{
+					Provider:     "fake",
 					Model:        "fake-model",
 					FakeResponse: "ok",
 					SystemPrompt: "test",
 				},
-				Store:       tc.store,
+				store:       tc.store,
 				IDGenerator: deterministicIDs(),
 			})
 			if err != nil {
@@ -4769,13 +4719,13 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 func TestHostPublicNotFoundErrors(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4852,13 +4802,13 @@ func TestRuntimeHostErrorMapsPublicBranchableSentinels(t *testing.T) {
 func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5232,13 +5182,13 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5295,15 +5245,9 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkTurn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
-		config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "projected answer",
-			SystemPrompt: "test",
-		},
-		idGenerator: deterministicIDs(), initialized: true,
-	})
+	turnOptions := testTurnExecutionOptions("projected answer")
+	turnOptions.idGenerator = deterministicIDs()
+	forkTurn, err := turnFactory.NewHost(ctx, turnOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5320,13 +5264,13 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "sqlite projected answer",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5666,13 +5610,13 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5739,14 +5683,7 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkSubAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
-		config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "done",
-			SystemPrompt: "test",
-		}, initialized: true,
-	})
+	forkSubAgents, err := subAgentFactory.NewHost(ctx, testSubAgentOptions("done"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5777,13 +5714,13 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "completion handled",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -5843,13 +5780,13 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5945,11 +5882,11 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	var mu sync.Mutex
 	requests := 0
 	longAssistantAfterPending := "command started " + strings.Repeat("after pending settlement keeps full assistant text ", 12) + "final settlement sentence."
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.Contains(string(req.RunID), "thread-title") {
-			events := make(chan ModelEvent, 2)
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Pending command"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events := make(chan modelEvent, 2)
+			events <- modelEvent{Type: modelEventDelta, Text: "Pending command"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 			close(events)
 			return events, nil
 		}
@@ -5957,14 +5894,14 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		requests++
 		step := requests
 		mu.Unlock()
-		events := make(chan ModelEvent, 2)
+		events := make(chan modelEvent, 2)
 		switch step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		case 2:
-			events <- ModelEvent{Type: ModelEventDelta, Text: longAssistantAfterPending}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: longAssistantAfterPending}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		default:
 			t.Fatalf("unexpected provider request after settlement: %#v", req)
 		}
@@ -5979,9 +5916,9 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	store.agentTodos = settlementRepo
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			return ToolSurface{
 				Tools: registry,
@@ -6240,19 +6177,19 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	}
 
 	var requests atomic.Int32
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		step := requests.Add(1)
-		events := make(chan ModelEvent, 2)
+		events := make(chan modelEvent, 2)
 		switch step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-active", Name: "terminal_exec", Args: `{"text":"stream timestamps"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-active", Name: "terminal_exec", Args: `{"text":"stream timestamps"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		case 2:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "terminate-active", Name: "terminal_terminate", Args: `{"text":"stop timestamp stream"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "terminate-active", Name: "terminal_terminate", Args: `{"text":"stop timestamp stream"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		case 3:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "command stopped"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "command stopped"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		default:
 			t.Fatalf("unexpected provider request %d: %#v", step, req)
 		}
@@ -6261,9 +6198,9 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	})
 	host, err = newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   store,
+		modelGateway:            gateway,
+		modelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		store:                   store,
 		Tools:                   registry,
 		EffectAuthorizationGate: effectGate,
 		IDGenerator:             deterministicIDs(),
@@ -6334,12 +6271,12 @@ func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 	secondRequest := make(chan struct{})
 	releaseSecondRequest := make(chan struct{})
 	var requests atomic.Int32
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 2)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
 		switch requests.Add(1) {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-replaced-lease", Name: "terminal_exec", Args: `{"text":"stream"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-replaced-lease", Name: "terminal_exec", Args: `{"text":"stream"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 			close(events)
 			return events, nil
 		case 2:
@@ -6350,8 +6287,8 @@ func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 				close(events)
 				return events, ctx.Err()
 			}
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 			close(events)
 			return events, nil
 		default:
@@ -6506,26 +6443,26 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	}
 
 	var requests int
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.Contains(string(req.RunID), "thread-title") {
-			events := make(chan ModelEvent, 2)
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Pending commands"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events := make(chan modelEvent, 2)
+			events <- modelEvent{Type: modelEventDelta, Text: "Pending commands"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 			close(events)
 			return events, nil
 		}
 		requests++
-		events := make(chan ModelEvent, 3)
+		events := make(chan modelEvent, 3)
 		switch requests {
 		case 1:
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{
 				{ID: "exec-a", Name: "terminal_exec", Args: `{"text":"npm test"}`},
 				{ID: "exec-b", Name: "terminal_exec", Args: `{"text":"npm lint"}`},
 			}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		case 2:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Both commands are now running under the host."}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "Both commands are now running under the host."}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		default:
 			t.Fatalf("unexpected provider request after pending commands: %#v", req)
 		}
@@ -6536,9 +6473,9 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   store,
+		modelGateway:            gateway,
+		modelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		store:                   store,
 		Tools:                   registry,
 		EffectAuthorizationGate: effectGate,
 		IDGenerator:             deterministicIDs(),
@@ -6632,12 +6569,12 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
 	store := newMemoryStore()
-	h, err := newHarnessWithProvider(config.Config{
-		Provider:     config.ProviderFake,
+	h, err := newHarnessWithProvider(runtimeConfig{
+		Provider:     "fake",
 		Model:        "fake-model",
 		SystemPrompt: "test",
 	}, scripted, harnessOptions{
-		Store:                   store,
+		store:                   store,
 		Tools:                   registry,
 		Title:                   fixedTitleGenerator{},
 		NewID:                   deterministicIDs(),
@@ -6700,25 +6637,25 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		step := len(requests)
 		mu.Unlock()
-		events := make(chan ModelEvent, 3)
+		events := make(chan modelEvent, 3)
 		switch step {
 		case 1:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Before first tool."}
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "echo", Args: `{"text":"first"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDelta, Text: "Before first tool."}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "echo", Args: `{"text":"first"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		case 2:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "After first tool, before second tool."}
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-2", Name: "echo", Args: `{"text":"second"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDelta, Text: "After first tool, before second tool."}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-2", Name: "echo", Args: `{"text":"second"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		default:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "Final answer."}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "Final answer."}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -6726,9 +6663,9 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   newMemoryStore(),
+		modelGateway:            gateway,
+		modelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		store:                   newMemoryStore(),
 		Tools:                   registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
 		Sink:                    rec,
@@ -6928,14 +6865,14 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
 		if req.Step == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -6946,9 +6883,9 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Tools:                registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			gateCalls.Add(1)
@@ -7084,17 +7021,17 @@ func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
 		if req.Step == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{
 				{ID: "call-a", Name: "write_note", Args: `{"text":"a"}`},
 				{ID: "call-b", Name: "write_note", Args: `{"text":"b"}`},
 			}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "done"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
@@ -7103,9 +7040,9 @@ func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 	releases := map[string]chan struct{}{"call-a": make(chan struct{}), "call-b": make(chan struct{})}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		Tools:                registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			requested <- req
@@ -7215,7 +7152,7 @@ func TestSQLiteHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testi
 	assertRuntimeApprovalCancellationDetails(t, detail.Events)
 }
 
-func runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T, store *Store) {
+func runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T, store *runtimeStore) {
 	t.Helper()
 	registry := tools.NewRegistry()
 	var handlers atomic.Int32
@@ -7233,25 +7170,25 @@ func runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T, s
 	)); err != nil {
 		t.Fatal(err)
 	}
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 3)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
 		if req.Step == 1 {
-			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{
 				{ID: "call-a", Name: "write_note", Args: `{"text":"a"}`},
 				{ID: "call-b", Name: "write_note", Args: `{"text":"b"}`},
 			}}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		} else {
-			events <- ModelEvent{Type: ModelEventDelta, Text: "unexpected"}
-			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			events <- modelEvent{Type: modelEventDelta, Text: "unexpected"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		}
 		close(events)
 		return events, nil
 	})
 	var gateCalls atomic.Int32
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("test"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: store, Tools: registry,
+		Config: runtimeGatewayConfig("test"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: store, Tools: registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			gateCalls.Add(1)
 			return tooltest.PermissionDecisionAllow, nil
@@ -7358,13 +7295,13 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "private answer",
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -7442,13 +7379,13 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 		t.Fatalf("test fixture must exceed preview budget, got %d runes", len([]rune(fullAnswer)))
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: fullAnswer,
 			SystemPrompt: "test",
 		},
-		Store:       newMemoryStore(),
+		store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -7569,22 +7506,22 @@ func TestHostControlSpecUsesPublicToolContracts(t *testing.T) {
 
 func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 	ctx := context.Background()
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 2)
-		events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{
 			ID:   "done",
 			Name: "task_complete",
 			Args: `{"result":"all done"}`,
 		}}}
-		events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -7663,10 +7600,10 @@ func TestThreadReadsCanonicalizeDurableJSONPayloadsAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		open func(*testing.T) *Store
+		open func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) *Store {
+		{name: "memory", open: func(t *testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -7677,20 +7614,20 @@ func TestThreadReadsCanonicalizeDurableJSONPayloadsAcrossStores(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
-			gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-				events := make(chan ModelEvent, 2)
-				events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
+				events := make(chan modelEvent, 2)
+				events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{
 					ID: "ask-1", Name: "host_wait", Args: `{}`,
 				}}}
-				events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+				events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 				close(events)
 				return events, nil
 			})
 			host, err := newTestHost(t, providerHostOptions{
 				Config:               runtimeGatewayConfig("test"),
-				ModelGateway:         gateway,
-				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-				Store:                store,
+				modelGateway:         gateway,
+				modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				store:                store,
 				IDGenerator:          deterministicIDs(),
 			})
 			if err != nil {
@@ -7770,10 +7707,10 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		open func(*testing.T) *Store
+		open func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) *Store {
+		{name: "memory", open: func(t *testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -7917,10 +7854,10 @@ func TestListThreadTurnsReadsAtomicCanonicalAdmission(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		open func(*testing.T) *Store
+		open func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) *Store {
+		{name: "memory", open: func(t *testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -7972,10 +7909,10 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		run  func(*testing.T, func(*Store))
+		run  func(*testing.T, func(*runtimeStore))
 	}{
-		{name: "memory", run: func(t *testing.T, test func(*Store)) { test(newMemoryStore()) }},
-		{name: "sqlite", run: func(t *testing.T, test func(*Store)) {
+		{name: "memory", run: func(t *testing.T, test func(*runtimeStore)) { test(newMemoryStore()) }},
+		{name: "sqlite", run: func(t *testing.T, test func(*runtimeStore)) {
 			path := filepath.Join(t.TempDir(), "floret.db")
 			store, err := openSQLiteStoreForTest(path)
 			if err != nil {
@@ -7997,7 +7934,7 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.run(t, func(store *Store) {
+			tc.run(t, func(store *runtimeStore) {
 				maintenance, err := newTestMaintenanceHost(t, store)
 				if err != nil {
 					t.Fatal(err)
@@ -8092,10 +8029,10 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		store func(*testing.T) *Store
+		store func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", store: func(t *testing.T) *Store {
+		{name: "memory", store: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -8117,14 +8054,14 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 				t.Fatal(err)
 			}
 
-			gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-				events := make(chan ModelEvent, 2)
+			gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+				events := make(chan modelEvent, 2)
 				if req.Step == 1 {
-					events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_todos", Args: `{"text":"implement"}`}}}
-					events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+					events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_todos", Args: `{"text":"implement"}`}}}
+					events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 				} else {
-					events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-					events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+					events <- modelEvent{Type: modelEventDelta, Text: "done"}
+					events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 				}
 				close(events)
 				return events, nil
@@ -8177,7 +8114,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 
 func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
-	e, err := newEngineWithProvider(config.Config{
+	e, err := newEngineWithProvider(runtimeConfig{
 		Provider:     "openai",
 		Model:        "gpt-5.4",
 		SystemPrompt: "test",
@@ -8213,13 +8150,13 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -8261,13 +8198,13 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 		return deleteCleanup(ctx, threadIDs)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -8313,13 +8250,13 @@ func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
+		Config: runtimeConfig{
+			Provider:     "fake",
 			Model:        "fake-model",
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       store,
+		store:       store,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -8395,10 +8332,10 @@ func TestThreadCapabilityHostsRequireBootstrapAuthority(t *testing.T) {
 func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		open func(*testing.T) *Store
+		open func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", open: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) *Store {
+		{name: "memory", open: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "close.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -8427,7 +8364,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 				t.Fatal(err)
 			}
 			var gatewayCalls atomic.Int64
-			gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 				gatewayCalls.Add(1)
 				return runtimeGatewayEvents("must not run"), nil
 			})
@@ -8497,12 +8434,12 @@ func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered := make(chan struct{})
-	gateway := runtimeModelGateway(func(ctx context.Context, _ ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 1)
+	gateway := runtimeModelGateway(func(ctx context.Context, _ modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 1)
 		close(entered)
 		go func() {
 			<-ctx.Done()
-			events <- ModelEvent{Type: ModelEventError, Err: ctx.Err()}
+			events <- modelEvent{Type: modelEventError, Err: ctx.Err()}
 			close(events)
 		}()
 		return events, nil
@@ -8575,13 +8512,13 @@ func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) 
 	}
 	entered := make(chan struct{})
 	cancelled := make(chan struct{})
-	gateway := runtimeModelGateway(func(ctx context.Context, _ ModelRequest) (<-chan ModelEvent, error) {
-		events := make(chan ModelEvent, 1)
+	gateway := runtimeModelGateway(func(ctx context.Context, _ modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 1)
 		close(entered)
 		go func() {
 			<-ctx.Done()
 			close(cancelled)
-			events <- ModelEvent{Type: ModelEventError, Err: ctx.Err()}
+			events <- modelEvent{Type: modelEventError, Err: ctx.Err()}
 			close(events)
 		}()
 		return events, nil
@@ -8646,10 +8583,10 @@ func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) 
 func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		open func(*testing.T) *Store
+		open func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", open: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", open: func(t *testing.T) *Store {
+		{name: "memory", open: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "closed-input-replay.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -8674,9 +8611,7 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			host, err := factory.NewHost(ctx, subAgentOptions{config: config.Config{
-				Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
-			}, initialized: true})
+			host, err := factory.NewHost(ctx, testSubAgentOptions("done"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -8757,7 +8692,7 @@ func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) 
 	if err := configureHostCapabilities(store, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
 		t.Fatalf("second configuration error = %v, want one-time configuration", err)
 	}
-	storeCopy := &Store{self: store}
+	storeCopy := &runtimeStore{self: store}
 	if err := configureHostCapabilities(storeCopy, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "must not be copied") {
 		t.Fatalf("copied store configuration error = %v, want copy rejection", err)
 	}
@@ -8859,8 +8794,8 @@ type runtimeEchoArgs struct {
 	Text string `json:"text"`
 }
 
-func runtimeGatewayConfig(systemPrompt string) config.Config {
-	return config.Config{
+func runtimeGatewayConfig(systemPrompt string) runtimeConfig {
+	return runtimeConfig{
 		SystemPrompt: strings.TrimSpace(systemPrompt),
 		ContextPolicy: config.ContextPolicy{
 			ContextWindowTokens: config.DefaultContextWindowTokens,
@@ -8868,8 +8803,40 @@ func runtimeGatewayConfig(systemPrompt string) config.Config {
 	}
 }
 
-func runtimeCompactionTestConfig() config.Config {
-	return config.Config{
+func testTurnExecutionOptions(response string) turnExecutionOptions {
+	return turnExecutionOptions{
+		config: runtimeGatewayConfig("test"),
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
+			return runtimeGatewayEvents(response), nil
+		}),
+		modelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
+		modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		initialized:              true,
+	}
+}
+
+func testSubAgentOptions(response string) subAgentOptions {
+	turn := testTurnExecutionOptions(response)
+	return subAgentOptions{
+		config: turn.config, modelGateway: turn.modelGateway,
+		modelGatewayIdentity:     turn.modelGatewayIdentity,
+		modelGatewayCapabilities: turn.modelGatewayCapabilities,
+		initialized:              true,
+	}
+}
+
+func testThreadCompactionOptions(response string) threadCompactionOptions {
+	turn := testTurnExecutionOptions(response)
+	return threadCompactionOptions{
+		config: turn.config, modelGateway: turn.modelGateway,
+		modelGatewayIdentity:     turn.modelGatewayIdentity,
+		modelGatewayCapabilities: turn.modelGatewayCapabilities,
+		initialized:              true,
+	}
+}
+
+func runtimeCompactionTestConfig() runtimeConfig {
+	return runtimeConfig{
 		SystemPrompt: "runtime compaction test",
 		ContextPolicy: config.ContextPolicy{
 			ContextWindowTokens:          256000,
@@ -8886,18 +8853,18 @@ func runtimeLargeCompactionInput() string {
 	return strings.Repeat("older context ", 6000) + "\n\n" + strings.Repeat("older answer ", 4500) + "\n\ncontinue after compaction"
 }
 
-func runtimeGatewayIdentity(model string) ModelGatewayIdentity {
-	return ModelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model), StateCompatibilityKey: "runtime-test-gateway:" + strings.TrimSpace(model)}
+func runtimeGatewayIdentity(model string) modelGatewayIdentity {
+	return modelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model), StateCompatibilityKey: "runtime-test-gateway:" + strings.TrimSpace(model)}
 }
 
-func runtimeGatewayCapabilities() ModelGatewayCapabilities {
+func runtimeGatewayCapabilities() modelGatewayCapabilities {
 	reasoning := config.ReasoningCapability{
 		Kind:             "effort",
 		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel:     config.ReasoningLevelHigh,
 		DisableSupported: true,
 	}
-	return ModelGatewayCapabilities{Reasoning: &reasoning}
+	return modelGatewayCapabilities{Reasoning: &reasoning}
 }
 
 func runtimeEchoSchema() map[string]any {
@@ -8997,7 +8964,7 @@ func (s *forkOperationFaultStore) CommitForkOperation(ctx context.Context, req s
 	return s.ForkOperationStore.CommitForkOperation(ctx, req)
 }
 
-func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
+func newForkTestStore(t *testing.T, withTerminalChild bool) *runtimeStore {
 	t.Helper()
 	ctx := context.Background()
 	store := newMemoryStore()
@@ -9016,7 +8983,7 @@ func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 		if err != nil {
 			t.Fatal(err)
 		}
-		childHost, err := factory.NewHost(ctx, subAgentOptions{config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}, initialized: true})
+		childHost, err := factory.NewHost(ctx, testSubAgentOptions("done"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -9220,21 +9187,21 @@ func allowRuntimeTools(context.Context, tooltest.ApprovalRequest) (tooltest.Perm
 	return tooltest.PermissionDecisionAllow, nil
 }
 
-type runtimeModelGateway func(context.Context, ModelRequest) (<-chan ModelEvent, error)
+type runtimeModelGateway func(context.Context, modelRequest) (<-chan modelEvent, error)
 
-func (f runtimeModelGateway) StreamModel(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+func (f runtimeModelGateway) StreamModel(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 	return f(ctx, req)
 }
 
-func runtimeGatewayEvents(text string) <-chan ModelEvent {
-	events := make(chan ModelEvent, 2)
-	events <- ModelEvent{Type: ModelEventDelta, Text: text}
-	events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+func runtimeGatewayEvents(text string) <-chan modelEvent {
+	events := make(chan modelEvent, 2)
+	events <- modelEvent{Type: modelEventDelta, Text: text}
+	events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 	close(events)
 	return events
 }
 
-func findRuntimeModelRequest(requests []ModelRequest, threadID, turnID string, step int) (ModelRequest, bool) {
+func findRuntimeModelRequest(requests []modelRequest, threadID, turnID string, step int) (modelRequest, bool) {
 	for _, req := range requests {
 		if string(req.ThreadID) != threadID || req.Step != step {
 			continue
@@ -9244,5 +9211,5 @@ func findRuntimeModelRequest(requests []ModelRequest, threadID, turnID string, s
 		}
 		return req, true
 	}
-	return ModelRequest{}, false
+	return modelRequest{}, false
 }

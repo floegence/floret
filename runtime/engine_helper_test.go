@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"github.com/floegence/floret/v2/config"
 	"github.com/floegence/floret/v2/internal/configbridge"
 	"github.com/floegence/floret/v2/internal/engine"
 	"github.com/floegence/floret/v2/internal/provider"
@@ -16,8 +15,7 @@ type engineHelperOptions struct {
 	PromptStore   cache.Store
 }
 
-func newEngineWithProvider(cfg config.Config, p provider.Provider, store session.TranscriptStore, registry *tools.Registry, opts engineHelperOptions) (*engine.Engine, error) {
-	cfg = config.ResolvePrompt(cfg)
+func newEngineWithProvider(cfg runtimeConfig, p provider.Provider, store session.TranscriptStore, registry *tools.Registry, opts engineHelperOptions) (*engine.Engine, error) {
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
@@ -28,9 +26,9 @@ func newEngineWithProvider(cfg config.Config, p provider.Provider, store session
 	if promptStore == nil {
 		promptStore = cache.NewMemoryStore()
 	}
-	cacheRetention, err := config.PromptCacheRetention(cfg)
-	if err != nil {
-		return nil, err
+	cacheRetention := cfg.PromptCacheRetention
+	if cacheRetention == "" {
+		cacheRetention = "in_memory"
 	}
 	return engine.New(engine.Config{
 		Provider: p, Store: store, Prompt: promptStore,

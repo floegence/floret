@@ -10,7 +10,7 @@ import (
 	"github.com/floegence/floret/v2/internal/session"
 	"github.com/floegence/floret/v2/internal/sessiontree"
 	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
+	publicstorage "github.com/floegence/floret/v2/storage"
 )
 
 func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
@@ -63,7 +63,7 @@ func TestThreadReadHostReadThreadTurnReturnsNotFoundForEmptyThreadAcrossStores(t
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
@@ -96,17 +96,22 @@ func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite_reopen"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var path string
 			var err error
 			clock := &interruptedRecoveryTestClock{now: time.Date(2026, time.July, 26, 10, 0, 0, 0, time.UTC)}
 			if backend == "sqlite_reopen" {
 				path = filepath.Join(t.TempDir(), "floret.db")
-				repo, openErr := sqlite.Open(path, sqlite.WithLeasePolicy(sessiontree.DefaultLeasePolicy), sqlite.WithAuthorityClock(clock.Now))
+				physical, openErr := publicstorage.SQLite(path).Open(ctx)
 				if openErr != nil {
 					t.Fatal(openErr)
 				}
-				store = &Store{repo: repo, prompt: repo, forkOperations: repo, agentTodos: repo, rootAuthority: repo}
+				repo, openErr := storage.NewBackendKernel(ctx, physical, sessiontree.DefaultLeasePolicy, clock.Now)
+				if openErr != nil {
+					_ = physical.Close()
+					t.Fatal(openErr)
+				}
+				store = &runtimeStore{repo: repo, prompt: repo, forkOperations: repo, agentTodos: repo, rootAuthority: repo, close: physical.Close}
 			} else {
 				repo, openErr := sessiontree.NewMemoryRepoWithLeasePolicy(sessiontree.DefaultLeasePolicy, clock.Now)
 				if openErr != nil {
@@ -157,7 +162,7 @@ func TestSubAgentReadHostReadThreadTurnEnforcesDescendantAuthorityAndLifecycle(t
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store *Store
+			var store *runtimeStore
 			var err error
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
@@ -220,12 +225,12 @@ func TestSubAgentReadHostReadThreadTurnEnforcesDescendantAuthorityAndLifecycle(t
 	}
 }
 
-func admitCompletedRuntimeTurn(t *testing.T, ctx context.Context, store *Store, threadID, turnID, runID string) {
+func admitCompletedRuntimeTurn(t *testing.T, ctx context.Context, store *runtimeStore, threadID, turnID, runID string) {
 	t.Helper()
 	admitCompletedRuntimeMessage(t, ctx, store, threadID, turnID, runID, session.Message{Role: session.User, Content: "input"})
 }
 
-func admitCompletedRuntimeMessage(t *testing.T, ctx context.Context, store *Store, threadID, turnID, runID string, input session.Message) {
+func admitCompletedRuntimeMessage(t *testing.T, ctx context.Context, store *runtimeStore, threadID, turnID, runID string, input session.Message) {
 	t.Helper()
 	authority := store.repo.(sessiontree.TurnAuthorityRepo)
 	admitted, err := authority.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{

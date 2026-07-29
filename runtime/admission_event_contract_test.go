@@ -57,10 +57,10 @@ func (s *admissionReadEventSink) snapshot() ([]Event, ThreadTurnsPage, error) {
 func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		store func(*testing.T) *Store
+		store func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", store: func(t *testing.T) *Store {
+		{name: "memory", store: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -86,11 +86,11 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 			sink := &admissionReadEventSink{}
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeGatewayConfig("admission event contract"),
-				ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+				modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 					return runtimeGatewayEvents("done"), nil
 				}),
-				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-				Store:                store,
+				modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				store:                store,
 				Sink:                 sink,
 			})
 			if err != nil {

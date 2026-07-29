@@ -27,7 +27,7 @@ func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 	}
 	_, err = factory.NewHost(ctx, turnExecutionOptions{
 		config: runtimeGatewayConfig("missing capability"),
-		modelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			return runtimeGatewayEvents("unused"), nil
 		}),
 		modelGatewayIdentity: runtimeGatewayIdentity("model"), initialized: true,
@@ -40,7 +40,7 @@ func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 func TestModelGatewayCapabilitiesValidateExplicitAuthority(t *testing.T) {
 	t.Parallel()
 
-	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 		return runtimeGatewayEvents("unused"), nil
 	})
 	none := config.ReasoningCapability{Kind: config.ReasoningKindNone}
@@ -49,17 +49,17 @@ func TestModelGatewayCapabilitiesValidateExplicitAuthority(t *testing.T) {
 	negativeBudget := config.ReasoningCapability{Kind: config.ReasoningKindBudget, Budget: config.ReasoningBudget{MinTokens: -1}}
 	tests := []struct {
 		name         string
-		gateway      ModelGateway
-		capabilities ModelGatewayCapabilities
+		gateway      modelGateway
+		capabilities modelGatewayCapabilities
 		wantError    string
 	}{
 		{name: "gateway missing capability", gateway: gateway, wantError: "reasoning capability is required"},
-		{name: "gateway zero capability", gateway: gateway, capabilities: ModelGatewayCapabilities{Reasoning: &zero}, wantError: "must be explicit"},
-		{name: "gateway explicit none", gateway: gateway, capabilities: ModelGatewayCapabilities{Reasoning: &none}},
-		{name: "gateway unknown kind", gateway: gateway, capabilities: ModelGatewayCapabilities{Reasoning: &unknown}, wantError: "unsupported reasoning capability kind"},
-		{name: "gateway invalid budget", gateway: gateway, capabilities: ModelGatewayCapabilities{Reasoning: &negativeBudget}, wantError: "cannot be negative"},
+		{name: "gateway zero capability", gateway: gateway, capabilities: modelGatewayCapabilities{Reasoning: &zero}, wantError: "must be explicit"},
+		{name: "gateway explicit none", gateway: gateway, capabilities: modelGatewayCapabilities{Reasoning: &none}},
+		{name: "gateway unknown kind", gateway: gateway, capabilities: modelGatewayCapabilities{Reasoning: &unknown}, wantError: "unsupported reasoning capability kind"},
+		{name: "gateway invalid budget", gateway: gateway, capabilities: modelGatewayCapabilities{Reasoning: &negativeBudget}, wantError: "cannot be negative"},
 		{name: "native without gateway capability"},
-		{name: "native with gateway capability", capabilities: ModelGatewayCapabilities{Reasoning: &none}, wantError: "native provider host must not provide"},
+		{name: "native with gateway capability", capabilities: modelGatewayCapabilities{Reasoning: &none}, wantError: "native provider host must not provide"},
 	}
 	for _, tt := range tests {
 		tt := tt

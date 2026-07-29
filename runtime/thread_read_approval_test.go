@@ -13,10 +13,10 @@ import (
 func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 	tests := []struct {
 		name  string
-		store func(*testing.T) *Store
+		store func(*testing.T) *runtimeStore
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
-		{name: "sqlite", store: func(t *testing.T) *Store {
+		{name: "memory", store: func(*testing.T) *runtimeStore { return newMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *runtimeStore {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "approval-read.db"))
 			if err != nil {
 				t.Fatal(err)
@@ -45,14 +45,14 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 			)); err != nil {
 				t.Fatal(err)
 			}
-			gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
-				events := make(chan ModelEvent, 2)
+			gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+				events := make(chan modelEvent, 2)
 				if req.Step == 1 {
-					events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
-					events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+					events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+					events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
 				} else {
-					events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
-					events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+					events <- modelEvent{Type: modelEventDelta, Text: "done"}
+					events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 				}
 				close(events)
 				return events, nil
@@ -60,9 +60,9 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 			release := make(chan struct{})
 			host, err := newTestHost(t, providerHostOptions{
 				Config:               runtimeGatewayConfig("test"),
-				ModelGateway:         gateway,
-				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-				Store:                store,
+				modelGateway:         gateway,
+				modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				store:                store,
 				Tools:                registry,
 				EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, _ tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 					select {

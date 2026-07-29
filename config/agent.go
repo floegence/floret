@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// AgentProfile is immutable persona metadata. The canonical prompt belongs to
+// AgentConfig.SystemPrompt and is never duplicated here.
+type AgentProfile struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
 // AgentConfig contains only the provider-neutral persona and model-behavior
 // policy of an Agent. Transport credentials and provider selection do not
 // belong in this contract.

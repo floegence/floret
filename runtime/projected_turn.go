@@ -14,10 +14,10 @@ import (
 	"github.com/floegence/floret/v2/internal/configbridge"
 	"github.com/floegence/floret/v2/internal/engine"
 	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/adapters"
 	"github.com/floegence/floret/v2/internal/session"
 	"github.com/floegence/floret/v2/internal/session/compaction"
 	"github.com/floegence/floret/v2/observation"
+	publicprovider "github.com/floegence/floret/v2/provider"
 	"github.com/floegence/floret/v2/tools"
 )
 
@@ -68,7 +68,7 @@ type ToolSurfaceRequest struct {
 type ToolSurface struct {
 	Tools                 *tools.Registry
 	ToolDefinitions       []tools.ToolDefinition
-	HostedToolDefinitions []HostedToolDefinition
+	HostedToolDefinitions []publicprovider.HostedToolDefinition
 	SystemPrompt          string
 	HostContext           map[string]string
 	Epoch                 string
@@ -77,35 +77,35 @@ type ToolSurface struct {
 
 type ToolSurfaceProvider func(context.Context, ToolSurfaceRequest) (ToolSurface, error)
 
-// ModelGateway lets a host supply model access while Floret still owns the
+// modelGateway lets a host supply model access while Floret still owns the
 // agent loop, tool dispatch, context pressure, and runtime ledgers.
-type ModelGateway interface {
-	StreamModel(context.Context, ModelRequest) (<-chan ModelEvent, error)
+type modelGateway interface {
+	StreamModel(context.Context, modelRequest) (<-chan modelEvent, error)
 }
 
-// ModelGatewayRequestPreparer optionally renders one complete model request
+// modelGatewayRequestPreparer optionally renders one complete model request
 // before Floret applies context pressure and request limits.
-type ModelGatewayRequestPreparer interface {
-	PrepareModelRequest(context.Context, ModelRequest) (PreparedModelRequest, error)
+type modelGatewayRequestPreparer interface {
+	PrepareModelRequest(context.Context, modelRequest) (preparedModelRequest, error)
 }
 
-// PreparedModelRequest is an immutable, single-use rendering of one exact
-// ModelRequest. StreamModel consumes it; Close discards or releases it and must
+// preparedModelRequest is an immutable, single-use rendering of one exact
+// modelRequest. StreamModel consumes it; Close discards or releases it and must
 // be idempotent. Prepared handles are in-memory only.
-type PreparedModelRequest interface {
-	StreamModel(context.Context) (<-chan ModelEvent, error)
-	TokenEstimate() ModelRequestTokenEstimate
+type preparedModelRequest interface {
+	StreamModel(context.Context) (<-chan modelEvent, error)
+	TokenEstimate() modelRequestTokenEstimate
 	RenderedPayloadFingerprint() string
 	Close() error
 }
 
-type ModelRequestTokenEstimateCoverage string
+type modelRequestTokenEstimateCoverage string
 
-const ModelRequestTokenEstimateCoverageComplete ModelRequestTokenEstimateCoverage = "complete_request"
+const modelRequestTokenEstimateCoverageComplete modelRequestTokenEstimateCoverage = "complete_request"
 
-// ModelRequestTokenEstimate covers the complete rendered request, including
+// modelRequestTokenEstimate covers the complete rendered request, including
 // host-expanded attachment payloads.
-type ModelRequestTokenEstimate struct {
+type modelRequestTokenEstimate struct {
 	PrefixTokens         int64
 	MessageTokens        int64
 	ToolDefinitionTokens int64
@@ -113,19 +113,19 @@ type ModelRequestTokenEstimate struct {
 	Source               string
 	Method               string
 	Confidence           string
-	Coverage             ModelRequestTokenEstimateCoverage
+	Coverage             modelRequestTokenEstimateCoverage
 }
 
-// ModelGatewayIdentity names the host-owned model transport used by a
-// ModelGateway-backed Host.
-type ModelGatewayIdentity struct {
+// modelGatewayIdentity names the host-owned model transport used by a
+// modelGateway-backed Host.
+type modelGatewayIdentity struct {
 	Provider              string
 	Model                 string
 	StateCompatibilityKey string
 }
 
-// ModelRequest is the host-safe model request shape passed to ModelGateway.
-type ModelRequest struct {
+// modelRequest is the host-safe model request shape passed to modelGateway.
+type modelRequest struct {
 	RunID           RunID
 	ThreadID        ThreadID
 	TurnID          TurnID
@@ -134,70 +134,70 @@ type ModelRequest struct {
 	Step            int
 	Provider        string
 	Model           string
-	Messages        []ModelMessage
+	Messages        []modelMessage
 	Tools           []tools.ToolDefinition
-	HostedTools     []HostedToolDefinition
+	HostedTools     []publicprovider.HostedToolDefinition
 	MaxOutputTokens int64
 	Reasoning       config.ReasoningSelection
-	PreviousState   *ModelState
+	PreviousState   *modelStateEnvelope
 	Labels          RunLabels
 }
 
-type ModelMessageRole string
+type modelMessageRole string
 
 const (
-	ModelMessageRoleSystem    ModelMessageRole = "system"
-	ModelMessageRoleUser      ModelMessageRole = "user"
-	ModelMessageRoleAssistant ModelMessageRole = "assistant"
-	ModelMessageRoleTool      ModelMessageRole = "tool"
+	modelMessageRoleSystem    modelMessageRole = "system"
+	modelMessageRoleUser      modelMessageRole = "user"
+	modelMessageRoleAssistant modelMessageRole = "assistant"
+	modelMessageRoleTool      modelMessageRole = "tool"
 )
 
-func (r ModelMessageRole) Valid() bool {
+func (r modelMessageRole) Valid() bool {
 	switch r {
-	case ModelMessageRoleSystem, ModelMessageRoleUser, ModelMessageRoleAssistant, ModelMessageRoleTool:
+	case modelMessageRoleSystem, modelMessageRoleUser, modelMessageRoleAssistant, modelMessageRoleTool:
 		return true
 	default:
 		return false
 	}
 }
 
-type ModelToolResult struct {
+type modelToolResult struct {
 	CallID   string `json:"call_id"`
 	ToolName string `json:"tool_name"`
 	Text     string `json:"text,omitempty"`
 }
 
-// ModelMessage is one validated provider-visible message generated by Floret.
-type ModelMessage struct {
-	Role        ModelMessageRole    `json:"role"`
+// modelMessage is one validated provider-visible message generated by Floret.
+type modelMessage struct {
+	Role        modelMessageRole    `json:"role"`
 	Text        string              `json:"text,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	Reasoning   string              `json:"reasoning,omitempty"`
 	ToolCalls   []tools.ToolCall    `json:"tool_calls,omitempty"`
-	ToolResult  *ModelToolResult    `json:"tool_result,omitempty"`
+	ToolResult  *modelToolResult    `json:"tool_result,omitempty"`
 }
 
-func (m ModelMessage) Validate() error {
+func (m modelMessage) Validate() error {
 	return m.validateAttachments(session.ValidateMessageAttachments)
 }
 
-func (m ModelMessage) validateStored() error {
+func (m modelMessage) validateStored() error {
 	return m.validateAttachments(session.ValidateStoredMessageAttachments)
 }
 
-func (m ModelMessage) validateAttachments(validate func([]session.MessageAttachment) error) error {
+func (m modelMessage) validateAttachments(validate func([]session.MessageAttachment) error) error {
 	if !m.Role.Valid() {
 		return fmt.Errorf("unsupported model message role %q", m.Role)
 	}
 	switch m.Role {
-	case ModelMessageRoleSystem:
+	case modelMessageRoleSystem:
 		if strings.TrimSpace(m.Text) == "" {
 			return errors.New("system model message requires text")
 		}
 		if len(m.Attachments) > 0 || m.Reasoning != "" || len(m.ToolCalls) > 0 || m.ToolResult != nil {
 			return errors.New("system model message contains user, assistant, or tool fields")
 		}
-	case ModelMessageRoleUser:
+	case modelMessageRoleUser:
 		if strings.TrimSpace(m.Text) == "" && len(m.Attachments) == 0 {
 			return errors.New("user model message requires text or attachments")
 		}
@@ -207,7 +207,7 @@ func (m ModelMessage) validateAttachments(validate func([]session.MessageAttachm
 		if m.Reasoning != "" || len(m.ToolCalls) > 0 || m.ToolResult != nil {
 			return errors.New("user model message contains assistant or tool fields")
 		}
-	case ModelMessageRoleAssistant:
+	case modelMessageRoleAssistant:
 		if len(m.Attachments) > 0 || m.ToolResult != nil {
 			return errors.New("assistant model message cannot contain attachments or a tool result")
 		}
@@ -230,7 +230,7 @@ func (m ModelMessage) validateAttachments(validate func([]session.MessageAttachm
 				return fmt.Errorf("assistant tool call %q has invalid JSON args", id)
 			}
 		}
-	case ModelMessageRoleTool:
+	case modelMessageRoleTool:
 		if m.ToolResult == nil {
 			return errors.New("tool model message requires a tool result")
 		}
@@ -244,90 +244,67 @@ func (m ModelMessage) validateAttachments(validate func([]session.MessageAttachm
 	return nil
 }
 
-// ModelState is opaque provider continuation state. A ModelGateway interprets
+// modelStateEnvelope is opaque provider continuation state. A modelGateway interprets
 // the provider-specific envelope; Floret owns its cross-turn persistence.
-type ModelState struct {
+type modelStateEnvelope struct {
 	Kind       string            `json:"kind,omitempty"`
 	ID         string            `json:"id,omitempty"`
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
-// ModelEventType is a streamed model event kind.
-type ModelEventType string
+// modelEventType is a streamed model event kind.
+type modelEventType string
 
 const (
-	ModelEventDelta         ModelEventType = "delta"
-	ModelEventReasoning     ModelEventType = "reasoning"
-	ModelEventToolCallStart ModelEventType = "tool_call_start"
-	ModelEventToolCallDelta ModelEventType = "tool_call_delta"
-	ModelEventToolCallEnd   ModelEventType = "tool_call_end"
-	ModelEventToolCalls     ModelEventType = "tool_calls"
-	ModelEventUsage         ModelEventType = "usage"
-	ModelEventSources       ModelEventType = "sources"
-	ModelEventDone          ModelEventType = "done"
-	ModelEventEmpty         ModelEventType = "empty"
-	ModelEventTruncated     ModelEventType = "truncated"
-	ModelEventError         ModelEventType = "error"
+	modelEventDelta            modelEventType = "delta"
+	modelEventReasoning        modelEventType = "reasoning"
+	modelEventToolCallStart    modelEventType = "tool_call_start"
+	modelEventToolCallDelta    modelEventType = "tool_call_delta"
+	modelEventToolCallEnd      modelEventType = "tool_call_end"
+	modelEventToolCalls        modelEventType = "tool_calls"
+	modelEventUsage            modelEventType = "usage"
+	modelEventSources          modelEventType = "sources"
+	modelEventHostedToolCall   modelEventType = "hosted_tool_call"
+	modelEventHostedToolResult modelEventType = "hosted_tool_result"
+	modelEventDone             modelEventType = "done"
+	modelEventEmpty            modelEventType = "empty"
+	modelEventTruncated        modelEventType = "truncated"
+	modelEventError            modelEventType = "error"
 )
 
-// ModelToolCallStream identifies a tool call while the model is still
+// modelToolCallStream identifies a tool call while the model is still
 // generating it. The final executable tool calls are delivered separately by
-// ModelEventToolCalls.
-type ModelToolCallStream struct {
+// modelEventToolCalls.
+type modelToolCallStream struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
-// ModelEvent carries streamed model output.
-type ModelEvent struct {
-	Type           ModelEventType       `json:"type"`
-	Text           string               `json:"text,omitempty"`
-	ToolCallStream *ModelToolCallStream `json:"tool_call_stream,omitempty"`
-	ToolCalls      []tools.ToolCall     `json:"tool_calls,omitempty"`
-	Sources        []SourceRef          `json:"sources,omitempty"`
-	Reason         string               `json:"reason,omitempty"`
-	Usage          ProviderUsage        `json:"usage,omitempty"`
-	ResponseID     string               `json:"response_id,omitempty"`
-	ResponseState  *ModelState          `json:"response_state,omitempty"`
-	Err            error                `json:"-"`
-}
-
-type SourceRef struct {
-	Title string `json:"title,omitempty"`
-	URL   string `json:"url,omitempty"`
-}
-
-type HostedToolDefinition struct {
-	Name        string         `json:"name"`
-	Type        string         `json:"type"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-	Options     map[string]any `json:"options,omitempty"`
+// modelEvent carries streamed model output.
+type modelEvent struct {
+	Type           modelEventType                   `json:"type"`
+	Text           string                           `json:"text,omitempty"`
+	ToolCallStream *modelToolCallStream             `json:"tool_call_stream,omitempty"`
+	ToolCalls      []tools.ToolCall                 `json:"tool_calls,omitempty"`
+	HostedToolCall *publicprovider.ToolCall         `json:"hosted_tool_call,omitempty"`
+	HostedResult   *publicprovider.HostedToolResult `json:"hosted_result,omitempty"`
+	Sources        []publicprovider.Source          `json:"sources,omitempty"`
+	Reason         string                           `json:"reason,omitempty"`
+	Usage          publicprovider.Usage             `json:"usage,omitempty"`
+	ResponseID     string                           `json:"response_id,omitempty"`
+	ResponseState  *modelStateEnvelope              `json:"response_state,omitempty"`
+	Err            error                            `json:"-"`
 }
 
 // RunMetrics summarizes the observable work completed by a run.
 type RunMetrics struct {
-	ProviderUsage ProviderUsage `json:"provider_usage"`
-	Steps         int           `json:"steps"`
-	LLMRequests   int           `json:"llm_requests"`
-	ToolCalls     int           `json:"tool_calls"`
-	Compactions   int           `json:"compactions"`
-	Retries       int           `json:"retries"`
-	WallTimeMS    int64         `json:"wall_time_ms,omitempty"`
-}
-
-// ProviderUsage is normalized provider token and cost usage.
-type ProviderUsage struct {
-	InputTokens       int64   `json:"input_tokens,omitempty"`
-	OutputTokens      int64   `json:"output_tokens,omitempty"`
-	ReasoningTokens   int64   `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens   int64   `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
-	TotalTokens       int64   `json:"total_tokens,omitempty"`
-	CostUSD           float64 `json:"cost_usd,omitempty"`
-	Source            string  `json:"source,omitempty"`
-	Available         bool    `json:"available,omitempty"`
-	WindowInputTokens int64   `json:"window_input_tokens,omitempty"`
+	ProviderUsage publicprovider.Usage `json:"provider_usage"`
+	Steps         int                  `json:"steps"`
+	LLMRequests   int                  `json:"llm_requests"`
+	ToolCalls     int                  `json:"tool_calls"`
+	Compactions   int                  `json:"compactions"`
+	Retries       int                  `json:"retries"`
+	WallTimeMS    int64                `json:"wall_time_ms,omitempty"`
 }
 
 // TurnCompletionPolicy controls how the provider loop may finish. The zero
@@ -426,68 +403,64 @@ func engineManualCompactionRequest(manual ManualCompactionRequest) engine.Manual
 	}
 }
 
-func projectedModelProvider(cfg config.Config, gateway ModelGateway, identity ModelGatewayIdentity, capabilities ModelGatewayCapabilities) (provider.Provider, error) {
-	if gateway != nil {
-		direct := modelGatewayProvider{gateway: gateway, identity: identity}
-		if capabilities.AttachmentPayload == ModelGatewayAttachmentPayloadExpanded {
-			return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
-		}
-		return direct, nil
+func projectedModelProvider(cfg runtimeConfig, gateway modelGateway, identity modelGatewayIdentity, capabilities modelGatewayCapabilities) (provider.Provider, error) {
+	if gateway == nil {
+		return nil, errors.New("provider gateway is required")
 	}
-	return adapters.NewProvider(cfg)
+	direct := modelGatewayProvider{gateway: gateway, identity: identity}
+	if capabilities.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
+		return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
+	}
+	return direct, nil
 }
 
-func resolveModelGatewayHostConfig(cfg config.Config, identity ModelGatewayIdentity) (config.Config, error) {
+func resolveModelGatewayHostConfig(cfg runtimeConfig, identity modelGatewayIdentity) (runtimeConfig, error) {
 	identity, err := normalizeModelGatewayIdentity(identity)
 	if err != nil {
-		return config.Config{}, err
-	}
-	if strings.TrimSpace(cfg.Provider) != "" ||
-		strings.TrimSpace(cfg.Model) != "" ||
-		strings.TrimSpace(cfg.BaseURL) != "" ||
-		strings.TrimSpace(cfg.APIKey) != "" ||
-		strings.TrimSpace(cfg.FakeResponse) != "" {
-		return config.Config{}, errors.New("model gateway host config must not set provider transport fields")
+		return runtimeConfig{}, err
 	}
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
-		return config.Config{}, errors.New("model gateway host config requires context policy context window tokens")
+		return runtimeConfig{}, errors.New("model gateway host config requires context policy context window tokens")
 	}
 	cfg.Provider = identity.Provider
 	cfg.Model = identity.Model
 	resolved, err := resolveProviderFreeModelGatewayConfig(cfg)
 	if err != nil {
-		return config.Config{}, err
+		return runtimeConfig{}, err
 	}
 	return resolved, nil
 }
 
-func resolveProviderFreeModelGatewayConfig(cfg config.Config) (config.Config, error) {
+func resolveProviderFreeModelGatewayConfig(cfg runtimeConfig) (runtimeConfig, error) {
 	if cfg.SkillPromptBudgetBytes <= 0 {
 		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
 	cfg.Reasoning = config.NormalizeReasoningSelection(cfg.Reasoning)
-	if _, err := config.PromptCacheRetention(cfg); err != nil {
-		return config.Config{}, err
+	retention := strings.TrimSpace(cfg.PromptCacheRetention)
+	switch retention {
+	case "", "none", "in_memory", "5m", "1h", "24h":
+	default:
+		return runtimeConfig{}, fmt.Errorf("unsupported prompt cache retention %q", retention)
 	}
 	if !config.ValidateReasoningLevel(cfg.Reasoning.Level) {
-		return config.Config{}, fmt.Errorf("unsupported reasoning level %q", cfg.Reasoning.Level)
+		return runtimeConfig{}, fmt.Errorf("unsupported reasoning level %q", cfg.Reasoning.Level)
 	}
 	cfg.ContextPolicy = configbridge.NormalizeContextPolicy(cfg.ContextPolicy)
-	return config.ResolvePrompt(cfg), nil
+	return cfg, nil
 }
 
-func normalizeModelGatewayIdentity(identity ModelGatewayIdentity) (ModelGatewayIdentity, error) {
+func normalizeModelGatewayIdentity(identity modelGatewayIdentity) (modelGatewayIdentity, error) {
 	identity.Provider = strings.TrimSpace(identity.Provider)
 	identity.Model = strings.TrimSpace(identity.Model)
 	identity.StateCompatibilityKey = strings.TrimSpace(identity.StateCompatibilityKey)
 	if identity.Provider == "" {
-		return ModelGatewayIdentity{}, errors.New("model gateway identity provider is required")
+		return modelGatewayIdentity{}, errors.New("model gateway identity provider is required")
 	}
 	if identity.Model == "" {
-		return ModelGatewayIdentity{}, errors.New("model gateway identity model is required")
+		return modelGatewayIdentity{}, errors.New("model gateway identity model is required")
 	}
 	if identity.StateCompatibilityKey == "" {
-		return ModelGatewayIdentity{}, errors.New("model gateway identity state compatibility key is required")
+		return modelGatewayIdentity{}, errors.New("model gateway identity state compatibility key is required")
 	}
 	return identity, nil
 }
@@ -501,8 +474,8 @@ func projectedReasoningSelection(requested config.ReasoningSelection, fallback c
 }
 
 type modelGatewayProvider struct {
-	gateway  ModelGateway
-	identity ModelGatewayIdentity
+	gateway  modelGateway
+	identity modelGatewayIdentity
 }
 
 type preparedModelGatewayProvider struct {
@@ -517,7 +490,7 @@ func (p preparedModelGatewayProvider) PrepareRequest(ctx context.Context, req pr
 	if err != nil {
 		return nil, err
 	}
-	preparer, ok := p.gateway.(ModelGatewayRequestPreparer)
+	preparer, ok := p.gateway.(modelGatewayRequestPreparer)
 	if !ok {
 		return nil, errors.New("expanded model gateway requires prepared request support")
 	}
@@ -539,7 +512,7 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 	if err != nil {
 		return nil, err
 	}
-	return streamModelGateway(ctx, func(ctx context.Context) (<-chan ModelEvent, error) {
+	return streamModelGateway(ctx, func(ctx context.Context) (<-chan modelEvent, error) {
 		return p.gateway.StreamModel(ctx, modelReq)
 	})
 }
@@ -555,37 +528,37 @@ func (p modelGatewayProvider) EstimateTokens(_ context.Context, req provider.Req
 	return descriptorModelRequestEstimate(modelReq)
 }
 
-func descriptorModelRequestEstimate(modelReq ModelRequest) (provider.TokenEstimate, error) {
+func descriptorModelRequestEstimate(modelReq modelRequest) (provider.TokenEstimate, error) {
 	fullBytes, err := serializedModelRequestBytes(modelReq)
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
 	base := modelReq
-	base.Messages = []ModelMessage{}
+	base.Messages = []modelMessage{}
 	base.Tools = []tools.ToolDefinition{}
-	base.HostedTools = []HostedToolDefinition{}
+	base.HostedTools = []publicprovider.HostedToolDefinition{}
 	baseBytes, err := serializedModelRequestBytes(base)
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
 
 	prefixLength := 0
-	for prefixLength < len(modelReq.Messages) && modelReq.Messages[prefixLength].Role == ModelMessageRoleSystem {
+	for prefixLength < len(modelReq.Messages) && modelReq.Messages[prefixLength].Role == modelMessageRoleSystem {
 		prefixLength++
 	}
-	prefixDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+	prefixDelta, err := serializedModelRequestSectionDelta(base, func(req *modelRequest) {
 		req.Messages = modelReq.Messages[:prefixLength]
 	})
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	messageDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+	messageDelta, err := serializedModelRequestSectionDelta(base, func(req *modelRequest) {
 		req.Messages = modelReq.Messages[prefixLength:]
 	})
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	toolDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+	toolDelta, err := serializedModelRequestSectionDelta(base, func(req *modelRequest) {
 		req.Tools = modelReq.Tools
 		req.HostedTools = modelReq.HostedTools
 	})
@@ -619,7 +592,7 @@ func descriptorModelRequestEstimate(modelReq ModelRequest) (provider.TokenEstima
 	}, nil
 }
 
-func serializedModelRequestSectionDelta(base ModelRequest, add func(*ModelRequest)) (int64, error) {
+func serializedModelRequestSectionDelta(base modelRequest, add func(*modelRequest)) (int64, error) {
 	baseBytes, err := serializedModelRequestBytes(base)
 	if err != nil {
 		return 0, err
@@ -636,7 +609,7 @@ func serializedModelRequestSectionDelta(base ModelRequest, add func(*ModelReques
 	return variantBytes - baseBytes, nil
 }
 
-func serializedModelRequestBytes(req ModelRequest) (int64, error) {
+func serializedModelRequestBytes(req modelRequest) (int64, error) {
 	raw, err := json.Marshal(req)
 	if err != nil {
 		return 0, fmt.Errorf("encode descriptor-only model gateway request estimate: %w", err)
@@ -667,16 +640,16 @@ func providerRequestHasAttachmentDescriptors(req provider.Request) bool {
 	return req.EphemeralUser != nil && len(req.EphemeralUser.Message.Attachments) > 0
 }
 
-func (p modelGatewayProvider) modelRequest(req provider.Request) (ModelRequest, error) {
+func (p modelGatewayProvider) modelRequest(req provider.Request) (modelRequest, error) {
 	providerMessages, err := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
 	if err != nil {
-		return ModelRequest{}, err
+		return modelRequest{}, err
 	}
 	messages, err := runtimeModelMessages(providerMessages)
 	if err != nil {
-		return ModelRequest{}, err
+		return modelRequest{}, err
 	}
-	return ModelRequest{
+	return modelRequest{
 		RunID:           RunID(req.RunID),
 		ThreadID:        ThreadID(req.ThreadID),
 		TurnID:          TurnID(req.TurnID),
@@ -695,7 +668,7 @@ func (p modelGatewayProvider) modelRequest(req provider.Request) (ModelRequest, 
 	}, nil
 }
 
-func streamModelGateway(ctx context.Context, streamModel func(context.Context) (<-chan ModelEvent, error)) (<-chan provider.StreamEvent, error) {
+func streamModelGateway(ctx context.Context, streamModel func(context.Context) (<-chan modelEvent, error)) (<-chan provider.StreamEvent, error) {
 	stream, err := streamModel(ctx)
 	if err != nil {
 		return nil, err
@@ -704,7 +677,7 @@ func streamModelGateway(ctx context.Context, streamModel func(context.Context) (
 	go func() {
 		defer close(out)
 		for {
-			var ev ModelEvent
+			var ev modelEvent
 			var ok bool
 			select {
 			case <-ctx.Done():
@@ -730,14 +703,14 @@ type modelGatewayPreparedRequest struct {
 	streamed     bool
 	closed       bool
 	closeErr     error
-	stream       func(context.Context) (<-chan ModelEvent, error)
+	stream       func(context.Context) (<-chan modelEvent, error)
 	close        func() error
 	estimate     provider.TokenEstimate
 	fingerprint  string
 	enforceLimit bool
 }
 
-func newModelGatewayPreparedRequest(prepared PreparedModelRequest) *modelGatewayPreparedRequest {
+func newModelGatewayPreparedRequest(prepared preparedModelRequest) *modelGatewayPreparedRequest {
 	estimate := prepared.TokenEstimate()
 	return &modelGatewayPreparedRequest{
 		stream: prepared.StreamModel,
@@ -806,14 +779,14 @@ func (p *modelGatewayPreparedRequest) Close() error {
 	return p.closeErr
 }
 
-func runtimeModelMessages(messages []session.Message) ([]ModelMessage, error) {
-	out := make([]ModelMessage, 0, len(messages))
+func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
+	out := make([]modelMessage, 0, len(messages))
 	for index := 0; index < len(messages); {
 		msg := messages[index]
 		switch msg.Role {
 		case session.System, session.User:
-			projected := ModelMessage{
-				Role:        ModelMessageRole(msg.Role),
+			projected := modelMessage{
+				Role:        modelMessageRole(msg.Role),
 				Text:        msg.Content,
 				Attachments: runtimeMessageAttachments(msg.Attachments),
 			}
@@ -823,7 +796,7 @@ func runtimeModelMessages(messages []session.Message) ([]ModelMessage, error) {
 			out = append(out, projected)
 			index++
 		case session.Assistant:
-			projected := ModelMessage{Role: ModelMessageRoleAssistant}
+			projected := modelMessage{Role: modelMessageRoleAssistant}
 			part := messages[index]
 			if part.ToolCallID == "" {
 				projected.Text = part.Content
@@ -848,7 +821,7 @@ func runtimeModelMessages(messages []session.Message) ([]ModelMessage, error) {
 			}
 			out = append(out, projected)
 		case session.Tool:
-			projected := ModelMessage{Role: ModelMessageRoleTool, ToolResult: &ModelToolResult{
+			projected := modelMessage{Role: modelMessageRoleTool, ToolResult: &modelToolResult{
 				CallID: msg.ToolCallID, ToolName: msg.ToolName, Text: msg.Content,
 			}}
 			if err := projected.Validate(); err != nil {
@@ -940,7 +913,7 @@ func sharedToolCallReasoning(calls []tools.ToolCall) string {
 	return reasoning
 }
 
-func validateModelMessageSequence(messages []ModelMessage) error {
+func validateModelMessageSequence(messages []modelMessage) error {
 	type pendingToolCall struct {
 		id   string
 		name string
@@ -948,10 +921,10 @@ func validateModelMessageSequence(messages []ModelMessage) error {
 	pending := make([]pendingToolCall, 0)
 	seenCallIDs := make(map[string]struct{})
 	for index, msg := range messages {
-		if len(pending) > 0 && msg.Role != ModelMessageRoleTool {
+		if len(pending) > 0 && msg.Role != modelMessageRoleTool {
 			return fmt.Errorf("model message %d appears before pending tool results", index)
 		}
-		if msg.Role == ModelMessageRoleAssistant {
+		if msg.Role == modelMessageRoleAssistant {
 			for _, call := range msg.ToolCalls {
 				if _, exists := seenCallIDs[call.ID]; exists {
 					return fmt.Errorf("model message %d repeats tool call id %q", index, call.ID)
@@ -961,7 +934,7 @@ func validateModelMessageSequence(messages []ModelMessage) error {
 			}
 			continue
 		}
-		if msg.Role != ModelMessageRoleTool {
+		if msg.Role != modelMessageRoleTool {
 			continue
 		}
 		result := msg.ToolResult
@@ -999,10 +972,10 @@ func runtimeToolDefinitions(defs []provider.ToolDefinition) []tools.ToolDefiniti
 	return out
 }
 
-func runtimeHostedToolDefinitions(defs []provider.HostedToolDefinition) []HostedToolDefinition {
-	out := make([]HostedToolDefinition, 0, len(defs))
+func runtimeHostedToolDefinitions(defs []provider.HostedToolDefinition) []publicprovider.HostedToolDefinition {
+	out := make([]publicprovider.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		out = append(out, HostedToolDefinition{
+		out = append(out, publicprovider.HostedToolDefinition{
 			Name:        def.Name,
 			Type:        def.Type,
 			Description: def.Description,
@@ -1013,12 +986,18 @@ func runtimeHostedToolDefinitions(defs []provider.HostedToolDefinition) []Hosted
 	return out
 }
 
-func providerStreamEvent(ev ModelEvent) provider.StreamEvent {
+func providerStreamEvent(ev modelEvent) provider.StreamEvent {
+	var hostedCall provider.ToolCall
+	if ev.HostedToolCall != nil {
+		hostedCall = provider.ToolCall{ID: ev.HostedToolCall.ID, Name: ev.HostedToolCall.Name, Args: ev.HostedToolCall.Args}
+	}
 	return provider.StreamEvent{
 		Type:           provider.EventType(ev.Type),
 		Text:           ev.Text,
 		ToolCallStream: providerToolCallStream(ev.ToolCallStream),
 		ToolCalls:      providerToolCalls(ev.ToolCalls),
+		ToolCall:       hostedCall,
+		HostedResult:   internalHostedToolResult(ev.HostedResult),
 		Sources:        providerSourceRefs(ev.Sources),
 		Reason:         ev.Reason,
 		Usage:          providerUsage(ev.Usage),
@@ -1028,7 +1007,27 @@ func providerStreamEvent(ev ModelEvent) provider.StreamEvent {
 	}
 }
 
-func providerToolCallStream(call *ModelToolCallStream) provider.ToolCallStream {
+func internalHostedToolResult(result *publicprovider.HostedToolResult) provider.HostedToolResultData {
+	if result == nil {
+		return provider.HostedToolResultData{}
+	}
+	items := make([]provider.HostedToolResultItem, len(result.Results))
+	for index, item := range result.Results {
+		items[index] = provider.HostedToolResultItem{
+			Title: item.Title, URL: item.URL, Snippet: item.Snippet, Source: item.Source,
+			Metadata: cloneAnyMap(item.Metadata),
+		}
+	}
+	var resultError *provider.HostedToolResultError
+	if result.Error != nil {
+		resultError = &provider.HostedToolResultError{Code: result.Error.Code, Message: result.Error.Message}
+	}
+	return provider.HostedToolResultData{
+		Text: result.Text, Results: items, Error: resultError, Metadata: cloneAnyMap(result.Metadata),
+	}
+}
+
+func providerToolCallStream(call *modelToolCallStream) provider.ToolCallStream {
 	if call == nil {
 		return provider.ToolCallStream{}
 	}
@@ -1046,7 +1045,7 @@ func providerToolCalls(calls []tools.ToolCall) []provider.ToolCall {
 	return out
 }
 
-func providerSourceRefs(in []SourceRef) []provider.SourceRef {
+func providerSourceRefs(in []publicprovider.Source) []provider.SourceRef {
 	out := make([]provider.SourceRef, 0, len(in))
 	for _, ref := range in {
 		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
@@ -1069,18 +1068,18 @@ func providerToolCall(call tools.ToolCall) provider.ToolCall {
 	}
 }
 
-func modelState(in *provider.State) *ModelState {
+func modelState(in *provider.State) *modelStateEnvelope {
 	if in == nil {
 		return nil
 	}
-	return &ModelState{
+	return &modelStateEnvelope{
 		Kind:       in.Kind,
 		ID:         in.ID,
 		Attributes: cloneStringMap(in.Attributes),
 	}
 }
 
-func providerState(in *ModelState) *provider.State {
+func providerState(in *modelStateEnvelope) *provider.State {
 	if in == nil {
 		return nil
 	}
@@ -1109,7 +1108,7 @@ func agentHarnessSupplementalContext(in []TurnSupplementalContextItem) []engine.
 	return out
 }
 
-func providerUsage(in ProviderUsage) provider.Usage {
+func providerUsage(in publicprovider.Usage) provider.Usage {
 	return provider.Usage{
 		InputTokens:       in.InputTokens,
 		OutputTokens:      in.OutputTokens,
@@ -1136,9 +1135,9 @@ func runtimeMetrics(in engine.RunMetrics) RunMetrics {
 	}
 }
 
-func runtimeProviderUsage(in provider.Usage) ProviderUsage {
+func runtimeProviderUsage(in provider.Usage) publicprovider.Usage {
 	in = in.Normalized()
-	return ProviderUsage{
+	return publicprovider.Usage{
 		InputTokens:       in.InputTokens,
 		OutputTokens:      in.OutputTokens,
 		ReasoningTokens:   in.ReasoningTokens,
@@ -1243,7 +1242,7 @@ func providerToolDefinitionsFromRuntime(defs []tools.ToolDefinition) []provider.
 	return out
 }
 
-func providerHostedToolDefinitions(defs []HostedToolDefinition) []provider.HostedToolDefinition {
+func providerHostedToolDefinitions(defs []publicprovider.HostedToolDefinition) []provider.HostedToolDefinition {
 	if defs == nil {
 		return nil
 	}

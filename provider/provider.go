@@ -11,6 +11,12 @@ import (
 	"github.com/floegence/floret/v2/config"
 )
 
+var (
+	// ErrContextOverflow reports that a provider rejected a request because its
+	// rendered context exceeded the model limit.
+	ErrContextOverflow = errors.New("provider context overflow")
+)
+
 // Gateway is the single model-execution path used by every Agent.
 type Gateway interface {
 	Identity() Identity
@@ -264,6 +270,11 @@ const (
 	EventUsage EventType = "usage"
 	// EventSources reports provider citations.
 	EventSources EventType = "sources"
+	// EventHostedToolCall reports a provider-native tool invocation.
+	EventHostedToolCall EventType = "hosted_tool_call"
+	// EventHostedToolResult reports the structured result of a provider-native
+	// tool invocation.
+	EventHostedToolResult EventType = "hosted_tool_result"
 	// EventDone terminates a successful provider step.
 	EventDone EventType = "done"
 	// EventEmpty terminates an empty provider step.
@@ -282,16 +293,42 @@ type ToolCallStream struct {
 
 // Event carries one streamed provider output.
 type Event struct {
-	Type           EventType       `json:"type"`
-	Text           string          `json:"text,omitempty"`
-	ToolCallStream *ToolCallStream `json:"tool_call_stream,omitempty"`
-	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
-	Sources        []Source        `json:"sources,omitempty"`
-	Reason         string          `json:"reason,omitempty"`
-	Usage          Usage           `json:"usage,omitempty"`
-	ResponseID     string          `json:"response_id,omitempty"`
-	ResponseState  *State          `json:"response_state,omitempty"`
-	Err            error           `json:"-"`
+	Type           EventType         `json:"type"`
+	Text           string            `json:"text,omitempty"`
+	ToolCallStream *ToolCallStream   `json:"tool_call_stream,omitempty"`
+	ToolCalls      []ToolCall        `json:"tool_calls,omitempty"`
+	HostedToolCall *ToolCall         `json:"hosted_tool_call,omitempty"`
+	HostedResult   *HostedToolResult `json:"hosted_result,omitempty"`
+	Sources        []Source          `json:"sources,omitempty"`
+	Reason         string            `json:"reason,omitempty"`
+	Usage          Usage             `json:"usage,omitempty"`
+	ResponseID     string            `json:"response_id,omitempty"`
+	ResponseState  *State            `json:"response_state,omitempty"`
+	Err            error             `json:"-"`
+}
+
+// HostedToolResult is a provider-neutral projection of provider-native tool
+// output.
+type HostedToolResult struct {
+	Text     string                 `json:"text,omitempty"`
+	Results  []HostedToolResultItem `json:"results,omitempty"`
+	Error    *HostedToolResultError `json:"error,omitempty"`
+	Metadata map[string]any         `json:"metadata,omitempty"`
+}
+
+// HostedToolResultItem is one structured provider-native result item.
+type HostedToolResultItem struct {
+	Title    string         `json:"title,omitempty"`
+	URL      string         `json:"url,omitempty"`
+	Snippet  string         `json:"snippet,omitempty"`
+	Source   string         `json:"source,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// HostedToolResultError describes a provider-native tool failure.
+type HostedToolResultError struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // Source is one provider citation.

@@ -19,8 +19,8 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
-	requests := make(chan ModelRequest, 4)
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	requests := make(chan modelRequest, 4)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests <- req
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			return runtimeGatewayEvents("Generated title"), nil
@@ -37,10 +37,10 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                   cfg,
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     runtimeGatewayIdentity("deepseek-like-model"),
-		ModelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning},
-		Store:                    store,
+		modelGateway:             gateway,
+		modelGatewayIdentity:     runtimeGatewayIdentity("deepseek-like-model"),
+		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning},
+		store:                    store,
 		ThreadTitleMode:          ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -55,7 +55,7 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var mainRequest, titleRequest ModelRequest
+	var mainRequest, titleRequest modelRequest
 	for range 2 {
 		select {
 		case req := <-requests:
@@ -89,8 +89,8 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
-	requests := make(chan ModelRequest, 2)
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	requests := make(chan modelRequest, 2)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests <- req
 		return runtimeGatewayEvents("child completed"), nil
 	})
@@ -106,7 +106,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	}
 	host, err := factory.NewHost(ctx, subAgentOptions{
 		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"),
-		modelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning}, initialized: true,
+		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning}, initialized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 		t.Fatalf("WaitSubAgents() = %#v, %v", waited, err)
 	}
 
-	var mainRequest ModelRequest
+	var mainRequest modelRequest
 	select {
 	case mainRequest = <-requests:
 	case <-time.After(time.Second):
@@ -144,8 +144,8 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
-	requests := make(chan ModelRequest, 8)
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	requests := make(chan modelRequest, 8)
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests <- req
 		if req.TurnID == "" {
 			return runtimeGatewayEvents("compacted summary"), nil
@@ -158,7 +158,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 		Kind: config.ReasoningKindEffort, SupportedLevels: []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
 		DefaultLevel: config.ReasoningLevelHigh, DisableSupported: true,
 	}
-	gatewayCapabilities := ModelGatewayCapabilities{Reasoning: &reasoning}
+	gatewayCapabilities := modelGatewayCapabilities{Reasoning: &reasoning}
 	turnFactory, err := capabilities.turn.Bind("thread")
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var compactionRequest ModelRequest
+	var compactionRequest modelRequest
 	deadline := time.After(time.Second)
 	for compactionRequest.RunID == "" {
 		select {
@@ -219,7 +219,7 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 		completeAttempted: make(chan struct{}),
 	}
 	store.repo = faultRepo
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			return runtimeGatewayEvents("Generated title"), nil
 		}
@@ -227,9 +227,9 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ThreadTitleMode:      ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -251,7 +251,7 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 
 	closeErr := store.Close()
 	if !errors.Is(closeErr, completeErr) || !errors.Is(closeErr, failErr) {
-		t.Fatalf("Store.Close err = %v, want completion and failure settlement errors", closeErr)
+		t.Fatalf("store.Close err = %v, want completion and failure settlement errors", closeErr)
 	}
 	store.lifetimeMu.Lock()
 	activeOperations := store.activeOperations
@@ -278,7 +278,7 @@ func TestStoreCloseJoinsBackgroundAndStorageErrors(t *testing.T) {
 
 	err := store.Close()
 	if !errors.Is(err, backgroundErr) || !errors.Is(err, storageErr) {
-		t.Fatalf("Store.Close err = %v, want background and storage errors", err)
+		t.Fatalf("store.Close err = %v, want background and storage errors", err)
 	}
 	store.lifetimeMu.Lock()
 	state := store.lifetimeState
@@ -312,8 +312,8 @@ func TestAutomaticTitleRecoveryRetriesAfterPartialFailure(t *testing.T) {
 
 	newHost := func() error {
 		_, err := newTestHost(t, providerHostOptions{
-			Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "unused"},
-			Store:  store,
+			Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+			store:  store,
 		})
 		return err
 	}
@@ -391,8 +391,8 @@ func TestProviderHostOpensAfterReopenedClosedChildTitle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	if _, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "unused"},
-		Store:  reopened,
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+		store:  reopened,
 	}); err != nil {
 		t.Fatalf("provider host open after closed child title: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 	titleStarted := make(chan struct{})
 	releaseTitle := make(chan struct{})
 	var titleOnce sync.Once
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			titleOnce.Do(func() { close(titleStarted) })
 			<-releaseTitle
@@ -414,9 +414,9 @@ func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ThreadTitleMode:      ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -444,7 +444,7 @@ func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 	}
 	close(releaseTitle)
 	if err := store.Close(); err != nil {
-		t.Fatalf("Store.Close reported deleted automatic title as a background failure: %v", err)
+		t.Fatalf("store.Close reported deleted automatic title as a background failure: %v", err)
 	}
 }
 
@@ -462,7 +462,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	var mainOnce sync.Once
 	var titleStartOnce sync.Once
 	var titleCancelOnce sync.Once
-	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			titleStartOnce.Do(func() { close(titleStarted) })
 			<-ctx.Done()
@@ -471,7 +471,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 			return nil, ctx.Err()
 		}
 		mainOnce.Do(func() { close(mainStarted) })
-		events := make(chan ModelEvent)
+		events := make(chan modelEvent)
 		go func() {
 			<-ctx.Done()
 			close(events)
@@ -480,9 +480,9 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ThreadTitleMode:      ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -536,7 +536,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	activeOperations := store.activeOperations
 	store.lifetimeMu.Unlock()
 	if activeOperations != 0 {
-		t.Fatalf("Store active operations at RunTurn return = %d, want 0", activeOperations)
+		t.Fatalf("store active operations at RunTurn return = %d, want 0", activeOperations)
 	}
 	overview, err := host.ReadThreadOverview(context.Background(), "thread")
 	if err != nil {
@@ -548,11 +548,11 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 }
 
 func TestModelGatewayProviderCancelsNeverClosingUpstreamStream(t *testing.T) {
-	upstream := make(chan ModelEvent)
+	upstream := make(chan modelEvent)
 	started := make(chan struct{})
 	var once sync.Once
 	adapter := modelGatewayProvider{
-		gateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		gateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			once.Do(func() { close(started) })
 			return upstream, nil
 		}),
@@ -598,19 +598,19 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	titleStarted := make(chan struct{})
 	var mainOnce sync.Once
 	var titleOnce sync.Once
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		if strings.HasSuffix(string(req.RunID), ":thread-title") {
 			titleOnce.Do(func() { close(titleStarted) })
 		} else {
 			mainOnce.Do(func() { close(mainStarted) })
 		}
-		return make(chan ModelEvent), nil
+		return make(chan modelEvent), nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("gateway system"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 		ThreadTitleMode:      ThreadTitleModeProvider,
 	})
 	if err != nil {
@@ -662,7 +662,7 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	activeOperations := store.activeOperations
 	store.lifetimeMu.Unlock()
 	if activeOperations != 0 {
-		t.Fatalf("Store active operations after cancellation = %d, want 0", activeOperations)
+		t.Fatalf("store active operations after cancellation = %d, want 0", activeOperations)
 	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- store.Close() }()
@@ -673,7 +673,7 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 		}
 		closed = true
 	case <-time.After(3 * time.Second):
-		t.Fatal("Store.Close blocked on never-closing model stream")
+		t.Fatal("store.Close blocked on never-closing model stream")
 	}
 }
 

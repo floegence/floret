@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v2/config"
 	"github.com/floegence/floret/v2/internal/engine"
 	"github.com/floegence/floret/v2/internal/provider"
 	"github.com/floegence/floret/v2/internal/provider/cache"
@@ -24,7 +23,7 @@ import (
 )
 
 func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
-	p, err := NewProvider(config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
+	p, err := NewProvider(Config{Provider: catalog.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,7 @@ func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
 }
 
 func TestFakeProviderUsesGenericRequestEstimateIncludingTools(t *testing.T) {
-	p, err := NewProvider(config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
+	p, err := NewProvider(Config{Provider: catalog.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +109,8 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(config.Config{
-		Provider: config.ProviderOpenAICompatible,
+	p, err := NewProvider(Config{
+		Provider: catalog.ProviderOpenAICompatible,
 		Model:    "remote-model",
 		BaseURL:  server.URL,
 		APIKey:   "secret",
@@ -443,7 +442,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
-	p, err := NewProvider(config.Config{Provider: config.ProviderOpenAICompatible, Model: "remote-model", BaseURL: server.URL, APIKey: "secret"})
+	p, err := NewProvider(Config{Provider: catalog.ProviderOpenAICompatible, Model: "remote-model", BaseURL: server.URL, APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +474,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(config.Config{Provider: "openai", Model: "gpt-5.4", BaseURL: server.URL, APIKey: "secret"})
+	p, err := NewProvider(Config{Provider: "openai", Model: "gpt-5.4", BaseURL: server.URL, APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +562,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testin
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret", PromptCacheRetention: "5m"})
+	p, err := NewProvider(Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret", PromptCacheRetention: "5m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2108,8 +2107,8 @@ func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(config.Config{
-		Provider: config.ProviderOpenAICompatible,
+	p, err := NewProvider(Config{
+		Provider: catalog.ProviderOpenAICompatible,
 		Model:    "remote-model",
 		BaseURL:  server.URL,
 		APIKey:   "secret",
@@ -2133,7 +2132,7 @@ func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
 	defer server.Close()
 
 	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
-	p, err := NewProvider(config.Config{Provider: "deepseek", Model: "deepseek-chat", BaseURL: server.URL})
+	p, err := NewProvider(Config{Provider: "deepseek", Model: "deepseek-chat", BaseURL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,17 +13,17 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
-		run  func(*testing.T, func(*Store))
+		run  func(*testing.T, func(*runtimeStore))
 	}{
 		{
 			name: "memory",
-			run: func(t *testing.T, verify func(*Store)) {
+			run: func(t *testing.T, verify func(*runtimeStore)) {
 				verify(newMemoryStore())
 			},
 		},
 		{
 			name: "sqlite_reopen",
-			run: func(t *testing.T, verify func(*Store)) {
+			run: func(t *testing.T, verify func(*runtimeStore)) {
 				path := filepath.Join(t.TempDir(), "floret.db")
 				store, err := openSQLiteStoreForTest(path)
 				if err != nil {
@@ -58,7 +58,7 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.run(t, func(store *Store) {
+			tc.run(t, func(store *runtimeStore) {
 				maintenance, err := newTestMaintenanceHost(t, store)
 				if err != nil {
 					t.Fatal(err)

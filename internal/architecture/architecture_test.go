@@ -264,19 +264,6 @@ func TestExamplesUseOnlyPublicFloretPackages(t *testing.T) {
 	}
 }
 
-func TestFloretStoreCommandUsesOnlyPublicStorageContracts(t *testing.T) {
-	imports := packageImports(t, filepath.Join("cmd", "floret-store"), false, true)
-	if !imports[modulePath+"/runtime"] {
-		t.Fatal("floret-store must delegate maintenance to the public runtime package")
-	}
-	allowed := map[string]bool{modulePath + "/runtime": true, modulePath + "/storage": true}
-	for imported := range imports {
-		if strings.HasPrefix(imported, modulePath+"/") && !allowed[imported] {
-			t.Fatalf("floret-store must not import Floret package %s", imported)
-		}
-	}
-}
-
 func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
 	for _, pkg := range []string{"./config", "./provider", "./runtime", "./storage", "./tools", "./observation"} {
 		out, err := exec.Command("go", "doc", "-all", pkg).CombinedOutput()
@@ -306,7 +293,7 @@ func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
 }
 
 func TestPublicConfigDoesNotExposeExecutionStorageWiring(t *testing.T) {
-	text := readTextFile(t, filepath.Join("config", "config.go"))
+	text := readGoFiles(t, "config")
 	for _, forbidden := range []string{"RunID", "PromptScopeID", "PromptCacheDir", "FLORET_RUN_ID", "FLORET_PROMPT_CACHE_DIR"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("config package exposes runtime/storage wiring %q", forbidden)
@@ -706,6 +693,22 @@ func TestV2RemovesLegacyHostCapabilityGraph(t *testing.T) {
 		"NewMemoryStore",
 		"OpenSQLiteStore",
 		"ConfigureHostCapabilities",
+		"type ModelGateway ",
+		"type ModelGatewayRequestPreparer ",
+		"type PreparedModelRequest ",
+		"type ModelGatewayIdentity ",
+		"type ModelGatewayCapabilities ",
+		"type ModelRequest ",
+		"type ModelMessage ",
+		"type ModelEvent ",
+		"type ModelState ",
+		"type SQLiteStore",
+		"type Store ",
+		"type StoreSchema",
+		"InspectSQLiteStore",
+		"VerifySQLiteStore",
+		"StartSQLiteStore",
+		"MigrateSQLiteStore",
 	} {
 		if strings.Contains(string(output), forbidden) {
 			t.Errorf("v2 public API retains legacy contract %q", forbidden)
@@ -1506,6 +1509,18 @@ func readTextFile(t *testing.T, file string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func readGoFiles(t *testing.T, directory string) string {
+	t.Helper()
+	var source strings.Builder
+	for _, file := range walkAllFiles(t, directory) {
+		if filepath.Ext(file) == ".go" {
+			source.WriteString(readTextFile(t, file))
+			source.WriteByte('\n')
+		}
+	}
+	return source.String()
 }
 
 func hasOKFFrontmatter(text string) bool {

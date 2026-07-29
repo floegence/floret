@@ -3,51 +3,73 @@ package adapters
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
-	"github.com/floegence/floret/v2/config"
 	"github.com/floegence/floret/v2/internal/provider"
 	"github.com/floegence/floret/v2/internal/provider/catalog"
 )
 
-func NewProvider(cfg config.Config) (provider.Provider, error) {
-	resolved, err := config.Resolve(cfg, nil)
-	if err != nil {
-		return nil, err
+type Config struct {
+	Provider             string
+	Model                string
+	BaseURL              string
+	APIKey               string
+	FakeResponse         string
+	PromptCacheRetention string
+}
+
+func NewProvider(configuration Config) (provider.Provider, error) {
+	providerName := catalog.NormalizeProvider(configuration.Provider)
+	if !catalog.SupportsProvider(providerName) {
+		return nil, fmt.Errorf("unsupported provider %q", providerName)
 	}
-	model, _ := catalog.FindModel(resolved.Provider, resolved.Model)
-	switch catalog.APIKind(resolved.Provider) {
+	modelName := strings.TrimSpace(configuration.Model)
+	if modelName == "" {
+		if model, found := catalog.DefaultModel(providerName); found {
+			modelName = model.ID
+		}
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(configuration.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(catalog.DefaultBaseURL(providerName), "/")
+	}
+	apiKey := strings.TrimSpace(configuration.APIKey)
+	if apiKey == "" {
+		for _, key := range catalog.EnvKeys(providerName) {
+			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+				apiKey = value
+				break
+			}
+		}
+	}
+	model, _ := catalog.FindModel(providerName, modelName)
+	switch catalog.APIKind(providerName) {
 	case catalog.APIFake:
-		return FakeProvider{Response: cfg.FakeResponse}, nil
+		response := configuration.FakeResponse
+		if response == "" {
+			response = "ok"
+		}
+		return FakeProvider{Response: response}, nil
 	case catalog.APIOpenAIChat:
-		modelID := resolved.Model
+		modelID := modelName
 		if model.OpenAIModelID != "" {
 			modelID = model.OpenAIModelID
 		}
 		return OpenAICompatibleProvider{
-			Endpoint:  strings.TrimRight(resolved.BaseURL, "/") + "/chat/completions",
-			APIKey:    resolved.APIKey,
-			Model:     modelID,
-			CostModel: model,
-			Cache:     catalog.Cache(resolved.Provider, resolved.Model),
-
-			HTTPClient: http.DefaultClient,
+			Endpoint: baseURL + "/chat/completions", APIKey: apiKey, Model: modelID,
+			CostModel: model, Cache: catalog.Cache(providerName, modelName), HTTPClient: http.DefaultClient,
 		}, nil
 	case catalog.APIAnthropicMessages:
-		modelID := resolved.Model
+		modelID := modelName
 		if model.AnthropicModel != "" {
 			modelID = model.AnthropicModel
 		}
 		return AnthropicProvider{
-			Endpoint:   strings.TrimRight(resolved.BaseURL, "/") + "/messages",
-			APIKey:     resolved.APIKey,
-			Model:      modelID,
-			MaxTokens:  model.MaxTokens,
-			CostModel:  model,
-			Cache:      catalog.Cache(resolved.Provider, resolved.Model),
-			HTTPClient: http.DefaultClient,
+			Endpoint: baseURL + "/messages", APIKey: apiKey, Model: modelID, MaxTokens: model.MaxTokens,
+			CostModel: model, Cache: catalog.Cache(providerName, modelName), HTTPClient: http.DefaultClient,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q", resolved.Provider)
+		return nil, fmt.Errorf("unsupported provider %q", providerName)
 	}
 }

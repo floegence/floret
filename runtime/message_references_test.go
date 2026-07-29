@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
 	"github.com/floegence/floret/v2/internal/engine"
 	"github.com/floegence/floret/v2/internal/session"
 	"github.com/floegence/floret/v2/internal/sessiontree"
@@ -265,11 +264,11 @@ func TestHostRejectsInvalidReferenceBeforeAdmissionWithoutMutation(t *testing.T)
 			store := newMemoryStore()
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeGatewayConfig("invalid reference"),
-				ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+				modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 					return runtimeGatewayEvents("unexpected"), nil
 				}),
-				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-				Store:                store,
+				modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				store:                store,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -305,8 +304,8 @@ func TestHostRejectsInvalidReferenceBeforeAdmissionWithoutMutation(t *testing.T)
 func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		mu.Lock()
 		requests = append(requests, req)
 		index := len(requests)
@@ -315,9 +314,9 @@ func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testi
 	})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("reference-only contract"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGateway:         gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -365,11 +364,11 @@ func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
 	defer store.Close()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeGatewayConfig("reference-only sqlite"),
-		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			return runtimeGatewayEvents("done"), nil
 		}),
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,9 +434,9 @@ func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			host, err := newTestHost(t, providerHostOptions{Config: runtimeGatewayConfig("test"), ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			host, err := newTestHost(t, providerHostOptions{Config: runtimeGatewayConfig("test"), modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 				return runtimeGatewayEvents("unexpected"), nil
-			}), ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: newMemoryStore()})
+			}), modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: newMemoryStore()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -472,7 +471,7 @@ func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	gateway := runtimeModelGateway(func(ctx context.Context, _ ModelRequest) (<-chan ModelEvent, error) {
+	gateway := runtimeModelGateway(func(ctx context.Context, _ modelRequest) (<-chan modelEvent, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 		}
@@ -484,7 +483,7 @@ func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 		return runtimeGatewayEvents("done"), nil
 	})
 	newHost := func() *testProviderFacade {
-		host, err := newTestHost(t, providerHostOptions{Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: store})
+		host, err := newTestHost(t, providerHostOptions{Config: runtimeGatewayConfig("test"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: store})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -565,12 +564,12 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	var calls atomic.Int64
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeGatewayConfig("exact reference replay"),
-		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			index := calls.Add(1)
 			return runtimeGatewayEvents(map[int64]string{1: "original answer", 2: "retry answer"}[index]), nil
 		}),
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -622,12 +621,12 @@ func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
 	var calls atomic.Int64
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeGatewayConfig("reference-only no retry"),
-		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			calls.Add(1)
 			return nil, errors.New("provider failed")
 		}),
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                newMemoryStore(),
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -663,11 +662,11 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeGatewayConfig("test"),
-		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		modelGateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			return runtimeGatewayEvents("done"), nil
 		}),
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		store:                store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -717,8 +716,8 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "child done", SystemPrompt: "test"},
-		Store:  newMemoryStore(),
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "child done", SystemPrompt: "test"},
+		store:  newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -754,10 +753,10 @@ func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.
 	}
 }
 
-func modelRequestTexts(req ModelRequest) []string {
+func modelRequestTexts(req modelRequest) []string {
 	out := make([]string, 0, len(req.Messages))
 	for _, message := range req.Messages {
-		if message.Role == ModelMessageRoleUser {
+		if message.Role == modelMessageRoleUser {
 			out = append(out, message.Text)
 		}
 	}

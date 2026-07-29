@@ -11,7 +11,7 @@ import (
 	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
-// hostBootstrap is an active, one-time composition scope for one opened Store.
+// hostBootstrap is an active, one-time composition scope for one opened store.
 // configureHostCapabilities seals it before returning to the caller.
 type hostBootstrap struct {
 	state *hostBootstrapState
@@ -19,7 +19,7 @@ type hostBootstrap struct {
 
 type hostBootstrapState struct {
 	mu     sync.Mutex
-	store  *Store
+	store  *runtimeStore
 	lease  *capabilityLease
 	active bool
 }
@@ -31,63 +31,63 @@ type capabilityLease struct {
 
 // threadCreateBinder issues only canonical root-thread create handles.
 type threadCreateBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadReadBinder issues only root-thread read handles.
 type threadReadBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadInventoryCapability lists canonical root threads for composition and
 // maintenance coordinators. It is not reachable from a normal run.
 type threadInventoryCapability struct {
-	store   *Store
+	store   *runtimeStore
 	harness *agentharness.AgentHarness
 	lease   *capabilityLease
 }
 
 // threadTitleBinder issues only root-thread title handles.
 type threadTitleBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadForkBinder issues only root-thread fork handles.
 type threadForkBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadDeleteBinder issues only root-thread delete handles.
 type threadDeleteBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // subAgentReadBinder issues only parent-bound child read handles.
 type subAgentReadBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // pendingToolRecoveryBinder issues only provider-free recovery settlement handles.
 type pendingToolRecoveryBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // interruptedTurnRecoveryBinder issues only exact interrupted-turn recovery factories.
 type interruptedTurnRecoveryBinder struct {
-	store *Store
+	store *runtimeStore
 	lease *capabilityLease
 }
 
 // threadCreateCapability is the coordinator capability that creates a canonical thread.
 type threadCreateCapability struct {
-	store          *Store
+	store          *runtimeStore
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
 	createIntentID CreateIntentID
@@ -95,42 +95,42 @@ type threadCreateCapability struct {
 
 // threadReadCapability reads one bound top-level canonical thread without mutation.
 type threadReadCapability struct {
-	store    *Store
+	store    *runtimeStore
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
 // subAgentReadCapability reads child lifecycle and detail under one bound parent.
 type subAgentReadCapability struct {
-	store          *Store
+	store          *runtimeStore
 	harness        *agentharness.AgentHarness
 	parentThreadID ThreadID
 }
 
 // threadTitleCapability writes the canonical title for one bound root thread.
 type threadTitleCapability struct {
-	store    *Store
+	store    *runtimeStore
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
 // threadForkCapability forks one bound canonical root thread.
 type threadForkCapability struct {
-	store    *Store
+	store    *runtimeStore
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
 // threadDeleteCapability deletes one bound canonical root thread tree.
 type threadDeleteCapability struct {
-	store    *Store
+	store    *runtimeStore
 	threadID ThreadID
 }
 
 // pendingToolRecoveryCapability settles host-owned pending tool work when no active
 // provider owner exists for the bound thread or parent.
 type pendingToolRecoveryCapability struct {
-	store          *Store
+	store          *runtimeStore
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
 	parentThreadID ThreadID
@@ -144,7 +144,7 @@ type interruptedTurnRecoveryFactory struct {
 
 type interruptedTurnRecoveryFactoryState struct {
 	mu             sync.Mutex
-	store          *Store
+	store          *runtimeStore
 	threadID       ThreadID
 	parentThreadID ThreadID
 	latestLease    sessiontree.TurnLease
@@ -153,7 +153,7 @@ type interruptedTurnRecoveryFactoryState struct {
 
 // interruptedTurnRecoveryCapability finalizes one exact expired turn authority proof.
 type interruptedTurnRecoveryCapability struct {
-	store          *Store
+	store          *runtimeStore
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
 	parentThreadID ThreadID
@@ -161,10 +161,10 @@ type interruptedTurnRecoveryCapability struct {
 	factoryState   *interruptedTurnRecoveryFactoryState
 }
 
-// configureHostCapabilities exposes one short-lived bootstrap scope. The Store
+// configureHostCapabilities exposes one short-lived bootstrap scope. The store
 // rejects a second configuration attempt. Callers may retain only narrow binders
 // created during configure; those binders become active after configure succeeds.
-func configureHostCapabilities(store *Store, configure func(*hostBootstrap) error) (err error) {
+func configureHostCapabilities(store *runtimeStore, configure func(*hostBootstrap) error) (err error) {
 	if err := validateCapabilityStore(store); err != nil {
 		return err
 	}
@@ -569,7 +569,7 @@ func (b *interruptedTurnRecoveryBinder) bindThread(ctx context.Context, threadID
 	return newInterruptedTurnRecoveryFactory(b.store, snapshot, "")
 }
 
-func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.ThreadAuthoritySnapshot, parentThreadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
+func newInterruptedTurnRecoveryFactory(store *runtimeStore, snapshot sessiontree.ThreadAuthoritySnapshot, parentThreadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
 	if store == nil || store.repo == nil {
 		return nil, errors.New("runtime store is required")
 	}
@@ -716,28 +716,28 @@ func validateInterruptedRecoveryLifecycle(meta sessiontree.ThreadMeta, parentThr
 	}
 }
 
-func validateCapabilityStore(store *Store) error {
+func validateCapabilityStore(store *runtimeStore) error {
 	if store == nil {
 		return errors.New("thread capability store is required")
 	}
 	return store.validate()
 }
 
-func beginHostOperation(store *Store) (func(), error) {
+func beginHostOperation(store *runtimeStore) (func(), error) {
 	if store == nil {
 		return nil, errors.New("thread capability store is required")
 	}
 	return store.beginOperation()
 }
 
-func beginHostOperationContext(store *Store, ctx context.Context) (context.Context, func(), error) {
+func beginHostOperationContext(store *runtimeStore, ctx context.Context) (context.Context, func(), error) {
 	if store == nil {
 		return nil, nil, errors.New("thread capability store is required")
 	}
 	return store.beginOperationContext(ctx)
 }
 
-func capabilityScope(bootstrap *hostBootstrap) (*Store, *capabilityLease, error) {
+func capabilityScope(bootstrap *hostBootstrap) (*runtimeStore, *capabilityLease, error) {
 	if bootstrap == nil || bootstrap.state == nil {
 		return nil, nil, errors.New("host bootstrap is required")
 	}
@@ -765,7 +765,7 @@ func (state *hostBootstrapState) seal(publish bool) {
 	lease.setActive(publish)
 }
 
-func validateCapabilityBinder(store *Store, lease *capabilityLease, name string) error {
+func validateCapabilityBinder(store *runtimeStore, lease *capabilityLease, name string) error {
 	if store == nil || lease == nil {
 		return fmt.Errorf("%s is required", name)
 	}
@@ -793,7 +793,7 @@ func (lease *capabilityLease) isActive() bool {
 	return lease.active
 }
 
-func newCapabilityHarness(store *Store, sink EventSink) (*agentharness.AgentHarness, error) {
+func newCapabilityHarness(store *runtimeStore, sink EventSink) (*agentharness.AgentHarness, error) {
 	if err := validateCapabilityStore(store); err != nil {
 		return nil, err
 	}

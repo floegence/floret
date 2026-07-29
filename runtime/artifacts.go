@@ -69,7 +69,7 @@ func normalizeArtifactReadRequest(req ReadArtifactRequest) (ThreadID, ArtifactID
 	return threadID, artifactID, nil
 }
 
-func readArtifact(ctx context.Context, store *Store, req sessiontree.ArtifactReadRequest) (ArtifactContent, error) {
+func readArtifact(ctx context.Context, store *runtimeStore, req sessiontree.ArtifactReadRequest) (ArtifactContent, error) {
 	repo, ok := store.repo.(sessiontree.ArtifactAuthorityRepo)
 	if !ok {
 		return ArtifactContent{}, ErrUnsupportedStoreCapability

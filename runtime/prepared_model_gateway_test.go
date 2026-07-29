@@ -12,12 +12,13 @@ import (
 	"github.com/floegence/floret/v2/internal/provider"
 	"github.com/floegence/floret/v2/internal/session"
 	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	publicprovider "github.com/floegence/floret/v2/provider"
 )
 
 func TestModelGatewayExpandedAttachmentsRequirePreparedRequests(t *testing.T) {
 	capabilities := runtimeGatewayCapabilities()
-	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
-	direct := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+	capabilities.AttachmentPayload = modelGatewayAttachmentPayloadExpanded
+	direct := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 		return runtimeGatewayEvents("unused"), nil
 	})
 	if err := capabilities.validate(direct); err == nil {
@@ -38,13 +39,13 @@ func TestPreparedModelGatewayConsumesExactPreparedRequestAndRecordsFingerprint(t
 	store := newMemoryStore()
 	gateway := &recordingPreparedModelGateway{}
 	capabilities := runtimeGatewayCapabilities()
-	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
+	capabilities.AttachmentPayload = modelGatewayAttachmentPayloadExpanded
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                   runtimeGatewayConfig("prepared gateway"),
-		ModelGateway:             gateway,
-		ModelGatewayIdentity:     runtimeGatewayIdentity("prepared-model"),
-		ModelGatewayCapabilities: capabilities,
-		Store:                    store,
+		modelGateway:             gateway,
+		modelGatewayIdentity:     runtimeGatewayIdentity("prepared-model"),
+		modelGatewayCapabilities: capabilities,
+		store:                    store,
 		IDGenerator:              deterministicIDs(),
 	})
 	if err != nil {
@@ -69,7 +70,7 @@ func TestPreparedModelGatewayConsumesExactPreparedRequestAndRecordsFingerprint(t
 	gateway.mu.Lock()
 	prepareCalls := gateway.prepareCalls
 	directCalls := gateway.directCalls
-	requests := append([]ModelRequest(nil), gateway.requests...)
+	requests := append([]modelRequest(nil), gateway.requests...)
 	handles := append([]*recordingPreparedModelRequest(nil), gateway.handles...)
 	gateway.mu.Unlock()
 	if prepareCalls != 1 || directCalls != 0 || len(requests) != 1 || len(handles) != 1 {
@@ -107,9 +108,9 @@ func TestPreparedModelGatewayConsumesExactPreparedRequestAndRecordsFingerprint(t
 func TestDescriptorOnlyGatewayKeepsLegacyDirectStreamEvenWhenPreparerExists(t *testing.T) {
 	gateway := &recordingPreparedModelGateway{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("descriptor gateway"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("descriptor-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Store: newMemoryStore(), IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("descriptor gateway"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("descriptor-model"), modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		store: newMemoryStore(), IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +134,7 @@ func TestDescriptorOnlyGatewayKeepsLegacyDirectStreamEvenWhenPreparerExists(t *t
 
 func TestDescriptorOnlyGatewayAttachmentEstimateBoundsSerializedRequestBytes(t *testing.T) {
 	adapter := modelGatewayProvider{
-		gateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		gateway: runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
 			return runtimeGatewayEvents("unused"), nil
 		}),
 		identity: runtimeGatewayIdentity("descriptor-estimate-model"),
@@ -198,22 +199,22 @@ func TestDescriptorOnlyGatewayAttachmentEstimateBoundsSerializedRequestBytes(t *
 func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsageAnchor(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
-	var requests []ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var requests []modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		requests = append(requests, req)
-		events := make(chan ModelEvent, 3)
-		events <- ModelEvent{Type: ModelEventUsage, Usage: ProviderUsage{
+		events := make(chan modelEvent, 3)
+		events <- modelEvent{Type: modelEventUsage, Usage: publicprovider.Usage{
 			InputTokens: 128, WindowInputTokens: 128, OutputTokens: 8, TotalTokens: 136, Available: true,
 		}}
-		events <- ModelEvent{Type: ModelEventDelta, Text: "response"}
-		events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		events <- modelEvent{Type: modelEventDelta, Text: "response"}
+		events <- modelEvent{Type: modelEventDone, Reason: "stop"}
 		close(events)
 		return events, nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("descriptor anchor"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("descriptor-anchor-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Store: store, IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("descriptor anchor"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("descriptor-anchor-model"), modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		store: store, IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,15 +268,15 @@ func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsag
 func TestDescriptorOnlyGatewayAttachmentEstimateDrivesProjectedPressure(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
-	var streamed ModelRequest
-	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	var streamed modelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
 		streamed = req
 		return runtimeGatewayEvents("direct response"), nil
 	})
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("descriptor pressure"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("descriptor-pressure-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Store: store, IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("descriptor pressure"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("descriptor-pressure-model"), modelGatewayCapabilities: runtimeGatewayCapabilities(),
+		store: store, IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -320,11 +321,11 @@ func TestPreparedModelGatewayHandleClosesWhenStoreCancelsTurn(t *testing.T) {
 	store := newMemoryStore()
 	gateway := newBlockingPreparedModelGateway()
 	capabilities := runtimeGatewayCapabilities()
-	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
+	capabilities.AttachmentPayload = modelGatewayAttachmentPayloadExpanded
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("blocking prepared gateway"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("blocking-model"), ModelGatewayCapabilities: capabilities,
-		Store: store, IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("blocking prepared gateway"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("blocking-model"), modelGatewayCapabilities: capabilities,
+		store: store, IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +353,7 @@ func TestPreparedModelGatewayHandleClosesWhenStoreCancelsTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Store.Close did not cancel prepared stream")
+		t.Fatal("store.Close did not cancel prepared stream")
 	}
 	select {
 	case err := <-runDone:
@@ -366,12 +367,12 @@ func TestPreparedModelGatewayHandleClosesWhenStoreCancelsTurn(t *testing.T) {
 	streamCalls, closeCalls := gateway.handle.streamCalls, gateway.handle.closeCalls
 	gateway.handle.mu.Unlock()
 	if streamCalls != 1 || closeCalls != 1 {
-		t.Fatalf("Store.Close handle lifecycle stream=%d close=%d", streamCalls, closeCalls)
+		t.Fatalf("store.Close handle lifecycle stream=%d close=%d", streamCalls, closeCalls)
 	}
 }
 
 func TestPreparedModelGatewayRejectsIncompleteEstimateAndClosesHandle(t *testing.T) {
-	gateway := &recordingPreparedModelGateway{estimate: ModelRequestTokenEstimate{
+	gateway := &recordingPreparedModelGateway{estimate: modelRequestTokenEstimate{
 		EstimatedInputTokens: 100,
 		Source:               "incomplete",
 		Method:               "provider_rendered_payload_estimate",
@@ -379,11 +380,11 @@ func TestPreparedModelGatewayRejectsIncompleteEstimateAndClosesHandle(t *testing
 	}}
 	store := newMemoryStore()
 	capabilities := runtimeGatewayCapabilities()
-	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
+	capabilities.AttachmentPayload = modelGatewayAttachmentPayloadExpanded
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeGatewayConfig("prepared gateway"), ModelGateway: gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("prepared-model"), ModelGatewayCapabilities: capabilities,
-		Store: store, IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("prepared gateway"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("prepared-model"), modelGatewayCapabilities: capabilities,
+		store: store, IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -415,31 +416,31 @@ type recordingPreparedModelGateway struct {
 	mu           sync.Mutex
 	prepareCalls int
 	directCalls  int
-	requests     []ModelRequest
+	requests     []modelRequest
 	handles      []*recordingPreparedModelRequest
-	estimate     ModelRequestTokenEstimate
+	estimate     modelRequestTokenEstimate
 }
 
-func (g *recordingPreparedModelGateway) StreamModel(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+func (g *recordingPreparedModelGateway) StreamModel(context.Context, modelRequest) (<-chan modelEvent, error) {
 	g.mu.Lock()
 	g.directCalls++
 	g.mu.Unlock()
 	return runtimeGatewayEvents("direct response"), nil
 }
 
-func (g *recordingPreparedModelGateway) PrepareModelRequest(_ context.Context, req ModelRequest) (PreparedModelRequest, error) {
+func (g *recordingPreparedModelGateway) PrepareModelRequest(_ context.Context, req modelRequest) (preparedModelRequest, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.prepareCalls++
 	g.requests = append(g.requests, req)
 	estimate := g.estimate
 	if estimate.Source == "" {
-		estimate = ModelRequestTokenEstimate{
+		estimate = modelRequestTokenEstimate{
 			EstimatedInputTokens: 100,
 			Source:               "prepared_gateway_test",
 			Method:               "provider_rendered_payload_estimate",
 			Confidence:           "conservative",
-			Coverage:             ModelRequestTokenEstimateCoverageComplete,
+			Coverage:             modelRequestTokenEstimateCoverageComplete,
 		}
 	}
 	handle := &recordingPreparedModelRequest{
@@ -452,21 +453,21 @@ func (g *recordingPreparedModelGateway) PrepareModelRequest(_ context.Context, r
 
 type recordingPreparedModelRequest struct {
 	mu          sync.Mutex
-	estimate    ModelRequestTokenEstimate
+	estimate    modelRequestTokenEstimate
 	fingerprint string
 	streamCalls int
 	closeCalls  int
 	closed      bool
 }
 
-func (p *recordingPreparedModelRequest) StreamModel(context.Context) (<-chan ModelEvent, error) {
+func (p *recordingPreparedModelRequest) StreamModel(context.Context) (<-chan modelEvent, error) {
 	p.mu.Lock()
 	p.streamCalls++
 	p.mu.Unlock()
 	return runtimeGatewayEvents("prepared response"), nil
 }
 
-func (p *recordingPreparedModelRequest) TokenEstimate() ModelRequestTokenEstimate {
+func (p *recordingPreparedModelRequest) TokenEstimate() modelRequestTokenEstimate {
 	return p.estimate
 }
 
@@ -485,9 +486,9 @@ func (p *recordingPreparedModelRequest) Close() error {
 	return nil
 }
 
-var _ ModelGateway = (*recordingPreparedModelGateway)(nil)
-var _ ModelGatewayRequestPreparer = (*recordingPreparedModelGateway)(nil)
-var _ PreparedModelRequest = (*recordingPreparedModelRequest)(nil)
+var _ modelGateway = (*recordingPreparedModelGateway)(nil)
+var _ modelGatewayRequestPreparer = (*recordingPreparedModelGateway)(nil)
+var _ preparedModelRequest = (*recordingPreparedModelRequest)(nil)
 
 type blockingPreparedModelGateway struct {
 	started chan struct{}
@@ -498,11 +499,11 @@ func newBlockingPreparedModelGateway() *blockingPreparedModelGateway {
 	return &blockingPreparedModelGateway{started: make(chan struct{}), handle: &blockingPreparedModelRequest{}}
 }
 
-func (g *blockingPreparedModelGateway) StreamModel(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+func (g *blockingPreparedModelGateway) StreamModel(context.Context, modelRequest) (<-chan modelEvent, error) {
 	return nil, errors.New("direct stream is unavailable")
 }
 
-func (g *blockingPreparedModelGateway) PrepareModelRequest(context.Context, ModelRequest) (PreparedModelRequest, error) {
+func (g *blockingPreparedModelGateway) PrepareModelRequest(context.Context, modelRequest) (preparedModelRequest, error) {
 	g.handle.started = g.started
 	return g.handle, nil
 }
@@ -516,12 +517,12 @@ type blockingPreparedModelRequest struct {
 	closeCalls  int
 }
 
-func (p *blockingPreparedModelRequest) StreamModel(ctx context.Context) (<-chan ModelEvent, error) {
+func (p *blockingPreparedModelRequest) StreamModel(ctx context.Context) (<-chan modelEvent, error) {
 	p.mu.Lock()
 	p.streamCalls++
 	p.mu.Unlock()
 	p.startOnce.Do(func() { close(p.started) })
-	events := make(chan ModelEvent)
+	events := make(chan modelEvent)
 	go func() {
 		<-ctx.Done()
 		close(events)
@@ -529,10 +530,10 @@ func (p *blockingPreparedModelRequest) StreamModel(ctx context.Context) (<-chan 
 	return events, nil
 }
 
-func (p *blockingPreparedModelRequest) TokenEstimate() ModelRequestTokenEstimate {
-	return ModelRequestTokenEstimate{
+func (p *blockingPreparedModelRequest) TokenEstimate() modelRequestTokenEstimate {
+	return modelRequestTokenEstimate{
 		EstimatedInputTokens: 100, Source: "blocking_prepared_test", Method: "provider_rendered_payload_estimate",
-		Confidence: "conservative", Coverage: ModelRequestTokenEstimateCoverageComplete,
+		Confidence: "conservative", Coverage: modelRequestTokenEstimateCoverageComplete,
 	}
 }
 

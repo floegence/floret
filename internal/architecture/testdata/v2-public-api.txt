@@ -12,27 +12,6 @@ type AgentProfile struct
 field AgentProfile.ID string tag="json:\"id\""
 field AgentProfile.Name string tag="json:\"name\""
 field AgentProfile.Description string tag="json:\"description,omitempty\""
-field AgentProfile.SystemPrompt string tag="json:\"system_prompt\""
-type Config struct
-field Config.Provider string
-field Config.Model string
-field Config.BaseURL string
-field Config.APIKey string
-field Config.FakeResponse string
-field Config.PromptCacheRetention string
-field Config.SystemPrompt string
-field Config.AgentProfile github.com/floegence/floret/v2/config.AgentProfile
-field Config.PromptIdentity github.com/floegence/floret/v2/config.PromptIdentity
-field Config.SkillsEnabled bool
-field Config.SkillSources []string
-field Config.SkillPromptBudgetBytes int
-field Config.ContextPolicy github.com/floegence/floret/v2/config.ContextPolicy
-field Config.Reasoning github.com/floegence/floret/v2/config.ReasoningSelection
-field Config.MaxOutputTokensSet bool
-field Config.MaxEmptyProviderRetries int
-field Config.NoProgressLimit int
-field Config.DuplicateToolLimit int
-field Config.WallTime time.Duration
 type ContextPolicy struct
 field ContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
 field ContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
@@ -77,13 +56,10 @@ field ContextUsage.Method github.com/floegence/floret/v2/config.EstimateMethod t
 field ContextUsage.Confidence github.com/floegence/floret/v2/config.EstimateConfidence tag="json:\"confidence,omitempty\""
 field ContextUsage.CompactionNeeded bool tag="json:\"compaction_needed,omitempty\""
 field ContextUsage.HardLimitExceeded bool tag="json:\"hard_limit_exceeded,omitempty\""
-func DefaultAgentProfile func() github.com/floegence/floret/v2/config.AgentProfile
-const DefaultAgentProfileID untyped string = "default"
 const DefaultAutoCompactRatioPercent int64 = 90
 const DefaultCheckpointOverheadTokens int64 = 2000
 const DefaultCompactedContextTargetTokens int64 = 50000
 const DefaultContextWindowTokens int64 = 256000
-const DefaultEnvFile untyped string = ".env.local"
 const DefaultEstimatorMethod github.com/floegence/floret/v2/config.EstimateMethod = "message_context_estimate"
 const DefaultEstimatorSource untyped string = "generic_conservative"
 const DefaultMaxOutputTokens int64 = 0
@@ -91,7 +67,6 @@ const DefaultRecentTailTokens int64 = 12000
 const DefaultRecentUserTokens int64 = 15000
 const DefaultReservedOutputTokens int64 = 64000
 const DefaultReservedSummaryTokens int64 = 20000
-const DefaultSystemPrompt untyped string = "You are a helpful AI assistant."
 const EstimateApproximate github.com/floegence/floret/v2/config.EstimateConfidence = "approximate"
 type EstimateConfidence string
 const EstimateConservative github.com/floegence/floret/v2/config.EstimateConfidence = "conservative"
@@ -102,10 +77,8 @@ const EstimateMethodMessageContext github.com/floegence/floret/v2/config.Estimat
 const EstimateMethodOfficialPreflightCount github.com/floegence/floret/v2/config.EstimateMethod = "official_preflight_count"
 const EstimateMethodProviderRenderedPayload github.com/floegence/floret/v2/config.EstimateMethod = "provider_rendered_payload_estimate"
 const EstimateMethodUnknown github.com/floegence/floret/v2/config.EstimateMethod = "unknown_estimate_method"
-func Load func(opts ...github.com/floegence/floret/v2/config.Option) (github.com/floegence/floret/v2/config.Config, error)
 const MinSupportedContextWindowTokens int64 = 256000
 func NormalizeReasoningSelection func(s github.com/floegence/floret/v2/config.ReasoningSelection) github.com/floegence/floret/v2/config.ReasoningSelection
-type Option func(*github.com/floegence/floret/v2/config.loader)
 type PressureSignal string
 const PressureSignalManual github.com/floegence/floret/v2/config.PressureSignal = "manual"
 const PressureSignalNativeUsage github.com/floegence/floret/v2/config.PressureSignal = "native_usage"
@@ -117,19 +90,6 @@ const PressureSourceManual github.com/floegence/floret/v2/config.PressureSource 
 const PressureSourceMissingNativeUsage github.com/floegence/floret/v2/config.PressureSource = "missing_native_usage_request_estimate"
 const PressureSourceProviderUsage github.com/floegence/floret/v2/config.PressureSource = "provider_usage"
 const PressureSourceUsageAnchoredDelta github.com/floegence/floret/v2/config.PressureSource = "usage_anchored_delta"
-func PromptCacheRetention func(cfg github.com/floegence/floret/v2/config.Config) (string, error)
-type PromptIdentity struct
-field PromptIdentity.AgentProfileID string tag="json:\"agent_profile_id\""
-field PromptIdentity.AgentProfileName string tag="json:\"agent_profile_name\""
-field PromptIdentity.SystemPromptHash string tag="json:\"system_prompt_hash\""
-field PromptIdentity.Source github.com/floegence/floret/v2/config.PromptSource tag="json:\"source\""
-type PromptSource string
-const PromptSourceAgentProfile github.com/floegence/floret/v2/config.PromptSource = "agent_profile"
-const PromptSourceDefaultAgent github.com/floegence/floret/v2/config.PromptSource = "default_agent"
-const PromptSourceEnv github.com/floegence/floret/v2/config.PromptSource = "env"
-const PromptSourceSystemPromptOverride github.com/floegence/floret/v2/config.PromptSource = "system_prompt_override"
-const ProviderFake untyped string = "fake"
-const ProviderOpenAICompatible untyped string = "openai-compatible"
 type ReasoningBudget struct
 field ReasoningBudget.MinTokens int64 tag="json:\"min_tokens,omitempty\""
 field ReasoningBudget.MaxTokens int64 tag="json:\"max_tokens,omitempty\""
@@ -174,15 +134,17 @@ field RequestEstimate.EstimatedInputTokens int64 tag="json:\"estimated_input_tok
 field RequestEstimate.Source string tag="json:\"source,omitempty\""
 field RequestEstimate.Method github.com/floegence/floret/v2/config.EstimateMethod tag="json:\"method,omitempty\""
 field RequestEstimate.Confidence github.com/floegence/floret/v2/config.EstimateConfidence tag="json:\"confidence,omitempty\""
-func Resolve func(cfg github.com/floegence/floret/v2/config.Config, environ map[string]string) (github.com/floegence/floret/v2/config.Config, error)
-func ResolveAgentProfile func(profile github.com/floegence/floret/v2/config.AgentProfile, systemPrompt string) github.com/floegence/floret/v2/config.AgentProfile
-func ResolveEnvSystemPrompt func(systemPrompt string) github.com/floegence/floret/v2/config.Config
-func ResolvePrompt func(cfg github.com/floegence/floret/v2/config.Config) github.com/floegence/floret/v2/config.Config
 func ValidateReasoningLevel func(level github.com/floegence/floret/v2/config.ReasoningLevel) bool
-func WithEnviron func(environ map[string]string) github.com/floegence/floret/v2/config.Option
-func WithPath func(path string) github.com/floegence/floret/v2/config.Option
 
 package github.com/floegence/floret/v2/provider
+type AnthropicOptions struct
+field AnthropicOptions.Provider string
+field AnthropicOptions.Model string
+field AnthropicOptions.BaseURL string
+field AnthropicOptions.APIKey string
+field AnthropicOptions.StateCompatibilityKey string
+field AnthropicOptions.HTTPClient *net/http.Client
+field AnthropicOptions.Capabilities github.com/floegence/floret/v2/provider.Capabilities
 type Attachment struct
 field Attachment.ResourceRef string tag="json:\"resource_ref\""
 field Attachment.Name string tag="json:\"name\""
@@ -200,11 +162,14 @@ field Capabilities.Reasoning github.com/floegence/floret/v2/provider.ReasoningSu
 field Capabilities.ReasoningCapability github.com/floegence/floret/v2/config.ReasoningCapability tag="json:\"reasoning_capability,omitempty\""
 field Capabilities.AttachmentPayload github.com/floegence/floret/v2/provider.AttachmentPayloadMode tag="json:\"attachment_payload\""
 method Capabilities.Validate func() error
+var ErrContextOverflow error
 type Event struct
 field Event.Type github.com/floegence/floret/v2/provider.EventType tag="json:\"type\""
 field Event.Text string tag="json:\"text,omitempty\""
 field Event.ToolCallStream *github.com/floegence/floret/v2/provider.ToolCallStream tag="json:\"tool_call_stream,omitempty\""
 field Event.ToolCalls []github.com/floegence/floret/v2/provider.ToolCall tag="json:\"tool_calls,omitempty\""
+field Event.HostedToolCall *github.com/floegence/floret/v2/provider.ToolCall tag="json:\"hosted_tool_call,omitempty\""
+field Event.HostedResult *github.com/floegence/floret/v2/provider.HostedToolResult tag="json:\"hosted_result,omitempty\""
 field Event.Sources []github.com/floegence/floret/v2/provider.Source tag="json:\"sources,omitempty\""
 field Event.Reason string tag="json:\"reason,omitempty\""
 field Event.Usage github.com/floegence/floret/v2/provider.Usage tag="json:\"usage,omitempty\""
@@ -215,6 +180,8 @@ const EventDelta github.com/floegence/floret/v2/provider.EventType = "delta"
 const EventDone github.com/floegence/floret/v2/provider.EventType = "done"
 const EventEmpty github.com/floegence/floret/v2/provider.EventType = "empty"
 const EventError github.com/floegence/floret/v2/provider.EventType = "error"
+const EventHostedToolCall github.com/floegence/floret/v2/provider.EventType = "hosted_tool_call"
+const EventHostedToolResult github.com/floegence/floret/v2/provider.EventType = "hosted_tool_result"
 const EventReasoning github.com/floegence/floret/v2/provider.EventType = "reasoning"
 const EventSources github.com/floegence/floret/v2/provider.EventType = "sources"
 const EventToolCallDelta github.com/floegence/floret/v2/provider.EventType = "tool_call_delta"
@@ -231,6 +198,20 @@ field HostedToolDefinition.Type string tag="json:\"type\""
 field HostedToolDefinition.Description string tag="json:\"description,omitempty\""
 field HostedToolDefinition.Parameters map[string]any tag="json:\"parameters,omitempty\""
 field HostedToolDefinition.Options map[string]any tag="json:\"options,omitempty\""
+type HostedToolResult struct
+field HostedToolResult.Text string tag="json:\"text,omitempty\""
+field HostedToolResult.Results []github.com/floegence/floret/v2/provider.HostedToolResultItem tag="json:\"results,omitempty\""
+field HostedToolResult.Error *github.com/floegence/floret/v2/provider.HostedToolResultError tag="json:\"error,omitempty\""
+field HostedToolResult.Metadata map[string]any tag="json:\"metadata,omitempty\""
+type HostedToolResultError struct
+field HostedToolResultError.Code string tag="json:\"code,omitempty\""
+field HostedToolResultError.Message string tag="json:\"message,omitempty\""
+type HostedToolResultItem struct
+field HostedToolResultItem.Title string tag="json:\"title,omitempty\""
+field HostedToolResultItem.URL string tag="json:\"url,omitempty\""
+field HostedToolResultItem.Snippet string tag="json:\"snippet,omitempty\""
+field HostedToolResultItem.Source string tag="json:\"source,omitempty\""
+field HostedToolResultItem.Metadata map[string]any tag="json:\"metadata,omitempty\""
 type Identity struct
 field Identity.Provider string tag="json:\"provider\""
 field Identity.Model string tag="json:\"model\""
@@ -248,6 +229,16 @@ field Message.ToolCalls []github.com/floegence/floret/v2/provider.ToolCall tag="
 field Message.ToolResult *github.com/floegence/floret/v2/provider.ToolResult tag="json:\"tool_result,omitempty\""
 method Message.Validate func() error
 type MessageRole string
+func NewAnthropic func(options github.com/floegence/floret/v2/provider.AnthropicOptions) (github.com/floegence/floret/v2/provider.Gateway, error)
+func NewOpenAICompatible func(options github.com/floegence/floret/v2/provider.OpenAICompatibleOptions) (github.com/floegence/floret/v2/provider.Gateway, error)
+type OpenAICompatibleOptions struct
+field OpenAICompatibleOptions.Provider string
+field OpenAICompatibleOptions.Model string
+field OpenAICompatibleOptions.BaseURL string
+field OpenAICompatibleOptions.APIKey string
+field OpenAICompatibleOptions.StateCompatibilityKey string
+field OpenAICompatibleOptions.HTTPClient *net/http.Client
+field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v2/provider.Capabilities
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v2/provider.Event, error); TokenEstimate() github.com/floegence/floret/v2/provider.TokenEstimate}
 type ReasoningSupport string
 const ReasoningSupported github.com/floegence/floret/v2/provider.ReasoningSupport = "supported"
@@ -589,7 +580,7 @@ field Event.Committed *github.com/floegence/floret/v2/runtime.ThreadDetailEvent 
 field Event.ContextStatus *github.com/floegence/floret/v2/observation.ContextStatus tag="json:\"context_status,omitempty\""
 field Event.Compaction *github.com/floegence/floret/v2/observation.CompactionEvent tag="json:\"compaction,omitempty\""
 field Event.CompactionDebug *github.com/floegence/floret/v2/observation.CompactionDebugEvent tag="json:\"compaction_debug,omitempty\""
-field Event.Sources []github.com/floegence/floret/v2/runtime.SourceRef tag="json:\"sources,omitempty\""
+field Event.Sources []github.com/floegence/floret/v2/provider.Source tag="json:\"sources,omitempty\""
 field Event.Metadata map[string]any tag="json:\"metadata,omitempty\""
 field Event.Timestamp time.Time tag="json:\"timestamp,omitempty\""
 method Event.Validate func() error
@@ -617,13 +608,6 @@ method *Host.TurnRunner func(ctx context.Context, threadID github.com/floegence/
 method *Host.PendingToolRecovery func(ctx context.Context, target github.com/floegence/floret/v2/runtime.PendingToolRecoveryTarget, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.PendingToolRecovery, error)
 method *Host.InterruptedTurnRecovery func(ctx context.Context, target github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryTarget, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecovery, error)
 method *Host.ThreadInventory func(ctx context.Context) (*github.com/floegence/floret/v2/runtime.ThreadInventory, error)
-type HostedToolDefinition struct
-field HostedToolDefinition.Name string tag="json:\"name\""
-field HostedToolDefinition.Type string tag="json:\"type\""
-field HostedToolDefinition.Description string tag="json:\"description,omitempty\""
-field HostedToolDefinition.Parameters map[string]any tag="json:\"parameters,omitempty\""
-field HostedToolDefinition.Options map[string]any tag="json:\"options,omitempty\""
-func InspectSQLiteStore func(ctx context.Context, path string, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStoreInspection, error)
 type InterruptedTurnRecovery struct
 method *InterruptedTurnRecovery.Recover func(ctx context.Context) (github.com/floegence/floret/v2/runtime.RecoverInterruptedTurnResult, error)
 type InterruptedTurnRecoveryTarget struct
@@ -713,99 +697,10 @@ type MessageReferenceKind string
 const MessageReferenceProcess github.com/floegence/floret/v2/runtime.MessageReferenceKind = "process"
 const MessageReferenceTerminal github.com/floegence/floret/v2/runtime.MessageReferenceKind = "terminal"
 const MessageReferenceText github.com/floegence/floret/v2/runtime.MessageReferenceKind = "text"
-func MigrateSQLiteStore func(ctx context.Context, path string, request github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationRequest, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationResult, error)
 type MigrationRequiredError struct
 field MigrationRequiredError.Version string
 method *MigrationRequiredError.Error func() string
 method *MigrationRequiredError.Is func(target error) bool
-type ModelEvent struct
-field ModelEvent.Type github.com/floegence/floret/v2/runtime.ModelEventType tag="json:\"type\""
-field ModelEvent.Text string tag="json:\"text,omitempty\""
-field ModelEvent.ToolCallStream *github.com/floegence/floret/v2/runtime.ModelToolCallStream tag="json:\"tool_call_stream,omitempty\""
-field ModelEvent.ToolCalls []github.com/floegence/floret/v2/tools.ToolCall tag="json:\"tool_calls,omitempty\""
-field ModelEvent.Sources []github.com/floegence/floret/v2/runtime.SourceRef tag="json:\"sources,omitempty\""
-field ModelEvent.Reason string tag="json:\"reason,omitempty\""
-field ModelEvent.Usage github.com/floegence/floret/v2/runtime.ProviderUsage tag="json:\"usage,omitempty\""
-field ModelEvent.ResponseID string tag="json:\"response_id,omitempty\""
-field ModelEvent.ResponseState *github.com/floegence/floret/v2/runtime.ModelState tag="json:\"response_state,omitempty\""
-field ModelEvent.Err error tag="json:\"-\""
-const ModelEventDelta github.com/floegence/floret/v2/runtime.ModelEventType = "delta"
-const ModelEventDone github.com/floegence/floret/v2/runtime.ModelEventType = "done"
-const ModelEventEmpty github.com/floegence/floret/v2/runtime.ModelEventType = "empty"
-const ModelEventError github.com/floegence/floret/v2/runtime.ModelEventType = "error"
-const ModelEventReasoning github.com/floegence/floret/v2/runtime.ModelEventType = "reasoning"
-const ModelEventSources github.com/floegence/floret/v2/runtime.ModelEventType = "sources"
-const ModelEventToolCallDelta github.com/floegence/floret/v2/runtime.ModelEventType = "tool_call_delta"
-const ModelEventToolCallEnd github.com/floegence/floret/v2/runtime.ModelEventType = "tool_call_end"
-const ModelEventToolCallStart github.com/floegence/floret/v2/runtime.ModelEventType = "tool_call_start"
-const ModelEventToolCalls github.com/floegence/floret/v2/runtime.ModelEventType = "tool_calls"
-const ModelEventTruncated github.com/floegence/floret/v2/runtime.ModelEventType = "truncated"
-type ModelEventType string
-const ModelEventUsage github.com/floegence/floret/v2/runtime.ModelEventType = "usage"
-type ModelGateway interface interface{StreamModel(context.Context, github.com/floegence/floret/v2/runtime.ModelRequest) (<-chan github.com/floegence/floret/v2/runtime.ModelEvent, error)}
-const ModelGatewayAttachmentPayloadDescriptors github.com/floegence/floret/v2/runtime.ModelGatewayAttachmentPayloadMode = ""
-const ModelGatewayAttachmentPayloadExpanded github.com/floegence/floret/v2/runtime.ModelGatewayAttachmentPayloadMode = "expanded"
-type ModelGatewayAttachmentPayloadMode string
-type ModelGatewayCapabilities struct
-field ModelGatewayCapabilities.Reasoning *github.com/floegence/floret/v2/config.ReasoningCapability
-field ModelGatewayCapabilities.AttachmentPayload github.com/floegence/floret/v2/runtime.ModelGatewayAttachmentPayloadMode
-type ModelGatewayIdentity struct
-field ModelGatewayIdentity.Provider string
-field ModelGatewayIdentity.Model string
-field ModelGatewayIdentity.StateCompatibilityKey string
-type ModelGatewayRequestPreparer interface interface{PrepareModelRequest(context.Context, github.com/floegence/floret/v2/runtime.ModelRequest) (github.com/floegence/floret/v2/runtime.PreparedModelRequest, error)}
-type ModelMessage struct
-field ModelMessage.Role github.com/floegence/floret/v2/runtime.ModelMessageRole tag="json:\"role\""
-field ModelMessage.Text string tag="json:\"text,omitempty\""
-field ModelMessage.Attachments []github.com/floegence/floret/v2/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
-field ModelMessage.Reasoning string tag="json:\"reasoning,omitempty\""
-field ModelMessage.ToolCalls []github.com/floegence/floret/v2/tools.ToolCall tag="json:\"tool_calls,omitempty\""
-field ModelMessage.ToolResult *github.com/floegence/floret/v2/runtime.ModelToolResult tag="json:\"tool_result,omitempty\""
-method ModelMessage.Validate func() error
-type ModelMessageRole string
-method ModelMessageRole.Valid func() bool
-const ModelMessageRoleAssistant github.com/floegence/floret/v2/runtime.ModelMessageRole = "assistant"
-const ModelMessageRoleSystem github.com/floegence/floret/v2/runtime.ModelMessageRole = "system"
-const ModelMessageRoleTool github.com/floegence/floret/v2/runtime.ModelMessageRole = "tool"
-const ModelMessageRoleUser github.com/floegence/floret/v2/runtime.ModelMessageRole = "user"
-type ModelRequest struct
-field ModelRequest.RunID github.com/floegence/floret/v2/runtime.RunID
-field ModelRequest.ThreadID github.com/floegence/floret/v2/runtime.ThreadID
-field ModelRequest.TurnID github.com/floegence/floret/v2/runtime.TurnID
-field ModelRequest.TraceID github.com/floegence/floret/v2/runtime.TraceID
-field ModelRequest.PromptScopeID github.com/floegence/floret/v2/runtime.PromptScopeID
-field ModelRequest.Step int
-field ModelRequest.Provider string
-field ModelRequest.Model string
-field ModelRequest.Messages []github.com/floegence/floret/v2/runtime.ModelMessage
-field ModelRequest.Tools []github.com/floegence/floret/v2/tools.ToolDefinition
-field ModelRequest.HostedTools []github.com/floegence/floret/v2/runtime.HostedToolDefinition
-field ModelRequest.MaxOutputTokens int64
-field ModelRequest.Reasoning github.com/floegence/floret/v2/config.ReasoningSelection
-field ModelRequest.PreviousState *github.com/floegence/floret/v2/runtime.ModelState
-field ModelRequest.Labels github.com/floegence/floret/v2/runtime.RunLabels
-type ModelRequestTokenEstimate struct
-field ModelRequestTokenEstimate.PrefixTokens int64
-field ModelRequestTokenEstimate.MessageTokens int64
-field ModelRequestTokenEstimate.ToolDefinitionTokens int64
-field ModelRequestTokenEstimate.EstimatedInputTokens int64
-field ModelRequestTokenEstimate.Source string
-field ModelRequestTokenEstimate.Method string
-field ModelRequestTokenEstimate.Confidence string
-field ModelRequestTokenEstimate.Coverage github.com/floegence/floret/v2/runtime.ModelRequestTokenEstimateCoverage
-type ModelRequestTokenEstimateCoverage string
-const ModelRequestTokenEstimateCoverageComplete github.com/floegence/floret/v2/runtime.ModelRequestTokenEstimateCoverage = "complete_request"
-type ModelState struct
-field ModelState.Kind string tag="json:\"kind,omitempty\""
-field ModelState.ID string tag="json:\"id,omitempty\""
-field ModelState.Attributes map[string]string tag="json:\"attributes,omitempty\""
-type ModelToolCallStream struct
-field ModelToolCallStream.ID string tag="json:\"id,omitempty\""
-field ModelToolCallStream.Name string tag="json:\"name,omitempty\""
-type ModelToolResult struct
-field ModelToolResult.CallID string tag="json:\"call_id\""
-field ModelToolResult.ToolName string tag="json:\"tool_name\""
-field ModelToolResult.Text string tag="json:\"text,omitempty\""
 func NewAgent func(configuration github.com/floegence/floret/v2/config.AgentConfig, gateway github.com/floegence/floret/v2/provider.Gateway, options ...github.com/floegence/floret/v2/runtime.AgentOption) (*github.com/floegence/floret/v2/runtime.Agent, error)
 func Open func(ctx context.Context, options github.com/floegence/floret/v2/runtime.Options) (*github.com/floegence/floret/v2/runtime.Host, error)
 type Options struct
@@ -872,7 +767,6 @@ field PendingToolSettlementTarget.ToolName string tag="json:\"tool_name\""
 field PendingToolSettlementTarget.Handle string tag="json:\"handle\""
 field PendingToolSettlementTarget.EffectAttemptID string tag="json:\"effect_attempt_id,omitempty\""
 method PendingToolSettlementTarget.Validate func() error
-type PreparedModelRequest interface interface{Close() error; RenderedPayloadFingerprint() string; StreamModel(context.Context) (<-chan github.com/floegence/floret/v2/runtime.ModelEvent, error); TokenEstimate() github.com/floegence/floret/v2/runtime.ModelRequestTokenEstimate}
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v2/tools.ToolCall) (github.com/floegence/floret/v2/runtime.TurnSignal, bool, error)
 func ProjectThreadTurn func(req github.com/floegence/floret/v2/runtime.ProjectThreadTurnRequest) github.com/floegence/floret/v2/runtime.ThreadTurnProjection
 type ProjectThreadTurnRequest struct
@@ -883,17 +777,6 @@ field ProjectThreadTurnRequest.TraceID github.com/floegence/floret/v2/runtime.Tr
 field ProjectThreadTurnRequest.Events []github.com/floegence/floret/v2/runtime.ThreadDetailEvent
 type PromptScopeID string
 func ProviderSafeCoreControlText func(signal github.com/floegence/floret/v2/runtime.TurnSignal) string
-type ProviderUsage struct
-field ProviderUsage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
-field ProviderUsage.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
-field ProviderUsage.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitempty\""
-field ProviderUsage.CacheReadTokens int64 tag="json:\"cache_read_tokens,omitempty\""
-field ProviderUsage.CacheWriteTokens int64 tag="json:\"cache_write_tokens,omitempty\""
-field ProviderUsage.TotalTokens int64 tag="json:\"total_tokens,omitempty\""
-field ProviderUsage.CostUSD float64 tag="json:\"cost_usd,omitempty\""
-field ProviderUsage.Source string tag="json:\"source,omitempty\""
-field ProviderUsage.Available bool tag="json:\"available,omitempty\""
-field ProviderUsage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
 type PublishSubAgentPendingToolCompletion struct
 field PublishSubAgentPendingToolCompletion.InputRequestID string
 field PublishSubAgentPendingToolCompletion.ChildThreadID github.com/floegence/floret/v2/runtime.ThreadID
@@ -976,7 +859,7 @@ type RunLabels struct
 field RunLabels.Correlation map[string]string
 field RunLabels.Host map[string]string
 type RunMetrics struct
-field RunMetrics.ProviderUsage github.com/floegence/floret/v2/runtime.ProviderUsage tag="json:\"provider_usage\""
+field RunMetrics.ProviderUsage github.com/floegence/floret/v2/provider.Usage tag="json:\"provider_usage\""
 field RunMetrics.Steps int tag="json:\"steps\""
 field RunMetrics.LLMRequests int tag="json:\"llm_requests\""
 field RunMetrics.ToolCalls int tag="json:\"tool_calls\""
@@ -997,165 +880,6 @@ field RunTurnRequest.Reasoning github.com/floegence/floret/v2/config.ReasoningSe
 field RunTurnRequest.ManualCompactions github.com/floegence/floret/v2/runtime.ManualCompactionSource
 field RunTurnRequest.ToolSurfaceProvider github.com/floegence/floret/v2/runtime.ToolSurfaceProvider
 method RunTurnRequest.Validate func() error
-const SQLiteMigrationApplyCompatible github.com/floegence/floret/v2/runtime.SQLiteMigrationPolicy = "apply_compatible"
-type SQLiteMigrationPolicy string
-const SQLiteMigrationRefuse github.com/floegence/floret/v2/runtime.SQLiteMigrationPolicy = "refuse"
-const SQLiteStartupInspecting github.com/floegence/floret/v2/runtime.SQLiteStartupPhase = "inspecting"
-const SQLiteStartupMigrating github.com/floegence/floret/v2/runtime.SQLiteStartupPhase = "migrating"
-const SQLiteStartupOpening github.com/floegence/floret/v2/runtime.SQLiteStartupPhase = "opening"
-type SQLiteStartupPhase string
-type SQLiteStartupProgress struct
-field SQLiteStartupProgress.Phase github.com/floegence/floret/v2/runtime.SQLiteStartupPhase tag="json:\"phase\""
-field SQLiteStartupProgress.Maintenance *github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceProgress tag="json:\"maintenance,omitempty\""
-type SQLiteStartupRequest struct
-field SQLiteStartupRequest.MigrationPolicy github.com/floegence/floret/v2/runtime.SQLiteMigrationPolicy
-field SQLiteStartupRequest.MigrationOperationID string
-field SQLiteStartupRequest.Progress func(github.com/floegence/floret/v2/runtime.SQLiteStartupProgress)
-type SQLiteStartupResult struct
-field SQLiteStartupResult.Store *github.com/floegence/floret/v2/runtime.Store
-field SQLiteStartupResult.Inspection *github.com/floegence/floret/v2/runtime.SQLiteStoreInspection
-field SQLiteStartupResult.Verification *github.com/floegence/floret/v2/runtime.SQLiteStoreVerification
-field SQLiteStartupResult.Migration *github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationResult
-method SQLiteStartupResult.Validate func() error
-const SQLiteStartupVerifying github.com/floegence/floret/v2/runtime.SQLiteStartupPhase = "verifying"
-type SQLiteStoreAction string
-const SQLiteStoreActionExportDiagnostics github.com/floegence/floret/v2/runtime.SQLiteStoreAction = "export_diagnostics"
-const SQLiteStoreActionMigrate github.com/floegence/floret/v2/runtime.SQLiteStoreAction = "migrate"
-const SQLiteStoreActionRequiresNewerReader github.com/floegence/floret/v2/runtime.SQLiteStoreAction = "requires_newer_reader"
-const SQLiteStoreActionRetryInspection github.com/floegence/floret/v2/runtime.SQLiteStoreAction = "retry_inspection"
-type SQLiteStoreInspection struct
-field SQLiteStoreInspection.Kind github.com/floegence/floret/v2/runtime.SQLiteStoreKind tag="json:\"kind\""
-field SQLiteStoreInspection.State github.com/floegence/floret/v2/runtime.SQLiteStoreState tag="json:\"state\""
-field SQLiteStoreInspection.Exists bool tag="json:\"exists\""
-field SQLiteStoreInspection.Empty bool tag="json:\"empty\""
-field SQLiteStoreInspection.Observed github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"observed\""
-field SQLiteStoreInspection.Current github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"current\""
-field SQLiteStoreInspection.Migratable []github.com/floegence/floret/v2/runtime.StoreSchemaMigrationSource tag="json:\"migratable\""
-field SQLiteStoreInspection.PersistedLeasePolicy *github.com/floegence/floret/v2/runtime.StoreLeasePolicy tag="json:\"persisted_lease_policy,omitempty\""
-field SQLiteStoreInspection.RequestedLeasePolicy github.com/floegence/floret/v2/runtime.StoreLeasePolicy tag="json:\"requested_lease_policy\""
-field SQLiteStoreInspection.LeasePolicyState github.com/floegence/floret/v2/runtime.SQLiteStoreLeasePolicyState tag="json:\"lease_policy_state\""
-field SQLiteStoreInspection.AutomaticMigration bool tag="json:\"automatic_migration\""
-field SQLiteStoreInspection.RequiresExclusive bool tag="json:\"requires_exclusive_access\""
-field SQLiteStoreInspection.Retryable bool tag="json:\"retryable\""
-field SQLiteStoreInspection.SafeToRetry bool tag="json:\"safe_to_retry\""
-field SQLiteStoreInspection.Actions []github.com/floegence/floret/v2/runtime.SQLiteStoreAction tag="json:\"actions,omitempty\""
-field SQLiteStoreInspection.Reason github.com/floegence/floret/v2/runtime.SQLiteStoreReason tag="json:\"reason\""
-field SQLiteStoreInspection.SafeDetail string tag="json:\"safe_detail,omitempty\""
-method SQLiteStoreInspection.Validate func() error
-type SQLiteStoreKind string
-const SQLiteStoreKindFloret github.com/floegence/floret/v2/runtime.SQLiteStoreKind = "floret"
-const SQLiteStoreKindUnknown github.com/floegence/floret/v2/runtime.SQLiteStoreKind = "unknown"
-const SQLiteStoreLeasePolicyMatches github.com/floegence/floret/v2/runtime.SQLiteStoreLeasePolicyState = "matches"
-const SQLiteStoreLeasePolicyMismatch github.com/floegence/floret/v2/runtime.SQLiteStoreLeasePolicyState = "mismatch"
-type SQLiteStoreLeasePolicyState string
-const SQLiteStoreLeasePolicyUnavailable github.com/floegence/floret/v2/runtime.SQLiteStoreLeasePolicyState = "unavailable"
-const SQLiteStoreMaintenanceCancelled github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus = "cancelled"
-type SQLiteStoreMaintenanceError struct
-field SQLiteStoreMaintenanceError.Operation github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceOperation
-field SQLiteStoreMaintenanceError.Reason github.com/floegence/floret/v2/runtime.SQLiteStoreReason
-field SQLiteStoreMaintenanceError.Retryable bool
-field SQLiteStoreMaintenanceError.SafeToRetry bool
-field SQLiteStoreMaintenanceError.Err error
-method *SQLiteStoreMaintenanceError.Error func() string
-method *SQLiteStoreMaintenanceError.Unwrap func() error
-const SQLiteStoreMaintenanceFailed github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus = "failed"
-const SQLiteStoreMaintenanceMigrating github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenancePhase = "migrating"
-type SQLiteStoreMaintenanceOperation string
-type SQLiteStoreMaintenancePhase string
-const SQLiteStoreMaintenancePreflight github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenancePhase = "preflight"
-type SQLiteStoreMaintenanceProgress struct
-field SQLiteStoreMaintenanceProgress.OperationID string tag="json:\"operation_id\""
-field SQLiteStoreMaintenanceProgress.Sequence uint64 tag="json:\"sequence\""
-field SQLiteStoreMaintenanceProgress.Phase github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenancePhase tag="json:\"phase\""
-field SQLiteStoreMaintenanceProgress.Status github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus tag="json:\"status\""
-field SQLiteStoreMaintenanceProgress.Step int tag="json:\"step,omitempty\""
-field SQLiteStoreMaintenanceProgress.Total int tag="json:\"total,omitempty\""
-field SQLiteStoreMaintenanceProgress.SafeToCancel bool tag="json:\"safe_to_cancel\""
-field SQLiteStoreMaintenanceProgress.Committed bool tag="json:\"committed\""
-field SQLiteStoreMaintenanceProgress.RolledBack bool tag="json:\"rolled_back\""
-field SQLiteStoreMaintenanceProgress.Retryable bool tag="json:\"retryable\""
-field SQLiteStoreMaintenanceProgress.SafeToRetry bool tag="json:\"safe_to_retry\""
-field SQLiteStoreMaintenanceProgress.Reason github.com/floegence/floret/v2/runtime.SQLiteStoreReason tag="json:\"reason,omitempty\""
-const SQLiteStoreMaintenanceReady github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus = "ready"
-const SQLiteStoreMaintenanceRunning github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus = "running"
-type SQLiteStoreMaintenanceStatus string
-const SQLiteStoreMaintenanceVerifying github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenancePhase = "verifying"
-const SQLiteStoreMaintenanceWaiting github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenancePhase = "waiting_for_exclusive_access"
-const SQLiteStoreMigrationApply github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationMode = "apply"
-type SQLiteStoreMigrationMode string
-const SQLiteStoreMigrationPlan github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationMode = "plan"
-type SQLiteStoreMigrationRequest struct
-field SQLiteStoreMigrationRequest.OperationID string
-field SQLiteStoreMigrationRequest.Mode github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationMode
-field SQLiteStoreMigrationRequest.ExpectedSchema github.com/floegence/floret/v2/runtime.StoreSchemaIdentity
-field SQLiteStoreMigrationRequest.Progress func(github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceProgress)
-type SQLiteStoreMigrationResult struct
-field SQLiteStoreMigrationResult.OperationID string tag="json:\"operation_id\""
-field SQLiteStoreMigrationResult.Mode github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationMode tag="json:\"mode\""
-field SQLiteStoreMigrationResult.Before github.com/floegence/floret/v2/runtime.SQLiteStoreInspection tag="json:\"before\""
-field SQLiteStoreMigrationResult.After github.com/floegence/floret/v2/runtime.SQLiteStoreInspection tag="json:\"after\""
-field SQLiteStoreMigrationResult.Steps []github.com/floegence/floret/v2/runtime.SQLiteStoreMigrationStep tag="json:\"steps,omitempty\""
-field SQLiteStoreMigrationResult.Status github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceStatus tag="json:\"status\""
-field SQLiteStoreMigrationResult.Changed bool tag="json:\"changed\""
-field SQLiteStoreMigrationResult.Committed bool tag="json:\"committed\""
-field SQLiteStoreMigrationResult.RolledBack bool tag="json:\"rolled_back\""
-field SQLiteStoreMigrationResult.Retryable bool tag="json:\"retryable\""
-field SQLiteStoreMigrationResult.SafeToRetry bool tag="json:\"safe_to_retry\""
-field SQLiteStoreMigrationResult.Reason github.com/floegence/floret/v2/runtime.SQLiteStoreReason tag="json:\"reason,omitempty\""
-method SQLiteStoreMigrationResult.Validate func() error
-type SQLiteStoreMigrationStep struct
-field SQLiteStoreMigrationStep.From github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"from\""
-field SQLiteStoreMigrationStep.To github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"to\""
-field SQLiteStoreMigrationStep.Code string tag="json:\"code\""
-type SQLiteStoreOpenRequest struct
-field SQLiteStoreOpenRequest.ExpectedState github.com/floegence/floret/v2/runtime.SQLiteStoreState tag="json:\"expected_state\""
-field SQLiteStoreOpenRequest.ExpectedSchema github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"expected_schema\""
-const SQLiteStoreOperationInspect github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceOperation = "inspect"
-const SQLiteStoreOperationMigrate github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceOperation = "migrate"
-const SQLiteStoreOperationOpen github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceOperation = "open"
-const SQLiteStoreOperationVerify github.com/floegence/floret/v2/runtime.SQLiteStoreMaintenanceOperation = "verify"
-type SQLiteStoreOption func(*github.com/floegence/floret/v2/runtime.sqliteStoreOptions)
-type SQLiteStoreReason string
-const SQLiteStoreReasonBusy github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "busy"
-const SQLiteStoreReasonCancelled github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "cancelled"
-const SQLiteStoreReasonContract github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "schema_contract_mismatch"
-const SQLiteStoreReasonCorrupt github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "corrupt"
-const SQLiteStoreReasonCurrent github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "store_current"
-const SQLiteStoreReasonFingerprint github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "schema_fingerprint_mismatch"
-const SQLiteStoreReasonIO github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "io_error"
-const SQLiteStoreReasonInspectionStale github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "inspection_stale"
-const SQLiteStoreReasonInvalidRequest github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "invalid_request"
-const SQLiteStoreReasonLeaseMismatch github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "lease_policy_mismatch"
-const SQLiteStoreReasonLegacyMigration github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "non_empty_schema_requires_legacy_migration"
-const SQLiteStoreReasonMigrationAvailable github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "migration_available"
-const SQLiteStoreReasonMigrationFailed github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "migration_failed"
-const SQLiteStoreReasonNewerReader github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "requires_newer_reader"
-const SQLiteStoreReasonPermission github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "permission_denied"
-const SQLiteStoreReasonSchemaMetadata github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "schema_metadata_invalid"
-const SQLiteStoreReasonStoreEmpty github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "store_empty"
-const SQLiteStoreReasonStoreMissing github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "store_missing"
-const SQLiteStoreReasonUnrecognized github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "unrecognized_store"
-const SQLiteStoreReasonUnsupported github.com/floegence/floret/v2/runtime.SQLiteStoreReason = "unsupported_older_schema"
-type SQLiteStoreState string
-const SQLiteStoreStateBusy github.com/floegence/floret/v2/runtime.SQLiteStoreState = "busy"
-const SQLiteStoreStateCorrupt github.com/floegence/floret/v2/runtime.SQLiteStoreState = "corrupt"
-const SQLiteStoreStateCurrent github.com/floegence/floret/v2/runtime.SQLiteStoreState = "current"
-const SQLiteStoreStateDrifted github.com/floegence/floret/v2/runtime.SQLiteStoreState = "drifted"
-const SQLiteStoreStateEmpty github.com/floegence/floret/v2/runtime.SQLiteStoreState = "empty"
-const SQLiteStoreStateFuture github.com/floegence/floret/v2/runtime.SQLiteStoreState = "future"
-const SQLiteStoreStateIOError github.com/floegence/floret/v2/runtime.SQLiteStoreState = "io_error"
-const SQLiteStoreStateMissing github.com/floegence/floret/v2/runtime.SQLiteStoreState = "missing"
-const SQLiteStoreStatePermissionDenied github.com/floegence/floret/v2/runtime.SQLiteStoreState = "permission_denied"
-const SQLiteStoreStateUnsupportedOlder github.com/floegence/floret/v2/runtime.SQLiteStoreState = "unsupported_older"
-const SQLiteStoreStateUpgradeable github.com/floegence/floret/v2/runtime.SQLiteStoreState = "upgradeable"
-type SQLiteStoreVerification struct
-field SQLiteStoreVerification.Inspection github.com/floegence/floret/v2/runtime.SQLiteStoreInspection tag="json:\"inspection\""
-field SQLiteStoreVerification.Checks []github.com/floegence/floret/v2/runtime.SQLiteStoreVerificationCheck tag="json:\"checks\""
-method SQLiteStoreVerification.Validate func() error
-type SQLiteStoreVerificationCheck struct
-field SQLiteStoreVerificationCheck.Code string tag="json:\"code\""
-field SQLiteStoreVerificationCheck.Passed bool tag="json:\"passed\""
-field SQLiteStoreVerificationCheck.SafeDetail string tag="json:\"safe_detail,omitempty\""
 type SendSubAgentInput struct
 field SendSubAgentInput.InputRequestID string
 field SendSubAgentInput.ChildThreadID github.com/floegence/floret/v2/runtime.ThreadID
@@ -1180,9 +904,6 @@ const SignalContinue github.com/floegence/floret/v2/runtime.SignalDisposition = 
 type SignalDisposition string
 const SignalTerminal github.com/floegence/floret/v2/runtime.SignalDisposition = "terminal"
 const SignalWaiting github.com/floegence/floret/v2/runtime.SignalDisposition = "waiting"
-type SourceRef struct
-field SourceRef.Title string tag="json:\"title,omitempty\""
-field SourceRef.URL string tag="json:\"url,omitempty\""
 type SpawnSubAgent struct
 field SpawnSubAgent.PublicationID string
 field SpawnSubAgent.ParentTurnID github.com/floegence/floret/v2/runtime.TurnID
@@ -1208,27 +929,10 @@ field SpawnSubAgentRequest.References []github.com/floegence/floret/v2/runtime.M
 field SpawnSubAgentRequest.HostProfileRef string
 field SpawnSubAgentRequest.ForkMode github.com/floegence/floret/v2/runtime.SubAgentForkMode
 field SpawnSubAgentRequest.Labels github.com/floegence/floret/v2/runtime.RunLabels
-func StartSQLiteStore func(ctx context.Context, path string, request github.com/floegence/floret/v2/runtime.SQLiteStartupRequest, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStartupResult, error)
-type Store struct
-method *Store.Close func() error
-type StoreLeasePolicy struct
-field StoreLeasePolicy.TTL time.Duration tag="json:\"ttl\""
-field StoreLeasePolicy.RenewInterval time.Duration tag="json:\"renew_interval\""
-field StoreLeasePolicy.ClockSkewAllowance time.Duration tag="json:\"clock_skew_allowance\""
-method StoreLeasePolicy.Validate func() error
-type StoreSchemaIdentity struct
-field StoreSchemaIdentity.Version string tag="json:\"version\""
-field StoreSchemaIdentity.Fingerprint string tag="json:\"fingerprint\""
-type StoreSchemaMigrationRequirement string
-const StoreSchemaMigrationRequirementNone github.com/floegence/floret/v2/runtime.StoreSchemaMigrationRequirement = "none"
-const StoreSchemaMigrationRequirementQuiescentAuthority github.com/floegence/floret/v2/runtime.StoreSchemaMigrationRequirement = "quiescent_authority"
-type StoreSchemaMigrationSource struct
-field StoreSchemaMigrationSource.Identity github.com/floegence/floret/v2/runtime.StoreSchemaIdentity tag="json:\"identity\""
-field StoreSchemaMigrationSource.Requirement github.com/floegence/floret/v2/runtime.StoreSchemaMigrationRequirement tag="json:\"requirement\""
 type StreamObservation struct
 field StreamObservation.Type github.com/floegence/floret/v2/runtime.StreamObservationType tag="json:\"type\""
 field StreamObservation.Text string tag="json:\"text,omitempty\""
-field StreamObservation.ToolCallStream *github.com/floegence/floret/v2/runtime.ModelToolCallStream tag="json:\"tool_call_stream,omitempty\""
+field StreamObservation.ToolCallStream *github.com/floegence/floret/v2/runtime.modelToolCallStream tag="json:\"tool_call_stream,omitempty\""
 field StreamObservation.Reason string tag="json:\"reason,omitempty\""
 field StreamObservation.FinishReason github.com/floegence/floret/v2/observation.FinishReason tag="json:\"finish_reason,omitempty\""
 field StreamObservation.RawFinishReason string tag="json:\"raw_finish_reason,omitempty\""
@@ -1274,7 +978,6 @@ method *SubAgentManager.SendInput func(ctx context.Context, request github.com/f
 method *SubAgentManager.PublishPendingToolCompletion func(ctx context.Context, request github.com/floegence/floret/v2/runtime.PublishSubAgentPendingToolCompletion) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentManager.Wait func(ctx context.Context, request github.com/floegence/floret/v2/runtime.WaitSubAgents) (github.com/floegence/floret/v2/runtime.WaitSubAgentsResult, error)
 method *SubAgentManager.Close func(ctx context.Context, request github.com/floegence/floret/v2/runtime.CloseSubAgent) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-type SubAgentOption struct
 type SubAgentReader struct
 method *SubAgentReader.List func(ctx context.Context) ([]github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentReader.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v2/runtime.SubAgentDetailRequest) (github.com/floegence/floret/v2/runtime.SubAgentDetail, error)
@@ -1319,7 +1022,6 @@ field ThreadAgentTodoState.UpdatedByTurnID github.com/floegence/floret/v2/runtim
 field ThreadAgentTodoState.UpdatedByRunID github.com/floegence/floret/v2/runtime.RunID tag="json:\"updated_by_run_id,omitempty\""
 field ThreadAgentTodoState.UpdatedByToolCall string tag="json:\"updated_by_tool_call_id,omitempty\""
 method ThreadAgentTodoState.Validate func() error
-type ThreadCompactionOption struct
 type ThreadCompactionRequest struct
 field ThreadCompactionRequest.RequestID string
 field ThreadCompactionRequest.Source string
@@ -1613,7 +1315,7 @@ const ThreadUserMessageOriginUser github.com/floegence/floret/v2/runtime.ThreadU
 type ToolSurface struct
 field ToolSurface.Tools *github.com/floegence/floret/v2/tools.Registry
 field ToolSurface.ToolDefinitions []github.com/floegence/floret/v2/tools.ToolDefinition
-field ToolSurface.HostedToolDefinitions []github.com/floegence/floret/v2/runtime.HostedToolDefinition
+field ToolSurface.HostedToolDefinitions []github.com/floegence/floret/v2/provider.HostedToolDefinition
 field ToolSurface.SystemPrompt string
 field ToolSurface.HostContext map[string]string
 field ToolSurface.Epoch string
@@ -1633,7 +1335,6 @@ type TraceID string
 const TurnCompletionExplicitSignal github.com/floegence/floret/v2/runtime.TurnCompletionPolicy = "explicit_signal"
 const TurnCompletionNaturalStop github.com/floegence/floret/v2/runtime.TurnCompletionPolicy = "natural_stop"
 type TurnCompletionPolicy string
-type TurnExecutionOption struct
 type TurnID string
 type TurnInput struct
 field TurnInput.Text string tag="json:\"text,omitempty\""
@@ -1721,7 +1422,6 @@ field UpdateThreadAgentTodosRequest.Items []github.com/floegence/floret/v2/runti
 field UpdateThreadAgentTodosRequest.TurnID github.com/floegence/floret/v2/runtime.TurnID
 field UpdateThreadAgentTodosRequest.RunID github.com/floegence/floret/v2/runtime.RunID
 field UpdateThreadAgentTodosRequest.ToolCallID string
-func VerifySQLiteStore func(ctx context.Context, path string, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStoreVerification, error)
 type WaitSubAgents struct
 field WaitSubAgents.ChildThreadIDs []github.com/floegence/floret/v2/runtime.ThreadID
 field WaitSubAgents.Timeout time.Duration
@@ -1742,30 +1442,6 @@ func WithAgentLoopLimits func(limits github.com/floegence/floret/v2/runtime.Loop
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v2/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v2/runtime.ThreadTitleMode) github.com/floegence/floret/v2/runtime.AgentOption
 func WithAgentTools func(items ...github.com/floegence/floret/v2/tools.Tool) github.com/floegence/floret/v2/runtime.AgentOption
-func WithSQLiteStoreLeasePolicy func(policy github.com/floegence/floret/v2/runtime.StoreLeasePolicy) github.com/floegence/floret/v2/runtime.SQLiteStoreOption
-func WithSubAgentCapabilities func(capabilities github.com/floegence/floret/v2/runtime.CapabilityOptions) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentDynamicToolSurface func(provider github.com/floegence/floret/v2/runtime.ToolSurfaceProvider) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentEffectfulTools func(registry *github.com/floegence/floret/v2/tools.Registry, gate github.com/floegence/floret/v2/runtime.EffectAuthorizationGate) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentEventSink func(sink github.com/floegence/floret/v2/runtime.EventSink) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentLoopLimits func(limits github.com/floegence/floret/v2/runtime.LoopLimits) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentModelGateway func(gateway github.com/floegence/floret/v2/runtime.ModelGateway, identity github.com/floegence/floret/v2/runtime.ModelGatewayIdentity, capabilities github.com/floegence/floret/v2/runtime.ModelGatewayCapabilities) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentReadOnlyTools func(items ...github.com/floegence/floret/v2/tools.Tool) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentRunTimeout func(timeout time.Duration) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithSubAgentThreadTitleMode func(mode github.com/floegence/floret/v2/runtime.ThreadTitleMode) github.com/floegence/floret/v2/runtime.SubAgentOption
-func WithThreadCompactionEventSink func(sink github.com/floegence/floret/v2/runtime.EventSink) github.com/floegence/floret/v2/runtime.ThreadCompactionOption
-func WithThreadCompactionIDGenerator func(generator func(string) string) github.com/floegence/floret/v2/runtime.ThreadCompactionOption
-func WithThreadCompactionLoopLimits func(limits github.com/floegence/floret/v2/runtime.LoopLimits) github.com/floegence/floret/v2/runtime.ThreadCompactionOption
-func WithThreadCompactionModelGateway func(gateway github.com/floegence/floret/v2/runtime.ModelGateway, identity github.com/floegence/floret/v2/runtime.ModelGatewayIdentity, capabilities github.com/floegence/floret/v2/runtime.ModelGatewayCapabilities) github.com/floegence/floret/v2/runtime.ThreadCompactionOption
-func WithTurnCapabilities func(capabilities github.com/floegence/floret/v2/runtime.CapabilityOptions) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnDynamicToolSurface func(provider github.com/floegence/floret/v2/runtime.ToolSurfaceProvider) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnEffectfulTools func(registry *github.com/floegence/floret/v2/tools.Registry, gate github.com/floegence/floret/v2/runtime.EffectAuthorizationGate) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnEventSink func(sink github.com/floegence/floret/v2/runtime.EventSink) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnIDGenerator func(generator func(string) string) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnLoopLimits func(limits github.com/floegence/floret/v2/runtime.LoopLimits) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnModelGateway func(gateway github.com/floegence/floret/v2/runtime.ModelGateway, identity github.com/floegence/floret/v2/runtime.ModelGatewayIdentity, capabilities github.com/floegence/floret/v2/runtime.ModelGatewayCapabilities) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnReadOnlyTools func(items ...github.com/floegence/floret/v2/tools.Tool) github.com/floegence/floret/v2/runtime.TurnExecutionOption
-func WithTurnThreadTitleMode func(mode github.com/floegence/floret/v2/runtime.ThreadTitleMode) github.com/floegence/floret/v2/runtime.TurnExecutionOption
 
 package github.com/floegence/floret/v2/storage
 type Backend interface interface{Close() error; Update(context.Context, func(github.com/floegence/floret/v2/storage.WriteTx) error) error; View(context.Context, func(github.com/floegence/floret/v2/storage.ReadTx) error) error}
