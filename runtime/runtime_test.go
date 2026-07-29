@@ -51,7 +51,7 @@ type testMaintenanceFacade struct {
 
 type testCapabilitySet struct {
 	create       *threadCreateBinder
-	inventory    *ThreadInventoryHost
+	inventory    *threadInventoryCapability
 	read         *threadReadBinder
 	title        *threadTitleBinder
 	fork         *threadForkBinder

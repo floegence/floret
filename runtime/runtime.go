@@ -27,6 +27,7 @@ import (
 	"github.com/floegence/floret/v2/internal/storage/sqlite"
 	"github.com/floegence/floret/v2/internal/tools/skills"
 	"github.com/floegence/floret/v2/observation"
+	publicstorage "github.com/floegence/floret/v2/storage"
 	"github.com/floegence/floret/v2/tools"
 )
 
@@ -2053,6 +2054,21 @@ func newMemoryStore() *Store {
 	store.self = store
 	store.initLifetime()
 	return store
+}
+
+func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) (*Store, error) {
+	kernel, err := storage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	store := &Store{
+		repo: kernel, prompt: kernel, forkOperations: kernel,
+		agentTodos: kernel, rootAuthority: kernel,
+		deleteCleanup: func(context.Context, []string) error { return nil },
+	}
+	store.self = store
+	store.initLifetime()
+	return store, nil
 }
 
 // openSQLiteStore opens or creates a Store only when its live state still

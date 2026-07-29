@@ -104,7 +104,11 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		_ = backend.Close()
 		return nil, err
 	}
-	store := newMemoryStore()
+	store, err := newBackendRuntimeStore(ctx, backend)
+	if err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
 	host := &Host{store: store, backend: backend}
 	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		constructors := []func() error{

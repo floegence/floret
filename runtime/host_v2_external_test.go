@@ -41,7 +41,10 @@ func (gateway *completingGateway) Stream(_ context.Context, request provider.Req
 	gateway.requests <- request
 	events := make(chan provider.Event, 2)
 	events <- provider.Event{Type: provider.EventDelta, Text: "done"}
-	events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
+	events <- provider.Event{
+		Type: provider.EventDone, Reason: "stop",
+		ResponseState: &provider.State{Kind: "response", ID: "state-" + string(request.TurnID)},
+	}
 	close(events)
 	return events, nil
 }
