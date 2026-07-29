@@ -6,7 +6,7 @@
 // and commands that have not yet been admitted to a Floret thread.
 //
 // Hosts create one Store, configure its capability binders exactly once with
-// ConfigureHostCapabilities, bind the narrow capability needed for an exact
+// configureHostCapabilities, bind the narrow capability needed for an exact
 // ThreadID or parent ThreadID, and close the Store only after active work has
 // stopped. Public snapshot and result Validate methods are intended for host
 // integration boundaries; invalid values must not be repaired from host
@@ -18,7 +18,7 @@
 // Store. Recovery keeps explicit BindThread and BindSubAgent entry points
 // because root and parent-child recovery authority are different contracts.
 // Provider-backed factories accept only opaque option values returned by
-// NewTurnExecutionHostOptions, NewThreadCompactionHostOptions, or
-// NewSubAgentHostOptions; factories revalidate both those values and current
+// newTurnExecutionOptions, newThreadCompactionOptions, or
+// newSubAgentOptions; factories revalidate both those values and current
 // Store authority before issuing a Host.
 package runtime

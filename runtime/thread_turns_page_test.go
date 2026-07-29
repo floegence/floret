@@ -29,7 +29,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 				path = filepath.Join(t.TempDir(), "retry-context.db")
 				store, err = openSQLiteStoreForTest(path)
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -187,7 +187,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 				path = filepath.Join(t.TempDir(), "retry-turn.db")
 				store, err = openSQLiteStoreForTest(path)
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -365,7 +365,7 @@ func assertExactThreadTurnMatchesListed(t *testing.T, ctx context.Context, maint
 }
 
 func TestListThreadTurnsRejectsEmptySinceCursor(t *testing.T) {
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	maintenance, err := newTestMaintenanceHost(t, store)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +384,7 @@ func TestListThreadTurnsRejectsEmptySinceCursor(t *testing.T) {
 
 func TestThreadTurnCursorIsOpaqueScopedAndTyped(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	maintenance, err := newTestMaintenanceHost(t, store)
 	if err != nil {
@@ -514,7 +514,7 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -579,7 +579,7 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 
 func TestListThreadTurnsUsesCanonicalPageWithoutFullJournalReads(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	base := store.repo.(*sessiontree.MemoryRepo)
 	counting := &canonicalPageCountingRepo{MemoryRepo: base}
 	store.repo = counting

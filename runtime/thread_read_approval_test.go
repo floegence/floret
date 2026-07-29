@@ -15,7 +15,7 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 		name  string
 		store func(*testing.T) *Store
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "approval-read.db"))
 			if err != nil {

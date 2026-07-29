@@ -10,7 +10,7 @@ import (
 
 func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"},
 		Store:  store,

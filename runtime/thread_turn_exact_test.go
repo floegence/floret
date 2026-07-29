@@ -15,7 +15,7 @@ import (
 
 func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	maintenance, err := newTestMaintenanceHost(t, store)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestThreadReadHostReadThreadTurnReturnsNotFoundForEmptyThreadAcrossStores(t
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -112,7 +112,7 @@ func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 				if openErr != nil {
 					t.Fatal(openErr)
 				}
-				store = NewMemoryStore()
+				store = newMemoryStore()
 				store.repo, store.rootAuthority, store.agentTodos, store.forkOperations = repo, repo, repo, storage.NewMemoryForkOperationStore(repo)
 			}
 			if err != nil {
@@ -162,7 +162,7 @@ func TestSubAgentReadHostReadThreadTurnEnforcesDescendantAuthorityAndLifecycle(t
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -243,7 +243,7 @@ func admitCompletedRuntimeMessage(t *testing.T, ctx context.Context, store *Stor
 	}
 }
 
-func assertSubAgentExactTurn(t *testing.T, ctx context.Context, host *SubAgentReadHost, threadID ThreadID, turnID TurnID) {
+func assertSubAgentExactTurn(t *testing.T, ctx context.Context, host *subAgentReadCapability, threadID ThreadID, turnID TurnID) {
 	t.Helper()
 	turn, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: threadID, TurnID: turnID})
 	if err != nil || turn.TurnID != turnID {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	floretruntime "github.com/floegence/floret/v2/runtime"
+	floretstorage "github.com/floegence/floret/v2/storage"
 )
 
 func TestInspectJSONWritesSingleVersionedEnvelope(t *testing.T) {
@@ -195,21 +196,14 @@ func TestUsageRejectsDangerousOrAmbiguousCommands(t *testing.T) {
 	}
 }
 
-func TestPublicRuntimeMaintenanceSmoke(t *testing.T) {
+func TestV2RuntimeStorageSmoke(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := floretruntime.OpenSQLiteStore(context.Background(), path, floretruntime.SQLiteStoreOpenRequest{
-		ExpectedState: floretruntime.SQLiteStoreStateMissing,
-	})
+	store, err := floretruntime.Open(context.Background(), floretruntime.Options{Storage: floretstorage.SQLite(path)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"inspect", path}, {"verify", path}, {"migrate", path}} {
-		if code := execute(context.Background(), args, io.Discard, io.Discard, publicMaintenanceAPI, fixedOperationID); code != exitSuccess {
-			t.Fatalf("args %q exit code = %d, want %d", args, code, exitSuccess)
-		}
 	}
 }
 

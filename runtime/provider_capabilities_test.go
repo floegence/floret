@@ -19,7 +19,7 @@ import (
 
 func TestProviderCapabilitiesRequireBoundAuthority(t *testing.T) {
 	ctx := context.Background()
-	capabilities := mustTestCapabilities(t, NewMemoryStore())
+	capabilities := mustTestCapabilities(t, newMemoryStore())
 	constructors := []struct {
 		name string
 		call func() error
@@ -46,7 +46,7 @@ func TestProviderCapabilitiesRequireBoundAuthority(t *testing.T) {
 
 func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	events := &runtimeEventRecorder{}
 	missing := []struct {
@@ -118,7 +118,7 @@ func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testin
 
 func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffects(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("root")
 	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
@@ -176,7 +176,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 				if err != nil {
 					return err
 				}
-				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+				_, err = factory.NewHost(ctx, turnExecutionOptions{
 					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
@@ -190,7 +190,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 				if err != nil {
 					return err
 				}
-				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+				_, err = factory.NewHost(ctx, turnExecutionOptions{
 					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
@@ -204,7 +204,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 				if err != nil {
 					return err
 				}
-				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
+				_, err = factory.NewHost(ctx, threadCompactionOptions{
 					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), sink: events, initialized: true,
 				})
 				return err
@@ -218,7 +218,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 				if err != nil {
 					return err
 				}
-				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
+				_, err = factory.NewHost(ctx, threadCompactionOptions{
 					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), sink: events, initialized: true,
 				})
 				return err
@@ -232,7 +232,7 @@ func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffec
 				if err != nil {
 					return err
 				}
-				_, err = factory.NewHost(ctx, SubAgentHostOptions{
+				_, err = factory.NewHost(ctx, subAgentOptions{
 					config: providerConfig, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("authority"), tools: registry, sink: events, initialized: true,
 				})
 				return err
@@ -273,7 +273,7 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 		name  string
 		store func(*testing.T) *Store
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
@@ -315,7 +315,7 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 
 func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	for _, threadID := range []ThreadID{"thread-a", "parent-a"} {
 		createRequest := testCreateThreadRequest(threadID)
@@ -337,7 +337,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{config: providerConfig, initialized: true})
+	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{config: providerConfig, initialized: true})
+	compaction, err := compactionFactory.NewHost(ctx, threadCompactionOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{config: providerConfig, initialized: true})
+	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{config: providerConfig, initialized: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 
 func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	for _, threadID := range []ThreadID{"thread-a", "thread-b"} {
 		createRequest := testCreateThreadRequest(threadID)
@@ -517,7 +517,7 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
 		config:                   runtimeGatewayConfig("test"),
 		modelGateway:             gateway,
 		modelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
@@ -531,7 +531,7 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
+	compaction, err := compactionFactory.NewHost(ctx, threadCompactionOptions{
 		config:                   runtimeCompactionTestConfig(),
 		modelGateway:             gateway,
 		modelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
@@ -605,7 +605,7 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 
 func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	parentCreateRequest := testCreateThreadRequest("parent")
 	create, err := capabilities.create.Bind(parentCreateRequest.ThreadID, parentCreateRequest.CreateIntentID)
@@ -629,14 +629,14 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
+	if _, err := turnFactory.NewHost(ctx, turnExecutionOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
 		t.Fatalf("turn NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
 	}
 	compactionFactory, err := capabilities.compaction.Bind("child")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
+	if _, err := compactionFactory.NewHost(ctx, threadCompactionOptions{config: providerConfig, initialized: true}); !errors.Is(err, ErrSubAgentParentRequired) {
 		t.Fatalf("compaction NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
 	}
 	constructors := []struct {
@@ -679,7 +679,7 @@ func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 		name  string
 		store func(*testing.T) *Store
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
@@ -735,7 +735,7 @@ func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 
 func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
 	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
@@ -762,7 +762,7 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
+	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
 		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -892,7 +892,7 @@ func (r *blockingRootAuthorityRepo) DeleteRootTree(ctx context.Context, rootThre
 
 func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	for _, threadID := range []ThreadID{"thread-a", "thread-b"} {
 		createRequest := testCreateThreadRequest(threadID)
@@ -911,7 +911,7 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
 		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -955,7 +955,7 @@ func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
+	subAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
 		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",

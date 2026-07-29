@@ -19,7 +19,7 @@ func TestStoreCloseWaitsForDispatchedEffectBeforeTerminalMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	store.repo = repo
 	store.rootAuthority = repo
 	store.agentTodos = repo

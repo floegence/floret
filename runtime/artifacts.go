@@ -11,7 +11,7 @@ import (
 
 // ReadArtifact reads one artifact owned by the exact root thread bound to this
 // capability.
-func (h *ThreadReadHost) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
+func (h *threadReadCapability) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
 	if h == nil {
 		return ArtifactContent{}, errors.New("thread read host is required")
 	}
@@ -36,7 +36,7 @@ func (h *ThreadReadHost) ReadArtifact(ctx context.Context, req ReadArtifactReque
 
 // ReadArtifact reads one artifact owned by any complete descendant of the
 // parent thread bound to this capability.
-func (h *SubAgentReadHost) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
+func (h *subAgentReadCapability) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
 	if h == nil {
 		return ArtifactContent{}, errors.New("subagent read host is required")
 	}

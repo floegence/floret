@@ -262,7 +262,7 @@ func TestHostRejectsInvalidReferenceBeforeAdmissionWithoutMutation(t *testing.T)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			store := NewMemoryStore()
+			store := newMemoryStore()
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeGatewayConfig("invalid reference"),
 				ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
@@ -317,7 +317,7 @@ func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testi
 		Config:               runtimeGatewayConfig("reference-only contract"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T
 			ctx := context.Background()
 			host, err := newTestHost(t, providerHostOptions{Config: runtimeGatewayConfig("test"), ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
 				return runtimeGatewayEvents("unexpected"), nil
-			}), ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: NewMemoryStore()})
+			}), ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: newMemoryStore()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -468,7 +468,7 @@ func runtimeSupplementalMetadataPairs(count int) map[string]string {
 
 func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -570,7 +570,7 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 			return runtimeGatewayEvents(map[int64]string{1: "original answer", 2: "retry answer"}[index]), nil
 		}),
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -627,7 +627,7 @@ func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
 			return nil, errors.New("provider failed")
 		}),
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -718,7 +718,7 @@ func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "child done", SystemPrompt: "test"},
-		Store:  NewMemoryStore(),
+		Store:  newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)

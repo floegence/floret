@@ -403,7 +403,7 @@ func (publicSQLiteStoreStartupAPI) Migrate(ctx context.Context, path string, req
 }
 
 func (publicSQLiteStoreStartupAPI) Open(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
-	return OpenSQLiteStore(ctx, path, request, options...)
+	return openSQLiteStore(ctx, path, request, options...)
 }
 
 func (e *SQLiteStoreMaintenanceError) Error() string {

@@ -17,7 +17,7 @@ import (
 )
 
 // RecoverInterruptedTurn atomically takes over and finalizes the exact proof bound at host construction.
-func (h *InterruptedTurnRecoveryHost) RecoverInterruptedTurn(ctx context.Context) (RecoverInterruptedTurnResult, error) {
+func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.Context) (RecoverInterruptedTurnResult, error) {
 	if h == nil || h.store == nil || h.harness == nil || h.threadID == "" {
 		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
 	}
@@ -75,7 +75,7 @@ func interruptedRecoveryTurnStatus(marker sessiontree.TurnMarkerStatus, failure 
 	}
 }
 
-func (h *InterruptedTurnRecoveryHost) markInterruptedRecoveryFactoryResolved() {
+func (h *interruptedTurnRecoveryCapability) markInterruptedRecoveryFactoryResolved() {
 	if h == nil || h.factoryState == nil {
 		return
 	}
@@ -352,7 +352,7 @@ func (h *providerHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsR
 	return listThreadTurns(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *threadReadCapability) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnsPage{}, err
@@ -366,7 +366,7 @@ func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurn
 
 // ListThreadTurns returns canonical typed turns for one complete descendant of
 // the parent bound to this read host.
-func (h *SubAgentReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *subAgentReadCapability) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if h == nil {
 		return ThreadTurnsPage{}, errors.New("subagent read host is required")
 	}
@@ -385,7 +385,7 @@ func (h *SubAgentReadHost) ListThreadTurns(ctx context.Context, req ListThreadTu
 }
 
 // ReadThreadTurn returns one canonical turn bound to this root read host.
-func (h *ThreadReadHost) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+func (h *threadReadCapability) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -399,7 +399,7 @@ func (h *ThreadReadHost) ReadThreadTurn(ctx context.Context, req ReadThreadTurnR
 
 // ReadThreadTurn returns one canonical turn for a complete descendant of the
 // parent bound to this read host.
-func (h *SubAgentReadHost) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+func (h *subAgentReadCapability) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
 	if h == nil {
 		return ThreadTurnSnapshot{}, errors.New("subagent read host is required")
 	}
@@ -455,7 +455,7 @@ func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID Thread
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
-func (h *ThreadReadHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func (h *threadReadCapability) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -471,7 +471,7 @@ func (h *providerHost) ReadThreadOverview(ctx context.Context, threadID ThreadID
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 
-func (h *ThreadReadHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+func (h *threadReadCapability) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadOverview{}, err

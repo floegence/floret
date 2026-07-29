@@ -18,7 +18,7 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 		{
 			name: "memory",
 			run: func(t *testing.T, verify func(*Store)) {
-				verify(NewMemoryStore())
+				verify(newMemoryStore())
 			},
 		},
 		{
@@ -103,7 +103,7 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 
 func TestPublicThreadReadModelPathsRejectCorruptProjection(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	repo := &corruptThreadProjectionRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo)}
 	store.repo = repo
 	maintenance, err := newTestMaintenanceHost(t, store)

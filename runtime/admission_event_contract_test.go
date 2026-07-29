@@ -13,7 +13,7 @@ import (
 
 type admissionReadEventSink struct {
 	mu       sync.Mutex
-	readHost *ThreadReadHost
+	readHost *threadReadCapability
 	events   []Event
 	page     ThreadTurnsPage
 	err      error
@@ -59,7 +59,7 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 		name  string
 		store func(*testing.T) *Store
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {

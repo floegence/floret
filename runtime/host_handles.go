@@ -97,7 +97,7 @@ func (host *Host) SubAgentReader(ctx context.Context, parentThreadID ThreadID) (
 
 // ThreadTitleEditor is title authority for one exact root thread.
 type ThreadTitleEditor struct {
-	inner    *ThreadTitleHost
+	inner    *threadTitleCapability
 	threadID ThreadID
 }
 
@@ -117,7 +117,7 @@ type ThreadForkRequest struct {
 
 // ThreadForker is fork authority for one exact source thread.
 type ThreadForker struct {
-	inner    *ThreadForkHost
+	inner    *threadForkCapability
 	threadID ThreadID
 }
 
@@ -134,7 +134,7 @@ func (forker *ThreadForker) Fork(ctx context.Context, request ThreadForkRequest)
 
 // ThreadDeleter is deletion authority for one exact root thread tree.
 type ThreadDeleter struct {
-	inner    *ThreadDeleteHost
+	inner    *threadDeleteCapability
 	threadID ThreadID
 }
 
@@ -157,7 +157,7 @@ type ThreadCompactionRequest struct {
 
 // ThreadCompactor owns provider-backed compaction for one exact thread.
 type ThreadCompactor struct {
-	inner    *ThreadCompactionHost
+	inner    *threadCompactionCapability
 	threadID ThreadID
 }
 
@@ -226,7 +226,7 @@ type CloseSubAgent struct {
 
 // SubAgentManager owns child lifecycle for one exact parent.
 type SubAgentManager struct {
-	inner          *SubAgentHost
+	inner          *subAgentCapability
 	parentThreadID ThreadID
 }
 
@@ -303,7 +303,7 @@ type SubAgentDetailRequest struct {
 
 // SubAgentReader reads descendants of one exact parent.
 type SubAgentReader struct {
-	inner          *SubAgentReadHost
+	inner          *subAgentReadCapability
 	parentThreadID ThreadID
 }
 
@@ -337,18 +337,18 @@ func (reader *SubAgentReader) ActivityTimeline(ctx context.Context, meta observa
 	})
 }
 
-func (agent *Agent) threadCompactionOptions() ThreadCompactionHostOptions {
+func (agent *Agent) threadCompactionOptions() threadCompactionOptions {
 	turn := agent.turnExecutionOptions()
-	return ThreadCompactionHostOptions{
+	return threadCompactionOptions{
 		config: turn.config, modelGateway: turn.modelGateway,
 		modelGatewayIdentity: turn.modelGatewayIdentity, modelGatewayCapabilities: turn.modelGatewayCapabilities,
 		sink: turn.sink, idGenerator: turn.idGenerator, loopLimits: turn.loopLimits, initialized: true,
 	}
 }
 
-func (agent *Agent) subAgentOptions() SubAgentHostOptions {
+func (agent *Agent) subAgentOptions() subAgentOptions {
 	turn := agent.turnExecutionOptions()
-	return SubAgentHostOptions{
+	return subAgentOptions{
 		config: turn.config, modelGateway: turn.modelGateway,
 		modelGatewayIdentity: turn.modelGatewayIdentity, modelGatewayCapabilities: turn.modelGatewayCapabilities,
 		tools: turn.tools, effectAuthorizationGate: turn.effectAuthorizationGate,

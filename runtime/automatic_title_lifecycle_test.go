@@ -17,7 +17,7 @@ import (
 
 func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	requests := make(chan ModelRequest, 4)
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -78,7 +78,7 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 
 func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
@@ -104,7 +104,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := factory.NewHost(ctx, SubAgentHostOptions{
+	host, err := factory.NewHost(ctx, subAgentOptions{
 		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"),
 		modelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning}, initialized: true,
 	})
@@ -133,7 +133,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 
 func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread")
@@ -163,7 +163,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+	turn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
 		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), modelGatewayCapabilities: gatewayCapabilities, initialized: true,
 	})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
+	compaction, err := compactionFactory.NewHost(ctx, threadCompactionOptions{
 		config: cfg, modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), modelGatewayCapabilities: gatewayCapabilities, initialized: true,
 	})
 	if err != nil {
@@ -210,7 +210,7 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 	ctx := context.Background()
 	completeErr := errors.New("injected runtime title completion failure")
 	failErr := errors.New("injected runtime title failure settlement failure")
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	baseRepo := store.repo.(*sessiontree.MemoryRepo)
 	faultRepo := &runtimeAutomaticTitleFaultRepo{
 		MemoryRepo:        baseRepo,
@@ -272,7 +272,7 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 func TestStoreCloseJoinsBackgroundAndStorageErrors(t *testing.T) {
 	backgroundErr := errors.New("injected background operation failure")
 	storageErr := errors.New("injected storage close failure")
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	store.close = func() error { return storageErr }
 	store.reportBackgroundError(backgroundErr)
 
@@ -291,7 +291,7 @@ func TestStoreCloseJoinsBackgroundAndStorageErrors(t *testing.T) {
 func TestAutomaticTitleRecoveryRetriesAfterPartialFailure(t *testing.T) {
 	ctx := context.Background()
 	recoveryErr := errors.New("injected automatic title recovery failure")
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	baseRepo := store.repo.(*sessiontree.MemoryRepo)
 	faultRepo := &runtimeAutomaticTitleRecoveryFaultRepo{
 		MemoryRepo: baseRepo,
@@ -400,7 +400,7 @@ func TestProviderHostOpensAfterReopenedClosedChildTitle(t *testing.T) {
 
 func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	titleStarted := make(chan struct{})
 	releaseTitle := make(chan struct{})
 	var titleOnce sync.Once

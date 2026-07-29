@@ -35,12 +35,12 @@ type ToolContractSpec struct {
 	Handler   func(context.Context, ToolContractInvocation) (tools.Result, error)
 }
 
-// ToolContractFactory adapts ToolContractSpec through consumer-owned tool
+// ToolContractBuilder adapts ToolContractSpec through consumer-owned tool
 // construction code and returns the registry that exposes the resulting tool.
-type ToolContractFactory func(testing.TB, ToolContractSpec) *tools.Registry
+type ToolContractBuilder func(testing.TB, ToolContractSpec) *tools.Registry
 
-// PublicToolContractFactory builds the contract tool directly with tools.Define.
-func PublicToolContractFactory(t testing.TB, spec ToolContractSpec) *tools.Registry {
+// NewToolContractRegistry builds the contract tool directly with tools.Define.
+func NewToolContractRegistry(t testing.TB, spec ToolContractSpec) *tools.Registry {
 	t.Helper()
 	type args struct {
 		Value string `json:"value"`
@@ -79,7 +79,7 @@ func PublicToolContractFactory(t testing.TB, spec ToolContractSpec) *tools.Regis
 
 // RunToolContract verifies the public behavioral baseline for a consumer tool
 // constructor or wrapper.
-func RunToolContract(t *testing.T, factory ToolContractFactory) {
+func RunToolContract(t *testing.T, factory ToolContractBuilder) {
 	t.Helper()
 	if factory == nil {
 		t.Fatal("florettest: tool contract factory is required")
@@ -213,7 +213,7 @@ func RunToolContract(t *testing.T, factory ToolContractFactory) {
 	})
 }
 
-func contractRegistry(t testing.TB, factory ToolContractFactory, spec ToolContractSpec) *tools.Registry {
+func contractRegistry(t testing.TB, factory ToolContractBuilder, spec ToolContractSpec) *tools.Registry {
 	t.Helper()
 	registry := factory(t, spec)
 	if registry == nil {

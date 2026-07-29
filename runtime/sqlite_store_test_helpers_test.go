@@ -13,7 +13,7 @@ func openSQLiteStoreForTest(path string, options ...SQLiteStoreOption) (*Store, 
 	}
 	switch inspection.State {
 	case SQLiteStoreStateMissing, SQLiteStoreStateEmpty:
-		return OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{ExpectedState: inspection.State}, options...)
+		return openSQLiteStore(ctx, path, SQLiteStoreOpenRequest{ExpectedState: inspection.State}, options...)
 	case SQLiteStoreStateUpgradeable:
 		result, err := MigrateSQLiteStore(ctx, path, SQLiteStoreMigrationRequest{
 			OperationID: "runtime-test-store-migration",
@@ -44,7 +44,7 @@ func openSQLiteStoreForTest(path string, options ...SQLiteStoreOption) (*Store, 
 			return nil, fmt.Errorf("runtime test store verification check %q failed", check.Code)
 		}
 	}
-	return OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{
+	return openSQLiteStore(ctx, path, SQLiteStoreOpenRequest{
 		ExpectedState:  verification.Inspection.State,
 		ExpectedSchema: verification.Inspection.Observed,
 	}, options...)

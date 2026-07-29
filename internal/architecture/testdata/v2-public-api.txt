@@ -466,7 +466,6 @@ field CompactThreadResult.Metrics github.com/floegence/floret/v2/runtime.RunMetr
 field CompactThreadResult.ActivityTimeline github.com/floegence/floret/v2/observation.ActivityTimeline tag="json:\"activity_timeline\""
 field CompactThreadResult.Replayed bool tag="json:\"replayed,omitempty\""
 method CompactThreadResult.Validate func() error
-func ConfigureHostCapabilities func(store *github.com/floegence/floret/v2/runtime.Store, configure func(*github.com/floegence/floret/v2/runtime.HostBootstrap) error) (err error)
 type ContractError struct
 field ContractError.Contract string
 field ContractError.Err error
@@ -615,7 +614,6 @@ method *Host.Close func() error
 method *Host.ThreadCreator func(threadID github.com/floegence/floret/v2/runtime.ThreadID, createIntentID github.com/floegence/floret/v2/runtime.CreateIntentID) (*github.com/floegence/floret/v2/runtime.ThreadCreator, error)
 method *Host.ThreadReader func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.ThreadReader, error)
 method *Host.TurnRunner func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID, agent *github.com/floegence/floret/v2/runtime.Agent) (*github.com/floegence/floret/v2/runtime.TurnRunner, error)
-type HostBootstrap struct
 type HostedToolDefinition struct
 field HostedToolDefinition.Name string tag="json:\"name\""
 field HostedToolDefinition.Type string tag="json:\"type\""
@@ -623,13 +621,6 @@ field HostedToolDefinition.Description string tag="json:\"description,omitempty\
 field HostedToolDefinition.Parameters map[string]any tag="json:\"parameters,omitempty\""
 field HostedToolDefinition.Options map[string]any tag="json:\"options,omitempty\""
 func InspectSQLiteStore func(ctx context.Context, path string, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (github.com/floegence/floret/v2/runtime.SQLiteStoreInspection, error)
-type InterruptedTurnRecoveryHost struct
-method *InterruptedTurnRecoveryHost.RecoverInterruptedTurn func(ctx context.Context) (github.com/floegence/floret/v2/runtime.RecoverInterruptedTurnResult, error)
-type InterruptedTurnRecoveryHostBinder struct
-method *InterruptedTurnRecoveryHostBinder.BindThread func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryHostFactory, error)
-method *InterruptedTurnRecoveryHostBinder.BindSubAgent func(ctx context.Context, parentThreadID github.com/floegence/floret/v2/runtime.ThreadID, childThreadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryHostFactory, error)
-type InterruptedTurnRecoveryHostFactory struct
-method *InterruptedTurnRecoveryHostFactory.NewHost func(ctx context.Context, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryHost, error)
 type ListRootThreadsRequest struct
 field ListRootThreadsRequest.Cursor github.com/floegence/floret/v2/runtime.ThreadInventoryCursor tag="json:\"cursor,omitempty\""
 field ListRootThreadsRequest.Limit int tag="json:\"limit,omitempty\""
@@ -807,24 +798,7 @@ field ModelToolResult.CallID string tag="json:\"call_id\""
 field ModelToolResult.ToolName string tag="json:\"tool_name\""
 field ModelToolResult.Text string tag="json:\"text,omitempty\""
 func NewAgent func(configuration github.com/floegence/floret/v2/config.AgentConfig, gateway github.com/floegence/floret/v2/provider.Gateway, options ...github.com/floegence/floret/v2/runtime.AgentOption) (*github.com/floegence/floret/v2/runtime.Agent, error)
-func NewInterruptedTurnRecoveryHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.InterruptedTurnRecoveryHostBinder, error)
-func NewMemoryStore func() *github.com/floegence/floret/v2/runtime.Store
-func NewPendingToolRecoveryHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.PendingToolRecoveryHostBinder, error)
-func NewSubAgentHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.SubAgentHostBinder, error)
-func NewSubAgentHostOptions func(cfg github.com/floegence/floret/v2/config.Config, options ...github.com/floegence/floret/v2/runtime.SubAgentOption) (github.com/floegence/floret/v2/runtime.SubAgentHostOptions, error)
-func NewSubAgentReadHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.SubAgentReadHostBinder, error)
-func NewThreadCompactionHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadCompactionHostBinder, error)
-func NewThreadCompactionHostOptions func(cfg github.com/floegence/floret/v2/config.Config, options ...github.com/floegence/floret/v2/runtime.ThreadCompactionOption) (github.com/floegence/floret/v2/runtime.ThreadCompactionHostOptions, error)
-func NewThreadCreateHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadCreateHostBinder, error)
-func NewThreadDeleteHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadDeleteHostBinder, error)
-func NewThreadForkHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadForkHostBinder, error)
-func NewThreadInventoryHost func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadInventoryHost, error)
-func NewThreadReadHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadReadHostBinder, error)
-func NewThreadTitleHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.ThreadTitleHostBinder, error)
-func NewTurnExecutionHostBinder func(bootstrap *github.com/floegence/floret/v2/runtime.HostBootstrap) (*github.com/floegence/floret/v2/runtime.TurnExecutionHostBinder, error)
-func NewTurnExecutionHostOptions func(cfg github.com/floegence/floret/v2/config.Config, options ...github.com/floegence/floret/v2/runtime.TurnExecutionOption) (github.com/floegence/floret/v2/runtime.TurnExecutionHostOptions, error)
 func Open func(ctx context.Context, options github.com/floegence/floret/v2/runtime.Options) (*github.com/floegence/floret/v2/runtime.Host, error)
-func OpenSQLiteStore func(ctx context.Context, path string, request github.com/floegence/floret/v2/runtime.SQLiteStoreOpenRequest, options ...github.com/floegence/floret/v2/runtime.SQLiteStoreOption) (*github.com/floegence/floret/v2/runtime.Store, error)
 type Options struct
 field Options.Storage github.com/floegence/floret/v2/storage.Source
 func ParseThreadTitleSource func(raw string) (github.com/floegence/floret/v2/runtime.ThreadTitleSource, error)
@@ -852,11 +826,6 @@ field PendingToolCompletionResult.Replayed bool tag="json:\"replayed,omitempty\"
 field PendingToolCompletionResult.Turn *github.com/floegence/floret/v2/runtime.TurnResult tag="json:\"turn,omitempty\""
 method PendingToolCompletionResult.Validate func() error
 type PendingToolCompletionStatus string
-type PendingToolRecoveryHost struct
-method *PendingToolRecoveryHost.SettlePendingTool func(ctx context.Context, req github.com/floegence/floret/v2/runtime.PendingToolSettlementRequest) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
-type PendingToolRecoveryHostBinder struct
-method *PendingToolRecoveryHostBinder.NewThreadHost func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.PendingToolRecoveryHost, error)
-method *PendingToolRecoveryHostBinder.NewSubAgentHost func(ctx context.Context, parentThreadID github.com/floegence/floret/v2/runtime.ThreadID, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.PendingToolRecoveryHost, error)
 const PendingToolSettlementCanceled github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "canceled"
 const PendingToolSettlementCompleted github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "completed"
 const PendingToolSettlementFailed github.com/floegence/floret/v2/runtime.PendingToolSettlementStatus = "failed"
@@ -1279,18 +1248,6 @@ field SubAgentDetailRequest.IncludeRaw bool
 const SubAgentForkFullPath github.com/floegence/floret/v2/runtime.SubAgentForkMode = "full_path"
 type SubAgentForkMode string
 const SubAgentForkNone github.com/floegence/floret/v2/runtime.SubAgentForkMode = "none"
-type SubAgentHost struct
-method *SubAgentHost.SpawnSubAgent func(ctx context.Context, req github.com/floegence/floret/v2/runtime.SpawnSubAgentRequest) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-method *SubAgentHost.SendSubAgentInput func(ctx context.Context, req github.com/floegence/floret/v2/runtime.SendSubAgentInputRequest) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-method *SubAgentHost.PublishPendingToolCompletion func(ctx context.Context, req github.com/floegence/floret/v2/runtime.PublishSubAgentPendingToolCompletionRequest) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-method *SubAgentHost.WaitSubAgents func(ctx context.Context, req github.com/floegence/floret/v2/runtime.WaitSubAgentsRequest) (github.com/floegence/floret/v2/runtime.WaitSubAgentsResult, error)
-method *SubAgentHost.CloseSubAgent func(ctx context.Context, req github.com/floegence/floret/v2/runtime.CloseSubAgentRequest) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-method *SubAgentHost.SettlePendingTool func(ctx context.Context, req github.com/floegence/floret/v2/runtime.PendingToolSettlementRequest) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
-type SubAgentHostBinder struct
-method *SubAgentHostBinder.Bind func(parentThreadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.SubAgentHostFactory, error)
-type SubAgentHostFactory struct
-method *SubAgentHostFactory.NewHost func(ctx context.Context, opts github.com/floegence/floret/v2/runtime.SubAgentHostOptions) (*github.com/floegence/floret/v2/runtime.SubAgentHost, error)
-type SubAgentHostOptions struct
 type SubAgentManager struct
 method *SubAgentManager.Spawn func(ctx context.Context, request github.com/floegence/floret/v2/runtime.SpawnSubAgent) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentManager.SendInput func(ctx context.Context, request github.com/floegence/floret/v2/runtime.SendSubAgentInput) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
@@ -1298,16 +1255,6 @@ method *SubAgentManager.PublishPendingToolCompletion func(ctx context.Context, r
 method *SubAgentManager.Wait func(ctx context.Context, request github.com/floegence/floret/v2/runtime.WaitSubAgents) (github.com/floegence/floret/v2/runtime.WaitSubAgentsResult, error)
 method *SubAgentManager.Close func(ctx context.Context, request github.com/floegence/floret/v2/runtime.CloseSubAgent) (github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 type SubAgentOption struct
-type SubAgentReadHost struct
-method *SubAgentReadHost.ReadArtifact func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadArtifactRequest) (github.com/floegence/floret/v2/runtime.ArtifactContent, error)
-method *SubAgentReadHost.ListSubAgents func(ctx context.Context, parentThreadID github.com/floegence/floret/v2/runtime.ThreadID) ([]github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
-method *SubAgentReadHost.ListSubAgentActivityTimeline func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListSubAgentActivityTimelineRequest) (github.com/floegence/floret/v2/runtime.SubAgentActivityTimelineResult, error)
-method *SubAgentReadHost.ReadSubAgentDetail func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadSubAgentDetailRequest) (github.com/floegence/floret/v2/runtime.SubAgentDetail, error)
-method *SubAgentReadHost.ListPendingToolSettlementTargets func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListSubAgentPendingToolSettlementTargetsRequest) ([]github.com/floegence/floret/v2/runtime.PendingToolSettlementTarget, error)
-method *SubAgentReadHost.ListThreadTurns func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListThreadTurnsRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnsPage, error)
-method *SubAgentReadHost.ReadThreadTurn func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadThreadTurnRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
-type SubAgentReadHostBinder struct
-method *SubAgentReadHostBinder.NewHost func(ctx context.Context, parentThreadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.SubAgentReadHost, error)
 type SubAgentReader struct
 method *SubAgentReader.List func(ctx context.Context) ([]github.com/floegence/floret/v2/runtime.SubAgentSnapshot, error)
 method *SubAgentReader.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v2/runtime.SubAgentDetailRequest) (github.com/floegence/floret/v2/runtime.SubAgentDetail, error)
@@ -1352,13 +1299,6 @@ field ThreadAgentTodoState.UpdatedByTurnID github.com/floegence/floret/v2/runtim
 field ThreadAgentTodoState.UpdatedByRunID github.com/floegence/floret/v2/runtime.RunID tag="json:\"updated_by_run_id,omitempty\""
 field ThreadAgentTodoState.UpdatedByToolCall string tag="json:\"updated_by_tool_call_id,omitempty\""
 method ThreadAgentTodoState.Validate func() error
-type ThreadCompactionHost struct
-method *ThreadCompactionHost.CompactThread func(ctx context.Context, req github.com/floegence/floret/v2/runtime.CompactThreadRequest) (github.com/floegence/floret/v2/runtime.CompactThreadResult, error)
-type ThreadCompactionHostBinder struct
-method *ThreadCompactionHostBinder.Bind func(threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.ThreadCompactionHostFactory, error)
-type ThreadCompactionHostFactory struct
-method *ThreadCompactionHostFactory.NewHost func(ctx context.Context, opts github.com/floegence/floret/v2/runtime.ThreadCompactionHostOptions) (*github.com/floegence/floret/v2/runtime.ThreadCompactionHost, error)
-type ThreadCompactionHostOptions struct
 type ThreadCompactionOption struct
 type ThreadCompactionRequest struct
 field ThreadCompactionRequest.RequestID string
@@ -1384,16 +1324,8 @@ field ThreadControlSignal.Disposition string tag="json:\"disposition,omitempty\"
 field ThreadControlSignal.Text string tag="json:\"text,omitempty\""
 field ThreadControlSignal.ArgsHash string tag="json:\"args_hash,omitempty\""
 field ThreadControlSignal.Payload map[string]any tag="json:\"payload,omitempty\""
-type ThreadCreateHost struct
-method *ThreadCreateHost.CreateThread func(ctx context.Context, req github.com/floegence/floret/v2/runtime.CreateThreadRequest) (github.com/floegence/floret/v2/runtime.ThreadSummary, error)
-type ThreadCreateHostBinder struct
-method *ThreadCreateHostBinder.Bind func(threadID github.com/floegence/floret/v2/runtime.ThreadID, createIntentID github.com/floegence/floret/v2/runtime.CreateIntentID) (*github.com/floegence/floret/v2/runtime.ThreadCreateHost, error)
 type ThreadCreator struct
 method *ThreadCreator.Create func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadSummary, error)
-type ThreadDeleteHost struct
-method *ThreadDeleteHost.DeleteThread func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) error
-type ThreadDeleteHostBinder struct
-method *ThreadDeleteHostBinder.NewHost func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.ThreadDeleteHost, error)
 type ThreadDeleter struct
 method *ThreadDeleter.Delete func(ctx context.Context) error
 type ThreadDetailApproval struct
@@ -1495,10 +1427,6 @@ field ThreadDetailToolResult.FullOutput *github.com/floegence/floret/v2/runtime.
 type ThreadDetailTurnMarker struct
 field ThreadDetailTurnMarker.Status string tag="json:\"status,omitempty\""
 field ThreadDetailTurnMarker.Metadata map[string]string tag="json:\"metadata,omitempty\""
-type ThreadForkHost struct
-method *ThreadForkHost.ForkThread func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ForkThreadRequest) (github.com/floegence/floret/v2/runtime.ForkThreadResult, error)
-type ThreadForkHostBinder struct
-method *ThreadForkHostBinder.NewHost func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.ThreadForkHost, error)
 type ThreadForkRequest struct
 field ThreadForkRequest.OperationID github.com/floegence/floret/v2/runtime.ForkOperationID
 field ThreadForkRequest.DestinationThreadID github.com/floegence/floret/v2/runtime.ThreadID
@@ -1516,21 +1444,6 @@ type ThreadPhase string
 method ThreadPhase.Valid func() bool
 const ThreadPhaseIdle github.com/floegence/floret/v2/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v2/runtime.ThreadPhase = "turn"
-type ThreadReadHost struct
-method *ThreadReadHost.ReadArtifact func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadArtifactRequest) (github.com/floegence/floret/v2/runtime.ArtifactContent, error)
-method *ThreadReadHost.ReadThread func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (github.com/floegence/floret/v2/runtime.ThreadSnapshot, error)
-method *ThreadReadHost.ListThreadDetailEvents func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListThreadDetailEventsRequest) (github.com/floegence/floret/v2/runtime.ThreadDetailEvents, error)
-method *ThreadReadHost.ListPendingToolSettlementTargets func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) ([]github.com/floegence/floret/v2/runtime.PendingToolSettlementTarget, error)
-method *ThreadReadHost.ReadThreadContext func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (github.com/floegence/floret/v2/runtime.ThreadContextSnapshot, error)
-method *ThreadReadHost.ReadThreadAgentTodos func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (github.com/floegence/floret/v2/runtime.ThreadAgentTodoState, error)
-method *ThreadReadHost.ReadApprovalQueue func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadApprovalQueueRequest) (github.com/floegence/floret/v2/runtime.ApprovalQueue, error)
-method *ThreadReadHost.ReadTurnProjection func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadTurnProjectionRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnProjection, error)
-method *ThreadReadHost.ListThreadTurns func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ListThreadTurnsRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnsPage, error)
-method *ThreadReadHost.ReadThreadTurn func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadThreadTurnRequest) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
-method *ThreadReadHost.ReadLatestThreadTurn func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
-method *ThreadReadHost.ReadThreadOverview func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (github.com/floegence/floret/v2/runtime.ThreadOverview, error)
-type ThreadReadHostBinder struct
-method *ThreadReadHostBinder.NewHost func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.ThreadReadHost, error)
 type ThreadReader struct
 method *ThreadReader.Read func(ctx context.Context) (github.com/floegence/floret/v2/runtime.ThreadSnapshot, error)
 method *ThreadReader.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v2/runtime.TurnID) (github.com/floegence/floret/v2/runtime.ThreadTurnSnapshot, error)
@@ -1583,10 +1496,6 @@ field ThreadSummary.CanRetry bool tag="json:\"can_retry\""
 method ThreadSummary.Validate func() error
 type ThreadTitleEditor struct
 method *ThreadTitleEditor.Set func(ctx context.Context, title string) (github.com/floegence/floret/v2/runtime.ThreadSnapshot, error)
-type ThreadTitleHost struct
-method *ThreadTitleHost.SetThreadTitle func(ctx context.Context, req github.com/floegence/floret/v2/runtime.SetThreadTitleRequest) (github.com/floegence/floret/v2/runtime.ThreadSnapshot, error)
-type ThreadTitleHostBinder struct
-method *ThreadTitleHostBinder.NewHost func(ctx context.Context, threadID github.com/floegence/floret/v2/runtime.ThreadID, sink github.com/floegence/floret/v2/runtime.EventSink) (*github.com/floegence/floret/v2/runtime.ThreadTitleHost, error)
 type ThreadTitleMode string
 const ThreadTitleModeHostOwned github.com/floegence/floret/v2/runtime.ThreadTitleMode = "host_owned"
 const ThreadTitleModeProvider github.com/floegence/floret/v2/runtime.ThreadTitleMode = "provider"
@@ -1704,19 +1613,6 @@ type TraceID string
 const TurnCompletionExplicitSignal github.com/floegence/floret/v2/runtime.TurnCompletionPolicy = "explicit_signal"
 const TurnCompletionNaturalStop github.com/floegence/floret/v2/runtime.TurnCompletionPolicy = "natural_stop"
 type TurnCompletionPolicy string
-type TurnExecutionHost struct
-method *TurnExecutionHost.RunTurn func(ctx context.Context, req github.com/floegence/floret/v2/runtime.RunTurnRequest) (github.com/floegence/floret/v2/runtime.TurnResult, error)
-method *TurnExecutionHost.RetryTurn func(ctx context.Context, req github.com/floegence/floret/v2/runtime.RetryTurnRequest) (github.com/floegence/floret/v2/runtime.TurnResult, error)
-method *TurnExecutionHost.CompletePendingTool func(ctx context.Context, req github.com/floegence/floret/v2/runtime.PendingToolCompletionRequest) (github.com/floegence/floret/v2/runtime.PendingToolCompletionResult, error)
-method *TurnExecutionHost.ReadApprovalQueue func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ReadApprovalQueueRequest) (github.com/floegence/floret/v2/runtime.ApprovalQueue, error)
-method *TurnExecutionHost.ResolveApproval func(ctx context.Context, req github.com/floegence/floret/v2/runtime.ResolveApprovalRequest) (github.com/floegence/floret/v2/runtime.ResolveApprovalResult, error)
-method *TurnExecutionHost.UpdateThreadAgentTodos func(ctx context.Context, req github.com/floegence/floret/v2/runtime.UpdateThreadAgentTodosRequest) (github.com/floegence/floret/v2/runtime.ThreadAgentTodoState, error)
-method *TurnExecutionHost.SettlePendingTool func(ctx context.Context, req github.com/floegence/floret/v2/runtime.PendingToolSettlementRequest) (github.com/floegence/floret/v2/runtime.PendingToolSettlementResult, error)
-type TurnExecutionHostBinder struct
-method *TurnExecutionHostBinder.Bind func(threadID github.com/floegence/floret/v2/runtime.ThreadID) (*github.com/floegence/floret/v2/runtime.TurnExecutionHostFactory, error)
-type TurnExecutionHostFactory struct
-method *TurnExecutionHostFactory.NewHost func(ctx context.Context, opts github.com/floegence/floret/v2/runtime.TurnExecutionHostOptions) (*github.com/floegence/floret/v2/runtime.TurnExecutionHost, error)
-type TurnExecutionHostOptions struct
 type TurnExecutionOption struct
 type TurnID string
 type TurnInput struct
@@ -2499,48 +2395,23 @@ func SortContextStatuses func(statuses []github.com/floegence/floret/v2/observat
 func ValidateActivityTimeline func(timeline github.com/floegence/floret/v2/observation.ActivityTimeline) error
 
 package github.com/floegence/floret/v2/florettest
-type ContractPrerequisite string
-type ContractPrerequisiteError struct
-field ContractPrerequisiteError.Prerequisite github.com/floegence/floret/v2/florettest.ContractPrerequisite
-field ContractPrerequisiteError.Reason string
-method *ContractPrerequisiteError.Error func() string
-const ContractPrerequisiteInterruptedTurn github.com/floegence/floret/v2/florettest.ContractPrerequisite = "interrupted_turn_fixture"
-const ContractPrerequisiteProjectionFailure github.com/floegence/floret/v2/florettest.ContractPrerequisite = "projection_failure_fixture"
-var ErrModelScriptExhausted error
-type ModelGatewayFactory func(testing.TB, []github.com/floegence/floret/v2/florettest.ModelStep) github.com/floegence/floret/v2/runtime.ModelGateway
-type ModelStep struct
-field ModelStep.Events []github.com/floegence/floret/v2/runtime.ModelEvent
-field ModelStep.ReturnError error
-field ModelStep.BlockUntil <-chan struct{}
-field ModelStep.WaitForCancellation bool
-func NewScriptedModelGateway func(steps ...github.com/floegence/floret/v2/florettest.ModelStep) *github.com/floegence/floret/v2/florettest.ScriptedModelGateway
-func PopulateStoreFixture func(ctx context.Context, store *github.com/floegence/floret/v2/runtime.Store, input github.com/floegence/floret/v2/florettest.StoreFixtureInput) (github.com/floegence/floret/v2/florettest.StoreFixtureResult, error)
-func PublicToolContractFactory func(t testing.TB, spec github.com/floegence/floret/v2/florettest.ToolContractSpec) *github.com/floegence/floret/v2/tools.Registry
-func RunApprovalEffectContract func(t *testing.T)
+var ErrGatewayScriptExhausted error
+func NewScriptedGateway func(identity github.com/floegence/floret/v2/provider.Identity, capabilities github.com/floegence/floret/v2/provider.Capabilities, steps ...github.com/floegence/floret/v2/florettest.Step) *github.com/floegence/floret/v2/florettest.ScriptedGateway
+func NewToolContractRegistry func(t testing.TB, spec github.com/floegence/floret/v2/florettest.ToolContractSpec) *github.com/floegence/floret/v2/tools.Registry
 func RunBackendContract func(t *testing.T, source github.com/floegence/floret/v2/storage.Source)
-func RunModelGatewayContract func(t *testing.T, factory github.com/floegence/floret/v2/florettest.ModelGatewayFactory)
-func RunTerminalOutcomeContract func(t *testing.T, options github.com/floegence/floret/v2/florettest.TerminalOutcomeContractOptions)
-func RunToolContract func(t *testing.T, factory github.com/floegence/floret/v2/florettest.ToolContractFactory)
-type ScriptedModelGateway struct
-method *ScriptedModelGateway.StreamModel func(ctx context.Context, request github.com/floegence/floret/v2/runtime.ModelRequest) (<-chan github.com/floegence/floret/v2/runtime.ModelEvent, error)
-method *ScriptedModelGateway.Requests func() []github.com/floegence/floret/v2/runtime.ModelRequest
-method *ScriptedModelGateway.WaitForRequests func(ctx context.Context, count int) error
-func ScriptedModelGatewayFactory func(_ testing.TB, steps []github.com/floegence/floret/v2/florettest.ModelStep) github.com/floegence/floret/v2/runtime.ModelGateway
-type StoreFixtureInput struct
-field StoreFixtureInput.ThreadID github.com/floegence/floret/v2/runtime.ThreadID
-field StoreFixtureInput.CreateIntentID github.com/floegence/floret/v2/runtime.CreateIntentID
-field StoreFixtureInput.Turns []github.com/floegence/floret/v2/florettest.StoreFixtureTurn
-type StoreFixtureResult struct
-field StoreFixtureResult.Thread github.com/floegence/floret/v2/runtime.ThreadSummary
-field StoreFixtureResult.Turns []github.com/floegence/floret/v2/runtime.TurnResult
-type StoreFixtureTurn struct
-field StoreFixtureTurn.Request github.com/floegence/floret/v2/runtime.RunTurnRequest
-field StoreFixtureTurn.ModelSteps []github.com/floegence/floret/v2/florettest.ModelStep
-type TerminalOutcomeContractOptions struct
-field TerminalOutcomeContractOptions.Interrupted github.com/floegence/floret/v2/florettest.TerminalOutcomeFixture
-field TerminalOutcomeContractOptions.ProjectionUnavailable github.com/floegence/floret/v2/florettest.TerminalOutcomeFixture
-type TerminalOutcomeFixture func(testing.TB) (github.com/floegence/floret/v2/runtime.TurnResult, error)
-type ToolContractFactory func(testing.TB, github.com/floegence/floret/v2/florettest.ToolContractSpec) *github.com/floegence/floret/v2/tools.Registry
+func RunToolContract func(t *testing.T, factory github.com/floegence/floret/v2/florettest.ToolContractBuilder)
+type ScriptedGateway struct
+method *ScriptedGateway.Identity func() github.com/floegence/floret/v2/provider.Identity
+method *ScriptedGateway.Capabilities func() github.com/floegence/floret/v2/provider.Capabilities
+method *ScriptedGateway.Stream func(ctx context.Context, request github.com/floegence/floret/v2/provider.Request) (<-chan github.com/floegence/floret/v2/provider.Event, error)
+method *ScriptedGateway.Requests func() []github.com/floegence/floret/v2/provider.Request
+method *ScriptedGateway.WaitForRequests func(ctx context.Context, count int) error
+type Step struct
+field Step.Events []github.com/floegence/floret/v2/provider.Event
+field Step.ReturnError error
+field Step.BlockUntil <-chan struct{}
+field Step.WaitForCancellation bool
+type ToolContractBuilder func(testing.TB, github.com/floegence/floret/v2/florettest.ToolContractSpec) *github.com/floegence/floret/v2/tools.Registry
 type ToolContractInvocation struct
 field ToolContractInvocation.CallID string
 field ToolContractInvocation.Name string

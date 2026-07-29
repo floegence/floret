@@ -11,9 +11,9 @@ import (
 	"github.com/floegence/floret/v2/internal/sessiontree"
 )
 
-// HostBootstrap is an active, one-time composition scope for one opened Store.
-// ConfigureHostCapabilities seals it before returning to the caller.
-type HostBootstrap struct {
+// hostBootstrap is an active, one-time composition scope for one opened Store.
+// configureHostCapabilities seals it before returning to the caller.
+type hostBootstrap struct {
 	state *hostBootstrapState
 }
 
@@ -29,14 +29,14 @@ type capabilityLease struct {
 	active bool
 }
 
-// ThreadCreateHostBinder issues only canonical root-thread create handles.
-type ThreadCreateHostBinder struct {
+// threadCreateBinder issues only canonical root-thread create handles.
+type threadCreateBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// ThreadReadHostBinder issues only root-thread read handles.
-type ThreadReadHostBinder struct {
+// threadReadBinder issues only root-thread read handles.
+type threadReadBinder struct {
 	store *Store
 	lease *capabilityLease
 }
@@ -49,96 +49,96 @@ type ThreadInventoryHost struct {
 	lease   *capabilityLease
 }
 
-// ThreadTitleHostBinder issues only root-thread title handles.
-type ThreadTitleHostBinder struct {
+// threadTitleBinder issues only root-thread title handles.
+type threadTitleBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// ThreadForkHostBinder issues only root-thread fork handles.
-type ThreadForkHostBinder struct {
+// threadForkBinder issues only root-thread fork handles.
+type threadForkBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// ThreadDeleteHostBinder issues only root-thread delete handles.
-type ThreadDeleteHostBinder struct {
+// threadDeleteBinder issues only root-thread delete handles.
+type threadDeleteBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// SubAgentReadHostBinder issues only parent-bound child read handles.
-type SubAgentReadHostBinder struct {
+// subAgentReadBinder issues only parent-bound child read handles.
+type subAgentReadBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// PendingToolRecoveryHostBinder issues only provider-free recovery settlement handles.
-type PendingToolRecoveryHostBinder struct {
+// pendingToolRecoveryBinder issues only provider-free recovery settlement handles.
+type pendingToolRecoveryBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// InterruptedTurnRecoveryHostBinder issues only exact interrupted-turn recovery factories.
-type InterruptedTurnRecoveryHostBinder struct {
+// interruptedTurnRecoveryBinder issues only exact interrupted-turn recovery factories.
+type interruptedTurnRecoveryBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// ThreadCreateHost is the coordinator capability that creates a canonical thread.
-type ThreadCreateHost struct {
+// threadCreateCapability is the coordinator capability that creates a canonical thread.
+type threadCreateCapability struct {
 	store          *Store
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
 	createIntentID CreateIntentID
 }
 
-// ThreadReadHost reads one bound top-level canonical thread without mutation.
-type ThreadReadHost struct {
+// threadReadCapability reads one bound top-level canonical thread without mutation.
+type threadReadCapability struct {
 	store    *Store
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
-// SubAgentReadHost reads child lifecycle and detail under one bound parent.
-type SubAgentReadHost struct {
+// subAgentReadCapability reads child lifecycle and detail under one bound parent.
+type subAgentReadCapability struct {
 	store          *Store
 	harness        *agentharness.AgentHarness
 	parentThreadID ThreadID
 }
 
-// ThreadTitleHost writes the canonical title for one bound root thread.
-type ThreadTitleHost struct {
+// threadTitleCapability writes the canonical title for one bound root thread.
+type threadTitleCapability struct {
 	store    *Store
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
-// ThreadForkHost forks one bound canonical root thread.
-type ThreadForkHost struct {
+// threadForkCapability forks one bound canonical root thread.
+type threadForkCapability struct {
 	store    *Store
 	harness  *agentharness.AgentHarness
 	threadID ThreadID
 }
 
-// ThreadDeleteHost deletes one bound canonical root thread tree.
-type ThreadDeleteHost struct {
+// threadDeleteCapability deletes one bound canonical root thread tree.
+type threadDeleteCapability struct {
 	store    *Store
 	threadID ThreadID
 }
 
-// PendingToolRecoveryHost settles host-owned pending tool work when no active
+// pendingToolRecoveryCapability settles host-owned pending tool work when no active
 // provider owner exists for the bound thread or parent.
-type PendingToolRecoveryHost struct {
+type pendingToolRecoveryCapability struct {
 	store          *Store
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
 	parentThreadID ThreadID
 }
 
-// InterruptedTurnRecoveryHostFactory refreshes recovery authority for one exact
+// interruptedTurnRecoveryFactory refreshes recovery authority for one exact
 // root or parent-child turn owner and generation.
-type InterruptedTurnRecoveryHostFactory struct {
+type interruptedTurnRecoveryFactory struct {
 	state *interruptedTurnRecoveryFactoryState
 }
 
@@ -151,8 +151,8 @@ type interruptedTurnRecoveryFactoryState struct {
 	resolved       bool
 }
 
-// InterruptedTurnRecoveryHost finalizes one exact expired turn authority proof.
-type InterruptedTurnRecoveryHost struct {
+// interruptedTurnRecoveryCapability finalizes one exact expired turn authority proof.
+type interruptedTurnRecoveryCapability struct {
 	store          *Store
 	harness        *agentharness.AgentHarness
 	threadID       ThreadID
@@ -161,10 +161,10 @@ type InterruptedTurnRecoveryHost struct {
 	factoryState   *interruptedTurnRecoveryFactoryState
 }
 
-// ConfigureHostCapabilities exposes one short-lived bootstrap scope. The Store
+// configureHostCapabilities exposes one short-lived bootstrap scope. The Store
 // rejects a second configuration attempt. Callers may retain only narrow binders
 // created during configure; those binders become active after configure succeeds.
-func ConfigureHostCapabilities(store *Store, configure func(*HostBootstrap) error) (err error) {
+func configureHostCapabilities(store *Store, configure func(*hostBootstrap) error) (err error) {
 	if err := validateCapabilityStore(store); err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func ConfigureHostCapabilities(store *Store, configure func(*HostBootstrap) erro
 	store.bootstrapMu.Unlock()
 
 	state := &hostBootstrapState{store: store, lease: &capabilityLease{}, active: true}
-	bootstrap := &HostBootstrap{state: state}
+	bootstrap := &hostBootstrap{state: state}
 	completed := false
 	defer func() {
 		state.seal(completed && err == nil)
@@ -195,18 +195,18 @@ func ConfigureHostCapabilities(store *Store, configure func(*HostBootstrap) erro
 	return err
 }
 
-// NewThreadCreateHostBinder constructs the canonical root-thread create issuer.
-func NewThreadCreateHostBinder(bootstrap *HostBootstrap) (*ThreadCreateHostBinder, error) {
+// newThreadCreateBinder constructs the canonical root-thread create issuer.
+func newThreadCreateBinder(bootstrap *hostBootstrap) (*threadCreateBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCreateHostBinder{store: store, lease: lease}, nil
+	return &threadCreateBinder{store: store, lease: lease}, nil
 }
 
 // Bind constructs canonical root-create authority for one exact identity and
 // durable create intent before it is delivered to a coordinator.
-func (b *ThreadCreateHostBinder) Bind(threadID ThreadID, createIntentID CreateIntentID) (*ThreadCreateHost, error) {
+func (b *threadCreateBinder) Bind(threadID ThreadID, createIntentID CreateIntentID) (*threadCreateCapability, error) {
 	if b == nil {
 		return nil, errors.New("thread create host binder is required")
 	}
@@ -230,21 +230,21 @@ func (b *ThreadCreateHostBinder) Bind(threadID ThreadID, createIntentID CreateIn
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCreateHost{store: b.store, harness: harness, threadID: threadID, createIntentID: createIntentID}, nil
+	return &threadCreateCapability{store: b.store, harness: harness, threadID: threadID, createIntentID: createIntentID}, nil
 }
 
-// NewThreadReadHostBinder constructs the root-thread read issuer.
-func NewThreadReadHostBinder(bootstrap *HostBootstrap) (*ThreadReadHostBinder, error) {
+// newThreadReadBinder constructs the root-thread read issuer.
+func newThreadReadBinder(bootstrap *hostBootstrap) (*threadReadBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadReadHostBinder{store: store, lease: lease}, nil
+	return &threadReadBinder{store: store, lease: lease}, nil
 }
 
-// NewThreadInventoryHost constructs the store-wide canonical root inventory
+// newThreadInventoryCapability constructs the store-wide canonical root inventory
 // capability for a composition owner.
-func NewThreadInventoryHost(bootstrap *HostBootstrap) (*ThreadInventoryHost, error) {
+func newThreadInventoryCapability(bootstrap *hostBootstrap) (*ThreadInventoryHost, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
@@ -257,7 +257,7 @@ func NewThreadInventoryHost(bootstrap *HostBootstrap) (*ThreadInventoryHost, err
 }
 
 // NewHost constructs read authority for exactly one root thread.
-func (b *ThreadReadHostBinder) NewHost(ctx context.Context, threadID ThreadID) (*ThreadReadHost, error) {
+func (b *threadReadBinder) NewHost(ctx context.Context, threadID ThreadID) (*threadReadCapability, error) {
 	if b == nil {
 		return nil, errors.New("thread read host binder is required")
 	}
@@ -281,20 +281,20 @@ func (b *ThreadReadHostBinder) NewHost(ctx context.Context, threadID ThreadID) (
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadReadHost{store: store, harness: harness, threadID: threadID}, nil
+	return &threadReadCapability{store: store, harness: harness, threadID: threadID}, nil
 }
 
-// NewSubAgentReadHostBinder constructs the parent-bound child read issuer.
-func NewSubAgentReadHostBinder(bootstrap *HostBootstrap) (*SubAgentReadHostBinder, error) {
+// newSubAgentReadBinder constructs the parent-bound child read issuer.
+func newSubAgentReadBinder(bootstrap *hostBootstrap) (*subAgentReadBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentReadHostBinder{store: store, lease: lease}, nil
+	return &subAgentReadBinder{store: store, lease: lease}, nil
 }
 
 // NewHost constructs child reads for exactly one parent.
-func (b *SubAgentReadHostBinder) NewHost(ctx context.Context, parentThreadID ThreadID) (*SubAgentReadHost, error) {
+func (b *subAgentReadBinder) NewHost(ctx context.Context, parentThreadID ThreadID) (*subAgentReadCapability, error) {
 	if b == nil {
 		return nil, errors.New("subagent read host binder is required")
 	}
@@ -317,20 +317,20 @@ func (b *SubAgentReadHostBinder) NewHost(ctx context.Context, parentThreadID Thr
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentReadHost{store: b.store, harness: harness, parentThreadID: parentThreadID}, nil
+	return &subAgentReadCapability{store: b.store, harness: harness, parentThreadID: parentThreadID}, nil
 }
 
-// NewThreadTitleHostBinder constructs the root-thread title issuer.
-func NewThreadTitleHostBinder(bootstrap *HostBootstrap) (*ThreadTitleHostBinder, error) {
+// newThreadTitleBinder constructs the root-thread title issuer.
+func newThreadTitleBinder(bootstrap *hostBootstrap) (*threadTitleBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadTitleHostBinder{store: store, lease: lease}, nil
+	return &threadTitleBinder{store: store, lease: lease}, nil
 }
 
 // NewHost constructs title authority for exactly one root thread.
-func (b *ThreadTitleHostBinder) NewHost(ctx context.Context, threadID ThreadID, sink EventSink) (*ThreadTitleHost, error) {
+func (b *threadTitleBinder) NewHost(ctx context.Context, threadID ThreadID, sink EventSink) (*threadTitleCapability, error) {
 	if b == nil {
 		return nil, errors.New("thread title host binder is required")
 	}
@@ -354,20 +354,20 @@ func (b *ThreadTitleHostBinder) NewHost(ctx context.Context, threadID ThreadID, 
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadTitleHost{store: store, harness: harness, threadID: threadID}, nil
+	return &threadTitleCapability{store: store, harness: harness, threadID: threadID}, nil
 }
 
-// NewThreadForkHostBinder constructs the root-thread fork issuer.
-func NewThreadForkHostBinder(bootstrap *HostBootstrap) (*ThreadForkHostBinder, error) {
+// newThreadForkBinder constructs the root-thread fork issuer.
+func newThreadForkBinder(bootstrap *hostBootstrap) (*threadForkBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadForkHostBinder{store: store, lease: lease}, nil
+	return &threadForkBinder{store: store, lease: lease}, nil
 }
 
 // NewHost constructs fork authority for exactly one source root thread.
-func (b *ThreadForkHostBinder) NewHost(ctx context.Context, threadID ThreadID, sink EventSink) (*ThreadForkHost, error) {
+func (b *threadForkBinder) NewHost(ctx context.Context, threadID ThreadID, sink EventSink) (*threadForkCapability, error) {
 	if b == nil {
 		return nil, errors.New("thread fork host binder is required")
 	}
@@ -391,20 +391,20 @@ func (b *ThreadForkHostBinder) NewHost(ctx context.Context, threadID ThreadID, s
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadForkHost{store: store, harness: harness, threadID: threadID}, nil
+	return &threadForkCapability{store: store, harness: harness, threadID: threadID}, nil
 }
 
-// NewThreadDeleteHostBinder constructs the root-thread delete issuer.
-func NewThreadDeleteHostBinder(bootstrap *HostBootstrap) (*ThreadDeleteHostBinder, error) {
+// newThreadDeleteBinder constructs the root-thread delete issuer.
+func newThreadDeleteBinder(bootstrap *hostBootstrap) (*threadDeleteBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadDeleteHostBinder{store: store, lease: lease}, nil
+	return &threadDeleteBinder{store: store, lease: lease}, nil
 }
 
 // NewHost constructs delete authority for exactly one root thread.
-func (b *ThreadDeleteHostBinder) NewHost(ctx context.Context, threadID ThreadID) (*ThreadDeleteHost, error) {
+func (b *threadDeleteBinder) NewHost(ctx context.Context, threadID ThreadID) (*threadDeleteCapability, error) {
 	if b == nil {
 		return nil, errors.New("thread delete host binder is required")
 	}
@@ -424,29 +424,29 @@ func (b *ThreadDeleteHostBinder) NewHost(ctx context.Context, threadID ThreadID)
 	if err := validateDeleteHostConstructionAuthority(ctx, store, threadID); err != nil {
 		return nil, err
 	}
-	return &ThreadDeleteHost{store: store, threadID: threadID}, nil
+	return &threadDeleteCapability{store: store, threadID: threadID}, nil
 }
 
-// NewPendingToolRecoveryHostBinder constructs the recovery settlement issuer.
-func NewPendingToolRecoveryHostBinder(bootstrap *HostBootstrap) (*PendingToolRecoveryHostBinder, error) {
+// newPendingToolRecoveryBinder constructs the recovery settlement issuer.
+func newPendingToolRecoveryBinder(bootstrap *hostBootstrap) (*pendingToolRecoveryBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &PendingToolRecoveryHostBinder{store: store, lease: lease}, nil
+	return &pendingToolRecoveryBinder{store: store, lease: lease}, nil
 }
 
-// NewInterruptedTurnRecoveryHostBinder constructs the interrupted-turn recovery issuer.
-func NewInterruptedTurnRecoveryHostBinder(bootstrap *HostBootstrap) (*InterruptedTurnRecoveryHostBinder, error) {
+// newInterruptedTurnRecoveryBinder constructs the interrupted-turn recovery issuer.
+func newInterruptedTurnRecoveryBinder(bootstrap *hostBootstrap) (*interruptedTurnRecoveryBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &InterruptedTurnRecoveryHostBinder{store: store, lease: lease}, nil
+	return &interruptedTurnRecoveryBinder{store: store, lease: lease}, nil
 }
 
 // NewThreadHost constructs recovery settlement authority for one root thread.
-func (b *PendingToolRecoveryHostBinder) NewThreadHost(ctx context.Context, threadID ThreadID, sink EventSink) (*PendingToolRecoveryHost, error) {
+func (b *pendingToolRecoveryBinder) NewThreadHost(ctx context.Context, threadID ThreadID, sink EventSink) (*pendingToolRecoveryCapability, error) {
 	if b == nil {
 		return nil, errors.New("pending tool recovery host binder is required")
 	}
@@ -469,7 +469,7 @@ func (b *PendingToolRecoveryHostBinder) NewThreadHost(ctx context.Context, threa
 	if err != nil {
 		return nil, err
 	}
-	return &PendingToolRecoveryHost{
+	return &pendingToolRecoveryCapability{
 		store:    b.store,
 		harness:  harness,
 		threadID: threadID,
@@ -477,7 +477,7 @@ func (b *PendingToolRecoveryHostBinder) NewThreadHost(ctx context.Context, threa
 }
 
 // NewSubAgentHost constructs recovery settlement authority for one SubAgent parent.
-func (b *PendingToolRecoveryHostBinder) NewSubAgentHost(ctx context.Context, parentThreadID ThreadID, sink EventSink) (*PendingToolRecoveryHost, error) {
+func (b *pendingToolRecoveryBinder) NewSubAgentHost(ctx context.Context, parentThreadID ThreadID, sink EventSink) (*pendingToolRecoveryCapability, error) {
 	if b == nil {
 		return nil, errors.New("pending tool recovery host binder is required")
 	}
@@ -500,7 +500,7 @@ func (b *PendingToolRecoveryHostBinder) NewSubAgentHost(ctx context.Context, par
 	if err != nil {
 		return nil, err
 	}
-	return &PendingToolRecoveryHost{
+	return &pendingToolRecoveryCapability{
 		store:          b.store,
 		harness:        harness,
 		parentThreadID: parentThreadID,
@@ -508,12 +508,12 @@ func (b *PendingToolRecoveryHostBinder) NewSubAgentHost(ctx context.Context, par
 }
 
 // BindThread binds recovery to the exact current turn owner and generation of one root thread.
-func (b *InterruptedTurnRecoveryHostBinder) BindThread(ctx context.Context, threadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+func (b *interruptedTurnRecoveryBinder) BindThread(ctx context.Context, threadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
 	return b.bindThread(ctx, threadID)
 }
 
 // BindSubAgent binds recovery to the exact current turn owner and generation of one child under one parent.
-func (b *InterruptedTurnRecoveryHostBinder) BindSubAgent(ctx context.Context, parentThreadID, childThreadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+func (b *interruptedTurnRecoveryBinder) BindSubAgent(ctx context.Context, parentThreadID, childThreadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
 	if b == nil {
 		return nil, errors.New("interrupted turn recovery host binder is required")
 	}
@@ -543,7 +543,7 @@ func (b *InterruptedTurnRecoveryHostBinder) BindSubAgent(ctx context.Context, pa
 	return newInterruptedTurnRecoveryFactory(b.store, scoped.Child, parentThreadID)
 }
 
-func (b *InterruptedTurnRecoveryHostBinder) bindThread(ctx context.Context, threadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+func (b *interruptedTurnRecoveryBinder) bindThread(ctx context.Context, threadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
 	if b == nil {
 		return nil, errors.New("interrupted turn recovery host binder is required")
 	}
@@ -569,7 +569,7 @@ func (b *InterruptedTurnRecoveryHostBinder) bindThread(ctx context.Context, thre
 	return newInterruptedTurnRecoveryFactory(b.store, snapshot, "")
 }
 
-func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.ThreadAuthoritySnapshot, parentThreadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.ThreadAuthoritySnapshot, parentThreadID ThreadID) (*interruptedTurnRecoveryFactory, error) {
 	if store == nil || store.repo == nil {
 		return nil, errors.New("runtime store is required")
 	}
@@ -585,7 +585,7 @@ func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.Thread
 	if snapshot.Lease == nil || snapshot.Lease.Purpose != sessiontree.TurnLeasePurposeTurn {
 		return nil, ErrInterruptedTurnNotFound
 	}
-	return &InterruptedTurnRecoveryHostFactory{
+	return &interruptedTurnRecoveryFactory{
 		state: &interruptedTurnRecoveryFactoryState{
 			store: store, threadID: ThreadID(snapshot.Thread.ID), parentThreadID: parentThreadID, latestLease: *snapshot.Lease,
 		},
@@ -593,7 +593,7 @@ func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.Thread
 }
 
 // NewHost binds one recovery attempt to the current complete proof for the factory's exact target.
-func (f *InterruptedTurnRecoveryHostFactory) NewHost(ctx context.Context, sink EventSink) (*InterruptedTurnRecoveryHost, error) {
+func (f *interruptedTurnRecoveryFactory) NewHost(ctx context.Context, sink EventSink) (*interruptedTurnRecoveryCapability, error) {
 	if f == nil || f.state == nil || f.state.store == nil || f.state.threadID == "" {
 		return nil, errors.New("interrupted turn recovery host factory is required")
 	}
@@ -644,7 +644,7 @@ func (f *InterruptedTurnRecoveryHostFactory) NewHost(ctx context.Context, sink E
 	if err != nil {
 		return nil, err
 	}
-	return &InterruptedTurnRecoveryHost{
+	return &interruptedTurnRecoveryCapability{
 		store: state.store, harness: harness, threadID: state.threadID, parentThreadID: state.parentThreadID, expectedLease: current,
 		factoryState: state,
 	}, nil
@@ -737,7 +737,7 @@ func beginHostOperationContext(store *Store, ctx context.Context) (context.Conte
 	return store.beginOperationContext(ctx)
 }
 
-func capabilityScope(bootstrap *HostBootstrap) (*Store, *capabilityLease, error) {
+func capabilityScope(bootstrap *hostBootstrap) (*Store, *capabilityLease, error) {
 	if bootstrap == nil || bootstrap.state == nil {
 		return nil, nil, errors.New("host bootstrap is required")
 	}

@@ -65,17 +65,17 @@ type Host struct {
 }
 
 type hostBinders struct {
-	create       *ThreadCreateHostBinder
-	read         *ThreadReadHostBinder
-	title        *ThreadTitleHostBinder
-	fork         *ThreadForkHostBinder
-	delete       *ThreadDeleteHostBinder
-	turn         *TurnExecutionHostBinder
-	compact      *ThreadCompactionHostBinder
-	subAgent     *SubAgentHostBinder
-	subAgentRead *SubAgentReadHostBinder
-	pending      *PendingToolRecoveryHostBinder
-	interrupted  *InterruptedTurnRecoveryHostBinder
+	create       *threadCreateBinder
+	read         *threadReadBinder
+	title        *threadTitleBinder
+	fork         *threadForkBinder
+	delete       *threadDeleteBinder
+	turn         *turnExecutionBinder
+	compact      *threadCompactionBinder
+	subAgent     *subAgentBinder
+	subAgentRead *subAgentReadBinder
+	pending      *pendingToolRecoveryBinder
+	interrupted  *interruptedTurnRecoveryBinder
 }
 
 type logicalSchemaEnvelope struct {
@@ -103,25 +103,25 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		_ = backend.Close()
 		return nil, err
 	}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host := &Host{store: store, backend: backend}
-	if err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		constructors := []func() error{
-			func() (err error) { host.binders.create, err = NewThreadCreateHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.read, err = NewThreadReadHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.title, err = NewThreadTitleHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.fork, err = NewThreadForkHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.delete, err = NewThreadDeleteHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.turn, err = NewTurnExecutionHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.compact, err = NewThreadCompactionHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.subAgent, err = NewSubAgentHostBinder(bootstrap); return err },
-			func() (err error) { host.binders.subAgentRead, err = NewSubAgentReadHostBinder(bootstrap); return err },
+			func() (err error) { host.binders.create, err = newThreadCreateBinder(bootstrap); return err },
+			func() (err error) { host.binders.read, err = newThreadReadBinder(bootstrap); return err },
+			func() (err error) { host.binders.title, err = newThreadTitleBinder(bootstrap); return err },
+			func() (err error) { host.binders.fork, err = newThreadForkBinder(bootstrap); return err },
+			func() (err error) { host.binders.delete, err = newThreadDeleteBinder(bootstrap); return err },
+			func() (err error) { host.binders.turn, err = newTurnExecutionBinder(bootstrap); return err },
+			func() (err error) { host.binders.compact, err = newThreadCompactionBinder(bootstrap); return err },
+			func() (err error) { host.binders.subAgent, err = newSubAgentBinder(bootstrap); return err },
+			func() (err error) { host.binders.subAgentRead, err = newSubAgentReadBinder(bootstrap); return err },
 			func() (err error) {
-				host.binders.pending, err = NewPendingToolRecoveryHostBinder(bootstrap)
+				host.binders.pending, err = newPendingToolRecoveryBinder(bootstrap)
 				return err
 			},
 			func() (err error) {
-				host.binders.interrupted, err = NewInterruptedTurnRecoveryHostBinder(bootstrap)
+				host.binders.interrupted, err = newInterruptedTurnRecoveryBinder(bootstrap)
 				return err
 			},
 		}
@@ -212,7 +212,7 @@ func (host *Host) available() error {
 
 // ThreadCreator is exact root-thread creation authority.
 type ThreadCreator struct {
-	inner *ThreadCreateHost
+	inner *threadCreateCapability
 }
 
 // Create creates or replays the bound root thread.
@@ -225,7 +225,7 @@ func (creator *ThreadCreator) Create(ctx context.Context) (ThreadSummary, error)
 
 // ThreadReader is read authority for one exact root thread.
 type ThreadReader struct {
-	inner    *ThreadReadHost
+	inner    *threadReadCapability
 	threadID ThreadID
 }
 
@@ -263,7 +263,7 @@ type TurnRequest struct {
 
 // TurnRunner owns provider-backed execution for one exact root thread.
 type TurnRunner struct {
-	inner    *TurnExecutionHost
+	inner    *turnExecutionCapability
 	threadID ThreadID
 }
 
@@ -313,7 +313,7 @@ func ensureLogicalSchema(ctx context.Context, backend publicstorage.Backend) err
 	})
 }
 
-func (agent *Agent) turnExecutionOptions() TurnExecutionHostOptions {
+func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 	identity := agent.gateway.Identity()
 	capabilities := agent.gateway.Capabilities()
 	reasoning := capabilities.ReasoningCapability
@@ -326,7 +326,7 @@ func (agent *Agent) turnExecutionOptions() TurnExecutionHostOptions {
 	}
 	profile := agent.configuration.Profile
 	profile.SystemPrompt = agent.configuration.SystemPrompt
-	return TurnExecutionHostOptions{
+	return turnExecutionOptions{
 		config: config.Config{
 			SystemPrompt: agent.configuration.SystemPrompt, AgentProfile: profile,
 			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,

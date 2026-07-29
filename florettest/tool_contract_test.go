@@ -7,5 +7,5 @@ import (
 )
 
 func TestPublicToolContract(t *testing.T) {
-	florettest.RunToolContract(t, florettest.PublicToolContractFactory)
+	florettest.RunToolContract(t, florettest.NewToolContractRegistry)
 }

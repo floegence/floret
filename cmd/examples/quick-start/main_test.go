@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestExample(t *testing.T) {
+func TestQuickStart(t *testing.T) {
 	if err := run(context.Background(), filepath.Join(t.TempDir(), "floret.db")); err != nil {
 		t.Fatal(err)
 	}

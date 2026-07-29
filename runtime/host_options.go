@@ -12,76 +12,76 @@ import (
 // ThreadCompactionOption configures one thread compaction host.
 type ThreadCompactionOption struct {
 	category string
-	apply    func(*ThreadCompactionHostOptions) error
+	apply    func(*threadCompactionOptions) error
 }
 
 // SubAgentOption configures one parent-bound SubAgent host.
 type SubAgentOption struct {
 	category string
-	apply    func(*SubAgentHostOptions) error
+	apply    func(*subAgentOptions) error
 }
 
-// NewThreadCompactionHostOptions constructs validated options for a compaction host.
-func NewThreadCompactionHostOptions(cfg config.Config, options ...ThreadCompactionOption) (ThreadCompactionHostOptions, error) {
-	out := ThreadCompactionHostOptions{config: cfg, initialized: true}
+// newThreadCompactionOptions constructs validated options for a compaction host.
+func newThreadCompactionOptions(cfg config.Config, options ...ThreadCompactionOption) (threadCompactionOptions, error) {
+	out := threadCompactionOptions{config: cfg, initialized: true}
 	seen := make(map[string]struct{}, len(options))
 	for index, option := range options {
 		if option.category == "" || option.apply == nil {
-			return ThreadCompactionHostOptions{}, fmt.Errorf("thread compaction option %d is invalid", index)
+			return threadCompactionOptions{}, fmt.Errorf("thread compaction option %d is invalid", index)
 		}
 		if _, ok := seen[option.category]; ok {
-			return ThreadCompactionHostOptions{}, fmt.Errorf("thread compaction option category %q is duplicated", option.category)
+			return threadCompactionOptions{}, fmt.Errorf("thread compaction option category %q is duplicated", option.category)
 		}
 		if err := option.apply(&out); err != nil {
-			return ThreadCompactionHostOptions{}, fmt.Errorf("thread compaction option %d: %w", index, err)
+			return threadCompactionOptions{}, fmt.Errorf("thread compaction option %d: %w", index, err)
 		}
 		seen[option.category] = struct{}{}
 	}
 	if err := out.validate(); err != nil {
-		return ThreadCompactionHostOptions{}, err
+		return threadCompactionOptions{}, err
 	}
 	return out, nil
 }
 
-// NewSubAgentHostOptions constructs validated options for a parent-bound SubAgent host.
-func NewSubAgentHostOptions(cfg config.Config, options ...SubAgentOption) (SubAgentHostOptions, error) {
-	out := SubAgentHostOptions{config: cfg, initialized: true}
+// newSubAgentOptions constructs validated options for a parent-bound SubAgent host.
+func newSubAgentOptions(cfg config.Config, options ...SubAgentOption) (subAgentOptions, error) {
+	out := subAgentOptions{config: cfg, initialized: true}
 	seen := make(map[string]struct{}, len(options))
 	for index, option := range options {
 		if option.category == "" || option.apply == nil {
-			return SubAgentHostOptions{}, fmt.Errorf("subagent option %d is invalid", index)
+			return subAgentOptions{}, fmt.Errorf("subagent option %d is invalid", index)
 		}
 		if _, ok := seen[option.category]; ok {
-			return SubAgentHostOptions{}, fmt.Errorf("subagent option category %q is duplicated", option.category)
+			return subAgentOptions{}, fmt.Errorf("subagent option category %q is duplicated", option.category)
 		}
 		if err := option.apply(&out); err != nil {
-			return SubAgentHostOptions{}, fmt.Errorf("subagent option %d: %w", index, err)
+			return subAgentOptions{}, fmt.Errorf("subagent option %d: %w", index, err)
 		}
 		seen[option.category] = struct{}{}
 	}
 	if err := out.validate(); err != nil {
-		return SubAgentHostOptions{}, err
+		return subAgentOptions{}, err
 	}
 	return out, nil
 }
 
-func (options TurnExecutionHostOptions) validate() error {
+func (options turnExecutionOptions) validate() error {
 	if !options.initialized {
-		return errors.New("turn execution host options must be constructed with NewTurnExecutionHostOptions")
+		return errors.New("turn execution host options must be constructed with newTurnExecutionOptions")
 	}
 	return validateProviderHostOptions(options.config, options.modelGateway, options.modelGatewayIdentity, options.modelGatewayCapabilities, options.loopLimits, options.threadTitleMode)
 }
 
-func (options ThreadCompactionHostOptions) validate() error {
+func (options threadCompactionOptions) validate() error {
 	if !options.initialized {
-		return errors.New("thread compaction host options must be constructed with NewThreadCompactionHostOptions")
+		return errors.New("thread compaction host options must be constructed with newThreadCompactionOptions")
 	}
 	return validateProviderHostOptions(options.config, options.modelGateway, options.modelGatewayIdentity, options.modelGatewayCapabilities, options.loopLimits, ThreadTitleModeHostOwned)
 }
 
-func (options SubAgentHostOptions) validate() error {
+func (options subAgentOptions) validate() error {
 	if !options.initialized {
-		return errors.New("subagent host options must be constructed with NewSubAgentHostOptions")
+		return errors.New("subagent host options must be constructed with newSubAgentOptions")
 	}
 	if options.subAgentRunTimeout < 0 {
 		return errors.New("subagent run timeout cannot be negative")
@@ -117,7 +117,7 @@ func validateProviderHostOptions(cfg config.Config, gateway ModelGateway, identi
 // WithThreadCompactionModelGateway atomically configures a custom gateway and
 // its declared identity and capabilities.
 func WithThreadCompactionModelGateway(gateway ModelGateway, identity ModelGatewayIdentity, capabilities ModelGatewayCapabilities) ThreadCompactionOption {
-	return ThreadCompactionOption{category: "model_gateway", apply: func(o *ThreadCompactionHostOptions) error {
+	return ThreadCompactionOption{category: "model_gateway", apply: func(o *threadCompactionOptions) error {
 		if gateway == nil {
 			return errors.New("model gateway is required")
 		}
@@ -128,7 +128,7 @@ func WithThreadCompactionModelGateway(gateway ModelGateway, identity ModelGatewa
 
 // WithThreadCompactionEventSink observes the runtime event contract.
 func WithThreadCompactionEventSink(sink EventSink) ThreadCompactionOption {
-	return ThreadCompactionOption{category: "event_sink", apply: func(o *ThreadCompactionHostOptions) error {
+	return ThreadCompactionOption{category: "event_sink", apply: func(o *threadCompactionOptions) error {
 		if sink == nil {
 			return errors.New("event sink is required")
 		}
@@ -140,7 +140,7 @@ func WithThreadCompactionEventSink(sink EventSink) ThreadCompactionOption {
 // WithThreadCompactionIDGenerator supplies deterministic correlation
 // identifiers. It does not derive ThreadID, TurnID, RunID, or PromptScopeID.
 func WithThreadCompactionIDGenerator(generator func(string) string) ThreadCompactionOption {
-	return ThreadCompactionOption{category: "id_generator", apply: func(o *ThreadCompactionHostOptions) error {
+	return ThreadCompactionOption{category: "id_generator", apply: func(o *threadCompactionOptions) error {
 		if generator == nil {
 			return errors.New("id generator is required")
 		}
@@ -151,13 +151,13 @@ func WithThreadCompactionIDGenerator(generator func(string) string) ThreadCompac
 
 // WithThreadCompactionLoopLimits configures provider loop limits.
 func WithThreadCompactionLoopLimits(limits LoopLimits) ThreadCompactionOption {
-	return ThreadCompactionOption{category: "loop_limits", apply: func(o *ThreadCompactionHostOptions) error { o.loopLimits = limits; return nil }}
+	return ThreadCompactionOption{category: "loop_limits", apply: func(o *threadCompactionOptions) error { o.loopLimits = limits; return nil }}
 }
 
 // WithSubAgentModelGateway atomically configures a custom gateway and its
 // declared identity and capabilities.
 func WithSubAgentModelGateway(gateway ModelGateway, identity ModelGatewayIdentity, capabilities ModelGatewayCapabilities) SubAgentOption {
-	return SubAgentOption{category: "model_gateway", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "model_gateway", apply: func(o *subAgentOptions) error {
 		if gateway == nil {
 			return errors.New("model gateway is required")
 		}
@@ -170,7 +170,7 @@ func WithSubAgentModelGateway(gateway ModelGateway, identity ModelGatewayIdentit
 // proving every tool is locally read-only and statically allowed.
 func WithSubAgentReadOnlyTools(items ...tools.Tool) SubAgentOption {
 	registry, err := newReadOnlyToolRegistry(items)
-	return SubAgentOption{category: "tools", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "tools", apply: func(o *subAgentOptions) error {
 		if err != nil {
 			return err
 		}
@@ -181,7 +181,7 @@ func WithSubAgentReadOnlyTools(items ...tools.Tool) SubAgentOption {
 
 // WithSubAgentEffectfulTools configures the explicit effect authorization path.
 func WithSubAgentEffectfulTools(registry *tools.Registry, gate EffectAuthorizationGate) SubAgentOption {
-	return SubAgentOption{category: "tools", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "tools", apply: func(o *subAgentOptions) error {
 		if registry == nil || gate == nil {
 			return errors.New("effectful tools require a registry and authorization gate")
 		}
@@ -192,7 +192,7 @@ func WithSubAgentEffectfulTools(registry *tools.Registry, gate EffectAuthorizati
 
 // WithSubAgentEventSink observes the runtime event contract.
 func WithSubAgentEventSink(sink EventSink) SubAgentOption {
-	return SubAgentOption{category: "event_sink", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "event_sink", apply: func(o *subAgentOptions) error {
 		if sink == nil {
 			return errors.New("event sink is required")
 		}
@@ -203,7 +203,7 @@ func WithSubAgentEventSink(sink EventSink) SubAgentOption {
 
 // WithSubAgentDynamicToolSurface configures the per-step tool surface owner.
 func WithSubAgentDynamicToolSurface(provider ToolSurfaceProvider) SubAgentOption {
-	return SubAgentOption{category: "dynamic_tool_surface", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "dynamic_tool_surface", apply: func(o *subAgentOptions) error {
 		if provider == nil {
 			return errors.New("dynamic tool surface provider is required")
 		}
@@ -215,7 +215,7 @@ func WithSubAgentDynamicToolSurface(provider ToolSurfaceProvider) SubAgentOption
 // WithSubAgentIDGenerator supplies deterministic correlation identifiers. It
 // does not derive ThreadID, TurnID, RunID, or PromptScopeID.
 func WithSubAgentIDGenerator(generator func(string) string) SubAgentOption {
-	return SubAgentOption{category: "id_generator", apply: func(o *SubAgentHostOptions) error {
+	return SubAgentOption{category: "id_generator", apply: func(o *subAgentOptions) error {
 		if generator == nil {
 			return errors.New("id generator is required")
 		}
@@ -226,20 +226,20 @@ func WithSubAgentIDGenerator(generator func(string) string) SubAgentOption {
 
 // WithSubAgentLoopLimits configures provider loop limits.
 func WithSubAgentLoopLimits(limits LoopLimits) SubAgentOption {
-	return SubAgentOption{category: "loop_limits", apply: func(o *SubAgentHostOptions) error { o.loopLimits = limits; return nil }}
+	return SubAgentOption{category: "loop_limits", apply: func(o *subAgentOptions) error { o.loopLimits = limits; return nil }}
 }
 
 // WithSubAgentRunTimeout bounds one child run without changing its identity.
 func WithSubAgentRunTimeout(timeout time.Duration) SubAgentOption {
-	return SubAgentOption{category: "run_timeout", apply: func(o *SubAgentHostOptions) error { o.subAgentRunTimeout = timeout; return nil }}
+	return SubAgentOption{category: "run_timeout", apply: func(o *subAgentOptions) error { o.subAgentRunTimeout = timeout; return nil }}
 }
 
 // WithSubAgentCapabilities configures product-neutral runtime capability sources.
 func WithSubAgentCapabilities(capabilities CapabilityOptions) SubAgentOption {
-	return SubAgentOption{category: "capabilities", apply: func(o *SubAgentHostOptions) error { o.capabilities = capabilities; return nil }}
+	return SubAgentOption{category: "capabilities", apply: func(o *subAgentOptions) error { o.capabilities = capabilities; return nil }}
 }
 
 // WithSubAgentThreadTitleMode selects host-owned or provider-owned child titles.
 func WithSubAgentThreadTitleMode(mode ThreadTitleMode) SubAgentOption {
-	return SubAgentOption{category: "thread_title_mode", apply: func(o *SubAgentHostOptions) error { o.threadTitleMode = mode; return nil }}
+	return SubAgentOption{category: "thread_title_mode", apply: func(o *subAgentOptions) error { o.threadTitleMode = mode; return nil }}
 }

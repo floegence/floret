@@ -1,7 +1,6 @@
 package floret_test
 
 import (
-	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -225,7 +224,7 @@ func TestCanonicalExactReadDoesNotDelegateToPageReaders(t *testing.T) {
 }
 
 func TestCommandPackagesRemainCommands(t *testing.T) {
-	dirs := []string{filepath.Join("cmd", "floret-store"), filepath.Join("cmd", "floret-test-ui")}
+	dirs := []string{filepath.Join("cmd", "floret-store")}
 	examples, err := os.ReadDir(filepath.Join("cmd", "examples"))
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +251,9 @@ func TestCommandPackagesRemainCommands(t *testing.T) {
 func TestExamplesUseOnlyPublicFloretPackages(t *testing.T) {
 	allowed := map[string]bool{
 		modulePath + "/config":      true,
+		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
+		modulePath + "/storage":     true,
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 	}
@@ -263,14 +264,15 @@ func TestExamplesUseOnlyPublicFloretPackages(t *testing.T) {
 	}
 }
 
-func TestFloretStoreCommandUsesOnlyPublicRuntime(t *testing.T) {
+func TestFloretStoreCommandUsesOnlyPublicStorageContracts(t *testing.T) {
 	imports := packageImports(t, filepath.Join("cmd", "floret-store"), false, true)
 	if !imports[modulePath+"/runtime"] {
 		t.Fatal("floret-store must delegate maintenance to the public runtime package")
 	}
+	allowed := map[string]bool{modulePath + "/runtime": true, modulePath + "/storage": true}
 	for imported := range imports {
-		if strings.HasPrefix(imported, modulePath+"/") && imported != modulePath+"/runtime" {
-			t.Fatalf("floret-store must not import non-runtime Floret package %s", imported)
+		if strings.HasPrefix(imported, modulePath+"/") && !allowed[imported] {
+			t.Fatalf("floret-store must not import Floret package %s", imported)
 		}
 	}
 }
@@ -510,91 +512,48 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 			t.Fatalf("%s exported method set = %#v, want %#v", name, got, wantSet)
 		}
 	}
-	exact("HostBootstrap", reflect.TypeOf((*floretRuntime.HostBootstrap)(nil)))
-	exact("ThreadCreateHostBinder", reflect.TypeOf((*floretRuntime.ThreadCreateHostBinder)(nil)), "Bind")
-	exact("ThreadReadHostBinder", reflect.TypeOf((*floretRuntime.ThreadReadHostBinder)(nil)), "NewHost")
-	exact("ThreadInventoryHost", reflect.TypeOf((*floretRuntime.ThreadInventoryHost)(nil)), "ListRootThreads")
-	exact("ThreadTitleHostBinder", reflect.TypeOf((*floretRuntime.ThreadTitleHostBinder)(nil)), "NewHost")
-	exact("ThreadForkHostBinder", reflect.TypeOf((*floretRuntime.ThreadForkHostBinder)(nil)), "NewHost")
-	exact("ThreadDeleteHostBinder", reflect.TypeOf((*floretRuntime.ThreadDeleteHostBinder)(nil)), "NewHost")
-	exact("TurnExecutionHostBinder", reflect.TypeOf((*floretRuntime.TurnExecutionHostBinder)(nil)), "Bind")
-	exact("ThreadCompactionHostBinder", reflect.TypeOf((*floretRuntime.ThreadCompactionHostBinder)(nil)), "Bind")
-	exact("SubAgentHostBinder", reflect.TypeOf((*floretRuntime.SubAgentHostBinder)(nil)), "Bind")
-	exact("SubAgentReadHostBinder", reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost")
-	exact("PendingToolRecoveryHostBinder", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost", "NewThreadHost")
-	exact("InterruptedTurnRecoveryHostBinder", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindSubAgent", "BindThread")
-	exact("TurnExecutionHostFactory", reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost")
-	exact("ThreadCompactionHostFactory", reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost")
-	exact("SubAgentHostFactory", reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost")
-	exact("InterruptedTurnRecoveryHostFactory", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostFactory)(nil)), "NewHost")
-	exact("ThreadCreateHost", reflect.TypeOf((*floretRuntime.ThreadCreateHost)(nil)), "CreateThread")
-	exact("ThreadTitleHost", reflect.TypeOf((*floretRuntime.ThreadTitleHost)(nil)), "SetThreadTitle")
-	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
-	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
-	exact("SubAgentReadHost", reflect.TypeOf((*floretRuntime.SubAgentReadHost)(nil)),
-		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ListThreadTurns", "ReadArtifact", "ReadSubAgentDetail", "ReadThreadTurn")
-	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
-	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
-	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
-		"CompletePendingTool", "ReadApprovalQueue", "ResolveApproval", "RetryTurn", "RunTurn", "SettlePendingTool", "UpdateThreadAgentTodos")
-	exact("ThreadCompactionHost", reflect.TypeOf((*floretRuntime.ThreadCompactionHost)(nil)), "CompactThread")
-	exact("SubAgentHost", reflect.TypeOf((*floretRuntime.SubAgentHost)(nil)),
-		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
-	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
-		"ListPendingToolSettlementTargets", "ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
-		"ReadApprovalQueue", "ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadThreadTurn", "ReadTurnProjection")
-	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
+
+	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
+		"Close", "SubAgentManager", "SubAgentReader", "ThreadCompactor", "ThreadCreator",
+		"ThreadDeleter", "ThreadForker", "ThreadReader", "ThreadTitleEditor", "TurnRunner")
+	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
+	exact("ThreadCreator", reflect.TypeOf((*floretRuntime.ThreadCreator)(nil)), "Create")
+	exact("ThreadReader", reflect.TypeOf((*floretRuntime.ThreadReader)(nil)), "Read", "ReadTurn")
+	exact("ThreadTitleEditor", reflect.TypeOf((*floretRuntime.ThreadTitleEditor)(nil)), "Set")
+	exact("ThreadForker", reflect.TypeOf((*floretRuntime.ThreadForker)(nil)), "Fork")
+	exact("ThreadDeleter", reflect.TypeOf((*floretRuntime.ThreadDeleter)(nil)), "Delete")
+	exact("TurnRunner", reflect.TypeOf((*floretRuntime.TurnRunner)(nil)), "Run")
+	exact("ThreadCompactor", reflect.TypeOf((*floretRuntime.ThreadCompactor)(nil)), "Compact")
+	exact("SubAgentManager", reflect.TypeOf((*floretRuntime.SubAgentManager)(nil)),
+		"Close", "PublishPendingToolCompletion", "SendInput", "Spawn", "Wait")
+	exact("SubAgentReader", reflect.TypeOf((*floretRuntime.SubAgentReader)(nil)),
+		"ActivityTimeline", "List", "ReadDetail")
+
 	for name, typ := range map[string]reflect.Type{
-		"HostBootstrap":                      reflect.TypeOf(floretRuntime.HostBootstrap{}),
-		"ThreadCreateHostBinder":             reflect.TypeOf(floretRuntime.ThreadCreateHostBinder{}),
-		"ThreadReadHostBinder":               reflect.TypeOf(floretRuntime.ThreadReadHostBinder{}),
-		"ThreadTitleHostBinder":              reflect.TypeOf(floretRuntime.ThreadTitleHostBinder{}),
-		"ThreadForkHostBinder":               reflect.TypeOf(floretRuntime.ThreadForkHostBinder{}),
-		"ThreadDeleteHostBinder":             reflect.TypeOf(floretRuntime.ThreadDeleteHostBinder{}),
-		"TurnExecutionHostBinder":            reflect.TypeOf(floretRuntime.TurnExecutionHostBinder{}),
-		"ThreadCompactionHostBinder":         reflect.TypeOf(floretRuntime.ThreadCompactionHostBinder{}),
-		"SubAgentHostBinder":                 reflect.TypeOf(floretRuntime.SubAgentHostBinder{}),
-		"SubAgentReadHostBinder":             reflect.TypeOf(floretRuntime.SubAgentReadHostBinder{}),
-		"PendingToolRecoveryHostBinder":      reflect.TypeOf(floretRuntime.PendingToolRecoveryHostBinder{}),
-		"InterruptedTurnRecoveryHostBinder":  reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostBinder{}),
-		"InterruptedTurnRecoveryHostFactory": reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostFactory{}),
-		"TurnExecutionHostFactory":           reflect.TypeOf(floretRuntime.TurnExecutionHostFactory{}),
-		"ThreadCompactionHostFactory":        reflect.TypeOf(floretRuntime.ThreadCompactionHostFactory{}),
-		"SubAgentHostFactory":                reflect.TypeOf(floretRuntime.SubAgentHostFactory{}),
-		"TurnExecutionHost":                  reflect.TypeOf(floretRuntime.TurnExecutionHost{}),
-		"ThreadCompactionHost":               reflect.TypeOf(floretRuntime.ThreadCompactionHost{}),
-		"SubAgentHost":                       reflect.TypeOf(floretRuntime.SubAgentHost{}),
-		"SubAgentReadHost":                   reflect.TypeOf(floretRuntime.SubAgentReadHost{}),
-		"ThreadCreateHost":                   reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
-		"ThreadReadHost":                     reflect.TypeOf(floretRuntime.ThreadReadHost{}),
-		"ThreadTitleHost":                    reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
-		"ThreadForkHost":                     reflect.TypeOf(floretRuntime.ThreadForkHost{}),
-		"ThreadDeleteHost":                   reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
-		"PendingToolRecoveryHost":            reflect.TypeOf(floretRuntime.PendingToolRecoveryHost{}),
-		"InterruptedTurnRecoveryHost":        reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHost{}),
-	} {
-		for i := 0; i < typ.NumField(); i++ {
-			if typ.Field(i).PkgPath == "" {
-				t.Fatalf("%s exposes exported field %q", name, typ.Field(i).Name)
-			}
-		}
-	}
-	for _, typ := range []reflect.Type{
-		reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
-		reflect.TypeOf(floretRuntime.ThreadCompactionHostOptions{}),
-		reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
+		"Host":              reflect.TypeOf(floretRuntime.Host{}),
+		"Agent":             reflect.TypeOf(floretRuntime.Agent{}),
+		"ThreadCreator":     reflect.TypeOf(floretRuntime.ThreadCreator{}),
+		"ThreadReader":      reflect.TypeOf(floretRuntime.ThreadReader{}),
+		"ThreadTitleEditor": reflect.TypeOf(floretRuntime.ThreadTitleEditor{}),
+		"ThreadForker":      reflect.TypeOf(floretRuntime.ThreadForker{}),
+		"ThreadDeleter":     reflect.TypeOf(floretRuntime.ThreadDeleter{}),
+		"TurnRunner":        reflect.TypeOf(floretRuntime.TurnRunner{}),
+		"ThreadCompactor":   reflect.TypeOf(floretRuntime.ThreadCompactor{}),
+		"SubAgentManager":   reflect.TypeOf(floretRuntime.SubAgentManager{}),
+		"SubAgentReader":    reflect.TypeOf(floretRuntime.SubAgentReader{}),
 	} {
 		for index := 0; index < typ.NumField(); index++ {
 			if typ.Field(index).PkgPath == "" {
-				t.Fatalf("%s exposes field %q; host options must remain opaque", typ.Name(), typ.Field(index).Name)
+				t.Fatalf("%s exposes exported field %q", name, typ.Field(index).Name)
 			}
 		}
 	}
+
 	exactFields := func(name string, typ reflect.Type, want ...string) {
 		t.Helper()
 		got := make([]string, 0, typ.NumField())
-		for i := 0; i < typ.NumField(); i++ {
-			got = append(got, typ.Field(i).Name)
+		for index := 0; index < typ.NumField(); index++ {
+			got = append(got, typ.Field(index).Name)
 		}
 		slices.Sort(got)
 		slices.Sort(want)
@@ -609,111 +568,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exactFields("ArtifactContent", reflect.TypeOf(floretRuntime.ArtifactContent{}), "Ref", "Text")
 }
 
-func TestTestUIAgentSessionCannotRetainCapabilityIssuers(t *testing.T) {
-	path := filepath.Join("internal", "testui", "runner.go")
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			typeSpec := spec.(*ast.TypeSpec)
-			if typeSpec.Name.Name != "agentSession" {
-				continue
-			}
-			found = true
-			shape := typeSpec.Type.(*ast.StructType)
-			for _, field := range shape.Fields.List {
-				ast.Inspect(field.Type, func(node ast.Node) bool {
-					ident, ok := node.(*ast.Ident)
-					if ok && (strings.HasSuffix(ident.Name, "Binder") || ident.Name == "testUIRuntimeCapabilityBinders") {
-						t.Fatalf("test UI agentSession retains Store-wide capability issuer %s", ident.Name)
-					}
-					return true
-				})
-			}
-		}
-	}
-	if !found {
-		t.Fatal("test UI agentSession type not found")
-	}
-}
-
-func TestTestUIRuntimeConstructionChecksExactAuthorityBeforeHostSideEffects(t *testing.T) {
-	text := readTextFile(t, filepath.Join("internal", "testui", "runner.go"))
-	start := strings.Index(text, "func (sess *agentSession) prepareRuntime(")
-	if start < 0 {
-		t.Fatal("test UI prepareRuntime function not found")
-	}
-	tail := text[start:]
-	end := strings.Index(tail, "\nfunc (sess *agentSession) applyRuntime(")
-	if end < 0 {
-		t.Fatal("test UI prepareRuntime function end not found")
-	}
-	body := tail[:end]
-	turnAuthority := strings.Index(body, "sess.turnFactory.NewHost(")
-	subAgentAuthority := strings.Index(body, "sess.subagentFactory.NewHost(")
-	if turnAuthority < 0 || subAgentAuthority < 0 {
-		t.Fatal("test UI prepareRuntime must construct exact turn and SubAgent authorities")
-	}
-	for _, sideEffect := range []string{
-		"registerAgentSessionTools(",
-		"r.registerAgentCapabilities(",
-		"r.providerFactory()(",
-		"r.titleProviderFactory()(",
-	} {
-		position := strings.Index(body, sideEffect)
-		if position < 0 {
-			t.Fatalf("test UI prepareRuntime is missing %q", sideEffect)
-		}
-		if position < turnAuthority || position < subAgentAuthority {
-			t.Fatalf("test UI prepareRuntime starts %q before exact authority construction", sideEffect)
-		}
-	}
-}
-
-func TestProviderCapabilityHostConstructionRequiresAuthorityContext(t *testing.T) {
-	contextType := reflect.TypeOf((*context.Context)(nil)).Elem()
-	for _, item := range []struct {
-		typ    reflect.Type
-		method string
-	}{
-		{reflect.TypeOf((*floretRuntime.ThreadReadHostBinder)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.ThreadTitleHostBinder)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.ThreadForkHostBinder)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.ThreadDeleteHostBinder)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewThreadHost"},
-		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost"},
-		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindThread"},
-		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindSubAgent"},
-		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostFactory)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost"},
-		{reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost"},
-	} {
-		method, ok := item.typ.MethodByName(item.method)
-		if !ok {
-			t.Fatalf("%s is missing %s", item.typ.Elem().Name(), item.method)
-		}
-		if method.Type.NumIn() < 2 || method.Type.In(1) != contextType {
-			t.Fatalf("%s.%s must receive context.Context first, got %s", item.typ.Elem().Name(), item.method, method.Type)
-		}
-	}
-}
-
-func TestRuntimePrivateProviderHostOnlyBacksApprovedCapabilities(t *testing.T) {
-	allowed := map[string]bool{
-		"TurnExecutionHost":    true,
-		"ThreadCompactionHost": true,
-		"SubAgentHost":         true,
-	}
-	found := map[string]bool{}
+func TestRuntimePrivateProviderHostDoesNotCrossPublicTypes(t *testing.T) {
 	for _, path := range walkAllFiles(t, "runtime") {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			continue
@@ -722,56 +577,33 @@ func TestRuntimePrivateProviderHostOnlyBacksApprovedCapabilities(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.TYPE {
+		for _, declaration := range file.Decls {
+			group, ok := declaration.(*ast.GenDecl)
+			if !ok || group.Tok != token.TYPE {
 				continue
 			}
-			for _, spec := range gen.Specs {
-				typeSpec := spec.(*ast.TypeSpec)
+			for _, specification := range group.Specs {
+				typeSpec := specification.(*ast.TypeSpec)
 				if !ast.IsExported(typeSpec.Name.Name) {
 					continue
 				}
 				usesProviderHost := false
 				ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
-					ident, ok := node.(*ast.Ident)
-					if ok && ident.Name == "providerHost" {
+					identifier, ok := node.(*ast.Ident)
+					if ok && identifier.Name == "providerHost" {
 						usesProviderHost = true
 					}
 					return true
 				})
-				if !usesProviderHost {
-					continue
-				}
-				if !allowed[typeSpec.Name.Name] {
+				if usesProviderHost {
 					t.Fatalf("exported runtime type %s wraps private providerHost", typeSpec.Name.Name)
 				}
-				found[typeSpec.Name.Name] = true
 			}
 		}
 	}
-	if !reflect.DeepEqual(found, allowed) {
-		t.Fatalf("providerHost facade set = %#v, want %#v", found, allowed)
-	}
 }
 
-func TestRuntimeBootstrapAuthorityIsConfinedToCompositionConstructors(t *testing.T) {
-	allowed := map[string]bool{
-		"ConfigureHostCapabilities":            true,
-		"NewInterruptedTurnRecoveryHostBinder": true,
-		"NewPendingToolRecoveryHostBinder":     true,
-		"NewSubAgentHostBinder":                true,
-		"NewSubAgentReadHostBinder":            true,
-		"NewThreadInventoryHost":               true,
-		"NewThreadCompactionHostBinder":        true,
-		"NewThreadCreateHostBinder":            true,
-		"NewThreadDeleteHostBinder":            true,
-		"NewThreadForkHostBinder":              true,
-		"NewThreadReadHostBinder":              true,
-		"NewThreadTitleHostBinder":             true,
-		"NewTurnExecutionHostBinder":           true,
-	}
-	found := map[string]bool{}
+func TestRuntimeStoreAndBootstrapStayPrivate(t *testing.T) {
 	for _, path := range walkAllFiles(t, "runtime") {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			continue
@@ -780,107 +612,44 @@ func TestRuntimeBootstrapAuthorityIsConfinedToCompositionConstructors(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range file.Decls {
-			switch typed := decl.(type) {
-			case *ast.FuncDecl:
-				usesBootstrap := false
-				ast.Inspect(typed.Type, func(node ast.Node) bool {
-					ident, ok := node.(*ast.Ident)
-					if ok && ident.Name == "HostBootstrap" {
-						usesBootstrap = true
-					}
-					return true
-				})
-				if !usesBootstrap {
-					continue
-				}
-				if !ast.IsExported(typed.Name.Name) {
-					continue
-				}
-				if typed.Recv != nil || !allowed[typed.Name.Name] {
-					t.Fatalf("runtime bootstrap authority leaks through %s in %s", typed.Name.Name, path)
-				}
-				found[typed.Name.Name] = true
-			case *ast.GenDecl:
-				if typed.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range typed.Specs {
-					typeSpec := spec.(*ast.TypeSpec)
-					if typeSpec.Name.Name == "HostBootstrap" {
-						continue
-					}
-					containsBootstrap := false
-					ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
-						ident, ok := node.(*ast.Ident)
-						if ok && ident.Name == "HostBootstrap" {
-							containsBootstrap = true
-						}
-						return true
-					})
-					if containsBootstrap {
-						t.Fatalf("runtime type %s retains bootstrap authority in %s", typeSpec.Name.Name, path)
-					}
-				}
-			}
-		}
-	}
-	if !reflect.DeepEqual(found, allowed) {
-		t.Fatalf("bootstrap constructor set = %#v, want %#v", found, allowed)
-	}
-}
-
-func TestRuntimeStoreAuthorityCrossesOnlyCompositionBoundary(t *testing.T) {
-	allowed := map[string]bool{
-		"ConfigureHostCapabilities": true,
-		"NewMemoryStore":            true,
-		"OpenSQLiteStore":           true,
-	}
-	found := map[string]bool{}
-	for _, path := range walkAllFiles(t, "runtime") {
-		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !ast.IsExported(fn.Name.Name) {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv != nil || !ast.IsExported(function.Name.Name) {
 				continue
 			}
-			usesStore := false
-			ast.Inspect(fn.Type, func(node ast.Node) bool {
-				ident, ok := node.(*ast.Ident)
-				if ok && ident.Name == "Store" {
-					usesStore = true
+			leaksAuthority := false
+			ast.Inspect(function.Type, func(node ast.Node) bool {
+				identifier, ok := node.(*ast.Ident)
+				if ok && (identifier.Name == "Store" || identifier.Name == "hostBootstrap") {
+					leaksAuthority = true
 				}
 				return true
 			})
-			if !usesStore {
-				continue
+			if leaksAuthority {
+				t.Fatalf("runtime authority leaks through public function %s in %s", function.Name.Name, path)
 			}
-			if !allowed[fn.Name.Name] {
-				t.Fatalf("runtime Store authority leaks through public function %s in %s", fn.Name.Name, path)
-			}
-			found[fn.Name.Name] = true
 		}
-	}
-	if !reflect.DeepEqual(found, allowed) {
-		t.Fatalf("public Store boundary = %#v, want %#v", found, allowed)
 	}
 }
 
-func TestRuntimeHostOptionsDoNotCarryAuthorityRoots(t *testing.T) {
-	for _, typ := range []reflect.Type{
-		reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
-		reflect.TypeOf(floretRuntime.ThreadCompactionHostOptions{}),
-		reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
+func TestBoundHandleRequestsDoNotRepeatBoundIdentity(t *testing.T) {
+	for name, contract := range map[string]struct {
+		typ       reflect.Type
+		forbidden []string
+	}{
+		"TurnRequest":                          {reflect.TypeOf(floretRuntime.TurnRequest{}), []string{"ThreadID"}},
+		"ThreadForkRequest":                    {reflect.TypeOf(floretRuntime.ThreadForkRequest{}), []string{"SourceThreadID"}},
+		"ThreadCompactionRequest":              {reflect.TypeOf(floretRuntime.ThreadCompactionRequest{}), []string{"ThreadID"}},
+		"SpawnSubAgent":                        {reflect.TypeOf(floretRuntime.SpawnSubAgent{}), []string{"ParentThreadID"}},
+		"SendSubAgentInput":                    {reflect.TypeOf(floretRuntime.SendSubAgentInput{}), []string{"ParentThreadID"}},
+		"PublishSubAgentPendingToolCompletion": {reflect.TypeOf(floretRuntime.PublishSubAgentPendingToolCompletion{}), []string{"ParentThreadID"}},
+		"WaitSubAgents":                        {reflect.TypeOf(floretRuntime.WaitSubAgents{}), []string{"ParentThreadID"}},
+		"CloseSubAgent":                        {reflect.TypeOf(floretRuntime.CloseSubAgent{}), []string{"ParentThreadID"}},
+		"SubAgentDetailRequest":                {reflect.TypeOf(floretRuntime.SubAgentDetailRequest{}), []string{"ParentThreadID"}},
 	} {
-		for _, field := range []string{"Store", "Bootstrap", "Runtime"} {
-			if _, ok := typ.FieldByName(field); ok {
-				t.Fatalf("%s exposes authority root field %q", typ.Name(), field)
+		for _, field := range contract.forbidden {
+			if _, ok := contract.typ.FieldByName(field); ok {
+				t.Fatalf("%s repeats bound identity field %s", name, field)
 			}
 		}
 	}
@@ -907,6 +676,40 @@ func TestV2PublicAPISurfaceMatchesBaseline(t *testing.T) {
 	}
 }
 
+func TestV2RemovesLegacyHostCapabilityGraph(t *testing.T) {
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "run", "./internal/architecture/apibaseline", "-root", root)
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generate public API surface: %v\n%s", err, output)
+	}
+	for _, forbidden := range []string{
+		"HostBootstrap",
+		"Binder",
+		"Factory",
+		"TurnExecutionHostOptions",
+		"ThreadCompactionHostOptions",
+		"SubAgentHostOptions",
+		"NewMemoryStore",
+		"OpenSQLiteStore",
+		"ConfigureHostCapabilities",
+	} {
+		if strings.Contains(string(output), forbidden) {
+			t.Errorf("v2 public API retains legacy contract %q", forbidden)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "cmd", "floret-host-init")); err == nil {
+		t.Error("v2 retains the floret-host-init generator")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func firstSurfaceDifference(expected, actual string) string {
 	expectedLines := strings.Split(expected, "\n")
 	actualLines := strings.Split(actual, "\n")
@@ -919,69 +722,16 @@ func firstSurfaceDifference(expected, actual string) string {
 	return fmt.Sprintf("line count changed from %d to %d", len(expectedLines), len(actualLines))
 }
 
-func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
-	allowedConstructors := map[string]bool{
-		"NewPendingToolRecoveryHostBinder":     true,
-		"NewInterruptedTurnRecoveryHostBinder": true,
-		"NewSubAgentHostBinder":                true,
-		"NewSubAgentReadHostBinder":            true,
-		"NewThreadInventoryHost":               true,
-		"NewThreadCompactionHostBinder":        true,
-		"NewThreadCreateHostBinder":            true,
-		"NewThreadDeleteHostBinder":            true,
-		"NewThreadForkHostBinder":              true,
-		"NewThreadReadHostBinder":              true,
-		"NewThreadTitleHostBinder":             true,
-		"NewTurnExecutionHostBinder":           true,
-	}
-	foundConstructors := map[string]bool{}
-	authorityOwners := map[string]string{
-		"CloseSubAgent":                "SubAgentHost",
-		"CompactThread":                "ThreadCompactionHost",
-		"CompletePendingTool":          "TurnExecutionHost",
-		"CreateThread":                 "ThreadCreateHost",
-		"DeleteThread":                 "ThreadDeleteHost",
-		"ForkThread":                   "ThreadForkHost",
-		"ListPendingApprovals":         "TurnExecutionHost",
-		"ListSubAgentActivityTimeline": "SubAgentReadHost",
-		"ListSubAgents":                "SubAgentReadHost",
-		"ListRootThreads":              "ThreadInventoryHost",
-		"ListThreadDetailEvents":       "ThreadReadHost",
-		"ListThreadTurns":              "ThreadReadHost",
-		"ReadLatestThreadTurn":         "ThreadReadHost",
-		"ReadSubAgentDetail":           "SubAgentReadHost",
-		"ReadThread":                   "ThreadReadHost",
-		"ReadThreadAgentTodos":         "ThreadReadHost",
-		"ReadThreadContext":            "ThreadReadHost",
-		"ReadThreadOverview":           "ThreadReadHost",
-		"ReadThreadTurn":               "ThreadReadHost",
-		"ReadTurnProjection":           "ThreadReadHost",
-		"RetryTurn":                    "TurnExecutionHost",
-		"RunTurn":                      "TurnExecutionHost",
-		"SendSubAgentInput":            "SubAgentHost",
-		"SetThreadTitle":               "ThreadTitleHost",
-		"SpawnSubAgent":                "SubAgentHost",
-		"UpdateThreadAgentTodos":       "TurnExecutionHost",
-		"WaitSubAgents":                "SubAgentHost",
-	}
+func TestRuntimeCapabilityRootsAndAggregatesStayExplicit(t *testing.T) {
 	capabilityTypes := map[string]bool{
-		"HostBootstrap": true, "PendingToolRecoveryHost": true, "PendingToolRecoveryHostBinder": true,
-		"InterruptedTurnRecoveryHost": true, "InterruptedTurnRecoveryHostBinder": true,
-		"InterruptedTurnRecoveryHostFactory": true,
-		"ThreadCreateHostBinder":             true, "ThreadReadHostBinder": true, "ThreadInventoryHost": true, "ThreadTitleHostBinder": true,
-		"ThreadForkHostBinder": true, "ThreadDeleteHostBinder": true,
-		"SubAgentHost": true, "SubAgentHostBinder": true, "SubAgentHostFactory": true,
-		"SubAgentReadHost": true, "SubAgentReadHostBinder": true,
-		"ThreadCompactionHost": true, "ThreadCreateHost": true, "ThreadDeleteHost": true,
-		"ThreadCompactionHostBinder": true, "ThreadCompactionHostFactory": true,
-		"ThreadForkHost": true, "ThreadReadHost": true, "ThreadTitleHost": true,
-		"TurnExecutionHost": true, "TurnExecutionHostBinder": true, "TurnExecutionHostFactory": true,
+		"Host": true, "Agent": true, "ThreadCreator": true, "ThreadReader": true,
+		"ThreadTitleEditor": true, "ThreadForker": true, "ThreadDeleter": true,
+		"TurnRunner": true, "ThreadCompactor": true, "SubAgentManager": true,
+		"SubAgentReader": true,
 	}
-	settlementOwners := map[string]bool{
-		"PendingToolRecoveryHost": true,
-		"SubAgentHost":            true,
-		"TurnExecutionHost":       true,
-	}
+	allowedConstructors := map[string]bool{"Open": true, "NewAgent": true}
+	foundConstructors := map[string]bool{}
+
 	for _, path := range walkAllFiles(t, "runtime") {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			continue
@@ -990,109 +740,67 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range file.Decls {
-			switch typed := decl.(type) {
+		for _, declaration := range file.Decls {
+			switch typed := declaration.(type) {
 			case *ast.FuncDecl:
-				returnsCapability := false
-				if typed.Recv == nil && ast.IsExported(typed.Name.Name) && typed.Type.Results != nil {
-					ast.Inspect(typed.Type.Results, func(node ast.Node) bool {
-						ident, ok := node.(*ast.Ident)
-						if ok && capabilityTypes[ident.Name] {
-							returnsCapability = true
-						}
-						return true
-					})
+				if typed.Recv != nil || !ast.IsExported(typed.Name.Name) || typed.Type.Results == nil {
+					continue
 				}
-				if returnsCapability && !allowedConstructors[typed.Name.Name] {
+				returnsCapability := false
+				ast.Inspect(typed.Type.Results, func(node ast.Node) bool {
+					identifier, ok := node.(*ast.Ident)
+					if ok && capabilityTypes[identifier.Name] {
+						returnsCapability = true
+					}
+					return true
+				})
+				if !returnsCapability {
+					continue
+				}
+				if !allowedConstructors[typed.Name.Name] {
 					t.Fatalf("runtime exposes unreviewed authority constructor %s", typed.Name.Name)
 				}
-				if typed.Recv == nil && ast.IsExported(typed.Name.Name) && strings.HasPrefix(typed.Name.Name, "New") && strings.Contains(typed.Name.Name, "Host") && !strings.HasSuffix(typed.Name.Name, "HostOptions") {
-					if !allowedConstructors[typed.Name.Name] {
-						t.Fatalf("runtime exposes unreviewed host constructor %s", typed.Name.Name)
-					}
-					foundConstructors[typed.Name.Name] = true
-				}
-				if typed.Recv != nil && ast.IsExported(typed.Name.Name) {
-					if typed.Name.Name == "SettlePendingTool" {
-						receiver := ""
-						ast.Inspect(typed.Recv.List[0].Type, func(node ast.Node) bool {
-							if ident, ok := node.(*ast.Ident); ok {
-								receiver = ident.Name
-							}
-							return true
-						})
-						if !settlementOwners[receiver] {
-							t.Fatalf("runtime settlement receiver = %s", receiver)
-						}
-						continue
-					}
-					owner, authorityMethod := authorityOwners[typed.Name.Name]
-					if !authorityMethod {
-						continue
-					}
-					receiver := ""
-					ast.Inspect(typed.Recv.List[0].Type, func(node ast.Node) bool {
-						if ident, ok := node.(*ast.Ident); ok {
-							receiver = ident.Name
-						}
-						return true
-					})
-					if ast.IsExported(receiver) && receiver != owner &&
-						!((typed.Name.Name == "ListThreadTurns" || typed.Name.Name == "ReadThreadTurn") && receiver == "SubAgentReadHost") {
-						t.Fatalf("runtime authority method %s receiver = %s, want %s", typed.Name.Name, receiver, owner)
-					}
-				}
+				foundConstructors[typed.Name.Name] = true
 			case *ast.GenDecl:
 				if typed.Tok != token.TYPE {
 					continue
 				}
-				for _, spec := range typed.Specs {
-					typeSpec := spec.(*ast.TypeSpec)
-					if ast.IsExported(typeSpec.Name.Name) && typeSpec.Assign.IsValid() {
+				for _, specification := range typed.Specs {
+					typeSpec := specification.(*ast.TypeSpec)
+					if !ast.IsExported(typeSpec.Name.Name) {
+						continue
+					}
+					if typeSpec.Assign.IsValid() {
 						aliasesCapability := false
 						ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
-							ident, ok := node.(*ast.Ident)
-							if ok && capabilityTypes[ident.Name] {
+							identifier, ok := node.(*ast.Ident)
+							if ok && capabilityTypes[identifier.Name] {
 								aliasesCapability = true
 							}
 							return true
 						})
 						if aliasesCapability {
-							t.Fatalf("runtime exported alias %s re-exports an authority capability", typeSpec.Name.Name)
+							t.Fatalf("runtime exported alias %s re-exports authority", typeSpec.Name.Name)
 						}
 					}
-					switch shape := typeSpec.Type.(type) {
-					case *ast.InterfaceType:
-						for _, field := range shape.Methods.List {
-							if ast.IsExported(typeSpec.Name.Name) && len(field.Names) == 0 {
-								t.Fatalf("runtime exported interface %s embeds another contract", typeSpec.Name.Name)
-							}
-							for _, name := range field.Names {
-								if _, ok := authorityOwners[name.Name]; ok || name.Name == "SettlePendingTool" {
-									t.Fatalf("runtime interface %s aggregates authority method %s", typeSpec.Name.Name, name.Name)
-								}
-							}
-						}
-					case *ast.StructType:
-						if !ast.IsExported(typeSpec.Name.Name) {
+					shape, ok := typeSpec.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					for _, field := range shape.Fields.List {
+						if len(field.Names) == 0 || !ast.IsExported(field.Names[0].Name) {
 							continue
 						}
-						for _, field := range shape.Fields.List {
-							if len(field.Names) > 0 && !ast.IsExported(field.Names[0].Name) {
-								continue
+						containsCapability := false
+						ast.Inspect(field.Type, func(node ast.Node) bool {
+							identifier, ok := node.(*ast.Ident)
+							if ok && capabilityTypes[identifier.Name] {
+								containsCapability = true
 							}
-							containsCapability := false
-							ast.Inspect(field.Type, func(node ast.Node) bool {
-								ident, ok := node.(*ast.Ident)
-								if ok && capabilityTypes[ident.Name] {
-									containsCapability = true
-								}
-								return true
-							})
-							if !containsCapability {
-								continue
-							}
-							t.Fatalf("runtime exported struct %s aggregates an authority capability field", typeSpec.Name.Name)
+							return true
+						})
+						if containsCapability {
+							t.Fatalf("runtime exported struct %s aggregates authority field %s", typeSpec.Name.Name, field.Names[0].Name)
 						}
 					}
 				}
@@ -1100,7 +808,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		}
 	}
 	if !reflect.DeepEqual(foundConstructors, allowedConstructors) {
-		t.Fatalf("host constructor set = %#v, want %#v", foundConstructors, allowedConstructors)
+		t.Fatalf("authority constructor set = %#v, want %#v", foundConstructors, allowedConstructors)
 	}
 }
 
@@ -1494,29 +1202,17 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 			t.Fatalf("web search capability resolver must not special-case provider names, found %q", forbidden)
 		}
 	}
-	testUI := readTextFile(t, filepath.Join("internal", "testui", "tool_selection.go"))
-	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtin.ToolWebSearch)"} {
-		if !strings.Contains(testUI, want) {
-			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
-		}
-	}
 }
 
 func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
-	builtins := readTextFile(t, filepath.Join("internal", "tools", "builtin", "common.go"))
-	testUI := readTextFile(t, filepath.Join("internal", "testui", "tool_selection.go"))
-	staticMatrix := readTextFile(t, filepath.Join("internal", "testui", "static", "components", "toolMatrix.js"))
-	for path, text := range map[string]string{
-		"internal/tools/builtin/common.go":                builtins,
-		"internal/testui/tool_selection.go":               testUI,
-		"internal/testui/static/components/toolMatrix.js": staticMatrix,
-	} {
+	for _, path := range append(walkAllFiles(t, "runtime"), walkAllFiles(t, filepath.Join("internal", "tools", "builtin"))...) {
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		text := readTextFile(t, path)
 		if strings.Contains(text, "web_fetch") || strings.Contains(text, "ToolWebFetch") || strings.Contains(text, "RegisterNetwork") {
 			t.Fatalf("%s must not expose built-in web_fetch", path)
 		}
-	}
-	if !strings.Contains(testUI, "IMPORTANT: Floret core does not expose a built-in URL fetch/browser-lite") {
-		t.Fatalf("web fetch boundary must be protected by an IMPORTANT comment")
 	}
 }
 
@@ -1531,12 +1227,6 @@ func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
 		}
 	}
 
-	testUIText := readTextFile(t, filepath.Join("internal", "testui", "runner.go"))
-	for _, forbidden := range []string{"latestSessionStatus", "status == string(engine.Waiting)", "status == string(engine.Completed)", "status == \"idle\"", "Status == \"running\"", "Phase == \"turn\""} {
-		if strings.Contains(testUIText, forbidden) {
-			t.Fatalf("test UI must derive lifecycle decisions through internal/sessionlifecycle, found %q", forbidden)
-		}
-	}
 }
 
 func TestTurnFinalizationInvariantIsDocumented(t *testing.T) {

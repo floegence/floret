@@ -12,64 +12,64 @@ import (
 	"github.com/floegence/floret/v2/tools"
 )
 
-// TurnExecutionHost owns provider-backed turn admission and continuation for
+// turnExecutionCapability owns provider-backed turn admission and continuation for
 // one canonical thread.
-type TurnExecutionHost struct {
+type turnExecutionCapability struct {
 	threadID ThreadID
 	host     *providerHost
 }
 
-// ThreadCompactionHost owns provider-backed compaction for one canonical thread.
-type ThreadCompactionHost struct {
+// threadCompactionCapability owns provider-backed compaction for one canonical thread.
+type threadCompactionCapability struct {
 	threadID ThreadID
 	host     *providerHost
 }
 
-// SubAgentHost owns provider-backed child-thread lifecycle under one canonical
-// parent. Child reads use a separately parent-bound SubAgentReadHost.
-type SubAgentHost struct {
+// subAgentCapability owns provider-backed child-thread lifecycle under one canonical
+// parent. Child reads use a separately parent-bound subAgentReadCapability.
+type subAgentCapability struct {
 	parentThreadID ThreadID
 	host           *providerHost
 }
 
-// TurnExecutionHostBinder issues only thread-bound turn factories.
-type TurnExecutionHostBinder struct {
+// turnExecutionBinder issues only thread-bound turn factories.
+type turnExecutionBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// ThreadCompactionHostBinder issues only thread-bound compaction factories.
-type ThreadCompactionHostBinder struct {
+// threadCompactionBinder issues only thread-bound compaction factories.
+type threadCompactionBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// SubAgentHostBinder issues only parent-bound interactive child factories.
-type SubAgentHostBinder struct {
+// subAgentBinder issues only parent-bound interactive child factories.
+type subAgentBinder struct {
 	store *Store
 	lease *capabilityLease
 }
 
-// TurnExecutionHostFactory issues thread-bound turn execution capabilities.
-type TurnExecutionHostFactory struct {
+// turnExecutionFactory issues thread-bound turn execution capabilities.
+type turnExecutionFactory struct {
 	store    *Store
 	threadID ThreadID
 }
 
-// ThreadCompactionHostFactory issues thread-bound compaction capabilities.
-type ThreadCompactionHostFactory struct {
+// threadCompactionFactory issues thread-bound compaction capabilities.
+type threadCompactionFactory struct {
 	store    *Store
 	threadID ThreadID
 }
 
-// SubAgentHostFactory issues parent-bound interactive child capabilities.
-type SubAgentHostFactory struct {
+// subAgentFactory issues parent-bound interactive child capabilities.
+type subAgentFactory struct {
 	store          *Store
 	parentThreadID ThreadID
 }
 
-// TurnExecutionHostOptions configures one thread-bound turn capability.
-type TurnExecutionHostOptions struct {
+// turnExecutionOptions configures one thread-bound turn capability.
+type turnExecutionOptions struct {
 	config                   config.Config
 	modelGateway             ModelGateway
 	modelGatewayIdentity     ModelGatewayIdentity
@@ -85,8 +85,8 @@ type TurnExecutionHostOptions struct {
 	initialized              bool
 }
 
-// ThreadCompactionHostOptions configures one thread-bound compaction capability.
-type ThreadCompactionHostOptions struct {
+// threadCompactionOptions configures one thread-bound compaction capability.
+type threadCompactionOptions struct {
 	config                   config.Config
 	modelGateway             ModelGateway
 	modelGatewayIdentity     ModelGatewayIdentity
@@ -97,8 +97,8 @@ type ThreadCompactionHostOptions struct {
 	initialized              bool
 }
 
-// SubAgentHostOptions configures one parent-bound interactive child capability.
-type SubAgentHostOptions struct {
+// subAgentOptions configures one parent-bound interactive child capability.
+type subAgentOptions struct {
 	config                   config.Config
 	modelGateway             ModelGateway
 	modelGatewayIdentity     ModelGatewayIdentity
@@ -158,17 +158,17 @@ func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
 	return nil
 }
 
-// NewTurnExecutionHostBinder constructs the turn execution issuer.
-func NewTurnExecutionHostBinder(bootstrap *HostBootstrap) (*TurnExecutionHostBinder, error) {
+// newTurnExecutionBinder constructs the turn execution issuer.
+func newTurnExecutionBinder(bootstrap *hostBootstrap) (*turnExecutionBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &TurnExecutionHostBinder{store: store, lease: lease}, nil
+	return &turnExecutionBinder{store: store, lease: lease}, nil
 }
 
 // Bind constructs provider-backed turn capability factory for exactly one root thread.
-func (b *TurnExecutionHostBinder) Bind(threadID ThreadID) (*TurnExecutionHostFactory, error) {
+func (b *turnExecutionBinder) Bind(threadID ThreadID) (*turnExecutionFactory, error) {
 	if b == nil {
 		return nil, errors.New("turn execution host binder is required")
 	}
@@ -184,20 +184,20 @@ func (b *TurnExecutionHostBinder) Bind(threadID ThreadID) (*TurnExecutionHostFac
 	if err != nil {
 		return nil, err
 	}
-	return &TurnExecutionHostFactory{store: b.store, threadID: threadID}, nil
+	return &turnExecutionFactory{store: b.store, threadID: threadID}, nil
 }
 
-// NewThreadCompactionHostBinder constructs the compaction issuer.
-func NewThreadCompactionHostBinder(bootstrap *HostBootstrap) (*ThreadCompactionHostBinder, error) {
+// newThreadCompactionBinder constructs the compaction issuer.
+func newThreadCompactionBinder(bootstrap *hostBootstrap) (*threadCompactionBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCompactionHostBinder{store: store, lease: lease}, nil
+	return &threadCompactionBinder{store: store, lease: lease}, nil
 }
 
 // Bind constructs provider-backed compaction factory for exactly one root thread.
-func (b *ThreadCompactionHostBinder) Bind(threadID ThreadID) (*ThreadCompactionHostFactory, error) {
+func (b *threadCompactionBinder) Bind(threadID ThreadID) (*threadCompactionFactory, error) {
 	if b == nil {
 		return nil, errors.New("thread compaction host binder is required")
 	}
@@ -213,20 +213,20 @@ func (b *ThreadCompactionHostBinder) Bind(threadID ThreadID) (*ThreadCompactionH
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCompactionHostFactory{store: b.store, threadID: threadID}, nil
+	return &threadCompactionFactory{store: b.store, threadID: threadID}, nil
 }
 
-// NewSubAgentHostBinder constructs the interactive child issuer.
-func NewSubAgentHostBinder(bootstrap *HostBootstrap) (*SubAgentHostBinder, error) {
+// newSubAgentBinder constructs the interactive child issuer.
+func newSubAgentBinder(bootstrap *hostBootstrap) (*subAgentBinder, error) {
 	store, lease, err := capabilityScope(bootstrap)
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentHostBinder{store: store, lease: lease}, nil
+	return &subAgentBinder{store: store, lease: lease}, nil
 }
 
 // Bind constructs provider-backed child capability factory for exactly one parent.
-func (b *SubAgentHostBinder) Bind(parentThreadID ThreadID) (*SubAgentHostFactory, error) {
+func (b *subAgentBinder) Bind(parentThreadID ThreadID) (*subAgentFactory, error) {
 	if b == nil {
 		return nil, errors.New("subagent host binder is required")
 	}
@@ -242,11 +242,11 @@ func (b *SubAgentHostBinder) Bind(parentThreadID ThreadID) (*SubAgentHostFactory
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentHostFactory{store: b.store, parentThreadID: parentThreadID}, nil
+	return &subAgentFactory{store: b.store, parentThreadID: parentThreadID}, nil
 }
 
 // NewHost constructs a provider-backed capability for one existing root thread.
-func (f *TurnExecutionHostFactory) NewHost(ctx context.Context, opts TurnExecutionHostOptions) (*TurnExecutionHost, error) {
+func (f *turnExecutionFactory) NewHost(ctx context.Context, opts turnExecutionOptions) (*turnExecutionCapability, error) {
 	if f == nil || f.store == nil || f.threadID == "" {
 		return nil, errors.New("turn execution host factory is required")
 	}
@@ -279,11 +279,11 @@ func (f *TurnExecutionHostFactory) NewHost(ctx context.Context, opts TurnExecuti
 	if err != nil {
 		return nil, err
 	}
-	return &TurnExecutionHost{threadID: f.threadID, host: host}, nil
+	return &turnExecutionCapability{threadID: f.threadID, host: host}, nil
 }
 
 // NewHost constructs a provider-backed compaction capability for one existing root thread.
-func (f *ThreadCompactionHostFactory) NewHost(ctx context.Context, opts ThreadCompactionHostOptions) (*ThreadCompactionHost, error) {
+func (f *threadCompactionFactory) NewHost(ctx context.Context, opts threadCompactionOptions) (*threadCompactionCapability, error) {
 	if f == nil || f.store == nil || f.threadID == "" {
 		return nil, errors.New("thread compaction host factory is required")
 	}
@@ -311,11 +311,11 @@ func (f *ThreadCompactionHostFactory) NewHost(ctx context.Context, opts ThreadCo
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCompactionHost{threadID: f.threadID, host: host}, nil
+	return &threadCompactionCapability{threadID: f.threadID, host: host}, nil
 }
 
 // NewHost constructs a provider-backed child lifecycle capability for one existing parent.
-func (f *SubAgentHostFactory) NewHost(ctx context.Context, opts SubAgentHostOptions) (*SubAgentHost, error) {
+func (f *subAgentFactory) NewHost(ctx context.Context, opts subAgentOptions) (*subAgentCapability, error) {
 	if f == nil || f.store == nil || f.parentThreadID == "" {
 		return nil, errors.New("subagent host factory is required")
 	}
@@ -349,10 +349,10 @@ func (f *SubAgentHostFactory) NewHost(ctx context.Context, opts SubAgentHostOpti
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentHost{parentThreadID: f.parentThreadID, host: host}, nil
+	return &subAgentCapability{parentThreadID: f.parentThreadID, host: host}, nil
 }
 
-func (h *TurnExecutionHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+func (h *turnExecutionCapability) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return TurnResult{}, err
@@ -368,7 +368,7 @@ func (h *TurnExecutionHost) RunTurn(ctx context.Context, req RunTurnRequest) (Tu
 	return result, requestConflictError(err, "turn", string(req.TurnID))
 }
 
-func (h *TurnExecutionHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
+func (h *turnExecutionCapability) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return TurnResult{}, err
@@ -384,7 +384,7 @@ func (h *TurnExecutionHost) RetryTurn(ctx context.Context, req RetryTurnRequest)
 	return result, requestConflictError(err, "retry", string(req.ThreadID))
 }
 
-func (h *TurnExecutionHost) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (PendingToolCompletionResult, error) {
+func (h *turnExecutionCapability) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (PendingToolCompletionResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolCompletionResult{}, err
@@ -400,7 +400,7 @@ func (h *TurnExecutionHost) CompletePendingTool(ctx context.Context, req Pending
 	return result, requestConflictError(err, "pending_tool_completion", req.CompletionRequestID)
 }
 
-func (h *TurnExecutionHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func (h *turnExecutionCapability) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return ApprovalQueue{}, err
@@ -415,7 +415,7 @@ func (h *TurnExecutionHost) ReadApprovalQueue(ctx context.Context, req ReadAppro
 	return h.host.ReadApprovalQueue(ctx, req)
 }
 
-func (h *TurnExecutionHost) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
+func (h *turnExecutionCapability) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
 	if err := req.Validate(); err != nil {
 		return ResolveApprovalResult{}, err
 	}
@@ -433,7 +433,7 @@ func (h *TurnExecutionHost) ResolveApproval(ctx context.Context, req ResolveAppr
 	return h.host.ResolveApproval(ctx, req)
 }
 
-func (h *TurnExecutionHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func (h *turnExecutionCapability) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return ThreadAgentTodoState{}, err
@@ -459,7 +459,7 @@ func (h *TurnExecutionHost) UpdateThreadAgentTodos(ctx context.Context, req Upda
 	return h.host.UpdateThreadAgentTodos(ctx, req)
 }
 
-func (h *ThreadCompactionHost) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+func (h *threadCompactionCapability) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return CompactThreadResult{}, err
@@ -475,7 +475,7 @@ func (h *ThreadCompactionHost) CompactThread(ctx context.Context, req CompactThr
 	return result, requestConflictError(err, "compaction", req.RequestID)
 }
 
-func (h *SubAgentHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -490,7 +490,7 @@ func (h *SubAgentHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 	return result, requestConflictError(err, "subagent_publication", req.PublicationID)
 }
 
-func (h *SubAgentHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -503,7 +503,7 @@ func (h *SubAgentHost) SendSubAgentInput(ctx context.Context, req SendSubAgentIn
 	return result, requestConflictError(err, "subagent_input", req.InputRequestID)
 }
 
-func (h *SubAgentHost) PublishPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) PublishPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -516,7 +516,7 @@ func (h *SubAgentHost) PublishPendingToolCompletion(ctx context.Context, req Pub
 	return result, requestConflictError(err, "subagent_pending_tool_completion", req.InputRequestID)
 }
 
-func (h *SubAgentHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+func (h *subAgentCapability) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return WaitSubAgentsResult{}, err
@@ -528,7 +528,7 @@ func (h *SubAgentHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsReque
 	return h.host.WaitSubAgents(ctx, req)
 }
 
-func (h *SubAgentHost) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err

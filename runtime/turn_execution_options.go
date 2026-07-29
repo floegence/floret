@@ -12,7 +12,7 @@ import (
 // Valid values are returned only by this package's With functions.
 type TurnExecutionOption struct {
 	category string
-	apply    func(*TurnExecutionHostOptions) error
+	apply    func(*turnExecutionOptions) error
 }
 
 func (option TurnExecutionOption) applyTurnExecution(builder *turnExecutionOptionsBuilder) error {
@@ -33,24 +33,24 @@ func (option TurnExecutionOption) applyTurnExecution(builder *turnExecutionOptio
 }
 
 type turnExecutionOptionsBuilder struct {
-	options TurnExecutionHostOptions
+	options turnExecutionOptions
 	seen    map[string]struct{}
 }
 
-// NewTurnExecutionHostOptions constructs validated options without changing the
-// authority or lifecycle of TurnExecutionHost.
-func NewTurnExecutionHostOptions(cfg config.Config, options ...TurnExecutionOption) (TurnExecutionHostOptions, error) {
+// newTurnExecutionOptions constructs validated options without changing the
+// authority or lifecycle of turnExecutionCapability.
+func newTurnExecutionOptions(cfg config.Config, options ...TurnExecutionOption) (turnExecutionOptions, error) {
 	builder := turnExecutionOptionsBuilder{
-		options: TurnExecutionHostOptions{config: cfg, initialized: true},
+		options: turnExecutionOptions{config: cfg, initialized: true},
 		seen:    make(map[string]struct{}, len(options)),
 	}
 	for index, option := range options {
 		if err := option.applyTurnExecution(&builder); err != nil {
-			return TurnExecutionHostOptions{}, fmt.Errorf("turn execution option %d: %w", index, err)
+			return turnExecutionOptions{}, fmt.Errorf("turn execution option %d: %w", index, err)
 		}
 	}
 	if err := builder.options.validate(); err != nil {
-		return TurnExecutionHostOptions{}, err
+		return turnExecutionOptions{}, err
 	}
 	return builder.options, nil
 }
@@ -58,7 +58,7 @@ func NewTurnExecutionHostOptions(cfg config.Config, options ...TurnExecutionOpti
 // WithTurnModelGateway atomically configures a custom gateway and its declared
 // identity and capabilities.
 func WithTurnModelGateway(gateway ModelGateway, identity ModelGatewayIdentity, capabilities ModelGatewayCapabilities) TurnExecutionOption {
-	return TurnExecutionOption{category: "model_gateway", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "model_gateway", apply: func(options *turnExecutionOptions) error {
 		if gateway == nil {
 			return errors.New("model gateway is required")
 		}
@@ -73,7 +73,7 @@ func WithTurnModelGateway(gateway ModelGateway, identity ModelGatewayIdentity, c
 // every tool is locally read-only and statically allowed.
 func WithTurnReadOnlyTools(items ...tools.Tool) TurnExecutionOption {
 	registry, snapshotErr := newReadOnlyToolRegistry(items)
-	return TurnExecutionOption{category: "tools", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "tools", apply: func(options *turnExecutionOptions) error {
 		if snapshotErr != nil {
 			return snapshotErr
 		}
@@ -117,7 +117,7 @@ func validateProvablyReadOnlyTool(definition tools.Definition) error {
 
 // WithTurnEffectfulTools configures the explicit effect authorization path.
 func WithTurnEffectfulTools(registry *tools.Registry, gate EffectAuthorizationGate) TurnExecutionOption {
-	return TurnExecutionOption{category: "tools", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "tools", apply: func(options *turnExecutionOptions) error {
 		if registry == nil {
 			return errors.New("effectful tool registry is required")
 		}
@@ -132,7 +132,7 @@ func WithTurnEffectfulTools(registry *tools.Registry, gate EffectAuthorizationGa
 
 // WithTurnEventSink observes the existing runtime event contract.
 func WithTurnEventSink(sink EventSink) TurnExecutionOption {
-	return TurnExecutionOption{category: "event_sink", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "event_sink", apply: func(options *turnExecutionOptions) error {
 		if sink == nil {
 			return errors.New("event sink is required")
 		}
@@ -143,7 +143,7 @@ func WithTurnEventSink(sink EventSink) TurnExecutionOption {
 
 // WithTurnDynamicToolSurface configures the existing per-step tool surface owner.
 func WithTurnDynamicToolSurface(provider ToolSurfaceProvider) TurnExecutionOption {
-	return TurnExecutionOption{category: "dynamic_tool_surface", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "dynamic_tool_surface", apply: func(options *turnExecutionOptions) error {
 		if provider == nil {
 			return errors.New("dynamic tool surface provider is required")
 		}
@@ -155,7 +155,7 @@ func WithTurnDynamicToolSurface(provider ToolSurfaceProvider) TurnExecutionOptio
 // WithTurnIDGenerator supplies deterministic correlation identifiers. It does
 // not derive ThreadID, TurnID, RunID, or PromptScopeID values.
 func WithTurnIDGenerator(generator func(string) string) TurnExecutionOption {
-	return TurnExecutionOption{category: "id_generator", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "id_generator", apply: func(options *turnExecutionOptions) error {
 		if generator == nil {
 			return errors.New("id generator is required")
 		}
@@ -166,7 +166,7 @@ func WithTurnIDGenerator(generator func(string) string) TurnExecutionOption {
 
 // WithTurnLoopLimits configures turn loop limits.
 func WithTurnLoopLimits(limits LoopLimits) TurnExecutionOption {
-	return TurnExecutionOption{category: "loop_limits", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "loop_limits", apply: func(options *turnExecutionOptions) error {
 		if limits.MaxEmptyProviderRetries < 0 {
 			return errors.New("max empty provider retries cannot be negative")
 		}
@@ -186,7 +186,7 @@ func WithTurnLoopLimits(limits LoopLimits) TurnExecutionOption {
 
 // WithTurnCapabilities configures product-neutral runtime capability sources.
 func WithTurnCapabilities(capabilities CapabilityOptions) TurnExecutionOption {
-	return TurnExecutionOption{category: "capabilities", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "capabilities", apply: func(options *turnExecutionOptions) error {
 		options.capabilities = capabilities
 		return nil
 	}}
@@ -194,7 +194,7 @@ func WithTurnCapabilities(capabilities CapabilityOptions) TurnExecutionOption {
 
 // WithTurnThreadTitleMode selects host-owned or provider-owned title generation.
 func WithTurnThreadTitleMode(mode ThreadTitleMode) TurnExecutionOption {
-	return TurnExecutionOption{category: "thread_title_mode", apply: func(options *TurnExecutionHostOptions) error {
+	return TurnExecutionOption{category: "thread_title_mode", apply: func(options *turnExecutionOptions) error {
 		normalized, err := normalizeThreadTitleMode(mode)
 		if err != nil {
 			return err

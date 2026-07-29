@@ -12,7 +12,7 @@ import (
 
 func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	for _, threadID := range []ThreadID{"parent", "foreign"} {
 		req := testCreateThreadRequest(threadID)
@@ -68,7 +68,7 @@ func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 
 func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
 	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)

@@ -35,7 +35,7 @@ func TestModelGatewayExpandedAttachmentsRequirePreparedRequests(t *testing.T) {
 
 func TestPreparedModelGatewayConsumesExactPreparedRequestAndRecordsFingerprint(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	gateway := &recordingPreparedModelGateway{}
 	capabilities := runtimeGatewayCapabilities()
 	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
@@ -109,7 +109,7 @@ func TestDescriptorOnlyGatewayKeepsLegacyDirectStreamEvenWhenPreparerExists(t *t
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeGatewayConfig("descriptor gateway"), ModelGateway: gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("descriptor-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
-		Store: NewMemoryStore(), IDGenerator: deterministicIDs(),
+		Store: newMemoryStore(), IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestDescriptorOnlyGatewayAttachmentEstimateBoundsSerializedRequestBytes(t *
 
 func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsageAnchor(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		requests = append(requests, req)
@@ -266,7 +266,7 @@ func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsag
 
 func TestDescriptorOnlyGatewayAttachmentEstimateDrivesProjectedPressure(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var streamed ModelRequest
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		streamed = req
@@ -317,7 +317,7 @@ func TestDescriptorOnlyGatewayAttachmentEstimateDrivesProjectedPressure(t *testi
 
 func TestPreparedModelGatewayHandleClosesWhenStoreCancelsTurn(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	gateway := newBlockingPreparedModelGateway()
 	capabilities := runtimeGatewayCapabilities()
 	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
@@ -377,7 +377,7 @@ func TestPreparedModelGatewayRejectsIncompleteEstimateAndClosesHandle(t *testing
 		Method:               "provider_rendered_payload_estimate",
 		Confidence:           "conservative",
 	}}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := runtimeGatewayCapabilities()
 	capabilities.AttachmentPayload = ModelGatewayAttachmentPayloadExpanded
 	host, err := newTestHost(t, providerHostOptions{

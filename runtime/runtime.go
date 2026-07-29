@@ -2033,7 +2033,7 @@ const (
 	storeLifetimeClosed  storeLifetimeState = "closed"
 )
 
-func NewMemoryStore() *Store {
+func newMemoryStore() *Store {
 	repo := sessiontree.NewMemoryRepo()
 	prompt := cache.NewMemoryStore()
 	forkOperations := storage.NewMemoryForkOperationStore(repo)
@@ -2055,10 +2055,10 @@ func NewMemoryStore() *Store {
 	return store
 }
 
-// OpenSQLiteStore opens or creates a Store only when its live state still
+// openSQLiteStore opens or creates a Store only when its live state still
 // matches a prior maintenance inspection. It never performs an implicit schema
 // migration.
-func OpenSQLiteStore(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
+func openSQLiteStore(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
 	if ctx == nil {
 		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, errors.New("sqlite store open context is required"))
 	}
@@ -2165,7 +2165,7 @@ func (s *Store) validate() error {
 		return err
 	}
 	if s.repo == nil || s.prompt == nil || s.forkOperations == nil || s.agentTodos == nil || s.rootAuthority == nil || s.deleteCleanup == nil {
-		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
+		return errors.New("runtime store must be created with runtime.newMemoryStore or runtime.openSQLiteStore")
 	}
 	if _, ok := s.repo.(sessiontree.ProviderStateStore); !ok {
 		return ErrUnsupportedStoreCapability
@@ -2525,7 +2525,7 @@ func runtimeHostError(err error) error {
 	}
 }
 
-func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+func (h *threadCreateCapability) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSummary{}, err
@@ -2575,7 +2575,7 @@ func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadReq
 	return validateThreadSummaryResult(threadSummary(summary))
 }
 
-func (h *ThreadTitleHost) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+func (h *threadTitleCapability) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSnapshot{}, err
@@ -2595,7 +2595,7 @@ func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req
 	return validateThreadSnapshotResult(threadSnapshot(snapshot))
 }
 
-func (h *ThreadForkHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+func (h *threadForkCapability) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ForkThreadResult{}, err
@@ -2647,7 +2647,7 @@ func (h *providerHost) ReadThread(ctx context.Context, threadID ThreadID) (Threa
 	return readThreadByID(ctx, h.harness, threadID)
 }
 
-func (h *ThreadReadHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+func (h *threadReadCapability) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSnapshot{}, err
@@ -2671,7 +2671,7 @@ func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req ListThrea
 	return listThreadDetailEvents(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func (h *threadReadCapability) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadDetailEvents{}, err
@@ -2685,7 +2685,7 @@ func (h *ThreadReadHost) ListThreadDetailEvents(ctx context.Context, req ListThr
 
 // ListPendingToolSettlementTargets returns all canonical active pending tool
 // targets for the bound root thread. The result is complete and unpaginated.
-func (h *ThreadReadHost) ListPendingToolSettlementTargets(ctx context.Context, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
+func (h *threadReadCapability) ListPendingToolSettlementTargets(ctx context.Context, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -2732,7 +2732,7 @@ func (h *providerHost) ReadThreadContext(ctx context.Context, threadID ThreadID)
 	return readThreadContext(ctx, h.harness, threadID)
 }
 
-func (h *ThreadReadHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+func (h *threadReadCapability) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadContextSnapshot{}, err
@@ -2760,7 +2760,7 @@ func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID Thread
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
-func (h *ThreadReadHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadAgentTodoState{}, err
@@ -2887,7 +2887,7 @@ func (h *providerHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQu
 	return readApprovalQueue(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func (h *threadReadCapability) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ApprovalQueue{}, err
@@ -2943,7 +2943,7 @@ func (h *providerHost) ReadTurnProjection(ctx context.Context, req ReadTurnProje
 	return readTurnProjection(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *threadReadCapability) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnProjection{}, err
@@ -3322,7 +3322,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	return out, runtimeHostError(runErr)
 }
 
-func (h *PendingToolRecoveryHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *pendingToolRecoveryCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3353,7 +3353,7 @@ func (h *PendingToolRecoveryHost) SettlePendingTool(ctx context.Context, req Pen
 	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
-func (h *TurnExecutionHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *turnExecutionCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3372,7 +3372,7 @@ func (h *TurnExecutionHost) SettlePendingTool(ctx context.Context, req PendingTo
 	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
-func (h *SubAgentHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *subAgentCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3622,7 +3622,7 @@ func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID ThreadI
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
-func (h *SubAgentReadHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *subAgentReadCapability) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -3663,7 +3663,7 @@ func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req Lis
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
-func (h *SubAgentReadHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *subAgentReadCapability) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return SubAgentActivityTimelineResult{}, err
@@ -3695,7 +3695,7 @@ func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentD
 	return readSubAgentDetail(ctx, h.harness, req)
 }
 
-func (h *SubAgentReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *subAgentReadCapability) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return SubAgentDetail{}, err
@@ -3710,7 +3710,7 @@ func (h *SubAgentReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAg
 // ListPendingToolSettlementTargets returns all canonical active pending tool
 // targets for one direct child under the bound parent. The result is complete
 // and unpaginated.
-func (h *SubAgentReadHost) ListPendingToolSettlementTargets(ctx context.Context, req ListSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
+func (h *subAgentReadCapability) ListPendingToolSettlementTargets(ctx context.Context, req ListSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -3774,7 +3774,7 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 	return out, nil
 }
 
-func (h *ThreadDeleteHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
+func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return err

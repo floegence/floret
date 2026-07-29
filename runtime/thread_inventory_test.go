@@ -21,7 +21,7 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 				path = filepath.Join(t.TempDir(), "floret.db")
 				store, err = openSQLiteStoreForTest(path)
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -102,7 +102,7 @@ func assertRootInventoryPages(t *testing.T, ctx context.Context, inventory *Thre
 }
 
 func TestThreadInventoryCursorValidation(t *testing.T) {
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	inventory := mustTestCapabilities(t, store).inventory
 	now := time.Now().UTC()

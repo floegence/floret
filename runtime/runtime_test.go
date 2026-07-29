@@ -33,35 +33,35 @@ import (
 
 type testProviderFacade struct {
 	*providerHost
-	create *ThreadCreateHostBinder
-	title  *ThreadTitleHostBinder
-	fork   *ThreadForkHostBinder
-	delete *ThreadDeleteHostBinder
+	create *threadCreateBinder
+	title  *threadTitleBinder
+	fork   *threadForkBinder
+	delete *threadDeleteBinder
 	sink   EventSink
 }
 
 type testMaintenanceFacade struct {
-	create *ThreadCreateHostBinder
-	read   *ThreadReadHostBinder
-	title  *ThreadTitleHostBinder
-	fork   *ThreadForkHostBinder
-	delete *ThreadDeleteHostBinder
+	create *threadCreateBinder
+	read   *threadReadBinder
+	title  *threadTitleBinder
+	fork   *threadForkBinder
+	delete *threadDeleteBinder
 	store  *Store
 }
 
 type testCapabilitySet struct {
-	create       *ThreadCreateHostBinder
+	create       *threadCreateBinder
 	inventory    *ThreadInventoryHost
-	read         *ThreadReadHostBinder
-	title        *ThreadTitleHostBinder
-	fork         *ThreadForkHostBinder
-	delete       *ThreadDeleteHostBinder
-	turn         *TurnExecutionHostBinder
-	compaction   *ThreadCompactionHostBinder
-	subAgent     *SubAgentHostBinder
-	subAgentRead *SubAgentReadHostBinder
-	recovery     *PendingToolRecoveryHostBinder
-	interrupted  *InterruptedTurnRecoveryHostBinder
+	read         *threadReadBinder
+	title        *threadTitleBinder
+	fork         *threadForkBinder
+	delete       *threadDeleteBinder
+	turn         *turnExecutionBinder
+	compaction   *threadCompactionBinder
+	subAgent     *subAgentBinder
+	subAgentRead *subAgentReadBinder
+	recovery     *pendingToolRecoveryBinder
+	interrupted  *interruptedTurnRecoveryBinder
 }
 
 // legacySubAgentUserOriginRepo presents the v0.29 canonical journal shape:
@@ -153,46 +153,46 @@ func mustTestCapabilities(t *testing.T, store *Store) *testCapabilitySet {
 		return existing
 	}
 	set := &testCapabilitySet{}
-	err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+	err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		var err error
-		if set.create, err = NewThreadCreateHostBinder(bootstrap); err != nil {
+		if set.create, err = newThreadCreateBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.read, err = NewThreadReadHostBinder(bootstrap); err != nil {
+		if set.read, err = newThreadReadBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.inventory, err = NewThreadInventoryHost(bootstrap); err != nil {
+		if set.inventory, err = newThreadInventoryCapability(bootstrap); err != nil {
 			return err
 		}
-		if set.title, err = NewThreadTitleHostBinder(bootstrap); err != nil {
+		if set.title, err = newThreadTitleBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.fork, err = NewThreadForkHostBinder(bootstrap); err != nil {
+		if set.fork, err = newThreadForkBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.delete, err = NewThreadDeleteHostBinder(bootstrap); err != nil {
+		if set.delete, err = newThreadDeleteBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.turn, err = NewTurnExecutionHostBinder(bootstrap); err != nil {
+		if set.turn, err = newTurnExecutionBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.compaction, err = NewThreadCompactionHostBinder(bootstrap); err != nil {
+		if set.compaction, err = newThreadCompactionBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.subAgent, err = NewSubAgentHostBinder(bootstrap); err != nil {
+		if set.subAgent, err = newSubAgentBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.subAgentRead, err = NewSubAgentReadHostBinder(bootstrap); err != nil {
+		if set.subAgentRead, err = newSubAgentReadBinder(bootstrap); err != nil {
 			return err
 		}
-		if set.recovery, err = NewPendingToolRecoveryHostBinder(bootstrap); err != nil {
+		if set.recovery, err = newPendingToolRecoveryBinder(bootstrap); err != nil {
 			return err
 		}
-		set.interrupted, err = NewInterruptedTurnRecoveryHostBinder(bootstrap)
+		set.interrupted, err = newInterruptedTurnRecoveryBinder(bootstrap)
 		return err
 	})
 	if err != nil {
-		t.Fatalf("ConfigureHostCapabilities: %v", err)
+		t.Fatalf("configureHostCapabilities: %v", err)
 	}
 	testCapabilities.byStore[store] = set
 	return set
@@ -456,7 +456,7 @@ func newTestMaintenanceHost(t *testing.T, store *Store) (*testMaintenanceFacade,
 	}, nil
 }
 
-func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID) *SubAgentReadHost {
+func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID) *subAgentReadCapability {
 	t.Helper()
 	host, err := mustTestCapabilities(t, store).subAgentRead.NewHost(context.Background(), parentThreadID)
 	if err != nil {
@@ -465,7 +465,7 @@ func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID
 	return host
 }
 
-func newTestPendingToolRecoveryHost(t *testing.T, store *Store, threadID ThreadID) *PendingToolRecoveryHost {
+func newTestPendingToolRecoveryHost(t *testing.T, store *Store, threadID ThreadID) *pendingToolRecoveryCapability {
 	t.Helper()
 	host, err := mustTestCapabilities(t, store).recovery.NewThreadHost(context.Background(), threadID, nil)
 	if err != nil {
@@ -580,7 +580,7 @@ func (f *testMaintenanceFacade) ReadTurnProjection(ctx context.Context, req Read
 	return host.ReadTurnProjection(ctx, req)
 }
 
-func (f *testMaintenanceFacade) readHost(ctx context.Context, threadID ThreadID) (*ThreadReadHost, error) {
+func (f *testMaintenanceFacade) readHost(ctx context.Context, threadID ThreadID) (*threadReadCapability, error) {
 	return f.read.NewHost(ctx, threadID)
 }
 
@@ -622,7 +622,7 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -670,7 +670,7 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(t *testing.T) {
 	ctx := context.Background()
 	repo := &terminalProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	store.repo = repo
 	store.rootAuthority = repo
 	store.agentTodos = repo
@@ -720,7 +720,7 @@ func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -770,7 +770,7 @@ func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing
 
 func TestHostRunTurnRejectsTakeoverEligibleInterruptedLeaseWithoutExplicitRecovery(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	leasePolicy := sessiontree.DefaultLeasePolicy
 	leaseNow := time.Date(2026, time.July, 19, 8, 0, 0, 0, time.UTC)
 	leaseAuthority, err := sessiontree.NewMemoryRepoWithLeasePolicy(leasePolicy, func() time.Time {
@@ -867,7 +867,7 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -925,7 +925,7 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		ThreadTitleMode:      ThreadTitleModeProvider,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -987,7 +987,7 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		ThreadTitleMode:      ThreadTitleModeProvider,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -1050,7 +1050,7 @@ func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing
 
 func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
 	release := make(chan struct{})
@@ -1117,7 +1117,7 @@ func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
 
 func TestHostBootstrapRecoversOrphanedAutomaticTitle(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	now := time.Now().UTC()
 	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -1154,7 +1154,7 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 			Model:        "fake-model",
 			FakeResponse: "configured",
 		},
-		Store: NewMemoryStore(),
+		Store: newMemoryStore(),
 		Sink:  recorder,
 	})
 	if err != nil {
@@ -1304,7 +1304,7 @@ func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testi
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "configured"},
-		Store:  NewMemoryStore(),
+		Store:  newMemoryStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1424,7 +1424,7 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1452,7 +1452,7 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 
 func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var mu sync.Mutex
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -1578,7 +1578,7 @@ func TestHostRunTurnRejectsEmptySupplementalContextBeforeAdmission(t *testing.T)
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1701,7 +1701,7 @@ func TestHostModelGatewayRequiresExplicitIdentity(t *testing.T) {
 
 func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var mu sync.Mutex
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -1894,7 +1894,7 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1923,7 +1923,7 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 
 func TestHostProviderStatePersistenceFailureRecordsFailedTurnFinalization(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo), failFinishPut: true}
 	store.repo = providerStates
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -1985,7 +1985,7 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -2041,7 +2041,7 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 		Config:               runtimeCompactionTestConfig(),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -2098,7 +2098,7 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 
 func TestHostCompactionDefersIncompatibleProviderStateCleanupToTurnFinish(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo)}
 	store.repo = providerStates
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -2266,7 +2266,7 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 		},
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -2342,7 +2342,7 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2449,7 +2449,7 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2630,7 +2630,7 @@ func TestHostCommitsParallelToolResultsInCanonicalCallOrder(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Tools:                registry,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -2733,7 +2733,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 		Config:               runtimeGatewayConfig("base"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			if req.Step >= 2 && req.Phase == "provider_request" {
 				return ToolSurface{
@@ -2790,7 +2790,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 
 func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var modelRequests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		modelRequests = append(modelRequests, req)
@@ -3026,7 +3026,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 		Config:                  runtimeGatewayConfig("test"),
 		ModelGateway:            gateway,
 		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   NewMemoryStore(),
+		Store:                   newMemoryStore(),
 		Tools:                   registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
 		Sink:                    rec,
@@ -3172,7 +3172,7 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 
 func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	var mu sync.Mutex
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -3264,7 +3264,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -3357,7 +3357,7 @@ func TestSubAgentTurnReadsExposeTypedUserMessageOrigin(t *testing.T) {
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -3393,7 +3393,7 @@ func TestSubAgentTurnReadsRecoverTypedOriginFromV029DurableInput(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 				if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
 					t.Fatal(err)
 				}
@@ -3435,7 +3435,7 @@ func TestSubAgentTurnReadsRecoverTypedOriginFromV029DurableInput(t *testing.T) {
 
 func TestLegacySubAgentOriginRecoveryRejectsMismatchedDurableAuthority(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
 		t.Fatal(err)
@@ -3488,7 +3488,7 @@ func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *
 			if backend == "sqlite" {
 				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -3549,7 +3549,7 @@ func TestLegacySubAgentOriginRecoveryFollowsDeepFullPathLineage(t *testing.T) {
 			if backend == "sqlite_reopen" {
 				store, err = openSQLiteStoreForTest(path)
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -3650,7 +3650,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				store = NewMemoryStore()
+				store = newMemoryStore()
 			}
 
 			host, err := newTestHost(t, providerHostOptions{
@@ -3880,7 +3880,7 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -4051,7 +4051,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	ctx := context.Background()
 	longMission := "inspect the complete delegated output " + strings.Repeat("mission context ", 80) + "mission tail"
 	longAnswer := "complete subagent report " + strings.Repeat("evidence section ", 80) + "https://example.test/full-final-output"
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -4464,7 +4464,7 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -4504,7 +4504,7 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 
 func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		switch req.ThreadID {
 		case "parent":
@@ -4581,7 +4581,7 @@ func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 
 func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		events := make(chan ModelEvent)
 		go func() {
@@ -4628,7 +4628,7 @@ func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote, err := remoteFactory.NewHost(ctx, SubAgentHostOptions{
+	remote, err := remoteFactory.NewHost(ctx, subAgentOptions{
 		config: runtimeGatewayConfig("test"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), modelGatewayCapabilities: runtimeGatewayCapabilities(), idGenerator: deterministicIDs(), initialized: true,
 	})
 	if err != nil {
@@ -4742,7 +4742,7 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 		name  string
 		store *Store
 	}{
-		{name: "memory", store: NewMemoryStore()},
+		{name: "memory", store: newMemoryStore()},
 		{name: "sqlite", store: sqliteStore},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4775,7 +4775,7 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -4858,7 +4858,7 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5230,7 +5230,7 @@ func TestTurnProjectionAvailabilityJSONUsesExplicitAvailabilityField(t *testing.
 
 func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -5295,7 +5295,7 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkTurn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+	forkTurn, err := turnFactory.NewHost(ctx, turnExecutionOptions{
 		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -5396,7 +5396,7 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 
 func TestThreadForkHostRejectsOperationAndDestinationConflicts(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
 		t.Fatal(err)
 	}
@@ -5457,7 +5457,7 @@ func TestThreadForkHostRejectsOperationAndDestinationConflicts(t *testing.T) {
 func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 	ctx := context.Background()
 	t.Run("deleted", func(t *testing.T) {
-		store := NewMemoryStore()
+		store := newMemoryStore()
 		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
 			t.Fatal(err)
 		}
@@ -5477,7 +5477,7 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 		}
 	})
 	t.Run("missing", func(t *testing.T) {
-		store := NewMemoryStore()
+		store := newMemoryStore()
 		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
 			t.Fatal(err)
 		}
@@ -5495,7 +5495,7 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 		}
 	})
 	t.Run("marker mismatch", func(t *testing.T) {
-		store := NewMemoryStore()
+		store := newMemoryStore()
 		underlying := store.repo
 		repo := &forkMarkerMismatchRepo{
 			Repo:                          underlying,
@@ -5664,7 +5664,7 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 
 func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -5739,7 +5739,7 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkSubAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
+	forkSubAgents, err := subAgentFactory.NewHost(ctx, subAgentOptions{
 		config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -5783,7 +5783,7 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 			FakeResponse: "completion handled",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -5849,7 +5849,7 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5973,7 +5973,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	})
 
 	settlementRepo := &settlementProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	store.repo = settlementRepo
 	store.rootAuthority = settlementRepo
 	store.agentTodos = settlementRepo
@@ -6159,13 +6159,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 
 func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	registry := tools.NewRegistry()
 	effectGate := newRecordingRuntimeEffectGate(allowRuntimeTools)
 	var host *testProviderFacade
-	var turnOwner *TurnExecutionHost
+	var turnOwner *turnExecutionCapability
 	var err error
-	var recoverySettlement *PendingToolRecoveryHost
+	var recoverySettlement *pendingToolRecoveryCapability
 
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
@@ -6271,7 +6271,7 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turnOwner = &TurnExecutionHost{
+	turnOwner = &turnExecutionCapability{
 		threadID: "thread-active-settlement",
 		host:     host.providerHost,
 	}
@@ -6307,7 +6307,7 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 
 func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	registry := tools.NewRegistry()
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
@@ -6374,7 +6374,7 @@ func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+	owner, err := factory.NewHost(ctx, turnExecutionOptions{
 		config:                   runtimeGatewayConfig("test"),
 		modelGateway:             gateway,
 		modelGatewayIdentity:     runtimeGatewayIdentity("fake-model"),
@@ -6533,7 +6533,7 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 		return events, nil
 	})
 
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config:                  runtimeGatewayConfig("test"),
 		ModelGateway:            gateway,
@@ -6631,7 +6631,7 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 		harness.Step(harness.Tool("echo-1", "echo", `{"text":"from tool"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	h, err := newHarnessWithProvider(config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
@@ -6728,7 +6728,7 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 		Config:                  runtimeGatewayConfig("test"),
 		ModelGateway:            gateway,
 		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Store:                   NewMemoryStore(),
+		Store:                   newMemoryStore(),
 		Tools:                   registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
 		Sink:                    rec,
@@ -6948,7 +6948,7 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Tools:                registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			gateCalls.Add(1)
@@ -7105,7 +7105,7 @@ func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		Tools:                registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			requested <- req
@@ -7180,7 +7180,7 @@ func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 }
 
 func TestHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) {
-	runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t, NewMemoryStore())
+	runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t, newMemoryStore())
 }
 
 func TestSQLiteHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) {
@@ -7364,7 +7364,7 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 			FakeResponse: "private answer",
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -7448,7 +7448,7 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 			FakeResponse: fullAnswer,
 			SystemPrompt: "test",
 		},
-		Store:       NewMemoryStore(),
+		Store:       newMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -7584,7 +7584,7 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
+		Store:                newMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -7665,7 +7665,7 @@ func TestThreadReadsCanonicalizeDurableJSONPayloadsAcrossStores(t *testing.T) {
 		name string
 		open func(*testing.T) *Store
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
@@ -7772,7 +7772,7 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 		name string
 		open func(*testing.T) *Store
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
@@ -7919,7 +7919,7 @@ func TestListThreadTurnsReadsAtomicCanonicalAdmission(t *testing.T) {
 		name string
 		open func(*testing.T) *Store
 	}{
-		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", open: func(t *testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
@@ -7974,7 +7974,7 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 		name string
 		run  func(*testing.T, func(*Store))
 	}{
-		{name: "memory", run: func(t *testing.T, test func(*Store)) { test(NewMemoryStore()) }},
+		{name: "memory", run: func(t *testing.T, test func(*Store)) { test(newMemoryStore()) }},
 		{name: "sqlite", run: func(t *testing.T, test func(*Store)) {
 			path := filepath.Join(t.TempDir(), "floret.db")
 			store, err := openSQLiteStoreForTest(path)
@@ -8094,7 +8094,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 		name  string
 		store func(*testing.T) *Store
 	}{
-		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", store: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
@@ -8130,7 +8130,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 				return events, nil
 			})
 			registry := tools.NewRegistry()
-			var turnHost *TurnExecutionHost
+			var turnHost *turnExecutionCapability
 			if err := registry.Register(tools.Define[runtimeEchoArgs](
 				tools.Definition{Name: "write_todos", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
 				nil, nil,
@@ -8151,7 +8151,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			turnHost, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+			turnHost, err = factory.NewHost(ctx, turnExecutionOptions{
 				config: runtimeGatewayConfig("test"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("model-a"), modelGatewayCapabilities: runtimeGatewayCapabilities(),
 				tools: registry, effectAuthorizationGate: allowRuntimeEffectGate{}, idGenerator: deterministicIDs(), initialized: true,
 			})
@@ -8211,7 +8211,7 @@ func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 
 func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -8251,7 +8251,7 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 
 func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	deleteCleanup := store.deleteCleanup
 	var deleteCalls int
 	var deleteThreadIDs []string
@@ -8311,7 +8311,7 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 
 func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -8346,7 +8346,7 @@ func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := reflect.TypeOf(maintenance).MethodByName("RunTurn"); ok {
-		t.Fatalf("ThreadDeleteHost must not expose RunTurn")
+		t.Fatalf("threadDeleteCapability must not expose RunTurn")
 	}
 	if summary, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
 		t.Fatalf("CreateThread summary=%#v err=%v", summary, err)
@@ -8370,17 +8370,17 @@ func TestThreadCapabilityHostsRequireBootstrapAuthority(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{name: "create", call: func() error { _, err := NewThreadCreateHostBinder(nil); return err }},
-		{name: "read", call: func() error { _, err := NewThreadReadHostBinder(nil); return err }},
-		{name: "inventory", call: func() error { _, err := NewThreadInventoryHost(nil); return err }},
-		{name: "title", call: func() error { _, err := NewThreadTitleHostBinder(nil); return err }},
-		{name: "fork", call: func() error { _, err := NewThreadForkHostBinder(nil); return err }},
-		{name: "delete", call: func() error { _, err := NewThreadDeleteHostBinder(nil); return err }},
-		{name: "subagent read", call: func() error { _, err := NewSubAgentReadHostBinder(nil); return err }},
-		{name: "pending settlement", call: func() error { _, err := NewPendingToolRecoveryHostBinder(nil); return err }},
-		{name: "turn", call: func() error { _, err := NewTurnExecutionHostBinder(nil); return err }},
-		{name: "compaction", call: func() error { _, err := NewThreadCompactionHostBinder(nil); return err }},
-		{name: "subagent", call: func() error { _, err := NewSubAgentHostBinder(nil); return err }},
+		{name: "create", call: func() error { _, err := newThreadCreateBinder(nil); return err }},
+		{name: "read", call: func() error { _, err := newThreadReadBinder(nil); return err }},
+		{name: "inventory", call: func() error { _, err := newThreadInventoryCapability(nil); return err }},
+		{name: "title", call: func() error { _, err := newThreadTitleBinder(nil); return err }},
+		{name: "fork", call: func() error { _, err := newThreadForkBinder(nil); return err }},
+		{name: "delete", call: func() error { _, err := newThreadDeleteBinder(nil); return err }},
+		{name: "subagent read", call: func() error { _, err := newSubAgentReadBinder(nil); return err }},
+		{name: "pending settlement", call: func() error { _, err := newPendingToolRecoveryBinder(nil); return err }},
+		{name: "turn", call: func() error { _, err := newTurnExecutionBinder(nil); return err }},
+		{name: "compaction", call: func() error { _, err := newThreadCompactionBinder(nil); return err }},
+		{name: "subagent", call: func() error { _, err := newSubAgentBinder(nil); return err }},
 	}
 	for _, constructor := range constructors {
 		t.Run(constructor.name, func(t *testing.T) {
@@ -8397,7 +8397,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 		name string
 		open func(*testing.T) *Store
 	}{
-		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", open: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "close.db"))
 			if err != nil {
@@ -8431,7 +8431,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 				gatewayCalls.Add(1)
 				return runtimeGatewayEvents("must not run"), nil
 			})
-			turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+			turn, err := factory.NewHost(ctx, turnExecutionOptions{
 				config: runtimeGatewayConfig("close"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 			})
 			if err != nil {
@@ -8464,7 +8464,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 			if _, err := capabilities.subAgent.Bind("thread"); !errors.Is(err, ErrStoreClosed) {
 				t.Fatalf("retained subagent binder err=%v, want ErrStoreClosed", err)
 			}
-			if _, err := factory.NewHost(ctx, TurnExecutionHostOptions{config: runtimeGatewayConfig("closed"), initialized: true}); !errors.Is(err, ErrStoreClosed) {
+			if _, err := factory.NewHost(ctx, turnExecutionOptions{config: runtimeGatewayConfig("closed"), initialized: true}); !errors.Is(err, ErrStoreClosed) {
 				t.Fatalf("retained factory construction err=%v, want ErrStoreClosed", err)
 			}
 			if _, err := read.ReadThread(ctx, "thread"); !errors.Is(err, ErrStoreClosed) {
@@ -8485,7 +8485,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 
 func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	repo := store.repo.(*sessiontree.MemoryRepo)
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread")
@@ -8511,7 +8511,7 @@ func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+	turn, err := factory.NewHost(ctx, turnExecutionOptions{
 		config: runtimeGatewayConfig("close active"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close-active"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 	})
 	if err != nil {
@@ -8562,7 +8562,7 @@ func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 
 func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	repo := store.repo.(*sessiontree.MemoryRepo)
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
@@ -8590,7 +8590,7 @@ func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := factory.NewHost(ctx, SubAgentHostOptions{
+	host, err := factory.NewHost(ctx, subAgentOptions{
 		config: runtimeGatewayConfig("close child"), modelGateway: gateway, modelGatewayIdentity: runtimeGatewayIdentity("close-child"), modelGatewayCapabilities: runtimeGatewayCapabilities(), initialized: true,
 	})
 	if err != nil {
@@ -8648,7 +8648,7 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 		name string
 		open func(*testing.T) *Store
 	}{
-		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "memory", open: func(*testing.T) *Store { return newMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
 			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "closed-input-replay.db"))
 			if err != nil {
@@ -8674,7 +8674,7 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			host, err := factory.NewHost(ctx, SubAgentHostOptions{config: config.Config{
+			host, err := factory.NewHost(ctx, subAgentOptions{config: config.Config{
 				Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
 			}, initialized: true})
 			if err != nil {
@@ -8737,28 +8737,28 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 }
 
 func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) {
-	store := NewMemoryStore()
-	var retained *HostBootstrap
-	var copied HostBootstrap
-	if err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+	store := newMemoryStore()
+	var retained *hostBootstrap
+	var copied hostBootstrap
+	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		retained = bootstrap
 		copied = *bootstrap
-		_, err := NewThreadReadHostBinder(bootstrap)
+		_, err := newThreadReadBinder(bootstrap)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewThreadReadHostBinder(retained); err == nil || !strings.Contains(err.Error(), "no longer active") {
+	if _, err := newThreadReadBinder(retained); err == nil || !strings.Contains(err.Error(), "no longer active") {
 		t.Fatalf("retained bootstrap error = %v, want sealed bootstrap", err)
 	}
-	if _, err := NewThreadReadHostBinder(&copied); err == nil || !strings.Contains(err.Error(), "no longer active") {
+	if _, err := newThreadReadBinder(&copied); err == nil || !strings.Contains(err.Error(), "no longer active") {
 		t.Fatalf("copied bootstrap error = %v, want shared sealed state", err)
 	}
-	if err := ConfigureHostCapabilities(store, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+	if err := configureHostCapabilities(store, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
 		t.Fatalf("second configuration error = %v, want one-time configuration", err)
 	}
 	storeCopy := &Store{self: store}
-	if err := ConfigureHostCapabilities(storeCopy, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "must not be copied") {
+	if err := configureHostCapabilities(storeCopy, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "must not be copied") {
 		t.Fatalf("copied store configuration error = %v, want copy rejection", err)
 	}
 	closeCalled := false
@@ -8767,14 +8767,14 @@ func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) 
 		t.Fatalf("copied store close error = %v close_called=%v, want rejection before close", err, closeCalled)
 	}
 
-	failedStore := NewMemoryStore()
+	failedStore := newMemoryStore()
 	configureErr := errors.New("configure failed")
-	var failedBootstrap *HostBootstrap
-	var leakedBinder *ThreadReadHostBinder
-	if err := ConfigureHostCapabilities(failedStore, func(bootstrap *HostBootstrap) error {
+	var failedBootstrap *hostBootstrap
+	var leakedBinder *threadReadBinder
+	if err := configureHostCapabilities(failedStore, func(bootstrap *hostBootstrap) error {
 		failedBootstrap = bootstrap
 		var err error
-		leakedBinder, err = NewThreadReadHostBinder(bootstrap)
+		leakedBinder, err = newThreadReadBinder(bootstrap)
 		if err != nil {
 			return err
 		}
@@ -8782,27 +8782,27 @@ func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) 
 	}); !errors.Is(err, configureErr) {
 		t.Fatalf("failed configuration error = %v, want %v", err, configureErr)
 	}
-	if _, err := NewThreadReadHostBinder(failedBootstrap); err == nil || !strings.Contains(err.Error(), "no longer active") {
+	if _, err := newThreadReadBinder(failedBootstrap); err == nil || !strings.Contains(err.Error(), "no longer active") {
 		t.Fatalf("failed callback retained bootstrap error = %v, want sealed bootstrap", err)
 	}
 	if _, err := leakedBinder.NewHost(context.Background(), "thread"); err == nil || !strings.Contains(err.Error(), "not active") {
 		t.Fatalf("failed callback leaked binder error = %v, want unpublished binder", err)
 	}
-	if err := ConfigureHostCapabilities(failedStore, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+	if err := configureHostCapabilities(failedStore, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
 		t.Fatalf("failed callback retry error = %v, want fail-closed configuration", err)
 	}
 
-	panicStore := NewMemoryStore()
-	var panicBinder *ThreadReadHostBinder
+	panicStore := newMemoryStore()
+	var panicBinder *threadReadBinder
 	func() {
 		defer func() {
 			if recovered := recover(); recovered != "configure panic" {
 				t.Fatalf("configure panic = %#v, want configure panic", recovered)
 			}
 		}()
-		_ = ConfigureHostCapabilities(panicStore, func(bootstrap *HostBootstrap) error {
+		_ = configureHostCapabilities(panicStore, func(bootstrap *hostBootstrap) error {
 			var err error
-			panicBinder, err = NewThreadReadHostBinder(bootstrap)
+			panicBinder, err = newThreadReadBinder(bootstrap)
 			if err != nil {
 				return err
 			}
@@ -8812,14 +8812,14 @@ func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) 
 	if _, err := panicBinder.NewHost(context.Background(), "thread"); err == nil || !strings.Contains(err.Error(), "not active") {
 		t.Fatalf("panicked callback leaked binder error = %v, want unpublished binder", err)
 	}
-	if err := ConfigureHostCapabilities(panicStore, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+	if err := configureHostCapabilities(panicStore, func(*hostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
 		t.Fatalf("panicked callback retry error = %v, want fail-closed configuration", err)
 	}
 }
 
 func TestSubAgentReadsReportMissingCanonicalParent(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
 	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
@@ -9000,7 +9000,7 @@ func (s *forkOperationFaultStore) CommitForkOperation(ctx context.Context, req s
 func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 	t.Helper()
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	now := time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC)
 	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -9016,7 +9016,7 @@ func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 		if err != nil {
 			t.Fatal(err)
 		}
-		childHost, err := factory.NewHost(ctx, SubAgentHostOptions{config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}, initialized: true})
+		childHost, err := factory.NewHost(ctx, subAgentOptions{config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}, initialized: true})
 		if err != nil {
 			t.Fatal(err)
 		}

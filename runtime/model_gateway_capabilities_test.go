@@ -10,7 +10,7 @@ import (
 
 func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore()
+	store := newMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread")
@@ -25,7 +25,7 @@ func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+	_, err = factory.NewHost(ctx, turnExecutionOptions{
 		config: runtimeGatewayConfig("missing capability"),
 		modelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
 			return runtimeGatewayEvents("unused"), nil
