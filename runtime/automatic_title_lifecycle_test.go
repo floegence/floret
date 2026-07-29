@@ -312,7 +312,7 @@ func TestAutomaticTitleRecoveryRetriesAfterPartialFailure(t *testing.T) {
 
 	newHost := func() error {
 		_, err := newTestHost(t, providerHostOptions{
-			Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+			Config: runtimeConfig{Provider: "fake", Model: "fake-model"},
 			store:  store,
 		})
 		return err
@@ -391,7 +391,7 @@ func TestProviderHostOpensAfterReopenedClosedChildTitle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	if _, err := newTestHost(t, providerHostOptions{
-		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model"},
 		store:  reopened,
 	}); err != nil {
 		t.Fatalf("provider host open after closed child title: %v", err)

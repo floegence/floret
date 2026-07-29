@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	ProviderFake             = "fake"
 	ProviderOpenAI           = "openai"
 	ProviderAnthropic        = "anthropic"
 	ProviderGoogle           = "google"
@@ -25,7 +24,6 @@ const (
 )
 
 const (
-	APIFake              = "fake"
 	APIOpenAIChat        = "openai-chat-completions"
 	APIAnthropicMessages = "anthropic-messages"
 )
@@ -137,8 +135,6 @@ func NormalizeProvider(id string) string {
 	id = strings.TrimSpace(strings.ToLower(id))
 	id = strings.ReplaceAll(id, "_", "-")
 	switch id {
-	case "", "local-fake":
-		return ProviderFake
 	case "openai-compatible", "openai-compatible-chat", "custom":
 		return ProviderOpenAICompatible
 	case "zai", "z.ai", "glm":

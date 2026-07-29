@@ -9,6 +9,8 @@ import (
 	"github.com/floegence/floret/v2/internal/provider/catalog"
 )
 
+const testProvider = "test-provider"
+
 func TestResolveUsesCapabilityAndCatalogWireShapeNotProviderName(t *testing.T) {
 	for _, providerID := range []string{
 		catalog.ProviderOpenAI,
@@ -17,7 +19,7 @@ func TestResolveUsesCapabilityAndCatalogWireShapeNotProviderName(t *testing.T) {
 		catalog.ProviderOpenRouter,
 		catalog.ProviderOpenAICompatible,
 		catalog.ProviderGoogle,
-		catalog.ProviderFake,
+		testProvider,
 	} {
 		t.Run(providerID, func(t *testing.T) {
 			resolved, err := Resolve(ResolveInput{
@@ -69,7 +71,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:         "external brave requires key but keeps source",
-			provider:     catalog.ProviderFake,
+			provider:     testProvider,
 			capability:   Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			wantSource:   WebSearchExternalBrave,
 			wantStatus:   ResolveUnavailable,
@@ -78,7 +80,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:         "external brave with key",
-			provider:     catalog.ProviderFake,
+			provider:     testProvider,
 			capability:   Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			braveKey:     true,
 			wantSource:   WebSearchExternalBrave,
@@ -89,7 +91,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:       "external provider must not silently become brave",
-			provider:   catalog.ProviderFake,
+			provider:   testProvider,
 			capability: Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: "serpapi"}},
 			wantSource: WebSearchExternalBrave,
 			wantError:  `unsupported external web_search provider "serpapi"`,
@@ -125,7 +127,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:       "unknown source is invalid",
-			provider:   catalog.ProviderFake,
+			provider:   testProvider,
 			capability: Capability{Source: "search_everywhere"},
 			wantSource: "search_everywhere",
 			wantError:  `unsupported web_search source "search_everywhere"`,
@@ -184,7 +186,7 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 		catalog.ProviderOpenRouter,
 		catalog.ProviderOpenAICompatible,
 		catalog.ProviderGoogle,
-		catalog.ProviderFake,
+		testProvider,
 	} {
 		capability := DefaultCapability(providerID)
 		if capability.Source != WebSearchDisabled {
@@ -206,7 +208,7 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 		catalog.ProviderOpenRouter,
 		catalog.ProviderOpenAICompatible,
 		catalog.ProviderGoogle,
-		catalog.ProviderFake,
+		testProvider,
 	} {
 		capability := ProviderPresetCapability(providerID)
 		if capability.Source != WebSearchDisabled {

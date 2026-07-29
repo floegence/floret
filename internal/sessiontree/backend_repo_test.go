@@ -1,4 +1,4 @@
-package sessiontree
+package sessiontree_test
 
 import (
 	"bytes"
@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/v2/internal/backendspi"
+	"github.com/floegence/floret/v2/internal/backendtest"
 	internalprovider "github.com/floegence/floret/v2/internal/provider"
 	"github.com/floegence/floret/v2/internal/session"
+	. "github.com/floegence/floret/v2/internal/sessiontree"
 	publicstorage "github.com/floegence/floret/v2/storage"
 )
 
@@ -81,7 +84,7 @@ func runBackendRepoDomainScript(t *testing.T, source publicstorage.Source) []byt
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	repo, err := NewBackendRepo(ctx, backend, DefaultLeasePolicy, func() time.Time { return now })
+	repo, err := NewBackendRepo(ctx, backendtest.Adapt(backend), DefaultLeasePolicy, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +116,7 @@ func runBackendRepoDomainScript(t *testing.T, source publicstorage.Source) []byt
 		t.Fatal(err)
 	}
 	var encoded []byte
-	if err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ publicstorage.ReadTx) error {
+	if err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ backendspi.ReadTx) error {
 		encoded, err = memory.EncodeMemoryState()
 		return err
 	}); err != nil {
@@ -137,12 +140,12 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer backend.Close()
-			repo, err := NewBackendRepo(ctx, backend, DefaultLeasePolicy, time.Now)
+			repo, err := NewBackendRepo(ctx, backendtest.Adapt(backend), DefaultLeasePolicy, time.Now)
 			if err != nil {
 				t.Fatal(err)
 			}
 			injected := errors.New("injected rollback")
-			if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ publicstorage.WriteTx) error {
+			if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ backendspi.WriteTx) error {
 				if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "error-thread"}); err != nil {
 					return err
 				}
@@ -156,7 +159,7 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 						t.Fatalf("recovered panic = %#v", recovered)
 					}
 				}()
-				_ = repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ publicstorage.WriteTx) error {
+				_ = repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ backendspi.WriteTx) error {
 					if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "panic-thread"}); err != nil {
 						return err
 					}

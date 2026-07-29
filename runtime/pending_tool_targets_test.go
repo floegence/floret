@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"testing"
-
 )
 
 func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"},
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", SystemPrompt: "test"},
 		store:  store,
 	})
 	if err != nil {

@@ -320,13 +320,11 @@ func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, e
 		opts.EffectAuthorizationGate = allowRuntimeEffectGate{}
 	}
 	if opts.modelGateway == nil {
-		response := opts.Config.FakeResponse
-		if response == "" {
-			response = "ok"
-		}
 		opts.modelGateway = runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
-			return runtimeGatewayEvents(response), nil
+			return runtimeGatewayEvents("ok"), nil
 		})
+	}
+	if opts.modelGatewayIdentity == (modelGatewayIdentity{}) {
 		opts.modelGatewayIdentity = modelGatewayIdentity{Provider: "test", Model: "test", StateCompatibilityKey: "test/test"}
 	}
 	if opts.modelGatewayCapabilities.Reasoning == nil {
@@ -351,6 +349,12 @@ func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, e
 		delete:       capabilities.delete,
 		sink:         opts.Sink,
 	}, nil
+}
+
+func testResponseGateway(response string) modelGateway {
+	return runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
+		return runtimeGatewayEvents(response), nil
+	})
 }
 
 type allowRuntimeEffectGate struct{ approver tooltest.Approver }
@@ -633,12 +637,12 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		Sink:        rec,
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("configured"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -693,12 +697,12 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		Sink:        recorder,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		Sink:         recorder,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("configured"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -731,7 +735,6 @@ func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
 		store:       newMemoryStore(),
@@ -801,7 +804,6 @@ func TestHostRunTurnRejectsTakeoverEligibleInterruptedLeaseWithoutExplicitRecove
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "continued",
 			SystemPrompt: "test",
 		},
 		store: store,
@@ -1143,7 +1145,7 @@ func TestHostBootstrapRecoversOrphanedAutomaticTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "unused"},
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model"},
 		store:  store,
 	})
 	if err != nil {
@@ -1164,9 +1166,8 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 	recorder := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeConfig{
-			Provider:     "fake",
-			Model:        "fake-model",
-			FakeResponse: "configured",
+			Provider: "fake",
+			Model:    "fake-model",
 		},
 		store: newMemoryStore(),
 		Sink:  recorder,
@@ -1330,7 +1331,7 @@ func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testi
 
 func TestNewHostRejectsUnknownThreadTitleMode(t *testing.T) {
 	_, err := newTestHost(t, providerHostOptions{
-		Config:          runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "ok"},
+		Config:          runtimeConfig{Provider: "fake", Model: "fake-model"},
 		ThreadTitleMode: ThreadTitleMode("automatic"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "thread title mode") {
@@ -3211,11 +3212,11 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("child done"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3448,7 +3449,7 @@ func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *
 			ctx := context.Background()
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeConfig{
-					Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+					Provider: "fake", Model: "fake-model", SystemPrompt: "test",
 				},
 				store: store, IDGenerator: deterministicIDs(),
 			})
@@ -3605,7 +3606,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 
 			host, err := newTestHost(t, providerHostOptions{
 				Config: runtimeConfig{
-					Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+					Provider: "fake", Model: "fake-model", SystemPrompt: "test",
 				},
 				store: store, IDGenerator: deterministicIDs(),
 			})
@@ -3687,7 +3688,6 @@ func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
 		store:       store,
@@ -4006,11 +4006,11 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: longAnswer,
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway(longAnswer),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4135,11 +4135,11 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: longAnswer,
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway(longAnswer),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4163,7 +4163,6 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "unused",
 			SystemPrompt: "test",
 		},
 		store: reopenedStore,
@@ -4194,11 +4193,11 @@ func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "restart child done",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("restart child done"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4621,11 +4620,11 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "persisted",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("persisted"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4648,7 +4647,6 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
 		store:       reopened,
@@ -4671,7 +4669,6 @@ func TestHostRejectsZeroValueStore(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
 		store: &runtimeStore{},
@@ -4700,7 +4697,6 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 				Config: runtimeConfig{
 					Provider:     "fake",
 					Model:        "fake-model",
-					FakeResponse: "ok",
 					SystemPrompt: "test",
 				},
 				store:       tc.store,
@@ -4722,7 +4718,6 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
 		store:       newMemoryStore(),
@@ -4805,11 +4800,11 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("projected answer"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5185,11 +5180,11 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("projected answer"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5267,11 +5262,11 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "sqlite projected answer",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("sqlite projected answer"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5613,11 +5608,11 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
-		store:       store,
-		IDGenerator: deterministicIDs(),
+		store:        store,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("child done"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5717,12 +5712,12 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "completion handled",
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		Sink:        rec,
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("completion handled"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5783,7 +5778,6 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
 		store:       newMemoryStore(),
@@ -7298,12 +7292,12 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "private answer",
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		Sink:        rec,
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway("private answer"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -7382,11 +7376,11 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: fullAnswer,
 			SystemPrompt: "test",
 		},
-		store:       newMemoryStore(),
-		IDGenerator: deterministicIDs(),
+		store:        newMemoryStore(),
+		IDGenerator:  deterministicIDs(),
+		modelGateway: testResponseGateway(fullAnswer),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8153,7 +8147,6 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
 		store:       store,
@@ -8201,7 +8194,6 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
 		store:       store,
@@ -8253,7 +8245,6 @@ func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 		Config: runtimeConfig{
 			Provider:     "fake",
 			Model:        "fake-model",
-			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
 		store:       store,

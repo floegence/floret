@@ -3,10 +3,12 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/floegence/floret/v2/config"
+	legacy "github.com/floegence/floret/v2/internal/storage/sqlite"
 	"github.com/floegence/floret/v2/provider"
 	floretruntime "github.com/floegence/floret/v2/runtime"
 	"github.com/floegence/floret/v2/storage"
@@ -15,6 +17,25 @@ import (
 type capturingSource struct {
 	next    storage.Source
 	backend storage.Backend
+}
+
+func TestOpenClassifiesExactV16SQLiteAsMigrationRequired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "floret.db")
+	legacyStore, err := legacy.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	host, err := floretruntime.Open(context.Background(), floretruntime.Options{Storage: storage.SQLite(path)})
+	if host != nil || !errors.Is(err, floretruntime.ErrMigrationRequired) {
+		t.Fatalf("host=%#v err=%v", host, err)
+	}
+	var migrationRequired *floretruntime.MigrationRequiredError
+	if !errors.As(err, &migrationRequired) || migrationRequired.Version != "16" {
+		t.Fatalf("migration error = %#v (%v)", migrationRequired, err)
+	}
 }
 
 func (source *capturingSource) Open(ctx context.Context) (storage.Backend, error) {

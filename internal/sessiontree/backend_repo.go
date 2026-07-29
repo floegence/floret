@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/v2/internal/backendspi"
 	"github.com/floegence/floret/v2/internal/storagecodec"
-	publicstorage "github.com/floegence/floret/v2/storage"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -17,7 +17,7 @@ var backendStateKey = storagecodec.Tuple(storagecodec.TupleString("sessiontree")
 // BackendRepo executes the canonical session-tree semantics inside Backend
 // snapshot and serializable transactions.
 type BackendRepo struct {
-	backend  publicstorage.Backend
+	backend  backendspi.Backend
 	now      func() time.Time
 	policy   LeasePolicy
 	mu       sync.Mutex
@@ -26,7 +26,7 @@ type BackendRepo struct {
 }
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
-func NewBackendRepo(ctx context.Context, backend publicstorage.Backend, policy LeasePolicy, now func() time.Time) (*BackendRepo, error) {
+func NewBackendRepo(ctx context.Context, backend backendspi.Backend, policy LeasePolicy, now func() time.Time) (*BackendRepo, error) {
 	if backend == nil || now == nil {
 		return nil, errors.New("backend repo requires backend and clock")
 	}
@@ -34,7 +34,7 @@ func NewBackendRepo(ctx context.Context, backend publicstorage.Backend, policy L
 		return nil, err
 	}
 	repo := &BackendRepo{backend: backend, now: now, policy: policy, change: make(chan struct{})}
-	if err := backend.Update(ctx, func(tx publicstorage.WriteTx) error {
+	if err := backend.Update(ctx, func(tx backendspi.WriteTx) error {
 		memory, found, err := repo.load(tx)
 		if err != nil {
 			return err
@@ -54,9 +54,9 @@ func NewBackendRepo(ctx context.Context, backend publicstorage.Backend, policy L
 	return repo, nil
 }
 
-func (repo *BackendRepo) load(tx publicstorage.ReadTx) (*MemoryRepo, bool, error) {
+func (repo *BackendRepo) load(tx backendspi.ReadTx) (*MemoryRepo, bool, error) {
 	encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
-	if errors.Is(err, publicstorage.ErrNotFound) {
+	if errors.Is(err, backendspi.ErrNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -73,7 +73,7 @@ func (repo *BackendRepo) load(tx publicstorage.ReadTx) (*MemoryRepo, bool, error
 	return memory, true, nil
 }
 
-func (repo *BackendRepo) save(tx publicstorage.WriteTx, memory *MemoryRepo) error {
+func (repo *BackendRepo) save(tx backendspi.WriteTx, memory *MemoryRepo) error {
 	payload, err := memory.EncodeMemoryState()
 	if err != nil {
 		return err
@@ -86,14 +86,14 @@ func (repo *BackendRepo) save(tx publicstorage.WriteTx, memory *MemoryRepo) erro
 }
 
 func (repo *BackendRepo) view(ctx context.Context, read func(*MemoryRepo) error) error {
-	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ publicstorage.ReadTx) error { return read(memory) })
+	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ backendspi.ReadTx) error { return read(memory) })
 }
 
 // ViewDomain executes one read against an exact backend snapshot.
-func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, publicstorage.ReadTx) error) error {
+func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, backendspi.ReadTx) error) error {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return repo.backend.View(ctx, func(tx publicstorage.ReadTx) error {
+	return repo.backend.View(ctx, func(tx backendspi.ReadTx) error {
 		memory, found, err := repo.load(tx)
 		if err != nil {
 			return err
@@ -106,15 +106,15 @@ func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, 
 }
 
 func (repo *BackendRepo) update(ctx context.Context, mutate func(*MemoryRepo) error) error {
-	return repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ publicstorage.WriteTx) error { return mutate(memory) })
+	return repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ backendspi.WriteTx) error { return mutate(memory) })
 }
 
 // UpdateDomain executes one session-tree mutation and related domain writes in
 // the same serializable backend transaction.
-func (repo *BackendRepo) UpdateDomain(ctx context.Context, mutate func(*MemoryRepo, publicstorage.WriteTx) error) error {
+func (repo *BackendRepo) UpdateDomain(ctx context.Context, mutate func(*MemoryRepo, backendspi.WriteTx) error) error {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	err := repo.backend.Update(ctx, func(tx publicstorage.WriteTx) error {
+	err := repo.backend.Update(ctx, func(tx backendspi.WriteTx) error {
 		memory, found, err := repo.load(tx)
 		if err != nil {
 			return err

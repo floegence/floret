@@ -95,6 +95,9 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	}
 	backend, err := options.Storage.Open(ctx)
 	if err != nil {
+		if errors.Is(err, publicstorage.ErrMigrationRequired) {
+			return nil, &MigrationRequiredError{Version: "16"}
+		}
 		return nil, err
 	}
 	if backend == nil {

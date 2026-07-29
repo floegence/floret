@@ -274,7 +274,6 @@ type providerHost struct {
 type runtimeConfig struct {
 	Provider                string
 	Model                   string
-	FakeResponse            string
 	PromptCacheRetention    string
 	SystemPrompt            string
 	ContextPolicy           config.ContextPolicy
@@ -2052,7 +2051,7 @@ func newMemoryStore() *runtimeStore {
 }
 
 func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) (*runtimeStore, error) {
-	kernel, err := storage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := storage.NewBackendKernel(ctx, adaptDomainBackend(backend), sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		return nil, err
 	}

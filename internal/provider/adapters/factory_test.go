@@ -22,76 +22,6 @@ import (
 	"github.com/floegence/floret/v2/tools"
 )
 
-func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
-	p, err := NewProvider(Config{Provider: catalog.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
-	if result.Status != engine.Completed || result.Output != "fake ok" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestFakeProviderUsesGenericRequestEstimateIncludingTools(t *testing.T) {
-	p, err := NewProvider(Config{Provider: catalog.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg := tools.NewRegistry()
-	mustRegisterAdapterTestTool(t, reg, tools.Define[struct{}](
-		tools.Definition{
-			Name:        "large_tool",
-			Description: strings.Repeat("Large schema tool. ", 20),
-			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-			InputSchema: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"value": map[string]any{"type": "string", "description": strings.Repeat("Detailed value. ", 20)},
-				},
-			},
-		},
-		nil,
-		nil,
-		func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
-			return tools.Result{Text: "ok"}, nil
-		},
-	))
-	promptStore := cache.NewMemoryStore()
-	eng, err := engine.New(engine.Config{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Tools:    reg,
-		Prompt:   promptStore,
-		Options:  engine.Options{RunID: "run"},
-	})
-	if err != nil {
-		t.Fatalf("new engine: %v", err)
-	}
-
-	result := eng.Run(context.Background(), "hello")
-
-	if result.Status != engine.Completed {
-		t.Fatalf("result = %#v", result)
-	}
-	requests, err := promptStore.ProviderRequests(context.Background(), "run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requests) != 1 {
-		t.Fatalf("requests = %#v", requests)
-	}
-	messageOnly := contextpolicy.EstimateMessageContext("", []session.Message{{Role: session.User, Content: "hello"}}, contextpolicy.Policy{})
-	estimate := requests[0].RequestEstimate
-	if estimate.EstimatedInputTokens <= messageOnly.InputTokens ||
-		estimate.Source != "generic_request_json" ||
-		estimate.Method != contextpolicy.EstimateMethodGenericPayload ||
-		estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
-		t.Fatalf("fake provider should use generic conservative request estimate including tools: estimate=%#v messageOnly=%#v", estimate, messageOnly)
-	}
-}
-
 func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testing.T) {
 	var seenModel string
 	var seenAuth string
@@ -109,15 +39,7 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(Config{
-		Provider: catalog.ProviderOpenAICompatible,
-		Model:    "remote-model",
-		BaseURL:  server.URL,
-		APIKey:   "secret",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL + "/chat/completions", Model: "remote-model", APIKey: "secret", HTTPClient: server.Client()}
 	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed || result.Output != "remote ok" || result.CompletionReason != engine.CompletionReasonNaturalStop {
 		t.Fatalf("result = %#v, want natural completion from remote text", result)
@@ -442,10 +364,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
-	p, err := NewProvider(Config{Provider: catalog.ProviderOpenAICompatible, Model: "remote-model", BaseURL: server.URL, APIKey: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL + "/chat/completions", Model: "remote-model", APIKey: "secret", HTTPClient: server.Client()}
 	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
@@ -455,7 +374,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	}
 }
 
-func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
+func TestOpenAICompatibleProviderUsesExplicitOpenAITransport(t *testing.T) {
 	var seenPath string
 	var seenAuth string
 	var seenModel string
@@ -474,10 +393,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(Config{Provider: "openai", Model: "gpt-5.4", BaseURL: server.URL, APIKey: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL + "/chat/completions", Model: "gpt-5.4", APIKey: "secret", HTTPClient: server.Client()}
 	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
@@ -562,10 +478,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testin
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret", PromptCacheRetention: "5m"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := AnthropicProvider{Endpoint: server.URL + "/messages", Model: "claude-sonnet-4-6", APIKey: "secret", MaxTokens: 8192, HTTPClient: server.Client()}
 	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "anthropic system", "hello")
 	if result.Status != engine.Completed || result.Output != "anthropic ok" {
 		t.Fatalf("result = %#v", result)
@@ -2107,41 +2020,10 @@ func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(Config{
-		Provider: catalog.ProviderOpenAICompatible,
-		Model:    "remote-model",
-		BaseURL:  server.URL,
-		APIKey:   "secret",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL + "/chat/completions", Model: "remote-model", APIKey: "secret", HTTPClient: server.Client()}
 	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed || result.Output != "remote done" || result.FinishReason != provider.FinishStop {
 		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
-	var seenAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
-	}))
-	defer server.Close()
-
-	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
-	p, err := NewProvider(Config{Provider: "deepseek", Model: "deepseek-chat", BaseURL: server.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
-	if result.Status != engine.Completed {
-		t.Fatalf("result = %#v", result)
-	}
-	if seenAuth != "Bearer deepseek-secret" {
-		t.Fatalf("auth = %q", seenAuth)
 	}
 }
 

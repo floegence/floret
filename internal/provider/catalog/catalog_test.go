@@ -101,7 +101,8 @@ func TestNormalizeProviderAcceptsFlowerAndPiAliases(t *testing.T) {
 		"z.ai":              ProviderChatGLM,
 		"zai":               ProviderChatGLM,
 		"dashscope":         ProviderQwen,
-		"":                  ProviderFake,
+		"":                  "",
+		"local-fake":        "local-fake",
 	}
 	for input, want := range cases {
 		if got := NormalizeProvider(input); got != want {

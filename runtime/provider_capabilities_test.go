@@ -608,7 +608,7 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	if _, err := create.CreateThread(ctx, parentCreateRequest); err != nil {
 		t.Fatal(err)
 	}
-	providerConfig := runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}
+	providerConfig := runtimeConfig{Provider: "fake", Model: "fake-model", SystemPrompt: "test"}
 	publishTestSubAgentFixture(t, ctx, store, "publication-root-child", "parent", "child", "")
 	childCreateRequest := testCreateThreadRequest("child")
 	childCreate, err := capabilities.create.Bind(childCreateRequest.ThreadID, childCreateRequest.CreateIntentID)

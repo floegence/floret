@@ -106,7 +106,7 @@ func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 				if openErr != nil {
 					t.Fatal(openErr)
 				}
-				repo, openErr := storage.NewBackendKernel(ctx, physical, sessiontree.DefaultLeasePolicy, clock.Now)
+				repo, openErr := storage.NewBackendKernel(ctx, adaptDomainBackend(physical), sessiontree.DefaultLeasePolicy, clock.Now)
 				if openErr != nil {
 					_ = physical.Close()
 					t.Fatal(openErr)

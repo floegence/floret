@@ -20,6 +20,9 @@ var (
 	ErrInvalidArgument = errors.New("invalid storage argument")
 	// ErrTransactionClosed reports use of a transaction outside its callback.
 	ErrTransactionClosed = errors.New("storage transaction closed")
+	// ErrMigrationRequired reports an exact legacy storage schema that must be
+	// migrated explicitly before it can be opened as a Backend.
+	ErrMigrationRequired = errors.New("storage migration required")
 )
 
 // Source opens a fresh Backend. A Source may be retained and opened more than

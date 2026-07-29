@@ -716,7 +716,7 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.T) {
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
-		Config: runtimeConfig{Provider: "fake", Model: "fake-model", FakeResponse: "child done", SystemPrompt: "test"},
+		Config: runtimeConfig{Provider: "fake", Model: "fake-model", SystemPrompt: "test"},
 		store:  newMemoryStore(),
 	})
 	if err != nil {

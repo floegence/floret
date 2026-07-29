@@ -170,16 +170,6 @@ func boolPtr(v bool) *bool {
 // output-token limit.
 var providers = []Provider{
 	{
-		ID:           ProviderFake,
-		Name:         "Fake",
-		API:          APIFake,
-		DefaultModel: "fake-model",
-		Custom:       true,
-		Models: []Model{
-			{ID: "fake-model", Name: "Fake model", ContextWindow: 256000, MaxTokens: 64000, Input: text},
-		},
-	},
-	{
 		ID:             ProviderOpenAI,
 		Name:           "OpenAI",
 		API:            APIOpenAIChat,

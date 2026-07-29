@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"context"
@@ -8,9 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/v2/internal/backendtest"
 	"github.com/floegence/floret/v2/internal/provider/cache"
 	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v2/internal/session/artifact"
 	"github.com/floegence/floret/v2/internal/sessiontree"
+	. "github.com/floegence/floret/v2/internal/storage"
 	publicstorage "github.com/floegence/floret/v2/storage"
 )
 
@@ -138,7 +141,7 @@ func openBackendKernel(t *testing.T, source publicstorage.Source) (publicstorage
 	if err != nil {
 		t.Fatal(err)
 	}
-	kernel, err := NewBackendKernel(context.Background(), backend, sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := NewBackendKernel(context.Background(), backendtest.Adapt(backend), sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		_ = backend.Close()
 		t.Fatal(err)
@@ -180,5 +183,18 @@ func backendForkRecord(t *testing.T, fingerprint string, now time.Time) ForkOper
 		OperationID: "fork-operation", RequestFingerprint: fingerprint,
 		SourceThreadIDs: []string{"source"}, AuthorityThreadIDs: []string{"source", "destination"},
 		State: ForkOperationPrepared, Plan: encoded, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func emptyForkArtifactClosure(t *testing.T, sourceThreadID, destinationThreadID string) artifact.Closure {
+	t.Helper()
+	items := []artifact.ManifestItem{}
+	fingerprint, err := artifact.ClosureFingerprint(sourceThreadID, destinationThreadID, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return artifact.Closure{
+		SourceThreadID: sourceThreadID, DestinationThreadID: destinationThreadID,
+		Items: items, Fingerprint: fingerprint,
 	}
 }
