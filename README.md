@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v3@v3.0.1
+go get github.com/floegence/floret/v3@v3.0.2
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -136,6 +136,13 @@ pending tool targets. `Thread.DescendantReader` binds one validated descendant
 at any depth for turn pages, exact turn reads, and artifacts. Neither handle
 accepts another thread identity after binding, and unrelated, deleted, or
 corrupt ancestry fails closed.
+
+Root canonical reads are issued directly by the bound `Thread`: overview, exact
+turn, turn pages, todos, context, approval queue, projections, pending-tool
+targets, and direct-child inventory. `Child` provides the corresponding exact
+turn and turn-page authority for one direct child. Title updates use a logical
+request and durable receipt. Interrupted-turn and provider-free pending-tool
+recovery use one-time handles bound to the exact current proof or target.
 
 Commands use stable logical request identities and explicit names:
 `CreateThread`, `StartTurn`, `RetryTurn`, `ForkThread`, `DeleteThread`,

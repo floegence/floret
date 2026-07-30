@@ -381,7 +381,7 @@ func (r forkThreadResult) Validate() error {
 	return nil
 }
 
-type recoverInterruptedTurnResult struct {
+type RecoverInterruptedTurnResult struct {
 	ThreadID identity.ThreadID  `json:"thread_id"`
 	TurnID   identity.TurnID    `json:"turn_id"`
 	RunID    identity.RunID     `json:"run_id"`
@@ -391,7 +391,7 @@ type recoverInterruptedTurnResult struct {
 }
 
 // Validate checks one public interrupted-turn recovery result.
-func (r recoverInterruptedTurnResult) Validate() error {
+func (r RecoverInterruptedTurnResult) Validate() error {
 	if !trimStableNonEmpty(string(r.ThreadID)) || !trimStableNonEmpty(string(r.TurnID)) || !trimStableNonEmpty(string(r.RunID)) {
 		return errors.New("interrupted recovery result requires thread, turn, and run identities")
 	}

@@ -16,6 +16,6 @@ v3 的关键边界：
 - 生产集成禁止 `replace`、`go.work` 和 sibling repository path。
 
 ```bash
-go get github.com/floegence/floret/v3@v3.0.1
+go get github.com/floegence/floret/v3@v3.0.2
 GOWORK=off go test ./...
 ```

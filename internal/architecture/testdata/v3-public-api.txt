@@ -474,6 +474,10 @@ field CapabilityOptions.SkillSources []string
 field CapabilityOptions.SkillPromptBudgetBytes int
 type Child struct
 method *Child.ID func() github.com/floegence/floret/v3/identity.ThreadID
+method *Child.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
+method *Child.ListTurns func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error)
+method *Child.PendingToolRecovery func(ctx context.Context, target github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget) (*github.com/floegence/floret/v3/runtime.PendingToolRecovery, error)
+method *Child.InterruptedTurnRecovery func(ctx context.Context) (*github.com/floegence/floret/v3/runtime.InterruptedTurnRecovery, error)
 method *Child.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadDetailRequest) (github.com/floegence/floret/v3/runtime.SubAgentDetail, error)
 method *Child.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error)
 type CloseSubAgentCommand struct
@@ -692,6 +696,8 @@ field InterruptSubAgentCommand.Labels github.com/floegence/floret/v3/runtime.Run
 type InterruptSubAgentResult struct
 field InterruptSubAgentResult.Child github.com/floegence/floret/v3/runtime.SubAgentSnapshot tag="json:\"child\""
 field InterruptSubAgentResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+type InterruptedTurnRecovery struct
+method *InterruptedTurnRecovery.Recover func(ctx context.Context) (github.com/floegence/floret/v3/runtime.RecoverInterruptedTurnResult, error)
 type ListThreadsOptions struct
 field ListThreadsOptions.Cursor github.com/floegence/floret/v3/runtime.ThreadListCursor tag="json:\"cursor,omitempty\""
 field ListThreadsOptions.Limit int tag="json:\"limit,omitempty\""
@@ -791,6 +797,13 @@ field PendingToolCompletionResult.Replayed bool tag="json:\"replayed,omitempty\"
 field PendingToolCompletionResult.Turn *github.com/floegence/floret/v3/runtime.TurnResult tag="json:\"turn,omitempty\""
 method PendingToolCompletionResult.Validate func() error
 type PendingToolCompletionStatus string
+type PendingToolRecovery struct
+method *PendingToolRecovery.Settle func(ctx context.Context, request github.com/floegence/floret/v3/runtime.PendingToolRecoveryRequest) (github.com/floegence/floret/v3/runtime.PendingToolSettlementResult, error)
+type PendingToolRecoveryRequest struct
+field PendingToolRecoveryRequest.Status github.com/floegence/floret/v3/runtime.PendingToolSettlementStatus tag="json:\"status\""
+field PendingToolRecoveryRequest.Summary string tag="json:\"summary,omitempty\""
+field PendingToolRecoveryRequest.Output string tag="json:\"output,omitempty\""
+field PendingToolRecoveryRequest.Activity *github.com/floegence/floret/v3/tools.ActivityPresentation tag="json:\"activity,omitempty\""
 const PendingToolSettlementCanceled github.com/floegence/floret/v3/runtime.PendingToolSettlementStatus = "canceled"
 const PendingToolSettlementCompleted github.com/floegence/floret/v3/runtime.PendingToolSettlementStatus = "completed"
 const PendingToolSettlementFailed github.com/floegence/floret/v3/runtime.PendingToolSettlementStatus = "failed"
@@ -830,6 +843,14 @@ field RecordPendingToolOutcomeCommand.Activity *github.com/floegence/floret/v3/t
 type RecordPendingToolOutcomeResult struct
 field RecordPendingToolOutcomeResult.Outcome github.com/floegence/floret/v3/runtime.PendingToolSettlementResult tag="json:\"outcome\""
 field RecordPendingToolOutcomeResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+type RecoverInterruptedTurnResult struct
+field RecoverInterruptedTurnResult.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field RecoverInterruptedTurnResult.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
+field RecoverInterruptedTurnResult.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field RecoverInterruptedTurnResult.Status github.com/floegence/floret/v3/runtime.TurnStatus tag="json:\"status\""
+field RecoverInterruptedTurnResult.Failure *github.com/floegence/floret/v3/runtime.ThreadTurnFailure tag="json:\"failure,omitempty\""
+field RecoverInterruptedTurnResult.Replayed bool tag="json:\"replayed\""
+method RecoverInterruptedTurnResult.Validate func() error
 type RequestConflictError struct
 field RequestConflictError.Operation string
 field RequestConflictError.RequestID string
@@ -882,6 +903,12 @@ field SendSubAgentMessageCommand.Labels github.com/floegence/floret/v3/runtime.R
 type SendSubAgentMessageResult struct
 field SendSubAgentMessageResult.Child github.com/floegence/floret/v3/runtime.SubAgentSnapshot tag="json:\"child\""
 field SendSubAgentMessageResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+type SetThreadTitleCommand struct
+field SetThreadTitleCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field SetThreadTitleCommand.Title string tag="json:\"title\""
+type SetThreadTitleResult struct
+field SetThreadTitleResult.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""
+field SetThreadTitleResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
 const SignalContinue github.com/floegence/floret/v3/runtime.SignalDisposition = "continue"
 type SignalDisposition string
 const SignalTerminal github.com/floegence/floret/v3/runtime.SignalDisposition = "terminal"
@@ -1006,6 +1033,18 @@ const SubscriptionMessageTransient github.com/floegence/floret/v3/runtime.Subscr
 type Thread struct
 method *Thread.ID func() github.com/floegence/floret/v3/identity.ThreadID
 method *Thread.Snapshot func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadView, error)
+method *Thread.ReadOverview func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadOverview, error)
+method *Thread.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
+method *Thread.ListTurns func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error)
+method *Thread.ReadAgentTodos func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadAgentTodoState, error)
+method *Thread.ReadContext func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadContextSnapshot, error)
+method *Thread.ReadApprovalQueue func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ApprovalQueue, error)
+method *Thread.ReadProjection func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID, runID github.com/floegence/floret/v3/identity.RunID) (github.com/floegence/floret/v3/runtime.ThreadTurnProjection, error)
+method *Thread.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error)
+method *Thread.ListSubAgents func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.SubAgentSnapshot, error)
+method *Thread.SetTitle func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SetThreadTitleCommand) (github.com/floegence/floret/v3/runtime.SetThreadTitleResult, error)
+method *Thread.PendingToolRecovery func(ctx context.Context, target github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget) (*github.com/floegence/floret/v3/runtime.PendingToolRecovery, error)
+method *Thread.InterruptedTurnRecovery func(ctx context.Context) (*github.com/floegence/floret/v3/runtime.InterruptedTurnRecovery, error)
 method *Thread.ForkThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ForkThreadCommand) (github.com/floegence/floret/v3/runtime.ForkThreadResultV3, error)
 method *Thread.DeleteThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.DeleteThreadCommand) (github.com/floegence/floret/v3/runtime.DeleteThreadResult, error)
 method *Thread.Turns func(agent *github.com/floegence/floret/v3/runtime.Agent) (*github.com/floegence/floret/v3/runtime.Turns, error)

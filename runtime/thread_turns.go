@@ -18,13 +18,13 @@ import (
 )
 
 // RecoverInterruptedTurn atomically takes over and finalizes the exact proof bound at host construction.
-func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.Context) (recoverInterruptedTurnResult, error) {
+func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.Context) (RecoverInterruptedTurnResult, error) {
 	if h == nil || h.store == nil || h.harness == nil || h.threadID == "" {
-		return recoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
+		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
 	}
 	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
-		return recoverInterruptedTurnResult{}, err
+		return RecoverInterruptedTurnResult{}, err
 	}
 	defer done()
 	result, err := h.harness.RecoverInterruptedTurn(operationCtx, agentharness.RecoverInterruptedTurnOptions{
@@ -38,26 +38,26 @@ func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.C
 		if errors.Is(mapped, ErrRecoveryTargetResolved) {
 			h.markInterruptedRecoveryFactoryResolved()
 		}
-		return recoverInterruptedTurnResult{}, mapped
+		return RecoverInterruptedTurnResult{}, mapped
 	}
 	h.markInterruptedRecoveryFactoryResolved()
 	detail, found, readErr := h.harness.ReadTurnDetailEvents(operationCtx, result.ThreadID, result.TurnID, result.RunID, true)
 	if readErr != nil {
-		return recoverInterruptedTurnResult{}, runtimeHostError(readErr)
+		return RecoverInterruptedTurnResult{}, runtimeHostError(readErr)
 	}
 	if !found {
-		return recoverInterruptedTurnResult{}, fmt.Errorf("%w: interrupted recovery terminal turn is missing", ErrAuthorityCorrupt)
+		return RecoverInterruptedTurnResult{}, fmt.Errorf("%w: interrupted recovery terminal turn is missing", ErrAuthorityCorrupt)
 	}
 	failure := canonicalTurnFailure(threadDetailEvents(detail.Events))
 	status := interruptedRecoveryTurnStatus(result.Status, failure)
 	if err := validateThreadTurnFailureForStatus(status, failure); err != nil {
-		return recoverInterruptedTurnResult{}, fmt.Errorf("%w: %v", ErrAuthorityCorrupt, err)
+		return RecoverInterruptedTurnResult{}, fmt.Errorf("%w: %v", ErrAuthorityCorrupt, err)
 	}
-	out := recoverInterruptedTurnResult{
+	out := RecoverInterruptedTurnResult{
 		ThreadID: identity.ThreadID(result.ThreadID), TurnID: identity.TurnID(result.TurnID), RunID: identity.RunID(result.RunID), Status: status, Failure: failure, Replayed: result.Replayed,
 	}
 	if err := out.Validate(); err != nil {
-		return recoverInterruptedTurnResult{}, invalidPublicResult("interrupted recovery result", err)
+		return RecoverInterruptedTurnResult{}, invalidPublicResult("interrupted recovery result", err)
 	}
 	return out, nil
 }

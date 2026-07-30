@@ -517,27 +517,36 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
 	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
-		"Child", "Compact", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Snapshot", "SubAgents", "Subscribe", "Turns")
+		"Child", "Compact", "DeleteThread", "DescendantReader", "ForkThread", "ID",
+		"InterruptedTurnRecovery", "ListPendingToolTargets", "ListSubAgents", "ListTurns",
+		"PendingToolRecovery", "ReadAgentTodos", "ReadApprovalQueue", "ReadContext",
+		"ReadOverview", "ReadProjection", "ReadTurn", "SetTitle", "Snapshot",
+		"SubAgents", "Subscribe", "Turns")
 	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
 		"ContinuePendingTool", "RecordPendingToolOutcome", "ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
-		"ID", "ListPendingToolTargets", "ReadDetail")
+		"ID", "InterruptedTurnRecovery", "ListPendingToolTargets", "ListTurns",
+		"PendingToolRecovery", "ReadDetail", "ReadTurn")
 	exact("DescendantReader", reflect.TypeOf((*floretRuntime.DescendantReader)(nil)),
 		"ID", "ListTurns", "ReadArtifact", "ReadTurn")
 	exact("SubAgents", reflect.TypeOf((*floretRuntime.SubAgents)(nil)),
 		"CloseSubAgent", "InterruptSubAgent", "List", "SendSubAgentMessage", "SpawnSubAgent", "WaitSubAgents")
 	exact("Subscription", reflect.TypeOf((*floretRuntime.Subscription)(nil)), "Close", "Next")
+	exact("PendingToolRecovery", reflect.TypeOf((*floretRuntime.PendingToolRecovery)(nil)), "Settle")
+	exact("InterruptedTurnRecovery", reflect.TypeOf((*floretRuntime.InterruptedTurnRecovery)(nil)), "Recover")
 
 	for name, typ := range map[string]reflect.Type{
-		"Host":             reflect.TypeOf(floretRuntime.Host{}),
-		"Agent":            reflect.TypeOf(floretRuntime.Agent{}),
-		"Threads":          reflect.TypeOf(floretRuntime.Threads{}),
-		"Thread":           reflect.TypeOf(floretRuntime.Thread{}),
-		"Turns":            reflect.TypeOf(floretRuntime.Turns{}),
-		"Child":            reflect.TypeOf(floretRuntime.Child{}),
-		"DescendantReader": reflect.TypeOf(floretRuntime.DescendantReader{}),
-		"SubAgents":        reflect.TypeOf(floretRuntime.SubAgents{}),
-		"Subscription":     reflect.TypeOf(floretRuntime.Subscription{}),
+		"Host":                    reflect.TypeOf(floretRuntime.Host{}),
+		"Agent":                   reflect.TypeOf(floretRuntime.Agent{}),
+		"Threads":                 reflect.TypeOf(floretRuntime.Threads{}),
+		"Thread":                  reflect.TypeOf(floretRuntime.Thread{}),
+		"Turns":                   reflect.TypeOf(floretRuntime.Turns{}),
+		"Child":                   reflect.TypeOf(floretRuntime.Child{}),
+		"DescendantReader":        reflect.TypeOf(floretRuntime.DescendantReader{}),
+		"SubAgents":               reflect.TypeOf(floretRuntime.SubAgents{}),
+		"Subscription":            reflect.TypeOf(floretRuntime.Subscription{}),
+		"PendingToolRecovery":     reflect.TypeOf(floretRuntime.PendingToolRecovery{}),
+		"InterruptedTurnRecovery": reflect.TypeOf(floretRuntime.InterruptedTurnRecovery{}),
 	} {
 		for index := 0; index < typ.NumField(); index++ {
 			if typ.Field(index).PkgPath == "" {

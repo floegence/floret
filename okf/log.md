@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-30
+* **v3 host adoption completion**: Added bound root-thread and direct-child
+  canonical reads, replayable title mutation, exact-target pending-tool
+  recovery, and exact-proof interrupted-turn recovery required by downstream
+  production adoption without restoring v2 capability handles.
 * **v3 capability completion**: Added exact-thread standalone compaction,
   immutable Agent manual-compaction polling, and parent-bound SubAgent wait and
   durable close operations without restoring v2 handles or unbound requests.

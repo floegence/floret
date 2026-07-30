@@ -24,6 +24,9 @@ durable operation identity and replay checks. Recovery binds the complete
 target, including turn/run/tool identity or interrupted owner generation, before
 settlement. Root capabilities reject parent-owned threads; SubAgent access is
 validated against its exact parent.
+The public recovery path preserves that order: `Thread` or `Child` first issues
+a `PendingToolRecovery` or `InterruptedTurnRecovery` bound to the exact target
+or proof, and only that narrower handle may settle or recover it.
 
 `Threads.ListThreads` is a bounded batch snapshot for product inventory. It does
 not grant mutation authority. Canonical read completeness does not widen
@@ -32,5 +35,8 @@ execution. `Child` exposes detail and pending-target reads for one direct child;
 `DescendantReader` exposes turn and artifact reads for one validated descendant
 at any depth. Both remain scoped beneath their bound parent and fail closed for
 unrelated, deleted, or corrupt ancestry.
+Root overview, turn, todo, context, approval, projection, pending-target, and
+direct-child queries remain methods on the exact bound `Thread`; direct-child
+turn queries remain methods on the exact bound `Child`.
 
 No public aggregate can recover or reissue composition-root authority.

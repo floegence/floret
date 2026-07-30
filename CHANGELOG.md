@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.0.2 - 2026-07-30
+
+- Complete the bound v3 host-adoption surface with canonical root-thread and
+  direct-child reads, logical-request-backed title mutation, exact-target
+  pending-tool recovery, and exact-proof interrupted-turn recovery.
+- Keep every new entry point on `Thread`, `Child`, or a one-time authority
+  derived from them; no v2 handle, unbound owner identity, local compatibility
+  facade, or caller-allocated lifecycle identity is restored.
+- Extend the manually reviewed API and behavior baselines, external-package
+  tests, README, and OKF knowledge for downstream production adoption.
+
 ## v3.0.1 - 2026-07-30
 
 - Restore the v3 bound runtime capabilities required by complete downstream

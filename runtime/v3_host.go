@@ -245,6 +245,27 @@ type UpdateTodosResult struct {
 	Receipt MutationReceipt      `json:"receipt"`
 }
 
+// SetThreadTitleCommand replaces the canonical title of the bound Thread.
+type SetThreadTitleCommand struct {
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id"`
+	Title            string                    `json:"title"`
+}
+
+// SetThreadTitleResult reports the canonical snapshot and durable mutation.
+type SetThreadTitleResult struct {
+	Thread  ThreadSnapshot  `json:"thread"`
+	Receipt MutationReceipt `json:"receipt"`
+}
+
+// PendingToolRecoveryRequest records one terminal host-owned outcome without
+// provider execution after exact target authority has been bound.
+type PendingToolRecoveryRequest struct {
+	Status   PendingToolSettlementStatus `json:"status"`
+	Summary  string                      `json:"summary,omitempty"`
+	Output   string                      `json:"output,omitempty"`
+	Activity *tools.ActivityPresentation `json:"activity,omitempty"`
+}
+
 // SpawnSubAgentCommand creates one direct child below the bound parent. The
 // child ThreadID is allocated by Floret and is never caller supplied.
 type SpawnSubAgentCommand struct {
@@ -708,6 +729,18 @@ type SubAgents struct {
 	reader  *subAgentReaderHandle
 }
 
+// PendingToolRecovery is provider-free settlement authority bound to one
+// exact pending tool on one bound Thread or Child.
+type PendingToolRecovery struct {
+	handle *pendingToolRecoveryHandle
+}
+
+// InterruptedTurnRecovery owns the exact durable interrupted-turn proof that
+// was current when the bound Thread or Child issued this handle.
+type InterruptedTurnRecovery struct {
+	handle *interruptedTurnRecoveryHandle
+}
+
 type requestLedgerRecord struct {
 	Version          int                       `json:"version"`
 	Operation        string                    `json:"operation"`
@@ -877,6 +910,168 @@ func (thread *Thread) Snapshot(ctx context.Context) (ThreadView, error) {
 		return ThreadView{}, err
 	}
 	return ThreadView{Thread: snapshot, Revision: revision}, nil
+}
+
+func (thread *Thread) reader(ctx context.Context) (*threadReaderHandle, error) {
+	if thread == nil || thread.host == nil {
+		return nil, errors.New("thread is required")
+	}
+	return thread.host.threadReader(ctx, thread.id)
+}
+
+// ReadOverview returns the bound thread and its latest canonical turn.
+func (thread *Thread) ReadOverview(ctx context.Context) (ThreadOverview, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	return reader.ReadOverview(ctx)
+}
+
+// ReadTurn returns one exact canonical turn from the bound Thread.
+func (thread *Thread) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	return reader.ReadTurn(ctx, turnID)
+}
+
+// ListTurns returns one canonical turn page from the bound Thread.
+func (thread *Thread) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadTurnsPage{}, err
+	}
+	return reader.ListTurns(ctx, request)
+}
+
+// ReadAgentTodos returns the bound Thread's canonical typed Agent todo state.
+func (thread *Thread) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadAgentTodoState{}, err
+	}
+	return reader.ReadAgentTodos(ctx)
+}
+
+// ReadContext returns canonical context usage and compaction state.
+func (thread *Thread) ReadContext(ctx context.Context) (ThreadContextSnapshot, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	return reader.ReadContext(ctx)
+}
+
+// ReadApprovalQueue returns the canonical approval queue rooted at the bound Thread.
+func (thread *Thread) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ApprovalQueue{}, err
+	}
+	return reader.ReadApprovalQueue(ctx)
+}
+
+// ReadProjection returns one canonical turn/run projection from the bound Thread.
+func (thread *Thread) ReadProjection(ctx context.Context, turnID identity.TurnID, runID identity.RunID) (ThreadTurnProjection, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return ThreadTurnProjection{}, err
+	}
+	return reader.ReadProjection(ctx, turnID, runID)
+}
+
+// ListPendingToolTargets returns unsettled host-owned work on the bound Thread.
+func (thread *Thread) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
+	reader, err := thread.reader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return reader.ListPendingToolTargets(ctx)
+}
+
+// ListSubAgents returns canonical direct children of the bound Thread.
+func (thread *Thread) ListSubAgents(ctx context.Context) ([]SubAgentSnapshot, error) {
+	if thread == nil || thread.host == nil {
+		return nil, errors.New("thread is required")
+	}
+	reader, err := thread.host.subAgentReader(ctx, thread.id)
+	if err != nil {
+		return nil, err
+	}
+	return reader.List(ctx)
+}
+
+// SetTitle replaces or permanently replays the bound Thread's canonical title.
+func (thread *Thread) SetTitle(ctx context.Context, command SetThreadTitleCommand) (SetThreadTitleResult, error) {
+	if thread == nil || thread.host == nil {
+		return SetThreadTitleResult{}, errors.New("thread is required")
+	}
+	host := thread.host
+	fingerprint, err := validateAndFingerprintMutation(host, command.LogicalRequestID, struct {
+		Title string `json:"title"`
+	}{Title: command.Title})
+	if err != nil {
+		return SetThreadTitleResult{}, err
+	}
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	record, replayed, err := host.reserveBoundMutation(ctx, "set_thread_title", thread.id, command.LogicalRequestID, fingerprint)
+	if err != nil {
+		return SetThreadTitleResult{}, err
+	}
+	if replayed && record.State == requestStateCommitted {
+		var out SetThreadTitleResult
+		if err := decodeLedgerResult(record, &out); err != nil {
+			return SetThreadTitleResult{}, err
+		}
+		out.Receipt = receiptFromRecord(record, true)
+		return out, nil
+	}
+	editor, err := host.threadTitleEditor(ctx, thread.id)
+	if err != nil {
+		return SetThreadTitleResult{}, err
+	}
+	snapshot, err := editor.Set(ctx, command.Title)
+	if err != nil {
+		return SetThreadTitleResult{}, err
+	}
+	out := SetThreadTitleResult{Thread: snapshot}
+	if err := host.commitMutationResult(context.WithoutCancel(ctx), thread, &record, &out); err != nil {
+		return SetThreadTitleResult{}, err
+	}
+	out.Receipt = receiptFromRecord(record, replayed)
+	return out, nil
+}
+
+// PendingToolRecovery binds provider-free settlement authority for one exact
+// target on the bound Thread.
+func (thread *Thread) PendingToolRecovery(ctx context.Context, target PendingToolSettlementTarget) (*PendingToolRecovery, error) {
+	if thread == nil || thread.host == nil {
+		return nil, errors.New("thread is required")
+	}
+	if target.ThreadID != thread.id {
+		return nil, ErrThreadAuthorityInvariant
+	}
+	handle, err := thread.host.pendingToolRecovery(ctx, pendingToolRecoveryTarget{Target: target}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PendingToolRecovery{handle: handle}, nil
+}
+
+// InterruptedTurnRecovery binds the current durable interrupted proof without
+// recovering it yet.
+func (thread *Thread) InterruptedTurnRecovery(ctx context.Context) (*InterruptedTurnRecovery, error) {
+	if thread == nil || thread.host == nil {
+		return nil, errors.New("thread is required")
+	}
+	handle, err := thread.host.interruptedTurnRecovery(ctx, interruptedTurnRecoveryTarget{ThreadID: thread.id}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &InterruptedTurnRecovery{handle: handle}, nil
 }
 
 type threadRevisionReader interface {
@@ -1113,6 +1308,67 @@ func (child *Child) ID() identity.ThreadID {
 		return ""
 	}
 	return child.id
+}
+
+// ReadTurn returns one exact canonical turn from the bound direct Child.
+func (child *Child) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
+	if child == nil || child.reader == nil {
+		return ThreadTurnSnapshot{}, errors.New("child is required")
+	}
+	return child.reader.ReadTurn(ctx, child.id, turnID)
+}
+
+// ListTurns returns one canonical turn page from the bound direct Child.
+func (child *Child) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+	if child == nil || child.reader == nil {
+		return ThreadTurnsPage{}, errors.New("child is required")
+	}
+	return child.reader.ListTurns(ctx, child.id, request)
+}
+
+// PendingToolRecovery binds provider-free settlement authority for one exact
+// target on the bound Child.
+func (child *Child) PendingToolRecovery(ctx context.Context, target PendingToolSettlementTarget) (*PendingToolRecovery, error) {
+	if child == nil || child.parent == nil || child.parent.host == nil {
+		return nil, errors.New("child is required")
+	}
+	if target.ThreadID != child.id {
+		return nil, ErrThreadAuthorityInvariant
+	}
+	handle, err := child.parent.host.pendingToolRecovery(ctx, pendingToolRecoveryTarget{ParentThreadID: child.parent.id, Target: target}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PendingToolRecovery{handle: handle}, nil
+}
+
+// InterruptedTurnRecovery binds the current durable interrupted proof of the
+// bound Child without recovering it yet.
+func (child *Child) InterruptedTurnRecovery(ctx context.Context) (*InterruptedTurnRecovery, error) {
+	if child == nil || child.parent == nil || child.parent.host == nil {
+		return nil, errors.New("child is required")
+	}
+	handle, err := child.parent.host.interruptedTurnRecovery(ctx, interruptedTurnRecoveryTarget{ParentThreadID: child.parent.id, ThreadID: child.id}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &InterruptedTurnRecovery{handle: handle}, nil
+}
+
+// Settle records the bound pending tool outcome exactly once or replays it.
+func (recovery *PendingToolRecovery) Settle(ctx context.Context, request PendingToolRecoveryRequest) (PendingToolSettlementResult, error) {
+	if recovery == nil || recovery.handle == nil {
+		return PendingToolSettlementResult{}, errors.New("pending tool recovery is required")
+	}
+	return recovery.handle.Settle(ctx, pendingToolRecoveryRequest{Status: request.Status, Summary: request.Summary, Output: request.Output, Activity: request.Activity})
+}
+
+// Recover atomically finalizes the exact interrupted proof bound at issuance.
+func (recovery *InterruptedTurnRecovery) Recover(ctx context.Context) (RecoverInterruptedTurnResult, error) {
+	if recovery == nil || recovery.handle == nil {
+		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery is required")
+	}
+	return recovery.handle.Recover(ctx)
 }
 
 // ReadDetail returns canonical detail for the direct child bound to this
@@ -2340,6 +2596,8 @@ func setMutationResultReceipt(result any, receipt MutationReceipt) error {
 	case *ResolveApprovalCommandResult:
 		value.Receipt = receipt
 	case *UpdateTodosResult:
+		value.Receipt = receipt
+	case *SetThreadTitleResult:
 		value.Receipt = receipt
 	case *SpawnSubAgentResult:
 		value.Receipt = receipt

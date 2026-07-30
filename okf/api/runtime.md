@@ -27,6 +27,14 @@ to the one validated descendant bound beneath the parent, including deeper
 descendants. Callers cannot substitute a target identity after either handle is
 issued.
 
+The bound `Thread` is also the canonical read source for overview, exact turn,
+turn pages, typed todos, context, approval queue, turn projection, pending-tool
+targets, and direct-child inventory. `Child.ReadTurn` and `Child.ListTurns`
+provide the corresponding direct-child reads. `Thread.SetTitle` is a durable
+logical mutation. `PendingToolRecovery` binds one exact settlement target, and
+`InterruptedTurnRecovery` binds one exact current interrupted lease proof before
+either operation can mutate lifecycle state.
+
 Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
 allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
 request key combines operation kind, bound authority, and logical request ID;

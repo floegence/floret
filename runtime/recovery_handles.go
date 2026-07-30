@@ -139,9 +139,9 @@ func (host *Host) interruptedTurnRecovery(ctx context.Context, target interrupte
 
 // Recover atomically finalizes the exact interrupted lease proof bound during
 // issuance.
-func (recovery *interruptedTurnRecoveryHandle) Recover(ctx context.Context) (recoverInterruptedTurnResult, error) {
+func (recovery *interruptedTurnRecoveryHandle) Recover(ctx context.Context) (RecoverInterruptedTurnResult, error) {
 	if recovery == nil || recovery.inner == nil {
-		return recoverInterruptedTurnResult{}, errors.New("interrupted turn recovery is required")
+		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery is required")
 	}
 	return recovery.inner.RecoverInterruptedTurn(ctx)
 }

@@ -267,6 +267,50 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if started.TurnID != "turn-allocated" || started.RunID != "run-allocated" || started.Receipt.Replayed {
 		t.Fatalf("start result = %#v", started)
 	}
+	overview, err := thread.ReadOverview(ctx)
+	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != started.TurnID {
+		t.Fatalf("thread overview = %#v err=%v", overview, err)
+	}
+	page, err := thread.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != started.TurnID {
+		t.Fatalf("thread turns = %#v err=%v", page, err)
+	}
+	readTurn, err := thread.ReadTurn(ctx, started.TurnID)
+	if err != nil || readTurn.RunID != started.RunID {
+		t.Fatalf("thread turn = %#v err=%v", readTurn, err)
+	}
+	if _, err := thread.ReadAgentTodos(ctx); err != nil {
+		t.Fatalf("read todos: %v", err)
+	}
+	if _, err := thread.ReadContext(ctx); err != nil {
+		t.Fatalf("read context: %v", err)
+	}
+	if _, err := thread.ReadApprovalQueue(ctx); err != nil {
+		t.Fatalf("read approval queue: %v", err)
+	}
+	if _, err := thread.ReadProjection(ctx, started.TurnID, started.RunID); err != nil {
+		t.Fatalf("read projection: %v", err)
+	}
+	if targets, err := thread.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("root pending targets = %#v err=%v", targets, err)
+	}
+	titled, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
+	if err != nil || titled.Thread.Title != "Canonical title" || titled.Receipt.Replayed {
+		t.Fatalf("set title = %#v err=%v", titled, err)
+	}
+	titleReplay, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
+	if err != nil || !titleReplay.Receipt.Replayed || titleReplay.Thread.Title != titled.Thread.Title {
+		t.Fatalf("title replay = %#v err=%v", titleReplay, err)
+	}
+	if _, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Changed title"}); !errors.Is(err, runtime.ErrRequestConflict) {
+		t.Fatalf("changed title replay = %v", err)
+	}
+	if _, err := thread.InterruptedTurnRecovery(ctx); !errors.Is(err, runtime.ErrInterruptedTurnNotFound) {
+		t.Fatalf("missing root interrupted turn = %v", err)
+	}
+	if _, err := thread.PendingToolRecovery(ctx, runtime.PendingToolSettlementTarget{ThreadID: "other-thread"}); !errors.Is(err, runtime.ErrThreadAuthorityInvariant) {
+		t.Fatalf("mismatched root pending target = %v", err)
+	}
 	replayedTurn, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
 		LogicalRequestID: "turn-request",
 		UserMessage:      runtime.TurnInput{Text: "hello"},
@@ -403,6 +447,10 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if child.ID() != spawned.Child.ThreadID {
 		t.Fatalf("child id = %q, want %q", child.ID(), spawned.Child.ThreadID)
 	}
+	children, err := parent.ListSubAgents(ctx)
+	if err != nil || len(children) != 1 || children[0].ThreadID != child.ID() {
+		t.Fatalf("bound parent children = %#v err=%v", children, err)
+	}
 	detail, err := child.ReadDetail(ctx, runtime.ThreadDetailRequest{IncludeRaw: true})
 	if err != nil || detail.Snapshot.ThreadID != spawned.Child.ThreadID {
 		t.Fatalf("child detail = %#v err=%v", detail, err)
@@ -421,6 +469,20 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	turn, err := descendant.ReadTurn(ctx, page.Turns[0].TurnID)
 	if err != nil || turn.RunID != page.Turns[0].RunID {
 		t.Fatalf("descendant turn = %#v err=%v", turn, err)
+	}
+	childPage, err := child.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(childPage.Turns) != 1 {
+		t.Fatalf("child turns = %#v err=%v", childPage, err)
+	}
+	childTurn, err := child.ReadTurn(ctx, childPage.Turns[0].TurnID)
+	if err != nil || childTurn.RunID != childPage.Turns[0].RunID {
+		t.Fatalf("child turn = %#v err=%v", childTurn, err)
+	}
+	if _, err := child.InterruptedTurnRecovery(ctx); !errors.Is(err, runtime.ErrInterruptedTurnNotFound) {
+		t.Fatalf("missing child interrupted turn = %v", err)
+	}
+	if _, err := child.PendingToolRecovery(ctx, runtime.PendingToolSettlementTarget{ThreadID: parent.ID()}); !errors.Is(err, runtime.ErrThreadAuthorityInvariant) {
+		t.Fatalf("mismatched child pending target = %v", err)
 	}
 	if _, err := descendant.ReadTurn(ctx, "missing-turn"); !errors.Is(err, runtime.ErrTurnNotFound) {
 		t.Fatalf("missing descendant turn error = %v", err)

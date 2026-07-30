@@ -79,6 +79,114 @@ methods:
     concurrency: registration is linearized with mutation publication
     cancellation: cancellation before registration returns ctx.Err
     closing: active subscriptions terminate when Host closes
+  - method: Thread.ReadOverview
+    errors_is: [ErrHostClosed, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry only after an independently observed canonical mutation
+    commit: read-only overview for the bound thread
+    replay: unchanged canonical state returns equivalent content
+    concurrency: exact-thread authority is fixed by the handle
+    cancellation: returns ctx.Err with no partial overview
+    closing: issued handles reject after Host closes
+  - method: Thread.ReadTurn
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrTurnNotFound]
+    errors_as: []
+    retryability: missing turns change only after an independently observed mutation
+    commit: read-only exact turn for the bound thread
+    replay: unchanged canonical state returns the same turn
+    concurrency: exact-thread authority is fixed by the handle
+    cancellation: returns ctx.Err with no partial turn
+    closing: issued handles reject after Host closes
+  - method: Thread.ListTurns
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrInvalidThreadTurnCursor, ErrStaleThreadTurnCursor]
+    errors_as: []
+    retryability: stale cursors require a fresh canonical page
+    commit: read-only stable turn page for the bound thread
+    replay: the same valid cursor and canonical state return the same page
+    concurrency: page provenance stays bound to the exact thread
+    cancellation: returns ctx.Err with no partial page
+    closing: issued handles reject after Host closes
+  - method: Thread.ReadAgentTodos
+    errors_is: [ErrHostClosed, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry only after an independently observed todo mutation
+    commit: read-only typed todo state for the bound thread
+    replay: unchanged canonical state returns the same version and items
+    concurrency: todo authority cannot be redirected to another thread
+    cancellation: returns ctx.Err with no partial state
+    closing: issued handles reject after Host closes
+  - method: Thread.ReadContext
+    errors_is: [ErrHostClosed, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry only after an independently observed context mutation
+    commit: read-only context and compaction state for the bound thread
+    replay: unchanged canonical state returns equivalent content
+    concurrency: context authority cannot be redirected to another thread
+    cancellation: returns ctx.Err with no partial snapshot
+    closing: issued handles reject after Host closes
+  - method: Thread.ReadApprovalQueue
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrAuthorityCorrupt]
+    errors_as: []
+    retryability: corrupt authority is permanent; otherwise refresh after canonical mutation
+    commit: read-only approval queue rooted at the bound thread
+    replay: unchanged canonical state returns the same generation and revision
+    concurrency: root approval authority cannot be redirected to another thread
+    cancellation: returns ctx.Err with no partial queue
+    closing: issued handles reject after Host closes
+  - method: Thread.ReadProjection
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrTurnNotFound, ErrRunNotFound]
+    errors_as: []
+    retryability: missing identities change only after an independently observed mutation
+    commit: read-only canonical projection for one turn and run on the bound thread
+    replay: unchanged canonical state returns equivalent projection content
+    concurrency: supplied turn and run cannot escape the bound thread
+    cancellation: returns ctx.Err with no partial projection
+    closing: issued handles reject after Host closes
+  - method: Thread.ListPendingToolTargets
+    errors_is: [ErrHostClosed, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry only after an independently observed pending-tool mutation
+    commit: read-only unsettled target list for the bound thread
+    replay: unchanged canonical state returns the same ordered targets
+    concurrency: target enumeration cannot escape the bound thread
+    cancellation: returns ctx.Err with no partial list
+    closing: issued handles reject after Host closes
+  - method: Thread.ListSubAgents
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: retry only after an independently observed child mutation
+    commit: read-only direct-child list for the bound thread
+    replay: unchanged canonical state returns the same ordered children
+    concurrency: child enumeration cannot select another parent
+    cancellation: returns ctx.Err with no partial list
+    closing: issued handles reject after Host closes
+  - method: Thread.SetTitle
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; conflicting title input is permanent
+    commit: canonical title and request receipt commit for the bound thread
+    replay: the same request permanently returns the original title snapshot
+    concurrency: serialized with other v3 mutations on the bound thread
+    cancellation: cancellation cannot erase an already committed title
+    closing: rejected after closing begins
+  - method: Thread.PendingToolRecovery
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadAuthorityInvariant, ErrPendingToolNotFound]
+    errors_as: []
+    retryability: issue again only after a fresh canonical pending-target read
+    commit: read-only issuance binds one exact root-thread pending target
+    replay: repeated valid issuance binds equivalent target authority
+    concurrency: a target for any other thread is rejected before issuance
+    cancellation: returns ctx.Err without settling the target
+    closing: rejected after closing begins
+  - method: Thread.InterruptedTurnRecovery
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrInterruptedTurnNotFound, ErrStaleAuthority]
+    errors_as: []
+    retryability: reissue after stale authority or an independently observed interruption
+    commit: read-only issuance binds the current exact interrupted lease proof
+    replay: an unchanged proof issues equivalent one-turn recovery authority
+    concurrency: the proof belongs only to the bound thread
+    cancellation: returns ctx.Err without recovering the turn
+    closing: rejected after closing begins
   - method: Subscription.Next
     errors_is: [io.EOF, ErrSubscriptionStale, ErrHostClosed]
     errors_as: []
@@ -187,6 +295,60 @@ methods:
     concurrency: validates direct-child authority at binding and read time
     cancellation: returns ctx.Err with no partial target list
     closing: issued handles reject after Host closes
+  - method: Child.ReadTurn
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrTurnNotFound, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: missing turns change only after an independently observed child mutation
+    commit: read-only exact turn for the bound direct child
+    replay: unchanged canonical state returns the same turn
+    concurrency: direct-child authority is revalidated at read time
+    cancellation: returns ctx.Err with no partial turn
+    closing: issued handles reject after Host closes
+  - method: Child.ListTurns
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant, ErrInvalidThreadTurnCursor, ErrStaleThreadTurnCursor]
+    errors_as: []
+    retryability: stale cursors require a fresh canonical child page
+    commit: read-only stable page for the bound direct child
+    replay: the same valid cursor and canonical state return the same page
+    concurrency: direct-child authority is revalidated at read time
+    cancellation: returns ctx.Err with no partial page
+    closing: issued handles reject after Host closes
+  - method: Child.PendingToolRecovery
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant, ErrPendingToolNotFound]
+    errors_as: []
+    retryability: issue again only after a fresh bound-child pending-target read
+    commit: read-only issuance binds one exact direct-child pending target
+    replay: repeated valid issuance binds equivalent target authority
+    concurrency: parent-child authority is validated before issuance
+    cancellation: returns ctx.Err without settling the target
+    closing: rejected after closing begins
+  - method: Child.InterruptedTurnRecovery
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrInterruptedTurnNotFound, ErrStaleAuthority, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: reissue after stale authority or an independently observed interruption
+    commit: read-only issuance binds the current exact child interrupted lease proof
+    replay: an unchanged proof issues equivalent one-turn recovery authority
+    concurrency: parent-child authority is validated before issuance
+    cancellation: returns ctx.Err without recovering the turn
+    closing: rejected after closing begins
+  - method: PendingToolRecovery.Settle
+    errors_is: [ErrHostClosed, ErrPendingToolNotFound, ErrPendingToolNotActive, ErrPendingToolSettlementConflict, ErrStaleAuthority]
+    errors_as: []
+    retryability: exact settlement replay is safe; changed outcome is permanent
+    commit: the bound pending target receives one durable terminal outcome
+    replay: the same bound target and outcome return the original settlement
+    concurrency: exact target authority admits at most one outcome
+    cancellation: cancellation cannot erase an already committed settlement
+    closing: rejected after closing begins
+  - method: InterruptedTurnRecovery.Recover
+    errors_is: [ErrHostClosed, ErrThreadBusy, ErrStaleAuthority, ErrRecoveryTargetResolved]
+    errors_as: []
+    retryability: busy or stale requires a newly issued recovery handle
+    commit: the exact bound interrupted lease becomes one terminal canonical turn
+    replay: resolved proof returns ErrRecoveryTargetResolved rather than selecting new work
+    concurrency: only the bound durable proof may be finalized
+    cancellation: cancellation cannot erase an already committed recovery
+    closing: rejected after closing begins
   - method: DescendantReader.ListTurns
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadDeleted, ErrThreadAuthorityInvariant]
     errors_as: []
