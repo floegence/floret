@@ -17,6 +17,12 @@ returns a handle bound to one exact `identity.ThreadID`; `Thread.Turns`,
 `Thread.SubAgents`, `Thread.Child`, and `Thread.DescendantReader` preserve that
 authority without repeating it in command DTOs.
 
+`Child.ReadDetail` and `Child.ListPendingToolTargets` apply only to the bound
+direct child. `DescendantReader.ListTurns`, `ReadTurn`, and `ReadArtifact` apply
+to the one validated descendant bound beneath the parent, including deeper
+descendants. Callers cannot substitute a target identity after either handle is
+issued.
+
 Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
 allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
 request key combines operation kind, bound authority, and logical request ID;

@@ -87,12 +87,15 @@ func generate(root string) (string, error) {
 	var output strings.Builder
 	output.WriteString("# Floret v3 public API baseline\n")
 	output.WriteString("# Design authority: internal/architecture/testdata/v3-public-api.txt\n\n")
-	for _, path := range publicPackages {
+	for index, path := range publicPackages {
 		pkg, err := compiled.Import(path)
 		if err != nil {
 			return "", fmt.Errorf("import %s: %w", path, err)
 		}
 		writePackage(&output, pkg)
+		if index < len(publicPackages)-1 {
+			output.WriteByte('\n')
+		}
 	}
 	return output.String(), nil
 }
@@ -117,7 +120,6 @@ func writePackage(output *strings.Builder, pkg *types.Package) {
 			writeType(output, typed)
 		}
 	}
-	output.WriteByte('\n')
 }
 
 func writeType(output *strings.Builder, object *types.TypeName) {

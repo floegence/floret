@@ -12,6 +12,12 @@
 - Replace unbound Host capabilities with `Host.Threads`, `Host.Thread`, bound
   `Thread`, `Turns`, and `SubAgents` handles, exact-revision reads, stable
   pagination, and linearized pull subscriptions with explicit Gap recovery.
+- Bind direct-child detail and pending-tool reads to `Child`, and bind turn and
+  artifact reads for any validated descendant to `DescendantReader`, without
+  repeating the target thread identity in read requests.
+- Start and continuously drain committed v3 SubAgent work after spawn, message,
+  interrupt, and committed-request replay while keeping read operations
+  execution-free.
 - Freeze the manually designed v3 API baseline, per-symbol v2 decision matrix,
   behavior contract, ownership matrix, and consumer provenance matrix.
 - Separate opaque ordinary-host storage sources from the advanced physical

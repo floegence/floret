@@ -254,6 +254,14 @@ func (manager *subAgentManagerHandle) SendInput(ctx context.Context, request sen
 	})
 }
 
+// Activate starts and drains durable input for one direct child.
+func (manager *subAgentManagerHandle) Activate(ctx context.Context, childThreadID identity.ThreadID) error {
+	if manager == nil || manager.inner == nil {
+		return errors.New("SubAgent manager is required")
+	}
+	return manager.inner.activateSubAgent(ctx, childThreadID)
+}
+
 // PublishPendingToolCompletion admits one host-owned child continuation.
 func (manager *subAgentManagerHandle) PublishPendingToolCompletion(ctx context.Context, request publishSubAgentPendingToolCompletionCommand) (SubAgentSnapshot, error) {
 	if manager == nil || manager.inner == nil {

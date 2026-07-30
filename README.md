@@ -131,6 +131,12 @@ code must never import `internal/*`.
 `Turns`, `SubAgents`, child, and descendant capabilities do not repeat that
 authority in each command.
 
+`Thread.Child` binds direct-child read authority for canonical detail and
+pending tool targets. `Thread.DescendantReader` binds one validated descendant
+at any depth for turn pages, exact turn reads, and artifacts. Neither handle
+accepts another thread identity after binding, and unrelated, deleted, or
+corrupt ancestry fails closed.
+
 Commands use stable logical request identities and explicit names:
 `CreateThread`, `StartTurn`, `RetryTurn`, `ForkThread`, `DeleteThread`,
 `ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,

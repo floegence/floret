@@ -391,12 +391,13 @@ type subagentController struct {
 	taskName       string
 	thread         *Thread
 
-	mu      sync.Mutex
-	running bool
-	turnID  string
-	closed  bool
-	cancel  context.CancelFunc
-	done    chan struct{}
+	mu        sync.Mutex
+	running   bool
+	turnID    string
+	closed    bool
+	autoDrain bool
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOptions) (SubAgentSnapshot, error) {
@@ -726,19 +727,38 @@ func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOpti
 
 func (h *AgentHarness) activateSubAgentTargets(ctx context.Context, parentThreadID string, childThreadIDs []string) error {
 	for _, childThreadID := range childThreadIDs {
-		meta, err := h.resolveSubAgentMeta(ctx, parentThreadID, childThreadID)
-		if err != nil {
+		if err := h.activateSubAgentTarget(ctx, parentThreadID, childThreadID); err != nil {
 			return err
 		}
-		if meta.IsClosed() {
-			continue
-		}
-		ctrl, err := h.ensureSubAgentController(ctx, meta, h.cacheThread(meta.ID))
-		if err != nil {
-			return err
-		}
-		h.startNextSubAgentTurn(ctrl)
 	}
+	return nil
+}
+
+// ActivateSubAgent starts and continuously drains durable input for one exact
+// child. Read APIs never call this method.
+func (h *AgentHarness) ActivateSubAgent(ctx context.Context, parentThreadID, childThreadID string) error {
+	if h == nil {
+		return errors.New("agent harness is nil")
+	}
+	return h.activateSubAgentTarget(ctx, parentThreadID, childThreadID)
+}
+
+func (h *AgentHarness) activateSubAgentTarget(ctx context.Context, parentThreadID, childThreadID string) error {
+	meta, err := h.resolveSubAgentMeta(ctx, parentThreadID, childThreadID)
+	if err != nil {
+		return err
+	}
+	if meta.IsClosed() {
+		return nil
+	}
+	ctrl, err := h.ensureSubAgentController(ctx, meta, h.cacheThread(meta.ID))
+	if err != nil {
+		return err
+	}
+	ctrl.mu.Lock()
+	ctrl.autoDrain = true
+	ctrl.mu.Unlock()
+	h.startNextSubAgentTurn(ctrl)
 	return nil
 }
 
@@ -2231,6 +2251,7 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 		ctrl.running = false
 		ctrl.turnID = ""
 		ctrl.cancel = nil
+		autoDrain := ctrl.autoDrain && !ctrl.closed
 		done := ctrl.done
 		ctrl.done = nil
 		ctrl.mu.Unlock()
@@ -2242,6 +2263,9 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 			Metadata: map[string]string{"subagent_thread_id": ctrl.threadID, "subagent_path": ctrl.path},
 		})
 		h.notifySubAgentUpdate()
+		if autoDrain {
+			h.startNextSubAgentTurn(ctrl)
+		}
 	}()
 }
 

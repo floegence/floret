@@ -1046,12 +1046,60 @@ func (child *Child) ID() identity.ThreadID {
 	return child.id
 }
 
+// ReadDetail returns canonical detail for the direct child bound to this
+// handle. The child identity cannot be substituted by the caller.
+func (child *Child) ReadDetail(ctx context.Context, request ThreadDetailRequest) (SubAgentDetail, error) {
+	if child == nil || child.reader == nil {
+		return SubAgentDetail{}, errors.New("Child read authority is required")
+	}
+	return child.reader.ReadDetail(ctx, subAgentDetailRequest{
+		ChildThreadID: child.id, AfterOrdinal: request.AfterOrdinal,
+		Limit: request.Limit, IncludeRaw: request.IncludeRaw,
+	})
+}
+
+// ListPendingToolTargets returns unsettled host-owned work for the direct
+// child bound to this handle.
+func (child *Child) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
+	if child == nil || child.reader == nil {
+		return nil, errors.New("Child read authority is required")
+	}
+	return child.reader.ListPendingToolTargets(ctx, child.id)
+}
+
 // ID returns the descendant identity bound to this read handle.
 func (reader *DescendantReader) ID() identity.ThreadID {
 	if reader == nil {
 		return ""
 	}
 	return reader.id
+}
+
+// ReadTurn returns one canonical turn from the descendant bound to this
+// handle.
+func (reader *DescendantReader) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
+	if reader == nil || reader.reader == nil {
+		return ThreadTurnSnapshot{}, errors.New("descendant read authority is required")
+	}
+	return reader.reader.ReadTurn(ctx, reader.id, turnID)
+}
+
+// ListTurns returns one canonical turn page from the descendant bound to this
+// handle.
+func (reader *DescendantReader) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+	if reader == nil || reader.reader == nil {
+		return ThreadTurnsPage{}, errors.New("descendant read authority is required")
+	}
+	return reader.reader.ListTurns(ctx, reader.id, request)
+}
+
+// ReadArtifact returns one artifact owned by the descendant bound to this
+// handle.
+func (reader *DescendantReader) ReadArtifact(ctx context.Context, artifactID identity.ArtifactID) (ArtifactContent, error) {
+	if reader == nil || reader.reader == nil {
+		return ArtifactContent{}, errors.New("descendant read authority is required")
+	}
+	return reader.reader.ReadArtifact(ctx, reader.id, artifactID)
 }
 
 // List returns the direct children of the bound parent.
@@ -1097,6 +1145,9 @@ func (subAgents *SubAgents) SpawnSubAgent(ctx context.Context, command SpawnSubA
 			return SpawnSubAgentResult{}, err
 		}
 		out.Receipt = receiptFromRecord(record, true)
+		if err := subAgents.activateCommittedChild(ctx, out.Child.ThreadID); err != nil {
+			return out, err
+		}
 		return out, nil
 	}
 	child, err := subAgents.manager.Spawn(ctx, spawnSubAgentCommand{
@@ -1114,6 +1165,9 @@ func (subAgents *SubAgents) SpawnSubAgent(ctx context.Context, command SpawnSubA
 		return SpawnSubAgentResult{}, err
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
+	if err := subAgents.activateCommittedChild(ctx, out.Child.ThreadID); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 
@@ -1164,6 +1218,9 @@ func (subAgents *SubAgents) sendSubAgentInput(ctx context.Context, operation str
 			return SendSubAgentMessageResult{}, err
 		}
 		out.Receipt = receiptFromRecord(record, true)
+		if err := subAgents.activateCommittedChild(ctx, out.Child.ThreadID); err != nil {
+			return out, err
+		}
 		return out, nil
 	}
 	child, err := subAgents.manager.SendInput(ctx, sendSubAgentInputCommand{
@@ -1179,7 +1236,21 @@ func (subAgents *SubAgents) sendSubAgentInput(ctx context.Context, operation str
 		return SendSubAgentMessageResult{}, err
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
+	if err := subAgents.activateCommittedChild(ctx, out.Child.ThreadID); err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+func (subAgents *SubAgents) activateCommittedChild(ctx context.Context, childThreadID identity.ThreadID) error {
+	activationCtx := context.Background()
+	if ctx != nil {
+		activationCtx = context.WithoutCancel(ctx)
+	}
+	if err := subAgents.manager.Activate(activationCtx, childThreadID); err != nil {
+		return &CommittedEffectError{Err: err}
+	}
+	return nil
 }
 
 // Subscribe starts an exact-thread stream after a canonical revision.

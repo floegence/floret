@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v3/config"
 	"github.com/floegence/floret/v3/florettest"
@@ -272,6 +273,42 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if spawned.Child.ThreadID != "child-thread" || spawned.Receipt.Replayed || spawned.Receipt.ThreadID != "child-thread" {
 		t.Fatalf("spawn result = %#v", spawned)
 	}
+	waitForV3SubAgentStatus(t, ctx, subAgents, spawned.Child.ThreadID, runtime.SubAgentStatusCompleted)
+	child, err := parent.Child(ctx, spawned.Child.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ID() != spawned.Child.ThreadID {
+		t.Fatalf("child id = %q, want %q", child.ID(), spawned.Child.ThreadID)
+	}
+	detail, err := child.ReadDetail(ctx, runtime.ThreadDetailRequest{IncludeRaw: true})
+	if err != nil || detail.Snapshot.ThreadID != spawned.Child.ThreadID {
+		t.Fatalf("child detail = %#v err=%v", detail, err)
+	}
+	if targets, err := child.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("child pending targets = %#v err=%v", targets, err)
+	}
+	descendant, err := parent.DescendantReader(ctx, spawned.Child.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := descendant.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(page.Turns) != 1 {
+		t.Fatalf("descendant turns = %#v err=%v", page, err)
+	}
+	turn, err := descendant.ReadTurn(ctx, page.Turns[0].TurnID)
+	if err != nil || turn.RunID != page.Turns[0].RunID {
+		t.Fatalf("descendant turn = %#v err=%v", turn, err)
+	}
+	if _, err := descendant.ReadTurn(ctx, "missing-turn"); !errors.Is(err, runtime.ErrTurnNotFound) {
+		t.Fatalf("missing descendant turn error = %v", err)
+	}
+	if _, err := descendant.ReadArtifact(ctx, "missing-artifact"); !errors.Is(err, runtime.ErrArtifactNotFound) {
+		t.Fatalf("missing descendant artifact error = %v", err)
+	}
+	if _, err := parent.Child(ctx, parent.ID()); !errors.Is(err, runtime.ErrSubAgentNotFound) {
+		t.Fatalf("parent bound as child error = %v", err)
+	}
 	spawnReplay, err := subAgents.SpawnSubAgent(ctx, spawnCommand)
 	if err != nil || !spawnReplay.Receipt.Replayed || spawnReplay.Child.ThreadID != spawned.Child.ThreadID {
 		t.Fatalf("spawn replay = %#v err=%v", spawnReplay, err)
@@ -289,6 +326,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForV3SubAgentStatus(t, ctx, subAgents, spawned.Child.ThreadID, runtime.SubAgentStatusCompleted)
 	sendReplay, err := subAgents.SendSubAgentMessage(ctx, sendCommand)
 	if err != nil || !sendReplay.Receipt.Replayed || sendReplay.Child.ThreadID != sent.Child.ThreadID {
 		t.Fatalf("send replay = %#v err=%v", sendReplay, err)
@@ -306,6 +344,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForV3SubAgentStatus(t, ctx, subAgents, spawned.Child.ThreadID, runtime.SubAgentStatusCompleted)
 	interruptReplay, err := subAgents.InterruptSubAgent(ctx, interruptCommand)
 	if err != nil || !interruptReplay.Receipt.Replayed || interruptReplay.Child.ThreadID != interrupted.Child.ThreadID {
 		t.Fatalf("interrupt replay = %#v err=%v", interruptReplay, err)
@@ -358,6 +397,24 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if result, err := restartedSubAgents.InterruptSubAgent(ctx, interruptCommand); err != nil || !result.Receipt.Replayed || result.Child.ThreadID != interrupted.Child.ThreadID {
 		t.Fatalf("restart interrupt replay = %#v err=%v", result, err)
 	}
+}
+
+func waitForV3SubAgentStatus(t *testing.T, ctx context.Context, subAgents *runtime.SubAgents, childThreadID identity.ThreadID, want runtime.SubAgentStatus) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		children, err := subAgents.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, child := range children {
+			if child.ThreadID == childThreadID && child.Status == want {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("subagent %q did not reach status %q", childThreadID, want)
 }
 
 func TestV3SubscriptionSuspendsWithOneGapOnTransientOverflow(t *testing.T) {

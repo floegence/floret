@@ -504,6 +504,15 @@ func (h *subAgentCapability) sendSubAgentInputCommand(ctx context.Context, req s
 	return result, requestConflictError(err, "subagent_input", req.InputRequestID)
 }
 
+func (h *subAgentCapability) activateSubAgent(ctx context.Context, childThreadID identity.ThreadID) error {
+	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return h.host.activateSubAgent(ctx, h.parentThreadID, childThreadID)
+}
+
 func (h *subAgentCapability) PublishPendingToolCompletion(ctx context.Context, req publishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {

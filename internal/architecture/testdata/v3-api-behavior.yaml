@@ -160,6 +160,51 @@ methods:
     concurrency: todo version and ThreadRevision CAS both apply
     cancellation: cancellation cannot erase committed todos
     closing: rejected after closing begins
+  - method: Child.ReadDetail
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: retry only after an independently observed canonical child mutation
+    commit: read-only detail projection for the bound direct child
+    replay: unchanged canonical detail returns equivalent content
+    concurrency: validates direct-child authority at binding and read time
+    cancellation: returns ctx.Err with no partial detail
+    closing: issued handles reject after Host closes
+  - method: Child.ListPendingToolTargets
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: retry only after an independently observed canonical child mutation
+    commit: read-only pending-target projection for the bound direct child
+    replay: unchanged canonical state returns the same ordered targets
+    concurrency: validates direct-child authority at binding and read time
+    cancellation: returns ctx.Err with no partial target list
+    closing: issued handles reject after Host closes
+  - method: DescendantReader.ListTurns
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadDeleted, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: retry only after a fresh descendant binding and canonical state change
+    commit: read-only stable page for the bound descendant
+    replay: the same cursor and canonical revision return the same page
+    concurrency: complete ancestry is validated before the descendant read
+    cancellation: returns ctx.Err with no partial page
+    closing: issued handles reject after Host closes
+  - method: DescendantReader.ReadTurn
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrTurnNotFound, ErrThreadDeleted, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: missing turns change only after an independently observed canonical mutation
+    commit: read-only exact turn projection for the bound descendant
+    replay: unchanged canonical state returns the same turn
+    concurrency: complete ancestry is validated before the descendant read
+    cancellation: returns ctx.Err with no partial turn
+    closing: issued handles reject after Host closes
+  - method: DescendantReader.ReadArtifact
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrArtifactNotFound, ErrThreadDeleted, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: missing artifacts change only after an independently observed canonical mutation
+    commit: read-only artifact content for the bound descendant
+    replay: unchanged canonical state returns the same artifact
+    concurrency: complete ancestry is validated before the descendant read
+    cancellation: returns ctx.Err with no partial artifact
+    closing: issued handles reject after Host closes
   - method: SubAgents.SpawnSubAgent
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
@@ -180,7 +225,7 @@ methods:
     closing: new message rejected and managed child work cancelled
   - method: SubAgents.InterruptSubAgent
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrRequestConflict]
-    errors_as: [RequestConflictError]
+    errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; missing/closed/conflict are permanent
     commit: interruption lifecycle fact advances only child revision
     replay: same request permanently returns original interruption receipt

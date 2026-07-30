@@ -474,6 +474,8 @@ field CapabilityOptions.SkillSources []string
 field CapabilityOptions.SkillPromptBudgetBytes int
 type Child struct
 method *Child.ID func() github.com/floegence/floret/v3/identity.ThreadID
+method *Child.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadDetailRequest) (github.com/floegence/floret/v3/runtime.SubAgentDetail, error)
+method *Child.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error)
 type CommittedCleanupError struct
 field CommittedCleanupError.ThreadID github.com/floegence/floret/v3/identity.ThreadID
 field CommittedCleanupError.Err error
@@ -520,6 +522,9 @@ field DeletedEvent.LogicalRequestID github.com/floegence/floret/v3/identity.Logi
 field DeletedEvent.DeletedAt time.Time tag="json:\"deleted_at\""
 type DescendantReader struct
 method *DescendantReader.ID func() github.com/floegence/floret/v3/identity.ThreadID
+method *DescendantReader.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
+method *DescendantReader.ListTurns func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error)
+method *DescendantReader.ReadArtifact func(ctx context.Context, artifactID github.com/floegence/floret/v3/identity.ArtifactID) (github.com/floegence/floret/v3/runtime.ArtifactContent, error)
 type DurableThreadEvent struct
 method DurableThreadEvent.Kind func() github.com/floegence/floret/v3/runtime.DurableThreadEventKind
 method DurableThreadEvent.Revision func() github.com/floegence/floret/v3/runtime.ThreadRevision
@@ -2239,4 +2244,3 @@ type ToolContractSpec struct
 field ToolContractSpec.Name string
 field ToolContractSpec.Resources func(github.com/floegence/floret/v3/florettest.ToolContractInvocation) ([]github.com/floegence/floret/v3/tools.ResourceRef, error)
 field ToolContractSpec.Handler func(context.Context, github.com/floegence/floret/v3/florettest.ToolContractInvocation) (github.com/floegence/floret/v3/tools.Result, error)
-

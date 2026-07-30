@@ -520,6 +520,12 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"Child", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Snapshot", "SubAgents", "Subscribe", "Turns")
 	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
 		"ContinuePendingTool", "RecordPendingToolOutcome", "ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
+	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
+		"ID", "ListPendingToolTargets", "ReadDetail")
+	exact("DescendantReader", reflect.TypeOf((*floretRuntime.DescendantReader)(nil)),
+		"ID", "ListTurns", "ReadArtifact", "ReadTurn")
+	exact("SubAgents", reflect.TypeOf((*floretRuntime.SubAgents)(nil)),
+		"InterruptSubAgent", "List", "SendSubAgentMessage", "SpawnSubAgent")
 	exact("Subscription", reflect.TypeOf((*floretRuntime.Subscription)(nil)), "Close", "Next")
 
 	for name, typ := range map[string]reflect.Type{

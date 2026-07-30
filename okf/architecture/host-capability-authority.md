@@ -26,6 +26,9 @@ validated against its exact parent.
 `Threads.ListThreads` is a bounded batch snapshot for product inventory. It does
 not grant mutation authority. Canonical read completeness does not widen
 authority: exact-thread queries and subscriptions never aggregate child
-execution, while descendant readers remain scoped beneath their bound parent.
+execution. `Child` exposes detail and pending-target reads for one direct child;
+`DescendantReader` exposes turn and artifact reads for one validated descendant
+at any depth. Both remain scoped beneath their bound parent and fail closed for
+unrelated, deleted, or corrupt ancestry.
 
 No public aggregate can recover or reissue composition-root authority.

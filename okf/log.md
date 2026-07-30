@@ -5,6 +5,12 @@
   Host, Threads, Thread, Turns, and SubAgents surfaces, Floret-allocated
   lifecycle identities, exact-revision reads, and pull subscriptions with
   explicit Gap recovery.
+* **Bound SubAgent reads**: Added direct-child detail and pending-tool reads on
+  `Child`, plus turn and artifact reads for one validated descendant on
+  `DescendantReader`, without caller-supplied target identities after binding.
+* **SubAgent execution**: Made committed v3 spawn, message, interrupt, and
+  request replay activate and continuously drain durable child input while
+  preserving execution-free read operations.
 * **Single source of truth**: Documented Floret ownership of admitted Agent
   lifecycle and the prohibition on host-side shadow stores and projections.
 * **Storage and migration**: Separated opaque ordinary-host Sources from the

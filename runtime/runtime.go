@@ -3529,6 +3529,13 @@ func (h *providerHost) sendSubAgentInputCommand(ctx context.Context, req sendSub
 	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
+func (h *providerHost) activateSubAgent(ctx context.Context, parentThreadID, childThreadID identity.ThreadID) error {
+	if err := h.harness.ActivateSubAgent(ctx, parentThreadID.String(), childThreadID.String()); err != nil {
+		return runtimeHostError(err)
+	}
+	return nil
+}
+
 func (h *providerHost) publishSubAgentPendingToolCompletionCommand(ctx context.Context, req publishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
 	if strings.TrimSpace(req.InputRequestID) == "" {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion input request id is required")
@@ -4263,10 +4270,12 @@ func firstRuntimeNonEmpty(values ...string) string {
 }
 
 func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
+	activityTimeline := cloneRuntimeActivityTimeline(in.ActivityTimeline)
+	activityTimeline.ThreadID = identity.ThreadID(in.Snapshot.ThreadID)
 	return SubAgentDetail{
 		Snapshot:         subAgentSnapshot(in.Snapshot),
 		Events:           subAgentThreadDetailEvents(in.Events),
-		ActivityTimeline: cloneRuntimeActivityTimeline(in.ActivityTimeline),
+		ActivityTimeline: activityTimeline,
 		Context:          subAgentDetailContext(in.Snapshot.ThreadID, in.Context),
 		NextOrdinal:      in.NextOrdinal,
 		HasMore:          in.HasMore,
