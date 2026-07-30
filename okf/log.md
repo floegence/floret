@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-30
+* **v3 capability completion**: Added exact-thread standalone compaction,
+  immutable Agent manual-compaction polling, and parent-bound SubAgent wait and
+  durable close operations without restoring v2 handles or unbound requests.
 * **v3 public boundary**: Replaced the v2 capability-handle graph with bound
   Host, Threads, Thread, Turns, and SubAgents surfaces, Floret-allocated
   lifecycle identities, exact-revision reads, and pull subscriptions with

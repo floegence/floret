@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/v3/config"
 	"github.com/floegence/floret/v3/florettest"
 	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/observation"
 	"github.com/floegence/floret/v3/provider"
 	"github.com/floegence/floret/v3/runtime"
 	"github.com/floegence/floret/v3/storage"
@@ -54,6 +55,127 @@ type deterministicIDs struct {
 	threads []identity.ThreadID
 	turns   []identity.TurnID
 	runs    []identity.RunID
+}
+
+type recordingManualCompactions struct {
+	polls []runtime.ManualCompactionPollRequest
+}
+
+func (source *recordingManualCompactions) PollManualCompaction(_ context.Context, request runtime.ManualCompactionPollRequest) (runtime.ManualCompactionRequest, bool, error) {
+	source.polls = append(source.polls, request)
+	if len(source.polls) > 1 {
+		return runtime.ManualCompactionRequest{}, false, nil
+	}
+	return runtime.ManualCompactionRequest{RequestID: "manual-request", Source: "host_action"}, true, nil
+}
+
+func TestV3AgentManualCompactionCapabilityIsPolledByBoundTurn(t *testing.T) {
+	ctx := context.Background()
+	host, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.Memory(),
+		IDSource: &deterministicIDs{
+			threads: []identity.ThreadID{"thread-manual"},
+			turns:   []identity.TurnID{"turn-manual"},
+			runs:    []identity.RunID{"run-manual"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone}}},
+	)
+	source := &recordingManualCompactions{}
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, runtime.WithAgentManualCompactions(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.Turns(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "start-manual", UserMessage: runtime.TurnInput{Text: "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.polls) == 0 {
+		t.Fatal("manual compaction source was not polled")
+	}
+	poll := source.polls[0]
+	if poll.ThreadID != created.ThreadID || poll.TurnID != started.TurnID || poll.RunID != started.RunID || poll.PromptScopeID != identity.PromptScopeID(created.ThreadID) {
+		t.Fatalf("manual compaction poll = %#v, started = %#v", poll, started)
+	}
+}
+
+func TestV3BoundThreadCompactionReturnsCanonicalResult(t *testing.T) {
+	ctx := context.Background()
+	host, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.Memory(),
+		IDSource: &deterministicIDs{
+			threads: []identity.ThreadID{"thread-compact"},
+			turns:   []identity.TurnID{"turn-compact"},
+			runs:    []identity.RunID{"run-turn-compact"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "short"}, {Type: provider.EventDone}}},
+	)
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.Turns(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turns.StartTurn(ctx, runtime.StartTurnCommand{LogicalRequestID: "start-compact", UserMessage: runtime.TurnInput{Text: "short"}}); err != nil {
+		t.Fatal(err)
+	}
+	result, compactErr := thread.Compact(ctx, agent, runtime.CompactThreadCommand{
+		LogicalRequestID: "compact-request", Source: "idle",
+	})
+	if compactErr == nil {
+		t.Fatal("short standalone compaction unexpectedly succeeded without a noop error")
+	}
+	if result.ThreadID != created.ThreadID || result.RequestID != "compact-request" || result.Compaction.Status != observation.CompactionStatusNoop {
+		t.Fatalf("compact result = %#v, err = %v", result, compactErr)
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (source *deterministicIDs) NewThreadID() (identity.ThreadID, error) {
@@ -354,6 +476,34 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if _, err := subAgents.InterruptSubAgent(ctx, changedInterrupt); !errors.Is(err, runtime.ErrRequestConflict) {
 		t.Fatalf("changed interrupt replay = %v", err)
 	}
+	waited, err := subAgents.WaitSubAgents(ctx, runtime.WaitSubAgentsCommand{
+		ChildThreadIDs: []identity.ThreadID{spawned.Child.ThreadID}, Timeout: time.Second,
+	})
+	if err != nil || waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].ThreadID != spawned.Child.ThreadID {
+		t.Fatalf("wait result = %#v, err = %v", waited, err)
+	}
+	if err := waited.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	closeCommand := runtime.CloseSubAgentCommand{
+		LogicalRequestID: "close-child", ChildThreadID: spawned.Child.ThreadID, Reason: "parent_terminal",
+	}
+	closed, err := subAgents.CloseSubAgent(ctx, closeCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !closed.Child.Closed || closed.Child.Status != runtime.SubAgentStatusClosed || closed.Receipt.Replayed {
+		t.Fatalf("close result = %#v", closed)
+	}
+	closeReplay, err := subAgents.CloseSubAgent(ctx, closeCommand)
+	if err != nil || !closeReplay.Receipt.Replayed || closeReplay.Child.ThreadID != closed.Child.ThreadID {
+		t.Fatalf("close replay = %#v, err = %v", closeReplay, err)
+	}
+	changedClose := closeCommand
+	changedClose.Reason = "changed"
+	if _, err := subAgents.CloseSubAgent(ctx, changedClose); !errors.Is(err, runtime.ErrRequestConflict) {
+		t.Fatalf("changed close replay = %v", err)
+	}
 
 	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
@@ -396,6 +546,9 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	}
 	if result, err := restartedSubAgents.InterruptSubAgent(ctx, interruptCommand); err != nil || !result.Receipt.Replayed || result.Child.ThreadID != interrupted.Child.ThreadID {
 		t.Fatalf("restart interrupt replay = %#v err=%v", result, err)
+	}
+	if result, err := restartedSubAgents.CloseSubAgent(ctx, closeCommand); err != nil || !result.Receipt.Replayed || result.Child.ThreadID != closed.Child.ThreadID {
+		t.Fatalf("restart close replay = %#v err=%v", result, err)
 	}
 }
 

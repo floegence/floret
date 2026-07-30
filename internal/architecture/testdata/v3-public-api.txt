@@ -476,6 +476,13 @@ type Child struct
 method *Child.ID func() github.com/floegence/floret/v3/identity.ThreadID
 method *Child.ReadDetail func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadDetailRequest) (github.com/floegence/floret/v3/runtime.SubAgentDetail, error)
 method *Child.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error)
+type CloseSubAgentCommand struct
+field CloseSubAgentCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field CloseSubAgentCommand.ChildThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"child_thread_id\""
+field CloseSubAgentCommand.Reason string tag="json:\"reason\""
+type CloseSubAgentResult struct
+field CloseSubAgentResult.Child github.com/floegence/floret/v3/runtime.SubAgentSnapshot tag="json:\"child\""
+field CloseSubAgentResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
 type CommittedCleanupError struct
 field CommittedCleanupError.ThreadID github.com/floegence/floret/v3/identity.ThreadID
 field CommittedCleanupError.Err error
@@ -486,6 +493,21 @@ field CommittedEffectError.EffectAttemptID string
 field CommittedEffectError.Err error
 method *CommittedEffectError.Error func() string
 method *CommittedEffectError.Unwrap func() error
+type CompactThreadCommand struct
+field CompactThreadCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field CompactThreadCommand.Source string tag="json:\"source\""
+field CompactThreadCommand.Labels github.com/floegence/floret/v3/runtime.RunLabels tag="json:\"labels,omitempty\""
+field CompactThreadCommand.Limits github.com/floegence/floret/v3/runtime.TurnLimits tag="json:\"limits,omitempty\""
+field CompactThreadCommand.Reasoning github.com/floegence/floret/v3/config.ReasoningSelection tag="json:\"reasoning,omitempty\""
+type CompactThreadResult struct
+field CompactThreadResult.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field CompactThreadResult.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field CompactThreadResult.RequestID string tag="json:\"request_id\""
+field CompactThreadResult.Compaction github.com/floegence/floret/v3/observation.CompactionEvent tag="json:\"compaction\""
+field CompactThreadResult.Metrics github.com/floegence/floret/v3/runtime.RunMetrics tag="json:\"metrics\""
+field CompactThreadResult.ActivityTimeline github.com/floegence/floret/v3/observation.ActivityTimeline tag="json:\"activity_timeline\""
+field CompactThreadResult.Replayed bool tag="json:\"replayed,omitempty\""
+method CompactThreadResult.Validate func() error
 type ContinuePendingToolCommand struct
 field ContinuePendingToolCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
 field ContinuePendingToolCommand.Target github.com/floegence/floret/v3/runtime.ActivePendingToolTarget tag="json:\"target\""
@@ -960,6 +982,8 @@ method *SubAgents.List func(ctx context.Context) ([]github.com/floegence/floret/
 method *SubAgents.SpawnSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SpawnSubAgentCommand) (github.com/floegence/floret/v3/runtime.SpawnSubAgentResult, error)
 method *SubAgents.SendSubAgentMessage func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SendSubAgentMessageCommand) (github.com/floegence/floret/v3/runtime.SendSubAgentMessageResult, error)
 method *SubAgents.InterruptSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.InterruptSubAgentCommand) (github.com/floegence/floret/v3/runtime.InterruptSubAgentResult, error)
+method *SubAgents.WaitSubAgents func(ctx context.Context, command github.com/floegence/floret/v3/runtime.WaitSubAgentsCommand) (github.com/floegence/floret/v3/runtime.WaitSubAgentsResult, error)
+method *SubAgents.CloseSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.CloseSubAgentCommand) (github.com/floegence/floret/v3/runtime.CloseSubAgentResult, error)
 type SubscribeOptions struct
 field SubscribeOptions.AfterRevision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"after_revision\""
 type Subscription struct
@@ -985,6 +1009,7 @@ method *Thread.Snapshot func(ctx context.Context) (github.com/floegence/floret/v
 method *Thread.ForkThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ForkThreadCommand) (github.com/floegence/floret/v3/runtime.ForkThreadResultV3, error)
 method *Thread.DeleteThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.DeleteThreadCommand) (github.com/floegence/floret/v3/runtime.DeleteThreadResult, error)
 method *Thread.Turns func(agent *github.com/floegence/floret/v3/runtime.Agent) (*github.com/floegence/floret/v3/runtime.Turns, error)
+method *Thread.Compact func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent, command github.com/floegence/floret/v3/runtime.CompactThreadCommand) (github.com/floegence/floret/v3/runtime.CompactThreadResult, error)
 method *Thread.Child func(ctx context.Context, childThreadID github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.Child, error)
 method *Thread.DescendantReader func(ctx context.Context, descendantThreadID github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.DescendantReader, error)
 method *Thread.SubAgents func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent) (*github.com/floegence/floret/v3/runtime.SubAgents, error)
@@ -1408,12 +1433,20 @@ field UpdateTodosCommand.ToolCallID string tag="json:\"tool_call_id\""
 type UpdateTodosResult struct
 field UpdateTodosResult.State github.com/floegence/floret/v3/runtime.ThreadAgentTodoState tag="json:\"state\""
 field UpdateTodosResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+type WaitSubAgentsCommand struct
+field WaitSubAgentsCommand.ChildThreadIDs []github.com/floegence/floret/v3/identity.ThreadID tag="json:\"child_thread_ids\""
+field WaitSubAgentsCommand.Timeout time.Duration tag="json:\"timeout\""
+type WaitSubAgentsResult struct
+field WaitSubAgentsResult.Snapshots []github.com/floegence/floret/v3/runtime.SubAgentSnapshot tag="json:\"snapshots\""
+field WaitSubAgentsResult.TimedOut bool tag="json:\"timed_out,omitempty\""
+method WaitSubAgentsResult.Validate func() error
 func WithAgentCapabilities func(capabilities github.com/floegence/floret/v3/runtime.CapabilityOptions) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v3/runtime.ToolSurfaceProvider) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v3/runtime.EffectAuthorizationGate) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentEventSink func(sink github.com/floegence/floret/v3/runtime.EventSink) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v3/runtime.LoopLimits) github.com/floegence/floret/v3/runtime.AgentOption
+func WithAgentManualCompactions func(source github.com/floegence/floret/v3/runtime.ManualCompactionSource) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v3/runtime.ThreadTitleMode) github.com/floegence/floret/v3/runtime.AgentOption
 func WithAgentTools func(items ...github.com/floegence/floret/v3/tools.Tool) github.com/floegence/floret/v3/runtime.AgentOption

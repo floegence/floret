@@ -14,8 +14,12 @@ composition-root-only `*runtime.Host`. Its public method set is intentionally
 small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread` and
 `Threads.ListThreads` are the only unbound collection operations. `Host.Thread`
 returns a handle bound to one exact `identity.ThreadID`; `Thread.Turns`,
-`Thread.SubAgents`, `Thread.Child`, and `Thread.DescendantReader` preserve that
+`Thread.Compact`, `Thread.SubAgents`, `Thread.Child`, and `Thread.DescendantReader` preserve that
 authority without repeating it in command DTOs.
+Standalone compaction remains exact-thread authority. Active-turn manual
+compaction is an immutable Agent capability polled only at engine safe points.
+`SubAgents.WaitSubAgents` and `CloseSubAgent` validate direct children beneath
+the bound parent; close is a durable, replayable logical mutation.
 
 `Child.ReadDetail` and `Child.ListPendingToolTargets` apply only to the bound
 direct child. `DescendantReader.ListTurns`, `ReadTurn`, and `ReadArtifact` apply
@@ -41,7 +45,7 @@ subscriptions use `Next(ctx)`. A queue overflow returns one Gap and then
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect
 gate, event sink, dynamic tool surface, loop limits, title mode, capabilities,
-and SubAgent timeout. It has no mutating API.
+SubAgent timeout, and optional manual compaction source. It has no mutating API.
 
 Runtime owns admitted conversation, turn/run lifecycle, projections, approval,
 Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache

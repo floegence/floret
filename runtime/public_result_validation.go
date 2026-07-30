@@ -70,6 +70,11 @@ func (r waitSubAgentsCommandResult) Validate() error {
 	return nil
 }
 
+// Validate checks one public SubAgent wait result.
+func (r WaitSubAgentsResult) Validate() error {
+	return waitSubAgentsCommandResult(r).Validate()
+}
+
 // Validate checks one canonical Agent todo projection.
 func (s ThreadAgentTodoState) Validate() error {
 	if !trimStableNonEmpty(string(s.ThreadID)) || s.Version < 0 {

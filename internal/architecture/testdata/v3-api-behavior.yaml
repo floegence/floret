@@ -106,6 +106,15 @@ methods:
     concurrency: delete linearizes after prior mutations and excludes later mutations
     cancellation: committed cleanup failure remains classified as committed
     closing: not admitted after closing begins
+  - method: Thread.Compact
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe; busy is transient; changed request input is permanent
+    commit: the terminal compaction event and checkpoint advance the bound thread revision before return
+    replay: the logical request id is the durable compaction request id and returns the original result
+    concurrency: bound thread authority serializes standalone compaction against turns and deletion
+    cancellation: cancellation preserves any compaction checkpoint already committed by the engine
+    closing: new compaction is rejected after closing begins and admitted work is joined by shutdown
   - method: Turns.StartTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
@@ -232,3 +241,21 @@ methods:
     concurrency: child lease generation and ThreadRevision CAS both apply
     cancellation: cancellation cannot erase a committed interruption
     closing: shutdown cancellation and explicit interrupt remain distinguishable durable facts
+  - method: SubAgents.WaitSubAgents
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: timeout is a successful observation; missing or unrelated children require a fresh canonical read
+    commit: read-only wait returns canonical direct-child snapshots without lifecycle mutation
+    replay: repeated waits observe the same or a later canonical child state
+    concurrency: selected direct children are validated under the bound parent before waiting
+    cancellation: returns ctx.Err without closing, interrupting, or otherwise mutating children
+    closing: active waits finish when managed child work stops during shutdown
+  - method: SubAgents.CloseSubAgent
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; missing, closed under another request, or conflicting input is permanent
+    commit: child closure and its lifecycle event commit before the logical request receipt
+    replay: same request permanently returns the original closed child and receipt
+    concurrency: child authority and parent-bound request serialization prevent cross-parent closure
+    cancellation: cancellation cannot erase a closure already committed by the child lifecycle
+    closing: explicit closure remains distinct from Host shutdown cancellation

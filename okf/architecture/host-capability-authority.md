@@ -13,6 +13,8 @@ timestamp: 2026-07-29T00:00:00Z
 binds one exact `ThreadID`; `Thread.Turns`, `Thread.SubAgents`, `Child`, and
 `DescendantReader` derive narrower authority without accepting the same identity
 again. Commands cannot select a different bound thread.
+`Thread.Compact` uses that same exact-thread authority. `SubAgents.WaitSubAgents`
+and `CloseSubAgent` remain restricted to direct children of the bound parent.
 
 Host and every issued handle share one lifetime fence. Shutdown prevents new
 work, cancels and joins managed execution, and closes owned storage.

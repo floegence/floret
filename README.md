@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v3@v3.0.0
+go get github.com/floegence/floret/v3@v3.0.1
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -139,9 +139,10 @@ corrupt ancestry fails closed.
 
 Commands use stable logical request identities and explicit names:
 `CreateThread`, `StartTurn`, `RetryTurn`, `ForkThread`, `DeleteThread`,
+`Compact`,
 `ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,
 `UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`, and
-`InterruptSubAgent`. Floret allocates all lifecycle identities. Replaying the
+`InterruptSubAgent`, `WaitSubAgents`, and `CloseSubAgent`. Floret allocates all lifecycle identities. Replaying the
 same logical request under the same operation and bound authority returns the
 original identities; changing durable input returns a typed request conflict.
 

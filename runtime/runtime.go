@@ -1664,6 +1664,11 @@ func (r compactThreadResult) Validate() error {
 	return nil
 }
 
+// Validate checks one public standalone compaction result.
+func (r CompactThreadResult) Validate() error {
+	return compactThreadResult(r).Validate()
+}
+
 type EventSink interface {
 	EmitEvent(Event)
 }

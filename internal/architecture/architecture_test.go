@@ -517,7 +517,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
 	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
-		"Child", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Snapshot", "SubAgents", "Subscribe", "Turns")
+		"Child", "Compact", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Snapshot", "SubAgents", "Subscribe", "Turns")
 	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
 		"ContinuePendingTool", "RecordPendingToolOutcome", "ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
@@ -525,7 +525,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("DescendantReader", reflect.TypeOf((*floretRuntime.DescendantReader)(nil)),
 		"ID", "ListTurns", "ReadArtifact", "ReadTurn")
 	exact("SubAgents", reflect.TypeOf((*floretRuntime.SubAgents)(nil)),
-		"InterruptSubAgent", "List", "SendSubAgentMessage", "SpawnSubAgent")
+		"CloseSubAgent", "InterruptSubAgent", "List", "SendSubAgentMessage", "SpawnSubAgent", "WaitSubAgents")
 	exact("Subscription", reflect.TypeOf((*floretRuntime.Subscription)(nil)), "Close", "Next")
 
 	for name, typ := range map[string]reflect.Type{

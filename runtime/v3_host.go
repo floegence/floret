@@ -128,6 +128,28 @@ type StartTurnCommand struct {
 	Reasoning           config.ReasoningSelection     `json:"reasoning,omitempty"`
 }
 
+// CompactThreadCommand runs one provider-backed compaction on the bound
+// Thread. LogicalRequestID is also the durable compaction request identity.
+type CompactThreadCommand struct {
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id"`
+	Source           string                    `json:"source"`
+	Labels           RunLabels                 `json:"labels,omitempty"`
+	Limits           TurnLimits                `json:"limits,omitempty"`
+	Reasoning        config.ReasoningSelection `json:"reasoning,omitempty"`
+}
+
+// CompactThreadResult is the canonical terminal result of one standalone
+// provider-backed compaction.
+type CompactThreadResult struct {
+	ThreadID         identity.ThreadID            `json:"thread_id"`
+	RunID            identity.RunID               `json:"run_id"`
+	RequestID        string                       `json:"request_id"`
+	Compaction       observation.CompactionEvent  `json:"compaction"`
+	Metrics          RunMetrics                   `json:"metrics"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	Replayed         bool                         `json:"replayed,omitempty"`
+}
+
 // StartTurnResult returns the canonical result and Floret-allocated execution
 // identities for one admitted turn.
 type StartTurnResult struct {
@@ -270,6 +292,31 @@ type InterruptSubAgentCommand struct {
 // InterruptSubAgentResult reports the canonical child after interrupt
 // admission.
 type InterruptSubAgentResult struct {
+	Child   SubAgentSnapshot `json:"child"`
+	Receipt MutationReceipt  `json:"receipt"`
+}
+
+// WaitSubAgentsCommand waits for selected direct children of the bound parent.
+type WaitSubAgentsCommand struct {
+	ChildThreadIDs []identity.ThreadID `json:"child_thread_ids"`
+	Timeout        time.Duration       `json:"timeout"`
+}
+
+// WaitSubAgentsResult reports the selected canonical child snapshots.
+type WaitSubAgentsResult struct {
+	Snapshots []SubAgentSnapshot `json:"snapshots"`
+	TimedOut  bool               `json:"timed_out,omitempty"`
+}
+
+// CloseSubAgentCommand closes one direct child of the bound parent.
+type CloseSubAgentCommand struct {
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id"`
+	ChildThreadID    identity.ThreadID         `json:"child_thread_id"`
+	Reason           string                    `json:"reason"`
+}
+
+// CloseSubAgentResult reports the canonical child after closure.
+type CloseSubAgentResult struct {
 	Child   SubAgentSnapshot `json:"child"`
 	Receipt MutationReceipt  `json:"receipt"`
 }
@@ -972,6 +1019,28 @@ func (thread *Thread) Turns(agent *Agent) (*Turns, error) {
 	return &Turns{thread: thread, agent: agent}, nil
 }
 
+// Compact runs provider-backed compaction for the exact bound Thread.
+func (thread *Thread) Compact(ctx context.Context, agent *Agent, command CompactThreadCommand) (CompactThreadResult, error) {
+	if thread == nil || thread.host == nil {
+		return CompactThreadResult{}, errors.New("thread is required")
+	}
+	if agent == nil {
+		return CompactThreadResult{}, errors.New("thread compaction requires an Agent")
+	}
+	if _, err := identity.ParseLogicalRequestID(command.LogicalRequestID.String()); err != nil {
+		return CompactThreadResult{}, err
+	}
+	compactor, err := thread.host.threadCompactor(ctx, thread.id, agent)
+	if err != nil {
+		return CompactThreadResult{}, err
+	}
+	result, err := compactor.Compact(ctx, threadCompactionRequest{
+		RequestID: command.LogicalRequestID.String(), Source: command.Source, Labels: command.Labels,
+		Limits: command.Limits, Reasoning: command.Reasoning,
+	})
+	return CompactThreadResult(result), err
+}
+
 // Child binds read authority to one direct child of the Thread.
 func (thread *Thread) Child(ctx context.Context, childThreadID identity.ThreadID) (*Child, error) {
 	if thread == nil || thread.host == nil {
@@ -1181,6 +1250,63 @@ func (subAgents *SubAgents) SendSubAgentMessage(ctx context.Context, command Sen
 func (subAgents *SubAgents) InterruptSubAgent(ctx context.Context, command InterruptSubAgentCommand) (InterruptSubAgentResult, error) {
 	result, err := subAgents.sendSubAgentInput(ctx, "interrupt_subagent", command.LogicalRequestID, command.ChildThreadID, command.Input, command.Labels, true)
 	return InterruptSubAgentResult(result), err
+}
+
+// WaitSubAgents waits for selected direct children of the bound parent.
+func (subAgents *SubAgents) WaitSubAgents(ctx context.Context, command WaitSubAgentsCommand) (WaitSubAgentsResult, error) {
+	if subAgents == nil || subAgents.manager == nil {
+		return WaitSubAgentsResult{}, errors.New("SubAgents authority is required")
+	}
+	result, err := subAgents.manager.Wait(ctx, waitSubAgentsCommand{
+		ChildThreadIDs: append([]identity.ThreadID(nil), command.ChildThreadIDs...), Timeout: command.Timeout,
+	})
+	return WaitSubAgentsResult(result), err
+}
+
+// CloseSubAgent closes or permanently replays closure of one direct child.
+func (subAgents *SubAgents) CloseSubAgent(ctx context.Context, command CloseSubAgentCommand) (CloseSubAgentResult, error) {
+	if subAgents == nil || subAgents.parent == nil || subAgents.parent.host == nil || subAgents.manager == nil {
+		return CloseSubAgentResult{}, errors.New("SubAgents authority is required")
+	}
+	host := subAgents.parent.host
+	childThreadID, err := identity.ParseThreadID(command.ChildThreadID.String())
+	if err != nil {
+		return CloseSubAgentResult{}, err
+	}
+	fingerprint, err := validateAndFingerprintMutation(host, command.LogicalRequestID, struct {
+		ChildThreadID identity.ThreadID `json:"child_thread_id"`
+		Reason        string            `json:"reason"`
+	}{childThreadID, command.Reason})
+	if err != nil {
+		return CloseSubAgentResult{}, err
+	}
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	record, replayed, err := host.reserveChildMutation(ctx, "close_subagent", subAgents.parent.id, childThreadID, command.LogicalRequestID, fingerprint)
+	if err != nil {
+		return CloseSubAgentResult{}, err
+	}
+	if replayed && record.State == requestStateCommitted {
+		var out CloseSubAgentResult
+		if err := decodeLedgerResult(record, &out); err != nil {
+			return CloseSubAgentResult{}, err
+		}
+		out.Receipt = receiptFromRecord(record, true)
+		return out, nil
+	}
+	child, err := subAgents.manager.Close(ctx, closeSubAgentCommand{
+		CloseOperationID: command.LogicalRequestID.String(), ChildThreadID: childThreadID, Reason: command.Reason,
+	})
+	if err != nil {
+		return CloseSubAgentResult{}, err
+	}
+	out := CloseSubAgentResult{Child: child}
+	childThread := &Thread{host: host, id: childThreadID}
+	if err := host.commitMutationResult(context.WithoutCancel(ctx), childThread, &record, &out); err != nil {
+		return CloseSubAgentResult{}, err
+	}
+	out.Receipt = receiptFromRecord(record, replayed)
+	return out, nil
 }
 
 func (subAgents *SubAgents) sendSubAgentInput(ctx context.Context, operation string, requestID identity.LogicalRequestID, childThreadID identity.ThreadID, input TurnInput, labels RunLabels, interrupt bool) (SendSubAgentMessageResult, error) {
@@ -1503,7 +1629,7 @@ func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (St
 		RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
 		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
 		Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
-		Reasoning: command.Reasoning,
+		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
 	})
 	if result.TurnID != "" {
 		view, snapshotErr := turns.thread.Snapshot(context.WithoutCancel(ctx))
@@ -2218,6 +2344,8 @@ func setMutationResultReceipt(result any, receipt MutationReceipt) error {
 	case *SpawnSubAgentResult:
 		value.Receipt = receipt
 	case *SendSubAgentMessageResult:
+		value.Receipt = receipt
+	case *CloseSubAgentResult:
 		value.Receipt = receipt
 	default:
 		return ErrAuthorityCorrupt

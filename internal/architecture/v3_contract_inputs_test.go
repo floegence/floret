@@ -85,8 +85,10 @@ func TestV3BehaviorContractCoversHostSurface(t *testing.T) {
 		"Open", "Host.Threads", "Host.Thread", "Host.Shutdown",
 		"Threads.ListThreads", "Threads.CreateThread", "Thread.Snapshot", "Thread.Subscribe", "Subscription.Next",
 		"Thread.ForkThread", "Thread.DeleteThread", "Turns.StartTurn", "Turns.RetryTurn",
+		"Thread.Compact",
 		"Turns.ContinuePendingTool", "Turns.RecordPendingToolOutcome", "Turns.ResolveApproval", "Turns.UpdateTodos",
 		"SubAgents.SpawnSubAgent", "SubAgents.SendSubAgentMessage", "SubAgents.InterruptSubAgent",
+		"SubAgents.WaitSubAgents", "SubAgents.CloseSubAgent",
 	} {
 		block := behaviorBlock(data, method)
 		if block == "" {

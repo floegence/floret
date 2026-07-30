@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.0.1 - 2026-07-30
+
+- Restore the v3 bound runtime capabilities required by complete downstream
+  adoption: active-turn manual compaction polling, standalone thread
+  compaction, and direct-child wait and close operations.
+- Keep every restored operation authority-bound: compaction is issued by an
+  exact `Thread`, while wait and close are issued by `SubAgents` bound to an
+  exact parent. No v2 handle, caller-assigned lifecycle identity, or unbound
+  compatibility DTO is reintroduced.
+- Add external-package behavior coverage for manual compaction polling,
+  canonical standalone compaction results, and durable SubAgent close replay.
+
 ## v3.0.0 - 2026-07-30
 
 - **Breaking:** Move the module to `github.com/floegence/floret/v3` and remove

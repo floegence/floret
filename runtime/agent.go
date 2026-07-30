@@ -24,6 +24,7 @@ type Agent struct {
 	capabilities        CapabilityOptions
 	threadTitleMode     ThreadTitleMode
 	subAgentRunTimeout  time.Duration
+	manualCompactions   ManualCompactionSource
 }
 
 // AgentOption configures one immutable Agent capability at construction time.
@@ -197,6 +198,18 @@ func WithAgentThreadTitleMode(mode ThreadTitleMode) AgentOption {
 func WithAgentSubAgentTimeout(timeout time.Duration) AgentOption {
 	return AgentOption{category: "subagent_timeout", apply: func(builder *agentBuilder) error {
 		builder.agent.subAgentRunTimeout = timeout
+		return nil
+	}}
+}
+
+// WithAgentManualCompactions configures host-owned manual compaction requests
+// that are polled at safe points during each turn executed by the Agent.
+func WithAgentManualCompactions(source ManualCompactionSource) AgentOption {
+	return AgentOption{category: "manual_compactions", apply: func(builder *agentBuilder) error {
+		if source == nil {
+			return errors.New("agent manual compaction source is required")
+		}
+		builder.agent.manualCompactions = source
 		return nil
 	}}
 }
