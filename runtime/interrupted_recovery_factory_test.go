@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/storage/sqlite"
 )
 
 func TestInterruptedTurnRecoveryFactoryRefreshesOnlyItsExactTarget(t *testing.T) {
@@ -157,7 +158,7 @@ func TestInterruptedTurnRecoveryFailureCodeRemainsReadableThroughPublicTurnPage(
 				if err != nil {
 					t.Fatal(err)
 				}
-				page, err := readHost.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+				page, err := readHost.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 1})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -585,10 +586,10 @@ func newInterruptedRecoveryTestStore(t *testing.T, backend string, policy sessio
 	}
 }
 
-func createTestRoot(t *testing.T, ctx context.Context, capabilities *testCapabilitySet, threadID ThreadID) {
+func createTestRoot(t *testing.T, ctx context.Context, capabilities *testCapabilitySet, threadID identity.ThreadID) {
 	t.Helper()
 	req := testCreateThreadRequest(threadID)
-	host, err := capabilities.create.Bind(req.ThreadID, req.CreateIntentID)
+	host, err := capabilities.create.Bind(req.ThreadID, req.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}

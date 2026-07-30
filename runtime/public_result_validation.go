@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/observation"
 )
 
 func (s SubAgentStatus) valid() bool {
@@ -55,8 +56,8 @@ func (s SubAgentSnapshot) Validate() error {
 }
 
 // Validate checks one public SubAgent wait result.
-func (r WaitSubAgentsResult) Validate() error {
-	seen := make(map[ThreadID]struct{}, len(r.Snapshots))
+func (r waitSubAgentsCommandResult) Validate() error {
+	seen := make(map[identity.ThreadID]struct{}, len(r.Snapshots))
 	for index, snapshot := range r.Snapshots {
 		if err := snapshot.Validate(); err != nil {
 			return fmt.Errorf("subagent wait snapshot %d: %w", index, err)
@@ -100,7 +101,7 @@ func (p ThreadDetailEvents) Validate() error {
 	if p.NextOrdinal < 0 || p.RetainedFrom < 0 || p.GeneratedAt.IsZero() || p.GeneratedAt != p.GeneratedAt.UTC() {
 		return errors.New("thread detail page boundary or generation time is invalid")
 	}
-	var threadID ThreadID
+	var threadID identity.ThreadID
 	var previous int64
 	seen := make(map[string]struct{}, len(p.Events))
 	for index, event := range p.Events {
@@ -150,7 +151,7 @@ func validateThreadDetailEvent(event ThreadDetailEvent) error {
 }
 
 // Validate checks one public SubAgent activity projection.
-func (r SubAgentActivityTimelineResult) Validate() error {
+func (r subAgentActivityTimelineResult) Validate() error {
 	if r.GeneratedAt.IsZero() || r.GeneratedAt != r.GeneratedAt.UTC() {
 		return errors.New("subagent activity result requires a UTC generation time")
 	}
@@ -177,7 +178,7 @@ func (d SubAgentDetail) Validate() error {
 	if err := observation.ValidateActivityTimeline(d.ActivityTimeline); err != nil {
 		return fmt.Errorf("subagent detail activity timeline: %w", err)
 	}
-	if d.ActivityTimeline.ThreadID != string(d.Snapshot.ThreadID) {
+	if d.ActivityTimeline.ThreadID.String() != string(d.Snapshot.ThreadID) {
 		return errors.New("subagent detail activity identity mismatch")
 	}
 	if err := d.Context.Validate(); err != nil {

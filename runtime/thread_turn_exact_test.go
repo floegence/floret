@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	publicstorage "github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v3/storage"
 )
 
 func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
@@ -21,8 +23,8 @@ func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, threadID := range []ThreadID{"first", "second"} {
-		if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: threadID}); err != nil {
+	for _, threadID := range []identity.ThreadID{"first", "second"} {
+		if _, err := maintenance.CreateThread(ctx, createThreadRequest{ThreadID: threadID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -36,17 +38,17 @@ func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "first", TurnID: "turn"})
+	turn, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "first", TurnID: "turn"})
 	if err != nil || turn.TurnID != "turn" || turn.RunID != "run" {
 		t.Fatalf("exact root turn=%#v err=%v", turn, err)
 	}
-	if _, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "first", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) {
+	if _, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "first", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("missing turn err=%v, want ErrTurnNotFound", err)
 	}
-	if _, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "second", TurnID: "turn"}); err == nil || errors.Is(err, ErrTurnNotFound) {
+	if _, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "second", TurnID: "turn"}); err == nil || errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("wrong bound root err=%v, want bound mismatch distinct from ErrTurnNotFound", err)
 	}
-	rich, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "first", TurnID: "turn-rich"})
+	rich, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "first", TurnID: "turn-rich"})
 	if err != nil || len(rich.UserAttachments) != 1 || rich.UserAttachments[0].ResourceRef != "attachment:one" ||
 		len(rich.UserReferences) != 1 || rich.UserReferences[0].ReferenceID != "ref" {
 		t.Fatalf("rich exact turn=%#v err=%v", rich, err)
@@ -54,7 +56,7 @@ func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
 	if err := maintenance.DeleteThread(ctx, "first"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "first", TurnID: "turn"}); !errors.Is(err, ErrThreadDeleted) {
+	if _, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "first", TurnID: "turn"}); !errors.Is(err, ErrThreadDeleted) {
 		t.Fatalf("deleted root exact err=%v, want ErrThreadDeleted", err)
 	}
 }
@@ -78,14 +80,14 @@ func TestThreadReadHostReadThreadTurnReturnsNotFoundForEmptyThreadAcrossStores(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "empty"}); err != nil {
+			if _, err := maintenance.CreateThread(ctx, createThreadRequest{ThreadID: "empty"}); err != nil {
 				t.Fatal(err)
 			}
 			host, err := mustTestCapabilities(t, store).read.NewHost(ctx, "empty")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "empty", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) || errors.Is(err, ErrAuthorityCorrupt) {
+			if _, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "empty", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) || errors.Is(err, ErrAuthorityCorrupt) {
 				t.Fatalf("empty thread exact read err=%v, want ErrTurnNotFound only", err)
 			}
 		})
@@ -102,11 +104,11 @@ func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 			clock := &interruptedRecoveryTestClock{now: time.Date(2026, time.July, 26, 10, 0, 0, 0, time.UTC)}
 			if backend == "sqlite_reopen" {
 				path = filepath.Join(t.TempDir(), "floret.db")
-				physical, openErr := publicstorage.SQLite(path).Open(ctx)
+				physical, openErr := storagebridge.Open(ctx, storagebridge.Source(publicstorage.SQLite(path)))
 				if openErr != nil {
 					t.Fatal(openErr)
 				}
-				repo, openErr := storage.NewBackendKernel(ctx, adaptDomainBackend(physical), sessiontree.DefaultLeasePolicy, clock.Now)
+				repo, openErr := storage.NewBackendKernel(ctx, physical, sessiontree.DefaultLeasePolicy, clock.Now)
 				if openErr != nil {
 					_ = physical.Close()
 					t.Fatal(openErr)
@@ -149,7 +151,7 @@ func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			turn, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "thread", TurnID: "turn"})
+			turn, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "thread", TurnID: "turn"})
 			if err != nil || turn.Status != TurnStatusInterrupted || turn.Projection.Status != TurnStatusRunning ||
 				!turn.Recoverable || turn.Failure == nil || turn.Failure.Code != ThreadTurnFailureInterrupted {
 				t.Fatalf("live interrupted exact=%#v err=%v", turn, err)
@@ -187,21 +189,21 @@ func TestSubAgentReadHostReadThreadTurnEnforcesDescendantAuthorityAndLifecycle(t
 
 			rootRead := newTestSubAgentReadHost(t, store, "root")
 			for _, test := range []struct {
-				threadID ThreadID
-				turnID   TurnID
+				threadID identity.ThreadID
+				turnID   identity.TurnID
 			}{{"child-a", "fixture-turn:child-a"}, {"child-b", "fixture-turn:child-b"}} {
-				turn, err := rootRead.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: test.threadID, TurnID: test.turnID})
+				turn, err := rootRead.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: test.threadID, TurnID: test.turnID})
 				if err != nil || turn.TurnID != test.turnID {
 					t.Fatalf("root descendant exact read thread=%q turn=%#v err=%v", test.threadID, turn, err)
 				}
 			}
 
 			childRead := newTestSubAgentReadHost(t, store, "child-a")
-			if _, err := childRead.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "child-b", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) {
+			if _, err := childRead.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "child-b", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) {
 				t.Fatalf("authorized missing turn err=%v, want ErrTurnNotFound", err)
 			}
-			for _, rejected := range []ThreadID{"root", "child-a", "sibling", "unrelated", "missing"} {
-				if _, err := childRead.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: rejected, TurnID: "fixture-turn:child-b"}); !errors.Is(err, ErrSubAgentNotFound) {
+			for _, rejected := range []identity.ThreadID{"root", "child-a", "sibling", "unrelated", "missing"} {
+				if _, err := childRead.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: rejected, TurnID: "fixture-turn:child-b"}); !errors.Is(err, ErrSubAgentNotFound) {
 					t.Fatalf("rejected target %q err=%v, want ErrSubAgentNotFound", rejected, err)
 				}
 			}
@@ -248,9 +250,9 @@ func admitCompletedRuntimeMessage(t *testing.T, ctx context.Context, store *runt
 	}
 }
 
-func assertSubAgentExactTurn(t *testing.T, ctx context.Context, host *subAgentReadCapability, threadID ThreadID, turnID TurnID) {
+func assertSubAgentExactTurn(t *testing.T, ctx context.Context, host *subAgentReadCapability, threadID identity.ThreadID, turnID identity.TurnID) {
 	t.Helper()
-	turn, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: threadID, TurnID: turnID})
+	turn, err := host.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: threadID, TurnID: turnID})
 	if err != nil || turn.TurnID != turnID {
 		t.Fatalf("subagent exact read thread=%q turn=%#v err=%v", threadID, turn, err)
 	}

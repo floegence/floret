@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v2/florettest"
-	"github.com/floegence/floret/v2/provider"
+	"github.com/floegence/floret/v3/florettest"
+	"github.com/floegence/floret/v3/provider"
 )
 
 func TestScriptedGateway(t *testing.T) {

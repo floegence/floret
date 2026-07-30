@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const (
@@ -29,8 +29,8 @@ type Signal struct {
 	Payload map[string]any
 }
 
-func ToolDefinitions(includeTaskComplete bool) []provider.ToolDefinition {
-	defs := []provider.ToolDefinition{{
+func ToolDefinitions(includeTaskComplete bool) []tools.ToolDefinition {
+	defs := []tools.ToolDefinition{{
 		Name:        AskUserTool,
 		Title:       "Ask user",
 		Description: "Ask the user for missing information and wait for their response.",
@@ -41,7 +41,7 @@ func ToolDefinitions(includeTaskComplete bool) []provider.ToolDefinition {
 		},
 	}}
 	if includeTaskComplete {
-		defs = append(defs, provider.ToolDefinition{
+		defs = append(defs, tools.ToolDefinition{
 			Name:        TaskCompleteTool,
 			Title:       "Task complete",
 			Description: "Signal that the requested task is complete. Include output or result when the same assistant response does not already contain the final answer.",

@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
@@ -46,10 +47,10 @@ func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 	}); err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
-	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,13 +112,13 @@ func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+	if _, err := host.spawnSubAgentCommand(ctx, spawnSubAgentRequest{
 		PublicationID: "publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "child", Message: "work", ForkMode: SubAgentForkNone,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: time.Second}); err != nil || waited.TimedOut {
-		t.Fatalf("WaitSubAgents() = %#v, %v", waited, err)
+	if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waitSubAgentsCommand() = %#v, %v", waited, err)
 	}
 
 	var mainRequest modelRequest
@@ -137,7 +138,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread")
-	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +170,10 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := turn.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
+	if _, err := turn.RunTurn(ctx, runTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := turn.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
+	if _, err := turn.RunTurn(ctx, runTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
 		t.Fatal(err)
 	}
 	compactionFactory, err := capabilities.compaction.Bind("thread")
@@ -185,7 +186,7 @@ func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compaction.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact", Source: "test"}); err != nil {
+	if _, err := compaction.CompactThread(ctx, compactThreadRequest{ThreadID: "thread", RequestID: "compact", Source: "test"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -235,10 +236,10 @@ func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 	}); err != nil {
 		t.Fatal(err)
@@ -422,10 +423,10 @@ func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 	}); err != nil {
 		t.Fatal(err)
@@ -488,7 +489,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -499,7 +500,7 @@ func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testin
 	}
 	runDone := make(chan runOutcome, 1)
 	go func() {
-		result, runErr := host.RunTurn(runCtx, RunTurnRequest{
+		result, runErr := host.RunTurn(runCtx, runTurnRequest{
 			RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "generate a title"},
 		})
 		runDone <- runOutcome{result: result, err: runErr}
@@ -616,7 +617,7 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -626,7 +627,7 @@ func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	}
 	runDone := make(chan runOutcome, 1)
 	go func() {
-		result, runErr := host.RunTurn(runCtx, RunTurnRequest{
+		result, runErr := host.RunTurn(runCtx, runTurnRequest{
 			RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "generate a title"},
 		})
 		runDone <- runOutcome{result: result, err: runErr}

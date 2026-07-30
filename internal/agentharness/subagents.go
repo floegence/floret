@@ -13,13 +13,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var (
@@ -301,14 +303,14 @@ type SubAgentDetailEvent struct {
 }
 
 type SubAgentDetailMessage struct {
-	Role        string                            `json:"role,omitempty"`
-	Kind        string                            `json:"kind,omitempty"`
-	Preview     string                            `json:"preview,omitempty"`
-	Content     string                            `json:"content,omitempty"`
-	Attachments []session.MessageAttachment       `json:"attachments,omitempty"`
-	References  []session.MessageReference        `json:"references,omitempty"`
-	Reasoning   string                            `json:"reasoning,omitempty"`
-	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
+	Role        string                      `json:"role,omitempty"`
+	Kind        string                      `json:"kind,omitempty"`
+	Preview     string                      `json:"preview,omitempty"`
+	Content     string                      `json:"content,omitempty"`
+	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
+	References  []session.MessageReference  `json:"references,omitempty"`
+	Reasoning   string                      `json:"reasoning,omitempty"`
+	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type SubAgentDetailToolCall struct {
@@ -861,10 +863,10 @@ func (h *AgentHarness) subAgentDetailContext(entries []sessiontree.Entry, retain
 			if err != nil {
 				return ThreadContextSnapshot{}, err
 			}
-			if status.ThreadID != entry.ThreadID || status.TurnID != entry.TurnID {
+			if status.ThreadID.String() != entry.ThreadID || status.TurnID.String() != entry.TurnID {
 				return ThreadContextSnapshot{}, errors.New("thread context status identity mismatch")
 			}
-			if runID := activityContext.runIDForTurn(entry.TurnID); runID != "" && status.RunID != runID {
+			if runID := activityContext.runIDForTurn(entry.TurnID); runID != "" && status.RunID.String() != runID {
 				return ThreadContextSnapshot{}, errors.New("thread context status run identity mismatch")
 			}
 			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
@@ -1494,18 +1496,18 @@ func subAgentDetailActivityTimeline(detail SubAgentDetailEvent, entry sessiontre
 	}
 	runID := subAgentDetailRunID(detail, activityContext)
 	timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
-		RunID:    runID,
-		ThreadID: detail.ThreadID,
-		TurnID:   detail.TurnID,
+		RunID:    identity.RunID(runID),
+		ThreadID: identity.ThreadID(detail.ThreadID),
+		TurnID:   identity.TurnID(detail.TurnID),
 	}, []observation.Event{observed}, entry.CreatedAt.UnixMilli())
 	return &timeline
 }
 
 func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontree.Entry, activityContext subAgentDetailActivityContext) (observation.Event, bool) {
 	base := observation.Event{
-		RunID:      subAgentDetailRunID(detail, activityContext),
-		ThreadID:   detail.ThreadID,
-		TurnID:     detail.TurnID,
+		RunID:      identity.RunID(subAgentDetailRunID(detail, activityContext)),
+		ThreadID:   identity.ThreadID(detail.ThreadID),
+		TurnID:     identity.TurnID(detail.TurnID),
 		Step:       int(detail.Ordinal),
 		ObservedAt: entry.CreatedAt,
 	}
@@ -1784,44 +1786,16 @@ func subAgentDetailTurnMarkerActivityMetadata(status string) map[string]any {
 	}
 }
 
-func subAgentDetailActivityPresentation(label, description string) *observation.ActivityPresentation {
-	return &observation.ActivityPresentation{
+func subAgentDetailActivityPresentation(label, description string) *tools.ActivityPresentation {
+	return &tools.ActivityPresentation{
 		Label:       strings.TrimSpace(label),
 		Description: strings.TrimSpace(description),
-		Renderer:    observation.ActivityRendererStructured,
+		Renderer:    tools.ActivityRendererStructured,
 	}
 }
 
-func observationActivityPresentation(in *session.ActivityPresentation) *observation.ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	out := &observation.ActivityPresentation{
-		Label:       in.Label,
-		Description: in.Description,
-		Renderer:    observation.ActivityRenderer(in.Renderer),
-		Chips:       make([]observation.ActivityChip, 0, len(in.Chips)),
-		TargetRefs:  make([]observation.ActivityTargetRef, 0, len(in.TargetRefs)),
-		Payload:     cloneActivityPayload(in.Payload),
-	}
-	for _, chip := range in.Chips {
-		out.Chips = append(out.Chips, observation.ActivityChip{
-			Kind:  chip.Kind,
-			Label: chip.Label,
-			Value: chip.Value,
-			Tone:  chip.Tone,
-		})
-	}
-	for _, ref := range in.TargetRefs {
-		out.TargetRefs = append(out.TargetRefs, observation.ActivityTargetRef{
-			Kind:  ref.Kind,
-			Label: ref.Label,
-			URI:   ref.URI,
-			Path:  ref.Path,
-			Line:  ref.Line,
-		})
-	}
-	return out
+func observationActivityPresentation(in *session.ActivityPresentation) *tools.ActivityPresentation {
+	return session.CloneActivityPresentation(in)
 }
 
 func firstSubAgentDetailNonEmpty(values ...string) string {

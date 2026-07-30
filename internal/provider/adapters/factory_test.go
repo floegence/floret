@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/searchcap"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/searchcap"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testing.T) {
@@ -717,7 +717,7 @@ func TestOpenAICompatibleProviderRejectsRawPlanMissingRequestedLocalTools(t *tes
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	req := provider.Request{
 		RunID: "r",
-		Tools: []provider.ToolDefinition{{
+		Tools: []tools.ToolDefinition{{
 			Name: "read",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -786,7 +786,7 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 	withTool, err := p.EstimateTokens(context.Background(), provider.Request{
 		RunID:    "r",
 		Messages: baseReq.Messages,
-		Tools: []provider.ToolDefinition{{
+		Tools: []tools.ToolDefinition{{
 			Name:        "read_file",
 			Description: strings.Repeat("Read a repository file. ", 20),
 			InputSchema: map[string]any{
@@ -832,8 +832,8 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 	}
 }
 
-func withToolReqTools() []provider.ToolDefinition {
-	return []provider.ToolDefinition{{
+func withToolReqTools() []tools.ToolDefinition {
+	return []tools.ToolDefinition{{
 		Name:        "read_file",
 		Description: strings.Repeat("Read a repository file. ", 20),
 		InputSchema: map[string]any{
@@ -873,7 +873,7 @@ func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
 			{Role: session.System, Content: "system"},
 			{Role: session.User, Content: "hello"},
 		},
-		Tools: []provider.ToolDefinition{{Name: "task_complete"}},
+		Tools: []tools.ToolDefinition{{Name: "task_complete"}},
 		Cache: cache.CachePolicy{Enabled: true, Retention: cache.RetentionLong},
 	})
 	if err != nil {
@@ -1129,7 +1129,7 @@ func TestAnthropicProviderRejectsRawPlanMissingRequestedLocalTools(t *testing.T)
 	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
 	req := provider.Request{
 		RunID: "r",
-		Tools: []provider.ToolDefinition{{
+		Tools: []tools.ToolDefinition{{
 			Name: "read",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -1336,7 +1336,7 @@ func TestOpenAICompatibleProviderNonStreamResponseDoesNotBlockWhenAllEventTypesA
 	stream, err := p.Stream(context.Background(), provider.Request{
 		RunID:    "run",
 		Messages: []session.Message{{Role: session.User, Content: "hello"}},
-		Tools:    []provider.ToolDefinition{{Name: "list"}},
+		Tools:    []tools.ToolDefinition{{Name: "list"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1526,7 +1526,7 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 		{Role: session.System, Content: "system"},
 		{Role: session.Assistant, Content: "tool_call", Reasoning: "assistant reasoning", ToolCallID: "read-1", ToolName: "read", ToolArgs: `{"path":"a.go"}`},
 		{Role: session.Tool, Content: "content", Reasoning: "must not render", ToolCallID: "read-1", ToolName: "read"},
-	}, Tools: []provider.ToolDefinition{{Name: "read", Description: "Read a file"}}})
+	}, Tools: []tools.ToolDefinition{{Name: "read", Description: "Read a file"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1580,7 +1580,7 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
 		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
-	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
+	}, Tools: []tools.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1628,7 +1628,7 @@ func TestOpenAICompatibleProviderReordersToolResultsToMatchToolCalls(t *testing.
 		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
-	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
+	}, Tools: []tools.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1659,11 +1659,11 @@ func TestOpenAICompatibleProviderPayloadHashUsesReorderedToolResults(t *testing.
 		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
 	}
 	p := OpenAICompatibleProvider{Endpoint: "https://example.test/chat", APIKey: "secret", Model: "remote-model"}
-	got, err := p.PayloadHash(provider.Request{RunID: "r", Messages: messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
+	got, err := p.PayloadHash(provider.Request{RunID: "r", Messages: messages, Tools: []tools.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := p.PayloadHash(provider.Request{RunID: "r", Messages: ordered, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
+	want, err := p.PayloadHash(provider.Request{RunID: "r", Messages: ordered, Tools: []tools.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1686,7 +1686,7 @@ func TestOpenAICompatibleProviderRejectsMalformedToolAdjacencyBeforeRequest(t *t
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha"}`},
 		{Role: session.User, Content: "interrupt"},
 		{Role: session.Tool, Content: "late", ToolCallID: "search-1", ToolName: "web_search"},
-	}, Tools: []provider.ToolDefinition{{Name: "web_search"}}})
+	}, Tools: []tools.ToolDefinition{{Name: "web_search"}}})
 	if err == nil || !strings.Contains(err.Error(), "assistant tool_calls must be followed by tool messages") {
 		t.Fatalf("err = %v, want local adjacency validation", err)
 	}
@@ -1738,7 +1738,7 @@ func TestOpenAICompatibleProviderRejectsMissingAndDuplicateToolResultsBeforeRequ
 			}))
 			defer server.Close()
 			p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
-			_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: tt.messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
+			_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: tt.messages, Tools: []tools.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tt.wantErr)
 			}
@@ -1798,7 +1798,7 @@ func TestOpenAICompatibleProviderMergesRawPlanAssistantToolCalls(t *testing.T) {
 		RunID:    "r",
 		Messages: messages,
 		RawPlan:  cache.RawPlan{Segments: segments},
-		Tools:    []provider.ToolDefinition{{Name: "web_search"}},
+		Tools:    []tools.ToolDefinition{{Name: "web_search"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1866,7 +1866,7 @@ func TestOpenAICompatibleProviderReordersRawPlanToolResults(t *testing.T) {
 		RunID:    "r",
 		Messages: messages,
 		RawPlan:  cache.RawPlan{Segments: segments},
-		Tools:    []provider.ToolDefinition{{Name: "web_search"}},
+		Tools:    []tools.ToolDefinition{{Name: "web_search"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1897,7 +1897,7 @@ func TestOpenAICompatibleProviderRejectsRawPlanPartialAssistantToolCallBatch(t *
 	req := provider.Request{
 		RunID:   "r",
 		RawPlan: cache.RawPlan{Segments: segments},
-		Tools:   []provider.ToolDefinition{{Name: "shell"}},
+		Tools:   []tools.ToolDefinition{{Name: "shell"}},
 	}
 	_, err := p.Stream(context.Background(), req)
 	if err == nil || !strings.Contains(err.Error(), `tool result "call-00" does not match preceding assistant tool_calls`) {
@@ -1938,7 +1938,7 @@ func TestOpenAICompatibleProviderDoesNotMergeSeparateToolBatches(t *testing.T) {
 	if _, err := p.Stream(context.Background(), provider.Request{
 		RunID:   "r",
 		RawPlan: cache.RawPlan{Segments: segments},
-		Tools:   []provider.ToolDefinition{{Name: "shell"}},
+		Tools:   []tools.ToolDefinition{{Name: "shell"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2049,7 +2049,7 @@ func TestOpenAICompatibleProviderRendersStrictFunctionSchemaAndRejectsHostedTool
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{
 		RunID: "r",
-		Tools: []provider.ToolDefinition{{
+		Tools: []tools.ToolDefinition{{
 			Name:        "read",
 			Description: "Read a file.",
 			InputSchema: tools.StrictObject(map[string]any{"path": tools.String("path")}, []string{"path"}),
@@ -2121,7 +2121,7 @@ func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testi
 	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: 4096, HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{
 		RunID: "r",
-		Tools: []provider.ToolDefinition{{
+		Tools: []tools.ToolDefinition{{
 			Name:        "read",
 			Description: "Read a file.",
 			InputSchema: tools.StrictObject(map[string]any{"path": tools.String("path")}, []string{"path"}),

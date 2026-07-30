@@ -1,15 +1,17 @@
 package runtime
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/activityview"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type ThreadTurnProjectionSegmentKind string
@@ -27,18 +29,18 @@ const (
 )
 
 type ProjectThreadTurnRequest struct {
-	ThreadID ThreadID
-	TurnID   TurnID
-	RunID    RunID
-	TraceID  TraceID
+	ThreadID identity.ThreadID
+	TurnID   identity.TurnID
+	RunID    identity.RunID
+	TraceID  identity.TraceID
 	Events   []ThreadDetailEvent
 }
 
 type ThreadTurnProjection struct {
-	ThreadID       ThreadID                      `json:"thread_id"`
-	TurnID         TurnID                        `json:"turn_id"`
-	RunID          RunID                         `json:"run_id"`
-	TraceID        TraceID                       `json:"trace_id,omitempty"`
+	ThreadID       identity.ThreadID             `json:"thread_id"`
+	TurnID         identity.TurnID               `json:"turn_id"`
+	RunID          identity.RunID                `json:"run_id"`
+	TraceID        identity.TraceID              `json:"trace_id,omitempty"`
 	Status         TurnStatus                    `json:"status"`
 	Segments       []ThreadTurnProjectionSegment `json:"segments,omitempty"`
 	ThroughOrdinal int64                         `json:"through_ordinal"`
@@ -136,10 +138,10 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 		}
 		timeline := threadTurnProjectionActivityTimeline(
 			observation.ActivityRunMeta{
-				RunID:    strings.TrimSpace(string(req.RunID)),
-				ThreadID: strings.TrimSpace(string(req.ThreadID)),
-				TurnID:   strings.TrimSpace(string(req.TurnID)),
-				TraceID:  strings.TrimSpace(string(req.TraceID)),
+				RunID:    identity.RunID(strings.TrimSpace(string(req.RunID))),
+				ThreadID: identity.ThreadID(strings.TrimSpace(string(req.ThreadID))),
+				TurnID:   identity.TurnID(strings.TrimSpace(string(req.TurnID))),
+				TraceID:  identity.TraceID(strings.TrimSpace(string(req.TraceID))),
 			},
 			activityEvents,
 		)
@@ -313,10 +315,8 @@ func threadTurnProjectionItemPendingHandle(item observation.ActivityItem) string
 			return value
 		}
 	}
-	if len(item.Payload) > 0 {
-		if value, ok := item.Payload["pending_handle"]; ok && value != nil {
-			return strings.TrimSpace(fmt.Sprint(value))
-		}
+	if value := activityview.PendingHandle(item.Presentation); value != "" {
+		return value
 	}
 	return ""
 }
@@ -573,20 +573,12 @@ func threadTurnProjectionHasPendingPresentation(item observation.ActivityItem) b
 			return true
 		}
 	}
-	for key := range item.Payload {
-		if strings.HasPrefix(key, "pending_") {
-			return true
-		}
-	}
-	return false
+	return tools.ActivityHasPending(item.Presentation)
 }
 
 func threadTurnProjectionHasRunningPayload(item observation.ActivityItem) bool {
-	if len(item.Payload) == 0 {
-		return false
-	}
-	value, ok := item.Payload["status"]
-	return ok && strings.TrimSpace(fmt.Sprint(value)) == string(observation.ActivityStatusRunning)
+	status, ok := tools.ActivityStatus(item.Presentation)
+	return ok && status == string(observation.ActivityStatusRunning)
 }
 
 func threadTurnProjectionApplyTerminalSettlementItem(item *observation.ActivityItem, terminal ThreadDetailEvent, status observation.ActivityStatus, severity observation.ActivitySeverity) {
@@ -597,8 +589,7 @@ func threadTurnProjectionApplyTerminalSettlementItem(item *observation.ActivityI
 	item.Severity = severity
 	item.EndedAtUnixMS = threadTurnProjectionTerminalEndedAtUnixMS(*item, terminal.CreatedAt)
 	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
-	item.Payload = threadTurnProjectionTerminalPayload(item.Payload, status)
-	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
+	item.Presentation = tools.FinalizeActivityPresentation(item.Presentation, string(status))
 	if item.RequiresApproval && status != observation.ActivityStatusSuccess {
 		item.ApprovalState = threadTurnProjectionTerminalApprovalState(status, item.ApprovalState)
 	}
@@ -666,47 +657,16 @@ func threadTurnProjectionApplySettlementItem(item *observation.ActivityItem, set
 		threadTurnProjectionMergeActivityItem(item, settlement.ActivityTimeline.Items[0])
 	}
 	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
-	item.Payload = threadTurnProjectionTerminalPayload(item.Payload, status)
-	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
+	item.Presentation = tools.FinalizeActivityPresentation(item.Presentation, string(status))
 	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
 	item.NeedsAttention = len(item.AttentionReasons) > 0
 }
 
 func threadTurnProjectionMergeActivityItem(item *observation.ActivityItem, settlement observation.ActivityItem) {
-	if strings.TrimSpace(settlement.Label) != "" {
-		item.Label = settlement.Label
-	}
-	if strings.TrimSpace(settlement.Description) != "" {
-		item.Description = settlement.Description
-	}
-	if settlement.Renderer != "" {
-		item.Renderer = settlement.Renderer
-	}
-	if len(settlement.Chips) > 0 {
-		item.Chips = append([]observation.ActivityChip(nil), settlement.Chips...)
-	}
-	if len(settlement.TargetRefs) > 0 {
-		item.TargetRefs = append([]observation.ActivityTargetRef(nil), settlement.TargetRefs...)
-	}
-	if len(settlement.Payload) > 0 {
-		item.Payload = threadTurnProjectionMergePayload(item.Payload, settlement.Payload)
-	}
+	item.Presentation = tools.MergeActivityPresentations(item.Presentation, settlement.Presentation)
 	if len(settlement.Metadata) > 0 {
 		item.Metadata = threadTurnProjectionMergeStringMetadata(item.Metadata, settlement.Metadata)
 	}
-}
-
-func threadTurnProjectionMergePayload(left, right map[string]any) map[string]any {
-	if len(left) == 0 {
-		return cloneProjectionAnyMap(right)
-	}
-	out := cloneProjectionAnyMap(left)
-	for key, value := range right {
-		if strings.TrimSpace(key) != "" && value != nil {
-			out[key] = value
-		}
-	}
-	return out
 }
 
 func threadTurnProjectionMergeStringMetadata(left, right map[string]string) map[string]string {
@@ -739,45 +699,6 @@ func threadTurnProjectionTerminalMetadata(metadata map[string]string) map[string
 	return out
 }
 
-func threadTurnProjectionTerminalPayload(payload map[string]any, status observation.ActivityStatus) map[string]any {
-	if len(payload) == 0 {
-		return nil
-	}
-	out := map[string]any{}
-	for key, value := range payload {
-		if strings.HasPrefix(key, "pending_") {
-			continue
-		}
-		out[key] = value
-	}
-	if _, ok := out["status"]; ok {
-		out["status"] = string(status)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func threadTurnProjectionTerminalChips(chips []observation.ActivityChip) []observation.ActivityChip {
-	if len(chips) == 0 {
-		return nil
-	}
-	out := make([]observation.ActivityChip, 0, len(chips))
-	for _, chip := range chips {
-		kind := strings.TrimSpace(chip.Kind)
-		value := strings.TrimSpace(chip.Value)
-		if kind == "handle" || kind == "state" && value == string(observation.ActivityStatusRunning) {
-			continue
-		}
-		out = append(out, chip)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func threadTurnProjectionAttentionReasons(item observation.ActivityItem) []observation.ActivityAttentionReason {
 	var reasons []observation.ActivityAttentionReason
 	if item.RequiresApproval {
@@ -794,7 +715,7 @@ func threadTurnProjectionAttentionReasons(item observation.ActivityItem) []obser
 	return reasons
 }
 
-func threadTurnProjectionEvents(events []ThreadDetailEvent, turnID TurnID) []ThreadDetailEvent {
+func threadTurnProjectionEvents(events []ThreadDetailEvent, turnID identity.TurnID) []ThreadDetailEvent {
 	out := make([]ThreadDetailEvent, 0, len(events))
 	turnIDText := strings.TrimSpace(string(turnID))
 	for _, ev := range events {
@@ -850,10 +771,10 @@ func threadTurnProjectionActivityTimeline(meta observation.ActivityRunMeta, deta
 
 func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, detail ThreadDetailEvent) (observation.Event, bool) {
 	base := observation.Event{
-		RunID:      strings.TrimSpace(meta.RunID),
-		ThreadID:   firstProjectionNonEmpty(meta.ThreadID, strings.TrimSpace(string(detail.ThreadID))),
-		TurnID:     firstProjectionNonEmpty(meta.TurnID, strings.TrimSpace(string(detail.TurnID))),
-		TraceID:    strings.TrimSpace(meta.TraceID),
+		RunID:      identity.RunID(strings.TrimSpace(meta.RunID.String())),
+		ThreadID:   identity.ThreadID(firstProjectionNonEmpty(meta.ThreadID.String(), strings.TrimSpace(string(detail.ThreadID)))),
+		TurnID:     identity.TurnID(firstProjectionNonEmpty(meta.TurnID.String(), strings.TrimSpace(string(detail.TurnID)))),
+		TraceID:    identity.TraceID(strings.TrimSpace(meta.TraceID.String())),
 		Step:       int(detail.Ordinal),
 		ObservedAt: detail.CreatedAt,
 	}
@@ -1033,91 +954,16 @@ func threadTurnProjectionApprovalEventType(detail ThreadDetailEvent) observation
 	}
 }
 
-func threadTurnProjectionActivityPresentationFromItem(item observation.ActivityItem) *observation.ActivityPresentation {
-	if strings.TrimSpace(item.Label) == "" &&
-		strings.TrimSpace(item.Description) == "" &&
-		item.Renderer == "" &&
-		len(item.Chips) == 0 &&
-		len(item.TargetRefs) == 0 &&
-		len(item.Payload) == 0 {
-		return nil
-	}
-	return &observation.ActivityPresentation{
-		Label:       item.Label,
-		Description: item.Description,
-		Renderer:    item.Renderer,
-		Chips:       append([]observation.ActivityChip(nil), item.Chips...),
-		TargetRefs:  append([]observation.ActivityTargetRef(nil), item.TargetRefs...),
-		Payload:     cloneProjectionActivityPayload(item.Payload),
-	}
+func threadTurnProjectionActivityPresentationFromItem(item observation.ActivityItem) *tools.ActivityPresentation {
+	return tools.CloneActivityPresentation(item.Presentation)
 }
 
-func threadTurnProjectionMergeActivityPresentation(left, right *observation.ActivityPresentation) *observation.ActivityPresentation {
-	if left == nil {
-		return cloneActivityPresentation(right)
-	}
-	if right == nil {
-		return cloneActivityPresentation(left)
-	}
-	out := cloneActivityPresentation(left)
-	if value := strings.TrimSpace(right.Label); value != "" {
-		out.Label = value
-	}
-	if value := strings.TrimSpace(right.Description); value != "" {
-		out.Description = value
-	}
-	if right.Renderer != "" {
-		out.Renderer = right.Renderer
-	}
-	if len(right.Chips) > 0 {
-		out.Chips = append([]observation.ActivityChip(nil), right.Chips...)
-	}
-	if len(right.TargetRefs) > 0 {
-		out.TargetRefs = append([]observation.ActivityTargetRef(nil), right.TargetRefs...)
-	}
-	if len(right.Payload) > 0 {
-		payload := cloneProjectionActivityPayload(out.Payload)
-		if payload == nil {
-			payload = map[string]any{}
-		}
-		for key, value := range right.Payload {
-			if strings.TrimSpace(key) != "" && value != nil {
-				payload[key] = value
-			}
-		}
-		out.Payload = payload
-	}
-	return out
+func threadTurnProjectionMergeActivityPresentation(left, right *tools.ActivityPresentation) *tools.ActivityPresentation {
+	return tools.MergeActivityPresentations(left, right)
 }
 
-func threadTurnProjectionActivityDurationMS(activity *observation.ActivityPresentation) int64 {
-	if activity == nil || len(activity.Payload) == 0 {
-		return 0
-	}
-	value, ok := activity.Payload["duration_ms"]
-	if !ok {
-		return 0
-	}
-	switch typed := value.(type) {
-	case int:
-		if typed > 0 {
-			return int64(typed)
-		}
-	case int64:
-		if typed > 0 {
-			return typed
-		}
-	case float64:
-		if typed > 0 {
-			return int64(typed)
-		}
-	case json.Number:
-		parsed, err := typed.Int64()
-		if err == nil && parsed > 0 {
-			return parsed
-		}
-	}
-	return 0
+func threadTurnProjectionActivityDurationMS(activity *tools.ActivityPresentation) int64 {
+	return tools.ActivityDurationMS(activity)
 }
 
 func threadTurnProjectionAnyMetadata(in map[string]string) map[string]any {
@@ -1167,10 +1013,6 @@ func firstProjectionNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func cloneProjectionActivityPayload(in map[string]any) map[string]any {
-	return cloneProjectionAnyMap(in)
 }
 
 func cloneProjectionAnyMap(in map[string]any) map[string]any {

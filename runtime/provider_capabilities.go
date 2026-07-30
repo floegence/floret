@@ -7,28 +7,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // turnExecutionCapability owns provider-backed turn admission and continuation for
 // one canonical thread.
 type turnExecutionCapability struct {
-	threadID ThreadID
+	threadID identity.ThreadID
 	host     *providerHost
 }
 
 // threadCompactionCapability owns provider-backed compaction for one canonical thread.
 type threadCompactionCapability struct {
-	threadID ThreadID
+	threadID identity.ThreadID
 	host     *providerHost
 }
 
 // subAgentCapability owns provider-backed child-thread lifecycle under one canonical
 // parent. Child reads use a separately parent-bound subAgentReadCapability.
 type subAgentCapability struct {
-	parentThreadID ThreadID
+	parentThreadID identity.ThreadID
 	host           *providerHost
 }
 
@@ -53,19 +54,19 @@ type subAgentBinder struct {
 // turnExecutionFactory issues thread-bound turn execution capabilities.
 type turnExecutionFactory struct {
 	store    *runtimeStore
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // threadCompactionFactory issues thread-bound compaction capabilities.
 type threadCompactionFactory struct {
 	store    *runtimeStore
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // subAgentFactory issues parent-bound interactive child capabilities.
 type subAgentFactory struct {
 	store          *runtimeStore
-	parentThreadID ThreadID
+	parentThreadID identity.ThreadID
 }
 
 // turnExecutionOptions configures one thread-bound turn capability.
@@ -168,7 +169,7 @@ func newTurnExecutionBinder(bootstrap *hostBootstrap) (*turnExecutionBinder, err
 }
 
 // Bind constructs provider-backed turn capability factory for exactly one root thread.
-func (b *turnExecutionBinder) Bind(threadID ThreadID) (*turnExecutionFactory, error) {
+func (b *turnExecutionBinder) Bind(threadID identity.ThreadID) (*turnExecutionFactory, error) {
 	if b == nil {
 		return nil, errors.New("turn execution host binder is required")
 	}
@@ -197,7 +198,7 @@ func newThreadCompactionBinder(bootstrap *hostBootstrap) (*threadCompactionBinde
 }
 
 // Bind constructs provider-backed compaction factory for exactly one root thread.
-func (b *threadCompactionBinder) Bind(threadID ThreadID) (*threadCompactionFactory, error) {
+func (b *threadCompactionBinder) Bind(threadID identity.ThreadID) (*threadCompactionFactory, error) {
 	if b == nil {
 		return nil, errors.New("thread compaction host binder is required")
 	}
@@ -226,7 +227,7 @@ func newSubAgentBinder(bootstrap *hostBootstrap) (*subAgentBinder, error) {
 }
 
 // Bind constructs provider-backed child capability factory for exactly one parent.
-func (b *subAgentBinder) Bind(parentThreadID ThreadID) (*subAgentFactory, error) {
+func (b *subAgentBinder) Bind(parentThreadID identity.ThreadID) (*subAgentFactory, error) {
 	if b == nil {
 		return nil, errors.New("subagent host binder is required")
 	}
@@ -352,7 +353,7 @@ func (f *subAgentFactory) NewHost(ctx context.Context, opts subAgentOptions) (*s
 	return &subAgentCapability{parentThreadID: f.parentThreadID, host: host}, nil
 }
 
-func (h *turnExecutionCapability) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+func (h *turnExecutionCapability) RunTurn(ctx context.Context, req runTurnRequest) (TurnResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return TurnResult{}, err
@@ -368,7 +369,7 @@ func (h *turnExecutionCapability) RunTurn(ctx context.Context, req RunTurnReques
 	return result, requestConflictError(err, "turn", string(req.TurnID))
 }
 
-func (h *turnExecutionCapability) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
+func (h *turnExecutionCapability) RetryTurn(ctx context.Context, req retryTurnRequest) (TurnResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return TurnResult{}, err
@@ -384,7 +385,7 @@ func (h *turnExecutionCapability) RetryTurn(ctx context.Context, req RetryTurnRe
 	return result, requestConflictError(err, "retry", string(req.ThreadID))
 }
 
-func (h *turnExecutionCapability) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (PendingToolCompletionResult, error) {
+func (h *turnExecutionCapability) CompletePendingTool(ctx context.Context, req pendingToolCompletionRequest) (PendingToolCompletionResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolCompletionResult{}, err
@@ -400,7 +401,7 @@ func (h *turnExecutionCapability) CompletePendingTool(ctx context.Context, req P
 	return result, requestConflictError(err, "pending_tool_completion", req.CompletionRequestID)
 }
 
-func (h *turnExecutionCapability) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func (h *turnExecutionCapability) ReadApprovalQueue(ctx context.Context, req readApprovalQueueRequest) (ApprovalQueue, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return ApprovalQueue{}, err
@@ -415,7 +416,7 @@ func (h *turnExecutionCapability) ReadApprovalQueue(ctx context.Context, req Rea
 	return h.host.ReadApprovalQueue(ctx, req)
 }
 
-func (h *turnExecutionCapability) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
+func (h *turnExecutionCapability) ResolveApproval(ctx context.Context, req resolveApprovalRequest) (ResolveApprovalResult, error) {
 	if err := req.Validate(); err != nil {
 		return ResolveApprovalResult{}, err
 	}
@@ -433,7 +434,7 @@ func (h *turnExecutionCapability) ResolveApproval(ctx context.Context, req Resol
 	return h.host.ResolveApproval(ctx, req)
 }
 
-func (h *turnExecutionCapability) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func (h *turnExecutionCapability) UpdateThreadAgentTodos(ctx context.Context, req updateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return ThreadAgentTodoState{}, err
@@ -459,23 +460,23 @@ func (h *turnExecutionCapability) UpdateThreadAgentTodos(ctx context.Context, re
 	return h.host.UpdateThreadAgentTodos(ctx, req)
 }
 
-func (h *threadCompactionCapability) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+func (h *threadCompactionCapability) CompactThread(ctx context.Context, req compactThreadRequest) (compactThreadResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
-		return CompactThreadResult{}, err
+		return compactThreadResult{}, err
 	}
 	defer done()
 	if err := validateBoundThreadID(h.threadID, req.ThreadID, "thread compaction host"); err != nil {
-		return CompactThreadResult{}, err
+		return compactThreadResult{}, err
 	}
 	if err := validateRootThreadAuthority(ctx, h.host.store, req.ThreadID); err != nil {
-		return CompactThreadResult{}, err
+		return compactThreadResult{}, err
 	}
 	result, err := h.host.CompactThread(ctx, req)
 	return result, requestConflictError(err, "compaction", req.RequestID)
 }
 
-func (h *subAgentCapability) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) spawnSubAgentCommand(ctx context.Context, req spawnSubAgentRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -486,11 +487,11 @@ func (h *subAgentCapability) SpawnSubAgent(ctx context.Context, req SpawnSubAgen
 	}
 	h.host.store.threadAuthorityMu.Lock()
 	defer h.host.store.threadAuthorityMu.Unlock()
-	result, err := h.host.SpawnSubAgent(ctx, req)
+	result, err := h.host.spawnSubAgentCommand(ctx, req)
 	return result, requestConflictError(err, "subagent_publication", req.PublicationID)
 }
 
-func (h *subAgentCapability) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) sendSubAgentInputCommand(ctx context.Context, req sendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -499,11 +500,11 @@ func (h *subAgentCapability) SendSubAgentInput(ctx context.Context, req SendSubA
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent host parent"); err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	result, err := h.host.SendSubAgentInput(ctx, req)
+	result, err := h.host.sendSubAgentInputCommand(ctx, req)
 	return result, requestConflictError(err, "subagent_input", req.InputRequestID)
 }
 
-func (h *subAgentCapability) PublishPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) PublishPendingToolCompletion(ctx context.Context, req publishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -512,23 +513,23 @@ func (h *subAgentCapability) PublishPendingToolCompletion(ctx context.Context, r
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent host parent"); err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	result, err := h.host.PublishSubAgentPendingToolCompletion(ctx, req)
+	result, err := h.host.publishSubAgentPendingToolCompletionCommand(ctx, req)
 	return result, requestConflictError(err, "subagent_pending_tool_completion", req.InputRequestID)
 }
 
-func (h *subAgentCapability) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+func (h *subAgentCapability) waitSubAgentsCommand(ctx context.Context, req waitSubAgentsRequest) (waitSubAgentsCommandResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
-		return WaitSubAgentsResult{}, err
+		return waitSubAgentsCommandResult{}, err
 	}
 	defer done()
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent host parent"); err != nil {
-		return WaitSubAgentsResult{}, err
+		return waitSubAgentsCommandResult{}, err
 	}
-	return h.host.WaitSubAgents(ctx, req)
+	return h.host.waitSubAgentsCommand(ctx, req)
 }
 
-func (h *subAgentCapability) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *subAgentCapability) closeSubAgentCommand(ctx context.Context, req closeSubAgentRequest) (SubAgentSnapshot, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -537,19 +538,19 @@ func (h *subAgentCapability) CloseSubAgent(ctx context.Context, req CloseSubAgen
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent host parent"); err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	result, err := h.host.CloseSubAgent(ctx, req)
+	result, err := h.host.closeSubAgentCommand(ctx, req)
 	return result, requestConflictError(err, "subagent_close", req.CloseOperationID)
 }
 
-func normalizeBoundThreadID(threadID ThreadID, owner string) (ThreadID, error) {
-	id := ThreadID(strings.TrimSpace(string(threadID)))
+func normalizeBoundThreadID(threadID identity.ThreadID, owner string) (identity.ThreadID, error) {
+	id := identity.ThreadID(strings.TrimSpace(string(threadID)))
 	if id == "" {
 		return "", fmt.Errorf("%s requires thread id", owner)
 	}
 	return id, nil
 }
 
-func validateBoundThreadID(bound, requested ThreadID, owner string) error {
+func validateBoundThreadID(bound, requested identity.ThreadID, owner string) error {
 	if strings.TrimSpace(string(requested)) == "" {
 		return errors.New("thread id is required")
 	}
@@ -559,14 +560,14 @@ func validateBoundThreadID(bound, requested ThreadID, owner string) error {
 	return nil
 }
 
-func validateBoundRootThreadAuthority(ctx context.Context, store *runtimeStore, bound, requested ThreadID, owner string) error {
+func validateBoundRootThreadAuthority(ctx context.Context, store *runtimeStore, bound, requested identity.ThreadID, owner string) error {
 	if err := validateBoundThreadID(bound, requested, owner); err != nil {
 		return err
 	}
 	return validateRootThreadAuthority(ctx, store, requested)
 }
 
-func validateSubAgentParentAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
+func validateSubAgentParentAuthority(ctx context.Context, store *runtimeStore, parentThreadID identity.ThreadID) error {
 	if strings.TrimSpace(string(parentThreadID)) == "" {
 		return errors.New("parent thread id is required")
 	}
@@ -577,7 +578,7 @@ func validateSubAgentParentAuthority(ctx context.Context, store *runtimeStore, p
 	return validateLiveThreadLifecycle(snapshot.Thread)
 }
 
-func validateRootHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
+func validateRootHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
 	if err := validateRootBoundAuthority(ctx, store, threadID); err != nil {
 		return err
 	}
@@ -591,7 +592,7 @@ func validateRootHostConstructionAuthority(ctx context.Context, store *runtimeSt
 	return nil
 }
 
-func validateRootBoundAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
+func validateRootBoundAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, threadID)
 	if err != nil {
 		return err
@@ -605,7 +606,7 @@ func validateRootBoundAuthority(ctx context.Context, store *runtimeStore, thread
 	return nil
 }
 
-func validateSubAgentParentConstructionAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
+func validateSubAgentParentConstructionAuthority(ctx context.Context, store *runtimeStore, parentThreadID identity.ThreadID) error {
 	if err := validateParentBoundAuthority(ctx, store, parentThreadID); err != nil {
 		return err
 	}
@@ -627,7 +628,7 @@ func authorityBusyForSnapshot(snapshot sessiontree.ThreadAuthoritySnapshot) erro
 	return &AuthorityBusyError{Kind: kind}
 }
 
-func validateParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
+func validateParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID identity.ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, parentThreadID)
 	if err != nil {
 		return err
@@ -638,7 +639,7 @@ func validateParentBoundAuthority(ctx context.Context, store *runtimeStore, pare
 	return nil
 }
 
-func validateReadableParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID ThreadID) error {
+func validateReadableParentBoundAuthority(ctx context.Context, store *runtimeStore, parentThreadID identity.ThreadID) error {
 	snapshot, err := inspectThreadAuthority(ctx, store, parentThreadID)
 	if err != nil {
 		return err
@@ -653,7 +654,7 @@ func validateReadableParentBoundAuthority(ctx context.Context, store *runtimeSto
 	}
 }
 
-func validateDeleteHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
+func validateDeleteHostConstructionAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
 	if err := validateRootBoundAuthority(ctx, store, threadID); err == nil {
 		return nil
 	} else if !errors.Is(err, ErrThreadDeleted) {
@@ -669,7 +670,7 @@ func validateDeleteHostConstructionAuthority(ctx context.Context, store *runtime
 	return nil
 }
 
-func inspectThreadAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) (sessiontree.ThreadAuthoritySnapshot, error) {
+func inspectThreadAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) (sessiontree.ThreadAuthoritySnapshot, error) {
 	if store == nil || store.repo == nil {
 		return sessiontree.ThreadAuthoritySnapshot{}, errors.New("runtime store is required")
 	}
@@ -681,7 +682,7 @@ func inspectThreadAuthority(ctx context.Context, store *runtimeStore, threadID T
 	return snapshot, runtimeHostError(err)
 }
 
-func inspectSubAgentThreadAuthority(ctx context.Context, store *runtimeStore, parentThreadID, childThreadID ThreadID) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
+func inspectSubAgentThreadAuthority(ctx context.Context, store *runtimeStore, parentThreadID, childThreadID identity.ThreadID) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
 	if store == nil || store.repo == nil {
 		return sessiontree.SubAgentThreadAuthoritySnapshot{}, errors.New("runtime store is required")
 	}

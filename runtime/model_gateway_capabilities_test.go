@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v3/config"
 )
 
 func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
@@ -14,7 +14,7 @@ func TestTurnExecutionHostRejectsMissingModelGatewayCapabilities(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread")
-	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}

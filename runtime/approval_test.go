@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestResolveApprovalRequestRequiresExactAuthority(t *testing.T) {
-	valid := ResolveApprovalRequest{
+	valid := resolveApprovalRequest{
 		DecisionID: "decision", ExpectedRootThreadID: "root", ExpectedGeneration: 1, ExpectedRevision: 2,
 		ExpectedCurrent: ApprovalIdentity{
 			ApprovalID: "approval", ThreadID: "thread", TurnID: "turn", RunID: "run",
@@ -19,12 +19,12 @@ func TestResolveApprovalRequestRequiresExactAuthority(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid request: %v", err)
 	}
-	for name, mutate := range map[string]func(*ResolveApprovalRequest){
-		"decision": func(req *ResolveApprovalRequest) { req.DecisionID = "" },
-		"root":     func(req *ResolveApprovalRequest) { req.ExpectedRootThreadID = "" },
-		"revision": func(req *ResolveApprovalRequest) { req.ExpectedRevision = 0 },
-		"identity": func(req *ResolveApprovalRequest) { req.ExpectedCurrent.EffectAttemptID = "" },
-		"choice":   func(req *ResolveApprovalRequest) { req.Decision = "later" },
+	for name, mutate := range map[string]func(*resolveApprovalRequest){
+		"decision": func(req *resolveApprovalRequest) { req.DecisionID = "" },
+		"root":     func(req *resolveApprovalRequest) { req.ExpectedRootThreadID = "" },
+		"revision": func(req *resolveApprovalRequest) { req.ExpectedRevision = 0 },
+		"identity": func(req *resolveApprovalRequest) { req.ExpectedCurrent.EffectAttemptID = "" },
+		"choice":   func(req *resolveApprovalRequest) { req.Decision = "later" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := valid

@@ -24,14 +24,15 @@ separate.
 * `TraceID` correlates events across a logical execution trace.
 * `LogicalRequestID` may identify retries or transport attempts, but it must not
   replace `RunID`, `TurnID`, or `TraceID`.
+* `ArtifactID` identifies one durable artifact.
 
 # Maintenance Notes
 
-Public hosted turns must receive an explicit `RunID` in `RunTurnRequest`; code
-must not infer it from `TurnID` or `ThreadID`. Harness-owned internal executions
-such as retry, queued child input, and maintenance follow-ups generate a fresh
-execution `RunID` through the Floret ID generator. Prompt-cache rows and JSON
-use `prompt_scope_id`, not `run_id`, as the reuse boundary.
+Public hosts submit only `LogicalRequestID` for lifecycle mutations. Floret
+allocates thread, turn, run, prompt-scope, trace, and child identities through
+its ID source. Tests may inject a deterministic source; applications cannot
+assign or infer lifecycle identities. Prompt-cache rows and JSON use
+`prompt_scope_id`, not `run_id`, as the reuse boundary.
 Standalone Engine runs and compact-only maintenance executions may carry a
 `RunID` without a `TurnID`; code must not synthesize `TurnID = RunID`. Public
 `TurnResult`, `CompactThreadResult`, nested context/compaction observations, and

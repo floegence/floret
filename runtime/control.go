@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/control"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/control"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const (

@@ -1,5 +1,18 @@
 # Floret OKF Update Log
 
+## 2026-07-30
+* **v3 public boundary**: Replaced the v2 capability-handle graph with bound
+  Host, Threads, Thread, Turns, and SubAgents surfaces, Floret-allocated
+  lifecycle identities, exact-revision reads, and pull subscriptions with
+  explicit Gap recovery.
+* **Single source of truth**: Documented Floret ownership of admitted Agent
+  lifecycle and the prohibition on host-side shadow stores and projections.
+* **Storage and migration**: Separated opaque ordinary-host Sources from the
+  advanced storage SPI and documented the explicit v2.2-to-v3 representability
+  and migration contract.
+* **Release governance**: Moved compatibility and blank-module adoption gates
+  to the `/v3` module and the manually designed v3 API baseline.
+
 ## 2026-07-29
 * **Runtime observation API**: Exported `runtime.ToolCallStream` so downstream
   event sinks can construct and test provider-neutral tool-call stream facts.

@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	publicprovider "github.com/floegence/floret/v2/provider"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	publicprovider "github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestModelGatewayExpandedAttachmentsRequirePreparedRequests(t *testing.T) {
@@ -51,11 +52,11 @@ func TestPreparedModelGatewayConsumesExactPreparedRequestAndRecordsFingerprint(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	stats := &MessageAttachmentTextStats{UnicodeCodePointCount: 11, LogicalLineCount: 2}
-	result, err := host.RunTurn(ctx, RunTurnRequest{
+	result, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1",
 		Input: TurnInput{Attachments: []MessageAttachment{{
 			ResourceRef: "resource:v1:notes", Name: "notes.txt", MIMEType: "text/plain", SizeBytes: 12, TextStats: stats,
@@ -115,10 +116,10 @@ func TestDescriptorOnlyGatewayKeepsLegacyDirectStreamEvenWhenPreparerExists(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(context.Background(), createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(context.Background(), RunTurnRequest{
+	result, err := host.RunTurn(context.Background(), runTurnRequest{
 		RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 	})
 	if err != nil || result.Status != TurnStatusCompleted || result.Output != "direct response" {
@@ -155,7 +156,7 @@ func TestDescriptorOnlyGatewayAttachmentEstimateBoundsSerializedRequestBytes(t *
 			req := provider.Request{
 				RunID: "run", ThreadID: "thread", TurnID: "turn", TraceID: "trace", PromptScopeID: "scope", Step: 2,
 				Messages:        []session.Message{{Role: session.System, Content: "system"}, {Role: session.User, Content: "inspect", Attachments: []session.MessageAttachment{attachment}}},
-				Tools:           []provider.ToolDefinition{{Name: "read", Description: "read a resource", InputSchema: map[string]any{"type": "object"}}},
+				Tools:           []tools.ToolDefinition{{Name: "read", Description: "read a resource", InputSchema: map[string]any{"type": "object"}}},
 				HostedTools:     []provider.HostedToolDefinition{{Name: "search", Type: "web", Options: map[string]any{"region": "global"}}},
 				MaxOutputTokens: 4096,
 				PreviousState:   &provider.State{Kind: "response", ID: "state"},
@@ -219,10 +220,10 @@ func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsag
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := host.RunTurn(ctx, RunTurnRequest{
+	if result, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{
 			Text: "establish native anchor",
 			Attachments: []MessageAttachment{{
@@ -232,7 +233,7 @@ func TestDescriptorOnlyGatewayAttachmentEstimateIncreasesPressureAfterNativeUsag
 	}); err != nil || result.Status != TurnStatusCompleted {
 		t.Fatalf("anchor result=%#v err=%v", result, err)
 	}
-	if result, err := host.RunTurn(ctx, RunTurnRequest{
+	if result, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "turn-2", ThreadID: "thread", TurnID: "turn-2",
 		Input: TurnInput{Attachments: []MessageAttachment{{
 			ResourceRef: strings.Repeat("r", MaxMessageAttachmentResourceRefBytes),
@@ -281,10 +282,10 @@ func TestDescriptorOnlyGatewayAttachmentEstimateDrivesProjectedPressure(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{
+	result, err := host.RunTurn(ctx, runTurnRequest{
 		RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1",
 		Input: TurnInput{Attachments: []MessageAttachment{{
 			ResourceRef: "resource:v1:pressure", Name: "pressure.txt", MIMEType: "text/plain", SizeBytes: 8,
@@ -330,12 +331,12 @@ func TestPreparedModelGatewayHandleClosesWhenStoreCancelsTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	runDone := make(chan error, 1)
 	go func() {
-		_, runErr := host.RunTurn(ctx, RunTurnRequest{
+		_, runErr := host.RunTurn(ctx, runTurnRequest{
 			RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 		})
 		runDone <- runErr
@@ -389,10 +390,10 @@ func TestPreparedModelGatewayRejectsIncompleteEstimateAndClosesHandle(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(context.Background(), createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, runErr := host.RunTurn(context.Background(), RunTurnRequest{
+	result, runErr := host.RunTurn(context.Background(), runTurnRequest{
 		RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
 	})
 	if runErr == nil || result.Status != TurnStatusFailed {

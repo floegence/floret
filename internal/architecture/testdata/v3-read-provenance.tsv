@@ -1,0 +1,24 @@
+consumer_kind	consumer	floret_public_source	product_projection	owner
+go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads	runtime.Threads.ListThreads batch snapshots at one revision	merge Redeven pin/read-state/routing then stable product sort	floret
+go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}	runtime.Thread.Snapshot	map canonical snapshot plus Redeven product settings	floret
+go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}/messages	runtime.Thread.Turns query with AtRevision	map canonical messages and references to transport DTO	floret
+go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}/todos	runtime.Thread.Todos query with AtRevision	map typed todo state to transport DTO	floret
+go_endpoint	internal/codeapp/appserver/server.go approval command	runtime.Turns.ResolveApproval	map mutation receipt and fresh approval projection	floret
+go_endpoint	internal/codeapp/appserver server reference-open target	runtime.Thread.Turns exact read at revision	resolve opaque ResourceRef under current Redeven authorization	floret
+background_decision	internal/ai/floret_startup_recovery.go	runtime.Thread pending-work query at snapshot revision	resolve host-owned pending work under current product policy	floret
+background_decision	internal/ai/subagent_publication_recovery.go	runtime.Thread.SubAgents query at snapshot revision	settle only Redeven coordinator intent around canonical child publication	floret
+background_decision	internal/ai/orphan_root_maintenance.go	runtime.Threads.ListThreads batch snapshots	reconcile product routing/settings without rebuilding lifecycle	floret
+background_decision	internal/ai/queued_turns.go	runtime.Thread.Snapshot and runtime.Thread.Subscribe	admit unadmitted queued product command through StartTurn	floret
+bootstrap	internal/ai/flower_live_projection.go GetFlowerThreadLiveBootstrap	runtime.Thread.Snapshot plus all queries AtRevision R	compose presentation with Redeven read-state and routing	floret
+bootstrap	internal/ai/floret_bootstrap.go Host startup	runtime.Open and runtime.Threads.ListThreads	bind product provider/policy resolvers without retaining lifecycle copy	floret
+live_event	internal/ai/floret_events.go	runtime.Thread.Subscribe after snapshot revision	translate sealed durable/transient variants to transport events	floret
+live_event	internal/ai/realtime_sink.go	runtime.Subscription.Next	transport-only fanout; no durable lifecycle sink	floret
+typescript_reducer	internal/flower_ui/src/flowerLiveReducer.ts	runtime.Thread.Subscribe transported sealed events	reduce live presentation only from canonical event variants	floret
+typescript_reducer	internal/flower_ui/src/flowerLiveProjection.ts	runtime.Thread snapshot/query bootstrap at one revision	derive visible run/approval/input state without audit replay	floret
+typescript_reducer	internal/flower_ui/src/flowerTimelineProjection.ts	runtime.Thread.Turns query and Activity projection	derive ordered timeline entries	floret
+ui_field	internal/flower_ui/src/FlowerSurface.tsx thread status	runtime.Thread.Snapshot status at bootstrap revision plus subscription	render canonical lifecycle status	floret
+ui_field	internal/flower_ui/src/FlowerSurface.tsx approval actions	runtime.Thread approval query at revision plus subscription	render current approval commands	floret
+ui_field	internal/flower_ui/src/FlowerSurface.tsx todos	runtime.Thread todo query at revision plus subscription	render typed todo state	floret
+ui_field	internal/flower_ui/src/FlowerSurface.tsx activity timeline	runtime.Thread activity query at revision plus subscription	render sealed ActivityPresentation variants	floret
+ui_field	internal/envapp/ui_src/src/ui/FlowerSurface navigation pin/read marker	Redeven threadstore pin and internal/threadreadstate	merge product pin/read marker with opaque ThreadID	redeven
+go_endpoint	internal/codeapp/appserver routing endpoints	Redeven internal/ai/threadstore routing APIs	product target selection only	redeven

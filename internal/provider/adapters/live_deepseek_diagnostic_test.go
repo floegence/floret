@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type deepSeekDiagnosticTransport struct {
@@ -192,8 +192,8 @@ func liveDeepSeekDiagnosticMessages() []session.Message {
 	}
 }
 
-func liveDeepSeekDiagnosticToolDefinitions() []provider.ToolDefinition {
-	return []provider.ToolDefinition{
+func liveDeepSeekDiagnosticToolDefinitions() []tools.ToolDefinition {
+	return []tools.ToolDefinition{
 		{
 			Name:        "inspect_once",
 			Description: "Return the first diagnostic observation.",

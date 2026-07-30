@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/agentharness"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/agentharness"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *testing.T) {
@@ -64,10 +65,10 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 				return host
 			}
 			host := newHost(store)
-			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
-			if result, err := host.RunTurn(ctx, RunTurnRequest{
+			if result, err := host.RunTurn(ctx, runTurnRequest{
 				ThreadID: "thread", TurnID: "turn-bootstrap", RunID: "run-bootstrap", Input: TurnInput{Text: "bootstrap question"},
 			}); err != nil || result.Status != TurnStatusCompleted {
 				t.Fatalf("bootstrap=%#v err=%v", result, err)
@@ -103,7 +104,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if retried, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "retry failed branch"}); err != nil || retried.Status != TurnStatusCompleted {
+			if retried, err := host.RetryTurn(ctx, retryTurnRequest{ThreadID: "thread", TurnID: "retry-turn", RunID: "retry-run", Reason: "retry failed branch"}); err != nil || retried.Status != TurnStatusCompleted {
 				t.Fatalf("retry=%#v err=%v", retried, err)
 			}
 
@@ -118,7 +119,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 				t.Cleanup(func() { _ = store.Close() })
 				host = newHost(store)
 			}
-			if result, err := host.RunTurn(ctx, RunTurnRequest{
+			if result, err := host.RunTurn(ctx, runTurnRequest{
 				ThreadID: "thread", TurnID: "turn-follow-up", RunID: "run-follow-up", Input: TurnInput{Text: "follow up"},
 			}); err != nil || result.Status != TurnStatusCompleted {
 				t.Fatalf("follow-up=%#v err=%v", result, err)
@@ -212,10 +213,10 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
-			failed, runErr := host.RunTurn(ctx, RunTurnRequest{
+			failed, runErr := host.RunTurn(ctx, runTurnRequest{
 				ThreadID: "thread", TurnID: "turn-original", RunID: "run-original", Input: TurnInput{Text: "original question"},
 			})
 			if runErr == nil || failed.Status != TurnStatusFailed {
@@ -225,11 +226,11 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			beforeRetry, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+			beforeRetry, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 1})
 			if err != nil || len(beforeRetry.Turns) != 1 || beforeRetry.Turns[0].UserEntryID == "" {
 				t.Fatalf("before retry=%#v err=%v", beforeRetry, err)
 			}
-			retried, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "retry failed provider"})
+			retried, err := host.RetryTurn(ctx, retryTurnRequest{ThreadID: "thread", TurnID: "retry-turn", RunID: "retry-run", Reason: "retry failed provider"})
 			if err != nil || retried.Status != TurnStatusCompleted || retried.Output != "retry answer" {
 				t.Fatalf("retried=%#v err=%v", retried, err)
 			}
@@ -238,7 +239,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.TurnID != "turn-original" {
 				t.Fatalf("retry overview=%#v err=%v", overview, err)
 			}
-			forkRequest := ForkThreadRequest{OperationID: "fork-retry", SourceThreadID: "thread", DestinationThreadID: "fork"}
+			forkRequest := forkThreadRequest{OperationID: "fork-retry", SourceThreadID: "thread", DestinationThreadID: "fork"}
 			if _, err := maintenance.ForkThread(ctx, forkRequest); err != nil {
 				t.Fatal(err)
 			}
@@ -246,12 +247,12 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 				t.Fatalf("fork replay=%#v err=%v", replayed, err)
 			}
 			forkCursor := assertRuntimeForkedRetryTurnPage(t, ctx, maintenance)
-			if next, err := host.RunTurn(ctx, RunTurnRequest{
+			if next, err := host.RunTurn(ctx, runTurnRequest{
 				ThreadID: "fork", TurnID: "fork-next", RunID: "fork-next-run", Input: TurnInput{Text: "continue after retry"},
 			}); err != nil || next.Status != TurnStatusCompleted {
 				t.Fatalf("fork next=%#v err=%v", next, err)
 			}
-			forkIncremental, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", SinceCursor: &forkCursor, Limit: 1})
+			forkIncremental, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", SinceCursor: &forkCursor, Limit: 1})
 			if err != nil || len(forkIncremental.Turns) != 1 || forkIncremental.Turns[0].TurnID != "fork-next" {
 				t.Fatalf("fork incremental=%#v err=%v", forkIncremental, err)
 			}
@@ -270,7 +271,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 					t.Fatal(err)
 				}
 				assertRuntimeRetryTurnPage(t, ctx, maintenance, beforeRetry.SinceCursor)
-				forkPage, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 3})
+				forkPage, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", Tail: 3})
 				if err != nil || len(forkPage.Turns) != 3 || forkPage.Turns[1].RetrySource == nil || forkPage.Turns[1].RetrySource.TurnID != forkPage.Turns[0].TurnID {
 					t.Fatalf("reopened fork retry page=%#v err=%v", forkPage, err)
 				}
@@ -284,7 +285,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 
 func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade) ThreadTurnCursor {
 	t.Helper()
-	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 2})
+	page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", Tail: 2})
 	if err != nil || len(page.Turns) != 2 {
 		t.Fatalf("fork retry page=%#v err=%v", page, err)
 	}
@@ -298,10 +299,10 @@ func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, mainten
 	if original.TurnID == "turn-original" {
 		t.Fatalf("fork did not rewrite original turn identity: %#v", original)
 	}
-	if _, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "fork", TurnID: "turn-original"}); !errors.Is(err, ErrTurnNotFound) {
+	if _, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "fork", TurnID: "turn-original"}); !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("fork accepted source turn identity err=%v", err)
 	}
-	if _, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "thread", TurnID: original.TurnID}); !errors.Is(err, ErrTurnNotFound) {
+	if _, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "thread", TurnID: original.TurnID}); !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("source accepted mapped fork turn identity err=%v", err)
 	}
 	latest, err := maintenance.ReadLatestThreadTurn(ctx, "fork")
@@ -312,11 +313,11 @@ func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, mainten
 	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.TurnID != original.TurnID {
 		t.Fatalf("fork retry overview=%#v err=%v", overview, err)
 	}
-	tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 1})
+	tail, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", Tail: 1})
 	if err != nil || tail.BeforeCursor == nil {
 		t.Fatalf("fork retry tail=%#v err=%v", tail, err)
 	}
-	before, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", BeforeCursor: tail.BeforeCursor, Limit: 1})
+	before, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", BeforeCursor: tail.BeforeCursor, Limit: 1})
 	if err != nil || len(before.Turns) != 1 || before.Turns[0].TurnID != original.TurnID {
 		t.Fatalf("fork retry before=%#v err=%v", before, err)
 	}
@@ -325,7 +326,7 @@ func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, mainten
 
 func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, sinceCursor ThreadTurnCursor) {
 	t.Helper()
-	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
+	page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 	if err != nil || len(page.Turns) != 2 {
 		t.Fatalf("retry page=%#v err=%v", page, err)
 	}
@@ -341,7 +342,7 @@ func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *
 	for _, listed := range page.Turns {
 		assertExactThreadTurnMatchesListed(t, ctx, maintenance, "thread", listed)
 	}
-	incremental, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", SinceCursor: &sinceCursor, Limit: 1})
+	incremental, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", SinceCursor: &sinceCursor, Limit: 1})
 	if err != nil || len(incremental.Turns) != 1 || incremental.Turns[0].TurnID != retry.TurnID || incremental.SinceCursor != page.SinceCursor {
 		t.Fatalf("retry incremental page=%#v err=%v", incremental, err)
 	}
@@ -351,9 +352,9 @@ func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *
 	}
 }
 
-func assertExactThreadTurnMatchesListed(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, threadID ThreadID, listed ThreadTurnSnapshot) {
+func assertExactThreadTurnMatchesListed(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, threadID identity.ThreadID, listed ThreadTurnSnapshot) {
 	t.Helper()
-	exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: threadID, TurnID: listed.TurnID})
+	exact, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: threadID, TurnID: listed.TurnID})
 	if err != nil {
 		t.Fatalf("ReadThreadTurn(%q, %q): %v", threadID, listed.TurnID, err)
 	}
@@ -370,11 +371,11 @@ func TestListThreadTurnsRejectsEmptySinceCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := maintenance.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := maintenance.CreateThread(context.Background(), createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	empty := ThreadTurnCursor("")
-	_, err = maintenance.ListThreadTurns(context.Background(), ListThreadTurnsRequest{
+	_, err = maintenance.ListThreadTurns(context.Background(), listThreadTurnsRequest{
 		ThreadID: "thread", SinceCursor: &empty, Limit: 1,
 	})
 	if err == nil || !errors.Is(err, ErrInvalidThreadTurnCursor) {
@@ -390,7 +391,7 @@ func TestThreadTurnCursorIsOpaqueScopedAndTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := maintenance.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	since, err := encodeThreadTurnCursor("thread", threadTurnCursorModeSince, "missing-entry")
@@ -408,7 +409,7 @@ func TestThreadTurnCursorIsOpaqueScopedAndTyped(t *testing.T) {
 	wrongVersion := testThreadTurnCursor(t, threadTurnCursorPayload{
 		Version: threadTurnCursorVersion + 1, ThreadID: "thread", Mode: threadTurnCursorModeSince, EntryID: "missing-entry",
 	})
-	for name, req := range map[string]ListThreadTurnsRequest{
+	for name, req := range map[string]listThreadTurnsRequest{
 		"malformed":     {ThreadID: "thread", SinceCursor: threadTurnCursorPointer("not-base64!"), Limit: 1},
 		"tampered":      {ThreadID: "thread", SinceCursor: threadTurnCursorPointer(string(since) + "x"), Limit: 1},
 		"wrong mode":    {ThreadID: "thread", SinceCursor: &before, Limit: 1},
@@ -422,10 +423,10 @@ func TestThreadTurnCursorIsOpaqueScopedAndTyped(t *testing.T) {
 			}
 		})
 	}
-	if page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", SinceCursor: &since, Limit: 1}); !errors.Is(err, ErrStaleThreadTurnCursor) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
+	if page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", SinceCursor: &since, Limit: 1}); !errors.Is(err, ErrStaleThreadTurnCursor) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
 		t.Fatalf("stale page=%#v err=%v", page, err)
 	}
-	raw, err := json.Marshal(ListThreadTurnsRequest{ThreadID: "thread", BeforeCursor: &before, Limit: 1})
+	raw, err := json.Marshal(listThreadTurnsRequest{ThreadID: "thread", BeforeCursor: &before, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,13 +554,13 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 					t.Fatalf("%s turn=%#v err=%v", name, turn, err)
 				}
 			}
-			page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 1})
+			page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", Tail: 1})
 			if err != nil || len(page.Turns) != 1 {
 				t.Fatalf("ListThreadTurns page=%#v err=%v", page, err)
 			}
 			turn := page.Turns[0]
 			assertFailure("ListThreadTurns", turn, nil)
-			exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "fork", TurnID: turn.TurnID})
+			exact, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "fork", TurnID: turn.TurnID})
 			assertFailure("ReadThreadTurn", exact, err)
 			assertExactThreadTurnMatchesListed(t, ctx, maintenance, "fork", turn)
 			latest, err := maintenance.ReadLatestThreadTurn(ctx, "fork")
@@ -569,7 +570,7 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 				t.Fatalf("ReadThreadOverview overview=%#v err=%v", overview, err)
 			}
 			assertFailure("ReadThreadOverview", *overview.LatestTurn, nil)
-			projection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "fork", TurnID: turn.TurnID, RunID: turn.RunID})
+			projection, err := maintenance.ReadTurnProjection(ctx, readTurnProjectionRequest{ThreadID: "fork", TurnID: turn.TurnID, RunID: turn.RunID})
 			if err != nil || projection.Status != TurnStatusInterrupted {
 				t.Fatalf("ReadTurnProjection projection=%#v err=%v", projection, err)
 			}
@@ -589,7 +590,7 @@ func TestListThreadTurnsUsesCanonicalPageWithoutFullJournalReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := maintenance.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 120; index++ {
@@ -609,7 +610,7 @@ func TestListThreadTurnsUsesCanonicalPageWithoutFullJournalReads(t *testing.T) {
 		}
 	}
 
-	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
+	page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

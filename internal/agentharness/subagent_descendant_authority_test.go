@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestValidateSubAgentDescendantAuthorityHidesTombstonedTarget(t *testing.T) {

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"math"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -12,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type Type = observation.EventType
@@ -80,24 +80,24 @@ type Event struct {
 	ToolKind      string `json:"tool_kind,omitempty"`
 	// CanonicalEntryID links an effect result event to the journal entry that
 	// the effect authority already committed. It is internal projection state.
-	CanonicalEntryID   string                            `json:"-"`
-	Args               string                            `json:"args,omitempty"`
-	ArgsHash           string                            `json:"args_hash,omitempty"`
-	Result             string                            `json:"result,omitempty"`
-	Err                string                            `json:"err,omitempty"`
-	FinishReason       string                            `json:"finish_reason,omitempty"`
-	RawFinishReason    string                            `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                              `json:"finish_inferred,omitempty"`
-	CompletionReason   string                            `json:"completion_reason,omitempty"`
-	ContinuationReason string                            `json:"continuation_reason,omitempty"`
-	Duration           int64                             `json:"duration_ms,omitempty"`
-	Metrics            any                               `json:"metrics,omitempty"`
-	Metadata           any                               `json:"metadata,omitempty"`
-	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
-	Artifacts          []Artifact                        `json:"artifacts,omitempty"`
-	Sources            []SourceRef                       `json:"sources,omitempty"`
-	Payload            any                               `json:"-"`
-	Timestamp          time.Time                         `json:"timestamp"`
+	CanonicalEntryID   string                      `json:"-"`
+	Args               string                      `json:"args,omitempty"`
+	ArgsHash           string                      `json:"args_hash,omitempty"`
+	Result             string                      `json:"result,omitempty"`
+	Err                string                      `json:"err,omitempty"`
+	FinishReason       string                      `json:"finish_reason,omitempty"`
+	RawFinishReason    string                      `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                        `json:"finish_inferred,omitempty"`
+	CompletionReason   string                      `json:"completion_reason,omitempty"`
+	ContinuationReason string                      `json:"continuation_reason,omitempty"`
+	Duration           int64                       `json:"duration_ms,omitempty"`
+	Metrics            any                         `json:"metrics,omitempty"`
+	Metadata           any                         `json:"metadata,omitempty"`
+	Activity           *tools.ActivityPresentation `json:"activity,omitempty"`
+	Artifacts          []Artifact                  `json:"artifacts,omitempty"`
+	Sources            []SourceRef                 `json:"sources,omitempty"`
+	Payload            any                         `json:"-"`
+	Timestamp          time.Time                   `json:"timestamp"`
 }
 
 type SourceRef struct {
@@ -273,27 +273,113 @@ func safeSourceURL(value string) string {
 	return safeActivityText(value, 500)
 }
 
-func sanitizeActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
+func sanitizeActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
 	if in == nil {
 		return nil
 	}
-	out := &observation.ActivityPresentation{
+	out := &tools.ActivityPresentation{
 		Label:       safeActivityText(in.Label, 200),
 		Description: safeActivityText(in.Description, 500),
 		Renderer:    in.Renderer,
 		Chips:       sanitizeActivityChips(in.Chips),
 		TargetRefs:  sanitizeActivityTargetRefs(in.TargetRefs),
-		Payload:     sanitizeActivityPayload(in.Payload, 0),
+		Payload:     sanitizeTypedActivityPayload(in.Payload),
 	}
 	if out.Label == "" &&
 		out.Description == "" &&
 		out.Renderer == "" &&
 		len(out.Chips) == 0 &&
 		len(out.TargetRefs) == 0 &&
-		len(out.Payload) == 0 {
+		out.Payload == nil {
+		return nil
+	}
+	if err := out.Validate(); err != nil {
 		return nil
 	}
 	return out
+}
+
+func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayload {
+	sanitizeError := func(in *tools.ActivityError) *tools.ActivityError {
+		if in == nil {
+			return nil
+		}
+		message := safeActivityText(in.Message, 8_000)
+		if message == "" {
+			return nil
+		}
+		return &tools.ActivityError{Message: message}
+	}
+	sanitizeText := func(value string) string { return safeActivityText(value, 8_000) }
+	switch payload := in.(type) {
+	case nil:
+		return nil
+	case tools.StructuredActivityPayload:
+		payload.Status = sanitizeText(payload.Status)
+		payload.Operation = sanitizeText(payload.Operation)
+		payload.DisplayName = sanitizeText(payload.DisplayName)
+		payload.Summary = sanitizeText(payload.Summary)
+		payload.Error = sanitizeError(payload.Error)
+		return payload
+	case tools.TerminalActivityPayload:
+		payload.Command = sanitizeText(payload.Command)
+		payload.Status = sanitizeText(payload.Status)
+		payload.ProcessID = sanitizeText(payload.ProcessID)
+		payload.LatestOutput = sanitizeText(payload.LatestOutput)
+		payload.Output = sanitizeText(payload.Output)
+		payload.Stdout = sanitizeText(payload.Stdout)
+		payload.Stderr = sanitizeText(payload.Stderr)
+		payload.PendingResult = sanitizeText(payload.PendingResult)
+		payload.Error = sanitizeError(payload.Error)
+		return payload
+	case tools.FileActivityPayload:
+		payload.Path = sanitizeText(payload.Path)
+		payload.Operation = sanitizeText(payload.Operation)
+		payload.Status = sanitizeText(payload.Status)
+		payload.Summary = sanitizeText(payload.Summary)
+		payload.Error = sanitizeError(payload.Error)
+		return payload
+	case tools.PatchActivityPayload:
+		payload.Path = sanitizeText(payload.Path)
+		payload.Diff = sanitizeText(payload.Diff)
+		payload.Status = sanitizeText(payload.Status)
+		payload.Summary = sanitizeText(payload.Summary)
+		payload.Error = sanitizeError(payload.Error)
+		return payload
+	case tools.WebSearchActivityPayload:
+		payload.Query = sanitizeText(payload.Query)
+		payload.Status = sanitizeText(payload.Status)
+		payload.Error = sanitizeError(payload.Error)
+		for i := range payload.Results {
+			payload.Results[i].Title = sanitizeText(payload.Results[i].Title)
+			payload.Results[i].URL = sanitizeText(payload.Results[i].URL)
+		}
+		return payload
+	case tools.TodosActivityPayload:
+		payload.Operation = sanitizeText(payload.Operation)
+		for i := range payload.Items {
+			payload.Items[i].Text = sanitizeText(payload.Items[i].Text)
+			payload.Items[i].Status = sanitizeText(payload.Items[i].Status)
+		}
+		return payload
+	case tools.QuestionActivityPayload:
+		payload.PromptID = sanitizeText(payload.PromptID)
+		for i := range payload.Questions {
+			payload.Questions[i].ID = sanitizeText(payload.Questions[i].ID)
+			payload.Questions[i].Question = sanitizeText(payload.Questions[i].Question)
+			for j := range payload.Questions[i].Options {
+				payload.Questions[i].Options[j].Label = sanitizeText(payload.Questions[i].Options[j].Label)
+				payload.Questions[i].Options[j].Description = sanitizeText(payload.Questions[i].Options[j].Description)
+			}
+		}
+		return payload
+	case tools.CompletionActivityPayload:
+		payload.Status = sanitizeText(payload.Status)
+		payload.Summary = sanitizeText(payload.Summary)
+		return payload
+	default:
+		return nil
+	}
 }
 
 func safeActivityText(value string, limit int) string {
@@ -308,13 +394,13 @@ func safeActivityText(value string, limit int) string {
 	return Redact(value)
 }
 
-func sanitizeActivityChips(in []observation.ActivityChip) []observation.ActivityChip {
+func sanitizeActivityChips(in []tools.ActivityChip) []tools.ActivityChip {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]observation.ActivityChip, 0, len(in))
+	out := make([]tools.ActivityChip, 0, len(in))
 	for _, chip := range in {
-		item := observation.ActivityChip{
+		item := tools.ActivityChip{
 			Kind:  safeActivityToken(chip.Kind, 64),
 			Label: safeActivityText(chip.Label, 120),
 			Value: safeActivityText(chip.Value, 120),
@@ -328,13 +414,13 @@ func sanitizeActivityChips(in []observation.ActivityChip) []observation.Activity
 	return out
 }
 
-func sanitizeActivityTargetRefs(in []observation.ActivityTargetRef) []observation.ActivityTargetRef {
+func sanitizeActivityTargetRefs(in []tools.ActivityTargetRef) []tools.ActivityTargetRef {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]observation.ActivityTargetRef, 0, len(in))
+	out := make([]tools.ActivityTargetRef, 0, len(in))
 	for _, ref := range in {
-		item := observation.ActivityTargetRef{
+		item := tools.ActivityTargetRef{
 			Kind:  safeActivityToken(ref.Kind, 64),
 			Label: safeActivityText(ref.Label, 240),
 			URI:   safeActivityURI(ref.URI),
@@ -350,113 +436,6 @@ func sanitizeActivityTargetRefs(in []observation.ActivityTargetRef) []observatio
 		out = append(out, item)
 	}
 	return out
-}
-
-func sanitizeActivityPayload(in map[string]any, depth int) map[string]any {
-	if len(in) == 0 || depth > 4 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		key = safeActivityToken(key, 80)
-		if key == "" {
-			continue
-		}
-		if sanitized, ok := sanitizeActivityValue(key, value, depth+1); ok {
-			out[key] = sanitized
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func sanitizeActivityValue(key string, value any, depth int) (any, bool) {
-	switch v := value.(type) {
-	case nil:
-		return nil, true
-	case string:
-		return safeActivityPayloadString(key, v), true
-	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return v, true
-	case float32:
-		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-			return nil, false
-		}
-		return v, true
-	case float64:
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return nil, false
-		}
-		return v, true
-	case map[string]string:
-		if depth > 4 {
-			return nil, false
-		}
-		out := map[string]any{}
-		for itemKey, itemValue := range v {
-			itemKey = safeActivityToken(itemKey, 80)
-			if itemKey == "" {
-				continue
-			}
-			out[itemKey] = safeActivityPayloadString(itemKey, itemValue)
-		}
-		return out, true
-	case map[string]any:
-		return sanitizeActivityPayload(v, depth), true
-	case []string:
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			out = append(out, safeActivityPayloadString(key, item))
-		}
-		return out, true
-	case []map[string]any:
-		if depth > 4 {
-			return nil, false
-		}
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			out = append(out, sanitizeActivityPayload(item, depth))
-		}
-		return out, true
-	case []any:
-		if depth > 4 {
-			return nil, false
-		}
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			if sanitized, ok := sanitizeActivityValue(key, item, depth+1); ok {
-				out = append(out, sanitized)
-			}
-		}
-		return out, true
-	default:
-		data, err := json.Marshal(v)
-		if err != nil {
-			return "[redacted]", true
-		}
-		return safeActivityPayloadString(key, string(data)), true
-	}
-}
-
-func safeActivityPayloadString(key string, value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if metadataKeyIsPath(key) {
-		value = SafePathLabel(value)
-	} else {
-		value = SafePathRefsText(value)
-	}
-	value = Redact(value)
-	const limit = 8000
-	if len([]rune(value)) <= limit {
-		return value
-	}
-	runes := []rune(value)
-	return string(runes[:limit])
 }
 
 func safeActivityToken(value string, limit int) string {

@@ -1,7 +1,7 @@
 ---
 type: Architecture Boundary
 title: Floret And Host Boundary
-description: Defines the single-source-of-truth and composition ownership rules for v2.
+description: Defines the v3 single-source-of-truth and composition ownership rules.
 resource: /AGENTS.md
 tags: [architecture, boundary, host]
 timestamp: 2026-07-29T00:00:00Z
@@ -29,6 +29,8 @@ services minimal interfaces or closures backed by identity-bound handles.
 Services, ordinary runs, terminal processes, and SubAgent executors neither
 retain Host nor recover it with type assertions.
 
-Downstream production imports only `config`, `provider`, `runtime`, `storage`,
-`tools`, and `observation`. `florettest` is test-only; `internal/*` is never a
-host dependency.
+Ordinary downstream production code imports only `identity`, `config`,
+`runtime`, `observation`, `tools`, official `provider` constructors, and opaque
+`storage.Source` values. Provider transports and `storage/spi` are advanced
+integration surfaces. `florettest` is test-only; `internal/*` is never a host
+dependency.

@@ -13,21 +13,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/configbridge"
-	"github.com/floegence/floret/v2/internal/engine"
-	enginecompaction "github.com/floegence/floret/v2/internal/engine/compaction"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/internal/sessionlifecycle"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/activityview"
+	"github.com/floegence/floret/v3/internal/configbridge"
+	"github.com/floegence/floret/v3/internal/engine"
+	enginecompaction "github.com/floegence/floret/v3/internal/engine/compaction"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/sessionlifecycle"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var (
@@ -206,6 +208,8 @@ type CompactOptions struct {
 }
 
 type RetryOptions struct {
+	TurnID identity.TurnID
+	RunID  identity.RunID
 	Reason string
 	Labels engine.RunLabels
 }
@@ -248,7 +252,7 @@ type PendingToolSettlement struct {
 	Status          PendingToolSettlementStatus
 	Summary         string
 	Output          string
-	Activity        *observation.ActivityPresentation
+	Activity        *tools.ActivityPresentation
 }
 
 type ThreadSnapshot struct {
@@ -675,7 +679,7 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 	return h.forkThreadReplayable(ctx, opts)
 }
 
-func rewriteForkContextEntry(entry sessiontree.Entry, identity sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
+func rewriteForkContextEntry(entry sessiontree.Entry, forkIdentity sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
 	if entry.Type != sessiontree.EntryCustom {
 		return entry, nil
 	}
@@ -685,18 +689,18 @@ func rewriteForkContextEntry(entry sessiontree.Entry, identity sessiontree.ForkE
 		if err != nil {
 			return sessiontree.Entry{}, err
 		}
-		status.ThreadID = identity.DestinationThreadID
-		status.TurnID = rewriteForkContextID(status.TurnID, identity.TurnIDMap)
-		status.RunID = rewriteForkContextID(status.RunID, identity.RunIDMap)
+		status.ThreadID = identity.ThreadID(forkIdentity.DestinationThreadID)
+		status.TurnID = identity.TurnID(rewriteForkContextID(status.TurnID.String(), forkIdentity.TurnIDMap))
+		status.RunID = identity.RunID(rewriteForkContextID(status.RunID.String(), forkIdentity.RunIDMap))
 		entry.Metadata[subAgentContextStatusKey] = mustSubAgentMetadataJSON(status)
 	case subAgentContextCompactionEntryKind:
 		compact, err := subAgentDetailContextCompaction(entry.Metadata)
 		if err != nil {
 			return sessiontree.Entry{}, err
 		}
-		compact.ThreadID = identity.DestinationThreadID
-		compact.TurnID = rewriteForkContextID(compact.TurnID, identity.TurnIDMap)
-		compact.RunID = rewriteForkContextID(compact.RunID, identity.RunIDMap)
+		compact.ThreadID = forkIdentity.DestinationThreadID
+		compact.TurnID = rewriteForkContextID(compact.TurnID, forkIdentity.TurnIDMap)
+		compact.RunID = rewriteForkContextID(compact.RunID, forkIdentity.RunIDMap)
 		entry.Metadata[subAgentContextCompactionKey] = mustSubAgentMetadataJSON(compact)
 	}
 	return entry, nil
@@ -1215,6 +1219,12 @@ func (t *Thread) Run(ctx context.Context, input string, opts RunOptions) (TurnRe
 }
 
 func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, error) {
+	if _, err := identity.ParseTurnID(opts.TurnID.String()); err != nil {
+		return TurnResult{}, err
+	}
+	if _, err := identity.ParseRunID(opts.RunID.String()); err != nil {
+		return TurnResult{}, err
+	}
 	if err := t.enterTurn(); err != nil {
 		return TurnResult{}, err
 	}
@@ -1227,8 +1237,8 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	if target.Entry.ID == "" {
 		return TurnResult{}, ErrNoRetryTarget
 	}
-	turnID := t.harness.nextID("turn")
-	runID := t.harness.nextID("run")
+	turnID := opts.TurnID.String()
+	runID := opts.RunID.String()
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
 		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"),
 		RetrySourceTurnID: target.Entry.TurnID, RetrySourceEntryID: target.Entry.ID,
@@ -1717,14 +1727,7 @@ func pendingToolSettlementEntryMatches(entry sessiontree.Entry, settlement Pendi
 }
 
 func pendingHandleFromSessionActivity(activity *session.ActivityPresentation) string {
-	if activity == nil || activity.Payload == nil {
-		return ""
-	}
-	value, ok := activity.Payload["pending_handle"]
-	if !ok || value == nil {
-		return ""
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
+	return activityview.PendingHandle(activity)
 }
 
 func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResult, error) {
@@ -3160,21 +3163,21 @@ func pendingToolSettlementAuthorityEntry(threadID string, settlement PendingTool
 	}
 	activity := settlement.Activity
 	if activity == nil {
-		activity = &observation.ActivityPresentation{Label: settlement.Summary}
+		activity = &tools.ActivityPresentation{Label: settlement.Summary}
 	}
 	sanitizedActivity := sanitizeActivityPresentation(activity)
 	payload, err := json.Marshal(struct {
-		ThreadID        string                            `json:"thread_id"`
-		TurnID          string                            `json:"turn_id"`
-		RunID           string                            `json:"run_id"`
-		ToolCallID      string                            `json:"tool_call_id"`
-		ToolName        string                            `json:"tool_name"`
-		Handle          string                            `json:"handle"`
-		EffectAttemptID string                            `json:"effect_attempt_id,omitempty"`
-		Status          PendingToolSettlementStatus       `json:"status"`
-		Summary         string                            `json:"summary"`
-		Output          string                            `json:"output"`
-		Activity        *observation.ActivityPresentation `json:"activity,omitempty"`
+		ThreadID        string                      `json:"thread_id"`
+		TurnID          string                      `json:"turn_id"`
+		RunID           string                      `json:"run_id"`
+		ToolCallID      string                      `json:"tool_call_id"`
+		ToolName        string                      `json:"tool_name"`
+		Handle          string                      `json:"handle"`
+		EffectAttemptID string                      `json:"effect_attempt_id,omitempty"`
+		Status          PendingToolSettlementStatus `json:"status"`
+		Summary         string                      `json:"summary"`
+		Output          string                      `json:"output"`
+		Activity        *tools.ActivityPresentation `json:"activity,omitempty"`
 	}{
 		ThreadID: strings.TrimSpace(threadID), TurnID: settlement.TurnID, RunID: settlement.RunID,
 		ToolCallID: settlement.ToolCallID, ToolName: settlement.ToolName, Handle: settlement.Handle,
@@ -3285,12 +3288,12 @@ func subAgentContextStatusFromEvent(ev event.Event) (observation.ContextStatus, 
 			return observation.ContextStatus{}, false
 		}
 		return observation.ContextStatusFromRequest(observation.RequestObservation{
-			RunID:             ev.RunID,
-			ThreadID:          ev.ThreadID,
-			TurnID:            ev.TurnID,
+			RunID:             identity.RunID(ev.RunID),
+			ThreadID:          identity.ThreadID(ev.ThreadID),
+			TurnID:            identity.TurnID(ev.TurnID),
 			Step:              ev.Step,
 			RequestID:         stringFromEventMetadata(meta["request_id"]),
-			LogicalRequestID:  stringFromEventMetadata(meta["logical_request_id"]),
+			LogicalRequestID:  identity.LogicalRequestID(stringFromEventMetadata(meta["logical_request_id"])),
 			Attempt:           intFromEventMetadata(meta["attempt"]),
 			Provider:          ev.Provider,
 			Model:             ev.Model,
@@ -3304,12 +3307,12 @@ func subAgentContextStatusFromEvent(ev event.Event) (observation.ContextStatus, 
 			return observation.ContextStatus{}, false
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
-			RunID:            ev.RunID,
-			ThreadID:         ev.ThreadID,
-			TurnID:           ev.TurnID,
+			RunID:            identity.RunID(ev.RunID),
+			ThreadID:         identity.ThreadID(ev.ThreadID),
+			TurnID:           identity.TurnID(ev.TurnID),
 			Step:             ev.Step,
 			RequestID:        status.RequestID,
-			LogicalRequestID: status.LogicalRequestID,
+			LogicalRequestID: identity.LogicalRequestID(status.LogicalRequestID),
 			Attempt:          status.Attempt,
 			Provider:         ev.Provider,
 			Model:            ev.Model,
@@ -3984,14 +3987,7 @@ func terminalTurnClosureToolResult(call session.Message, status engine.Status, c
 		}
 	}
 	activity := session.CloneActivityPresentation(call.Activity)
-	if activity == nil {
-		activity = &session.ActivityPresentation{}
-	}
-	activity.Payload = cloneSessionActivityPayload(activity.Payload)
-	if activity.Payload == nil {
-		activity.Payload = map[string]any{}
-	}
-	activity.Payload["status"] = resultStatus
+	activity = activityview.WithTerminalStatus(activity, resultStatus, text)
 	return session.Message{
 		Role:       session.Tool,
 		Content:    text,
@@ -4000,17 +3996,6 @@ func terminalTurnClosureToolResult(call session.Message, status engine.Status, c
 		ToolResult: &session.ToolResultView{Status: resultStatus},
 		Activity:   activity,
 	}
-}
-
-func cloneSessionActivityPayload(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }
 
 func (p *turnProjection) flushPendingToolBatch(force bool) error {
@@ -4219,68 +4204,12 @@ func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
 	return string(observation.ActivityStatusSuccess)
 }
 
-func sanitizeActivityPresentation(activity *observation.ActivityPresentation) *observation.ActivityPresentation {
+func sanitizeActivityPresentation(activity *tools.ActivityPresentation) *tools.ActivityPresentation {
 	return event.Sanitize(event.Event{Activity: activity}).Activity
 }
 
-func sessionActivityPresentation(in *observation.ActivityPresentation) *session.ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	out := &session.ActivityPresentation{
-		Label:       in.Label,
-		Description: in.Description,
-		Renderer:    string(in.Renderer),
-		Chips:       make([]session.ActivityChip, 0, len(in.Chips)),
-		TargetRefs:  make([]session.ActivityTargetRef, 0, len(in.TargetRefs)),
-		Payload:     cloneActivityPayload(in.Payload),
-	}
-	for _, chip := range in.Chips {
-		out.Chips = append(out.Chips, session.ActivityChip{
-			Kind:  chip.Kind,
-			Label: chip.Label,
-			Value: chip.Value,
-			Tone:  chip.Tone,
-		})
-	}
-	for _, ref := range in.TargetRefs {
-		out.TargetRefs = append(out.TargetRefs, session.ActivityTargetRef{
-			Kind:  ref.Kind,
-			Label: ref.Label,
-			URI:   ref.URI,
-			Path:  ref.Path,
-			Line:  ref.Line,
-		})
-	}
-	return out
-}
-
-func cloneActivityPayload(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = cloneActivityPayloadValue(value)
-	}
-	return out
-}
-
-func cloneActivityPayloadValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneActivityPayload(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = cloneActivityPayloadValue(item)
-		}
-		return out
-	case []string:
-		return append([]string(nil), typed...)
-	default:
-		return typed
-	}
+func sessionActivityPresentation(in *tools.ActivityPresentation) *session.ActivityPresentation {
+	return session.CloneActivityPresentation(in)
 }
 
 func artifactRefFromEvent(in event.Artifact) artifact.Ref {

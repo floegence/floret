@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type pendingToolAuthorityTestRepo interface {
@@ -621,7 +622,9 @@ func seedPendingToolRecovery(t *testing.T, repo pendingToolAuthorityTestRepo, no
 		Message: session.Message{
 			Role: session.Tool, ToolCallID: "call-1", ToolName: "terminal",
 			ToolResult: &session.ToolResultView{Status: "running"},
-			Activity:   &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "terminal:job:123"}},
+			Activity: &session.ActivityPresentation{Chips: []tools.ActivityChip{
+				{Kind: "handle", Label: "Handle", Value: "terminal:job:123", Tone: "quiet"},
+			}},
 		},
 	}, sessiontree.AppendOptions{Now: now}); err != nil {
 		t.Fatal(err)
@@ -703,7 +706,9 @@ func seedLocalEffectPendingToolRecovery(t *testing.T, repo pendingToolAuthorityT
 		OutcomeFingerprint: "effect-outcome", Now: now,
 		Result: sessiontree.Entry{ThreadID: "local-effect", TurnID: "turn-1", Type: sessiontree.EntryToolResult,
 			Message: session.Message{Role: session.Tool, ToolCallID: "call-1", ToolName: "terminal",
-				ToolResult: &session.ToolResultView{Status: "running"}, Activity: &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "terminal:local:123"}}}},
+				ToolResult: &session.ToolResultView{Status: "running"}, Activity: &session.ActivityPresentation{Chips: []tools.ActivityChip{
+					{Kind: "handle", Label: "Handle", Value: "terminal:local:123", Tone: "quiet"},
+				}}}},
 	}); err != nil {
 		t.Fatalf("finish local effect: %v", err)
 	}
@@ -746,7 +751,9 @@ func seedSubAgentPendingToolCompletion(t *testing.T, repo pendingToolAuthorityTe
 	if _, err := repo.Append(leaseCtx, sessiontree.Entry{
 		ThreadID: "child", TurnID: "turn-1", Type: sessiontree.EntryToolResult,
 		Message: session.Message{Role: session.Tool, ToolCallID: "call-1", ToolName: "terminal",
-			ToolResult: &session.ToolResultView{Status: "running"}, Activity: &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "terminal:job:child"}}},
+			ToolResult: &session.ToolResultView{Status: "running"}, Activity: &session.ActivityPresentation{Chips: []tools.ActivityChip{
+				{Kind: "handle", Label: "Handle", Value: "terminal:job:child", Tone: "quiet"},
+			}}},
 	}, sessiontree.AppendOptions{Now: now}); err != nil {
 		t.Fatal(err)
 	}

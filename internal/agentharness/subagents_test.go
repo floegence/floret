@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
-	scriptharness "github.com/floegence/floret/v2/internal/testing/harness"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage/sqlite"
+	scriptharness "github.com/floegence/floret/v3/internal/testing/harness"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type canonicalTurnOnlyRepo struct {

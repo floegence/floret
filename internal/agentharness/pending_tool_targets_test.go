@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
 )
 
 func TestListPendingToolSettlementTargetsReadsCompleteCanonicalPathAndExcludesSettled(t *testing.T) {

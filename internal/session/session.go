@@ -3,7 +3,8 @@ package session
 import (
 	"sync"
 
-	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type Role string
@@ -35,29 +36,9 @@ type ToolResultView struct {
 	FullOutput    *artifact.Ref `json:"full_output,omitempty"`
 }
 
-type ActivityChip struct {
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
-	Value string `json:"value,omitempty"`
-	Tone  string `json:"tone,omitempty"`
-}
-
-type ActivityTargetRef struct {
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
-	URI   string `json:"uri,omitempty"`
-	Path  string `json:"path,omitempty"`
-	Line  int    `json:"line,omitempty"`
-}
-
-type ActivityPresentation struct {
-	Label       string              `json:"label,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Renderer    string              `json:"renderer,omitempty"`
-	Chips       []ActivityChip      `json:"chips,omitempty"`
-	TargetRefs  []ActivityTargetRef `json:"target_refs,omitempty"`
-	Payload     map[string]any      `json:"payload,omitempty"`
-}
+type ActivityChip = tools.ActivityChip
+type ActivityTargetRef = tools.ActivityTargetRef
+type ActivityPresentation = tools.ActivityPresentation
 
 type ControlSignalView struct {
 	Name        string         `json:"name,omitempty"`
@@ -204,17 +185,7 @@ func CloneControlSignalView(in *ControlSignalView) *ControlSignalView {
 }
 
 func CloneActivityPresentation(in *ActivityPresentation) *ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	return &ActivityPresentation{
-		Label:       in.Label,
-		Description: in.Description,
-		Renderer:    in.Renderer,
-		Chips:       append([]ActivityChip(nil), in.Chips...),
-		TargetRefs:  append([]ActivityTargetRef(nil), in.TargetRefs...),
-		Payload:     cloneActivityPayload(in.Payload),
-	}
+	return tools.CloneActivityPresentation(in)
 }
 
 func cloneActivityPayload(in map[string]any) map[string]any {

@@ -23,8 +23,8 @@ Hosts integrate through a small public surface:
 
 * [config](api/config.md) defines provider-neutral Agent policy.
 * [provider](api/provider.md) defines the only model transport boundary.
-* [runtime](api/runtime.md) owns durable Hosts, immutable Agents, and bound handles.
-* [storage](api/storage.md) defines the opaque transactional Backend SPI.
+* [runtime](api/runtime.md) owns durable Hosts, immutable Agents, bound threads, commands, queries, and subscriptions.
+* [storage](api/storage.md) provides opaque Sources; advanced physical backends implement `storage/spi`.
 * [tools](api/tools.md) defines and dispatches host-provided local tools.
 * [observation](api/observation.md) projects sanitized runtime facts for hosts.
 
@@ -35,7 +35,7 @@ provider profile persistence, and UI rendering stay in the downstream host.
 
 * [README](/README.md)
 * [Repository Guide](/AGENTS.md)
-* [Runtime Host](/runtime/host_v2.go)
+* [Runtime Host](/runtime/v3_host.go)
 * [Immutable Agent](/runtime/agent.go)
 * [Provider Contract](/provider/provider.go)
 * [Storage Contract](/storage/backend.go)

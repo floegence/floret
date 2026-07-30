@@ -17,18 +17,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/internal/testing/harness"
-	"github.com/floegence/floret/v2/internal/testing/tooltest"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/testing/harness"
+	"github.com/floegence/floret/v3/internal/testing/tooltest"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
@@ -900,7 +901,7 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 		t.Fatalf("requests = %d", len(p.Requests))
 	}
 	for _, req := range p.Requests {
-		if !slices.ContainsFunc(req.Tools, func(tool provider.ToolDefinition) bool {
+		if !slices.ContainsFunc(req.Tools, func(tool tools.ToolDefinition) bool {
 			return tool.Name == "read" && tool.Description == "Read original"
 		}) {
 			t.Fatalf("request toolset changed after registry mutation: %#v", req.Tools)
@@ -1061,8 +1062,8 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 {
 		t.Fatalf("toolset epochs: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
 	}
-	if !slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool provider.ToolDefinition) bool { return tool.Name == "read" }) ||
-		!slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool provider.ToolDefinition) bool { return tool.Name == "write" }) {
+	if !slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "read" }) ||
+		!slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "write" }) {
 		t.Fatalf("second turn should expose updated tools: %#v", secondProvider.Requests[0].Tools)
 	}
 	thirdProvider := harness.NewScriptedProvider(harness.Step(harness.Text("third"), harness.Done()))
@@ -1713,7 +1714,7 @@ func TestCustomControlSpecWaitingSignalCanonicalizesJSONPayload(t *testing.T) {
 	e := newTestEngine(p, rec)
 	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"run": "r1"}}
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{
+		Definitions: []tools.ToolDefinition{{
 			Name:        "host_wait",
 			Title:       "Host wait",
 			Description: "Wait for external input.",
@@ -1785,7 +1786,7 @@ func TestCustomControlSpecRejectsNonJSONPayload(t *testing.T) {
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{
+		Definitions: []tools.ToolDefinition{{
 			Name: "host_wait", Description: "Wait for external input.",
 			InputSchema: tools.StrictObject(map[string]any{}, nil), Strict: true,
 		}},
@@ -1810,7 +1811,7 @@ func TestCustomControlSpecTerminalSignalCompletes(t *testing.T) {
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{
+		Definitions: []tools.ToolDefinition{{
 			Name:        "host_complete",
 			Description: "Complete the task.",
 			InputSchema: tools.StrictObject(map[string]any{"summary": tools.String("summary")}, []string{"summary"}),
@@ -1838,7 +1839,7 @@ func TestCustomControlContinueRequiresProviderVisibleText(t *testing.T) {
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{
+		Definitions: []tools.ToolDefinition{{
 			Name:        "host_continue",
 			Description: "Continue after host-side handling.",
 			InputSchema: tools.StrictObject(map[string]any{"secret": tools.String("secret")}, nil),
@@ -1869,7 +1870,7 @@ func TestCustomControlContinueAddsOnlyOutputTextToProviderTranscript(t *testing.
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{
+		Definitions: []tools.ToolDefinition{{
 			Name:        "host_continue",
 			Description: "Continue after host-side handling.",
 			InputSchema: tools.StrictObject(map[string]any{"secret": tools.String("secret")}, nil),
@@ -1912,7 +1913,7 @@ func TestDeclaredControlToolMustProjectSignal(t *testing.T) {
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{Name: "host_gate", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Definitions: []tools.ToolDefinition{{Name: "host_gate", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
 		Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) {
 			return engine.ControlSignal{}, false, nil
 		},
@@ -1945,7 +1946,7 @@ func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(
 	e := newTestEngine(p, rec)
 	e.Tools = reg
 	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Definitions: []tools.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
 		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
 			return engine.ControlSignal{Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID, OutputText: "Continue?"}, true, nil
 		},
@@ -1983,7 +1984,7 @@ func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(
 func TestProviderSafeHistoryProjectsCustomControlSignals(t *testing.T) {
 	store := session.NewMemoryStore()
 	controlSpec := engine.ControlSpec{
-		Definitions: []provider.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "secret": tools.String("secret")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Definitions: []tools.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "secret": tools.String("secret")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
 		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
 			return engine.ControlSignal{Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID, OutputText: "Need input"}, true, nil
 		},
@@ -2324,7 +2325,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 		approver      tooltest.Approver
 		args          string
 		wantReason    string
-		wantRenderer  observation.ActivityRenderer
+		wantRenderer  tools.ActivityRenderer
 		wantCallLabel string
 	}{
 		{
@@ -2334,7 +2335,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 			}),
 			args:         `{"bad":true}`,
 			wantReason:   "invalid arguments",
-			wantRenderer: observation.ActivityRendererStructured,
+			wantRenderer: tools.ActivityRendererStructured,
 		},
 		{
 			name: "permission denied",
@@ -2343,15 +2344,15 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 					Name:        "write",
 					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 					Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
-					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+					Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 						args, ok := inv.Args.(stringArgs)
 						if !ok {
 							t.Fatalf("args=%T, want stringArgs", inv.Args)
 						}
-						return &observation.ActivityPresentation{
+						return &tools.ActivityPresentation{
 							Label:    "Write " + args.Value,
-							Renderer: observation.ActivityRendererFile,
-							Payload:  map[string]any{"path": args.Value},
+							Renderer: tools.ActivityRendererFile,
+							Payload:  tools.FileActivityPayload{Path: args.Value},
 						}, nil
 					},
 				},
@@ -2366,7 +2367,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 			},
 			args:          `{"value":"notes.md"}`,
 			wantReason:    "not allowed by policy",
-			wantRenderer:  observation.ActivityRendererFile,
+			wantRenderer:  tools.ActivityRendererFile,
 			wantCallLabel: "Write notes.md",
 		},
 		{
@@ -2376,15 +2377,15 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 					Name:        "shell",
 					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 					Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+					Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 						args, ok := inv.Args.(stringArgs)
 						if !ok {
 							t.Fatalf("args=%T, want stringArgs", inv.Args)
 						}
-						return &observation.ActivityPresentation{
+						return &tools.ActivityPresentation{
 							Label:    args.Value,
-							Renderer: observation.ActivityRendererTerminal,
-							Payload:  map[string]any{"command": args.Value},
+							Renderer: tools.ActivityRendererTerminal,
+							Payload:  tools.TerminalActivityPayload{Command: args.Value},
 						}, nil
 					},
 				},
@@ -2398,7 +2399,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 			),
 			args:          `{"value":"npm test"}`,
 			wantReason:    `tool "shell" panicked: boom`,
-			wantRenderer:  observation.ActivityRendererTerminal,
+			wantRenderer:  tools.ActivityRendererTerminal,
 			wantCallLabel: "npm test",
 		},
 		{
@@ -2408,15 +2409,15 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 					Name:        "todos",
 					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 					Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+					Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 						args, ok := inv.Args.(stringArgs)
 						if !ok {
 							t.Fatalf("args=%T, want stringArgs", inv.Args)
 						}
-						return &observation.ActivityPresentation{
+						return &tools.ActivityPresentation{
 							Label:    "Update " + args.Value,
-							Renderer: observation.ActivityRendererTodos,
-							Payload:  map[string]any{"operation": "write"},
+							Renderer: tools.ActivityRendererTodos,
+							Payload:  tools.TodosActivityPayload{Operation: "write"},
 						}, nil
 					},
 				},
@@ -2430,7 +2431,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 			),
 			args:          `{"value":"plan"}`,
 			wantReason:    `tool "todos" resource extraction failed: todo state unavailable`,
-			wantRenderer:  observation.ActivityRendererTodos,
+			wantRenderer:  tools.ActivityRendererStructured,
 			wantCallLabel: "Update plan",
 		},
 	}
@@ -2469,7 +2470,10 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 			if item.Status != observation.ActivityStatusError {
 				t.Fatalf("timeline item status = %q, want error; item=%#v", item.Status, item)
 			}
-			assertActivityErrorReason(t, item.Payload, tt.wantReason)
+			if item.Presentation == nil {
+				t.Fatalf("timeline item presentation missing: %#v", item)
+			}
+			assertActivityErrorReason(t, item.Presentation.Payload, tt.wantReason)
 		})
 	}
 }
@@ -2538,15 +2542,15 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 				args, ok := inv.Args.(stringArgs)
 				if !ok {
 					t.Fatalf("args=%T, want stringArgs", inv.Args)
 				}
-				return &observation.ActivityPresentation{
+				return &tools.ActivityPresentation{
 					Label:    args.Value,
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": args.Value},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: args.Value},
 				}, nil
 			},
 		},
@@ -2555,9 +2559,10 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
 			return tools.Result{
 				Text: "ok",
-				Activity: &observation.ActivityPresentation{
+				Activity: &tools.ActivityPresentation{
+					Renderer:    tools.ActivityRendererTerminal,
 					Description: "Command completed",
-					Payload:     map[string]any{"exit_code": 0, "stdout": "ok"},
+					Payload:     tools.TerminalActivityPayload{ExitCode: activityTestInt(0), Stdout: "ok"},
 				},
 			}, nil
 		},
@@ -2575,8 +2580,8 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			ev.ToolID == "exec-1" &&
 			ev.Activity != nil &&
 			ev.Activity.Label == "npm test" &&
-			ev.Activity.Renderer == observation.ActivityRendererTerminal &&
-			ev.Activity.Payload["command"] == "npm test"
+			ev.Activity.Renderer == tools.ActivityRendererTerminal &&
+			terminalActivityPayload(ev.Activity).Command == "npm test"
 	}) {
 		t.Fatalf("tool call activity missing: %#v", rec.Events)
 	}
@@ -2585,7 +2590,7 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			ev.ToolID == "exec-1" &&
 			ev.Activity != nil &&
 			ev.Activity.Description == "Command completed" &&
-			ev.Activity.Payload["stdout"] == "ok"
+			terminalActivityPayload(ev.Activity).Stdout == "ok"
 	}) {
 		t.Fatalf("tool result activity missing: %#v", rec.Events)
 	}
@@ -2594,7 +2599,7 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			msg.ToolCallID == "exec-1" &&
 			msg.Activity != nil &&
 			msg.Activity.Label == "npm test" &&
-			msg.Activity.Renderer == string(observation.ActivityRendererTerminal)
+			msg.Activity.Renderer == tools.ActivityRendererTerminal
 	}) {
 		t.Fatalf("tool call activity was not persisted: %#v", got.Messages)
 	}
@@ -2631,12 +2636,12 @@ func TestToolActivityUpdateEmitsRunningPresentation(t *testing.T) {
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 				args := inv.Args.(stringArgs)
-				return &observation.ActivityPresentation{
+				return &tools.ActivityPresentation{
 					Label:    args.Value,
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": args.Value},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: args.Value},
 				}, nil
 			},
 		},
@@ -2644,15 +2649,10 @@ func TestToolActivityUpdateEmitsRunningPresentation(t *testing.T) {
 		nil,
 		func(ctx context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
 			inv.UpdateActivity(tools.ActivityUpdate{
-				Activity: &observation.ActivityPresentation{
-					Renderer: observation.ActivityRendererTerminal,
-					Payload: map[string]any{
-						"command":            inv.Args.Value,
-						"status":             "running",
-						"process_id":         "tp_live",
-						"latest_output":      "tick 1\n",
-						"last_seq":           1,
-						"execution_location": "local_runtime",
+				Activity: &tools.ActivityPresentation{
+					Renderer: tools.ActivityRendererTerminal,
+					Payload: tools.TerminalActivityPayload{
+						Command: inv.Args.Value, Status: "running", ProcessID: "tp_live", LatestOutput: "tick 1\n",
 					},
 				},
 				Metadata: map[string]any{"phase": "process_started"},
@@ -2674,8 +2674,8 @@ func TestToolActivityUpdateEmitsRunningPresentation(t *testing.T) {
 			ev.ToolID == "exec-1" &&
 			ev.ToolName == "shell" &&
 			ev.Activity != nil &&
-			ev.Activity.Renderer == observation.ActivityRendererTerminal &&
-			ev.Activity.Payload["process_id"] == "tp_live" &&
+			ev.Activity.Renderer == tools.ActivityRendererTerminal &&
+			terminalActivityPayload(ev.Activity).ProcessID == "tp_live" &&
 			metadata["phase"] == "process_started"
 	}) {
 		t.Fatalf("tool activity update missing: %#v", rec.Events)
@@ -2898,16 +2898,14 @@ func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
 			return tools.Result{
 				Text: "handler succeeded",
-				Activity: &observation.ActivityPresentation{
+				Activity: &tools.ActivityPresentation{
 					Label:       "Shell command",
 					Description: "Command completed",
-					Renderer:    observation.ActivityRendererStructured,
-					Chips:       []observation.ActivityChip{{Kind: "status", Label: "Success", Tone: "success"}},
-					Payload: map[string]any{
-						"status":    string(observation.ActivityStatusSuccess),
-						"exit_code": 0,
-						"stdout":    "handler succeeded",
-						"error":     map[string]any{"message": "stale handler error"},
+					Renderer:    tools.ActivityRendererTerminal,
+					Chips:       []tools.ActivityChip{{Kind: "status", Label: "Success", Tone: "success"}},
+					Payload: tools.TerminalActivityPayload{
+						Status: string(observation.ActivityStatusSuccess), ExitCode: activityTestInt(0), Stdout: "handler succeeded",
+						Error: &tools.ActivityError{Message: "stale handler error"},
 					},
 				},
 			}, nil
@@ -2931,20 +2929,18 @@ func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
 		if ev.Err != finalizationErr.Error() || ev.Result != "" {
 			t.Fatalf("tool result event=%#v, want pure finalizer error", ev)
 		}
-		if ev.Activity == nil || ev.Activity.Payload["status"] != string(observation.ActivityStatusError) {
+		if ev.Activity == nil {
+			t.Fatalf("finalizer error retained successful activity: %#v", ev.Activity)
+		}
+		payload, ok := ev.Activity.Payload.(tools.StructuredActivityPayload)
+		if !ok || payload.Status != string(observation.ActivityStatusError) {
 			t.Fatalf("finalizer error retained successful activity: %#v", ev.Activity)
 		}
 		if ev.Activity.Label != "Shell command" || ev.Activity.Description != finalizationErr.Error() || len(ev.Activity.Chips) != 0 || len(ev.Activity.TargetRefs) != 0 {
 			t.Fatalf("finalizer error activity retained successful presentation: %#v", ev.Activity)
 		}
-		for _, forbidden := range []string{"exit_code", "stdout"} {
-			if _, ok := ev.Activity.Payload[forbidden]; ok {
-				t.Fatalf("finalizer error activity retained %q: %#v", forbidden, ev.Activity)
-			}
-		}
-		errorPayload, _ := ev.Activity.Payload["error"].(map[string]any)
-		if errorPayload["message"] != finalizationErr.Error() {
-			t.Fatalf("activity error payload=%#v, want finalizer error", errorPayload)
+		if payload.Error == nil || payload.Error.Message != finalizationErr.Error() {
+			t.Fatalf("activity error payload=%#v, want finalizer error", payload)
 		}
 		return
 	}
@@ -4733,7 +4729,7 @@ func mustRegister(t *testing.T, reg *tools.Registry, tool tools.Tool) {
 	}
 }
 
-func providerToolNames(defs []provider.ToolDefinition) []string {
+func providerToolNames(defs []tools.ToolDefinition) []string {
 	out := make([]string, 0, len(defs))
 	for _, def := range defs {
 		if name := strings.TrimSpace(def.Name); name != "" {
@@ -4848,10 +4844,10 @@ func engineTestActivityTimeline(events []event.Event) observation.ActivityTimeli
 		sanitized := event.Sanitize(ev)
 		observed = append(observed, observation.Event{
 			Type:       sanitized.Type,
-			TraceID:    sanitized.TraceID,
-			RunID:      sanitized.RunID,
-			ThreadID:   sanitized.ThreadID,
-			TurnID:     sanitized.TurnID,
+			TraceID:    identity.TraceID(sanitized.TraceID),
+			RunID:      identity.RunID(sanitized.RunID),
+			ThreadID:   identity.ThreadID(sanitized.ThreadID),
+			TurnID:     identity.TurnID(sanitized.TurnID),
 			Step:       sanitized.Step,
 			ToolID:     sanitized.ToolID,
 			ToolName:   sanitized.ToolName,
@@ -4892,20 +4888,38 @@ func firstTimelineToolItem(t *testing.T, timeline observation.ActivityTimeline, 
 	return observation.ActivityItem{}
 }
 
-func assertActivityErrorReason(t *testing.T, payload map[string]any, want string) {
+func assertActivityErrorReason(t *testing.T, payload tools.ActivityPayload, want string) {
 	t.Helper()
-	if payload["status"] != string(observation.ActivityStatusError) {
-		t.Fatalf("activity status = %#v, want error; payload=%#v", payload["status"], payload)
+	var status string
+	var activityError *tools.ActivityError
+	switch typed := payload.(type) {
+	case tools.StructuredActivityPayload:
+		status, activityError = typed.Status, typed.Error
+	case tools.TerminalActivityPayload:
+		status, activityError = typed.Status, typed.Error
+	case tools.FileActivityPayload:
+		status, activityError = typed.Status, typed.Error
+	case tools.PatchActivityPayload:
+		status, activityError = typed.Status, typed.Error
+	case tools.WebSearchActivityPayload:
+		status, activityError = typed.Status, typed.Error
+	default:
+		t.Fatalf("activity error payload has unsupported type %T: %#v", payload, payload)
 	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("activity error payload missing: %#v", payload)
-	}
-	message, ok := errorPayload["message"].(string)
-	if !ok || !strings.Contains(message, want) {
-		t.Fatalf("activity error message = %#v, want containing %q; payload=%#v", errorPayload["message"], want, payload)
+	if status != string(observation.ActivityStatusError) || activityError == nil || !strings.Contains(activityError.Message, want) {
+		t.Fatalf("activity error payload = %#v, want error containing %q", payload, want)
 	}
 }
+
+func terminalActivityPayload(activity *tools.ActivityPresentation) tools.TerminalActivityPayload {
+	if activity == nil {
+		return tools.TerminalActivityPayload{}
+	}
+	payload, _ := activity.Payload.(tools.TerminalActivityPayload)
+	return payload
+}
+
+func activityTestInt(value int) *int { return &value }
 
 func eventsOfType(events []event.Event, typ event.Type) []event.Event {
 	var out []event.Event
@@ -4917,8 +4931,8 @@ func eventsOfType(events []event.Event, typ event.Type) []event.Event {
 	return out
 }
 
-func hasProviderTool(defs []provider.ToolDefinition, name string) bool {
-	return slices.ContainsFunc(defs, func(def provider.ToolDefinition) bool {
+func hasProviderTool(defs []tools.ToolDefinition, name string) bool {
+	return slices.ContainsFunc(defs, func(def tools.ToolDefinition) bool {
 		return def.Name == name
 	})
 }

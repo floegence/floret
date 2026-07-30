@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/provider"
-	"github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/runtime"
+	"github.com/floegence/floret/v3/storage"
 )
 
 type gateway struct{}
@@ -24,14 +24,14 @@ func (gateway) Capabilities() provider.Capabilities {
 
 func (gateway) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
 	events := make(chan provider.Event, 2)
-	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v2."}
+	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v3."}
 	events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
 	close(events)
 	return events, nil
 }
 
 func main() {
-	path := filepath.Join(os.TempDir(), "floret-v2-example.db")
+	path := filepath.Join(os.TempDir(), "floret-v3-example.db")
 	if err := run(context.Background(), path); err != nil {
 		panic(err)
 	}
@@ -42,7 +42,11 @@ func run(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	defer host.Close()
+	defer func() {
+		if err := host.Shutdown(context.Background()); err != nil {
+			panic(err)
+		}
+	}()
 	agent, err := runtime.NewAgent(config.AgentConfig{
 		Profile:      config.AgentProfile{ID: "example", Name: "Example assistant"},
 		SystemPrompt: "Answer clearly and concisely.",
@@ -51,23 +55,27 @@ func run(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	creator, err := host.ThreadCreator("example-thread", "example-create")
-	if err != nil {
-		return err
-	}
-	if _, err := creator.Create(ctx); err != nil {
-		return err
-	}
-	runner, err := host.TurnRunner(ctx, "example-thread", agent)
-	if err != nil {
-		return err
-	}
-	result, err := runner.Run(ctx, runtime.TurnRequest{
-		RunID: "example-run", TurnID: "example-turn", Input: runtime.TurnInput{Text: "Hello"},
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
+		LogicalRequestID: "example-create",
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Println(result.Output)
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		return err
+	}
+	turns, err := thread.Turns(agent)
+	if err != nil {
+		return err
+	}
+	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "example-message",
+		UserMessage:      runtime.TurnInput{Text: "Hello"},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(started.ThreadID, started.TurnID, started.RunID)
 	return nil
 }

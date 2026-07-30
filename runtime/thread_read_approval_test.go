@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/testing/tooltest"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/testing/tooltest"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
@@ -77,12 +77,12 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
 			runErr := make(chan error, 1)
 			go func() {
-				_, runErrValue := host.RunTurn(ctx, RunTurnRequest{
+				_, runErrValue := host.RunTurn(ctx, runTurnRequest{
 					RunID: "run", ThreadID: "thread", TurnID: "turn", Input: TurnInput{Text: "write"},
 				})
 				runErr <- runErrValue
@@ -97,7 +97,7 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			queue, err := reader.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: "thread"})
+			queue, err := reader.ReadApprovalQueue(ctx, readApprovalQueueRequest{ThreadID: "thread"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +106,7 @@ func TestThreadReadHostReadsCanonicalApprovalQueue(t *testing.T) {
 				queue.Items[0].ApprovalID != activeQueue.Items[0].ApprovalID {
 				t.Fatalf("read queue=%#v, want canonical queue %#v", queue, activeQueue)
 			}
-			if _, err := reader.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: "other"}); err == nil {
+			if _, err := reader.ReadApprovalQueue(ctx, readApprovalQueueRequest{ThreadID: "other"}); err == nil {
 				t.Fatal("thread read host accepted a different root thread")
 			}
 

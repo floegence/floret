@@ -2,13 +2,14 @@ package skills_test
 
 import (
 	"context"
-	"github.com/floegence/floret/v2/internal/testing/tooltest"
-	"github.com/floegence/floret/v2/internal/tools/skills"
-	"github.com/floegence/floret/v2/tools"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/floegence/floret/v3/internal/testing/tooltest"
+	"github.com/floegence/floret/v3/internal/tools/skills"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestDiscoverBuildsSkillsAndDiagnostics(t *testing.T) {

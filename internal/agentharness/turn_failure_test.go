@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	scriptharness "github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	scriptharness "github.com/floegence/floret/v3/internal/testing/harness"
 )
 
 func TestTurnFailureCodeIsDeterministic(t *testing.T) {
@@ -141,7 +141,7 @@ func TestRetryFinalizesTypedFailureWhenLeaseRenewalCannotStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, retryErr := resumed.Retry(ctx, RetryOptions{Reason: "test"})
+	result, retryErr := resumed.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "test"})
 	if strings.TrimSpace(result.ID) == "" || strings.TrimSpace(result.RunID) == "" {
 		t.Fatalf("retry startup failure lost execution identity: %#v", result)
 	}

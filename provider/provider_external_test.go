@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v2/provider"
+	"github.com/floegence/floret/v3/provider"
 )
 
 type contractGateway struct{}

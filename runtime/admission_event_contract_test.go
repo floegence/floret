@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/observation"
 )
 
 type admissionReadEventSink struct {
@@ -37,7 +37,7 @@ func (s *admissionReadEventSink) EmitEvent(event Event) {
 		s.err = fmt.Errorf("canonical read host is unavailable at user admission")
 		return
 	}
-	page, err := s.readHost.ListThreadTurns(context.Background(), ListThreadTurnsRequest{
+	page, err := s.readHost.ListThreadTurns(context.Background(), listThreadTurnsRequest{
 		ThreadID: event.ThreadID,
 		Limit:    10,
 	})
@@ -105,7 +105,7 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 			}
 			sink.readHost = readHost
 
-			if _, err := host.RunTurn(ctx, RunTurnRequest{
+			if _, err := host.RunTurn(ctx, runTurnRequest{
 				ThreadID:            "thread",
 				TurnID:              "turn-1",
 				RunID:               "run-1",

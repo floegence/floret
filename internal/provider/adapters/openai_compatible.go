@@ -11,10 +11,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type OpenAICompatibleProvider struct {
@@ -502,7 +503,7 @@ func (p OpenAICompatibleProvider) MessageRaw(kind cache.SegmentKind, msg session
 }
 
 func (p OpenAICompatibleProvider) ToolRaw(def cache.ToolDefinition) (string, string, error) {
-	rendered := renderTools([]provider.ToolDefinition{{
+	rendered := renderTools([]tools.ToolDefinition{{
 		Name:         def.Name,
 		Title:        def.Title,
 		Description:  def.Description,
@@ -831,7 +832,7 @@ func renderMessagesFromRawPlan(plan cache.RawPlan) ([]chatMessage, error) {
 	return out, nil
 }
 
-func renderTools(defs []provider.ToolDefinition) []chatTool {
+func renderTools(defs []tools.ToolDefinition) []chatTool {
 	tools := make([]chatTool, 0, len(defs))
 	for _, def := range defs {
 		if def.Name == "" {

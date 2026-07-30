@@ -1,3 +1,4 @@
+// Package adoption_test exercises the released v3 API from a blank module.
 package adoption_test
 
 import (
@@ -7,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/florettest"
-	"github.com/floegence/floret/v2/provider"
-	"github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/florettest"
+	"github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/runtime"
+	"github.com/floegence/floret/v3/storage"
 )
 
 func TestPublishedMemoryHostAndSubAgent(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	floretruntime "github.com/floegence/floret/v2/runtime"
+	floretruntime "github.com/floegence/floret/v3/runtime"
 )
 
 func TestPublicThreadTitleVocabularyRejectsUnknownValues(t *testing.T) {

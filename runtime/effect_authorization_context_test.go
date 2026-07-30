@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/agentharness"
+	"github.com/floegence/floret/v3/internal/agentharness"
 )
 
 type runtimeEffectContextKey struct{}

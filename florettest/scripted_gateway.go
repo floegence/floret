@@ -5,7 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/floegence/floret/v2/provider"
+	"github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // ErrGatewayScriptExhausted reports a request without a remaining Step.
@@ -181,7 +182,7 @@ func cloneProviderRequest(request provider.Request) provider.Request {
 			cloned.Messages[index].ToolResult = &result
 		}
 	}
-	cloned.Tools = make([]provider.ToolDefinition, len(request.Tools))
+	cloned.Tools = make([]tools.ToolDefinition, len(request.Tools))
 	for index, definition := range request.Tools {
 		cloned.Tools[index] = definition
 		cloned.Tools[index].InputSchema = cloneAnyMap(definition.InputSchema)

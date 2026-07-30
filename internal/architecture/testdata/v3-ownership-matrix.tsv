@@ -1,0 +1,25 @@
+domain	owner	sink	encoder	payload_schema	writer_call_path
+admitted_messages_references	floret	sessiontree journal entry	internal/session strict message codec	runtime.TurnInput with ordered MessageReference and MessageAttachment	runtime.Turns.StartTurn -> agentharness admission -> sessiontree.WriteTx.Append
+thread_turn_run_lifecycle	floret	sessiontree journal and thread metadata	internal/sessiontree typed records	identity.ThreadID+TurnID+RunID lifecycle variants	runtime command -> agentharness -> sessiontree transaction
+title	floret	thread title projection	internal/sessiontree typed title record	title value+source+status+revision	runtime bound title command -> sessiontree mutation
+approval	floret	approval journal records	internal/session typed approval codec	typed ApprovalRecord and decision receipt	runtime.Turns.ResolveApproval -> agentharness -> sessiontree transaction
+todo	floret	thread todo state	internal/session typed todo codec	typed todo items+version+execution identities	runtime.Turns.UpdateTodos -> agentharness -> sessiontree transaction
+tool_invocation_outcome	floret	journal tool call/result entries	internal/session strict tool codec	tools.ToolInvocation and tools.ToolResult	engine dispatch -> agentharness journal sink
+pending_settlement	floret	pending tool state and journal result	internal/sessiontree typed settlement codec	target identities+typed status+activity	runtime.Turns.RecordPendingToolOutcome -> sessiontree transaction
+artifact	floret	artifact namespace	internal/sessiontree typed artifact codec	identity ownership+kind+MIME+content reference	tool result admission -> sessiontree artifact writer
+control_signal	floret	journal control entry	internal/session sealed signal codec	built-in sealed variant or schema-validated canonical arguments	engine control projection -> agentharness journal sink
+context_compaction	floret	journal compaction and context state	internal/session strict context codec	usage+pressure+summary+compaction lifecycle	engine context policy -> agentharness -> sessiontree transaction
+provider_ledger_state	floret	provider request/response ledgers	internal/provider adapter raw-plan codec	resolved provider/model+request fingerprint+opaque continuation state	engine provider loop -> prompt-scope ledger writer
+prompt_cache	floret	prompt-scope cache namespace	internal/session typed prompt-cache codec	PromptScopeID+CreatedByRunID+CreatedByTurnID+segments	engine request preparation -> prompt cache transaction
+subagent_hierarchy	floret	thread authority and parent publication journal	internal/sessiontree typed authority codec	parent ThreadID+child ThreadID+publication+close facts	runtime.SubAgents command -> agentharness -> sessiontree transaction
+activity_projection	floret	canonical observation projection	tools sealed ActivityPresentation union	structured|terminal|file|patch|web_search|todos|question|completion	engine events -> observation.BuildActivityTimeline
+resolved_run_snapshot	floret	run admission record	internal/session typed resolved-run codec	prompt identity+provider/model+toolset+capability+reasoning+authorization+continuation hashes	runtime.Turns.StartTurn -> agentharness admission transaction
+persona_prompt_source	redeven	Redeven product configuration store	Redeven typed AgentProfile encoder	persona ID+editable prompt source+product metadata	internal/ai Agent resolver -> product settings repository
+provider_profile_credentials	redeven	Redeven credential and provider profile stores	Redeven typed credential/profile encoders	credential reference+profile selection; no run lifecycle	internal/ai provider resolver -> credential/profile repository
+skill_mcp_catalog	redeven	Redeven capability catalog	Redeven typed catalog encoder	skill/MCP definitions and enablement; no resolved run snapshot	internal/ai capability resolver -> catalog repository
+tool_policy_authorization	redeven	Redeven security audit and session grant stores	Redeven typed policy decision encoder	resource authorization decision+policy version; no tool result DTO	internal/ai effect gate -> product audit/grant repository
+routing	redeven	internal/ai/threadstore routing table	threadstore.FlowerThreadRouting typed SQL columns	endpoint+thread opaque key+target routing only	internal/ai routing command -> threadstore.UpsertFlowerThreadRouting
+read_state	redeven	internal/threadreadstate store	threadreadstate.Record typed SQL columns	user read marker keyed by opaque thread identity	HTTP read-state command -> threadreadstate.AdvanceFlower
+upload_staging	redeven	internal/ai/threadstore upload tables	threadstore.UploadRecord typed SQL columns	staged upload authorization and resource metadata	upload endpoint -> threadstore upload writer before Floret admission
+transport_diagnostic	redeven	product diagnostic sink	Redeven typed diagnostic envelope	transport attempt metadata without Agent lifecycle DTO	transport adapter -> diagnostic recorder
+unadmitted_command	redeven	coordinator journal	stable typed operation intent encoder	operation key+product preconditions+opaque Floret commitment	product command coordinator before first Floret commit

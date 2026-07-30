@@ -15,8 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const Version = "cache.v1"
@@ -139,15 +140,7 @@ type MessageSnapshot struct {
 	Kind        string                      `json:"kind,omitempty"`
 }
 
-type ToolDefinition struct {
-	Name         string         `json:"name"`
-	Title        string         `json:"title,omitempty"`
-	Description  string         `json:"description,omitempty"`
-	InputSchema  map[string]any `json:"input_schema,omitempty"`
-	OutputSchema map[string]any `json:"output_schema,omitempty"`
-	Strict       bool           `json:"strict,omitempty"`
-	Annotations  map[string]any `json:"annotations,omitempty"`
-}
+type ToolDefinition = tools.ToolDefinition
 
 type HostedToolDefinition struct {
 	Name        string         `json:"name"`

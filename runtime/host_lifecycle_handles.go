@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // ThreadTurnsRequest selects a canonical turn page after ThreadID is bound.
@@ -23,17 +24,19 @@ type ThreadDetailRequest struct {
 	IncludeRaw   bool
 }
 
-// RetryRequest describes a retry after ThreadID and Agent are bound.
-type RetryRequest struct {
+// boundRetryRequest describes a retry after ThreadID and Agent are bound.
+type boundRetryRequest struct {
+	TurnID identity.TurnID
+	RunID  identity.RunID
 	Reason string
 	Labels RunLabels
 }
 
 // ActivePendingToolTarget identifies one pending tool on the thread already
-// bound by a TurnRunner.
+// bound by a turnRunnerHandle.
 type ActivePendingToolTarget struct {
-	TurnID          TurnID
-	RunID           RunID
+	TurnID          identity.TurnID
+	RunID           identity.RunID
 	ToolCallID      string
 	ToolName        string
 	Handle          string
@@ -41,12 +44,12 @@ type ActivePendingToolTarget struct {
 }
 
 // ActivePendingToolCompletion describes a provider continuation for pending
-// work on the thread already bound by a TurnRunner.
-type ActivePendingToolCompletion struct {
+// work on the thread already bound by a turnRunnerHandle.
+type activePendingToolCompletion struct {
 	CompletionRequestID string
 	Target              ActivePendingToolTarget
-	ContinuationTurnID  TurnID
-	ContinuationRunID   RunID
+	ContinuationTurnID  identity.TurnID
+	ContinuationRunID   identity.RunID
 	Status              PendingToolCompletionStatus
 	Summary             string
 	Output              string
@@ -55,9 +58,9 @@ type ActivePendingToolCompletion struct {
 }
 
 // ApprovalResolutionRequest describes one approval decision after the root
-// ThreadID is bound by a TurnRunner. ExpectedCurrent.ThreadID identifies the
+// ThreadID is bound by a turnRunnerHandle. ExpectedCurrent.ThreadID identifies the
 // exact root or descendant execution that requested approval.
-type ApprovalResolutionRequest struct {
+type approvalResolutionRequest struct {
 	DecisionID               string
 	ExpectedGeneration       int64
 	ExpectedRevision         int64
@@ -67,26 +70,26 @@ type ApprovalResolutionRequest struct {
 }
 
 // AgentTodoUpdateRequest updates canonical Agent todos after ThreadID is bound.
-type AgentTodoUpdateRequest struct {
+type agentTodoUpdateRequest struct {
 	ExpectedVersion int64
 	Items           []AgentTodo
-	TurnID          TurnID
-	RunID           RunID
+	TurnID          identity.TurnID
+	RunID           identity.RunID
 	ToolCallID      string
 }
 
 // ActivePendingToolSettlement records a pending tool outcome on the thread
-// already bound by a TurnRunner without resuming provider execution.
-type ActivePendingToolSettlement struct {
+// already bound by a turnRunnerHandle without resuming provider execution.
+type activePendingToolSettlement struct {
 	Target   ActivePendingToolTarget
 	Status   PendingToolSettlementStatus
 	Summary  string
 	Output   string
-	Activity *observation.ActivityPresentation
+	Activity *tools.ActivityPresentation
 }
 
 // ReadOverview returns the bound thread and its latest canonical turn.
-func (reader *ThreadReader) ReadOverview(ctx context.Context) (ThreadOverview, error) {
+func (reader *threadReaderHandle) ReadOverview(ctx context.Context) (ThreadOverview, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadOverview{}, errors.New("thread reader is required")
 	}
@@ -94,11 +97,11 @@ func (reader *ThreadReader) ReadOverview(ctx context.Context) (ThreadOverview, e
 }
 
 // ListTurns returns one canonical turn page for the bound thread.
-func (reader *ThreadReader) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (reader *threadReaderHandle) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadTurnsPage{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ListThreadTurns(ctx, ListThreadTurnsRequest{
+	return reader.inner.ListThreadTurns(ctx, listThreadTurnsRequest{
 		ThreadID: reader.threadID, BeforeCursor: request.BeforeCursor,
 		SinceCursor: request.SinceCursor, Tail: request.Tail, Limit: request.Limit,
 	})
@@ -106,11 +109,11 @@ func (reader *ThreadReader) ListTurns(ctx context.Context, request ThreadTurnsRe
 
 // ListDetailEvents returns one canonical detail-event page for the bound
 // thread.
-func (reader *ThreadReader) ListDetailEvents(ctx context.Context, request ThreadDetailRequest) (ThreadDetailEvents, error) {
+func (reader *threadReaderHandle) ListDetailEvents(ctx context.Context, request ThreadDetailRequest) (ThreadDetailEvents, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadDetailEvents{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{
+	return reader.inner.ListThreadDetailEvents(ctx, listThreadDetailEventsRequest{
 		ThreadID: reader.threadID, AfterOrdinal: request.AfterOrdinal,
 		Limit: request.Limit, IncludeRaw: request.IncludeRaw,
 	})
@@ -118,7 +121,7 @@ func (reader *ThreadReader) ListDetailEvents(ctx context.Context, request Thread
 
 // ListPendingToolTargets returns unsettled host-owned work for the bound
 // thread.
-func (reader *ThreadReader) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
+func (reader *threadReaderHandle) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
 	if reader == nil || reader.inner == nil {
 		return nil, errors.New("thread reader is required")
 	}
@@ -126,7 +129,7 @@ func (reader *ThreadReader) ListPendingToolTargets(ctx context.Context) ([]Pendi
 }
 
 // ReadAgentTodos returns the canonical Agent todo state for the bound thread.
-func (reader *ThreadReader) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
+func (reader *threadReaderHandle) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadAgentTodoState{}, errors.New("thread reader is required")
 	}
@@ -135,7 +138,7 @@ func (reader *ThreadReader) ReadAgentTodos(ctx context.Context) (ThreadAgentTodo
 
 // ReadContext returns canonical context usage and compaction state for the
 // bound thread.
-func (reader *ThreadReader) ReadContext(ctx context.Context) (ThreadContextSnapshot, error) {
+func (reader *threadReaderHandle) ReadContext(ctx context.Context) (ThreadContextSnapshot, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadContextSnapshot{}, errors.New("thread reader is required")
 	}
@@ -144,48 +147,49 @@ func (reader *ThreadReader) ReadContext(ctx context.Context) (ThreadContextSnaps
 
 // ReadApprovalQueue returns the canonical approval queue rooted at the bound
 // thread.
-func (reader *ThreadReader) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
+func (reader *threadReaderHandle) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
 	if reader == nil || reader.inner == nil {
 		return ApprovalQueue{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: reader.threadID})
+	return reader.inner.ReadApprovalQueue(ctx, readApprovalQueueRequest{ThreadID: reader.threadID})
 }
 
 // ReadProjection rebuilds one canonical turn projection from the bound thread.
-func (reader *ThreadReader) ReadProjection(ctx context.Context, turnID TurnID, runID RunID) (ThreadTurnProjection, error) {
+func (reader *threadReaderHandle) ReadProjection(ctx context.Context, turnID identity.TurnID, runID identity.RunID) (ThreadTurnProjection, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadTurnProjection{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
+	return reader.inner.ReadTurnProjection(ctx, readTurnProjectionRequest{
 		ThreadID: reader.threadID, TurnID: turnID, RunID: runID,
 	})
 }
 
 // ReadArtifact returns one artifact owned by the bound thread.
-func (reader *ThreadReader) ReadArtifact(ctx context.Context, artifactID ArtifactID) (ArtifactContent, error) {
+func (reader *threadReaderHandle) ReadArtifact(ctx context.Context, artifactID identity.ArtifactID) (ArtifactContent, error) {
 	if reader == nil || reader.inner == nil {
 		return ArtifactContent{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: reader.threadID, ArtifactID: artifactID})
+	return reader.inner.ReadArtifact(ctx, readArtifactRequest{ThreadID: reader.threadID, ArtifactID: artifactID})
 }
 
 // Retry retries the latest eligible turn on the bound thread.
-func (runner *TurnRunner) Retry(ctx context.Context, request RetryRequest) (TurnResult, error) {
+func (runner *turnRunnerHandle) Retry(ctx context.Context, request boundRetryRequest) (TurnResult, error) {
 	if runner == nil || runner.inner == nil {
 		return TurnResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.RetryTurn(ctx, RetryTurnRequest{
-		ThreadID: runner.threadID, Reason: request.Reason, Labels: request.Labels,
+	return runner.inner.RetryTurn(ctx, retryTurnRequest{
+		ThreadID: runner.threadID, TurnID: request.TurnID, RunID: request.RunID,
+		Reason: request.Reason, Labels: request.Labels,
 	})
 }
 
 // CompletePendingTool admits one host-owned provider continuation on the bound
 // thread.
-func (runner *TurnRunner) CompletePendingTool(ctx context.Context, request ActivePendingToolCompletion) (PendingToolCompletionResult, error) {
+func (runner *turnRunnerHandle) CompletePendingTool(ctx context.Context, request activePendingToolCompletion) (PendingToolCompletionResult, error) {
 	if runner == nil || runner.inner == nil {
 		return PendingToolCompletionResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.CompletePendingTool(ctx, PendingToolCompletionRequest{
+	return runner.inner.CompletePendingTool(ctx, pendingToolCompletionRequest{
 		CompletionRequestID: request.CompletionRequestID,
 		Target:              request.Target.withThreadID(runner.threadID),
 		ContinuationTurnID:  request.ContinuationTurnID,
@@ -200,11 +204,11 @@ func (runner *TurnRunner) CompletePendingTool(ctx context.Context, request Activ
 
 // ResolveApproval submits one decision to the approval queue rooted at the
 // bound thread.
-func (runner *TurnRunner) ResolveApproval(ctx context.Context, request ApprovalResolutionRequest) (ResolveApprovalResult, error) {
+func (runner *turnRunnerHandle) ResolveApproval(ctx context.Context, request approvalResolutionRequest) (ResolveApprovalResult, error) {
 	if runner == nil || runner.inner == nil {
 		return ResolveApprovalResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.ResolveApproval(ctx, ResolveApprovalRequest{
+	return runner.inner.ResolveApproval(ctx, resolveApprovalRequest{
 		DecisionID: request.DecisionID, ExpectedRootThreadID: runner.threadID,
 		ExpectedGeneration: request.ExpectedGeneration, ExpectedRevision: request.ExpectedRevision,
 		ExpectedCurrent: request.ExpectedCurrent, ExpectedApprovalRevision: request.ExpectedApprovalRevision,
@@ -214,11 +218,11 @@ func (runner *TurnRunner) ResolveApproval(ctx context.Context, request ApprovalR
 
 // UpdateAgentTodos atomically updates canonical Agent todos on the bound
 // thread.
-func (runner *TurnRunner) UpdateAgentTodos(ctx context.Context, request AgentTodoUpdateRequest) (ThreadAgentTodoState, error) {
+func (runner *turnRunnerHandle) UpdateAgentTodos(ctx context.Context, request agentTodoUpdateRequest) (ThreadAgentTodoState, error) {
 	if runner == nil || runner.inner == nil {
 		return ThreadAgentTodoState{}, errors.New("turn runner is required")
 	}
-	return runner.inner.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
+	return runner.inner.UpdateThreadAgentTodos(ctx, updateThreadAgentTodosRequest{
 		ThreadID: runner.threadID, ExpectedVersion: request.ExpectedVersion,
 		Items: append([]AgentTodo(nil), request.Items...), TurnID: request.TurnID,
 		RunID: request.RunID, ToolCallID: request.ToolCallID,
@@ -227,11 +231,11 @@ func (runner *TurnRunner) UpdateAgentTodos(ctx context.Context, request AgentTod
 
 // SettlePendingTool records one host-owned pending tool outcome on the bound
 // thread without resuming provider execution.
-func (runner *TurnRunner) SettlePendingTool(ctx context.Context, request ActivePendingToolSettlement) (PendingToolSettlementResult, error) {
+func (runner *turnRunnerHandle) SettlePendingTool(ctx context.Context, request activePendingToolSettlement) (PendingToolSettlementResult, error) {
 	if runner == nil || runner.inner == nil {
 		return PendingToolSettlementResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.SettlePendingTool(ctx, PendingToolSettlementRequest{
+	return runner.inner.SettlePendingTool(ctx, pendingToolSettlementRequest{
 		Target: request.Target.withThreadID(runner.threadID), Status: request.Status,
 		Summary: request.Summary, Output: request.Output, Activity: request.Activity,
 	})
@@ -239,7 +243,7 @@ func (runner *TurnRunner) SettlePendingTool(ctx context.Context, request ActiveP
 
 // SettlePendingTool records one host-owned pending tool outcome for a direct
 // child of the bound parent without resuming provider execution.
-func (manager *SubAgentManager) SettlePendingTool(ctx context.Context, request PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (manager *subAgentManagerHandle) SettlePendingTool(ctx context.Context, request pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	if manager == nil || manager.inner == nil {
 		return PendingToolSettlementResult{}, errors.New("SubAgent manager is required")
 	}
@@ -247,20 +251,20 @@ func (manager *SubAgentManager) SettlePendingTool(ctx context.Context, request P
 }
 
 // ReadTurn returns one canonical turn from a direct child of the bound parent.
-func (reader *SubAgentReader) ReadTurn(ctx context.Context, childThreadID ThreadID, turnID TurnID) (ThreadTurnSnapshot, error) {
+func (reader *subAgentReaderHandle) ReadTurn(ctx context.Context, childThreadID identity.ThreadID, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadTurnSnapshot{}, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: childThreadID, TurnID: turnID})
+	return reader.inner.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: childThreadID, TurnID: turnID})
 }
 
 // ListTurns returns one canonical turn page from a direct child of the bound
 // parent.
-func (reader *SubAgentReader) ListTurns(ctx context.Context, childThreadID ThreadID, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (reader *subAgentReaderHandle) ListTurns(ctx context.Context, childThreadID identity.ThreadID, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadTurnsPage{}, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ListThreadTurns(ctx, ListThreadTurnsRequest{
+	return reader.inner.ListThreadTurns(ctx, listThreadTurnsRequest{
 		ThreadID: childThreadID, BeforeCursor: request.BeforeCursor,
 		SinceCursor: request.SinceCursor, Tail: request.Tail, Limit: request.Limit,
 	})
@@ -268,24 +272,24 @@ func (reader *SubAgentReader) ListTurns(ctx context.Context, childThreadID Threa
 
 // ListPendingToolTargets returns unsettled host-owned work for a direct child
 // of the bound parent.
-func (reader *SubAgentReader) ListPendingToolTargets(ctx context.Context, childThreadID ThreadID) ([]PendingToolSettlementTarget, error) {
+func (reader *subAgentReaderHandle) ListPendingToolTargets(ctx context.Context, childThreadID identity.ThreadID) ([]PendingToolSettlementTarget, error) {
 	if reader == nil || reader.inner == nil {
 		return nil, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ListPendingToolSettlementTargets(ctx, ListSubAgentPendingToolSettlementTargetsRequest{
+	return reader.inner.ListPendingToolSettlementTargets(ctx, listSubAgentPendingToolSettlementTargetsRequest{
 		ParentThreadID: reader.parentThreadID, ChildThreadID: childThreadID,
 	})
 }
 
 // ReadArtifact returns one artifact from a direct child of the bound parent.
-func (reader *SubAgentReader) ReadArtifact(ctx context.Context, childThreadID ThreadID, artifactID ArtifactID) (ArtifactContent, error) {
+func (reader *subAgentReaderHandle) ReadArtifact(ctx context.Context, childThreadID identity.ThreadID, artifactID identity.ArtifactID) (ArtifactContent, error) {
 	if reader == nil || reader.inner == nil {
 		return ArtifactContent{}, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: childThreadID, ArtifactID: artifactID})
+	return reader.inner.ReadArtifact(ctx, readArtifactRequest{ThreadID: childThreadID, ArtifactID: artifactID})
 }
 
-func (target ActivePendingToolTarget) withThreadID(threadID ThreadID) PendingToolSettlementTarget {
+func (target ActivePendingToolTarget) withThreadID(threadID identity.ThreadID) PendingToolSettlementTarget {
 	return PendingToolSettlementTarget{
 		ThreadID: threadID, TurnID: target.TurnID, RunID: target.RunID,
 		ToolCallID: target.ToolCallID, ToolName: target.ToolName, Handle: target.Handle,

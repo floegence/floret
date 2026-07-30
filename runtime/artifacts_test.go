@@ -7,16 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
-	for _, threadID := range []ThreadID{"parent", "foreign"} {
+	for _, threadID := range []identity.ThreadID{"parent", "foreign"} {
 		req := testCreateThreadRequest(threadID)
-		create, err := capabilities.create.Bind(req.ThreadID, req.CreateIntentID)
+		create, err := capabilities.create.Bind(req.ThreadID, req.createIntentID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -31,11 +32,11 @@ func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missing, err := rootRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
+	missing, err := rootRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
 	if !errors.Is(err, ErrArtifactNotFound) || !reflect.DeepEqual(missing, ArtifactContent{}) {
 		t.Fatalf("root missing result=%#v err=%v, want zero ErrArtifactNotFound", missing, err)
 	}
-	mismatch, err := rootRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "foreign", ArtifactID: "missing"})
+	mismatch, err := rootRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "foreign", ArtifactID: "missing"})
 	if err == nil || !reflect.DeepEqual(mismatch, ArtifactContent{}) {
 		t.Fatalf("root mismatch result=%#v err=%v, want zero bound error", mismatch, err)
 	}
@@ -44,15 +45,15 @@ func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descendantMissing, err := subAgentRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "grandchild", ArtifactID: "missing"})
+	descendantMissing, err := subAgentRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "grandchild", ArtifactID: "missing"})
 	if !errors.Is(err, ErrArtifactNotFound) || !reflect.DeepEqual(descendantMissing, ArtifactContent{}) {
 		t.Fatalf("descendant missing result=%#v err=%v, want zero ErrArtifactNotFound", descendantMissing, err)
 	}
-	foreign, err := subAgentRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "foreign", ArtifactID: "missing"})
+	foreign, err := subAgentRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "foreign", ArtifactID: "missing"})
 	if !errors.Is(err, ErrSubAgentNotFound) || !reflect.DeepEqual(foreign, ArtifactContent{}) {
 		t.Fatalf("foreign result=%#v err=%v, want zero ErrSubAgentNotFound", foreign, err)
 	}
-	parent, err := subAgentRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
+	parent, err := subAgentRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
 	if !errors.Is(err, ErrSubAgentNotFound) || !reflect.DeepEqual(parent, ArtifactContent{}) {
 		t.Fatalf("parent target result=%#v err=%v, want zero ErrSubAgentNotFound", parent, err)
 	}
@@ -60,7 +61,7 @@ func TestBoundArtifactReadsPreserveAuthorityAndZeroErrors(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	closed, err := rootRead.ReadArtifact(ctx, ReadArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
+	closed, err := rootRead.ReadArtifact(ctx, readArtifactRequest{ThreadID: "parent", ArtifactID: "missing"})
 	if !errors.Is(err, ErrStoreClosed) || !reflect.DeepEqual(closed, ArtifactContent{}) {
 		t.Fatalf("closed result=%#v err=%v, want zero ErrStoreClosed", closed, err)
 	}
@@ -71,7 +72,7 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	store := newMemoryStore()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
-	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,17 +88,17 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail, err := rootRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
+	if detail, err := rootRead.ReadSubAgentDetail(ctx, readSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
 		t.Fatalf("open descendant detail=%#v err=%v", detail, err)
 	}
-	for _, threadID := range []ThreadID{"child", "grandchild"} {
-		page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: threadID, Tail: 1})
-		if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != TurnID("fixture-turn:"+string(threadID)) {
+	for _, threadID := range []identity.ThreadID{"child", "grandchild"} {
+		page, err := rootRead.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: threadID, Tail: 1})
+		if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != identity.TurnID("fixture-turn:"+string(threadID)) {
 			t.Fatalf("typed descendant turns thread=%q page=%#v err=%v", threadID, page, err)
 		}
 	}
-	for _, threadID := range []ThreadID{"parent", "missing"} {
-		if page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: threadID, Tail: 1}); !errors.Is(err, ErrSubAgentNotFound) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
+	for _, threadID := range []identity.ThreadID{"parent", "missing"} {
+		if page, err := rootRead.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: threadID, Tail: 1}); !errors.Is(err, ErrSubAgentNotFound) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
 			t.Fatalf("invalid descendant turns thread=%q page=%#v err=%v", threadID, page, err)
 		}
 	}
@@ -121,13 +122,13 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind closed parent read: %v", err)
 	}
-	if detail, err := closedParentRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "child", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" || !detail.Snapshot.Closed {
+	if detail, err := closedParentRead.ReadSubAgentDetail(ctx, readSubAgentDetailRequest{ParentThreadID: "child", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" || !detail.Snapshot.Closed {
 		t.Fatalf("closed descendant detail=%#v err=%v", detail, err)
 	}
-	if detail, err := rootRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
+	if detail, err := rootRead.ReadSubAgentDetail(ctx, readSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
 		t.Fatalf("closed deep descendant detail=%#v err=%v", detail, err)
 	}
-	if page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "grandchild", Tail: 1}); err != nil || len(page.Turns) != 1 {
+	if page, err := rootRead.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "grandchild", Tail: 1}); err != nil || len(page.Turns) != 1 {
 		t.Fatalf("closed deep descendant turns=%#v err=%v", page, err)
 	}
 }

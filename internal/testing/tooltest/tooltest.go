@@ -9,8 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type ApprovalRequest struct {
@@ -20,7 +19,7 @@ type ApprovalRequest struct {
 	Args          string
 	ArgsHash      string
 	ValidatedArgs any
-	Activity      *observation.ActivityPresentation
+	Activity      *tools.ActivityPresentation
 	RunID         string
 	ThreadID      string
 	TurnID        string
@@ -112,10 +111,10 @@ func Dispatcher(approver Approver) tools.EffectDispatcher {
 				Name:          req.Name,
 				Args:          strings.TrimSpace(req.RawArgs),
 				ArgsHash:      stableArgsHash(req.RawArgs),
-				RunID:         req.RunID,
-				ThreadID:      req.ThreadID,
-				TurnID:        req.TurnID,
-				PromptScopeID: req.PromptScopeID,
+				RunID:         req.RunID.String(),
+				ThreadID:      req.ThreadID.String(),
+				TurnID:        req.TurnID.String(),
+				PromptScopeID: req.PromptScopeID.String(),
 				Step:          req.Step,
 				BatchIndex:    req.BatchIndex,
 				BatchSize:     req.BatchSize,

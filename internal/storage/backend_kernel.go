@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/backendspi"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storagecodec"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storagecodec"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -25,13 +25,13 @@ type BackendKernel struct {
 }
 
 // NewBackendKernel opens all canonical Floret domain state.
-func NewBackendKernel(ctx context.Context, backend backendspi.Backend, policy sessiontree.LeasePolicy, now func() time.Time) (*BackendKernel, error) {
+func NewBackendKernel(ctx context.Context, backend spi.Backend, policy sessiontree.LeasePolicy, now func() time.Time) (*BackendKernel, error) {
 	repo, err := sessiontree.NewBackendRepo(ctx, backend, policy, now)
 	if err != nil {
 		return nil, err
 	}
 	kernel := &BackendKernel{BackendRepo: repo}
-	if err := repo.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	if err := repo.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		_, found, err := loadPromptState(tx)
 		if err != nil {
 			return err
@@ -46,9 +46,9 @@ func NewBackendKernel(ctx context.Context, backend backendspi.Backend, policy se
 	return kernel, nil
 }
 
-func loadPromptState(tx backendspi.ReadTx) (*cache.MemoryStore, bool, error) {
+func loadPromptState(tx spi.ReadTx) (*cache.MemoryStore, bool, error) {
 	encoded, err := tx.Get(backendDomainNamespace, promptStateKey)
-	if errors.Is(err, backendspi.ErrNotFound) {
+	if errors.Is(err, spi.ErrNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -62,7 +62,7 @@ func loadPromptState(tx backendspi.ReadTx) (*cache.MemoryStore, bool, error) {
 	return state, true, err
 }
 
-func savePromptState(tx backendspi.WriteTx, state *cache.MemoryStore) error {
+func savePromptState(tx spi.WriteTx, state *cache.MemoryStore) error {
 	payload, err := state.EncodeMemoryState()
 	if err != nil {
 		return err
@@ -75,7 +75,7 @@ func savePromptState(tx backendspi.WriteTx, state *cache.MemoryStore) error {
 }
 
 func (kernel *BackendKernel) updatePrompt(ctx context.Context, mutate func(*cache.MemoryStore) error) error {
-	return kernel.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	return kernel.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		state, found, err := loadPromptState(tx)
 		if err != nil {
 			return err
@@ -91,7 +91,7 @@ func (kernel *BackendKernel) updatePrompt(ctx context.Context, mutate func(*cach
 }
 
 func (kernel *BackendKernel) viewPrompt(ctx context.Context, read func(*cache.MemoryStore) error) error {
-	return kernel.ViewDomain(ctx, func(_ *sessiontree.MemoryRepo, tx backendspi.ReadTx) error {
+	return kernel.ViewDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
 		state, found, err := loadPromptState(tx)
 		if err != nil {
 			return err
@@ -164,7 +164,7 @@ func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopeIDs ..
 }
 
 func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, rootThreadID string) (result sessiontree.DeleteRootTreeResult, err error) {
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.DeleteRootTree(ctx, rootThreadID)
 		if err != nil {
 			return err
@@ -188,9 +188,9 @@ func forkStateKey(operationID string) []byte {
 	return storagecodec.Tuple(storagecodec.TupleString("fork"), storagecodec.TupleString(strings.TrimSpace(operationID)))
 }
 
-func loadForkOperation(tx backendspi.ReadTx, operationID string) (ForkOperationRecord, bool, error) {
+func loadForkOperation(tx spi.ReadTx, operationID string) (ForkOperationRecord, bool, error) {
 	encoded, err := tx.Get(backendDomainNamespace, forkStateKey(operationID))
-	if errors.Is(err, backendspi.ErrNotFound) {
+	if errors.Is(err, spi.ErrNotFound) {
 		return ForkOperationRecord{}, false, nil
 	}
 	if err != nil {
@@ -209,7 +209,7 @@ func loadForkOperation(tx backendspi.ReadTx, operationID string) (ForkOperationR
 	return record, true, nil
 }
 
-func saveForkOperation(tx backendspi.WriteTx, record ForkOperationRecord) error {
+func saveForkOperation(tx spi.WriteTx, record ForkOperationRecord) error {
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -225,7 +225,7 @@ func (kernel *BackendKernel) PrepareForkOperation(ctx context.Context, record Fo
 	if err := ValidatePreparedForkOperation(record); err != nil {
 		return ForkOperationRecord{}, false, err
 	}
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		existing, found, loadErr := loadForkOperation(tx, record.OperationID)
 		if loadErr != nil {
 			return loadErr
@@ -255,7 +255,7 @@ func (kernel *BackendKernel) PrepareForkOperation(ctx context.Context, record Fo
 }
 
 func (kernel *BackendKernel) ForkOperation(ctx context.Context, operationID string) (result ForkOperationRecord, err error) {
-	err = kernel.ViewDomain(ctx, func(memory *sessiontree.MemoryRepo, tx backendspi.ReadTx) error {
+	err = kernel.ViewDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.ReadTx) error {
 		var found bool
 		result, found, err = loadForkOperation(tx, operationID)
 		if err != nil {
@@ -284,7 +284,7 @@ func (kernel *BackendKernel) CommitForkOperation(ctx context.Context, request Fo
 	if strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.RequestFingerprint) == "" || len(request.Plan) == 0 || !json.Valid(request.Plan) || len(request.Nodes) == 0 || len(request.Result) == 0 || !json.Valid(request.Result) || request.FinishedAt.IsZero() {
 		return ForkOperationRecord{}, false, errors.New("fork commit requires operation, fingerprint, complete nodes, result, and finish time")
 	}
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		existing, found, loadErr := loadForkOperation(tx, request.OperationID)
 		if loadErr != nil {
 			return loadErr
@@ -326,7 +326,7 @@ func (kernel *BackendKernel) FailForkOperation(ctx context.Context, request Fork
 	if strings.TrimSpace(request.OperationID) == "" || strings.TrimSpace(request.RequestFingerprint) == "" || strings.TrimSpace(request.ErrorCode) == "" || strings.TrimSpace(request.ErrorMessage) == "" || request.FinishedAt.IsZero() {
 		return ForkOperationRecord{}, false, errors.New("fork failure requires operation, fingerprint, typed error, and finish time")
 	}
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx backendspi.WriteTx) error {
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		existing, found, loadErr := loadForkOperation(tx, request.OperationID)
 		if loadErr != nil {
 			return loadErr

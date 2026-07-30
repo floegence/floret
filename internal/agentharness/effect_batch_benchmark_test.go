@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	scriptharness "github.com/floegence/floret/v2/internal/testing/harness"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	scriptharness "github.com/floegence/floret/v3/internal/testing/harness"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // BenchmarkEffectBatch measures the complete canonical effect path from turn

@@ -12,17 +12,19 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v2/internal/control"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/memory"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/activityview"
+	"github.com/floegence/floret/v3/internal/control"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/memory"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var (
@@ -119,7 +121,7 @@ type ToolSurfaceRequest struct {
 
 type ToolSurface struct {
 	Tools                 *tools.Registry
-	ToolDefinitions       []provider.ToolDefinition
+	ToolDefinitions       []tools.ToolDefinition
 	HostedToolDefinitions []provider.HostedToolDefinition
 	SystemPrompt          string
 	HostContext           map[string]string
@@ -190,14 +192,14 @@ type Options struct {
 	ProviderRequestGate      func(context.Context) (func(), error)
 	SupplementalContext      []TurnSupplementalContextItem
 
-	toolDefinitions           []provider.ToolDefinition
+	toolDefinitions           []tools.ToolDefinition
 	toolSurface               resolvedToolSurface
 	supplementalAnchorEntryID string
 }
 
 type resolvedToolSurface struct {
 	tools                 *tools.Registry
-	toolDefinitions       []provider.ToolDefinition
+	toolDefinitions       []tools.ToolDefinition
 	hostedToolDefinitions []provider.HostedToolDefinition
 	systemPrompt          string
 	hostContext           map[string]string
@@ -487,7 +489,7 @@ func New(cfg Config) (*Engine, error) {
 		cfg.Tools = tools.NewRegistry()
 	}
 	cfg.Options = normalizeOptions(cfg.Options)
-	cfg.Options.toolDefinitions = providerToolDefinitionsFromTools(cfg.Tools.Definitions())
+	cfg.Options.toolDefinitions = cloneProviderToolDefinitions(cfg.Tools.Definitions())
 	if err := validateConfiguredTools(cfg.Options.toolDefinitions, cfg.Options.HostedToolDefinitions, false); err != nil {
 		return nil, err
 	}
@@ -702,7 +704,7 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 		registry = tools.NewRegistry()
 	}
 	opts = normalizeOptions(opts)
-	opts.toolDefinitions = providerToolDefinitionsFromTools(registry.Definitions())
+	opts.toolDefinitions = cloneProviderToolDefinitions(registry.Definitions())
 	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return nil, err
 	}
@@ -968,7 +970,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.DispatchOptions
-		callActivities := map[string]*observation.ActivityPresentation{}
+		callActivities := map[string]*tools.ActivityPresentation{}
 		callBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
@@ -989,10 +991,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				activeToolRegistry = tools.NewRegistry()
 			}
 			toolRunOptions = tools.DispatchOptions{
-				RunID:         opts.RunID,
-				ThreadID:      opts.ThreadID,
-				TurnID:        opts.TurnID,
-				PromptScopeID: opts.PromptScopeID,
+				RunID:         identity.RunID(opts.RunID),
+				ThreadID:      identity.ThreadID(opts.ThreadID),
+				TurnID:        identity.TurnID(opts.TurnID),
+				PromptScopeID: identity.PromptScopeID(opts.PromptScopeID),
 				Step:          step,
 				Labels:        observabilityLabels(opts.Labels),
 				HostContext:   opts.toolSurface.hostContext,
@@ -1327,11 +1329,11 @@ func preparePendingToolResult(result tools.Result) tools.Result {
 	return result
 }
 
-func sanitizeActivityPresentation(activity *observation.ActivityPresentation) *observation.ActivityPresentation {
+func sanitizeActivityPresentation(activity *tools.ActivityPresentation) *tools.ActivityPresentation {
 	return event.Sanitize(event.Event{Activity: activity}).Activity
 }
 
-func errorToolResultActivityPresentation(activity, callActivity *observation.ActivityPresentation, status string, reason string, includeReason bool) *observation.ActivityPresentation {
+func errorToolResultActivityPresentation(activity, callActivity *tools.ActivityPresentation, status string, reason string, includeReason bool) *tools.ActivityPresentation {
 	if status != string(observation.ActivityStatusError) {
 		return activity
 	}
@@ -1342,37 +1344,15 @@ func errorToolResultActivityPresentation(activity, callActivity *observation.Act
 	if reason == "" {
 		reason = "tool execution failed"
 	}
-	out := observation.CloneActivityPresentation(activity)
+	out := tools.CloneActivityPresentation(activity)
 	if out == nil {
-		out = observation.CloneActivityPresentation(callActivity)
+		out = tools.CloneActivityPresentation(callActivity)
 	}
-	if out == nil {
-		out = &observation.ActivityPresentation{}
-	}
-	if out.Renderer == "" && callActivity != nil && callActivity.Renderer != "" {
-		out.Renderer = callActivity.Renderer
-	}
-	if out.Renderer == "" {
-		out.Renderer = observation.ActivityRendererStructured
-	}
-	out.Payload = cloneActivityPayload(out.Payload)
-	if out.Payload == nil {
-		out.Payload = map[string]any{}
-	}
-	out.Payload["status"] = string(observation.ActivityStatusError)
-	errorPayload, _ := out.Payload["error"].(map[string]any)
-	errorPayload = cloneActivityPayload(errorPayload)
-	if errorPayload == nil {
-		errorPayload = map[string]any{}
-	}
-	if strings.TrimSpace(stringFromAny(errorPayload["message"])) == "" {
-		errorPayload["message"] = reason
-	}
-	out.Payload["error"] = errorPayload
+	out = activityview.WithTerminalStatus(out, string(observation.ActivityStatusError), reason)
 	return sanitizeActivityPresentation(out)
 }
 
-func effectFinalizationErrorActivityPresentation(activity, callActivity *observation.ActivityPresentation, reason string) *observation.ActivityPresentation {
+func effectFinalizationErrorActivityPresentation(activity, callActivity *tools.ActivityPresentation, reason string) *tools.ActivityPresentation {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = "effect result finalization failed"
@@ -1381,87 +1361,16 @@ func effectFinalizationErrorActivityPresentation(activity, callActivity *observa
 	if source == nil {
 		source = activity
 	}
-	out := &observation.ActivityPresentation{
-		Description: reason,
-		Renderer:    observation.ActivityRendererStructured,
-		Payload: map[string]any{
-			"status": string(observation.ActivityStatusError),
-			"error":  map[string]any{"message": reason},
-		},
-	}
+	out := activityview.WithTerminalStatus(nil, string(observation.ActivityStatusError), reason)
+	out.Description = reason
 	if source != nil {
 		out.Label = source.Label
-		if source.Renderer != "" {
-			out.Renderer = source.Renderer
-		}
 	}
 	return sanitizeActivityPresentation(out)
 }
 
-func sessionActivityPresentation(in *observation.ActivityPresentation) *session.ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	out := &session.ActivityPresentation{
-		Label:       in.Label,
-		Description: in.Description,
-		Renderer:    string(in.Renderer),
-		Chips:       make([]session.ActivityChip, 0, len(in.Chips)),
-		TargetRefs:  make([]session.ActivityTargetRef, 0, len(in.TargetRefs)),
-		Payload:     cloneActivityPayload(in.Payload),
-	}
-	for _, chip := range in.Chips {
-		out.Chips = append(out.Chips, session.ActivityChip{
-			Kind:  chip.Kind,
-			Label: chip.Label,
-			Value: chip.Value,
-			Tone:  chip.Tone,
-		})
-	}
-	for _, ref := range in.TargetRefs {
-		out.TargetRefs = append(out.TargetRefs, session.ActivityTargetRef{
-			Kind:  ref.Kind,
-			Label: ref.Label,
-			URI:   ref.URI,
-			Path:  ref.Path,
-			Line:  ref.Line,
-		})
-	}
-	return out
-}
-
-func cloneActivityPayload(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = cloneActivityPayloadValue(value)
-	}
-	return out
-}
-
-func cloneActivityPayloadValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneActivityPayload(typed)
-	case map[string]string:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			out[key] = item
-		}
-		return out
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = cloneActivityPayloadValue(item)
-		}
-		return out
-	case []string:
-		return append([]string(nil), typed...)
-	default:
-		return typed
-	}
+func sessionActivityPresentation(in *tools.ActivityPresentation) *session.ActivityPresentation {
+	return session.CloneActivityPresentation(in)
 }
 
 func stringFromAny(value any) string {
@@ -1545,7 +1454,7 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 		baseTools = tools.NewRegistry()
 	}
 	if len(opts.toolDefinitions) == 0 {
-		opts.toolDefinitions = providerToolDefinitionsFromTools(baseTools.Definitions())
+		opts.toolDefinitions = cloneProviderToolDefinitions(baseTools.Definitions())
 	}
 	if len(opts.toolSurface.hostedToolDefinitions) > 0 {
 		opts.HostedToolDefinitions = cloneHostedToolDefinitions(opts.toolSurface.hostedToolDefinitions)
@@ -1582,7 +1491,7 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 	}
 	toolDefs := cloneProviderToolDefinitions(surface.ToolDefinitions)
 	if toolDefs == nil {
-		toolDefs = providerToolDefinitionsFromTools(surfaceTools.Definitions())
+		toolDefs = cloneProviderToolDefinitions(surfaceTools.Definitions())
 	}
 	hostedDefs := cloneHostedToolDefinitions(surface.HostedToolDefinitions)
 	if hostedDefs == nil {
@@ -1645,11 +1554,11 @@ func stableTextHash(value string) string {
 	return cache.StableHash(value)
 }
 
-func stableProviderToolDefinitionsHash(defs []provider.ToolDefinition) string {
+func stableProviderToolDefinitionsHash(defs []tools.ToolDefinition) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	raw, err := cache.CanonicalJSON(convertToolDefinitions(defs))
+	raw, err := cache.CanonicalJSON(defs)
 	if err != nil {
 		return ""
 	}
@@ -1714,18 +1623,18 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func registryDefinitions(registry *tools.Registry) []provider.ToolDefinition {
+func registryDefinitions(registry *tools.Registry) []tools.ToolDefinition {
 	if registry == nil {
 		return nil
 	}
-	return providerToolDefinitionsFromTools(registry.Definitions())
+	return cloneProviderToolDefinitions(registry.Definitions())
 }
 
-func cloneProviderToolDefinitions(defs []provider.ToolDefinition) []provider.ToolDefinition {
+func cloneProviderToolDefinitions(defs []tools.ToolDefinition) []tools.ToolDefinition {
 	if defs == nil {
 		return nil
 	}
-	out := make([]provider.ToolDefinition, len(defs))
+	out := make([]tools.ToolDefinition, len(defs))
 	for i, def := range defs {
 		out[i] = def
 		out[i].InputSchema = cloneAnyMap(def.InputSchema)
@@ -1780,15 +1689,8 @@ func cloneAny(value any) any {
 	}
 }
 
-func cloneActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
-	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
-	out.Payload = cloneAnyMap(in.Payload)
-	return &out
+func cloneActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
+	return tools.CloneActivityPresentation(in)
 }
 
 func normalizeOptions(o Options) Options {
@@ -2060,7 +1962,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if systemPrompt == "" {
 		systemPrompt = e.memory.SystemPrompt
 	}
-	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, convertToolDefinitions(toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
+	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
@@ -2087,7 +1989,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
-	activeTools := providerToolDefinitions(toolset.Tools)
+	activeTools := cloneProviderToolDefinitions(toolset.Tools)
 	activeHostedTools := hostedToolDefinitions(toolset.HostedTools)
 	if err := validateNoLocalHostedToolNameConflict(activeTools, activeHostedTools); err != nil {
 		return provider.Request{}, err
@@ -2584,7 +2486,7 @@ func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot
 	}
 }
 
-func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition) error {
+func validateNoLocalHostedToolNameConflict(local []tools.ToolDefinition, hosted []provider.HostedToolDefinition) error {
 	if len(local) == 0 || len(hosted) == 0 {
 		return nil
 	}
@@ -2605,8 +2507,8 @@ func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, host
 	return nil
 }
 
-func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition, allowControl bool) error {
-	_, _, err := cache.NormalizeToolsetChecked(convertToolDefinitions(local), convertHostedToolDefinitions(hosted), cache.ToolsetOptions{AllowControlTools: allowControl})
+func validateConfiguredTools(local []tools.ToolDefinition, hosted []provider.HostedToolDefinition, allowControl bool) error {
+	_, _, err := cache.NormalizeToolsetChecked(local, convertHostedToolDefinitions(hosted), cache.ToolsetOptions{AllowControlTools: allowControl})
 	return withFailureOrigin(err, FailureOriginContract)
 }
 
@@ -3677,38 +3579,6 @@ func providerSafeControlText(signal ControlSignal) string {
 	}
 }
 
-func convertToolDefinitions(defs []provider.ToolDefinition) []cache.ToolDefinition {
-	out := make([]cache.ToolDefinition, 0, len(defs))
-	for _, def := range defs {
-		out = append(out, cache.ToolDefinition{
-			Name:         def.Name,
-			Title:        def.Title,
-			Description:  def.Description,
-			InputSchema:  def.InputSchema,
-			OutputSchema: def.OutputSchema,
-			Strict:       def.Strict,
-			Annotations:  def.Annotations,
-		})
-	}
-	return out
-}
-
-func providerToolDefinitionsFromTools(defs []tools.ToolDefinition) []provider.ToolDefinition {
-	out := make([]provider.ToolDefinition, 0, len(defs))
-	for _, def := range defs {
-		out = append(out, provider.ToolDefinition{
-			Name:         def.Name,
-			Title:        def.Title,
-			Description:  def.Description,
-			InputSchema:  def.InputSchema,
-			OutputSchema: def.OutputSchema,
-			Strict:       def.Strict,
-			Annotations:  def.Annotations,
-		})
-	}
-	return out
-}
-
 func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []cache.HostedToolDefinition {
 	out := make([]cache.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -3740,22 +3610,6 @@ func toolCall(call provider.ToolCall) tools.ToolCall {
 	}
 }
 
-func providerToolDefinitions(defs []cache.ToolDefinition) []provider.ToolDefinition {
-	out := make([]provider.ToolDefinition, 0, len(defs))
-	for _, def := range defs {
-		out = append(out, provider.ToolDefinition{
-			Name:         def.Name,
-			Title:        def.Title,
-			Description:  def.Description,
-			InputSchema:  def.InputSchema,
-			OutputSchema: def.OutputSchema,
-			Strict:       def.Strict,
-			Annotations:  def.Annotations,
-		})
-	}
-	return out
-}
-
 func hostedToolDefinitions(defs []cache.HostedToolDefinition) []provider.HostedToolDefinition {
 	out := make([]provider.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -3770,8 +3624,8 @@ func hostedToolDefinitions(defs []cache.HostedToolDefinition) []provider.HostedT
 	return out
 }
 
-func appendControlToolDefinitions(defs []provider.ToolDefinition, spec ControlSpec) []provider.ToolDefinition {
-	out := append([]provider.ToolDefinition(nil), defs...)
+func appendControlToolDefinitions(defs []tools.ToolDefinition, spec ControlSpec) []tools.ToolDefinition {
+	out := append([]tools.ToolDefinition(nil), defs...)
 	for _, def := range spec.Definitions {
 		out = append(out, def)
 	}

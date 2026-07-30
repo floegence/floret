@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: Runtime Package
-description: Immutable Agents, durable Host ownership, and identity-bound capability handles.
+description: Immutable Agents, durable Host ownership, bound thread operations, revision reads, and subscriptions.
 resource: /runtime
 tags: [api, runtime, agent, host]
 timestamp: 2026-07-29T00:00:00Z
@@ -10,37 +10,27 @@ timestamp: 2026-07-29T00:00:00Z
 # Runtime
 
 `runtime.Open` accepts `runtime.Options{Storage: storage.Source}` and returns a
-composition-root-only `*runtime.Host`. Host opens the Backend, validates or
-initializes the exact logical schema, waits for active runtime work during
-close, and closes the Backend exactly once.
+composition-root-only `*runtime.Host`. Its public method set is intentionally
+small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread` and
+`Threads.ListThreads` are the only unbound collection operations. `Host.Thread`
+returns a handle bound to one exact `identity.ThreadID`; `Thread.Turns`,
+`Thread.SubAgents`, `Thread.Child`, and `Thread.DescendantReader` preserve that
+authority without repeating it in command DTOs.
 
-Host issues narrow handles:
+Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
+allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
+request key combines operation kind, bound authority, and logical request ID;
+replay returns the original receipt, while changed durable input returns a
+typed request conflict. There is no bootstrap, binder, factory, Store facade,
+rename-only adapter, or caller-assigned lifecycle identity.
 
-| Handle | Bound authority |
-| --- | --- |
-| `ThreadCreator` | root ThreadID and create intent |
-| `ThreadReader` | one root thread |
-| `ThreadTitleEditor` | one root thread |
-| `ThreadForker` | one source root |
-| `ThreadDeleter` | one root ownership tree |
-| `TurnRunner` | one root and Agent |
-| `ThreadCompactor` | one root and Agent |
-| `SubAgentManager` | one parent and Agent |
-| `SubAgentReader` | one parent |
-| `PendingToolRecovery` | one exact settlement target |
-| `InterruptedTurnRecovery` | one exact interrupted authority target |
-| `ThreadInventory` | bounded store-wide root discovery at composition startup |
-
-Request types omit identities already fixed by a handle. There is no public
-bootstrap, binder, factory, family-specific Host options, Store facade, or host
-generator.
-
-`ThreadReader` exposes all provider-free canonical facts for its bound root:
-overview, exact and paged turns, detail events, approvals, todos, context,
-projections, artifacts, and pending settlement targets. `TurnRunner` owns
-provider-backed retry and the active approval, todo, and pending-work mutation
-surface. Parent-bound `SubAgentReader` and `SubAgentManager` expose corresponding
-child reads and settlement without granting arbitrary root authority.
+Every thread has a monotonic `ThreadRevision`. Consumers read `Snapshot`, load
+all first-screen queries at that revision, then call `Subscribe(after=revision)`.
+Pages have stable ordering, limits from 1 through 200, and cursors bound to the
+thread, revision, direction, and position. An unavailable revision fails with
+`ErrRevisionUnavailable`; it never silently reads current state. Exact-thread
+subscriptions use `Next(ctx)`. A queue overflow returns one Gap and then
+`ErrSubscriptionStale` until the consumer resynchronizes.
 
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect
@@ -52,5 +42,6 @@ Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache
 facts. Hosts read these through handles and do not persist a second Agent
 lifecycle.
 
-Opening exact v1 schema-v16 returns typed `MigrationRequiredError`. Runtime does
-not migrate or dual-read legacy state.
+`Host.Shutdown(ctx)` stops admission, cancels Host-managed execution, and waits
+for completion. A deadline leaves the Host closing so a later call can continue
+waiting. Runtime never migrates or dual-reads legacy state.

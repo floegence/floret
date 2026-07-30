@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestRebuildActivitySummaryUsesItemsAndPreservesDuration(t *testing.T) {
@@ -175,7 +177,7 @@ func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
 func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_500)
 	command := "curl -s https://example.test"
-	toolCall := Event{Type: EventTypeToolCall, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start}
+	toolCall := Event{Type: EventTypeToolCall, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start}
 
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued"}, []Event{toolCall}, start.Add(time.Second).UnixMilli())
 	if err := ValidateActivityTimeline(timeline); err != nil {
@@ -184,7 +186,7 @@ func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing
 	item := activityTestItemByToolID(timeline, "exec-1")
 	if item.Status != ActivityStatusPending ||
 		item.Severity != ActivitySeverityQuiet ||
-		item.Label != command ||
+		activityTestPresentation(t, item).Label != command ||
 		item.EndedAtUnixMS != 0 {
 		t.Fatalf("queued tool item mismatch: %#v", item)
 	}
@@ -196,7 +198,7 @@ func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing
 
 	timeline = BuildActivityTimeline(ActivityRunMeta{RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued"}, []Event{
 		toolCall,
-		{Type: EventTypeToolDispatchStarted, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(25 * time.Millisecond)},
+		{Type: EventTypeToolDispatchStarted, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start.Add(25 * time.Millisecond)},
 	}, start.Add(time.Second).UnixMilli())
 	if err := ValidateActivityTimeline(timeline); err != nil {
 		t.Fatalf("dispatched timeline should validate: %v; timeline=%#v", err, timeline)
@@ -204,7 +206,7 @@ func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing
 	item = activityTestItemByToolID(timeline, "exec-1")
 	if item.Status != ActivityStatusRunning ||
 		item.Severity != ActivitySeverityNormal ||
-		item.Label != command ||
+		activityTestPresentation(t, item).Label != command ||
 		item.StartedAtUnixMS != start.Add(25*time.Millisecond).UnixMilli() ||
 		item.EndedAtUnixMS != 0 {
 		t.Fatalf("dispatched tool item mismatch: %#v", item)
@@ -220,17 +222,11 @@ func TestBuildActivityTimelineMergesToolActivityUpdateIntoRunningTool(t *testing
 	start := time.UnixMilli(1_700_000_001_500)
 	command := `for i in $(seq 1 10); do date; sleep 1; done`
 	events := []Event{
-		{Type: EventTypeToolCall, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
-		{Type: EventTypeToolDispatchStarted, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(10 * time.Millisecond)},
-		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Renderer: ActivityRendererTerminal, Payload: map[string]any{
-			"command":            command,
-			"status":             "running",
-			"process_id":         "tp_live",
-			"latest_output":      "tick 1\n",
-			"last_seq":           1,
-			"total_bytes":        7,
-			"execution_location": "local_runtime",
-		}}, ObservedAt: start.Add(20 * time.Millisecond)},
+		{Type: EventTypeToolCall, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start},
+		{Type: EventTypeToolDispatchStarted, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start.Add(10 * time.Millisecond)},
+		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation("", tools.TerminalActivityPayload{
+			Command: command, LatestOutput: "tick 1\n", ProcessID: "tp_live", Status: "running",
+		}), ObservedAt: start.Add(20 * time.Millisecond)},
 	}
 
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal"}, events, start.Add(time.Second).UnixMilli())
@@ -244,8 +240,9 @@ func TestBuildActivityTimelineMergesToolActivityUpdateIntoRunningTool(t *testing
 	if item.Status != ActivityStatusRunning || item.EndedAtUnixMS != 0 {
 		t.Fatalf("item status mismatch: %#v", item)
 	}
-	if item.Payload["process_id"] != "tp_live" || item.Payload["latest_output"] != "tick 1\n" {
-		t.Fatalf("live payload was not merged: %#v", item.Payload)
+	payload := activityTestTerminalPayload(t, item)
+	if payload.ProcessID != "tp_live" || payload.LatestOutput != "tick 1\n" {
+		t.Fatalf("live payload was not merged: %#v", payload)
 	}
 	if timeline.Summary.Counts.Running != 1 || timeline.Summary.Counts.Success != 0 {
 		t.Fatalf("summary mismatch: %#v", timeline.Summary)
@@ -256,8 +253,8 @@ func TestBuildActivityTimelineDoesNotReopenTerminalToolAfterResult(t *testing.T)
 	start := time.UnixMilli(1_700_000_001_500)
 	events := []Event{
 		{Type: EventTypeToolDispatchStarted, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
-		{Type: EventTypeToolResult, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 1000, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Payload: map[string]any{"output": "done\n", "process_id": "tp_live"}}, ObservedAt: start.Add(time.Second)},
-		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Payload: map[string]any{"latest_output": "late\n", "process_id": "tp_live"}}, ObservedAt: start.Add(1100 * time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 1000, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: activityTestTerminalPresentation("", tools.TerminalActivityPayload{Output: "done\n", ProcessID: "tp_live"}), ObservedAt: start.Add(time.Second)},
+		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation("", tools.TerminalActivityPayload{LatestOutput: "late\n", ProcessID: "tp_live"}), ObservedAt: start.Add(1100 * time.Millisecond)},
 	}
 
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-terminal"}, events, start.Add(2*time.Second).UnixMilli())
@@ -268,8 +265,9 @@ func TestBuildActivityTimelineDoesNotReopenTerminalToolAfterResult(t *testing.T)
 	if item.Status != ActivityStatusSuccess || item.EndedAtUnixMS == 0 {
 		t.Fatalf("terminal item was reopened: %#v", item)
 	}
-	if item.Payload["process_id"] != "tp_live" || item.Payload["output"] != "done\n" {
-		t.Fatalf("terminal payload mismatch: %#v", item.Payload)
+	payload := activityTestTerminalPayload(t, item)
+	if payload.ProcessID != "tp_live" || payload.Output != "done\n" {
+		t.Fatalf("terminal payload mismatch: %#v", payload)
 	}
 }
 
@@ -286,7 +284,7 @@ func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 			ToolName:   "terminal.exec",
 			ToolKind:   "local",
 			Metadata:   map[string]any{"pending_tool_result": true, "pending_handle": "terminal:job:123", "pending_state": "running"},
-			Activity:   &ActivityPresentation{Label: "Command is running", Payload: map[string]any{"pending_handle": "terminal:job:123"}},
+			Activity:   activityTestTerminalPresentation("Command is running", tools.TerminalActivityPayload{PendingResult: "terminal:job:123"}),
 			ObservedAt: start,
 		},
 		{
@@ -299,7 +297,7 @@ func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 			ToolName:   "terminal.exec",
 			ToolKind:   "local",
 			Metadata:   map[string]any{"tool_result_status": string(ActivityStatusSuccess)},
-			Activity:   &ActivityPresentation{Label: "Command completed", Payload: map[string]any{"exit_code": 0}},
+			Activity:   activityTestTerminalPresentation("Command completed", tools.TerminalActivityPayload{ExitCode: activityTestInt(0)}),
 			ObservedAt: start.Add(time.Second),
 		},
 	}, start.Add(2*time.Second).UnixMilli())
@@ -311,19 +309,18 @@ func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 		t.Fatalf("summary should show settled tool: %#v", timeline.Summary)
 	}
 	tool := activityTestItemByToolID(timeline, "exec-1")
-	if tool.Status != ActivityStatusSuccess || tool.Severity != ActivitySeverityNormal || tool.Label != "Command completed" || tool.EndedAtUnixMS == 0 {
+	presentation := activityTestPresentation(t, tool)
+	payload := activityTestTerminalPayload(t, tool)
+	if tool.Status != ActivityStatusSuccess || tool.Severity != ActivitySeverityNormal || presentation.Label != "Command completed" || tool.EndedAtUnixMS == 0 {
 		t.Fatalf("settled tool mismatch: %#v", tool)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := tool.Metadata[key]; ok {
 			t.Fatalf("settled tool metadata retained %q: %#v", key, tool.Metadata)
 		}
-		if _, ok := tool.Payload[key]; ok {
-			t.Fatalf("settled tool payload retained %q: %#v", key, tool.Payload)
-		}
 	}
-	if tool.Payload["exit_code"] != 0 {
-		t.Fatalf("settled payload mismatch: %#v", tool.Payload)
+	if payload.PendingResult != "" || payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("settled payload mismatch: %#v", payload)
 	}
 }
 
@@ -541,11 +538,11 @@ func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 	start := time.UnixMilli(1_700_000_002_000)
 	command := "curl -s https://example.test"
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved"}, []Event{
-		{Type: EventTypeToolCall, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
+		{Type: EventTypeToolCall, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start},
 		{Type: EventTypeToolApprovalRequested, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start.Add(10 * time.Millisecond)},
 		{Type: EventTypeToolApprovalApproved, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(100 * time.Millisecond)},
-		{Type: EventTypeToolDispatchStarted, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(10 * time.Second)},
-		{Type: EventTypeToolResult, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 500, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Description: "Command completed", Payload: map[string]any{"exit_code": 0}}, ObservedAt: start.Add(10500 * time.Millisecond)},
+		{Type: EventTypeToolDispatchStarted, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start.Add(10 * time.Second)},
+		{Type: EventTypeToolResult, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 500, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &tools.ActivityPresentation{Description: "Command completed", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{ExitCode: activityTestInt(0)}}, ObservedAt: start.Add(10500 * time.Millisecond)},
 	}, start.Add(11*time.Second).UnixMilli())
 
 	if err := ValidateActivityTimeline(timeline); err != nil {
@@ -555,14 +552,16 @@ func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 		t.Fatalf("timeline should contain one approved tool item: %#v", timeline)
 	}
 	item := timeline.Items[0]
+	presentation := activityTestPresentation(t, item)
+	payload := activityTestTerminalPayload(t, item)
 	if item.ItemID != "tool:exec-1" ||
 		item.Kind != ActivityKindTool ||
 		item.Status != ActivityStatusSuccess ||
 		item.ApprovalState != "approved" ||
 		!item.RequiresApproval ||
-		item.Label != command ||
-		item.Payload["command"] != command ||
-		item.Payload["exit_code"] != 0 ||
+		presentation.Label != command ||
+		payload.Command != command ||
+		payload.ExitCode == nil || *payload.ExitCode != 0 ||
 		item.EndedAtUnixMS-item.StartedAtUnixMS != 500 {
 		t.Fatalf("approved tool item mismatch: %#v", item)
 	}
@@ -572,7 +571,7 @@ func TestBuildActivityTimelineAllowsApprovedToolBeforeDispatch(t *testing.T) {
 	start := time.UnixMilli(1_700_000_002_500)
 	command := "curl -s https://example.test"
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending"}, []Event{
-		{Type: EventTypeToolCall, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
+		{Type: EventTypeToolCall, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command}), ObservedAt: start},
 		{Type: EventTypeToolApprovalRequested, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start.Add(10 * time.Millisecond)},
 		{Type: EventTypeToolApprovalApproved, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(100 * time.Millisecond)},
 	}, start.Add(200*time.Millisecond).UnixMilli())
@@ -584,13 +583,15 @@ func TestBuildActivityTimelineAllowsApprovedToolBeforeDispatch(t *testing.T) {
 		t.Fatalf("timeline should contain one approved pending tool item: %#v", timeline)
 	}
 	item := timeline.Items[0]
+	presentation := activityTestPresentation(t, item)
+	payload := activityTestTerminalPayload(t, item)
 	if item.ItemID != "tool:exec-1" ||
 		item.Kind != ActivityKindTool ||
 		item.Status != ActivityStatusPending ||
 		item.ApprovalState != "approved" ||
 		!item.RequiresApproval ||
-		item.Label != command ||
-		item.Payload["command"] != command ||
+		presentation.Label != command ||
+		payload.Command != command ||
 		item.EndedAtUnixMS != 0 {
 		t.Fatalf("approved pending tool item mismatch: %#v", item)
 	}
@@ -644,19 +645,16 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 			ToolID:   "exec-1",
 			ToolName: "workspace.inspect",
 			ToolKind: "local",
-			Activity: &ActivityPresentation{
+			Activity: &tools.ActivityPresentation{
 				Label:    "Inspect workspace",
-				Renderer: ActivityRendererStructured,
-				Chips:    []ActivityChip{{Kind: "effect", Label: "inspect", Tone: "neutral"}},
-				TargetRefs: []ActivityTargetRef{{
+				Renderer: tools.ActivityRendererStructured,
+				Chips:    []tools.ActivityChip{{Kind: "effect", Label: "inspect", Tone: "neutral"}},
+				TargetRefs: []tools.ActivityTargetRef{{
 					Kind:  "workspace",
 					Label: "flower_ui",
 					Path:  "internal/flower_ui",
 				}},
-				Payload: map[string]any{
-					"operation":    "inspect",
-					"display_name": "flower_ui",
-				},
+				Payload: tools.StructuredActivityPayload{Operation: "inspect", DisplayName: "flower_ui"},
 			},
 			ObservedAt: start,
 		},
@@ -668,13 +666,10 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 			ToolName:   "workspace.inspect",
 			ToolKind:   "local",
 			DurationMS: 42,
-			Activity: &ActivityPresentation{
+			Activity: &tools.ActivityPresentation{
 				Description: "Inspection completed",
-				Payload: map[string]any{
-					"status":      "ok",
-					"duration_ms": 42,
-					"summary":     "done",
-				},
+				Renderer:    tools.ActivityRendererStructured,
+				Payload:     tools.StructuredActivityPayload{Status: "ok", DurationMS: 42, Summary: "done"},
 			},
 			ObservedAt: start.Add(42 * time.Millisecond),
 		},
@@ -686,17 +681,19 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 		t.Fatalf("items = %d, want 1", len(timeline.Items))
 	}
 	item := timeline.Items[0]
-	if item.Label != "Inspect workspace" ||
-		item.Description != "Inspection completed" ||
-		item.Renderer != ActivityRendererStructured {
+	presentation := activityTestPresentation(t, item)
+	payload := activityTestStructuredPayload(t, item)
+	if presentation.Label != "Inspect workspace" ||
+		presentation.Description != "Inspection completed" ||
+		presentation.Renderer != tools.ActivityRendererStructured {
 		t.Fatalf("presentation mismatch: %#v", item)
 	}
-	if len(item.Chips) != 1 || item.Chips[0].Label != "inspect" {
-		t.Fatalf("chips mismatch: %#v", item.Chips)
+	if len(presentation.Chips) != 1 || presentation.Chips[0].Label != "inspect" {
+		t.Fatalf("chips mismatch: %#v", presentation.Chips)
 	}
-	if item.Payload["operation"] != "inspect" || item.Payload["display_name"] != "flower_ui" ||
-		item.Payload["summary"] != "done" || item.Payload["status"] != "ok" {
-		t.Fatalf("payload mismatch: %#v", item.Payload)
+	if payload.Operation != "inspect" || payload.DisplayName != "flower_ui" ||
+		payload.Summary != "done" || payload.Status != "ok" {
+		t.Fatalf("payload mismatch: %#v", payload)
 	}
 }
 
@@ -710,11 +707,7 @@ func TestBuildActivityTimelineUsesResultDurationWhenCallTimestampIsLate(t *testi
 			ToolName:   "terminal.exec",
 			ToolKind:   "local",
 			ObservedAt: end.Add(-2 * time.Millisecond),
-			Activity: &ActivityPresentation{
-				Label:    "sleep 10s",
-				Renderer: ActivityRendererTerminal,
-				Payload:  map[string]any{"command": "sleep 10s"},
-			},
+			Activity:   activityTestTerminalPresentation("sleep 10s", tools.TerminalActivityPayload{Command: "sleep 10s"}),
 		},
 		{
 			Type:       EventTypeToolResult,
@@ -731,7 +724,7 @@ func TestBuildActivityTimelineUsesResultDurationWhenCallTimestampIsLate(t *testi
 		t.Fatalf("timeline should validate: %v", err)
 	}
 	item := activityTestItemByToolID(timeline, "exec-1")
-	if item.Label != "sleep 10s" || item.Payload["command"] != "sleep 10s" {
+	if activityTestPresentation(t, item).Label != "sleep 10s" || activityTestTerminalPayload(t, item).Command != "sleep 10s" {
 		t.Fatalf("presentation = %#v", item)
 	}
 	if got := item.EndedAtUnixMS - item.StartedAtUnixMS; got != 10_039 {
@@ -824,14 +817,16 @@ func TestValidateActivityTimelineRejectsInvalidPresentation(t *testing.T) {
 			Kind:     ActivityKindTool,
 			Status:   ActivityStatusSuccess,
 			Severity: ActivitySeverityNormal,
-			Renderer: ActivityRendererTerminal,
-			Chips:    []ActivityChip{{Kind: "status", Label: "ok"}},
-			TargetRefs: []ActivityTargetRef{{
-				Kind:  "file",
-				Label: "README.md",
-				URI:   "https://example.test/readme",
-			}},
-			Payload: map[string]any{"command": "pwd"},
+			Presentation: &tools.ActivityPresentation{
+				Renderer: tools.ActivityRendererTerminal,
+				Chips:    []tools.ActivityChip{{Kind: "status", Label: "ok"}},
+				TargetRefs: []tools.ActivityTargetRef{{
+					Kind:  "file",
+					Label: "README.md",
+					URI:   "https://example.test/readme",
+				}},
+				Payload: tools.TerminalActivityPayload{Command: "pwd"},
+			},
 		}},
 	}
 	if err := ValidateActivityTimeline(base); err != nil {
@@ -841,18 +836,18 @@ func TestValidateActivityTimelineRejectsInvalidPresentation(t *testing.T) {
 		name   string
 		mutate func(*ActivityTimeline)
 	}{
-		{name: "renderer", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Renderer = ActivityRenderer("terminal/v2") }},
-		{name: "chip kind", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Chips[0].Kind = "bad kind" }},
-		{name: "target uri", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].TargetRefs[0].URI = "file:///secret" }},
-		{name: "payload key", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Payload = map[string]any{"bad key": "x"} }},
+		{name: "renderer", mutate: func(timeline *ActivityTimeline) {
+			timeline.Items[0].Presentation.Renderer = tools.ActivityRenderer("terminal/v2")
+		}},
+		{name: "chip kind", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Presentation.Chips[0].Kind = "" }},
+		{name: "target line", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Presentation.TargetRefs[0].Line = -1 }},
+		{name: "renderer payload mismatch", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Presentation.Renderer = tools.ActivityRendererFile }},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			timeline := base
 			timeline.Items = append([]ActivityItem(nil), base.Items...)
-			timeline.Items[0].Chips = append([]ActivityChip(nil), base.Items[0].Chips...)
-			timeline.Items[0].TargetRefs = append([]ActivityTargetRef(nil), base.Items[0].TargetRefs...)
-			timeline.Items[0].Payload = cloneActivityPayload(base.Items[0].Payload)
+			timeline.Items[0] = cloneActivityItem(base.Items[0])
 			tt.mutate(&timeline)
 			if err := ValidateActivityTimeline(timeline); err == nil {
 				t.Fatalf("ValidateActivityTimeline should reject %s", tt.name)
@@ -871,92 +866,52 @@ func TestValidateActivityTimelineAllowsHostPublicDetailPayloads(t *testing.T) {
 		Severity: ActivitySeverityNormal,
 	}
 	cases := []struct {
-		name     string
-		renderer ActivityRenderer
-		payload  map[string]any
+		name         string
+		presentation *tools.ActivityPresentation
 	}{
 		{
-			name:     "terminal",
-			renderer: ActivityRendererTerminal,
-			payload: map[string]any{
-				"command":            `curl -s https://example.test`,
-				"output":             "ok\n",
-				"latest_output":      "ok\n",
-				"process_id":         "tp_123",
-				"exit_code":          0,
-				"duration_ms":        1200,
-				"truncated":          false,
-				"total_bytes":        3,
-				"execution_location": "local_runtime",
-			},
+			name: "terminal",
+			presentation: activityTestTerminalPresentation("terminal", tools.TerminalActivityPayload{
+				Command: `curl -s https://example.test`, Output: "ok\n", LatestOutput: "ok\n",
+				ProcessID: "tp_123", ExitCode: activityTestInt(0), DurationMS: 1200,
+			}),
 		},
 		{
-			name:     "file",
-			renderer: ActivityRendererFile,
-			payload: map[string]any{
-				"display_name":   "README.md",
-				"content":        "# Title\n",
-				"line_offset":    1,
-				"line_count":     1,
-				"total_lines":    1,
-				"file_action_id": "file-read-1",
-				"truncated":      false,
-			},
+			name: "file",
+			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererFile, Payload: tools.FileActivityPayload{
+				Path: "README.md", Operation: "read", Status: "ok", Summary: "read file", SizeBytes: 8,
+			}},
 		},
 		{
-			name:     "patch",
-			renderer: ActivityRendererPatch,
-			payload: map[string]any{
-				"files_changed": 1,
-				"additions":     1,
-				"deletions":     1,
-				"mutations": []any{map[string]any{
-					"display_name": "main.go",
-					"change_type":  "edit",
-					"unified_diff": "@@ -1 +1 @@\n-old\n+new\n",
-					"truncated":    false,
-				}},
-			},
+			name: "patch",
+			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererPatch, Payload: tools.PatchActivityPayload{
+				Path: "main.go", Diff: "@@ -1 +1 @@\n-old\n+new\n", Status: "ok", Summary: "updated file",
+			}},
 		},
 		{
-			name:     "web search",
-			renderer: ActivityRendererWebSearch,
-			payload: map[string]any{
-				"query":   "weather changsha",
-				"results": []any{map[string]any{"title": "Weather", "url": "https://example.test/weather"}},
-				"sources": []any{map[string]any{"title": "Source", "url": "https://example.test/source"}},
-			},
+			name: "web search",
+			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{
+				Query: "weather changsha", Status: "ok", Results: []tools.WebSearchActivityResult{{Title: "Weather", URL: "https://example.test/weather"}},
+			}},
 		},
 		{
-			name:     "question",
-			renderer: ActivityRendererQuestion,
-			payload: map[string]any{
-				"reason_code":        "needs_user_choice",
-				"required_from_user": []any{"target"},
-				"questions": []any{map[string]any{
-					"id":       "target",
-					"question": "Which target should I use?",
-					"choices":  []any{map[string]any{"label": "Local"}},
-				}},
-			},
+			name: "question",
+			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererQuestion, Payload: tools.QuestionActivityPayload{
+				PromptID: "prompt-1", Questions: []tools.QuestionActivityItem{{ID: "target", Question: "Which target should I use?", Options: []tools.QuestionActivityOption{{Label: "Local"}}}},
+			}},
 		},
 		{
-			name:     "completion",
-			renderer: ActivityRendererCompletion,
-			payload: map[string]any{
-				"result":          "done",
-				"evidence_refs":   []any{"test"},
-				"remaining_risks": []any{"none"},
-				"next_actions":    []any{"ship"},
-			},
+			name: "completion",
+			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererCompletion, Payload: tools.CompletionActivityPayload{
+				Status: "success", Summary: "done",
+			}},
 		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			item := baseItem
 			item.ItemID = "tool-" + strings.ReplaceAll(tt.name, " ", "-")
-			item.Renderer = tt.renderer
-			item.Payload = tt.payload
+			item.Presentation = tt.presentation
 			timeline := ActivityTimeline{
 				SchemaVersion: ActivityTimelineSchemaVersion,
 				RunID:         "run-detail-payload",
@@ -989,11 +944,7 @@ func TestBuildActivityTimelinePreservesHostPublicTerminalPayload(t *testing.T) {
 			ToolName:   "terminal.exec",
 			ToolKind:   "local",
 			ObservedAt: start,
-			Activity: &ActivityPresentation{
-				Label:    command,
-				Renderer: ActivityRendererTerminal,
-				Payload:  map[string]any{"command": command, "process_id": "tp_123", "latest_output": "starting\n"},
-			},
+			Activity:   activityTestTerminalPresentation(command, tools.TerminalActivityPayload{Command: command, ProcessID: "tp_123", LatestOutput: "starting\n"}),
 		},
 		{
 			Type:       EventTypeToolResult,
@@ -1007,10 +958,7 @@ func TestBuildActivityTimelinePreservesHostPublicTerminalPayload(t *testing.T) {
 			DurationMS: 1200,
 			ObservedAt: start.Add(1200 * time.Millisecond),
 			Metadata:   map[string]any{"tool_result_status": string(ActivityStatusSuccess)},
-			Activity: &ActivityPresentation{
-				Renderer: ActivityRendererTerminal,
-				Payload:  map[string]any{"output": "ok\n", "exit_code": 0, "duration_ms": 1200, "truncated": false},
-			},
+			Activity:   activityTestTerminalPresentation("", tools.TerminalActivityPayload{Output: "ok\n", ExitCode: activityTestInt(0), DurationMS: 1200}),
 		},
 	}, start.Add(2*time.Second).UnixMilli())
 	if err := ValidateActivityTimeline(timeline); err != nil {
@@ -1020,24 +968,14 @@ func TestBuildActivityTimelinePreservesHostPublicTerminalPayload(t *testing.T) {
 		t.Fatalf("items=%d, want 1: %#v", len(timeline.Items), timeline.Items)
 	}
 	item := timeline.Items[0]
-	if item.Renderer != ActivityRendererTerminal || item.Label != command {
+	presentation := activityTestPresentation(t, item)
+	payload := activityTestTerminalPayload(t, item)
+	if presentation.Renderer != tools.ActivityRendererTerminal || presentation.Label != command {
 		t.Fatalf("terminal presentation mismatch: %#v", item)
 	}
-	for key, want := range map[string]any{
-		"command":       command,
-		"process_id":    "tp_123",
-		"latest_output": "starting\n",
-		"output":        "ok\n",
-		"exit_code":     0,
-		"duration_ms":   1200,
-		"truncated":     false,
-	} {
-		if got := item.Payload[key]; got != want {
-			t.Fatalf("payload[%s]=%#v, want %#v; payload=%#v", key, got, want, item.Payload)
-		}
-	}
-	if _, ok := item.Payload["layout"]; ok {
-		t.Fatalf("Floret must not add product UI layout fields: %#v", item.Payload)
+	if payload.Command != command || payload.ProcessID != "tp_123" || payload.LatestOutput != "starting\n" ||
+		payload.Output != "ok\n" || payload.ExitCode == nil || *payload.ExitCode != 0 || payload.DurationMS != 1200 || payload.Truncated {
+		t.Fatalf("terminal payload mismatch: %#v", payload)
 	}
 }
 
@@ -1251,7 +1189,7 @@ func TestBuildActivityTimelineDoesNotAssumeRunAndTurnIdentity(t *testing.T) {
 	if harness.RunID != "engine-run-7" || harness.ThreadID != "thread-7" || harness.TurnID != "turn-7" || harness.TraceID != "trace-7" {
 		t.Fatalf("harness identity mismatch: %#v", harness)
 	}
-	if harness.RunID == harness.TurnID {
+	if harness.RunID.String() == harness.TurnID.String() {
 		t.Fatalf("test requires distinct run_id and turn_id: %#v", harness)
 	}
 }
@@ -1535,4 +1473,44 @@ func activityTestItemByKind(timeline ActivityTimeline, kind ActivityKind) Activi
 		}
 	}
 	return ActivityItem{}
+}
+
+func activityTestPresentation(t *testing.T, item ActivityItem) *tools.ActivityPresentation {
+	t.Helper()
+	if item.Presentation == nil {
+		t.Fatalf("activity item has no presentation: %#v", item)
+	}
+	return item.Presentation
+}
+
+func activityTestTerminalPresentation(label string, payload tools.TerminalActivityPayload) *tools.ActivityPresentation {
+	return &tools.ActivityPresentation{
+		Label:    label,
+		Renderer: tools.ActivityRendererTerminal,
+		Payload:  payload,
+	}
+}
+
+func activityTestTerminalPayload(t *testing.T, item ActivityItem) tools.TerminalActivityPayload {
+	t.Helper()
+	presentation := activityTestPresentation(t, item)
+	payload, ok := presentation.Payload.(tools.TerminalActivityPayload)
+	if !ok {
+		t.Fatalf("activity payload has type %T, want tools.TerminalActivityPayload", presentation.Payload)
+	}
+	return payload
+}
+
+func activityTestStructuredPayload(t *testing.T, item ActivityItem) tools.StructuredActivityPayload {
+	t.Helper()
+	presentation := activityTestPresentation(t, item)
+	payload, ok := presentation.Payload.(tools.StructuredActivityPayload)
+	if !ok {
+		t.Fatalf("activity payload has type %T, want tools.StructuredActivityPayload", presentation.Payload)
+	}
+	return payload
+}
+
+func activityTestInt(value int) *int {
+	return &value
 }

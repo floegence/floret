@@ -14,19 +14,19 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/internal/sessionlifecycle"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
-	scriptharness "github.com/floegence/floret/v2/internal/testing/harness"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	"github.com/floegence/floret/v3/internal/sessionlifecycle"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/storage/sqlite"
+	scriptharness "github.com/floegence/floret/v3/internal/testing/harness"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
@@ -597,7 +597,10 @@ func TestThreadSettlePendingToolAppendsDetailOnlyEvent(t *testing.T) {
 		Status:     PendingToolSettledCompleted,
 		Summary:    "command completed",
 		Output:     "exit 0",
-		Activity:   &observation.ActivityPresentation{Label: "command completed", Payload: map[string]any{"exit_code": 0}},
+		Activity: &tools.ActivityPresentation{
+			Label: "command completed", Renderer: tools.ActivityRendererTerminal,
+			Payload: tools.TerminalActivityPayload{ExitCode: testActivityInt(0)},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -971,7 +974,9 @@ func TestPendingToolActiveSettlementRequiresCanonicalEffectAttemptIdentity(t *te
 			Metadata: map[string]string{sessiontree.PendingToolEffectAttemptIDKey: "effect-1"},
 			Message: session.Message{Role: session.Tool, ToolCallID: "call-1", ToolName: "tool",
 				ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusRunning)},
-				Activity:   &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "tool:job:1"}}}},
+				Activity: &session.ActivityPresentation{Chips: []tools.ActivityChip{
+					{Kind: "handle", Label: "Handle", Value: "tool:job:1", Tone: "quiet"},
+				}}}},
 	}
 	settlement := PendingToolSettlement{
 		TurnID: "turn-1", RunID: "run-1", ToolCallID: "call-1", ToolName: "tool", Handle: "tool:job:1",
@@ -1436,7 +1441,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	}
 	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	h.options.Provider = retryProvider
-	result, err = thread.Retry(ctx, RetryOptions{Reason: "provider recovered"})
+	result, err = thread.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "provider recovered"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1549,7 +1554,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	}
 	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	h.options.Provider = retryProvider
-	result, err := thread.Retry(ctx, RetryOptions{Reason: "after interruption"})
+	result, err := thread.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "after interruption"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2953,7 +2958,7 @@ func TestRetryDuringActiveTurnReturnsErrActiveTurnWithoutMovingLeaf(t *testing.T
 	}()
 	<-blocking.started
 
-	_, err = thread.Retry(ctx, RetryOptions{Reason: "busy"})
+	_, err = thread.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "busy"})
 	if !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("err = %v, want active turn guard", err)
 	}
@@ -3163,12 +3168,12 @@ func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sess
 		Activity: &session.ActivityPresentation{
 			Label:       "npm test",
 			Description: "Command is running",
-			Renderer:    string(observation.ActivityRendererTerminal),
+			Renderer:    tools.ActivityRendererTerminal,
 			Chips: []session.ActivityChip{
 				{Kind: "state", Label: "State", Value: string(observation.ActivityStatusRunning), Tone: "running"},
 				{Kind: "handle", Label: "Handle", Value: "terminal:job:123", Tone: "quiet"},
 			},
-			Payload: map[string]any{"command": "npm test", "pending_handle": "terminal:job:123", "pending_state": string(observation.ActivityStatusRunning)},
+			Payload: tools.TerminalActivityPayload{Command: "npm test", Status: string(observation.ActivityStatusRunning)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -3194,8 +3199,8 @@ func appendPendingToolCallFixture(t *testing.T, ctx context.Context, repo sessio
 		ToolArgs:   `{"command":"npm test"}`,
 		Activity: &session.ActivityPresentation{
 			Label:    "npm test",
-			Renderer: string(observation.ActivityRendererTerminal),
-			Payload:  map[string]any{"command": "npm test"},
+			Renderer: tools.ActivityRendererTerminal,
+			Payload:  tools.TerminalActivityPayload{Command: "npm test"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -3215,6 +3220,8 @@ func countPendingToolSettlementEntries(entries []sessiontree.Entry) int {
 type stringArgs struct {
 	Value string `json:"value"`
 }
+
+func testActivityInt(value int) *int { return &value }
 
 type failingTitleGenerator struct {
 	err error

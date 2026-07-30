@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/session"
 )
 
 func TestMemoryCanonicalTurnEntriesTracksExactTurnAndCleansDelete(t *testing.T) {
@@ -274,9 +274,9 @@ func TestMemoryCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
 func TestEntryIntegrityAcceptsLegacyRawWithoutReferencesField(t *testing.T) {
 	const legacyRaw = `{"type":"user_message","message":{"Role":"user","Content":"legacy","Attachments":null,"Reasoning":"","ToolCallID":"","ToolName":"","ToolArgs":"","EntryID":"","ParentEntryID":"","Kind":"","ToolResult":null,"CompactionID":"","CompactionGeneration":0,"CompactionWindowID":""}}`
 	entry := Entry{
-		Type: EntryUserMessage,
+		Type:    EntryUserMessage,
 		Message: session.Message{Role: session.User, Content: "legacy"},
-		Raw: legacyRaw, RawHash: StableHash(legacyRaw),
+		Raw:     legacyRaw, RawHash: StableHash(legacyRaw),
 	}
 	if err := ValidateEntryIntegrity(entry); err != nil {
 		t.Fatalf("legacy raw integrity: %v", err)

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/floegence/floret/v2/internal/testing/tooltest"
-	"github.com/floegence/floret/v2/tools"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v3/internal/testing/tooltest"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestReadListGlobAndGrepWorkspaceTools(t *testing.T) {

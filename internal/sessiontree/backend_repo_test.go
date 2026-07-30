@@ -9,18 +9,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/backendspi"
-	"github.com/floegence/floret/v2/internal/backendtest"
-	internalprovider "github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/session"
-	. "github.com/floegence/floret/v2/internal/sessiontree"
-	publicstorage "github.com/floegence/floret/v2/storage"
+	internalprovider "github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
+	. "github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 func TestBackendRepoMethodSetTracksCanonicalMemoryRepo(t *testing.T) {
 	memoryType := reflect.TypeOf((*MemoryRepo)(nil))
 	backendType := reflect.TypeOf((*BackendRepo)(nil))
-	backendOnly := map[string]bool{"UpdateDomain": true, "ViewDomain": true}
+	backendOnly := map[string]bool{
+		"CurrentThreadRevision":  true,
+		"ThreadStateAtRevision":  true,
+		"UpdateDomain":           true,
+		"UpdateDomainAtRevision": true,
+		"ViewDomain":             true,
+	}
 	memoryOnly := map[string]bool{
 		"CommitForkBatch": true, "EncodeMemoryState": true, "FailForkClaim": true,
 		"ReleaseThreadAuthorityClaim": true,
@@ -79,12 +85,12 @@ func runBackendRepoDomainScript(t *testing.T, source publicstorage.Source) []byt
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	backend, err := source.Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(source))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	repo, err := NewBackendRepo(ctx, backendtest.Adapt(backend), DefaultLeasePolicy, func() time.Time { return now })
+	repo, err := NewBackendRepo(ctx, backend, DefaultLeasePolicy, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +122,7 @@ func runBackendRepoDomainScript(t *testing.T, source publicstorage.Source) []byt
 		t.Fatal(err)
 	}
 	var encoded []byte
-	if err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ backendspi.ReadTx) error {
+	if err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
 		encoded, err = memory.EncodeMemoryState()
 		return err
 	}); err != nil {
@@ -135,17 +141,17 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 	} {
 		t.Run(source.name, func(t *testing.T) {
 			ctx := context.Background()
-			backend, err := source.source.Open(ctx)
+			backend, err := storagebridge.Open(ctx, storagebridge.Source(source.source))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer backend.Close()
-			repo, err := NewBackendRepo(ctx, backendtest.Adapt(backend), DefaultLeasePolicy, time.Now)
+			repo, err := NewBackendRepo(ctx, backend, DefaultLeasePolicy, time.Now)
 			if err != nil {
 				t.Fatal(err)
 			}
 			injected := errors.New("injected rollback")
-			if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ backendspi.WriteTx) error {
+			if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
 				if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "error-thread"}); err != nil {
 					return err
 				}
@@ -159,7 +165,7 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 						t.Fatalf("recovered panic = %#v", recovered)
 					}
 				}()
-				_ = repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ backendspi.WriteTx) error {
+				_ = repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
 					if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "panic-thread"}); err != nil {
 						return err
 					}

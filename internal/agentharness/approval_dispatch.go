@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type effectApproval struct {
@@ -57,7 +57,7 @@ func (t *Thread) preflightEffectBatch(ctx context.Context, requests []tools.Effe
 		attempt := sessiontree.EffectAttempt{EffectAttemptID: item.EffectAttemptID, Invocation: item.Invocation}
 		authorizationRequest := effectAuthorizationRequest(request, lease, attempt, effectFingerprint)
 		requestedEvent := t.effectApprovalEvent(event.ToolApprovalRequested, authorizationRequest, "")
-		item.RequestedEntry = approvalEventEntry(t.id, request.TurnID, requestedEvent)
+		item.RequestedEntry = approvalEventEntry(t.id, request.TurnID.String(), requestedEvent)
 		item.RequestedEntry.ID = sessiontree.ApprovalRequestedEntryID(item.EffectAttemptID)
 		item.ApprovalRequestFingerprint, err = approvalRequestFingerprint(item)
 		if err != nil {
@@ -97,7 +97,7 @@ func (t *Thread) preflightEffectBatch(ctx context.Context, requests []tools.Effe
 		if result.Replayed {
 			continue
 		}
-		t.emitCommittedApprovalEvent(result.RequestedEntries[index], request.request.RunID, request.requestedEvent)
+		t.emitCommittedApprovalEvent(result.RequestedEntries[index], request.request.RunID.String(), request.requestedEvent)
 		if t.harness.options.Sink != nil {
 			t.harness.options.Sink.Emit(event.SanitizeWithPolicy(request.requestedEvent, t.harness.options.SinkPolicy))
 		}
@@ -117,7 +117,7 @@ func approvalPreflightItem(request tools.EffectDispatchRequest, effectFingerprin
 	item := sessiontree.ApprovalPreflightItem{
 		EffectRequestFingerprint: effectFingerprint,
 		Invocation: sessiontree.EffectInvocationIdentity{
-			ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID,
+			ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(),
 			ToolCallID: request.CallID, ToolName: request.Name, ArgumentHash: argumentHash,
 		},
 		ToolKind: "local", Step: request.Step, BatchIndex: request.BatchIndex, BatchSize: request.BatchSize,
@@ -140,7 +140,7 @@ func approvalRequestFingerprint(item sessiontree.ApprovalPreflightItem) (string,
 func effectAuthorizationRequest(request tools.EffectDispatchRequest, lease sessiontree.TurnLease, attempt sessiontree.EffectAttempt, fingerprint string) EffectAuthorizationRequest {
 	return EffectAuthorizationRequest{
 		EffectAttemptID: attempt.EffectAttemptID, RequestFingerprint: fingerprint,
-		ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.CallID,
+		ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(), ToolCallID: request.CallID,
 		ToolName: request.Name, ArgumentHash: attempt.Invocation.ArgumentHash, Resources: append([]tools.ResourceRef(nil), request.Resources...),
 		Step: request.Step, BatchIndex: request.BatchIndex, BatchSize: request.BatchSize,
 		Labels: cloneStringMap(request.Labels), HostContext: cloneStringMap(request.HostContext),

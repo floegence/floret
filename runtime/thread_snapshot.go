@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessionlifecycle"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessionlifecycle"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 const (
@@ -144,8 +145,7 @@ func validateThreadSummaryResult(summary ThreadSummary) (ThreadSummary, error) {
 }
 
 func validateThreadSnapshotState(
-	threadID ThreadID,
-	title string,
+	threadID identity.ThreadID, title string,
 	titleStatus ThreadTitleStatus,
 	titleSource ThreadTitleSource,
 	titleUpdatedAt time.Time,
@@ -155,8 +155,7 @@ func validateThreadSnapshotState(
 	updatedAt time.Time,
 	phase ThreadPhase,
 	status ThreadStatus,
-	latestTurnID TurnID,
-	waitingPrompt string,
+	latestTurnID identity.TurnID, waitingPrompt string,
 	recoverable bool,
 	canAppendMessage bool,
 ) error {

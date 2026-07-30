@@ -1,8 +1,33 @@
 # Changelog
 
-## Unreleased
+## v3.0.0 - 2026-07-30
 
-- Export `runtime.ToolCallStream` so downstream event sinks can construct and test tool-call stream observations through the public API.
+- **Breaking:** Move the module to `github.com/floegence/floret/v3` and remove
+  the v2 capability-handle graph, caller-assigned lifecycle identities, and all
+  compatibility facades and runtime legacy decoders.
+- Make `identity` the sole owner of thread, turn, run, prompt-scope, trace,
+  logical-request, and artifact identities. Floret allocates lifecycle
+  identities and permanently replays logical requests under their bound
+  operation authority.
+- Replace unbound Host capabilities with `Host.Threads`, `Host.Thread`, bound
+  `Thread`, `Turns`, and `SubAgents` handles, exact-revision reads, stable
+  pagination, and linearized pull subscriptions with explicit Gap recovery.
+- Freeze the manually designed v3 API baseline, per-symbol v2 decision matrix,
+  behavior contract, ownership matrix, and consumer provenance matrix.
+- Separate opaque ordinary-host storage sources from the advanced physical
+  storage SPI and add explicit v2.2-to-v3 preflight, plan, preview, apply,
+  semantic-hash, and receipt contracts. Unsupported legacy extensions fail
+  closed without mutation.
+- Make Floret the sole queryable source for admitted conversation, lifecycle,
+  approvals, todos, tools, artifacts, provider state, prompt cache, SubAgents,
+  and Activity projections.
+- Validate candidate and published v3 releases from blank modules without a
+  workspace, replacement, or sibling checkout.
+
+## v2.2.0 - 2026-07-29
+
+- Export `runtime.ToolCallStream` so downstream event sinks can construct and
+  test tool-call stream observations through the public API.
 
 ## v2.1.0 - 2026-07-29
 

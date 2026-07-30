@@ -1,0 +1,189 @@
+version: 1
+scope: github.com/floegence/floret/v3/runtime
+defaults:
+  unknown_error: propagate
+  page_limit: 1..200
+  identity_allocation: floret
+  mutation_serialization: thread_revision_cas
+  durable_request_key: operation_kind+bound_authority+logical_request_id
+methods:
+  - method: Open
+    errors_is: [context.Canceled, context.DeadlineExceeded, storage/spi.ErrMigrationRequired]
+    errors_as: [MigrationRequiredError, UnsupportedLegacyContentError]
+    retryability: only after the classified cause is corrected; never reinterpret an unknown error
+    commit: no Host is returned unless storage ownership and schema validation complete
+    replay: reopening the same valid source reconstructs the same durable state
+    concurrency: one process owns the storage source exclusively
+    cancellation: cancellation before completion returns ctx.Err and releases partial resources
+    closing: not applicable before a Host is returned
+  - method: Host.Threads
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: never after Host reaches closed
+    commit: read-only handle issuance
+    replay: repeated calls are equivalent
+    concurrency: safe with concurrent reads
+    cancellation: no context is accepted
+    closing: rejects after closing begins
+  - method: Host.Thread
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry not-found only after an independently observed create
+    commit: read-only exact-thread binding
+    replay: repeated binding returns equivalent authority
+    concurrency: safe with concurrent reads and mutation CAS
+    cancellation: returns ctx.Err before binding completes
+    closing: rejects after closing begins
+  - method: Host.Shutdown
+    errors_is: [context.Canceled, context.DeadlineExceeded, ErrHostClosed]
+    errors_as: []
+    retryability: repeat with a live context while Host remains closing
+    commit: closing starts once; closed commits only after managed work and backend close finish
+    replay: repeated calls wait for the same terminal close
+    concurrency: linearizable across concurrent callers
+    cancellation: timeout returns ctx.Err without reopening admission
+    closing: the defining closing operation
+  - method: Threads.ListThreads
+    errors_is: [ErrHostClosed, ErrRevisionUnavailable]
+    errors_as: []
+    retryability: obtain a new snapshot revision after ErrRevisionUnavailable
+    commit: read-only batch snapshots from one revision
+    replay: same cursor and AtRevision return the same stable page
+    concurrency: concurrent mutation is excluded from the bound revision
+    cancellation: returns ctx.Err with no partial page
+    closing: rejects after closing begins
+  - method: Threads.CreateThread
+    errors_is: [ErrHostClosed, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; conflicting fingerprint is permanent
+    commit: receipt Committed is true only after thread and request ledger commit
+    replay: same key and fingerprint permanently returns original ThreadID and receipt
+    concurrency: competing same-key requests linearize to commit or conflict
+    cancellation: a committed result may accompany a committed error; caller must inspect errors.As
+    closing: no new request is admitted after closing begins
+  - method: Thread.Snapshot
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRevisionUnavailable]
+    errors_as: []
+    retryability: refresh only after revision-unavailable
+    commit: read-only snapshot includes one ThreadRevision
+    replay: unchanged state returns the same revision and content
+    concurrency: linearizable with mutations on the exact thread
+    cancellation: returns ctx.Err and no partial snapshot
+    closing: existing handles reject after Host is closed
+  - method: Thread.Subscribe
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRevisionUnavailable]
+    errors_as: []
+    retryability: snapshot-query-subscribe again after unavailable history
+    commit: read-only subscription registration after exact revision
+    replay: durable events after the revision replay exactly once
+    concurrency: registration is linearized with mutation publication
+    cancellation: cancellation before registration returns ctx.Err
+    closing: active subscriptions terminate when Host closes
+  - method: Subscription.Next
+    errors_is: [io.EOF, ErrSubscriptionStale, ErrHostClosed]
+    errors_as: []
+    retryability: recreate only after Gap then ErrSubscriptionStale
+    commit: each successful call advances lastDeliveredRevision once
+    replay: durable messages are ordered by ThreadRevision with no duplicate
+    concurrency: calls are serialized; multiple concurrent callers are unsupported by contract
+    cancellation: returns ctx.Err without consuming an unavailable next message
+    closing: returns ErrHostClosed after managed shutdown; Deleted is delivered before EOF
+  - method: Thread.ForkThread
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRequestConflict, ErrThreadBusy]
+    errors_as: [RequestConflictError, CommittedCleanupError]
+    retryability: exact replay is safe; busy is transient; conflict is permanent
+    commit: source revision and child publication commit atomically before receipt
+    replay: same key and fingerprint permanently returns original child identity
+    concurrency: serialized by source ThreadRevision CAS
+    cancellation: committed errors expose commit state through errors.As
+    closing: not admitted after closing begins
+  - method: Thread.DeleteThread
+    errors_is: [ErrHostClosed, ErrRequestConflict, ErrThreadBusy]
+    errors_as: [RequestConflictError, CommittedCleanupError]
+    retryability: exact replay is permanent; busy is transient
+    commit: lifecycle content is removed and a content-free tombstone plus Deleted event remain
+    replay: same request returns original final revision forever
+    concurrency: delete linearizes after prior mutations and excludes later mutations
+    cancellation: committed cleanup failure remains classified as committed
+    closing: not admitted after closing begins
+  - method: Turns.StartTurn
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe; busy is transient; conflict is permanent
+    commit: admitted message, resolved Agent snapshot, TurnID, RunID and receipt share one durable mutation
+    replay: fingerprint includes durable input, supplemental hash and resolved Agent snapshot hash
+    concurrency: serialized by bound ThreadRevision CAS
+    cancellation: provider cancellation cannot erase an already admitted turn
+    closing: managed provider and tool work is cancelled after closing begins
+  - method: Turns.RetryTurn
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrNoRetryTarget, ErrRequestConflict]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe; busy is transient; no-target changes only after lifecycle mutation
+    commit: retry source and new Floret identities persist before provider work
+    replay: same request returns original retry identities
+    concurrency: serialized by bound ThreadRevision CAS
+    cancellation: provider cancellation preserves admitted retry lifecycle
+    closing: managed provider and tool work is cancelled
+  - method: Turns.ContinuePendingTool
+    errors_is: [ErrHostClosed, ErrPendingToolNotFound, ErrPendingToolNotActive, ErrPendingToolSettlementConflict, ErrRequestConflict]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe; target/conflict errors are permanent
+    commit: settlement and continuation identities commit once
+    replay: same request returns original settlement and continuation receipt
+    concurrency: exact target and ThreadRevision CAS serialize settlement
+    cancellation: a committed settlement is never rolled back by provider cancellation
+    closing: new continuation is rejected and managed work is cancelled
+  - method: Turns.RecordPendingToolOutcome
+    errors_is: [ErrHostClosed, ErrPendingToolNotFound, ErrPendingToolNotActive, ErrPendingToolSettlementConflict, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; conflicting outcome is permanent
+    commit: outcome is durable without starting provider execution
+    replay: same request returns original settlement receipt
+    concurrency: exact target and ThreadRevision CAS serialize settlement
+    cancellation: cancellation cannot erase a committed outcome
+    closing: rejected after closing begins
+  - method: Turns.ResolveApproval
+    errors_is: [ErrHostClosed, ErrStaleAuthority, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; stale authority requires a fresh approval query
+    commit: one decision and authorization outcome advance the same thread revision
+    replay: same request permanently returns original decision receipt
+    concurrency: approval generation and ThreadRevision CAS both apply
+    cancellation: cancellation cannot erase a committed decision
+    closing: rejected after closing begins
+  - method: Turns.UpdateTodos
+    errors_is: [ErrHostClosed, ErrAgentTodoVersionConflict, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; version conflict requires a fresh todo read
+    commit: typed todo replacement is one revision mutation
+    replay: same request returns original todo state and receipt
+    concurrency: todo version and ThreadRevision CAS both apply
+    cancellation: cancellation cannot erase committed todos
+    closing: rejected after closing begins
+  - method: SubAgents.SpawnSubAgent
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe; busy is transient; conflict is permanent
+    commit: parent publication and Floret-allocated child thread commit atomically
+    replay: same request permanently returns original child ThreadID
+    concurrency: parent ThreadRevision CAS serializes child publication
+    cancellation: child admission remains durable if provider execution is cancelled
+    closing: new child is rejected and managed child work is cancelled
+  - method: SubAgents.SendSubAgentMessage
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrThreadBusy, ErrRequestConflict]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe; busy is transient; closed/conflict are permanent
+    commit: canonical child input and child revision commit before execution
+    replay: same request returns original child turn identities
+    concurrency: child ThreadRevision CAS serializes input
+    cancellation: cancellation preserves admitted child input
+    closing: new message rejected and managed child work cancelled
+  - method: SubAgents.InterruptSubAgent
+    errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; missing/closed/conflict are permanent
+    commit: interruption lifecycle fact advances only child revision
+    replay: same request permanently returns original interruption receipt
+    concurrency: child lease generation and ThreadRevision CAS both apply
+    cancellation: cancellation cannot erase a committed interruption
+    closing: shutdown cancellation and explicit interrupt remain distinguishable durable facts

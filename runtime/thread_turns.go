@@ -11,19 +11,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/agentharness"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/agentharness"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 // RecoverInterruptedTurn atomically takes over and finalizes the exact proof bound at host construction.
-func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.Context) (RecoverInterruptedTurnResult, error) {
+func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.Context) (recoverInterruptedTurnResult, error) {
 	if h == nil || h.store == nil || h.harness == nil || h.threadID == "" {
-		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
+		return recoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
 	}
 	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
-		return RecoverInterruptedTurnResult{}, err
+		return recoverInterruptedTurnResult{}, err
 	}
 	defer done()
 	result, err := h.harness.RecoverInterruptedTurn(operationCtx, agentharness.RecoverInterruptedTurnOptions{
@@ -37,26 +38,26 @@ func (h *interruptedTurnRecoveryCapability) RecoverInterruptedTurn(ctx context.C
 		if errors.Is(mapped, ErrRecoveryTargetResolved) {
 			h.markInterruptedRecoveryFactoryResolved()
 		}
-		return RecoverInterruptedTurnResult{}, mapped
+		return recoverInterruptedTurnResult{}, mapped
 	}
 	h.markInterruptedRecoveryFactoryResolved()
 	detail, found, readErr := h.harness.ReadTurnDetailEvents(operationCtx, result.ThreadID, result.TurnID, result.RunID, true)
 	if readErr != nil {
-		return RecoverInterruptedTurnResult{}, runtimeHostError(readErr)
+		return recoverInterruptedTurnResult{}, runtimeHostError(readErr)
 	}
 	if !found {
-		return RecoverInterruptedTurnResult{}, fmt.Errorf("%w: interrupted recovery terminal turn is missing", ErrAuthorityCorrupt)
+		return recoverInterruptedTurnResult{}, fmt.Errorf("%w: interrupted recovery terminal turn is missing", ErrAuthorityCorrupt)
 	}
 	failure := canonicalTurnFailure(threadDetailEvents(detail.Events))
 	status := interruptedRecoveryTurnStatus(result.Status, failure)
 	if err := validateThreadTurnFailureForStatus(status, failure); err != nil {
-		return RecoverInterruptedTurnResult{}, fmt.Errorf("%w: %v", ErrAuthorityCorrupt, err)
+		return recoverInterruptedTurnResult{}, fmt.Errorf("%w: %v", ErrAuthorityCorrupt, err)
 	}
-	out := RecoverInterruptedTurnResult{
-		ThreadID: ThreadID(result.ThreadID), TurnID: TurnID(result.TurnID), RunID: RunID(result.RunID), Status: status, Failure: failure, Replayed: result.Replayed,
+	out := recoverInterruptedTurnResult{
+		ThreadID: identity.ThreadID(result.ThreadID), TurnID: identity.TurnID(result.TurnID), RunID: identity.RunID(result.RunID), Status: status, Failure: failure, Replayed: result.Replayed,
 	}
 	if err := out.Validate(); err != nil {
-		return RecoverInterruptedTurnResult{}, invalidPublicResult("interrupted recovery result", err)
+		return recoverInterruptedTurnResult{}, invalidPublicResult("interrupted recovery result", err)
 	}
 	return out, nil
 }
@@ -98,23 +99,23 @@ var (
 // Hosts may persist and compare the token, but must not parse or modify it.
 type ThreadTurnCursor string
 
-type ListThreadTurnsRequest struct {
-	ThreadID     ThreadID          `json:"thread_id"`
+type listThreadTurnsRequest struct {
+	ThreadID     identity.ThreadID `json:"thread_id"`
 	BeforeCursor *ThreadTurnCursor `json:"before_cursor,omitempty"`
 	SinceCursor  *ThreadTurnCursor `json:"since_cursor,omitempty"`
 	Tail         int               `json:"tail,omitempty"`
 	Limit        int               `json:"limit,omitempty"`
 }
 
-// ReadThreadTurnRequest identifies one canonical turn on a thread's current
+// readThreadTurnRequest identifies one canonical turn on a thread's current
 // active path. It is a Go host contract, not a wire schema.
-type ReadThreadTurnRequest struct {
-	ThreadID ThreadID
-	TurnID   TurnID
+type readThreadTurnRequest struct {
+	ThreadID identity.ThreadID
+	TurnID   identity.TurnID
 }
 
 type ThreadTurnsPage struct {
-	ThreadID       ThreadID             `json:"thread_id"`
+	ThreadID       identity.ThreadID    `json:"thread_id"`
 	Turns          []ThreadTurnSnapshot `json:"turns"`
 	BeforeCursor   *ThreadTurnCursor    `json:"before_cursor,omitempty"`
 	SinceCursor    ThreadTurnCursor     `json:"since_cursor"`
@@ -141,11 +142,11 @@ const (
 )
 
 type ThreadTurnSnapshot struct {
-	TurnID    TurnID    `json:"turn_id"`
-	RunID     RunID     `json:"run_id"`
-	Ordinal   int64     `json:"ordinal"`
-	StartedAt time.Time `json:"started_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TurnID    identity.TurnID `json:"turn_id"`
+	RunID     identity.RunID  `json:"run_id"`
+	Ordinal   int64           `json:"ordinal"`
+	StartedAt time.Time       `json:"started_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 	// UserEntryID is the opaque identity of the admitted canonical user Entry.
 	// It is a presentation anchor, not authorization or a storage access handle.
 	UserEntryID       string                  `json:"user_entry_id,omitempty"`
@@ -166,7 +167,7 @@ type ThreadTurnSnapshot struct {
 type ThreadTurnRetrySource struct {
 	// TurnID is the canonical source turn. Its internal journal anchor remains
 	// private to Floret.
-	TurnID TurnID `json:"turn_id"`
+	TurnID identity.TurnID `json:"turn_id"`
 }
 
 // Validate checks the self-contained public turn snapshot shape. Durable path
@@ -287,7 +288,7 @@ func (p ThreadTurnsPage) Validate() error {
 		return errors.New("thread turn page since cursor is invalid")
 	}
 	var previous int64
-	seen := make(map[TurnID]struct{}, len(p.Turns))
+	seen := make(map[identity.TurnID]struct{}, len(p.Turns))
 	for index, turn := range p.Turns {
 		if err := turn.Validate(); err != nil {
 			return fmt.Errorf("thread turn page item %d: %w", index, err)
@@ -333,10 +334,10 @@ const (
 )
 
 type threadTurnCursorPayload struct {
-	Version  int    `json:"version"`
-	ThreadID string `json:"thread_id"`
-	Mode     string `json:"mode"`
-	EntryID  string `json:"entry_id"`
+	Version  int               `json:"version"`
+	ThreadID identity.ThreadID `json:"thread_id"`
+	Mode     string            `json:"mode"`
+	EntryID  string            `json:"entry_id"`
 }
 
 type ThreadControlSignal struct {
@@ -348,11 +349,11 @@ type ThreadControlSignal struct {
 	Payload     map[string]any `json:"payload,omitempty"`
 }
 
-func (h *providerHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *providerHost) ListThreadTurns(ctx context.Context, req listThreadTurnsRequest) (ThreadTurnsPage, error) {
 	return listThreadTurns(ctx, h.harness, req)
 }
 
-func (h *threadReadCapability) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *threadReadCapability) ListThreadTurns(ctx context.Context, req listThreadTurnsRequest) (ThreadTurnsPage, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnsPage{}, err
@@ -366,7 +367,7 @@ func (h *threadReadCapability) ListThreadTurns(ctx context.Context, req ListThre
 
 // ListThreadTurns returns canonical typed turns for one complete descendant of
 // the parent bound to this read host.
-func (h *subAgentReadCapability) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *subAgentReadCapability) ListThreadTurns(ctx context.Context, req listThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if h == nil {
 		return ThreadTurnsPage{}, errors.New("subagent read host is required")
 	}
@@ -385,7 +386,7 @@ func (h *subAgentReadCapability) ListThreadTurns(ctx context.Context, req ListTh
 }
 
 // ReadThreadTurn returns one canonical turn bound to this root read host.
-func (h *threadReadCapability) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+func (h *threadReadCapability) ReadThreadTurn(ctx context.Context, req readThreadTurnRequest) (ThreadTurnSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -399,7 +400,7 @@ func (h *threadReadCapability) ReadThreadTurn(ctx context.Context, req ReadThrea
 
 // ReadThreadTurn returns one canonical turn for a complete descendant of the
 // parent bound to this read host.
-func (h *subAgentReadCapability) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+func (h *subAgentReadCapability) ReadThreadTurn(ctx context.Context, req readThreadTurnRequest) (ThreadTurnSnapshot, error) {
 	if h == nil {
 		return ThreadTurnSnapshot{}, errors.New("subagent read host is required")
 	}
@@ -417,7 +418,7 @@ func (h *subAgentReadCapability) ReadThreadTurn(ctx context.Context, req ReadThr
 	return readThreadTurn(ctx, h.harness, req)
 }
 
-func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req readThreadTurnRequest) (ThreadTurnSnapshot, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadTurnSnapshot{}, errors.New("thread id is required")
 	}
@@ -439,9 +440,9 @@ func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req
 	if turn.ThroughOrdinal > read.ThroughOrdinal {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: exact canonical turn boundary is inconsistent", ErrAuthorityCorrupt)
 	}
-	if turn.TurnID == TurnID(read.LatestTurnID) {
+	if turn.TurnID == identity.TurnID(read.LatestTurnID) {
 		applyLatestThreadLifecycle(&turn, ThreadSnapshot{
-			LatestTurnID: TurnID(read.LatestTurnID), Status: ThreadStatus(read.LatestStatus),
+			LatestTurnID: identity.TurnID(read.LatestTurnID), Status: ThreadStatus(read.LatestStatus),
 			Recoverable: read.LatestRecoverable, CanRetry: read.LatestCanRetry,
 		})
 	}
@@ -451,11 +452,11 @@ func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req
 	return turn, nil
 }
 
-func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID identity.ThreadID) (ThreadTurnSnapshot, error) {
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
-func (h *threadReadCapability) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func (h *threadReadCapability) ReadLatestThreadTurn(ctx context.Context, threadID identity.ThreadID) (ThreadTurnSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -467,11 +468,11 @@ func (h *threadReadCapability) ReadLatestThreadTurn(ctx context.Context, threadI
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
-func (h *providerHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+func (h *providerHost) ReadThreadOverview(ctx context.Context, threadID identity.ThreadID) (ThreadOverview, error) {
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 
-func (h *threadReadCapability) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+func (h *threadReadCapability) ReadThreadOverview(ctx context.Context, threadID identity.ThreadID) (ThreadOverview, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadOverview{}, err
@@ -483,7 +484,7 @@ func (h *threadReadCapability) ReadThreadOverview(ctx context.Context, threadID 
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 
-func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadOverview, error) {
+func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadOverview, error) {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return ThreadOverview{}, errors.New("thread id is required")
 	}
@@ -518,7 +519,7 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 	return result, nil
 }
 
-func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadTurnSnapshot, error) {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return ThreadTurnSnapshot{}, errors.New("thread id is required")
 	}
@@ -555,7 +556,7 @@ func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarnes
 	return latest, nil
 }
 
-func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, req listThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadTurnsPage{}, errors.New("thread id is required")
 	}
@@ -628,9 +629,9 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 		if err != nil {
 			return ThreadTurnsPage{}, err
 		}
-		if turn.TurnID == TurnID(detailPage.LatestTurnID) {
+		if turn.TurnID == identity.TurnID(detailPage.LatestTurnID) {
 			applyLatestThreadLifecycle(&turn, ThreadSnapshot{
-				LatestTurnID: TurnID(detailPage.LatestTurnID), Status: ThreadStatus(detailPage.LatestStatus),
+				LatestTurnID: identity.TurnID(detailPage.LatestTurnID), Status: ThreadStatus(detailPage.LatestStatus),
 				Recoverable: detailPage.LatestRecoverable, CanRetry: detailPage.LatestCanRetry,
 			})
 		}
@@ -666,14 +667,14 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 	return page, nil
 }
 
-func encodeThreadTurnCursor(threadID ThreadID, mode, entryID string) (ThreadTurnCursor, error) {
+func encodeThreadTurnCursor(threadID identity.ThreadID, mode, entryID string) (ThreadTurnCursor, error) {
 	payload := threadTurnCursorPayload{
 		Version:  threadTurnCursorVersion,
-		ThreadID: strings.TrimSpace(string(threadID)),
+		ThreadID: identity.ThreadID(strings.TrimSpace(string(threadID))),
 		Mode:     mode,
 		EntryID:  strings.TrimSpace(entryID),
 	}
-	if payload.ThreadID == "" || payload.ThreadID != string(threadID) ||
+	if payload.ThreadID == "" || payload.ThreadID.String() != string(threadID) ||
 		(mode != threadTurnCursorModeBefore && mode != threadTurnCursorModeSince) || payload.EntryID == "" || payload.EntryID != entryID {
 		return "", fmt.Errorf("%w: cursor payload is incomplete", ErrAuthorityCorrupt)
 	}
@@ -684,7 +685,7 @@ func encodeThreadTurnCursor(threadID ThreadID, mode, entryID string) (ThreadTurn
 	return ThreadTurnCursor(base64.RawURLEncoding.EncodeToString(raw)), nil
 }
 
-func decodeThreadTurnCursor(cursor ThreadTurnCursor, threadID ThreadID, mode string) (threadTurnCursorPayload, error) {
+func decodeThreadTurnCursor(cursor ThreadTurnCursor, threadID identity.ThreadID, mode string) (threadTurnCursorPayload, error) {
 	rawCursor := string(cursor)
 	if strings.TrimSpace(rawCursor) == "" || rawCursor != strings.TrimSpace(rawCursor) {
 		return threadTurnCursorPayload{}, fmt.Errorf("%w: cursor token is required", ErrInvalidThreadTurnCursor)
@@ -704,7 +705,7 @@ func decodeThreadTurnCursor(cursor ThreadTurnCursor, threadID ThreadID, mode str
 	}
 	expectedThreadID := strings.TrimSpace(string(threadID))
 	if expectedThreadID == "" || expectedThreadID != string(threadID) || payload.Version != threadTurnCursorVersion ||
-		payload.ThreadID != expectedThreadID || payload.Mode != mode ||
+		payload.ThreadID.String() != expectedThreadID || payload.Mode != mode ||
 		(mode != threadTurnCursorModeBefore && mode != threadTurnCursorModeSince) ||
 		strings.TrimSpace(payload.EntryID) == "" || payload.EntryID != strings.TrimSpace(payload.EntryID) {
 		return threadTurnCursorPayload{}, fmt.Errorf("%w: cursor scope does not match request", ErrInvalidThreadTurnCursor)
@@ -712,10 +713,10 @@ func decodeThreadTurnCursor(cursor ThreadTurnCursor, threadID ThreadID, mode str
 	return payload, nil
 }
 
-func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.CanonicalTurnDetail) (ThreadTurnSnapshot, error) {
+func projectCanonicalThreadTurnSnapshot(threadID identity.ThreadID, detail agentharness.CanonicalTurnDetail) (ThreadTurnSnapshot, error) {
 	events := threadDetailEvents(detail.Events)
-	turnID := TurnID(strings.TrimSpace(detail.TurnID))
-	runID := RunID(strings.TrimSpace(detail.RunID))
+	turnID := identity.TurnID(strings.TrimSpace(detail.TurnID))
+	runID := identity.RunID(strings.TrimSpace(detail.RunID))
 	startedRunID, ordinal, startedAt := threadTurnStartedIdentity(events)
 	if turnID == "" || runID == "" || startedRunID != runID || ordinal != detail.StartedOrdinal || ordinal <= 0 || startedAt.IsZero() {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: canonical turn %q has an invalid started identity", ErrAuthorityCorrupt, detail.TurnID)
@@ -742,7 +743,7 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 		ThreadID: threadID,
 		TurnID:   turnID,
 		RunID:    runID,
-		TraceID:  TraceID(runID),
+		TraceID:  identity.TraceID(runID),
 		Events:   events,
 	})
 	if err := projection.Validate(); err != nil {
@@ -788,10 +789,10 @@ func applyLatestThreadLifecycle(turn *ThreadTurnSnapshot, thread ThreadSnapshot)
 	}
 }
 
-func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) ([]ThreadTurnSnapshot, int64, error) {
-	turnOrder := make([]TurnID, 0)
-	byTurn := make(map[TurnID][]ThreadDetailEvent)
-	seen := make(map[TurnID]bool)
+func projectThreadTurnSnapshots(threadID identity.ThreadID, events []ThreadDetailEvent) ([]ThreadTurnSnapshot, int64, error) {
+	turnOrder := make([]identity.TurnID, 0)
+	byTurn := make(map[identity.TurnID][]ThreadDetailEvent)
+	seen := make(map[identity.TurnID]bool)
 	var through int64
 	for _, event := range events {
 		if event.Ordinal > through {
@@ -833,7 +834,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			ThreadID: threadID,
 			TurnID:   turnID,
 			RunID:    runID,
-			TraceID:  TraceID(runID),
+			TraceID:  identity.TraceID(runID),
 			Events:   turnEvents,
 		})
 		if err := projection.Validate(); err != nil {
@@ -867,11 +868,11 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 }
 
 type threadTurnRetryAuthority struct {
-	TurnID  TurnID
+	TurnID  identity.TurnID
 	EntryID string
 }
 
-func readThreadTurnRetryAuthority(events []ThreadDetailEvent, turnID TurnID) (*threadTurnRetryAuthority, error) {
+func readThreadTurnRetryAuthority(events []ThreadDetailEvent, turnID identity.TurnID) (*threadTurnRetryAuthority, error) {
 	for _, event := range events {
 		if event.TurnID != turnID || event.TurnMarker == nil || event.TurnMarker.Status != string(sessiontree.TurnStarted) {
 			continue
@@ -883,10 +884,10 @@ func readThreadTurnRetryAuthority(events []ThreadDetailEvent, turnID TurnID) (*t
 		if sourceTurnID == "" && sourceEntryID == "" {
 			return nil, nil
 		}
-		if sourceTurnID == "" || sourceEntryID == "" || rawTurnID != sourceTurnID || rawEntryID != sourceEntryID || TurnID(sourceTurnID) == turnID {
+		if sourceTurnID == "" || sourceEntryID == "" || rawTurnID != sourceTurnID || rawEntryID != sourceEntryID || identity.TurnID(sourceTurnID) == turnID {
 			return nil, fmt.Errorf("%w: canonical turn %q has an invalid retry source", ErrAuthorityCorrupt, turnID)
 		}
-		return &threadTurnRetryAuthority{TurnID: TurnID(sourceTurnID), EntryID: sourceEntryID}, nil
+		return &threadTurnRetryAuthority{TurnID: identity.TurnID(sourceTurnID), EntryID: sourceEntryID}, nil
 	}
 	return nil, fmt.Errorf("%w: canonical turn %q has no started marker", ErrAuthorityCorrupt, turnID)
 }
@@ -895,7 +896,7 @@ func runtimeCanonicalTurnRetryAuthority(source *sessiontree.CanonicalTurnRetrySo
 	if source == nil {
 		return nil
 	}
-	return &threadTurnRetryAuthority{TurnID: TurnID(source.TurnID), EntryID: source.EntryID}
+	return &threadTurnRetryAuthority{TurnID: identity.TurnID(source.TurnID), EntryID: source.EntryID}
 }
 
 func sameThreadTurnRetryAuthority(first, second *threadTurnRetryAuthority) bool {
@@ -919,17 +920,17 @@ func canonicalTurnStatus(status TurnStatus, failure *ThreadTurnFailure) TurnStat
 	return status
 }
 
-func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.Time) {
+func threadTurnStartedIdentity(events []ThreadDetailEvent) (identity.RunID, int64, time.Time) {
 	for _, event := range events {
 		if event.TurnMarker == nil || event.TurnMarker.Status != string(sessiontree.TurnStarted) {
 			continue
 		}
-		return RunID(strings.TrimSpace(event.TurnMarker.Metadata["run_id"])), event.Ordinal, event.CreatedAt
+		return identity.RunID(strings.TrimSpace(event.TurnMarker.Metadata["run_id"])), event.Ordinal, event.CreatedAt
 	}
 	return "", 0, time.Time{}
 }
 
-func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, ThreadUserMessageOrigin, string, []MessageAttachment, []MessageReference, error) {
+func canonicalTurnUserInput(events []ThreadDetailEvent, turnID identity.TurnID) (string, ThreadUserMessageOrigin, string, []MessageAttachment, []MessageReference, error) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
 			origin, err := threadUserMessageOrigin(event.Metadata)

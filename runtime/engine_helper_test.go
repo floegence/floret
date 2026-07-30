@@ -1,12 +1,12 @@
 package runtime
 
 import (
-	"github.com/floegence/floret/v2/internal/configbridge"
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/configbridge"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type engineHelperOptions struct {

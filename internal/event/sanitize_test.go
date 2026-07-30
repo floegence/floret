@@ -1,27 +1,24 @@
 package event
 
 import (
-	"math"
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
-func TestSanitizeActivityPresentationDropsNonFiniteNumbers(t *testing.T) {
-	got := Sanitize(Event{Activity: &observation.ActivityPresentation{Payload: map[string]any{
-		"finite": 1.5,
-		"nan":    math.NaN(),
-		"inf":    math.Inf(1),
-	}}})
-	if got.Activity == nil || got.Activity.Payload["finite"] != 1.5 {
-		t.Fatalf("finite activity payload was not preserved: %#v", got.Activity)
+func TestSanitizeActivityPresentationPreservesTypedNumbers(t *testing.T) {
+	exitCode := 7
+	got := Sanitize(Event{Activity: &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererTerminal,
+		Payload:  tools.TerminalActivityPayload{ExitCode: &exitCode, DurationMS: 1500},
+	}})
+	if got.Activity == nil {
+		t.Fatal("typed activity was dropped")
 	}
-	if _, ok := got.Activity.Payload["nan"]; ok {
-		t.Fatalf("NaN activity payload was preserved: %#v", got.Activity.Payload)
-	}
-	if _, ok := got.Activity.Payload["inf"]; ok {
-		t.Fatalf("Inf activity payload was preserved: %#v", got.Activity.Payload)
+	payload, ok := got.Activity.Payload.(tools.TerminalActivityPayload)
+	if !ok || payload.ExitCode == nil || *payload.ExitCode != 7 || payload.DurationMS != 1500 {
+		t.Fatalf("typed numeric activity payload was not preserved: %#v", got.Activity)
 	}
 }
 
@@ -61,29 +58,26 @@ func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"
 	got := Sanitize(Event{
 		Type: ToolResult,
-		Activity: &observation.ActivityPresentation{
+		Activity: &tools.ActivityPresentation{
 			Label:       "cat " + path,
 			Description: "token sk-test-secret",
-			Renderer:    observation.ActivityRendererTerminal,
-			Chips:       []observation.ActivityChip{{Kind: "effect", Label: "shell"}},
-			TargetRefs:  []observation.ActivityTargetRef{{Kind: "file", Label: path, Path: path}},
-			Payload: map[string]any{
-				"command": "cat " + path,
-				"stdout":  "token sk-test-secret",
-				"items": []any{map[string]any{
-					"path": path,
-					"url":  "https://example.test/docs",
-				}},
+			Renderer:    tools.ActivityRendererTerminal,
+			Chips:       []tools.ActivityChip{{Kind: "effect", Label: "shell"}},
+			TargetRefs:  []tools.ActivityTargetRef{{Kind: "file", Label: path, Path: path}},
+			Payload: tools.TerminalActivityPayload{
+				Command: "cat " + path,
+				Stdout:  "token sk-test-secret",
 			},
 		},
 	})
 	if got.Activity == nil {
 		t.Fatalf("activity missing after sanitize")
 	}
-	data := got.Activity.Label + "\n" + got.Activity.Description + "\n" + got.Activity.TargetRefs[0].Label + "\n" + got.Activity.TargetRefs[0].Path + "\n"
-	for _, value := range got.Activity.Payload {
-		data += strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(anyString(value)), "\\n", " "), "\\t", " "))
+	payload, ok := got.Activity.Payload.(tools.TerminalActivityPayload)
+	if !ok {
+		t.Fatalf("terminal payload type = %T", got.Activity.Payload)
 	}
+	data := strings.Join([]string{got.Activity.Label, got.Activity.Description, got.Activity.TargetRefs[0].Label, got.Activity.TargetRefs[0].Path, payload.Command, payload.Stdout}, "\n")
 	if strings.Contains(data, path) {
 		t.Fatalf("activity still contains raw path: %#v", got.Activity)
 	}
@@ -92,27 +86,6 @@ func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got.Activity.TargetRefs[0].Path, SafePathLabel(path)) {
 		t.Fatalf("activity target path missing safe path label: %#v", got.Activity)
-	}
-}
-
-func anyString(value any) string {
-	switch v := value.(type) {
-	case string:
-		return v
-	case []any:
-		var out string
-		for _, item := range v {
-			out += anyString(item)
-		}
-		return out
-	case map[string]any:
-		var out string
-		for _, item := range v {
-			out += anyString(item)
-		}
-		return out
-	default:
-		return ""
 	}
 }
 

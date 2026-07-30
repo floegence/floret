@@ -13,23 +13,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	internalstorage "github.com/floegence/floret/v2/internal/storage"
-	legacy "github.com/floegence/floret/v2/internal/storage/sqlite"
-	"github.com/floegence/floret/v2/internal/storagecodec"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v3/internal/storage"
+	legacy "github.com/floegence/floret/v3/internal/storage/sqlite"
+	"github.com/floegence/floret/v3/internal/storagecodec"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 const (
 	migrationBackendNamespace  = "floret.domain"
 	migrationSystemNamespace   = "floret.system"
-	migrationSchemaVersion     = "2"
-	migrationSchemaFingerprint = "sha256:3343ff9e64073d543e491de34b1d1aaee222ca7099f3d321de9c66f266b90e03"
+	migrationSchemaVersion     = "3"
+	migrationSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
+	migrationPlanVersion       = 1
+	migrationAlgorithmVersion  = "floret-v2.2-to-v3/1"
+	migrationProjectionVersion = "floret-v3-domain/1"
 )
 
 var (
-	// ErrMigrationConflict reports that a v2 store was produced by a different
-	// migration operation.
-	ErrMigrationConflict = errors.New("floret v2 migration operation conflict")
+	// ErrMigrationConflict reports that the source, immutable plan, or committed
+	// target no longer describes the same migration operation.
+	ErrMigrationConflict = errors.New("floret v2 to v3 migration conflict")
 )
 
 type migrationStage string
@@ -48,8 +52,8 @@ const (
 
 type migrationCheckpoint func(migrationStage) error
 
-// MigrationSchemaError reports a database outside the one exact v16 source
-// schema or exact v2 migration receipt accepted by MigrateV2.
+// MigrationSchemaError reports a database outside the exact supported v2.2
+// source schema or exact v3 migration receipt.
 type MigrationSchemaError struct {
 	Version     string
 	Fingerprint string
@@ -64,29 +68,124 @@ func (failure *MigrationSchemaError) Error() string {
 	return fmt.Sprintf("invalid floret migration schema: version %q fingerprint %q: %s", failure.Version, failure.Fingerprint, failure.Reason)
 }
 
-// MigrateV2Request identifies one exact SQLite migration operation.
-type MigrateV2Request struct {
-	Path        string
-	OperationID string
+// UnsupportedLegacyContentError reports valid legacy content for which the
+// frozen conversion table has no unique v3 representation.
+type UnsupportedLegacyContentError struct {
+	Kind   string `json:"kind"`
+	Count  int    `json:"count"`
+	Reason string `json:"reason"`
 }
 
-// MigrateV2Result reports the committed operation and whether it was replayed.
-type MigrateV2Result struct {
-	OperationID string `json:"operation_id"`
-	Replayed    bool   `json:"replayed"`
-	Threads     int    `json:"threads"`
-	Entries     int    `json:"entries"`
-	ContentHash string `json:"content_hash"`
+func (failure *UnsupportedLegacyContentError) Error() string {
+	if failure == nil {
+		return "unsupported legacy Floret content"
+	}
+	return fmt.Sprintf("unsupported legacy Floret content %q (count %d): %s", failure.Kind, failure.Count, failure.Reason)
+}
+
+// V2MigrationPreflightRequest identifies a read-only representability check.
+// CoordinatorCommitment is opaque to Floret and binds a product-level joint
+// upgrade journal to the resulting immutable plan.
+type V2MigrationPreflightRequest struct {
+	Path                  string
+	OperationID           string
+	CoordinatorCommitment string
+}
+
+type v2MigrationPlanWire struct {
+	Version               int    `json:"version"`
+	AlgorithmVersion      string `json:"algorithm_version"`
+	ProjectionVersion     string `json:"projection_version"`
+	OperationID           string `json:"operation_id"`
+	CoordinatorCommitment string `json:"coordinator_commitment"`
+	SourceVersion         string `json:"source_version"`
+	SourceFingerprint     string `json:"source_fingerprint"`
+	SourceSemanticHash    string `json:"source_semantic_hash"`
+	TargetSemanticHash    string `json:"target_semantic_hash"`
+	Threads               int    `json:"threads"`
+	Entries               int    `json:"entries"`
+	PlanHash              string `json:"plan_hash"`
+}
+
+// V2MigrationPlan is a content-addressed, immutable migration plan. Its fields
+// are intentionally private so callers cannot construct an unchecked plan.
+// Strict JSON round-tripping is supported for offline coordination.
+type V2MigrationPlan struct {
+	wire v2MigrationPlanWire
+}
+
+func (plan V2MigrationPlan) OperationID() string           { return plan.wire.OperationID }
+func (plan V2MigrationPlan) CoordinatorCommitment() string { return plan.wire.CoordinatorCommitment }
+func (plan V2MigrationPlan) SourceSemanticHash() string    { return plan.wire.SourceSemanticHash }
+func (plan V2MigrationPlan) TargetSemanticHash() string    { return plan.wire.TargetSemanticHash }
+func (plan V2MigrationPlan) PlanHash() string              { return plan.wire.PlanHash }
+func (plan V2MigrationPlan) ThreadCount() int              { return plan.wire.Threads }
+func (plan V2MigrationPlan) EntryCount() int               { return plan.wire.Entries }
+func (plan V2MigrationPlan) MarshalJSON() ([]byte, error) {
+	if err := validateV2MigrationPlan(plan.wire); err != nil {
+		return nil, err
+	}
+	return json.Marshal(plan.wire)
+}
+func (plan *V2MigrationPlan) UnmarshalJSON(data []byte) error {
+	if plan == nil {
+		return errors.New("decode v2 migration plan into nil receiver")
+	}
+	var wire v2MigrationPlanWire
+	if err := decodeStrictMigrationJSON(data, &wire); err != nil {
+		return err
+	}
+	if err := validateV2MigrationPlan(wire); err != nil {
+		return err
+	}
+	plan.wire = wire
+	return nil
+}
+
+type V2MigrationPreviewRequest struct {
+	Path string
+	Plan V2MigrationPlan
+}
+
+type V2MigrationPreview struct {
+	PlanHash           string `json:"plan_hash"`
+	SourceSemanticHash string `json:"source_semantic_hash"`
+	TargetSemanticHash string `json:"target_semantic_hash"`
+	Threads            int    `json:"threads"`
+	Entries            int    `json:"entries"`
+}
+
+type V2MigrationApplyRequest struct {
+	Path string
+	Plan V2MigrationPlan
+}
+
+// V2MigrationReceipt proves the exact source, target, plan, and opaque
+// coordinator commitment that were committed atomically by Floret.
+type V2MigrationReceipt struct {
+	OperationID           string `json:"operation_id"`
+	Replayed              bool   `json:"replayed"`
+	PlanHash              string `json:"plan_hash"`
+	SourceSemanticHash    string `json:"source_semantic_hash"`
+	TargetSemanticHash    string `json:"target_semantic_hash"`
+	CoordinatorCommitment string `json:"coordinator_commitment"`
+	Threads               int    `json:"threads"`
+	Entries               int    `json:"entries"`
 }
 
 type migrationReceipt struct {
-	Version           int    `json:"version"`
-	OperationID       string `json:"operation_id"`
-	SourceVersion     string `json:"source_version"`
-	SourceFingerprint string `json:"source_fingerprint"`
-	Threads           int    `json:"threads"`
-	Entries           int    `json:"entries"`
-	ContentHash       string `json:"content_hash"`
+	Version               int    `json:"version"`
+	AlgorithmVersion      string `json:"algorithm_version"`
+	ProjectionVersion     string `json:"projection_version"`
+	OperationID           string `json:"operation_id"`
+	PlanHash              string `json:"plan_hash"`
+	CoordinatorCommitment string `json:"coordinator_commitment"`
+	SourceVersion         string `json:"source_version"`
+	SourceFingerprint     string `json:"source_fingerprint"`
+	Threads               int    `json:"threads"`
+	Entries               int    `json:"entries"`
+	SourceSemanticHash    string `json:"source_semantic_hash"`
+	TargetSemanticHash    string `json:"target_semantic_hash"`
 }
 
 type migrationLogicalSchema struct {
@@ -99,22 +198,306 @@ var (
 	migrationPromptKey  = storagecodec.Tuple(storagecodec.TupleString("prompt"), storagecodec.TupleString("state"))
 )
 
-// MigrateV2 atomically converts one exact schema-v16 SQLite store into the v2
-// backend format. It never opens, repairs, or upgrades any other schema.
-func MigrateV2(ctx context.Context, request MigrateV2Request) (result MigrateV2Result, resultErr error) {
-	return migrateV2(ctx, request, nil)
+type analyzedV2Migration struct {
+	exported        legacy.ExportedV16State
+	sessionEnvelope []byte
+	promptEnvelope  []byte
+	forkRecords     []migratedForkRecord
+	sourceHash      string
+	targetHash      string
 }
 
-func migrateV2(ctx context.Context, request MigrateV2Request, checkpoint migrationCheckpoint) (result MigrateV2Result, resultErr error) {
+func validateMigrationPath(ctx context.Context, value string) (string, error) {
 	if ctx == nil {
-		return result, fmt.Errorf("%w: migration context is required", ErrInvalidArgument)
-	}
-	path := strings.TrimSpace(request.Path)
-	operationID := strings.TrimSpace(request.OperationID)
-	if path == "" || path == ":memory:" || operationID == "" || path != request.Path || operationID != request.OperationID {
-		return result, fmt.Errorf("%w: migration requires a canonical file path and operation ID", ErrInvalidArgument)
+		return "", fmt.Errorf("%w: migration context is required", spi.ErrInvalidArgument)
 	}
 	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(value)
+	if path == "" || path == ":memory:" || path != value {
+		return "", fmt.Errorf("%w: migration requires a canonical SQLite file path", spi.ErrInvalidArgument)
+	}
+	return path, nil
+}
+
+func validateV2MigrationIdentity(ctx context.Context, pathValue, operationValue, commitmentValue string) (string, string, string, error) {
+	path, err := validateMigrationPath(ctx, pathValue)
+	if err != nil {
+		return "", "", "", err
+	}
+	operationID, commitment := strings.TrimSpace(operationValue), strings.TrimSpace(commitmentValue)
+	if operationID == "" || operationID != operationValue || commitment == "" || commitment != commitmentValue {
+		return "", "", "", fmt.Errorf("%w: migration requires canonical operation and coordinator commitment identities", spi.ErrInvalidArgument)
+	}
+	return path, operationID, commitment, nil
+}
+
+func openMigrationConnection(ctx context.Context, path string, writable bool) (*sql.Conn, func(), error) {
+	database, err := sql.Open(sqliteDriverName, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	database.SetMaxOpenConns(1)
+	connection, err := database.Conn(ctx)
+	if err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+	closeConnection := func() { connection.Close(); database.Close() }
+	if _, err := connection.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		closeConnection()
+		return nil, nil, err
+	}
+	transaction := "BEGIN"
+	if writable {
+		transaction = "BEGIN IMMEDIATE"
+	}
+	if _, err := connection.ExecContext(ctx, transaction); err != nil {
+		closeConnection()
+		return nil, nil, err
+	}
+	return connection, func() { _, _ = connection.ExecContext(context.Background(), `ROLLBACK`); closeConnection() }, nil
+}
+
+func analyzeV2Migration(ctx context.Context, runner legacy.V16Runner) (analyzedV2Migration, error) {
+	if err := legacy.VerifyV16Runner(ctx, runner); err != nil {
+		return analyzedV2Migration{}, migrationSchemaError(err)
+	}
+	exported, err := legacy.ExportV16State(ctx, runner)
+	if err != nil {
+		return analyzedV2Migration{}, fmt.Errorf("export Floret v2.2 state: %w", err)
+	}
+	sessionEnvelope, err := storagecodec.EncodeEnvelope("sessiontree", exported.Session)
+	if err != nil {
+		return analyzedV2Migration{}, err
+	}
+	promptEnvelope, err := storagecodec.EncodeEnvelope("prompt", exported.Prompt)
+	if err != nil {
+		return analyzedV2Migration{}, err
+	}
+	forkRecords, err := encodeMigratedForkOperations(exported.ForkOperations)
+	if err != nil {
+		return analyzedV2Migration{}, err
+	}
+	return analyzedV2Migration{
+		exported: exported, sessionEnvelope: sessionEnvelope, promptEnvelope: promptEnvelope, forkRecords: forkRecords,
+		sourceHash: sourceSemanticHash(exported.Session, exported.Prompt, forkRecords),
+		targetHash: targetSemanticHash(exported.Session, exported.Prompt, forkRecords),
+	}, nil
+}
+
+func sourceSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("floret-v2.2-source-semantic/1\x00"))
+	writeMigrationSemanticContent(hash, session, prompt, forkRecords)
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeMigrationSemanticContent(hash io.Writer, session, prompt []byte, forkRecords []migratedForkRecord) {
+	_, _ = hash.Write(session)
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write(prompt)
+	for _, record := range forkRecords {
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(record.key)
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(record.value)
+	}
+}
+
+func migrationPlanHash(wire v2MigrationPlanWire) string {
+	wire.PlanHash = ""
+	encoded, _ := json.Marshal(wire)
+	sum := sha256.Sum256(append([]byte("floret-v3-migration-plan/1\x00"), encoded...))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func validateV2MigrationPlan(wire v2MigrationPlanWire) error {
+	version, fingerprint := legacy.V16Identity()
+	if wire.Version != migrationPlanVersion || wire.AlgorithmVersion != migrationAlgorithmVersion ||
+		wire.ProjectionVersion != migrationProjectionVersion || wire.SourceVersion != version || wire.SourceFingerprint != fingerprint ||
+		strings.TrimSpace(wire.OperationID) == "" || wire.OperationID != strings.TrimSpace(wire.OperationID) ||
+		strings.TrimSpace(wire.CoordinatorCommitment) == "" || wire.CoordinatorCommitment != strings.TrimSpace(wire.CoordinatorCommitment) ||
+		wire.Threads < 0 || wire.Entries < 0 || !validSemanticHash(wire.SourceSemanticHash) ||
+		!validSemanticHash(wire.TargetSemanticHash) || !validSemanticHash(wire.PlanHash) || migrationPlanHash(wire) != wire.PlanHash {
+		return fmt.Errorf("%w: invalid or tampered v2 migration plan", spi.ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validSemanticHash(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+func matchMigrationPlan(plan v2MigrationPlanWire, analyzed analyzedV2Migration) error {
+	if plan.SourceSemanticHash != analyzed.sourceHash || plan.TargetSemanticHash != analyzed.targetHash ||
+		plan.Threads != analyzed.exported.Threads || plan.Entries != analyzed.exported.Entries {
+		return ErrMigrationConflict
+	}
+	return nil
+}
+
+func previewFromPlan(plan v2MigrationPlanWire) V2MigrationPreview {
+	return V2MigrationPreview{PlanHash: plan.PlanHash, SourceSemanticHash: plan.SourceSemanticHash, TargetSemanticHash: plan.TargetSemanticHash, Threads: plan.Threads, Entries: plan.Entries}
+}
+
+func classifyLegacyMigrationError(err error) error {
+	var unsupported *legacy.UnsupportedV16ContentError
+	if errors.As(err, &unsupported) {
+		return &UnsupportedLegacyContentError{Kind: unsupported.Kind, Count: unsupported.Count, Reason: unsupported.Reason}
+	}
+	return err
+}
+
+func decodeStrictMigrationJSON(data []byte, target any) error {
+	if err := rejectDuplicateMigrationJSONKeys(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON data")
+		}
+		return err
+	}
+	return nil
+}
+
+func rejectDuplicateMigrationJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delim {
+		case '{':
+			seen := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("JSON object key is not a string")
+				}
+				if _, exists := seen[key]; exists {
+					return fmt.Errorf("duplicate JSON key %q", key)
+				}
+				seen[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		default:
+			return errors.New("unexpected JSON delimiter")
+		}
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON data")
+		}
+		return err
+	}
+	return nil
+}
+
+// PreflightV2Migration verifies representability and returns an immutable,
+// content-addressed plan without mutating the source.
+func PreflightV2Migration(ctx context.Context, request V2MigrationPreflightRequest) (V2MigrationPlan, error) {
+	path, operationID, commitment, err := validateV2MigrationIdentity(ctx, request.Path, request.OperationID, request.CoordinatorCommitment)
+	if err != nil {
+		return V2MigrationPlan{}, err
+	}
+	connection, closeConnection, err := openMigrationConnection(ctx, path, false)
+	if err != nil {
+		return V2MigrationPlan{}, err
+	}
+	defer closeConnection()
+	analyzed, err := analyzeV2Migration(ctx, connection)
+	if err != nil {
+		return V2MigrationPlan{}, classifyLegacyMigrationError(err)
+	}
+	version, fingerprint := legacy.V16Identity()
+	wire := v2MigrationPlanWire{
+		Version: migrationPlanVersion, AlgorithmVersion: migrationAlgorithmVersion, ProjectionVersion: migrationProjectionVersion,
+		OperationID: operationID, CoordinatorCommitment: commitment, SourceVersion: version, SourceFingerprint: fingerprint,
+		SourceSemanticHash: analyzed.sourceHash, TargetSemanticHash: analyzed.targetHash,
+		Threads: analyzed.exported.Threads, Entries: analyzed.exported.Entries,
+	}
+	wire.PlanHash = migrationPlanHash(wire)
+	return V2MigrationPlan{wire: wire}, nil
+}
+
+// PreviewV2Migration verifies that the source still matches plan and returns
+// the exact target semantic summary without writing.
+func PreviewV2Migration(ctx context.Context, request V2MigrationPreviewRequest) (V2MigrationPreview, error) {
+	path, err := validateMigrationPath(ctx, request.Path)
+	if err != nil {
+		return V2MigrationPreview{}, err
+	}
+	if err := validateV2MigrationPlan(request.Plan.wire); err != nil {
+		return V2MigrationPreview{}, err
+	}
+	connection, closeConnection, err := openMigrationConnection(ctx, path, false)
+	if err != nil {
+		return V2MigrationPreview{}, err
+	}
+	defer closeConnection()
+	analyzed, err := analyzeV2Migration(ctx, connection)
+	if err != nil {
+		return V2MigrationPreview{}, classifyLegacyMigrationError(err)
+	}
+	if err := matchMigrationPlan(request.Plan.wire, analyzed); err != nil {
+		return V2MigrationPreview{}, err
+	}
+	return previewFromPlan(request.Plan.wire), nil
+}
+
+// ApplyV2Migration atomically applies an unchanged immutable plan. Exact
+// replays return the original receipt; any source, plan, or target drift is a
+// permanent migration conflict.
+func ApplyV2Migration(ctx context.Context, request V2MigrationApplyRequest) (result V2MigrationReceipt, resultErr error) {
+	return applyV2Migration(ctx, request, nil)
+}
+
+func applyV2Migration(ctx context.Context, request V2MigrationApplyRequest, checkpoint migrationCheckpoint) (result V2MigrationReceipt, resultErr error) {
+	if ctx == nil {
+		return result, fmt.Errorf("%w: migration context is required", spi.ErrInvalidArgument)
+	}
+	path, err := validateMigrationPath(ctx, request.Path)
+	if err != nil {
+		return result, err
+	}
+	if err := validateV2MigrationPlan(request.Plan.wire); err != nil {
 		return result, err
 	}
 	database, err := sql.Open(sqliteDriverName, path)
@@ -153,7 +536,7 @@ func migrateV2(ctx context.Context, request MigrateV2Request, checkpoint migrati
 		return result, err
 	}
 
-	replayed, err := replayMigrationV2(ctx, connection, operationID)
+	replayed, err := replayV3Migration(ctx, connection, request.Plan.wire)
 	if err != nil {
 		return result, err
 	}
@@ -173,33 +556,24 @@ func migrateV2(ctx context.Context, request MigrateV2Request, checkpoint migrati
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageSourceValidated); err != nil {
 		return result, err
 	}
-	exported, err := legacy.ExportV16State(ctx, connection)
+	analyzed, err := analyzeV2Migration(ctx, connection)
 	if err != nil {
-		return result, fmt.Errorf("export floret schema v16: %w", err)
+		return result, classifyLegacyMigrationError(err)
 	}
-	sessionEnvelope, err := storagecodec.EncodeEnvelope("sessiontree", exported.Session)
-	if err != nil {
+	if err := matchMigrationPlan(request.Plan.wire, analyzed); err != nil {
 		return result, err
 	}
-	promptEnvelope, err := storagecodec.EncodeEnvelope("prompt", exported.Prompt)
-	if err != nil {
-		return result, err
-	}
-	forkRecords, err := encodeMigratedForkOperations(exported.ForkOperations)
-	if err != nil {
-		return result, err
-	}
-	contentHash := migrationContentHash(exported.Session, exported.Prompt, forkRecords)
-	version, fingerprint := legacy.V16Identity()
+	plan := request.Plan.wire
 	receipt := migrationReceipt{
-		Version: 1, OperationID: operationID, SourceVersion: version,
-		SourceFingerprint: fingerprint, Threads: exported.Threads,
-		Entries: exported.Entries, ContentHash: contentHash,
+		Version: migrationPlanVersion, AlgorithmVersion: migrationAlgorithmVersion, ProjectionVersion: migrationProjectionVersion,
+		OperationID: plan.OperationID, PlanHash: plan.PlanHash, CoordinatorCommitment: plan.CoordinatorCommitment,
+		SourceVersion: plan.SourceVersion, SourceFingerprint: plan.SourceFingerprint, Threads: plan.Threads, Entries: plan.Entries,
+		SourceSemanticHash: plan.SourceSemanticHash, TargetSemanticHash: plan.TargetSemanticHash,
 	}
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageSourceExported); err != nil {
 		return result, err
 	}
-	if err := replaceV16WithV2(ctx, connection, sessionEnvelope, promptEnvelope, forkRecords, receipt, checkpoint); err != nil {
+	if err := replaceV16WithV3(ctx, connection, analyzed.sessionEnvelope, analyzed.promptEnvelope, analyzed.forkRecords, receipt, checkpoint); err != nil {
 		return result, err
 	}
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageBeforeCommit); err != nil {
@@ -224,7 +598,7 @@ func runMigrationCheckpoint(ctx context.Context, checkpoint migrationCheckpoint,
 	return ctx.Err()
 }
 
-func replayMigrationV2(ctx context.Context, connection *sql.Conn, operationID string) (*migrationReceipt, error) {
+func replayV3Migration(ctx context.Context, connection *sql.Conn, plan v2MigrationPlanWire) (*migrationReceipt, error) {
 	var tableCount, backendTableCount int
 	if err := connection.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
 		return nil, err
@@ -242,7 +616,7 @@ func replayMigrationV2(ctx context.Context, connection *sql.Conn, operationID st
 	if !bytes.Equal(physicalSchema, []byte("1")) {
 		return nil, &MigrationSchemaError{Version: migrationSchemaVersion, Reason: fmt.Sprintf("unsupported physical schema %q", physicalSchema)}
 	}
-	if err := connection.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name = 'migration_v2_receipt'`).Scan(&receiptJSON); err != nil {
+	if err := connection.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name = 'migration_v3_receipt'`).Scan(&receiptJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrMigrationConflict
 		}
@@ -252,7 +626,9 @@ func replayMigrationV2(ctx context.Context, connection *sql.Conn, operationID st
 	if err != nil {
 		return nil, &MigrationSchemaError{Version: migrationSchemaVersion, Reason: "invalid migration receipt"}
 	}
-	if receipt.OperationID != operationID {
+	if receipt.OperationID != plan.OperationID || receipt.PlanHash != plan.PlanHash ||
+		receipt.CoordinatorCommitment != plan.CoordinatorCommitment ||
+		receipt.SourceSemanticHash != plan.SourceSemanticHash || receipt.TargetSemanticHash != plan.TargetSemanticHash {
 		return nil, ErrMigrationConflict
 	}
 	if err := validateMigratedContent(ctx, connection, receipt); err != nil {
@@ -266,7 +642,7 @@ type migratedForkRecord struct {
 	value []byte
 }
 
-func replaceV16WithV2(ctx context.Context, connection *sql.Conn, sessionEnvelope, promptEnvelope []byte, forkRecords []migratedForkRecord, receipt migrationReceipt, checkpoint migrationCheckpoint) error {
+func replaceV16WithV3(ctx context.Context, connection *sql.Conn, sessionEnvelope, promptEnvelope []byte, forkRecords []migratedForkRecord, receipt migrationReceipt, checkpoint migrationCheckpoint) error {
 	rows, err := connection.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return err
@@ -318,7 +694,7 @@ func replaceV16WithV2(ctx context.Context, connection *sql.Conn, sessionEnvelope
 	if err != nil {
 		return err
 	}
-	if _, err := connection.ExecContext(ctx, `INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('1' AS BLOB)), ('migration_v2_receipt', ?)`, receiptJSON); err != nil {
+	if _, err := connection.ExecContext(ctx, `INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('1' AS BLOB)), ('migration_v3_receipt', ?)`, receiptJSON); err != nil {
 		return err
 	}
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageMetadataWritten); err != nil {
@@ -399,7 +775,7 @@ func validateMigratedContent(ctx context.Context, connection *sql.Conn, receipt 
 	if err != nil {
 		return err
 	}
-	if got := migrationContentHash(session, prompt, forkRecords); got != receipt.ContentHash {
+	if got := targetSemanticHash(session, prompt, forkRecords); got != receipt.TargetSemanticHash {
 		return &MigrationSchemaError{Version: migrationSchemaVersion, Reason: "migration content hash mismatch"}
 	}
 	return nil
@@ -421,9 +797,9 @@ func decodeMigrationLogicalSchema(encoded []byte) (migrationLogicalSchema, error
 	return schema, nil
 }
 
-func migrationContentHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
+func targetSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
 	hash := sha256.New()
-	_, _ = hash.Write([]byte("floret-v2-migration\x00"))
+	_, _ = hash.Write([]byte("floret-v3-target-semantic/1\x00"))
 	_, _ = hash.Write(session)
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write(prompt)
@@ -472,21 +848,15 @@ func readMigratedForkRecords(ctx context.Context, connection *sql.Conn) ([]migra
 }
 
 func decodeMigrationReceipt(encoded []byte) (migrationReceipt, error) {
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
 	var receipt migrationReceipt
-	if err := decoder.Decode(&receipt); err != nil {
-		return receipt, err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return receipt, errors.New("migration receipt contains trailing data")
-		}
+	if err := decodeStrictMigrationJSON(encoded, &receipt); err != nil {
 		return receipt, err
 	}
 	version, fingerprint := legacy.V16Identity()
-	if receipt.Version != 1 || strings.TrimSpace(receipt.OperationID) == "" || receipt.SourceVersion != version ||
-		receipt.SourceFingerprint != fingerprint || receipt.Threads < 0 || receipt.Entries < 0 || !strings.HasPrefix(receipt.ContentHash, "sha256:") {
+	if receipt.Version != migrationPlanVersion || receipt.AlgorithmVersion != migrationAlgorithmVersion ||
+		receipt.ProjectionVersion != migrationProjectionVersion || strings.TrimSpace(receipt.OperationID) == "" ||
+		receipt.SourceVersion != version || receipt.SourceFingerprint != fingerprint || receipt.Threads < 0 || receipt.Entries < 0 ||
+		!validSemanticHash(receipt.PlanHash) || !validSemanticHash(receipt.SourceSemanticHash) || !validSemanticHash(receipt.TargetSemanticHash) {
 		return receipt, errors.New("unsupported migration receipt")
 	}
 	return receipt, nil
@@ -503,10 +873,11 @@ func migrationSchemaError(err error) error {
 	return err
 }
 
-func resultFromReceipt(receipt migrationReceipt, replayed bool) MigrateV2Result {
-	return MigrateV2Result{
-		OperationID: receipt.OperationID, Replayed: replayed, Threads: receipt.Threads,
-		Entries: receipt.Entries, ContentHash: receipt.ContentHash,
+func resultFromReceipt(receipt migrationReceipt, replayed bool) V2MigrationReceipt {
+	return V2MigrationReceipt{
+		OperationID: receipt.OperationID, Replayed: replayed, PlanHash: receipt.PlanHash,
+		SourceSemanticHash: receipt.SourceSemanticHash, TargetSemanticHash: receipt.TargetSemanticHash,
+		CoordinatorCommitment: receipt.CoordinatorCommitment, Threads: receipt.Threads, Entries: receipt.Entries,
 	}
 }
 

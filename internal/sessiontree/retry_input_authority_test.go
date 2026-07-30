@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/session"
 )
 
 func TestValidateRetrySourcePathRequiresDurableUserInput(t *testing.T) {

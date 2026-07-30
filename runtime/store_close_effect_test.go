@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/storage/sqlite"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/storage/sqlite"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestStoreCloseWaitsForDispatchedEffectBeforeTerminalMemory(t *testing.T) {
@@ -55,7 +55,7 @@ func runStoreCloseEffectScenario(t *testing.T, store *runtimeStore, repo session
 	ctx := context.Background()
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("thread-close-effect")
-	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func runStoreCloseEffectScenario(t *testing.T, store *runtimeStore, repo session
 	}
 	runDone := make(chan error, 1)
 	go func() {
-		_, runErr := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread-close-effect", TurnID: "turn-close-effect", RunID: "run-close-effect", Input: TurnInput{Text: "run shell"}})
+		_, runErr := host.RunTurn(ctx, runTurnRequest{ThreadID: "thread-close-effect", TurnID: "turn-close-effect", RunID: "run-close-effect", Input: TurnInput{Text: "run shell"}})
 		runDone <- runErr
 	}()
 	select {

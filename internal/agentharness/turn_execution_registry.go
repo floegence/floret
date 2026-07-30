@@ -1,6 +1,6 @@
 package agentharness
 
-import "github.com/floegence/floret/v2/internal/sessiontree"
+import "github.com/floegence/floret/v3/internal/sessiontree"
 
 type TurnExecutionRegistry struct {
 	Register   func(sessiontree.TurnLease) error

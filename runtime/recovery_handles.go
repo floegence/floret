@@ -5,22 +5,23 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/tools"
 )
 
-// PendingToolRecoveryTarget binds one exact pending tool and, for a child
+// pendingToolRecoveryTarget binds one exact pending tool and, for a child
 // thread, its canonical parent.
-type PendingToolRecoveryTarget struct {
-	ParentThreadID ThreadID
+type pendingToolRecoveryTarget struct {
+	ParentThreadID identity.ThreadID
 	Target         PendingToolSettlementTarget
 }
 
 // Validate checks the complete recovery authority identity.
-func (target PendingToolRecoveryTarget) Validate() error {
+func (target pendingToolRecoveryTarget) Validate() error {
 	if err := target.Target.Validate(); err != nil {
 		return err
 	}
-	if target.ParentThreadID != ThreadID(strings.TrimSpace(string(target.ParentThreadID))) {
+	if target.ParentThreadID != identity.ThreadID(strings.TrimSpace(string(target.ParentThreadID))) {
 		return errors.New("pending tool recovery parent identity must be trim-stable")
 	}
 	if target.ParentThreadID == target.Target.ThreadID {
@@ -29,23 +30,23 @@ func (target PendingToolRecoveryTarget) Validate() error {
 	return nil
 }
 
-// PendingToolRecoveryRequest contains only the host-owned outcome for a target
-// already bound by PendingToolRecoveryTarget.
-type PendingToolRecoveryRequest struct {
+// pendingToolRecoveryRequest contains only the host-owned outcome for a target
+// already bound by pendingToolRecoveryTarget.
+type pendingToolRecoveryRequest struct {
 	Status   PendingToolSettlementStatus
 	Summary  string
 	Output   string
-	Activity *observation.ActivityPresentation
+	Activity *tools.ActivityPresentation
 }
 
-// PendingToolRecovery settles one exact target without provider execution.
-type PendingToolRecovery struct {
+// pendingToolRecoveryHandle settles one exact target without provider execution.
+type pendingToolRecoveryHandle struct {
 	inner  *pendingToolRecoveryCapability
 	target PendingToolSettlementTarget
 }
 
-// PendingToolRecovery binds recovery to one exact root or child pending tool.
-func (host *Host) PendingToolRecovery(ctx context.Context, target PendingToolRecoveryTarget, sink EventSink) (*PendingToolRecovery, error) {
+// pendingToolRecoveryHandle binds recovery to one exact root or child pending tool.
+func (host *Host) pendingToolRecovery(ctx context.Context, target pendingToolRecoveryTarget, sink EventSink) (*pendingToolRecoveryHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -67,34 +68,34 @@ func (host *Host) PendingToolRecovery(ctx context.Context, target PendingToolRec
 	if err != nil {
 		return nil, err
 	}
-	return &PendingToolRecovery{inner: inner, target: target.Target}, nil
+	return &pendingToolRecoveryHandle{inner: inner, target: target.Target}, nil
 }
 
 // Settle records the bound pending tool outcome exactly once or replays the
 // same durable settlement.
-func (recovery *PendingToolRecovery) Settle(ctx context.Context, request PendingToolRecoveryRequest) (PendingToolSettlementResult, error) {
+func (recovery *pendingToolRecoveryHandle) Settle(ctx context.Context, request pendingToolRecoveryRequest) (PendingToolSettlementResult, error) {
 	if recovery == nil || recovery.inner == nil {
 		return PendingToolSettlementResult{}, errors.New("pending tool recovery is required")
 	}
-	return recovery.inner.SettlePendingTool(ctx, PendingToolSettlementRequest{
+	return recovery.inner.SettlePendingTool(ctx, pendingToolSettlementRequest{
 		Target: recovery.target, Status: request.Status, Summary: request.Summary,
 		Output: request.Output, Activity: request.Activity,
 	})
 }
 
-// InterruptedTurnRecoveryTarget identifies a root or canonical child whose
+// interruptedTurnRecoveryTarget identifies a root or canonical child whose
 // current interrupted lease proof will be bound during issuance.
-type InterruptedTurnRecoveryTarget struct {
-	ParentThreadID ThreadID
-	ThreadID       ThreadID
+type interruptedTurnRecoveryTarget struct {
+	ParentThreadID identity.ThreadID
+	ThreadID       identity.ThreadID
 }
 
 // Validate checks the complete thread relationship identity.
-func (target InterruptedTurnRecoveryTarget) Validate() error {
-	if target.ThreadID == "" || target.ThreadID != ThreadID(strings.TrimSpace(string(target.ThreadID))) {
+func (target interruptedTurnRecoveryTarget) Validate() error {
+	if target.ThreadID == "" || target.ThreadID != identity.ThreadID(strings.TrimSpace(string(target.ThreadID))) {
 		return errors.New("interrupted recovery thread identity is required and must be trim-stable")
 	}
-	if target.ParentThreadID != ThreadID(strings.TrimSpace(string(target.ParentThreadID))) {
+	if target.ParentThreadID != identity.ThreadID(strings.TrimSpace(string(target.ParentThreadID))) {
 		return errors.New("interrupted recovery parent identity must be trim-stable")
 	}
 	if target.ParentThreadID == target.ThreadID {
@@ -103,14 +104,14 @@ func (target InterruptedTurnRecoveryTarget) Validate() error {
 	return nil
 }
 
-// InterruptedTurnRecovery owns one exact interrupted lease proof.
-type InterruptedTurnRecovery struct {
+// interruptedTurnRecoveryHandle owns one exact interrupted lease proof.
+type interruptedTurnRecoveryHandle struct {
 	inner *interruptedTurnRecoveryCapability
 }
 
-// InterruptedTurnRecovery binds the current durable interrupted lease proof
+// interruptedTurnRecoveryHandle binds the current durable interrupted lease proof
 // for one exact root or child thread.
-func (host *Host) InterruptedTurnRecovery(ctx context.Context, target InterruptedTurnRecoveryTarget, sink EventSink) (*InterruptedTurnRecovery, error) {
+func (host *Host) interruptedTurnRecovery(ctx context.Context, target interruptedTurnRecoveryTarget, sink EventSink) (*interruptedTurnRecoveryHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -133,35 +134,35 @@ func (host *Host) InterruptedTurnRecovery(ctx context.Context, target Interrupte
 	if err != nil {
 		return nil, err
 	}
-	return &InterruptedTurnRecovery{inner: inner}, nil
+	return &interruptedTurnRecoveryHandle{inner: inner}, nil
 }
 
 // Recover atomically finalizes the exact interrupted lease proof bound during
 // issuance.
-func (recovery *InterruptedTurnRecovery) Recover(ctx context.Context) (RecoverInterruptedTurnResult, error) {
+func (recovery *interruptedTurnRecoveryHandle) Recover(ctx context.Context) (recoverInterruptedTurnResult, error) {
 	if recovery == nil || recovery.inner == nil {
-		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery is required")
+		return recoverInterruptedTurnResult{}, errors.New("interrupted turn recovery is required")
 	}
 	return recovery.inner.RecoverInterruptedTurn(ctx)
 }
 
-// ThreadInventory is composition-owned root-thread enumeration authority.
-type ThreadInventory struct {
+// threadInventoryHandle is composition-owned root-thread enumeration authority.
+type threadInventoryHandle struct {
 	inner *threadInventoryCapability
 }
 
-// ThreadInventory issues canonical root-thread enumeration authority.
-func (host *Host) ThreadInventory(ctx context.Context) (*ThreadInventory, error) {
+// threadInventoryHandle issues canonical root-thread enumeration authority.
+func (host *Host) threadInventory(ctx context.Context) (*threadInventoryHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
-	return &ThreadInventory{inner: host.binders.inventory}, nil
+	return &threadInventoryHandle{inner: host.binders.inventory}, nil
 }
 
 // List returns one stable page of canonical root threads.
-func (inventory *ThreadInventory) List(ctx context.Context, request ListRootThreadsRequest) (RootThreadsPage, error) {
+func (inventory *threadInventoryHandle) List(ctx context.Context, request listRootThreadsRequest) (rootThreadsPage, error) {
 	if inventory == nil || inventory.inner == nil {
-		return RootThreadsPage{}, errors.New("thread inventory is required")
+		return rootThreadsPage{}, errors.New("thread inventory is required")
 	}
 	return inventory.inner.ListRootThreads(ctx, request)
 }

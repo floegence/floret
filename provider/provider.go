@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var (
@@ -98,14 +100,14 @@ func (capabilities Capabilities) Validate() error {
 
 // Request is one complete provider-visible model request.
 type Request struct {
-	RunID           string                    `json:"run_id"`
-	ThreadID        string                    `json:"thread_id,omitempty"`
-	TurnID          string                    `json:"turn_id,omitempty"`
-	TraceID         string                    `json:"trace_id,omitempty"`
-	PromptScopeID   string                    `json:"prompt_scope_id"`
+	RunID           identity.RunID            `json:"run_id"`
+	ThreadID        identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID          identity.TurnID           `json:"turn_id,omitempty"`
+	TraceID         identity.TraceID          `json:"trace_id,omitempty"`
+	PromptScopeID   identity.PromptScopeID    `json:"prompt_scope_id"`
 	Step            int                       `json:"step"`
 	Messages        []Message                 `json:"messages"`
-	Tools           []ToolDefinition          `json:"tools,omitempty"`
+	Tools           []tools.ToolDefinition    `json:"tools,omitempty"`
 	HostedTools     []HostedToolDefinition    `json:"hosted_tools,omitempty"`
 	MaxOutputTokens int64                     `json:"max_output_tokens,omitempty"`
 	Reasoning       config.ReasoningSelection `json:"reasoning,omitempty"`
@@ -115,7 +117,7 @@ type Request struct {
 
 // Validate verifies identities and provider-visible message structure.
 func (request Request) Validate() error {
-	if strings.TrimSpace(request.RunID) == "" || strings.TrimSpace(request.PromptScopeID) == "" {
+	if strings.TrimSpace(request.RunID.String()) == "" || strings.TrimSpace(request.PromptScopeID.String()) == "" {
 		return errors.New("provider request requires run and prompt scope identities")
 	}
 	if request.Step < 0 || request.MaxOutputTokens < 0 {
@@ -220,17 +222,6 @@ type ToolResult struct {
 	CallID   string `json:"call_id"`
 	ToolName string `json:"tool_name"`
 	Text     string `json:"text,omitempty"`
-}
-
-// ToolDefinition is one provider-visible local tool schema.
-type ToolDefinition struct {
-	Name         string         `json:"name"`
-	Title        string         `json:"title,omitempty"`
-	Description  string         `json:"description"`
-	InputSchema  map[string]any `json:"input_schema"`
-	OutputSchema map[string]any `json:"output_schema,omitempty"`
-	Strict       bool           `json:"strict,omitempty"`
-	Annotations  map[string]any `json:"annotations,omitempty"`
 }
 
 // HostedToolDefinition is one provider-native capability that the local tool

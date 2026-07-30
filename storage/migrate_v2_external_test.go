@@ -12,16 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/backendtest"
-	internalprovider "github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	internalstorage "github.com/floegence/floret/v2/internal/storage"
-	legacy "github.com/floegence/floret/v2/internal/storage/sqlite"
-	floretruntime "github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/storage"
+	internalprovider "github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v3/internal/storage"
+	legacy "github.com/floegence/floret/v3/internal/storage/sqlite"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	floretruntime "github.com/floegence/floret/v3/runtime"
+	"github.com/floegence/floret/v3/storage"
 )
 
 func legacyThread(id string, createdAt time.Time) sessiontree.ThreadMeta {
@@ -54,6 +54,20 @@ func legacyMetadata(t *testing.T, path, key string) string {
 	return value
 }
 
+func preflightV2Migration(ctx context.Context, path, operationID string) (storage.V2MigrationPlan, error) {
+	return storage.PreflightV2Migration(ctx, storage.V2MigrationPreflightRequest{
+		Path: path, OperationID: operationID, CoordinatorCommitment: "sha256:test-coordinator",
+	})
+}
+
+func applyV2Migration(ctx context.Context, path, operationID string) (storage.V2MigrationReceipt, error) {
+	plan, err := preflightV2Migration(ctx, path, operationID)
+	if err != nil {
+		return storage.V2MigrationReceipt{}, err
+	}
+	return storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: plan})
+}
+
 func TestMigrateV2ConvertsExactSchemaV16AndReplaysOperation(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
@@ -69,7 +83,15 @@ func TestMigrateV2ConvertsExactSchemaV16AndReplaysOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-1"})
+	plan, err := preflightV2Migration(ctx, path, "migration-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictingPlan, err := preflightV2Migration(ctx, path, "migration-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: plan})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,26 +102,27 @@ func TestMigrateV2ConvertsExactSchemaV16AndReplaysOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := host.ThreadReader(ctx, "thread-1")
+	handle, err := host.Thread(ctx, "thread-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := reader.Read(ctx)
+	view, err := handle.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	thread := view.Thread
 	if thread.ID != "thread-1" || !thread.CreatedAt.Equal(createdAt) {
 		t.Fatalf("migrated thread = %#v", thread)
 	}
-	if err := host.Close(); err != nil {
+	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	replay, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-1"})
+	replay, err := storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: plan})
 	if err != nil || !replay.Replayed {
 		t.Fatalf("replay = %#v, err = %v", replay, err)
 	}
-	_, err = storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-2"})
+	_, err = storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: conflictingPlan})
 	if !errors.Is(err, storage.ErrMigrationConflict) {
 		t.Fatalf("different operation error = %v", err)
 	}
@@ -117,7 +140,7 @@ func TestMigrateV2RejectsNonExactV16Fingerprint(t *testing.T) {
 	}
 	mutateLegacyMetadata(t, path, "schema_fingerprint", "not-v16")
 
-	_, err = storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-1"})
+	_, err = preflightV2Migration(ctx, path, "migration-1")
 	var schemaError *storage.MigrationSchemaError
 	if !errors.As(err, &schemaError) || schemaError.Version != "16" || schemaError.Fingerprint != "not-v16" {
 		t.Fatalf("schema error = %#v (%v)", schemaError, err)
@@ -154,7 +177,7 @@ func TestMigrateV2RejectsHostOwnedLegacyMetadataWithoutMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-metadata"})
+	_, err = preflightV2Migration(ctx, path, "migration-metadata")
 	if err == nil || !strings.Contains(err.Error(), "host-owned records") {
 		t.Fatalf("metadata migration error = %v", err)
 	}
@@ -185,7 +208,11 @@ func TestMigrateV2ReplayRejectsCorruptLogicalContent(t *testing.T) {
 			if err := legacyStore.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-replay"}); err != nil {
+			plan, err := preflightV2Migration(ctx, path, "migration-replay")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: plan}); err != nil {
 				t.Fatal(err)
 			}
 			database, err := sql.Open("sqlite", path)
@@ -200,7 +227,7 @@ func TestMigrateV2ReplayRejectsCorruptLogicalContent(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			result, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-replay"})
+			result, err := storage.ApplyV2Migration(ctx, storage.V2MigrationApplyRequest{Path: path, Plan: plan})
 			if err == nil || result.Replayed {
 				t.Fatalf("corrupt replay result = %#v, err = %v", result, err)
 			}
@@ -280,16 +307,16 @@ func TestMigrateV2PreservesDurableAuthorityProviderPromptAndForkState(t *testing
 	if err := legacyStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-authority"}); err != nil {
+	if _, err := applyV2Migration(ctx, path, "migration-authority"); err != nil {
 		t.Fatal(err)
 	}
 
-	backend, err := storage.SQLite(path).Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(storage.SQLite(path)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	kernel, err := internalstorage.NewBackendKernel(ctx, backendtest.Adapt(backend), sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := internalstorage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,15 +402,15 @@ func TestMigrateV2PreservesTurnAndApprovalAuthorityLedgers(t *testing.T) {
 	if err := legacyStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-turns"}); err != nil {
+	if _, err := applyV2Migration(ctx, path, "migration-turns"); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := storage.SQLite(path).Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(storage.SQLite(path)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	kernel, err := internalstorage.NewBackendKernel(ctx, backendtest.Adapt(backend), sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := internalstorage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,16 +488,16 @@ func TestMigrateV2PreservesRootSubAgentCompactionAndArtifactReplay(t *testing.T)
 	if err := legacyStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.MigrateV2(ctx, storage.MigrateV2Request{Path: path, OperationID: "migration-lifecycle"}); err != nil {
+	if _, err := applyV2Migration(ctx, path, "migration-lifecycle"); err != nil {
 		t.Fatal(err)
 	}
 
-	backend, err := storage.SQLite(path).Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(storage.SQLite(path)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	kernel, err := internalstorage.NewBackendKernel(ctx, backendtest.Adapt(backend), sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := internalstorage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

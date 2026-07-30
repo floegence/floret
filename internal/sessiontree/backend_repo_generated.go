@@ -5,7 +5,7 @@ package sessiontree
 import (
 	"context"
 
-	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/artifact"
 )
 
 func (repo *BackendRepo) AcquireThreadAuthorityClaim(ctx context.Context, operationID string, requiredSourceThreadIDs, authorityThreadIDs []string) error {

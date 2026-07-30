@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 type memorySource struct{}
@@ -13,12 +15,12 @@ type memorySource struct{}
 // Memory returns an in-memory Source suitable for production ephemeral use
 // and deterministic tests.
 func Memory() Source {
-	return memorySource{}
+	return NewSource(memorySource{})
 }
 
-func (memorySource) Open(ctx context.Context) (Backend, error) {
+func (memorySource) Open(ctx context.Context) (spi.Backend, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("%w: open context is required", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: open context is required", spi.ErrInvalidArgument)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -35,7 +37,7 @@ type memoryBackend struct {
 	closed  bool
 }
 
-func (backend *memoryBackend) View(ctx context.Context, callback func(ReadTx) error) error {
+func (backend *memoryBackend) View(ctx context.Context, callback func(spi.ReadTx) error) error {
 	if err := validateCallback(ctx, callback != nil); err != nil {
 		return err
 	}
@@ -53,7 +55,7 @@ func (backend *memoryBackend) View(ctx context.Context, callback func(ReadTx) er
 	return ctx.Err()
 }
 
-func (backend *memoryBackend) Update(ctx context.Context, callback func(WriteTx) error) error {
+func (backend *memoryBackend) Update(ctx context.Context, callback func(spi.WriteTx) error) error {
 	if err := validateCallback(ctx, callback != nil); err != nil {
 		return err
 	}
@@ -77,10 +79,10 @@ func (backend *memoryBackend) Update(ctx context.Context, callback func(WriteTx)
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	if backend.closed {
-		return ErrClosed
+		return spi.ErrClosed
 	}
 	if backend.version != version {
-		return ErrConflict
+		return spi.ErrConflict
 	}
 	backend.records = records
 	backend.version++
@@ -98,7 +100,7 @@ func (backend *memoryBackend) snapshot() (recordSet, uint64, error) {
 	backend.mu.RLock()
 	defer backend.mu.RUnlock()
 	if backend.closed {
-		return nil, 0, ErrClosed
+		return nil, 0, spi.ErrClosed
 	}
 	return cloneRecordSet(backend.records), backend.version, nil
 }
@@ -120,22 +122,22 @@ func (tx *memoryTx) Get(namespace string, key []byte) ([]byte, error) {
 	}
 	value, ok := tx.records[namespace][string(key)]
 	if !ok {
-		return nil, ErrNotFound
+		return nil, spi.ErrNotFound
 	}
 	return bytes.Clone(value), nil
 }
 
-func (tx *memoryTx) Scan(request ScanRequest) (ScanPage, error) {
+func (tx *memoryTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if err := tx.usable(); err != nil {
-		return ScanPage{}, err
+		return spi.ScanPage{}, err
 	}
 	if request.Namespace == "" || request.Limit <= 0 {
-		return ScanPage{}, fmt.Errorf("%w: namespace and positive limit are required", ErrInvalidArgument)
+		return spi.ScanPage{}, fmt.Errorf("%w: namespace and positive limit are required", spi.ErrInvalidArgument)
 	}
 	if len(request.End) > 0 && len(request.Start) > 0 && bytes.Compare(request.Start, request.End) >= 0 {
-		return ScanPage{}, fmt.Errorf("%w: scan start must precede end", ErrInvalidArgument)
+		return spi.ScanPage{}, fmt.Errorf("%w: scan start must precede end", spi.ErrInvalidArgument)
 	}
 	keys := make([][]byte, 0, len(tx.records[request.Namespace]))
 	for encoded := range tx.records[request.Namespace] {
@@ -156,9 +158,9 @@ func (tx *memoryTx) Scan(request ScanRequest) (ScanPage, error) {
 	if hasMore {
 		keys = keys[:request.Limit]
 	}
-	page := ScanPage{Records: make([]Record, 0, len(keys)), HasMore: hasMore}
+	page := spi.ScanPage{Records: make([]spi.Record, 0, len(keys)), HasMore: hasMore}
 	for _, key := range keys {
-		page.Records = append(page.Records, Record{
+		page.Records = append(page.Records, spi.Record{
 			Key:   bytes.Clone(key),
 			Value: bytes.Clone(tx.records[request.Namespace][string(key)]),
 		})
@@ -190,7 +192,7 @@ func (tx *memoryTx) Delete(namespace string, key []byte) error {
 		return err
 	}
 	if _, ok := tx.records[namespace][string(key)]; !ok {
-		return ErrNotFound
+		return spi.ErrNotFound
 	}
 	delete(tx.records[namespace], string(key))
 	tx.dirty = true
@@ -202,7 +204,7 @@ func (tx *memoryTx) validate(namespace string, key []byte) error {
 		return err
 	}
 	if namespace == "" || len(key) == 0 {
-		return fmt.Errorf("%w: namespace and key are required", ErrInvalidArgument)
+		return fmt.Errorf("%w: namespace and key are required", spi.ErrInvalidArgument)
 	}
 	return nil
 }
@@ -212,14 +214,14 @@ func (tx *memoryTx) validateWrite(namespace string, key []byte) error {
 		return err
 	}
 	if tx.readOnly {
-		return fmt.Errorf("%w: read transaction cannot write", ErrInvalidArgument)
+		return fmt.Errorf("%w: read transaction cannot write", spi.ErrInvalidArgument)
 	}
 	return nil
 }
 
 func (tx *memoryTx) usable() error {
 	if !tx.active {
-		return ErrTransactionClosed
+		return spi.ErrTransactionClosed
 	}
 	return tx.ctx.Err()
 }
@@ -239,10 +241,10 @@ func (tx *memoryTx) expire() {
 
 func validateCallback(ctx context.Context, present bool) error {
 	if ctx == nil {
-		return fmt.Errorf("%w: transaction context is required", ErrInvalidArgument)
+		return fmt.Errorf("%w: transaction context is required", spi.ErrInvalidArgument)
 	}
 	if !present {
-		return fmt.Errorf("%w: transaction callback is required", ErrInvalidArgument)
+		return fmt.Errorf("%w: transaction callback is required", spi.ErrInvalidArgument)
 	}
 	return ctx.Err()
 }

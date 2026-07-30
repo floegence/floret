@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"strings"
 	"sync"
-
-	"github.com/floegence/floret/v2/observation"
 )
 
 type ApprovalRequest struct {
@@ -17,7 +15,7 @@ type ApprovalRequest struct {
 	Args          string
 	ArgsHash      string
 	ValidatedArgs any
-	Activity      *observation.ActivityPresentation
+	Activity      *ActivityPresentation
 	RunID         string
 	ThreadID      string
 	TurnID        string
@@ -134,7 +132,7 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 			ApprovalID: approvalID(call), ID: call.ID, Name: call.Name, Args: call.Args,
 			ArgsHash: stableApprovalArgsHash(call.Args), ValidatedArgs: args,
 			Activity: activityForApprovalRequest(def, call, args, opts),
-			RunID:    opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID,
+			RunID:    opts.RunID.String(), ThreadID: opts.ThreadID.String(), TurnID: opts.TurnID.String(), PromptScopeID: opts.PromptScopeID.String(),
 			Step: opts.Step, BatchIndex: opts.BatchIndex, BatchSize: opts.BatchSize,
 			Resources: resources, Effects: append([]Effect(nil), def.Effects...),
 			Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext),
@@ -155,7 +153,7 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 	return ""
 }
 
-func activityForApprovalRequest(def Definition, call ToolCall, args any, opts DispatchOptions) *observation.ActivityPresentation {
+func activityForApprovalRequest(def Definition, call ToolCall, args any, opts DispatchOptions) *ActivityPresentation {
 	if def.Activity == nil {
 		return nil
 	}

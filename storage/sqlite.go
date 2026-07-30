@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/floegence/floret/v3/storage/spi"
 	_ "modernc.org/sqlite"
 )
 
@@ -23,15 +24,15 @@ type sqliteSource struct {
 // SQLite returns a Source backed by the SQLite file at path. The physical
 // database contains only backend metadata and opaque namespaced records.
 func SQLite(path string) Source {
-	return sqliteSource{path: path}
+	return NewSource(sqliteSource{path: path})
 }
 
-func (source sqliteSource) Open(ctx context.Context) (Backend, error) {
+func (source sqliteSource) Open(ctx context.Context) (spi.Backend, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("%w: open context is required", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: open context is required", spi.ErrInvalidArgument)
 	}
 	if strings.TrimSpace(source.path) == "" {
-		return nil, fmt.Errorf("%w: SQLite path is required", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: SQLite path is required", spi.ErrInvalidArgument)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -114,18 +115,18 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 			if exactV16, err := sqliteHasExactV16Identity(ctx, tx); err != nil {
 				return err
 			} else if exactV16 {
-				return fmt.Errorf("%w: Floret schema 16", ErrMigrationRequired)
+				return fmt.Errorf("%w: Floret schema 16", spi.ErrMigrationRequired)
 			}
-			return fmt.Errorf("%w: database is not a Floret backend", ErrInvalidArgument)
+			return fmt.Errorf("%w: database is not a Floret backend", spi.ErrInvalidArgument)
 		}
 		var physicalSchema []byte
 		if err := tx.QueryRowContext(ctx, `
 			SELECT value FROM floret_backend_metadata WHERE name = 'physical_schema'
 		`).Scan(&physicalSchema); err != nil {
-			return fmt.Errorf("%w: invalid backend metadata: %v", ErrInvalidArgument, err)
+			return fmt.Errorf("%w: invalid backend metadata: %v", spi.ErrInvalidArgument, err)
 		}
 		if !bytes.Equal(physicalSchema, []byte("1")) {
-			return fmt.Errorf("%w: unsupported backend physical schema %q", ErrInvalidArgument, physicalSchema)
+			return fmt.Errorf("%w: unsupported backend physical schema %q", spi.ErrInvalidArgument, physicalSchema)
 		}
 	}
 	return tx.Commit()
@@ -149,12 +150,12 @@ func sqliteHasExactV16Identity(ctx context.Context, tx *sql.Tx) (bool, error) {
 	return version == "16" && fingerprint == "e9eb8db040f98a3d41d2a87109814d5cf005d58573c8750ac5b218bd6537f82e", nil
 }
 
-func (backend *sqliteBackend) View(ctx context.Context, callback func(ReadTx) error) error {
+func (backend *sqliteBackend) View(ctx context.Context, callback func(spi.ReadTx) error) error {
 	if err := validateCallback(ctx, callback != nil); err != nil {
 		return err
 	}
 	if backend.isClosed() {
-		return ErrClosed
+		return spi.ErrClosed
 	}
 	sqlTx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
 	if err != nil {
@@ -171,12 +172,12 @@ func (backend *sqliteBackend) View(ctx context.Context, callback func(ReadTx) er
 	return ctx.Err()
 }
 
-func (backend *sqliteBackend) Update(ctx context.Context, callback func(WriteTx) error) error {
+func (backend *sqliteBackend) Update(ctx context.Context, callback func(spi.WriteTx) error) error {
 	if err := validateCallback(ctx, callback != nil); err != nil {
 		return err
 	}
 	if backend.isClosed() {
-		return ErrClosed
+		return spi.ErrClosed
 	}
 	sqlTx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -231,7 +232,7 @@ func (tx *sqliteTx) Get(namespace string, key []byte) ([]byte, error) {
 		SELECT value FROM floret_backend_records WHERE namespace = ? AND key = ?
 	`, namespace, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, spi.ErrNotFound
 	}
 	if err != nil {
 		return nil, classifySQLiteError(tx.ctx, err)
@@ -239,17 +240,17 @@ func (tx *sqliteTx) Get(namespace string, key []byte) ([]byte, error) {
 	return bytes.Clone(value), nil
 }
 
-func (tx *sqliteTx) Scan(request ScanRequest) (ScanPage, error) {
+func (tx *sqliteTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if err := tx.usable(); err != nil {
-		return ScanPage{}, err
+		return spi.ScanPage{}, err
 	}
 	if request.Namespace == "" || request.Limit <= 0 {
-		return ScanPage{}, fmt.Errorf("%w: namespace and positive limit are required", ErrInvalidArgument)
+		return spi.ScanPage{}, fmt.Errorf("%w: namespace and positive limit are required", spi.ErrInvalidArgument)
 	}
 	if len(request.End) > 0 && len(request.Start) > 0 && bytes.Compare(request.Start, request.End) >= 0 {
-		return ScanPage{}, fmt.Errorf("%w: scan start must precede end", ErrInvalidArgument)
+		return spi.ScanPage{}, fmt.Errorf("%w: scan start must precede end", spi.ErrInvalidArgument)
 	}
 	query := `SELECT key, value FROM floret_backend_records WHERE namespace = ?`
 	arguments := []any{request.Namespace}
@@ -269,14 +270,14 @@ func (tx *sqliteTx) Scan(request ScanRequest) (ScanPage, error) {
 	arguments = append(arguments, request.Limit+1)
 	rows, err := tx.tx.QueryContext(tx.ctx, query, arguments...)
 	if err != nil {
-		return ScanPage{}, classifySQLiteError(tx.ctx, err)
+		return spi.ScanPage{}, classifySQLiteError(tx.ctx, err)
 	}
 	defer rows.Close()
-	page := ScanPage{Records: make([]Record, 0, request.Limit)}
+	page := spi.ScanPage{Records: make([]spi.Record, 0, request.Limit)}
 	for rows.Next() {
-		var record Record
+		var record spi.Record
 		if err := rows.Scan(&record.Key, &record.Value); err != nil {
-			return ScanPage{}, classifySQLiteError(tx.ctx, err)
+			return spi.ScanPage{}, classifySQLiteError(tx.ctx, err)
 		}
 		if len(page.Records) == request.Limit {
 			page.HasMore = true
@@ -287,7 +288,7 @@ func (tx *sqliteTx) Scan(request ScanRequest) (ScanPage, error) {
 		page.Records = append(page.Records, record)
 	}
 	if err := rows.Err(); err != nil {
-		return ScanPage{}, classifySQLiteError(tx.ctx, err)
+		return spi.ScanPage{}, classifySQLiteError(tx.ctx, err)
 	}
 	if page.HasMore {
 		page.Next = bytes.Clone(page.Records[len(page.Records)-1].Key)
@@ -325,7 +326,7 @@ func (tx *sqliteTx) Delete(namespace string, key []byte) error {
 		return err
 	}
 	if deleted == 0 {
-		return ErrNotFound
+		return spi.ErrNotFound
 	}
 	return nil
 }
@@ -335,7 +336,7 @@ func (tx *sqliteTx) validate(namespace string, key []byte) error {
 		return err
 	}
 	if namespace == "" || len(key) == 0 {
-		return fmt.Errorf("%w: namespace and key are required", ErrInvalidArgument)
+		return fmt.Errorf("%w: namespace and key are required", spi.ErrInvalidArgument)
 	}
 	return nil
 }
@@ -345,14 +346,14 @@ func (tx *sqliteTx) validateWrite(namespace string, key []byte) error {
 		return err
 	}
 	if tx.readOnly {
-		return fmt.Errorf("%w: read transaction cannot write", ErrInvalidArgument)
+		return fmt.Errorf("%w: read transaction cannot write", spi.ErrInvalidArgument)
 	}
 	return nil
 }
 
 func (tx *sqliteTx) usable() error {
 	if !tx.active {
-		return ErrTransactionClosed
+		return spi.ErrTransactionClosed
 	}
 	return tx.ctx.Err()
 }
@@ -375,7 +376,7 @@ func classifySQLiteError(ctx context.Context, err error) error {
 	if errors.As(err, &coded) {
 		switch coded.Code() & 0xff {
 		case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
-			return fmt.Errorf("%w: %v", ErrConflict, err)
+			return fmt.Errorf("%w: %v", spi.ErrConflict, err)
 		}
 	}
 	return err

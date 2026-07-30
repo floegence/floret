@@ -6,9 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/floegence/floret/v2/internal/testing/tooltest"
-	"github.com/floegence/floret/v2/internal/tools/mcp"
-	"github.com/floegence/floret/v2/tools"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v3/internal/testing/tooltest"
+	"github.com/floegence/floret/v3/internal/tools/mcp"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestStdioServerListsAndCallsTools(t *testing.T) {

@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestProjectThreadTurnUsesMaximumIncludedOrdinal(t *testing.T) {
@@ -140,10 +142,10 @@ func TestProjectThreadTurnMergesToolInvocationAndResultPresentation(t *testing.T
 				TurnID:    "turn-terminal",
 				Kind:      ThreadDetailEventToolCall,
 				CreatedAt: start,
-				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &tools.ActivityPresentation{
 					Label:    "sleep 10s",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "sleep 10s"},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: "sleep 10s"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
 			},
@@ -154,14 +156,11 @@ func TestProjectThreadTurnMergesToolInvocationAndResultPresentation(t *testing.T
 				TurnID:    "turn-terminal",
 				Kind:      ThreadDetailEventToolResult,
 				CreatedAt: start.Add(10 * time.Second),
-				Message: &ThreadDetailMessage{Role: "tool", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "tool", Activity: &tools.ActivityPresentation{
 					Description: "Command completed",
-					Chips:       []observation.ActivityChip{{Kind: "duration_ms", Label: "duration", Value: "10000 ms", Tone: "neutral"}},
-					Payload: map[string]any{
-						"duration_ms": int64(10_000),
-						"exit_code":   0,
-						"status":      "success",
-					},
+					Renderer:    tools.ActivityRendererTerminal,
+					Chips:       []tools.ActivityChip{{Kind: "duration_ms", Label: "duration", Value: "10000 ms", Tone: "neutral"}},
+					Payload:     tools.TerminalActivityPayload{DurationMS: 10_000, ExitCode: projectionIntPtr(0), Status: "success"},
 				}},
 				ToolResult: &ThreadDetailToolResult{
 					CallID:   "exec-1",
@@ -182,10 +181,12 @@ func TestProjectThreadTurnMergesToolInvocationAndResultPresentation(t *testing.T
 		t.Fatalf("items = %#v", timeline.Items)
 	}
 	item := timeline.Items[0]
-	if item.Label != "sleep 10s" ||
-		item.Description != "Command completed" ||
-		item.Payload["command"] != "sleep 10s" ||
-		item.Payload["exit_code"] != 0 ||
+	presentation := projectionActivityPresentation(t, item)
+	payload := projectionTerminalPayload(t, item)
+	if presentation.Label != "sleep 10s" ||
+		presentation.Description != "Command completed" ||
+		payload.Command != "sleep 10s" ||
+		payload.ExitCode == nil || *payload.ExitCode != 0 ||
 		item.EndedAtUnixMS-item.StartedAtUnixMS != 10_000 {
 		t.Fatalf("item = %#v", item)
 	}
@@ -247,9 +248,7 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,
 					ApprovalState:    "requested",
-					Label:            "curl -s https://example.test",
-					Renderer:         observation.ActivityRendererTerminal,
-					Payload:          map[string]any{"command": "curl -s https://example.test"},
+					Presentation:     &tools.ActivityPresentation{Label: "curl -s https://example.test", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "curl -s https://example.test"}},
 				}),
 			},
 			{
@@ -280,7 +279,7 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 	if item.Status != observation.ActivityStatusWaiting ||
 		item.ApprovalState != "requested" ||
 		item.EndedAtUnixMS != 0 ||
-		item.Label != "curl -s https://example.test" {
+		projectionActivityPresentation(t, item).Label != "curl -s https://example.test" {
 		t.Fatalf("approval item should remain requested: %#v", item)
 	}
 	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
@@ -314,10 +313,10 @@ func TestProjectThreadTurnUsesStartedMarkerWithoutRenderingIt(t *testing.T) {
 				TurnID:    "turn-started-approval",
 				Kind:      ThreadDetailEventToolCall,
 				CreatedAt: now.Add(3 * time.Second),
-				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &tools.ActivityPresentation{
 					Label:    "curl -s https://newsapi.example.test",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "curl -s https://newsapi.example.test"},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: "curl -s https://newsapi.example.test"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-newsapi", Name: "terminal.exec"},
 			},
@@ -328,10 +327,10 @@ func TestProjectThreadTurnUsesStartedMarkerWithoutRenderingIt(t *testing.T) {
 				TurnID:    "turn-started-approval",
 				Kind:      ThreadDetailEventToolCall,
 				CreatedAt: now.Add(3*time.Second + time.Millisecond),
-				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &tools.ActivityPresentation{
 					Label:    "curl -sL https://search.example.test",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "curl -sL https://search.example.test"},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: "curl -sL https://search.example.test"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-search", Name: "terminal.exec"},
 			},
@@ -378,14 +377,14 @@ func TestProjectThreadTurnUsesStartedMarkerWithoutRenderingIt(t *testing.T) {
 		waiting.ApprovalState != "requested" ||
 		!waiting.RequiresApproval ||
 		waiting.EndedAtUnixMS != 0 ||
-		waiting.Label != "curl -s https://newsapi.example.test" {
+		projectionActivityPresentation(t, waiting).Label != "curl -s https://newsapi.example.test" {
 		t.Fatalf("approval tool item mismatch: %#v", waiting)
 	}
 	queued := projectionToolItem(t, projection, "call-search")
 	if queued.Status != observation.ActivityStatusPending ||
 		queued.RequiresApproval ||
 		queued.EndedAtUnixMS != 0 ||
-		queued.Label != "curl -sL https://search.example.test" {
+		projectionActivityPresentation(t, queued).Label != "curl -sL https://search.example.test" {
 		t.Fatalf("second tool item mismatch: %#v", queued)
 	}
 }
@@ -441,10 +440,10 @@ func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
 				TurnID:    "turn-dispatch",
 				Kind:      ThreadDetailEventToolCall,
 				CreatedAt: now,
-				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &tools.ActivityPresentation{
 					Label:    "curl -s https://example.test",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "curl -s https://example.test"},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: "curl -s https://example.test"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 			},
@@ -456,10 +455,10 @@ func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
 				Kind:      ThreadDetailEventToolDispatch,
 				Type:      string(observation.EventTypeToolDispatchStarted),
 				CreatedAt: now.Add(25 * time.Millisecond),
-				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Activity: &tools.ActivityPresentation{
 					Label:    "curl -s https://example.test",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "curl -s https://example.test"},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: "curl -s https://example.test"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 			},
@@ -475,7 +474,7 @@ func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
 	}
 	item := projectionToolItem(t, projection, "call-1")
 	if item.Status != observation.ActivityStatusRunning ||
-		item.Label != "curl -s https://example.test" ||
+		projectionActivityPresentation(t, item).Label != "curl -s https://example.test" ||
 		item.EndedAtUnixMS != 0 {
 		t.Fatalf("dispatch item mismatch: %#v", item)
 	}
@@ -500,10 +499,10 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 				TurnID:    "turn-terminal-live",
 				Kind:      ThreadDetailEventToolCall,
 				CreatedAt: now,
-				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &tools.ActivityPresentation{
 					Label:    command,
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": command},
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: command},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 			},
@@ -525,16 +524,9 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 				Kind:      ThreadDetailEventToolActivity,
 				Type:      string(observation.EventTypeToolActivityUpdated),
 				CreatedAt: now.Add(20 * time.Millisecond),
-				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
-					Renderer: observation.ActivityRendererTerminal,
-					Payload: map[string]any{
-						"command":            command,
-						"status":             "running",
-						"process_id":         "tp_live",
-						"latest_output":      "tick 1\n",
-						"last_seq":           1,
-						"execution_location": "local_runtime",
-					},
+				Message: &ThreadDetailMessage{Activity: &tools.ActivityPresentation{
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: command, Status: "running", ProcessID: "tp_live", LatestOutput: "tick 1\n"},
 				}},
 				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 			},
@@ -545,7 +537,8 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 		t.Fatalf("projection segments = %#v", projection.Segments)
 	}
 	item := projectionToolItem(t, projection, "call-1")
-	if item.Status != observation.ActivityStatusRunning || item.Payload["process_id"] != "tp_live" || item.Payload["latest_output"] != "tick 1\n" {
+	payload := projectionTerminalPayload(t, item)
+	if item.Status != observation.ActivityStatusRunning || payload.ProcessID != "tp_live" || payload.LatestOutput != "tick 1\n" {
 		t.Fatalf("activity update was not merged: %#v", item)
 	}
 	if err := observation.ValidateActivityTimeline(*projection.Segments[0].ActivityTimeline); err != nil {
@@ -580,9 +573,7 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,
 					ApprovalState:    "requested",
-					Label:            "curl -s https://example.test",
-					Renderer:         observation.ActivityRendererTerminal,
-					Payload:          map[string]any{"command": "curl -s https://example.test"},
+					Presentation:     &tools.ActivityPresentation{Label: "curl -s https://example.test", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "curl -s https://example.test"}},
 				}),
 			},
 			{
@@ -604,15 +595,13 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 				CreatedAt: now.Add(2 * time.Second),
 				ToolCall:  &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
-					ItemID:   "tool:call-1",
-					ToolID:   "call-1",
-					ToolName: "terminal.exec",
-					Kind:     observation.ActivityKindTool,
-					Status:   observation.ActivityStatusRunning,
-					Severity: observation.ActivitySeverityNormal,
-					Label:    "curl -s https://example.test",
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": "curl -s https://example.test"},
+					ItemID:       "tool:call-1",
+					ToolID:       "call-1",
+					ToolName:     "terminal.exec",
+					Kind:         observation.ActivityKindTool,
+					Status:       observation.ActivityStatusRunning,
+					Severity:     observation.ActivitySeverityNormal,
+					Presentation: &tools.ActivityPresentation{Label: "curl -s https://example.test", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "curl -s https://example.test"}},
 				}),
 			},
 			{
@@ -649,8 +638,8 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 		if item.Status != observation.ActivityStatusSuccess {
 			t.Fatalf("item should be settled: %#v", item)
 		}
-		if item.Label != "curl -s https://example.test" {
-			t.Fatalf("item label=%q, want command label: %#v", item.Label, item)
+		if label := projectionActivityPresentation(t, item).Label; label != "curl -s https://example.test" {
+			t.Fatalf("item label=%q, want command label: %#v", label, item)
 		}
 		if item.ItemID != "tool:call-1" || item.ApprovalState != "approved" || !item.RequiresApproval {
 			t.Fatalf("item should keep approval lifecycle on the tool row: %#v", item)
@@ -688,9 +677,7 @@ func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,
 					ApprovalState:    "requested",
-					Label:            "curl -s https://example.test",
-					Renderer:         observation.ActivityRendererTerminal,
-					Payload:          map[string]any{"command": "curl -s https://example.test"},
+					Presentation:     &tools.ActivityPresentation{Label: "curl -s https://example.test", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "curl -s https://example.test"}},
 				}),
 			},
 			{
@@ -718,7 +705,7 @@ func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
 	item := timeline.Items[0]
 	if item.Status != observation.ActivityStatusError ||
 		item.ApprovalState != "timed_out" ||
-		item.Label != "curl -s https://example.test" ||
+		projectionActivityPresentation(t, item).Label != "curl -s https://example.test" ||
 		!item.RequiresApproval ||
 		timeline.Summary.Counts.Waiting != 0 ||
 		timeline.Summary.Status != observation.ActivityStatusError {
@@ -762,14 +749,17 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 						CreatedAt: now,
 						ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
 						ActivityTimeline: projectionSingleItemTimeline("run-terminal", "thread-terminal", "turn-terminal", observation.ActivityItem{
-							ItemID:          "tool:exec-1",
-							ToolID:          "exec-1",
-							ToolName:        "terminal.exec",
-							Kind:            observation.ActivityKindTool,
-							Status:          observation.ActivityStatusRunning,
-							Severity:        observation.ActivitySeverityWarning,
-							Renderer:        observation.ActivityRendererTerminal,
-							Payload:         map[string]any{"command": "npm test", "status": string(observation.ActivityStatusRunning)},
+							ItemID:   "tool:exec-1",
+							ToolID:   "exec-1",
+							ToolName: "terminal.exec",
+							Kind:     observation.ActivityKindTool,
+							Status:   observation.ActivityStatusRunning,
+							Severity: observation.ActivitySeverityWarning,
+							Presentation: &tools.ActivityPresentation{
+								Renderer: tools.ActivityRendererTerminal,
+								Chips:    []tools.ActivityChip{{Kind: "handle", Label: "handle", Value: "terminal:job:123"}},
+								Payload:  tools.TerminalActivityPayload{Command: "npm test", Status: string(observation.ActivityStatusRunning), PendingResult: "terminal"},
+							},
 							Metadata:        map[string]string{"pending_tool_result": "true", "pending_handle": "terminal:job:123", "pending_state": "running"},
 							StartedAtUnixMS: now.UnixMilli(),
 						}),
@@ -832,8 +822,8 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 						t.Fatalf("terminal item retained %q metadata: %#v", key, item.Metadata)
 					}
 				}
-				if got := item.Payload["status"]; got != string(tt.wantStatus) {
-					t.Fatalf("terminal item payload status=%#v, want %s; payload=%#v", got, tt.wantStatus, item.Payload)
+				if got := projectionTerminalPayload(t, item).Status; got != string(tt.wantStatus) {
+					t.Fatalf("terminal item payload status=%#v, want %s; presentation=%#v", got, tt.wantStatus, item.Presentation)
 				}
 			}
 			if err := observation.ValidateActivityTimeline(*timeline); err != nil {
@@ -860,14 +850,17 @@ func TestProjectThreadTurnTerminalMarkerSettlesEarlierActivitySegments(t *testin
 				CreatedAt: start,
 				ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-terminal-segments", "thread-terminal-segments", "turn-terminal-segments", observation.ActivityItem{
-					ItemID:          "tool:exec-1",
-					ToolID:          "exec-1",
-					ToolName:        "terminal.exec",
-					Kind:            observation.ActivityKindTool,
-					Status:          observation.ActivityStatusRunning,
-					Severity:        observation.ActivitySeverityNormal,
-					Renderer:        observation.ActivityRendererTerminal,
-					Payload:         map[string]any{"command": "npm test", "pending_result": "terminal"},
+					ItemID:   "tool:exec-1",
+					ToolID:   "exec-1",
+					ToolName: "terminal.exec",
+					Kind:     observation.ActivityKindTool,
+					Status:   observation.ActivityStatusRunning,
+					Severity: observation.ActivitySeverityNormal,
+					Presentation: &tools.ActivityPresentation{
+						Renderer: tools.ActivityRendererTerminal,
+						Chips:    []tools.ActivityChip{{Kind: "handle", Label: "handle", Value: "terminal:job:123"}},
+						Payload:  tools.TerminalActivityPayload{Command: "npm test", Status: "running", PendingResult: "terminal"},
+					},
 					Metadata:        map[string]string{"pending_tool_result": "true", "pending_state": "running", "pending_handle": "terminal:job:123"},
 					StartedAtUnixMS: start.Add(2 * time.Second).UnixMilli(),
 				}),
@@ -923,8 +916,8 @@ func TestProjectThreadTurnTerminalMarkerSettlesEarlierActivitySegments(t *testin
 		item.EndedAtUnixMS < item.StartedAtUnixMS {
 		t.Fatalf("exec item should be canceled with clamped end time: %#v", item)
 	}
-	if item.Payload["pending_result"] != nil {
-		t.Fatalf("terminal item retained pending payload: %#v", item.Payload)
+	if payload := projectionTerminalPayload(t, item); payload.PendingResult != "" {
+		t.Fatalf("terminal item retained pending payload: %#v", payload)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := item.Metadata[key]; ok {
@@ -1173,8 +1166,7 @@ func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegm
 					Kind:            observation.ActivityKindTool,
 					Status:          observation.ActivityStatusRunning,
 					Severity:        observation.ActivitySeverityNormal,
-					Renderer:        observation.ActivityRendererTerminal,
-					Payload:         map[string]any{"command": "npm test"},
+					Presentation:    &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "npm test"}},
 					Metadata:        map[string]string{"pending_tool_result": "true", "pending_state": "running"},
 					StartedAtUnixMS: start.UnixMilli(),
 				}),
@@ -1213,15 +1205,13 @@ func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegm
 					Status:   string(observation.ActivityStatusCanceled),
 				},
 				ActivityTimeline: projectionSingleItemTimeline("run-settlement-segments", "thread-settlement-segments", "turn-settlement-segments", observation.ActivityItem{
-					ItemID:      "tool:exec-1",
-					ToolID:      "exec-1",
-					ToolName:    "terminal.exec",
-					Kind:        observation.ActivityKindTool,
-					Status:      observation.ActivityStatusCanceled,
-					Severity:    observation.ActivitySeverityWarning,
-					Description: "Command canceled",
-					Renderer:    observation.ActivityRendererTerminal,
-					Payload:     map[string]any{"exit_code": -1},
+					ItemID:       "tool:exec-1",
+					ToolID:       "exec-1",
+					ToolName:     "terminal.exec",
+					Kind:         observation.ActivityKindTool,
+					Status:       observation.ActivityStatusCanceled,
+					Severity:     observation.ActivitySeverityWarning,
+					Presentation: &tools.ActivityPresentation{Description: "Command canceled", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{ExitCode: projectionIntPtr(-1)}},
 				}),
 			},
 		},
@@ -1232,8 +1222,8 @@ func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegm
 	}
 	item := projectionToolItem(t, projection, "exec-1")
 	if item.Status != observation.ActivityStatusCanceled ||
-		item.Description != "Command canceled" ||
-		item.Payload["exit_code"] != -1 ||
+		projectionActivityPresentation(t, item).Description != "Command canceled" ||
+		projectionTerminalPayload(t, item).ExitCode == nil || *projectionTerminalPayload(t, item).ExitCode != -1 ||
 		item.EndedAtUnixMS-start.UnixMilli() != 5_000 {
 		t.Fatalf("settlement should override terminal projection: %#v", item)
 	}
@@ -1276,15 +1266,13 @@ func TestProjectThreadTurnPendingSettlementOverridesLaterPendingResult(t *testin
 					Status:   string(observation.ActivityStatusSuccess),
 				},
 				ActivityTimeline: projectionSingleItemTimeline("run-settlement-early", "thread-settlement-early", "turn-settlement-early", observation.ActivityItem{
-					ItemID:      "tool:exec-1",
-					ToolID:      "exec-1",
-					ToolName:    "terminal.exec",
-					Kind:        observation.ActivityKindTool,
-					Status:      observation.ActivityStatusSuccess,
-					Severity:    observation.ActivitySeverityNormal,
-					Description: "Command completed",
-					Renderer:    observation.ActivityRendererTerminal,
-					Payload:     map[string]any{"exit_code": 0, "status": string(observation.ActivityStatusSuccess)},
+					ItemID:       "tool:exec-1",
+					ToolID:       "exec-1",
+					ToolName:     "terminal.exec",
+					Kind:         observation.ActivityKindTool,
+					Status:       observation.ActivityStatusSuccess,
+					Severity:     observation.ActivitySeverityNormal,
+					Presentation: &tools.ActivityPresentation{Description: "Command completed", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{ExitCode: projectionIntPtr(0), Status: string(observation.ActivityStatusSuccess)}},
 				}),
 			},
 			{
@@ -1300,14 +1288,17 @@ func TestProjectThreadTurnPendingSettlementOverridesLaterPendingResult(t *testin
 					Status:   string(observation.ActivityStatusRunning),
 				},
 				ActivityTimeline: projectionSingleItemTimeline("run-settlement-early", "thread-settlement-early", "turn-settlement-early", observation.ActivityItem{
-					ItemID:          "tool:exec-1",
-					ToolID:          "exec-1",
-					ToolName:        "terminal.exec",
-					Kind:            observation.ActivityKindTool,
-					Status:          observation.ActivityStatusRunning,
-					Severity:        observation.ActivitySeverityWarning,
-					Renderer:        observation.ActivityRendererTerminal,
-					Payload:         map[string]any{"command": "npm test", "status": string(observation.ActivityStatusRunning), "pending_handle": "terminal:job:123"},
+					ItemID:   "tool:exec-1",
+					ToolID:   "exec-1",
+					ToolName: "terminal.exec",
+					Kind:     observation.ActivityKindTool,
+					Status:   observation.ActivityStatusRunning,
+					Severity: observation.ActivitySeverityWarning,
+					Presentation: &tools.ActivityPresentation{
+						Renderer: tools.ActivityRendererTerminal,
+						Chips:    []tools.ActivityChip{{Kind: "handle", Label: "handle", Value: "terminal:job:123"}},
+						Payload:  tools.TerminalActivityPayload{Command: "npm test", Status: string(observation.ActivityStatusRunning), PendingResult: "terminal"},
+					},
 					Metadata:        map[string]string{"pending_tool_result": "true", "pending_handle": "terminal:job:123", "pending_state": "running"},
 					StartedAtUnixMS: start.UnixMilli(),
 				}),
@@ -1332,9 +1323,9 @@ func TestProjectThreadTurnPendingSettlementOverridesLaterPendingResult(t *testin
 	}
 	item := projectionToolItem(t, projection, "exec-1")
 	if item.Status != observation.ActivityStatusSuccess ||
-		item.Description != "Command completed" ||
-		item.Payload["status"] != string(observation.ActivityStatusSuccess) ||
-		item.Payload["exit_code"] != 0 ||
+		projectionActivityPresentation(t, item).Description != "Command completed" ||
+		projectionTerminalPayload(t, item).Status != string(observation.ActivityStatusSuccess) ||
+		projectionTerminalPayload(t, item).ExitCode == nil || *projectionTerminalPayload(t, item).ExitCode != 0 ||
 		item.NeedsAttention {
 		t.Fatalf("early settlement should override later pending result and failed marker: %#v", item)
 	}
@@ -1348,14 +1339,35 @@ func TestProjectThreadTurnPendingSettlementOverridesLaterPendingResult(t *testin
 func projectionSingleItemTimeline(runID, threadID, turnID string, item observation.ActivityItem) *observation.ActivityTimeline {
 	timeline := observation.ActivityTimeline{
 		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         runID,
-		ThreadID:      threadID,
-		TurnID:        turnID,
-		TraceID:       runID,
+		RunID:         identity.RunID(runID),
+		ThreadID:      identity.ThreadID(threadID),
+		TurnID:        identity.TurnID(turnID),
+		TraceID:       identity.TraceID(runID),
 		Items:         []observation.ActivityItem{item},
 	}
 	timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
 	return &timeline
+}
+
+func projectionIntPtr(value int) *int {
+	return &value
+}
+
+func projectionActivityPresentation(t *testing.T, item observation.ActivityItem) *tools.ActivityPresentation {
+	t.Helper()
+	if item.Presentation == nil {
+		t.Fatalf("activity item has no presentation: %#v", item)
+	}
+	return item.Presentation
+}
+
+func projectionTerminalPayload(t *testing.T, item observation.ActivityItem) tools.TerminalActivityPayload {
+	t.Helper()
+	payload, ok := projectionActivityPresentation(t, item).Payload.(tools.TerminalActivityPayload)
+	if !ok {
+		t.Fatalf("activity payload = %T, want tools.TerminalActivityPayload", item.Presentation.Payload)
+	}
+	return payload
 }
 
 func projectionToolItem(t *testing.T, projection ThreadTurnProjection, toolID string) observation.ActivityItem {

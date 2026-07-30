@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/identity"
 )
 
 var ErrRejected = errors.New("tool call rejected")
@@ -35,7 +35,7 @@ type Definition struct {
 	Description  string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
-	Activity     func(Invocation[any]) (*observation.ActivityPresentation, error)
+	Activity     func(Invocation[any]) (*ActivityPresentation, error)
 
 	Effects     []Effect
 	ReadOnly    bool
@@ -49,10 +49,10 @@ type Definition struct {
 }
 
 type DispatchOptions struct {
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	BatchIndex    int
 	BatchSize     int
@@ -69,10 +69,10 @@ type EffectDispatchRequest struct {
 	CallID        string
 	Name          string
 	RawArgs       string
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	BatchIndex    int
 	BatchSize     int
@@ -97,10 +97,10 @@ type DispatchStart struct {
 	CallID        string
 	Name          string
 	RawArgs       string
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	Labels        map[string]string
 	HostContext   map[string]string
@@ -110,14 +110,14 @@ type ToolActivityUpdate struct {
 	CallID        string
 	Name          string
 	RawArgs       string
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	Labels        map[string]string
 	HostContext   map[string]string
-	Activity      *observation.ActivityPresentation
+	Activity      *ActivityPresentation
 	Metadata      map[string]any
 }
 
@@ -126,10 +126,10 @@ type erasedInvocation struct {
 	Name            string
 	RawArgs         string
 	Args            any
-	RunID           string
-	ThreadID        string
-	TurnID          string
-	PromptScopeID   string
+	RunID           identity.RunID
+	ThreadID        identity.ThreadID
+	TurnID          identity.TurnID
+	PromptScopeID   identity.PromptScopeID
 	Step            int
 	Labels          map[string]string
 	HostContext     map[string]string
@@ -553,7 +553,7 @@ func (r *Registry) DispatchBatch(ctx context.Context, calls []ToolCall, opts Dis
 	return results
 }
 
-func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*observation.ActivityPresentation, error) {
+func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*ActivityPresentation, error) {
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
@@ -670,7 +670,7 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 					Step:          opts.Step,
 					Labels:        cloneStringMap(opts.Labels),
 					HostContext:   cloneStringMap(opts.HostContext),
-					Activity:      observation.CloneActivityPresentation(update.Activity),
+					Activity:      CloneActivityPresentation(update.Activity),
 					Metadata:      cloneAnyMap(update.Metadata),
 				})
 			}

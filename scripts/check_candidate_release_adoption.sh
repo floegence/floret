@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly module_path="github.com/floegence/floret/v2"
-readonly version="v2.0.0-candidate"
+readonly module_path="github.com/floegence/floret/v3"
+readonly version="v3.0.0-candidate"
 readonly repository_root=$(git rev-parse --show-toplevel)
 
 if [[ -n $(git status --porcelain --untracked-files=all) ]]; then
@@ -10,7 +10,7 @@ if [[ -n $(git status --porcelain --untracked-files=all) ]]; then
   exit 1
 fi
 
-readonly adoption_root=$(mktemp -d "${TMPDIR:-/tmp}/floret-v2-candidate.XXXXXX")
+readonly adoption_root=$(mktemp -d "${TMPDIR:-/tmp}/floret-v3-candidate.XXXXXX")
 cleanup() {
   chmod -R u+w "${adoption_root}" 2>/dev/null || true
   rm -rf -- "${adoption_root}"
@@ -40,8 +40,8 @@ export GOCACHE="${adoption_root}/buildcache"
 mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}"
 
 cd "${adoption_root}/consumer"
-go mod init example.com/floret-v2-candidate-adoption
-cp "${repository_root}/scripts/testdata/v2_adoption_test.go" adoption_test.go
+go mod init example.com/floret-v3-candidate-adoption
+cp "${repository_root}/scripts/testdata/v3_adoption_test.go" adoption_test.go
 go get "${module_path}@${version}"
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...

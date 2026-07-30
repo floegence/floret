@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	internalstorage "github.com/floegence/floret/v2/internal/storage"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v3/internal/storage"
 )
 
 // V16Runner is the SQL surface required to verify and export one legacy v16
@@ -49,6 +50,22 @@ type ExportedV16State struct {
 	ForkOperations []internalstorage.ForkOperationRecord
 	Threads        int
 	Entries        int
+}
+
+// UnsupportedV16ContentError reports legal v16 content that has no unique
+// representation in the v3 domain model. It is consumed only by the explicit
+// offline migration surface; runtime startup never decodes v16 content.
+type UnsupportedV16ContentError struct {
+	Kind   string
+	Count  int
+	Reason string
+}
+
+func (failure *UnsupportedV16ContentError) Error() string {
+	if failure == nil {
+		return "unsupported Floret v16 content"
+	}
+	return fmt.Sprintf("unsupported Floret v16 content %q (count %d): %s", failure.Kind, failure.Count, failure.Reason)
 }
 
 // ExportV16State decodes canonical v16 thread, journal, and prompt data from
@@ -154,8 +171,15 @@ func ExportV16State(ctx context.Context, runner V16Runner) (ExportedV16State, er
 	if err != nil {
 		return ExportedV16State{}, err
 	}
+	threadRevisions, threadRevisionHistory, err := migratedThreadRevisions(
+		threadMap, entryMap, todos, approvals, effectAttempts, subAgentInputs,
+		compactionOperations, providerStates, artifacts, tombstones,
+	)
+	if err != nil {
+		return ExportedV16State{}, err
+	}
 	sessionState, err := json.Marshal(map[string]any{
-		"version": 1, "threads": threadMap, "entries": entryMap,
+		"version": 2, "threads": threadMap, "entries": entryMap,
 		"entry_ordinals": entryOrdinals, "entry_depths": entryDepths,
 		"turn_entry_ordinals": turnOrdinals, "turn_entry_counts": turnCounts,
 		"leases": leases, "lease_generation": leaseGenerations, "lease_policy": leasePolicy,
@@ -171,8 +195,9 @@ func ExportV16State(ctx context.Context, runner V16Runner) (ExportedV16State, er
 		"pending_tool_completions":          pendingCompletions,
 		"subagent_pending_tool_completions": subAgentPendingCompletions,
 		"subagent_close_operations":         closeOperations, "compaction_operations": compactionOperations,
-		"artifacts": artifacts,
-		"sequence":  entryCount,
+		"artifacts":        artifacts,
+		"thread_revisions": threadRevisions, "thread_revision_history": threadRevisionHistory,
+		"sequence": entryCount,
 	})
 	if err != nil {
 		return ExportedV16State{}, err
@@ -197,6 +222,143 @@ func ExportV16State(ctx context.Context, runner V16Runner) (ExportedV16State, er
 		Session: sessionState, Prompt: promptState, ForkOperations: forkOperations,
 		Threads: len(threads), Entries: entryCount,
 	}, nil
+}
+
+func migratedThreadRevisions(
+	threads map[string]sessiontree.ThreadMeta,
+	entries map[string][]sessiontree.Entry,
+	todos map[string]sessiontree.AgentTodoState,
+	approvals map[string]sessiontree.ApprovalRecord,
+	effects map[string]sessiontree.EffectAttempt,
+	subAgentInputs map[string][]sessiontree.SubAgentInputRecord,
+	compactions map[string]sessiontree.CompactionOperation,
+	providerStates map[string]sessiontree.ProviderStateRecord,
+	artifacts map[string]artifact.Record,
+	tombstones map[string]sessiontree.ThreadTombstone,
+) (map[string]sessiontree.ThreadRevision, map[string]map[sessiontree.ThreadRevision]map[string]any, error) {
+	revisions := make(map[string]sessiontree.ThreadRevision, len(threads)+len(tombstones))
+	history := make(map[string]map[sessiontree.ThreadRevision]map[string]any, len(threads)+len(tombstones))
+	ids := make([]string, 0, len(threads)+len(tombstones))
+	for id := range threads {
+		ids = append(ids, id)
+	}
+	for id := range tombstones {
+		if _, live := threads[id]; !live {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	allDomains := []sessiontree.ThreadRevisionDomain{
+		sessiontree.ThreadRevisionDomainThread, sessiontree.ThreadRevisionDomainJournal,
+		sessiontree.ThreadRevisionDomainTodo, sessiontree.ThreadRevisionDomainApproval,
+		sessiontree.ThreadRevisionDomainEffect, sessiontree.ThreadRevisionDomainSubAgent,
+		sessiontree.ThreadRevisionDomainCompaction, sessiontree.ThreadRevisionDomainArtifact,
+		sessiontree.ThreadRevisionDomainProviderState,
+	}
+	for _, id := range ids {
+		committedAt := time.Time{}
+		children, err := migratedThreadChildren(id, threads)
+		if err != nil {
+			return nil, nil, err
+		}
+		base := map[string]any{
+			"revision": sessiontree.ThreadRevision(1), "base": true,
+			"changed_domains": append([]sessiontree.ThreadRevisionDomain(nil), allDomains...),
+			"entries":         map[string]any{"from": 0, "values": entries[id]},
+			"approvals":       map[string]any{"from": 0, "values": migratedThreadApprovals(id, approvals)},
+			"effects":         map[string]any{"from": 0, "values": migratedThreadEffects(id, effects)},
+			"subagent_inputs": map[string]any{"from": 0, "values": subAgentInputs[id]},
+			"children":        map[string]any{"from": 0, "values": children},
+			"compactions":     map[string]any{"from": 0, "values": migratedThreadCompactions(id, compactions)},
+			"artifacts":       map[string]any{"from": 0, "values": migratedThreadArtifacts(id, artifacts)},
+		}
+		if thread, ok := threads[id]; ok {
+			base["thread"] = thread
+			committedAt = thread.UpdatedAt.UTC()
+		}
+		if tombstone, ok := tombstones[id]; ok {
+			base["tombstone"] = tombstone
+			base["changed_domains"] = append(base["changed_domains"].([]sessiontree.ThreadRevisionDomain), sessiontree.ThreadRevisionDomainDeleted)
+			committedAt = tombstone.DeletedAt.UTC()
+		}
+		if todo, ok := todos[id]; ok {
+			base["todo"] = todo
+		}
+		if state, ok := providerStates[id]; ok {
+			base["provider_state"] = state
+		}
+		if committedAt.IsZero() {
+			return nil, nil, fmt.Errorf("migrate thread %q: canonical commit time is missing", id)
+		}
+		base["committed_at"] = committedAt
+		revisions[id] = 1
+		history[id] = map[sessiontree.ThreadRevision]map[string]any{1: base}
+	}
+	return revisions, history, nil
+}
+
+func migratedThreadApprovals(threadID string, records map[string]sessiontree.ApprovalRecord) []sessiontree.ApprovalRecord {
+	values := make([]sessiontree.ApprovalRecord, 0)
+	for _, record := range records {
+		if record.ThreadID == threadID {
+			values = append(values, record)
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].ApprovalID < values[j].ApprovalID })
+	return values
+}
+
+func migratedThreadEffects(threadID string, records map[string]sessiontree.EffectAttempt) []sessiontree.EffectAttempt {
+	values := make([]sessiontree.EffectAttempt, 0)
+	for _, record := range records {
+		if record.Invocation.ThreadID == threadID {
+			values = append(values, record)
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].EffectAttemptID < values[j].EffectAttemptID })
+	return values
+}
+
+func migratedThreadChildren(threadID string, threads map[string]sessiontree.ThreadMeta) ([]sessiontree.ThreadRevisionChild, error) {
+	values := make([]sessiontree.ThreadRevisionChild, 0)
+	for _, child := range threads {
+		if child.ParentThreadID != threadID {
+			continue
+		}
+		lifecycle, err := child.CanonicalLifecycle()
+		if err != nil {
+			return nil, fmt.Errorf("migrate child thread %q: %w", child.ID, err)
+		}
+		values = append(values, sessiontree.ThreadRevisionChild{
+			ThreadID: child.ID, ParentTurnID: child.ParentTurnID, TaskName: child.TaskName,
+			TaskDescription: child.TaskDescription, AgentPath: child.AgentPath,
+			Lifecycle: lifecycle, CloseOperationID: child.CloseOperationID,
+		})
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].ThreadID < values[j].ThreadID })
+	return values, nil
+}
+
+func migratedThreadCompactions(threadID string, records map[string]sessiontree.CompactionOperation) []sessiontree.CompactionOperation {
+	values := make([]sessiontree.CompactionOperation, 0)
+	for _, record := range records {
+		if record.ThreadID == threadID {
+			values = append(values, record)
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].RequestID < values[j].RequestID })
+	return values
+}
+
+func migratedThreadArtifacts(threadID string, records map[string]artifact.Record) []artifact.Record {
+	values := make([]artifact.Record, 0)
+	for _, record := range records {
+		if record.ThreadID == threadID {
+			values = append(values, record)
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].Ref.ID < values[j].Ref.ID })
+	return values
 }
 
 type migratedRootCreateLedger struct {
@@ -449,7 +611,11 @@ func rejectLegacyMetadata(ctx context.Context, runner V16Runner) error {
 		return err
 	}
 	if count != 0 {
-		return fmt.Errorf("legacy metadata_records contains %d host-owned records", count)
+		return &UnsupportedV16ContentError{
+			Kind:   "host_metadata",
+			Count:  count,
+			Reason: "host-owned records are outside the product-neutral Floret conversion table",
+		}
 	}
 	return nil
 }

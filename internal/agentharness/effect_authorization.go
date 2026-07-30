@@ -10,13 +10,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var (
@@ -302,10 +302,10 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		return effectDispatchError(request.CallID, request.Name, ErrAuthorizationUnavailable)
 	}
 	lease, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok || lease.ThreadID != t.id || lease.TurnID != request.TurnID || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
+	if !ok || lease.ThreadID != t.id || lease.TurnID != request.TurnID.String() || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
 		return effectDispatchError(request.CallID, request.Name, sessiontree.ErrStaleAuthority)
 	}
-	local, ok := t.ownedActiveTurnLease(request.TurnID)
+	local, ok := t.ownedActiveTurnLease(request.TurnID.String())
 	if !ok || local.OwnerID != lease.OwnerID || local.Generation != lease.Generation {
 		return effectDispatchError(request.CallID, request.Name, sessiontree.ErrStaleAuthority)
 	}
@@ -320,7 +320,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	}
 	approvalRequested := request.Permission.Mode == tools.PermissionAsk
 	cancelApprovalForExecution := func(cancellation error) error {
-		if err := t.cancelApprovalBatchForTurn(ctx, lease, request.RunID); err != nil {
+		if err := t.cancelApprovalBatchForTurn(ctx, lease, request.RunID.String()); err != nil {
 			return err
 		}
 		if cancellation == nil {
@@ -334,7 +334,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	prepared, err := repo.PrepareEffectAttempt(ctx, sessiontree.PrepareEffectAttemptRequest{
 		Lease: lease, RequestFingerprint: fingerprint, Now: t.harness.now(),
 		Invocation: sessiontree.EffectInvocationIdentity{
-			ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID,
+			ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(),
 			ToolCallID: request.CallID, ToolName: request.Name, ArgumentHash: argumentHash,
 		},
 	})
@@ -470,7 +470,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		if !active.Load() || !callbackState.CompareAndSwap(0, 1) {
 			return EffectDispatchResult{}, ErrEffectDispatchConsumed
 		}
-		finalizerKey := effectFinalizerKey(request.RunID, request.TurnID, request.CallID)
+		finalizerKey := effectFinalizerKey(request.RunID.String(), request.TurnID.String(), request.CallID)
 		finalizerRegistered := false
 		readyDelivered := false
 		keepFinalizer := false
@@ -657,7 +657,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			finished, finishErr := repo.FinishEffectDispatch(finishCtx, sessiontree.FinishEffectDispatchRequest{
 				Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
 				OutcomeFingerprint: outcomeFingerprint, Failed: handlerResult.IsError || effectMessageFailed(finalization.request.Message), Now: t.harness.now(),
-				Result:     sessiontree.Entry{ThreadID: request.ThreadID, TurnID: request.TurnID, Type: sessiontree.EntryToolResult, Message: session.CloneMessage(finalization.request.Message)},
+				Result:     sessiontree.Entry{ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), Type: sessiontree.EntryToolResult, Message: session.CloneMessage(finalization.request.Message)},
 				FullOutput: cloneEffectFullOutput(finalization.request.FullOutput),
 			})
 			if finishErr != nil {
@@ -674,9 +674,9 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			completed = EffectDispatchResult{seal: seal, finalization: committedFinalization}
 			recordKnownResult(completed)
 			if !finished.Replayed {
-				t.harness.emitEntryCommitted(entry, request.RunID)
+				t.harness.emitEntryCommitted(entry, request.RunID.String())
 				t.harness.emit(HarnessEvent{
-					Type: EventEntryAppended, RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID,
+					Type: EventEntryAppended, RunID: request.RunID.String(), ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(),
 					EntryID: entry.ID, ParentID: entry.ParentID,
 				})
 			}

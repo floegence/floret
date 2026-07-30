@@ -1,81 +1,20 @@
-// Package storage defines the transactional persistence boundary used by Floret.
-// Backends store opaque namespaced bytes; Floret owns every domain schema and
-// index encoded into those bytes.
+// Package storage provides opaque storage values for ordinary Floret hosts.
+// Transactional backend implementation belongs to the advanced storage/spi
+// package and cannot be used to query a runtime-owned Source.
 package storage
 
 import (
-	"context"
-	"errors"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
-var (
-	// ErrNotFound reports that a key does not exist in a namespace.
-	ErrNotFound = errors.New("storage record not found")
-	// ErrClosed reports an operation attempted on a closed backend.
-	ErrClosed = errors.New("storage backend closed")
-	// ErrConflict reports that a transaction could not commit because another
-	// transaction committed after its snapshot was taken.
-	ErrConflict = errors.New("storage transaction conflict")
-	// ErrInvalidArgument reports a request outside the storage contract.
-	ErrInvalidArgument = errors.New("invalid storage argument")
-	// ErrTransactionClosed reports use of a transaction outside its callback.
-	ErrTransactionClosed = errors.New("storage transaction closed")
-	// ErrMigrationRequired reports an exact legacy storage schema that must be
-	// migrated explicitly before it can be opened as a Backend.
-	ErrMigrationRequired = errors.New("storage migration required")
-)
+// Source is an opaque storage configuration consumed exclusively by
+// runtime.Open. It deliberately has no exported methods.
+type Source storagebridge.Source
 
-// Source opens a fresh Backend. A Source may be retained and opened more than
-// once; each returned Backend has an independent lifecycle.
-type Source interface {
-	Open(context.Context) (Backend, error)
-}
-
-// Backend provides snapshot reads and serializable writes over opaque records.
-// Implementations must invoke an Update callback exactly once and must never
-// retry it implicitly.
-type Backend interface {
-	View(context.Context, func(ReadTx) error) error
-	Update(context.Context, func(WriteTx) error) error
-	Close() error
-}
-
-// ReadTx is a snapshot that is valid only for the duration of its callback.
-type ReadTx interface {
-	Get(namespace string, key []byte) ([]byte, error)
-	Scan(ScanRequest) (ScanPage, error)
-}
-
-// WriteTx is a serializable transaction that is valid only for the duration
-// of its callback.
-type WriteTx interface {
-	ReadTx
-	Put(namespace string, key, value []byte) error
-	Delete(namespace string, key []byte) error
-}
-
-// ScanRequest selects a bounded lexicographic page from one namespace. Start
-// is inclusive, End is exclusive, and After is exclusive. Limit must be
-// positive.
-type ScanRequest struct {
-	Namespace string
-	Start     []byte
-	End       []byte
-	After     []byte
-	Limit     int
-}
-
-// Record is one key and value returned by Scan. Both byte slices are owned by
-// the caller.
-type Record struct {
-	Key   []byte
-	Value []byte
-}
-
-// ScanPage is one ordered page. Next is the exclusive After cursor for the
-// following request and is present only when HasMore is true.
-type ScanPage struct {
-	Records []Record
-	HasMore bool
-	Next    []byte
+// NewSource seals an advanced backend implementation for use by runtime.Open.
+// Applications that use only official storage constructors do not need this
+// function.
+func NewSource(source spi.Source) Source {
+	return Source(storagebridge.New(source))
 }

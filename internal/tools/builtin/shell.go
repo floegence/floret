@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type CommandRunner interface {

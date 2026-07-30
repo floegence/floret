@@ -11,36 +11,37 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/internal/agentharness"
-	"github.com/floegence/floret/v2/internal/configbridge"
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/internal/storage"
-	"github.com/floegence/floret/v2/internal/tools/skills"
-	"github.com/floegence/floret/v2/observation"
-	publicprovider "github.com/floegence/floret/v2/provider"
-	publicstorage "github.com/floegence/floret/v2/storage"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/agentharness"
+	"github.com/floegence/floret/v3/internal/configbridge"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/tools/skills"
+	"github.com/floegence/floret/v3/observation"
+	publicprovider "github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v3/tools"
 )
 
-type ThreadID string
-type TurnID string
-type RunID string
-type ArtifactID string
-type ForkOperationID string
-type CreateIntentID string
-type PromptScopeID string
-type TraceID string
+type forkOperationID string
+type createIntentID string
 
 var (
+	// ErrHostClosed reports that Host shutdown has started.
+	ErrHostClosed = errors.New("floret host is closed")
+	// ErrRevisionUnavailable reports a thread revision outside retained durable history.
+	ErrRevisionUnavailable = errors.New("floret thread revision is unavailable")
+	// ErrSubscriptionStale reports a subscription that must be recreated from a new snapshot.
+	ErrSubscriptionStale = errors.New("floret subscription is stale")
 	// ErrThreadNotFound reports that a requested durable thread was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
 	// ErrThreadDeleted reports that a requested durable identity is permanently tombstoned.
@@ -94,7 +95,7 @@ var (
 	// ErrAuthorizationContract reports a host gate that did not return the closure's sealed result.
 	ErrAuthorizationContract = errors.New("floret effect authorization contract failed")
 	// ErrStoreClosed reports that the store has started closing.
-	ErrStoreClosed = errors.New("floret store is closed")
+	ErrStoreClosed = ErrHostClosed
 	// ErrSubAgentParentRequired reports that a child operation used a root-thread capability.
 	ErrSubAgentParentRequired = errors.New("floret subagent operation requires parent authority")
 	// ErrForkOperationConflict reports that an operation ID was reused with a different fork request.
@@ -112,7 +113,7 @@ var (
 // CommittedCleanupError reports that canonical deletion committed and only
 // physical or auxiliary cleanup remains retryable.
 type CommittedCleanupError struct {
-	ThreadID ThreadID
+	ThreadID identity.ThreadID
 	Err      error
 }
 
@@ -337,40 +338,40 @@ type CapabilityOptions struct {
 	SkillPromptBudgetBytes int
 }
 
-type CreateThreadRequest struct {
-	ThreadID       ThreadID
-	CreateIntentID CreateIntentID
+type createThreadRequest struct {
+	ThreadID       identity.ThreadID
+	createIntentID createIntentID
 }
 
 // Validate checks the explicit identities required for a durable root create.
-func (r CreateThreadRequest) Validate() error {
+func (r createThreadRequest) Validate() error {
 	if strings.TrimSpace(string(r.ThreadID)) == "" {
 		return errors.New("thread id is required")
 	}
-	if strings.TrimSpace(string(r.CreateIntentID)) == "" {
+	if strings.TrimSpace(string(r.createIntentID)) == "" {
 		return errors.New("create intent id is required")
 	}
 	return nil
 }
 
-type SetThreadTitleRequest struct {
-	ThreadID ThreadID `json:"thread_id"`
-	Title    string   `json:"title"`
+type setThreadTitleRequest struct {
+	ThreadID identity.ThreadID `json:"thread_id"`
+	Title    string            `json:"title"`
 }
 
-type ForkThreadRequest struct {
-	OperationID         ForkOperationID
-	SourceThreadID      ThreadID
-	DestinationThreadID ThreadID
+type forkThreadRequest struct {
+	OperationID         forkOperationID
+	SourceThreadID      identity.ThreadID
+	DestinationThreadID identity.ThreadID
 }
 
-type ForkThreadResult struct {
-	OperationID ForkOperationID `json:"operation_id"`
+type forkThreadResult struct {
+	OperationID forkOperationID `json:"operation_id"`
 	Thread      ThreadSummary   `json:"thread"`
 }
 
 // Validate checks one public fork result.
-func (r ForkThreadResult) Validate() error {
+func (r forkThreadResult) Validate() error {
 	if !trimStableNonEmpty(string(r.OperationID)) {
 		return errors.New("fork result requires an operation identity")
 	}
@@ -380,17 +381,17 @@ func (r ForkThreadResult) Validate() error {
 	return nil
 }
 
-type RecoverInterruptedTurnResult struct {
-	ThreadID ThreadID           `json:"thread_id"`
-	TurnID   TurnID             `json:"turn_id"`
-	RunID    RunID              `json:"run_id"`
+type recoverInterruptedTurnResult struct {
+	ThreadID identity.ThreadID  `json:"thread_id"`
+	TurnID   identity.TurnID    `json:"turn_id"`
+	RunID    identity.RunID     `json:"run_id"`
 	Status   TurnStatus         `json:"status"`
 	Failure  *ThreadTurnFailure `json:"failure,omitempty"`
 	Replayed bool               `json:"replayed"`
 }
 
 // Validate checks one public interrupted-turn recovery result.
-func (r RecoverInterruptedTurnResult) Validate() error {
+func (r recoverInterruptedTurnResult) Validate() error {
 	if !trimStableNonEmpty(string(r.ThreadID)) || !trimStableNonEmpty(string(r.TurnID)) || !trimStableNonEmpty(string(r.RunID)) {
 		return errors.New("interrupted recovery result requires thread, turn, and run identities")
 	}
@@ -478,9 +479,9 @@ type MessageReference struct {
 type EffectAuthorizationRequest struct {
 	EffectAttemptID    string               `json:"effect_attempt_id"`
 	RequestFingerprint string               `json:"request_fingerprint"`
-	ThreadID           ThreadID             `json:"thread_id"`
-	TurnID             TurnID               `json:"turn_id"`
-	RunID              RunID                `json:"run_id"`
+	ThreadID           identity.ThreadID    `json:"thread_id"`
+	TurnID             identity.TurnID      `json:"turn_id"`
+	RunID              identity.RunID       `json:"run_id"`
 	ToolCallID         string               `json:"tool_call_id"`
 	ToolName           string               `json:"tool_name"`
 	ArgumentHash       string               `json:"argument_hash"`
@@ -501,19 +502,19 @@ type EffectAuthorizationRequest struct {
 }
 
 type EffectAuthorizationProof struct {
-	EffectAttemptID    string    `json:"effect_attempt_id"`
-	RequestFingerprint string    `json:"request_fingerprint"`
-	ThreadID           ThreadID  `json:"thread_id"`
-	TurnID             TurnID    `json:"turn_id"`
-	RunID              RunID     `json:"run_id"`
-	ToolCallID         string    `json:"tool_call_id"`
-	LeaseOwnerID       string    `json:"lease_owner_id"`
-	LeaseGeneration    int64     `json:"lease_generation"`
-	PolicyRevision     string    `json:"policy_revision"`
-	ApprovalID         string    `json:"approval_id,omitempty"`
-	AuditReference     string    `json:"audit_reference"`
-	AuditHash          string    `json:"audit_hash"`
-	AuthorizedAt       time.Time `json:"authorized_at"`
+	EffectAttemptID    string            `json:"effect_attempt_id"`
+	RequestFingerprint string            `json:"request_fingerprint"`
+	ThreadID           identity.ThreadID `json:"thread_id"`
+	TurnID             identity.TurnID   `json:"turn_id"`
+	RunID              identity.RunID    `json:"run_id"`
+	ToolCallID         string            `json:"tool_call_id"`
+	LeaseOwnerID       string            `json:"lease_owner_id"`
+	LeaseGeneration    int64             `json:"lease_generation"`
+	PolicyRevision     string            `json:"policy_revision"`
+	ApprovalID         string            `json:"approval_id,omitempty"`
+	AuditReference     string            `json:"audit_reference"`
+	AuditHash          string            `json:"audit_hash"`
+	AuthorizedAt       time.Time         `json:"authorized_at"`
 }
 
 type EffectDispatchResult struct {
@@ -541,7 +542,7 @@ func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.E
 	return agentharness.EffectAuthorizationGateFunc(func(ctx context.Context, req agentharness.EffectAuthorizationRequest, effect agentharness.AuthorizedEffect) (agentharness.EffectDispatchResult, error) {
 		result, err := gate.Dispatch(ctx, EffectAuthorizationRequest{
 			EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
-			ThreadID: ThreadID(req.ThreadID), TurnID: TurnID(req.TurnID), RunID: RunID(req.RunID),
+			ThreadID: identity.ThreadID(req.ThreadID), TurnID: identity.TurnID(req.TurnID), RunID: identity.RunID(req.RunID),
 			ToolCallID: req.ToolCallID, ToolName: req.ToolName, ArgumentHash: req.ArgumentHash,
 			Step: req.Step, BatchIndex: req.BatchIndex, BatchSize: req.BatchSize,
 			Labels: cloneStringMap(req.Labels), HostContext: cloneStringMap(req.HostContext),
@@ -616,10 +617,10 @@ func (r MessageReference) Validate() error {
 	}.Validate()
 }
 
-type RunTurnRequest struct {
-	RunID               RunID
-	ThreadID            ThreadID
-	TurnID              TurnID
+type runTurnRequest struct {
+	RunID               identity.RunID
+	ThreadID            identity.ThreadID
+	TurnID              identity.TurnID
 	Input               TurnInput
 	SupplementalContext []TurnSupplementalContextItem
 	Labels              RunLabels
@@ -634,19 +635,21 @@ type RunTurnRequest struct {
 // Validate checks the provider-independent request contract before admission.
 // Host execution repeats this validation and additionally checks bound
 // authority and provider-specific capabilities.
-func (r RunTurnRequest) Validate() error {
+func (r runTurnRequest) Validate() error {
 	_, err := validateRunTurnRequest(r)
 	return err
 }
 
-type RetryTurnRequest struct {
-	ThreadID ThreadID
+type retryTurnRequest struct {
+	ThreadID identity.ThreadID
+	TurnID   identity.TurnID
+	RunID    identity.RunID
 	Reason   string
 	Labels   RunLabels
 }
 
-type CompactThreadRequest struct {
-	ThreadID  ThreadID
+type compactThreadRequest struct {
+	ThreadID  identity.ThreadID
 	RequestID string
 	Source    string
 	Labels    RunLabels
@@ -654,12 +657,12 @@ type CompactThreadRequest struct {
 	Reasoning config.ReasoningSelection
 }
 
-// ReadTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
+// readTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
 // RunID is required and must match the execution identity recorded for the turn.
-type ReadTurnProjectionRequest struct {
-	ThreadID ThreadID
-	TurnID   TurnID
-	RunID    RunID
+type readTurnProjectionRequest struct {
+	ThreadID identity.ThreadID
+	TurnID   identity.TurnID
+	RunID    identity.RunID
 }
 
 type AgentTodoStatus string
@@ -686,21 +689,21 @@ type AgentTodo struct {
 }
 
 type ThreadAgentTodoState struct {
-	ThreadID          ThreadID    `json:"thread_id"`
-	Version           int64       `json:"version"`
-	Items             []AgentTodo `json:"items"`
-	UpdatedAt         time.Time   `json:"updated_at,omitempty"`
-	UpdatedByTurnID   TurnID      `json:"updated_by_turn_id,omitempty"`
-	UpdatedByRunID    RunID       `json:"updated_by_run_id,omitempty"`
-	UpdatedByToolCall string      `json:"updated_by_tool_call_id,omitempty"`
+	ThreadID          identity.ThreadID `json:"thread_id"`
+	Version           int64             `json:"version"`
+	Items             []AgentTodo       `json:"items"`
+	UpdatedAt         time.Time         `json:"updated_at,omitempty"`
+	UpdatedByTurnID   identity.TurnID   `json:"updated_by_turn_id,omitempty"`
+	UpdatedByRunID    identity.RunID    `json:"updated_by_run_id,omitempty"`
+	UpdatedByToolCall string            `json:"updated_by_tool_call_id,omitempty"`
 }
 
-type UpdateThreadAgentTodosRequest struct {
-	ThreadID        ThreadID
+type updateThreadAgentTodosRequest struct {
+	ThreadID        identity.ThreadID
 	ExpectedVersion int64
 	Items           []AgentTodo
-	TurnID          TurnID
-	RunID           RunID
+	TurnID          identity.TurnID
+	RunID           identity.RunID
 	ToolCallID      string
 }
 
@@ -714,13 +717,13 @@ const (
 	PendingToolCompletionCanceled  PendingToolCompletionStatus = "canceled"
 )
 
-// PendingToolCompletionRequest asks Floret to append a host-authored follow-up
+// pendingToolCompletionRequest asks Floret to append a host-authored follow-up
 // turn for work whose lifecycle was owned outside Floret.
-type PendingToolCompletionRequest struct {
+type pendingToolCompletionRequest struct {
 	CompletionRequestID string
 	Target              PendingToolSettlementTarget
-	ContinuationTurnID  TurnID
-	ContinuationRunID   RunID
+	ContinuationTurnID  identity.TurnID
+	ContinuationRunID   identity.RunID
 	Status              PendingToolCompletionStatus
 	Summary             string
 	Output              string
@@ -731,13 +734,13 @@ type PendingToolCompletionRequest struct {
 // PendingToolCompletionResult reports the one durable continuation admission.
 // Turn is present only once that continuation has reached a terminal state.
 type PendingToolCompletionResult struct {
-	CompletionRequestID string      `json:"completion_request_id"`
-	ThreadID            ThreadID    `json:"thread_id"`
-	TurnID              TurnID      `json:"turn_id"`
-	RunID               RunID       `json:"run_id"`
-	Status              TurnStatus  `json:"status"`
-	Replayed            bool        `json:"replayed,omitempty"`
-	Turn                *TurnResult `json:"turn,omitempty"`
+	CompletionRequestID string            `json:"completion_request_id"`
+	ThreadID            identity.ThreadID `json:"thread_id"`
+	TurnID              identity.TurnID   `json:"turn_id"`
+	RunID               identity.RunID    `json:"run_id"`
+	Status              TurnStatus        `json:"status"`
+	Replayed            bool              `json:"replayed,omitempty"`
+	Turn                *TurnResult       `json:"turn,omitempty"`
 }
 
 func (r PendingToolCompletionResult) Validate() error {
@@ -779,13 +782,13 @@ const (
 // PendingToolSettlementTarget identifies the exact pending tool result that a
 // host owns and intends to settle.
 type PendingToolSettlementTarget struct {
-	ThreadID        ThreadID `json:"thread_id"`
-	TurnID          TurnID   `json:"turn_id"`
-	RunID           RunID    `json:"run_id"`
-	ToolCallID      string   `json:"tool_call_id"`
-	ToolName        string   `json:"tool_name"`
-	Handle          string   `json:"handle"`
-	EffectAttemptID string   `json:"effect_attempt_id,omitempty"`
+	ThreadID        identity.ThreadID `json:"thread_id"`
+	TurnID          identity.TurnID   `json:"turn_id"`
+	RunID           identity.RunID    `json:"run_id"`
+	ToolCallID      string            `json:"tool_call_id"`
+	ToolName        string            `json:"tool_name"`
+	Handle          string            `json:"handle"`
+	EffectAttemptID string            `json:"effect_attempt_id,omitempty"`
 }
 
 // Validate checks the exact identity required to settle one pending tool.
@@ -806,21 +809,21 @@ func (t PendingToolSettlementTarget) Validate() error {
 	return nil
 }
 
-// ListSubAgentPendingToolSettlementTargetsRequest identifies one direct child
+// listSubAgentPendingToolSettlementTargetsRequest identifies one direct child
 // whose canonical pending tool targets should be read.
-type ListSubAgentPendingToolSettlementTargetsRequest struct {
-	ParentThreadID ThreadID `json:"parent_thread_id"`
-	ChildThreadID  ThreadID `json:"child_thread_id"`
+type listSubAgentPendingToolSettlementTargetsRequest struct {
+	ParentThreadID identity.ThreadID `json:"parent_thread_id"`
+	ChildThreadID  identity.ThreadID `json:"child_thread_id"`
 }
 
-// PendingToolSettlementRequest records a host-owned pending tool outcome as a
+// pendingToolSettlementRequest records a host-owned pending tool outcome as a
 // detail/activity event only. It does not resume the provider loop.
-type PendingToolSettlementRequest struct {
+type pendingToolSettlementRequest struct {
 	Target   PendingToolSettlementTarget
 	Status   PendingToolSettlementStatus
 	Summary  string
 	Output   string
-	Activity *observation.ActivityPresentation
+	Activity *tools.ActivityPresentation
 }
 
 type SubAgentStatus string
@@ -844,11 +847,11 @@ const (
 	SubAgentForkFullPath SubAgentForkMode = "full_path"
 )
 
-type SpawnSubAgentRequest struct {
+type spawnSubAgentRequest struct {
 	PublicationID   string
-	ParentThreadID  ThreadID
-	ParentTurnID    TurnID
-	ThreadID        ThreadID
+	ParentThreadID  identity.ThreadID
+	ParentTurnID    identity.TurnID
+	ThreadID        identity.ThreadID
 	TaskName        string
 	TaskDescription string
 	Message         string
@@ -859,10 +862,10 @@ type SpawnSubAgentRequest struct {
 	Labels          RunLabels
 }
 
-type SendSubAgentInputRequest struct {
+type sendSubAgentInputRequest struct {
 	InputRequestID string
-	ParentThreadID ThreadID
-	ChildThreadID  ThreadID
+	ParentThreadID identity.ThreadID
+	ChildThreadID  identity.ThreadID
 	Message        string
 	Attachments    []MessageAttachment
 	References     []MessageReference
@@ -870,10 +873,10 @@ type SendSubAgentInputRequest struct {
 	Labels         RunLabels
 }
 
-type PublishSubAgentPendingToolCompletionRequest struct {
+type publishSubAgentPendingToolCompletionRequest struct {
 	InputRequestID string
-	ParentThreadID ThreadID
-	ChildThreadID  ThreadID
+	ParentThreadID identity.ThreadID
+	ChildThreadID  identity.ThreadID
 	Target         PendingToolSettlementTarget
 	Status         PendingToolCompletionStatus
 	Summary        string
@@ -882,41 +885,41 @@ type PublishSubAgentPendingToolCompletionRequest struct {
 	Labels         RunLabels
 }
 
-type WaitSubAgentsRequest struct {
-	ParentThreadID ThreadID
-	ChildThreadIDs []ThreadID
+type waitSubAgentsRequest struct {
+	ParentThreadID identity.ThreadID
+	ChildThreadIDs []identity.ThreadID
 	Timeout        time.Duration
 }
 
-type CloseSubAgentRequest struct {
+type closeSubAgentRequest struct {
 	CloseOperationID string
-	ParentThreadID   ThreadID
-	ChildThreadID    ThreadID
+	ParentThreadID   identity.ThreadID
+	ChildThreadID    identity.ThreadID
 	Reason           string
 }
 
-type ReadSubAgentDetailRequest struct {
-	ParentThreadID ThreadID
-	ChildThreadID  ThreadID
+type readSubAgentDetailRequest struct {
+	ParentThreadID identity.ThreadID
+	ChildThreadID  identity.ThreadID
 	AfterOrdinal   int64
 	Limit          int
 	IncludeRaw     bool
 }
 
-type ListSubAgentActivityTimelineRequest struct {
-	ParentThreadID ThreadID
+type listSubAgentActivityTimelineRequest struct {
+	ParentThreadID identity.ThreadID
 	Meta           observation.ActivityRunMeta
 }
 
-type ListThreadDetailEventsRequest struct {
-	ThreadID     ThreadID
+type listThreadDetailEventsRequest struct {
+	ThreadID     identity.ThreadID
 	AfterOrdinal int64
 	Limit        int
 	IncludeRaw   bool
 }
 
-type ReadApprovalQueueRequest struct {
-	ThreadID ThreadID
+type readApprovalQueueRequest struct {
+	ThreadID identity.ThreadID
 }
 
 type ApprovalDecision string
@@ -927,12 +930,12 @@ const (
 )
 
 type ApprovalIdentity struct {
-	ApprovalID      string   `json:"approval_id"`
-	ThreadID        ThreadID `json:"thread_id"`
-	TurnID          TurnID   `json:"turn_id"`
-	RunID           RunID    `json:"run_id"`
-	ToolCallID      string   `json:"tool_call_id"`
-	EffectAttemptID string   `json:"effect_attempt_id"`
+	ApprovalID      string            `json:"approval_id"`
+	ThreadID        identity.ThreadID `json:"thread_id"`
+	TurnID          identity.TurnID   `json:"turn_id"`
+	RunID           identity.RunID    `json:"run_id"`
+	ToolCallID      string            `json:"tool_call_id"`
+	EffectAttemptID string            `json:"effect_attempt_id"`
 }
 
 func (i ApprovalIdentity) Validate() error {
@@ -944,17 +947,17 @@ func (i ApprovalIdentity) Validate() error {
 	return nil
 }
 
-type ResolveApprovalRequest struct {
-	DecisionID               string           `json:"decision_id"`
-	ExpectedRootThreadID     ThreadID         `json:"expected_root_thread_id"`
-	ExpectedGeneration       int64            `json:"expected_generation"`
-	ExpectedRevision         int64            `json:"expected_revision"`
-	ExpectedCurrent          ApprovalIdentity `json:"expected_current"`
-	ExpectedApprovalRevision int64            `json:"expected_approval_revision"`
-	Decision                 ApprovalDecision `json:"decision"`
+type resolveApprovalRequest struct {
+	DecisionID               string            `json:"decision_id"`
+	ExpectedRootThreadID     identity.ThreadID `json:"expected_root_thread_id"`
+	ExpectedGeneration       int64             `json:"expected_generation"`
+	ExpectedRevision         int64             `json:"expected_revision"`
+	ExpectedCurrent          ApprovalIdentity  `json:"expected_current"`
+	ExpectedApprovalRevision int64             `json:"expected_approval_revision"`
+	Decision                 ApprovalDecision  `json:"decision"`
 }
 
-func (r ResolveApprovalRequest) Validate() error {
+func (r resolveApprovalRequest) Validate() error {
 	if strings.TrimSpace(r.DecisionID) == "" || strings.TrimSpace(string(r.ExpectedRootThreadID)) == "" {
 		return errors.New("approval decision requires decision and root thread identities")
 	}
@@ -971,28 +974,28 @@ func (r ResolveApprovalRequest) Validate() error {
 }
 
 type SubAgentSnapshot struct {
-	ThreadID        ThreadID         `json:"thread_id"`
-	Path            string           `json:"path"`
-	TaskName        string           `json:"task_name"`
-	TaskDescription string           `json:"task_description,omitempty"`
-	ParentThreadID  ThreadID         `json:"parent_thread_id"`
-	ParentTurnID    TurnID           `json:"parent_turn_id,omitempty"`
-	HostProfileRef  string           `json:"host_profile_ref,omitempty"`
-	ForkMode        SubAgentForkMode `json:"fork_mode,omitempty"`
-	Status          SubAgentStatus   `json:"status"`
-	LatestTurnID    TurnID           `json:"latest_turn_id,omitempty"`
-	LastMessage     string           `json:"last_message,omitempty"`
-	WaitingPrompt   string           `json:"waiting_prompt,omitempty"`
-	QueuedInputs    int              `json:"queued_inputs,omitempty"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
-	Closed          bool             `json:"closed,omitempty"`
-	CanSendInput    bool             `json:"can_send_input"`
-	CanInterrupt    bool             `json:"can_interrupt"`
-	CanClose        bool             `json:"can_close"`
+	ThreadID        identity.ThreadID `json:"thread_id"`
+	Path            string            `json:"path"`
+	TaskName        string            `json:"task_name"`
+	TaskDescription string            `json:"task_description,omitempty"`
+	ParentThreadID  identity.ThreadID `json:"parent_thread_id"`
+	ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
+	HostProfileRef  string            `json:"host_profile_ref,omitempty"`
+	ForkMode        SubAgentForkMode  `json:"fork_mode,omitempty"`
+	Status          SubAgentStatus    `json:"status"`
+	LatestTurnID    identity.TurnID   `json:"latest_turn_id,omitempty"`
+	LastMessage     string            `json:"last_message,omitempty"`
+	WaitingPrompt   string            `json:"waiting_prompt,omitempty"`
+	QueuedInputs    int               `json:"queued_inputs,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	Closed          bool              `json:"closed,omitempty"`
+	CanSendInput    bool              `json:"can_send_input"`
+	CanInterrupt    bool              `json:"can_interrupt"`
+	CanClose        bool              `json:"can_close"`
 }
 
-type WaitSubAgentsResult struct {
+type waitSubAgentsCommandResult struct {
 	Snapshots []SubAgentSnapshot `json:"snapshots"`
 	TimedOut  bool               `json:"timed_out,omitempty"`
 }
@@ -1009,7 +1012,7 @@ type SubAgentDetail struct {
 }
 
 type ThreadContextSnapshot struct {
-	ThreadID    ThreadID                      `json:"thread_id"`
+	ThreadID    identity.ThreadID             `json:"thread_id"`
 	Provider    string                        `json:"provider,omitempty"`
 	Model       string                        `json:"model,omitempty"`
 	Policy      config.ContextPolicy          `json:"policy,omitempty"`
@@ -1030,7 +1033,7 @@ func (s ThreadContextSnapshot) Validate() error {
 		if err := s.Usage.Validate(); err != nil {
 			return err
 		}
-		if strings.TrimSpace(s.Usage.RunID) == "" || strings.TrimSpace(s.Usage.TurnID) == "" || s.Usage.ThreadID != string(s.ThreadID) {
+		if strings.TrimSpace(s.Usage.RunID.String()) == "" || strings.TrimSpace(s.Usage.TurnID.String()) == "" || s.Usage.ThreadID.String() != string(s.ThreadID) {
 			return errors.New("thread context usage identity mismatch")
 		}
 		if s.Usage.Provider != s.Provider || s.Usage.Model != s.Model {
@@ -1041,14 +1044,14 @@ func (s ThreadContextSnapshot) Validate() error {
 		if err := compact.Validate(); err != nil {
 			return err
 		}
-		if compact.ThreadID != string(s.ThreadID) || strings.TrimSpace(compact.RunID) == "" || strings.TrimSpace(compact.OperationID) == "" || strings.TrimSpace(compact.RequestID) == "" {
+		if compact.ThreadID.String() != string(s.ThreadID) || strings.TrimSpace(compact.RunID.String()) == "" || strings.TrimSpace(compact.OperationID) == "" || strings.TrimSpace(compact.RequestID) == "" {
 			return errors.New("thread context compaction identity mismatch")
 		}
 	}
 	return nil
 }
 
-type SubAgentActivityTimelineResult struct {
+type subAgentActivityTimelineResult struct {
 	Timeline    observation.ActivityTimeline `json:"activity_timeline"`
 	GeneratedAt time.Time                    `json:"generated_at"`
 }
@@ -1062,12 +1065,12 @@ type ThreadDetailEvents struct {
 }
 
 type ApprovalQueue struct {
-	RootThreadID      ThreadID         `json:"root_thread_id"`
-	Generation        int64            `json:"generation"`
-	Revision          int64            `json:"revision"`
-	CurrentApprovalID string           `json:"current_approval_id,omitempty"`
-	Items             []ApprovalRecord `json:"items"`
-	GeneratedAt       time.Time        `json:"generated_at"`
+	RootThreadID      identity.ThreadID `json:"root_thread_id"`
+	Generation        int64             `json:"generation"`
+	Revision          int64             `json:"revision"`
+	CurrentApprovalID string            `json:"current_approval_id,omitempty"`
+	Items             []ApprovalRecord  `json:"items"`
+	GeneratedAt       time.Time         `json:"generated_at"`
 }
 
 func (q ApprovalQueue) Validate() error {
@@ -1098,18 +1101,18 @@ func (q ApprovalQueue) Validate() error {
 }
 
 type ApprovalDecisionReceipt struct {
-	DecisionID             string           `json:"decision_id"`
-	ApprovalID             string           `json:"approval_id"`
-	RootThreadID           ThreadID         `json:"root_thread_id"`
-	Decision               ApprovalDecision `json:"decision"`
-	State                  string           `json:"state"`
-	Reason                 string           `json:"reason,omitempty"`
-	AuthorizationProofHash string           `json:"authorization_proof_hash,omitempty"`
-	QueueGeneration        int64            `json:"queue_generation"`
-	QueueRevision          int64            `json:"queue_revision"`
-	ApprovalRevision       int64            `json:"approval_revision"`
-	SubmittedAt            time.Time        `json:"submitted_at"`
-	ResolvedAt             time.Time        `json:"resolved_at,omitempty"`
+	DecisionID             string            `json:"decision_id"`
+	ApprovalID             string            `json:"approval_id"`
+	RootThreadID           identity.ThreadID `json:"root_thread_id"`
+	Decision               ApprovalDecision  `json:"decision"`
+	State                  string            `json:"state"`
+	Reason                 string            `json:"reason,omitempty"`
+	AuthorizationProofHash string            `json:"authorization_proof_hash,omitempty"`
+	QueueGeneration        int64             `json:"queue_generation"`
+	QueueRevision          int64             `json:"queue_revision"`
+	ApprovalRevision       int64             `json:"approval_revision"`
+	SubmittedAt            time.Time         `json:"submitted_at"`
+	ResolvedAt             time.Time         `json:"resolved_at,omitempty"`
 }
 
 func (r ApprovalDecisionReceipt) Validate() error {
@@ -1199,15 +1202,15 @@ func (r ApprovalResource) Validate() error {
 
 type ApprovalRecord struct {
 	ApprovalID             string             `json:"approval_id,omitempty"`
-	RootThreadID           ThreadID           `json:"root_thread_id,omitempty"`
-	ParentThreadID         ThreadID           `json:"parent_thread_id,omitempty"`
+	RootThreadID           identity.ThreadID  `json:"root_thread_id,omitempty"`
+	ParentThreadID         identity.ThreadID  `json:"parent_thread_id,omitempty"`
 	ToolCallID             string             `json:"tool_call_id,omitempty"`
 	EffectAttemptID        string             `json:"effect_attempt_id,omitempty"`
 	ToolName               string             `json:"tool_name,omitempty"`
 	ToolKind               string             `json:"tool_kind,omitempty"`
-	RunID                  RunID              `json:"run_id,omitempty"`
-	ThreadID               ThreadID           `json:"thread_id,omitempty"`
-	TurnID                 TurnID             `json:"turn_id,omitempty"`
+	RunID                  identity.RunID     `json:"run_id,omitempty"`
+	ThreadID               identity.ThreadID  `json:"thread_id,omitempty"`
+	TurnID                 identity.TurnID    `json:"turn_id,omitempty"`
 	Step                   int                `json:"step,omitempty"`
 	BatchIndex             int                `json:"batch_index"`
 	BatchSize              int                `json:"batch_size"`
@@ -1311,9 +1314,9 @@ type ThreadDetailEvent struct {
 	ID        string                `json:"id"`
 	Ordinal   int64                 `json:"ordinal"`
 	ParentID  string                `json:"parent_id,omitempty"`
-	ThreadID  ThreadID              `json:"thread_id"`
-	TurnID    TurnID                `json:"turn_id,omitempty"`
-	RunID     RunID                 `json:"run_id,omitempty"`
+	ThreadID  identity.ThreadID     `json:"thread_id"`
+	TurnID    identity.TurnID       `json:"turn_id,omitempty"`
+	RunID     identity.RunID        `json:"run_id,omitempty"`
 	Step      int                   `json:"step,omitempty"`
 	Kind      ThreadDetailEventKind `json:"kind"`
 	Type      string                `json:"type,omitempty"`
@@ -1332,14 +1335,14 @@ type ThreadDetailEvent struct {
 }
 
 type ThreadDetailMessage struct {
-	Role        string                            `json:"role,omitempty"`
-	Kind        string                            `json:"kind,omitempty"`
-	Preview     string                            `json:"preview,omitempty"`
-	Content     string                            `json:"content,omitempty"`
-	Attachments []MessageAttachment               `json:"attachments,omitempty"`
-	References  []MessageReference                `json:"references,omitempty"`
-	Reasoning   string                            `json:"reasoning,omitempty"`
-	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
+	Role        string                      `json:"role,omitempty"`
+	Kind        string                      `json:"kind,omitempty"`
+	Preview     string                      `json:"preview,omitempty"`
+	Content     string                      `json:"content,omitempty"`
+	Attachments []MessageAttachment         `json:"attachments,omitempty"`
+	References  []MessageReference          `json:"references,omitempty"`
+	Reasoning   string                      `json:"reasoning,omitempty"`
+	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type ThreadDetailToolCall struct {
@@ -1405,12 +1408,12 @@ type ThreadDetailCompaction struct {
 }
 
 type ArtifactRef struct {
-	ID        ArtifactID `json:"id,omitempty"`
-	SafeLabel string     `json:"safe_label,omitempty"`
-	Kind      string     `json:"kind,omitempty"`
-	MIME      string     `json:"mime,omitempty"`
-	SizeBytes int64      `json:"size_bytes,omitempty"`
-	SHA256    string     `json:"sha256,omitempty"`
+	ID        identity.ArtifactID `json:"id,omitempty"`
+	SafeLabel string              `json:"safe_label,omitempty"`
+	Kind      string              `json:"kind,omitempty"`
+	MIME      string              `json:"mime,omitempty"`
+	SizeBytes int64               `json:"size_bytes,omitempty"`
+	SHA256    string              `json:"sha256,omitempty"`
 }
 
 // Validate checks one public artifact reference.
@@ -1427,9 +1430,9 @@ func (r ArtifactRef) Validate() error {
 	return nil
 }
 
-type ReadArtifactRequest struct {
-	ThreadID   ThreadID   `json:"thread_id"`
-	ArtifactID ArtifactID `json:"artifact_id"`
+type readArtifactRequest struct {
+	ThreadID   identity.ThreadID   `json:"thread_id"`
+	ArtifactID identity.ArtifactID `json:"artifact_id"`
 }
 
 type ArtifactContent struct {
@@ -1451,7 +1454,7 @@ type RunLabels struct {
 }
 
 type ThreadSnapshot struct {
-	ID               ThreadID          `json:"id"`
+	ID               identity.ThreadID `json:"id"`
 	Title            string            `json:"title,omitempty"`
 	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
 	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
@@ -1462,8 +1465,8 @@ type ThreadSnapshot struct {
 	UpdatedAt        time.Time         `json:"updated_at"`
 	Phase            ThreadPhase       `json:"phase"`
 	Status           ThreadStatus      `json:"status"`
-	LatestTurnID     TurnID            `json:"latest_turn_id,omitempty"`
-	LatestRunID      RunID             `json:"latest_run_id,omitempty"`
+	LatestTurnID     identity.TurnID   `json:"latest_turn_id,omitempty"`
+	LatestRunID      identity.RunID    `json:"latest_run_id,omitempty"`
 	ThroughOrdinal   int64             `json:"through_ordinal"`
 	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
 	Recoverable      bool              `json:"recoverable"`
@@ -1472,7 +1475,7 @@ type ThreadSnapshot struct {
 }
 
 type ThreadSummary struct {
-	ID               ThreadID          `json:"id"`
+	ID               identity.ThreadID `json:"id"`
 	Title            string            `json:"title,omitempty"`
 	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
 	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
@@ -1483,7 +1486,7 @@ type ThreadSummary struct {
 	UpdatedAt        time.Time         `json:"updated_at"`
 	Phase            ThreadPhase       `json:"phase"`
 	Status           ThreadStatus      `json:"status"`
-	LatestTurnID     TurnID            `json:"latest_turn_id,omitempty"`
+	LatestTurnID     identity.TurnID   `json:"latest_turn_id,omitempty"`
 	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
 	Recoverable      bool              `json:"recoverable"`
 	CanAppendMessage bool              `json:"can_append_message"`
@@ -1491,9 +1494,9 @@ type ThreadSummary struct {
 }
 
 type TurnResult struct {
-	ThreadID               ThreadID                       `json:"thread_id"`
-	TurnID                 TurnID                         `json:"turn_id"`
-	RunID                  RunID                          `json:"run_id"`
+	ThreadID               identity.ThreadID              `json:"thread_id"`
+	TurnID                 identity.TurnID                `json:"turn_id"`
+	RunID                  identity.RunID                 `json:"run_id"`
 	Status                 TurnStatus                     `json:"status"`
 	Output                 string                         `json:"output,omitempty"`
 	Failure                *ThreadTurnFailure             `json:"failure,omitempty"`
@@ -1577,7 +1580,7 @@ func (r TurnResult) Validate() error {
 	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
 		return fmt.Errorf("invalid turn result activity timeline: %w", err)
 	}
-	if r.ActivityTimeline.ThreadID != string(r.ThreadID) || r.ActivityTimeline.TurnID != string(r.TurnID) || r.ActivityTimeline.RunID != string(r.RunID) || r.ActivityTimeline.TraceID != string(r.RunID) {
+	if r.ActivityTimeline.ThreadID.String() != string(r.ThreadID) || r.ActivityTimeline.TurnID.String() != string(r.TurnID) || r.ActivityTimeline.RunID.String() != string(r.RunID) || r.ActivityTimeline.TraceID.String() != string(r.RunID) {
 		return errors.New("turn result activity timeline identity mismatch")
 	}
 	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
@@ -1623,9 +1626,9 @@ func (r PendingToolSettlementResult) Validate() error {
 	return nil
 }
 
-type CompactThreadResult struct {
-	ThreadID         ThreadID                     `json:"thread_id"`
-	RunID            RunID                        `json:"run_id"`
+type compactThreadResult struct {
+	ThreadID         identity.ThreadID            `json:"thread_id"`
+	RunID            identity.RunID               `json:"run_id"`
 	RequestID        string                       `json:"request_id"`
 	Compaction       observation.CompactionEvent  `json:"compaction"`
 	Metrics          RunMetrics                   `json:"metrics"`
@@ -1633,14 +1636,14 @@ type CompactThreadResult struct {
 	Replayed         bool                         `json:"replayed,omitempty"`
 }
 
-func (r CompactThreadResult) Validate() error {
+func (r compactThreadResult) Validate() error {
 	if strings.TrimSpace(string(r.ThreadID)) == "" || strings.TrimSpace(string(r.RunID)) == "" || strings.TrimSpace(r.RequestID) == "" {
 		return errors.New("compact thread result requires thread, run, and request identities")
 	}
 	if err := r.Compaction.Validate(); err != nil {
 		return fmt.Errorf("invalid compact thread result: %w", err)
 	}
-	if strings.TrimSpace(r.Compaction.ThreadID) != string(r.ThreadID) || strings.TrimSpace(r.Compaction.RunID) != string(r.RunID) || strings.TrimSpace(r.Compaction.RequestID) != strings.TrimSpace(r.RequestID) {
+	if strings.TrimSpace(r.Compaction.ThreadID.String()) != string(r.ThreadID) || strings.TrimSpace(r.Compaction.RunID.String()) != string(r.RunID) || strings.TrimSpace(r.Compaction.RequestID) != strings.TrimSpace(r.RequestID) {
 		return errors.New("compact thread result identity mismatch")
 	}
 	if r.Compaction.TurnID != "" {
@@ -1655,7 +1658,7 @@ func (r CompactThreadResult) Validate() error {
 	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
 		return fmt.Errorf("invalid compact thread result activity timeline: %w", err)
 	}
-	if r.ActivityTimeline.ThreadID != string(r.ThreadID) || r.ActivityTimeline.TurnID != "" || r.ActivityTimeline.RunID != string(r.RunID) || r.ActivityTimeline.TraceID != string(r.RunID) {
+	if r.ActivityTimeline.ThreadID.String() != string(r.ThreadID) || r.ActivityTimeline.TurnID != "" || r.ActivityTimeline.RunID.String() != string(r.RunID) || r.ActivityTimeline.TraceID.String() != string(r.RunID) {
 		return errors.New("compact thread result activity timeline identity mismatch")
 	}
 	return nil
@@ -1667,10 +1670,10 @@ type EventSink interface {
 
 type Event struct {
 	Type               observation.EventType             `json:"type"`
-	TraceID            TraceID                           `json:"trace_id,omitempty"`
-	RunID              RunID                             `json:"run_id,omitempty"`
-	ThreadID           ThreadID                          `json:"thread_id,omitempty"`
-	TurnID             TurnID                            `json:"turn_id,omitempty"`
+	TraceID            identity.TraceID                  `json:"trace_id,omitempty"`
+	RunID              identity.RunID                    `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID                 `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID                   `json:"turn_id,omitempty"`
 	Step               int                               `json:"step,omitempty"`
 	Provider           string                            `json:"provider,omitempty"`
 	Model              string                            `json:"model,omitempty"`
@@ -1687,7 +1690,7 @@ type Event struct {
 	FinishInferred     bool                              `json:"finish_inferred,omitempty"`
 	CompletionReason   observation.CompletionReason      `json:"completion_reason,omitempty"`
 	ContinuationReason observation.ContinuationReason    `json:"continuation_reason,omitempty"`
-	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
+	Activity           *tools.ActivityPresentation       `json:"activity,omitempty"`
 	ActivityTimeline   *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
 	Projection         *ThreadTurnProjection             `json:"projection,omitempty"`
 	Stream             *StreamObservation                `json:"stream,omitempty"`
@@ -1723,7 +1726,7 @@ func (e Event) Validate() error {
 		if err := e.ContextStatus.Validate(); err != nil {
 			return fmt.Errorf("invalid context status: %w", err)
 		}
-		if !eventIdentityMatches(e, e.ContextStatus.RunID, e.ContextStatus.ThreadID, e.ContextStatus.TurnID, e.ContextStatus.Step) {
+		if !eventIdentityMatches(e, e.ContextStatus.RunID.String(), e.ContextStatus.ThreadID.String(), e.ContextStatus.TurnID.String(), e.ContextStatus.Step) {
 			return errors.New("runtime event context status identity mismatch")
 		}
 	}
@@ -1731,7 +1734,7 @@ func (e Event) Validate() error {
 		if err := e.Compaction.Validate(); err != nil {
 			return fmt.Errorf("invalid compaction event: %w", err)
 		}
-		if !eventIdentityMatches(e, e.Compaction.RunID, e.Compaction.ThreadID, e.Compaction.TurnID, e.Compaction.Step) {
+		if !eventIdentityMatches(e, e.Compaction.RunID.String(), e.Compaction.ThreadID.String(), e.Compaction.TurnID.String(), e.Compaction.Step) {
 			return errors.New("runtime event compaction identity mismatch")
 		}
 	}
@@ -1739,7 +1742,7 @@ func (e Event) Validate() error {
 		if err := e.CompactionDebug.Validate(); err != nil {
 			return fmt.Errorf("invalid compaction debug event: %w", err)
 		}
-		if !eventIdentityMatches(e, e.CompactionDebug.RunID, e.CompactionDebug.ThreadID, e.CompactionDebug.TurnID, e.CompactionDebug.Step) {
+		if !eventIdentityMatches(e, e.CompactionDebug.RunID.String(), e.CompactionDebug.ThreadID.String(), e.CompactionDebug.TurnID.String(), e.CompactionDebug.Step) {
 			return errors.New("runtime event compaction debug identity mismatch")
 		}
 	}
@@ -1752,7 +1755,7 @@ func (e Event) Validate() error {
 		if err := observation.ValidateActivityTimeline(*e.ActivityTimeline); err != nil {
 			return fmt.Errorf("invalid event activity timeline: %w", err)
 		}
-		if e.ActivityTimeline.RunID != string(e.RunID) || e.ActivityTimeline.ThreadID != string(e.ThreadID) || e.ActivityTimeline.TurnID != string(e.TurnID) {
+		if e.ActivityTimeline.RunID.String() != string(e.RunID) || e.ActivityTimeline.ThreadID.String() != string(e.ThreadID) || e.ActivityTimeline.TurnID.String() != string(e.TurnID) {
 			return errors.New("runtime event activity timeline identity mismatch")
 		}
 	}
@@ -2050,8 +2053,8 @@ func newMemoryStore() *runtimeStore {
 	return store
 }
 
-func newBackendRuntimeStore(ctx context.Context, backend publicstorage.Backend) (*runtimeStore, error) {
-	kernel, err := storage.NewBackendKernel(ctx, adaptDomainBackend(backend), sessiontree.DefaultLeasePolicy, time.Now)
+func newBackendRuntimeStore(ctx context.Context, backend spi.Backend) (*runtimeStore, error) {
+	kernel, err := storage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -2331,7 +2334,7 @@ func (s *runtimeStore) deleteThreadData(ctx context.Context, threadID string) er
 		return err
 	}
 	if err := s.deleteCleanup(ctx, result.ThreadIDs); err != nil {
-		return &CommittedCleanupError{ThreadID: ThreadID(threadID), Err: err}
+		return &CommittedCleanupError{ThreadID: identity.ThreadID(threadID), Err: err}
 	}
 	return nil
 }
@@ -2419,6 +2422,8 @@ func runtimeHostError(err error) error {
 		return &AuthorityBusyError{Kind: AuthorityBusyAuthority, Err: err}
 	case errors.Is(err, sessiontree.ErrThreadDeleted):
 		return fmt.Errorf("%w: %w", ErrThreadDeleted, err)
+	case errors.Is(err, sessiontree.ErrRevisionUnavailable):
+		return fmt.Errorf("%w: %w", ErrRevisionUnavailable, err)
 	case errors.Is(err, sessiontree.ErrSubAgentClosing):
 		return fmt.Errorf("%w: %w", ErrSubAgentClosing, err)
 	case errors.Is(err, sessiontree.ErrStaleAuthority):
@@ -2488,22 +2493,22 @@ func runtimeHostError(err error) error {
 	}
 }
 
-func (h *threadCreateCapability) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+func (h *threadCreateCapability) CreateThread(ctx context.Context, req createThreadRequest) (ThreadSummary, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSummary{}, err
 	}
 	defer done()
-	requestedThreadID := ThreadID(strings.TrimSpace(string(req.ThreadID)))
+	requestedThreadID := identity.ThreadID(strings.TrimSpace(string(req.ThreadID)))
 	if requestedThreadID != "" && requestedThreadID != h.threadID {
 		return ThreadSummary{}, fmt.Errorf("thread create host is bound to thread %q, got %q", h.threadID, requestedThreadID)
 	}
-	requestedIntentID := CreateIntentID(strings.TrimSpace(string(req.CreateIntentID)))
+	requestedIntentID := createIntentID(strings.TrimSpace(string(req.createIntentID)))
 	if requestedIntentID != "" && requestedIntentID != h.createIntentID {
 		return ThreadSummary{}, fmt.Errorf("thread create host is bound to create intent %q, got %q", h.createIntentID, requestedIntentID)
 	}
 	req.ThreadID = h.threadID
-	req.CreateIntentID = h.createIntentID
+	req.createIntentID = h.createIntentID
 	if err := req.Validate(); err != nil {
 		return ThreadSummary{}, err
 	}
@@ -2511,12 +2516,12 @@ func (h *threadCreateCapability) CreateThread(ctx context.Context, req CreateThr
 	defer h.store.threadAuthorityMu.Unlock()
 	created, err := h.store.rootAuthority.CreateRoot(ctx, sessiontree.CreateRootRequest{
 		ThreadID:        string(req.ThreadID),
-		CreateIntentID:  string(req.CreateIntentID),
+		CreateIntentID:  string(req.createIntentID),
 		ContractVersion: "1",
 		Meta:            sessiontree.ThreadMeta{ID: string(req.ThreadID)},
 	})
 	if err != nil {
-		return ThreadSummary{}, requestConflictError(runtimeHostError(err), "root_create", string(req.CreateIntentID))
+		return ThreadSummary{}, requestConflictError(runtimeHostError(err), "root_create", string(req.createIntentID))
 	}
 	thread, err := h.harness.BindCreatedRoot(created.Thread, created.Replayed)
 	if err != nil {
@@ -2524,7 +2529,7 @@ func (h *threadCreateCapability) CreateThread(ctx context.Context, req CreateThr
 	}
 	if !created.Replayed {
 		return validateThreadSummaryResult(ThreadSummary{
-			ID: ThreadID(created.Thread.ID), Title: created.Thread.Title,
+			ID: identity.ThreadID(created.Thread.ID), Title: created.Thread.Title,
 			TitleStatus: ThreadTitleStatus(created.Thread.TitleStatus), TitleSource: ThreadTitleSource(created.Thread.TitleSource),
 			TitleUpdatedAt: created.Thread.TitleUpdatedAt, TitleError: created.Thread.TitleError,
 			CreatedAt: created.Thread.CreatedAt, UpdatedAt: created.Thread.UpdatedAt,
@@ -2538,7 +2543,7 @@ func (h *threadCreateCapability) CreateThread(ctx context.Context, req CreateThr
 	return validateThreadSummaryResult(threadSummary(summary))
 }
 
-func (h *threadTitleCapability) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+func (h *threadTitleCapability) SetThreadTitle(ctx context.Context, req setThreadTitleRequest) (ThreadSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSnapshot{}, err
@@ -2550,7 +2555,7 @@ func (h *threadTitleCapability) SetThreadTitle(ctx context.Context, req SetThrea
 	return setThreadTitle(ctx, h.harness, req)
 }
 
-func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req setThreadTitleRequest) (ThreadSnapshot, error) {
 	snapshot, err := harness.SetThreadTitle(ctx, string(req.ThreadID), req.Title)
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
@@ -2558,38 +2563,38 @@ func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req
 	return validateThreadSnapshotResult(threadSnapshot(snapshot))
 }
 
-func (h *threadForkCapability) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+func (h *threadForkCapability) ForkThread(ctx context.Context, req forkThreadRequest) (forkThreadResult, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
-		return ForkThreadResult{}, err
+		return forkThreadResult{}, err
 	}
 	defer done()
 	h.store.threadAuthorityMu.Lock()
 	defer h.store.threadAuthorityMu.Unlock()
 	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.SourceThreadID, "thread fork host"); err != nil {
-		return ForkThreadResult{}, err
+		return forkThreadResult{}, err
 	}
 	result, err := forkThread(ctx, h.harness, req)
 	if err == nil {
 		if validationErr := result.Validate(); validationErr != nil {
-			return ForkThreadResult{}, invalidPublicResult("fork result", validationErr)
+			return forkThreadResult{}, invalidPublicResult("fork result", validationErr)
 		}
 	}
 	return result, requestConflictError(err, "fork", string(req.OperationID))
 }
 
-func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req ForkThreadRequest) (ForkThreadResult, error) {
+func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req forkThreadRequest) (forkThreadResult, error) {
 	if strings.TrimSpace(string(req.OperationID)) == "" {
-		return ForkThreadResult{}, errors.New("fork operation id is required")
+		return forkThreadResult{}, errors.New("fork operation id is required")
 	}
 	if strings.TrimSpace(string(req.SourceThreadID)) == "" {
-		return ForkThreadResult{}, errors.New("source thread id is required")
+		return forkThreadResult{}, errors.New("source thread id is required")
 	}
 	if strings.TrimSpace(string(req.DestinationThreadID)) == "" {
-		return ForkThreadResult{}, errors.New("destination thread id is required")
+		return forkThreadResult{}, errors.New("destination thread id is required")
 	}
 	if strings.TrimSpace(string(req.SourceThreadID)) == strings.TrimSpace(string(req.DestinationThreadID)) {
-		return ForkThreadResult{}, errors.New("fork destination must differ from source")
+		return forkThreadResult{}, errors.New("fork destination must differ from source")
 	}
 	result, err := harness.ForkThreadWithResult(ctx, agentharness.ForkOptions{
 		OperationID:    string(req.OperationID),
@@ -2597,20 +2602,20 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 		NewThreadID:    string(req.DestinationThreadID),
 	})
 	if err != nil {
-		return ForkThreadResult{}, runtimeHostError(err)
+		return forkThreadResult{}, runtimeHostError(err)
 	}
-	out := forkThreadResult(result)
+	out := runtimeForkThreadResult(result)
 	if _, err := validateThreadSummaryResult(out.Thread); err != nil {
-		return ForkThreadResult{}, err
+		return forkThreadResult{}, err
 	}
 	return out, nil
 }
 
-func (h *providerHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+func (h *providerHost) ReadThread(ctx context.Context, threadID identity.ThreadID) (ThreadSnapshot, error) {
 	return readThreadByID(ctx, h.harness, threadID)
 }
 
-func (h *threadReadCapability) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+func (h *threadReadCapability) ReadThread(ctx context.Context, threadID identity.ThreadID) (ThreadSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSnapshot{}, err
@@ -2622,7 +2627,7 @@ func (h *threadReadCapability) ReadThread(ctx context.Context, threadID ThreadID
 	return readThreadByID(ctx, h.harness, threadID)
 }
 
-func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadSnapshot, error) {
+func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadSnapshot, error) {
 	snapshot, err := harness.ReadThread(ctx, string(threadID))
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
@@ -2630,11 +2635,11 @@ func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, thr
 	return validateThreadSnapshotResult(threadSnapshot(snapshot))
 }
 
-func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	return listThreadDetailEvents(ctx, h.harness, req)
 }
 
-func (h *threadReadCapability) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func (h *threadReadCapability) ListThreadDetailEvents(ctx context.Context, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadDetailEvents{}, err
@@ -2648,7 +2653,7 @@ func (h *threadReadCapability) ListThreadDetailEvents(ctx context.Context, req L
 
 // ListPendingToolSettlementTargets returns all canonical active pending tool
 // targets for the bound root thread. The result is complete and unpaginated.
-func (h *threadReadCapability) ListPendingToolSettlementTargets(ctx context.Context, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
+func (h *threadReadCapability) ListPendingToolSettlementTargets(ctx context.Context, threadID identity.ThreadID) ([]PendingToolSettlementTarget, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -2660,7 +2665,7 @@ func (h *threadReadCapability) ListPendingToolSettlementTargets(ctx context.Cont
 	return listPendingToolSettlementTargets(ctx, h.harness, threadID)
 }
 
-func listPendingToolSettlementTargets(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
+func listPendingToolSettlementTargets(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) ([]PendingToolSettlementTarget, error) {
 	targets, err := harness.ListPendingToolSettlementTargets(ctx, string(threadID))
 	if err != nil {
 		return nil, runtimeHostError(err)
@@ -2668,7 +2673,7 @@ func listPendingToolSettlementTargets(ctx context.Context, harness *agentharness
 	return pendingToolSettlementTargets(targets), nil
 }
 
-func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	detail, err := harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
 		ThreadID:     string(req.ThreadID),
 		AfterOrdinal: req.AfterOrdinal,
@@ -2691,11 +2696,11 @@ func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarn
 	return out, nil
 }
 
-func (h *providerHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+func (h *providerHost) ReadThreadContext(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
 	return readThreadContext(ctx, h.harness, threadID)
 }
 
-func (h *threadReadCapability) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+func (h *threadReadCapability) ReadThreadContext(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadContextSnapshot{}, err
@@ -2707,7 +2712,7 @@ func (h *threadReadCapability) ReadThreadContext(ctx context.Context, threadID T
 	return readThreadContext(ctx, h.harness, threadID)
 }
 
-func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadContextSnapshot, error) {
+func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
 	contextSnapshot, err := harness.ReadThreadContext(ctx, string(threadID))
 	if err != nil {
 		return ThreadContextSnapshot{}, runtimeHostError(err)
@@ -2719,11 +2724,11 @@ func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, 
 	return out, nil
 }
 
-func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
-func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadAgentTodoState{}, err
@@ -2735,7 +2740,7 @@ func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadI
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
-func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID ThreadID) (ThreadAgentTodoState, error) {
+func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return ThreadAgentTodoState{}, errors.New("thread id is required")
 	}
@@ -2750,11 +2755,11 @@ func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID Thr
 	return out, nil
 }
 
-func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req updateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	return updateThreadAgentTodos(ctx, h.store, req)
 }
 
-func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req updateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadAgentTodoState{}, errors.New("thread id is required")
 	}
@@ -2799,7 +2804,7 @@ func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req Update
 	return out, nil
 }
 
-func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.JournalRepo, req UpdateThreadAgentTodosRequest) error {
+func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.JournalRepo, req updateThreadAgentTodosRequest) error {
 	meta, err := repo.Thread(ctx, string(req.ThreadID))
 	if err != nil {
 		return runtimeHostError(err)
@@ -2832,12 +2837,12 @@ func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.Journ
 
 func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
 	out := ThreadAgentTodoState{
-		ThreadID:          ThreadID(in.ThreadID),
+		ThreadID:          identity.ThreadID(in.ThreadID),
 		Version:           in.Version,
 		Items:             make([]AgentTodo, 0, len(in.Items)),
 		UpdatedAt:         in.UpdatedAt,
-		UpdatedByTurnID:   TurnID(in.UpdatedByTurnID),
-		UpdatedByRunID:    RunID(in.UpdatedByRunID),
+		UpdatedByTurnID:   identity.TurnID(in.UpdatedByTurnID),
+		UpdatedByRunID:    identity.RunID(in.UpdatedByRunID),
 		UpdatedByToolCall: in.UpdatedByToolCall,
 	}
 	for _, item := range in.Items {
@@ -2846,11 +2851,11 @@ func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
 	return out
 }
 
-func (h *providerHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func (h *providerHost) ReadApprovalQueue(ctx context.Context, req readApprovalQueueRequest) (ApprovalQueue, error) {
 	return readApprovalQueue(ctx, h.harness, req)
 }
 
-func (h *threadReadCapability) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func (h *threadReadCapability) ReadApprovalQueue(ctx context.Context, req readApprovalQueueRequest) (ApprovalQueue, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ApprovalQueue{}, err
@@ -2862,7 +2867,7 @@ func (h *threadReadCapability) ReadApprovalQueue(ctx context.Context, req ReadAp
 	return readApprovalQueue(ctx, h.harness, req)
 }
 
-func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, req readApprovalQueueRequest) (ApprovalQueue, error) {
 	result, err := harness.ReadApprovalQueue(ctx, agentharness.ReadApprovalQueueOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return ApprovalQueue{}, runtimeHostError(err)
@@ -2874,7 +2879,7 @@ func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, 
 	return out, nil
 }
 
-func (h *providerHost) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
+func (h *providerHost) ResolveApproval(ctx context.Context, req resolveApprovalRequest) (ResolveApprovalResult, error) {
 	if err := req.Validate(); err != nil {
 		return ResolveApprovalResult{}, err
 	}
@@ -2902,11 +2907,11 @@ func (h *providerHost) ResolveApproval(ctx context.Context, req ResolveApprovalR
 	return out, nil
 }
 
-func (h *providerHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *providerHost) ReadTurnProjection(ctx context.Context, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
 	return readTurnProjection(ctx, h.harness, req)
 }
 
-func (h *threadReadCapability) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *threadReadCapability) ReadTurnProjection(ctx context.Context, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadTurnProjection{}, err
@@ -2918,7 +2923,7 @@ func (h *threadReadCapability) ReadTurnProjection(ctx context.Context, req ReadT
 	return readTurnProjection(ctx, h.harness, req)
 }
 
-func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadTurnProjection{}, errors.New("thread id is required")
 	}
@@ -2946,7 +2951,7 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 		ThreadID: req.ThreadID,
 		TurnID:   req.TurnID,
 		RunID:    req.RunID,
-		TraceID:  TraceID(req.RunID),
+		TraceID:  identity.TraceID(req.RunID),
 		Events:   events,
 	})
 	failure := canonicalTurnFailure(events)
@@ -2960,7 +2965,7 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 	return projection, nil
 }
 
-func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+func (h *providerHost) RunTurn(ctx context.Context, req runTurnRequest) (TurnResult, error) {
 	validated, err := validateRunTurnRequest(req)
 	if err != nil {
 		return TurnResult{}, err
@@ -3023,7 +3028,7 @@ type validatedRunTurnRequest struct {
 	signalSpec       engine.ControlSpec
 }
 
-func validateRunTurnRequest(req RunTurnRequest) (validatedRunTurnRequest, error) {
+func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error) {
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return validatedRunTurnRequest{}, errors.New("run id is required")
 	}
@@ -3106,7 +3111,7 @@ func sessionMessageReferences(in []MessageReference) []session.MessageReference 
 	return out
 }
 
-func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
+func (h *providerHost) RetryTurn(ctx context.Context, req retryTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
@@ -3115,6 +3120,8 @@ func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (Tur
 		return TurnResult{}, runtimeHostError(err)
 	}
 	result, runErr := thread.Retry(ctx, agentharness.RetryOptions{
+		TurnID: req.TurnID,
+		RunID:  req.RunID,
 		Reason: req.Reason,
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
@@ -3134,19 +3141,19 @@ func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (Tur
 	return out, runtimeHostError(runErr)
 }
 
-func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+func (h *providerHost) CompactThread(ctx context.Context, req compactThreadRequest) (compactThreadResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return CompactThreadResult{}, errors.New("thread id is required")
+		return compactThreadResult{}, errors.New("thread id is required")
 	}
 	if strings.TrimSpace(req.RequestID) == "" {
-		return CompactThreadResult{}, errors.New("manual compaction request id is required")
+		return compactThreadResult{}, errors.New("manual compaction request id is required")
 	}
 	if strings.TrimSpace(req.Source) == "" {
-		return CompactThreadResult{}, errors.New("manual compaction source is required")
+		return compactThreadResult{}, errors.New("manual compaction source is required")
 	}
 	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
-		return CompactThreadResult{}, runtimeHostError(err)
+		return compactThreadResult{}, runtimeHostError(err)
 	}
 	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
 	result, compactErr := thread.Compact(ctx, agentharness.CompactOptions{
@@ -3182,38 +3189,38 @@ func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadReque
 				errorText = compactErr.Error()
 			}
 			terminalCompactions = append(terminalCompactions, observation.CompactionEvent{
-				RunID: result.RunID, ThreadID: string(req.ThreadID), OperationID: result.OperationID,
+				RunID: identity.RunID(result.RunID), ThreadID: identity.ThreadID(req.ThreadID), OperationID: result.OperationID,
 				RequestID: result.RequestID, Source: result.Source, Trigger: string(compaction.TriggerManual),
 				Reason: string(compaction.ReasonManual), Phase: phase, Status: status,
 				Error: errorText, ObservedAt: time.Now(),
 			})
 		} else if compactErr != nil {
-			return CompactThreadResult{}, runtimeHostError(compactErr)
+			return compactThreadResult{}, runtimeHostError(compactErr)
 		} else {
-			return CompactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
+			return compactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
 		}
 	}
-	out := CompactThreadResult{
+	out := compactThreadResult{
 		ThreadID:   req.ThreadID,
-		RunID:      RunID(result.RunID),
+		RunID:      identity.RunID(result.RunID),
 		RequestID:  strings.TrimSpace(req.RequestID),
 		Compaction: terminalCompactions[len(terminalCompactions)-1],
 		Metrics:    runtimeMetrics(result.Metrics),
 		Replayed:   result.Replayed,
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    result.RunID,
-			ThreadID: string(req.ThreadID),
+			RunID:    identity.RunID(result.RunID),
+			ThreadID: identity.ThreadID(req.ThreadID),
 			TurnID:   "",
-			TraceID:  result.RunID,
+			TraceID:  identity.TraceID(result.RunID),
 		}, events, time.Now().UnixMilli()),
 	}
 	if err := out.Validate(); err != nil {
-		return CompactThreadResult{}, invalidPublicResult("compact thread result", err)
+		return compactThreadResult{}, invalidPublicResult("compact thread result", err)
 	}
 	return out, runtimeHostError(compactErr)
 }
 
-func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (PendingToolCompletionResult, error) {
+func (h *providerHost) CompletePendingTool(ctx context.Context, req pendingToolCompletionRequest) (PendingToolCompletionResult, error) {
 	requestID := strings.TrimSpace(req.CompletionRequestID)
 	if requestID == "" {
 		return PendingToolCompletionResult{}, errors.New("completion request id is required")
@@ -3285,7 +3292,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	return out, runtimeHostError(runErr)
 }
 
-func (h *pendingToolRecoveryCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *pendingToolRecoveryCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3316,7 +3323,7 @@ func (h *pendingToolRecoveryCapability) SettlePendingTool(ctx context.Context, r
 	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
-func (h *turnExecutionCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *turnExecutionCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3335,7 +3342,7 @@ func (h *turnExecutionCapability) SettlePendingTool(ctx context.Context, req Pen
 	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
-func (h *subAgentCapability) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *subAgentCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
 		return PendingToolSettlementResult{}, err
@@ -3351,14 +3358,14 @@ func (h *subAgentCapability) SettlePendingTool(ctx context.Context, req PendingT
 	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
-func validateSubAgentSettlementAuthority(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID, childThreadID ThreadID) error {
+func validateSubAgentSettlementAuthority(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID, childThreadID identity.ThreadID) error {
 	if err := harness.ValidateSubAgentAuthority(ctx, string(parentThreadID), string(childThreadID)); err != nil {
 		return runtimeHostError(err)
 	}
 	return nil
 }
 
-func settlePendingToolRecovery(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func settlePendingToolRecovery(ctx context.Context, harness *agentharness.AgentHarness, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	if err := validatePendingToolSettlementRequest(req); err != nil {
 		return PendingToolSettlementResult{}, err
 	}
@@ -3369,7 +3376,7 @@ func settlePendingToolRecovery(ctx context.Context, harness *agentharness.AgentH
 	return settlePendingToolOnThread(ctx, harness, thread, req, sessiontree.TurnLease{})
 }
 
-func settlePendingToolActive(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func settlePendingToolActive(ctx context.Context, harness *agentharness.AgentHarness, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	if err := validatePendingToolSettlementRequest(req); err != nil {
 		return PendingToolSettlementResult{}, err
 	}
@@ -3383,7 +3390,7 @@ func settlePendingToolActive(ctx context.Context, harness *agentharness.AgentHar
 	return settlePendingToolOnThread(ctx, harness, thread, req, lease)
 }
 
-func validatePendingToolSettlementRequest(req PendingToolSettlementRequest) error {
+func validatePendingToolSettlementRequest(req pendingToolSettlementRequest) error {
 	return validatePendingToolSettlementTarget(req.Target)
 }
 
@@ -3409,7 +3416,7 @@ func validatePendingToolSettlementTarget(target PendingToolSettlementTarget) err
 	return nil
 }
 
-func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req PendingToolSettlementRequest, activeLease sessiontree.TurnLease) (PendingToolSettlementResult, error) {
+func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req pendingToolSettlementRequest, activeLease sessiontree.TurnLease) (PendingToolSettlementResult, error) {
 	settlement := agentharness.PendingToolSettlement{
 		TurnID:          string(req.Target.TurnID),
 		RunID:           string(req.Target.RunID),
@@ -3459,7 +3466,7 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 		ThreadID: req.Target.ThreadID,
 		TurnID:   req.Target.TurnID,
 		RunID:    req.Target.RunID,
-		TraceID:  TraceID(req.Target.RunID),
+		TraceID:  identity.TraceID(req.Target.RunID),
 		Events:   threadDetailEvents(detail.Events),
 	})
 	out.ProjectionAvailability = TurnProjectionAvailabilityReady
@@ -3470,7 +3477,7 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 	return out, nil
 }
 
-func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) spawnSubAgentCommand(ctx context.Context, req spawnSubAgentRequest) (SubAgentSnapshot, error) {
 	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -3498,7 +3505,7 @@ func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
-func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) sendSubAgentInputCommand(ctx context.Context, req sendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -3522,7 +3529,7 @@ func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentIn
 	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
-func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) publishSubAgentPendingToolCompletionCommand(ctx context.Context, req publishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
 	if strings.TrimSpace(req.InputRequestID) == "" {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion input request id is required")
 	}
@@ -3565,27 +3572,27 @@ func rejectReferenceOnlyInputWithoutSupplemental(input TurnInput, operation stri
 	return nil
 }
 
-func (h *providerHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+func (h *providerHost) waitSubAgentsCommand(ctx context.Context, req waitSubAgentsRequest) (waitSubAgentsCommandResult, error) {
 	result, err := h.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadIDs: threadIDStrings(req.ChildThreadIDs),
 		Timeout:        req.Timeout,
 	})
 	if err != nil {
-		return WaitSubAgentsResult{}, runtimeHostError(err)
+		return waitSubAgentsCommandResult{}, runtimeHostError(err)
 	}
 	out := waitSubAgentsResult(result)
 	if err := out.Validate(); err != nil {
-		return WaitSubAgentsResult{}, invalidPublicResult("subagent wait result", err)
+		return waitSubAgentsCommandResult{}, invalidPublicResult("subagent wait result", err)
 	}
 	return out, nil
 }
 
-func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
-func (h *subAgentReadCapability) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *subAgentReadCapability) ListSubAgents(ctx context.Context, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -3597,7 +3604,7 @@ func (h *subAgentReadCapability) ListSubAgents(ctx context.Context, parentThread
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
-func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
 	snapshots, err := harness.ListSubAgents(ctx, string(parentThreadID))
 	if err != nil {
 		return nil, runtimeHostError(err)
@@ -3609,7 +3616,7 @@ func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, pare
 	return validateSubAgentSnapshotsResult(out)
 }
 
-func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) closeSubAgentCommand(ctx context.Context, req closeSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
 		CloseOperationID: req.CloseOperationID,
 		ParentThreadID:   string(req.ParentThreadID),
@@ -3622,43 +3629,43 @@ func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentReque
 	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
 }
 
-func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
-func (h *subAgentReadCapability) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *subAgentReadCapability) ListSubAgentActivityTimeline(ctx context.Context, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
-		return SubAgentActivityTimelineResult{}, err
+		return subAgentActivityTimelineResult{}, err
 	}
 	defer done()
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
-		return SubAgentActivityTimelineResult{}, err
+		return subAgentActivityTimelineResult{}, err
 	}
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
-func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.AgentHarness, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.AgentHarness, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
 	snapshots, err := harness.ListSubAgents(ctx, string(req.ParentThreadID))
 	if err != nil {
-		return SubAgentActivityTimelineResult{}, runtimeHostError(err)
+		return subAgentActivityTimelineResult{}, runtimeHostError(err)
 	}
 	generatedAt := time.Now().UTC()
-	out := SubAgentActivityTimelineResult{
+	out := subAgentActivityTimelineResult{
 		Timeline:    subAgentActivityTimeline(req.Meta, snapshots, generatedAt),
 		GeneratedAt: generatedAt,
 	}
 	if err := out.Validate(); err != nil {
-		return SubAgentActivityTimelineResult{}, invalidPublicResult("subagent activity timeline", err)
+		return subAgentActivityTimelineResult{}, invalidPublicResult("subagent activity timeline", err)
 	}
 	return out, nil
 }
 
-func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req readSubAgentDetailRequest) (SubAgentDetail, error) {
 	return readSubAgentDetail(ctx, h.harness, req)
 }
 
-func (h *subAgentReadCapability) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *subAgentReadCapability) ReadSubAgentDetail(ctx context.Context, req readSubAgentDetailRequest) (SubAgentDetail, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return SubAgentDetail{}, err
@@ -3673,7 +3680,7 @@ func (h *subAgentReadCapability) ReadSubAgentDetail(ctx context.Context, req Rea
 // ListPendingToolSettlementTargets returns all canonical active pending tool
 // targets for one direct child under the bound parent. The result is complete
 // and unpaginated.
-func (h *subAgentReadCapability) ListPendingToolSettlementTargets(ctx context.Context, req ListSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
+func (h *subAgentReadCapability) ListPendingToolSettlementTargets(ctx context.Context, req listSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return nil, err
@@ -3693,9 +3700,9 @@ func pendingToolSettlementTargets(in []sessiontree.PendingToolSettlementTarget) 
 	out := make([]PendingToolSettlementTarget, 0, len(in))
 	for _, target := range in {
 		out = append(out, PendingToolSettlementTarget{
-			ThreadID:        ThreadID(target.ThreadID),
-			TurnID:          TurnID(target.TurnID),
-			RunID:           RunID(target.RunID),
+			ThreadID:        identity.ThreadID(target.ThreadID),
+			TurnID:          identity.TurnID(target.TurnID),
+			RunID:           identity.RunID(target.RunID),
 			ToolCallID:      target.ToolCallID,
 			ToolName:        target.ToolName,
 			Handle:          target.Handle,
@@ -3705,7 +3712,7 @@ func pendingToolSettlementTargets(in []sessiontree.PendingToolSettlementTarget) 
 	return out
 }
 
-func validateRootThreadAuthority(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
+func validateRootThreadAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return errors.New("thread id is required")
 	}
@@ -3719,7 +3726,7 @@ func validateRootThreadAuthority(ctx context.Context, store *runtimeStore, threa
 	return validateLiveThreadLifecycle(snapshot.Thread)
 }
 
-func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req readSubAgentDetailRequest) (SubAgentDetail, error) {
 	detail, err := harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
@@ -3737,7 +3744,7 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 	return out, nil
 }
 
-func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID ThreadID) error {
+func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID identity.ThreadID) error {
 	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return err
@@ -3751,7 +3758,7 @@ func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID Thre
 	return deleteThread(ctx, h.store, threadID)
 }
 
-func deleteThread(ctx context.Context, store *runtimeStore, threadID ThreadID) error {
+func deleteThread(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
 		return errors.New("thread id is required")
@@ -3787,7 +3794,7 @@ func pendingToolSettlementStatus(status PendingToolSettlementStatus) agentharnes
 
 func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 	out := ThreadSnapshot{
-		ID:               ThreadID(in.ID),
+		ID:               identity.ThreadID(in.ID),
 		Title:            in.Title,
 		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
 		TitleSource:      ThreadTitleSource(in.TitleSource),
@@ -3798,8 +3805,8 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 		UpdatedAt:        in.UpdatedAt,
 		Phase:            ThreadPhase(in.Phase),
 		Status:           ThreadStatus(in.Status),
-		LatestTurnID:     TurnID(in.LatestTurnID),
-		LatestRunID:      RunID(in.LatestRunID),
+		LatestTurnID:     identity.TurnID(in.LatestTurnID),
+		LatestRunID:      identity.RunID(in.LatestRunID),
 		ThroughOrdinal:   in.ThroughOrdinal,
 		WaitingPrompt:    in.WaitingPrompt,
 		Recoverable:      in.Recoverable,
@@ -3811,7 +3818,7 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 
 func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 	return ThreadSummary{
-		ID:               ThreadID(in.ID),
+		ID:               identity.ThreadID(in.ID),
 		Title:            in.Title,
 		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
 		TitleSource:      ThreadTitleSource(in.TitleSource),
@@ -3822,7 +3829,7 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 		UpdatedAt:        in.UpdatedAt,
 		Phase:            ThreadPhase(in.Phase),
 		Status:           ThreadStatus(in.Status),
-		LatestTurnID:     TurnID(in.LatestTurnID),
+		LatestTurnID:     identity.TurnID(in.LatestTurnID),
 		WaitingPrompt:    in.WaitingPrompt,
 		Recoverable:      in.Recoverable,
 		CanAppendMessage: in.CanAppendMessage,
@@ -3830,23 +3837,23 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 	}
 }
 
-func forkThreadResult(in agentharness.ForkResult) ForkThreadResult {
-	return ForkThreadResult{
-		OperationID: ForkOperationID(in.OperationID),
+func runtimeForkThreadResult(in agentharness.ForkResult) forkThreadResult {
+	return forkThreadResult{
+		OperationID: forkOperationID(in.OperationID),
 		Thread:      threadSummary(in.Summary),
 	}
 }
 
 func approvalQueue(in agentharness.ApprovalQueueSnapshot) ApprovalQueue {
 	return ApprovalQueue{
-		RootThreadID: ThreadID(in.RootThreadID), Generation: in.Generation, Revision: in.Revision,
+		RootThreadID: identity.ThreadID(in.RootThreadID), Generation: in.Generation, Revision: in.Revision,
 		CurrentApprovalID: in.CurrentApprovalID, Items: approvalRecordList(in.Approvals), GeneratedAt: in.GeneratedAt,
 	}
 }
 
 func approvalDecisionReceipt(in sessiontree.ApprovalDecisionReceipt) ApprovalDecisionReceipt {
 	return ApprovalDecisionReceipt{
-		DecisionID: in.DecisionID, ApprovalID: in.ApprovalID, RootThreadID: ThreadID(in.RootThreadID),
+		DecisionID: in.DecisionID, ApprovalID: in.ApprovalID, RootThreadID: identity.ThreadID(in.RootThreadID),
 		Decision: ApprovalDecision(in.Decision), State: string(in.State), Reason: in.Reason,
 		AuthorizationProofHash: in.AuthorizationProofHash, QueueGeneration: in.QueueGeneration,
 		QueueRevision: in.QueueRevision, ApprovalRevision: in.ApprovalRevision,
@@ -3867,9 +3874,9 @@ func approvalRecordList(in []agentharness.ApprovalRecord) []ApprovalRecord {
 
 func approvalRecord(in agentharness.ApprovalRecord) ApprovalRecord {
 	return ApprovalRecord{
-		ApprovalID: in.ApprovalID, RootThreadID: ThreadID(in.RootThreadID), ParentThreadID: ThreadID(in.ParentThreadID),
+		ApprovalID: in.ApprovalID, RootThreadID: identity.ThreadID(in.RootThreadID), ParentThreadID: identity.ThreadID(in.ParentThreadID),
 		ToolCallID: in.ToolCallID, EffectAttemptID: in.EffectAttemptID, ToolName: in.ToolName, ToolKind: in.ToolKind,
-		RunID: RunID(in.RunID), ThreadID: ThreadID(in.ThreadID), TurnID: TurnID(in.TurnID),
+		RunID: identity.RunID(in.RunID), ThreadID: identity.ThreadID(in.ThreadID), TurnID: identity.TurnID(in.TurnID),
 		Step: in.Step, BatchIndex: in.BatchIndex, BatchSize: in.BatchSize,
 		State: in.State, Revision: in.Revision, QueueSequence: in.QueueSequence, DecisionID: in.DecisionID,
 		RequestedAt:            in.RequestedAt,
@@ -3906,9 +3913,9 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		status = TurnStatusRunning
 	}
 	out := TurnResult{
-		ThreadID:           ThreadID(threadID),
-		TurnID:             TurnID(in.ID),
-		RunID:              RunID(in.RunID),
+		ThreadID:           identity.ThreadID(threadID),
+		TurnID:             identity.TurnID(in.ID),
+		RunID:              identity.RunID(in.RunID),
 		Status:             status,
 		Output:             in.Output,
 		Diagnostics:        cloneStringMap(in.Diagnostics),
@@ -3920,10 +3927,10 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		FinishInferred:     in.FinishInferred,
 		Signal:             runtimeTurnSignal(in.ControlSignal),
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    in.RunID,
-			ThreadID: threadID,
-			TurnID:   in.ID,
-			TraceID:  in.RunID,
+			RunID:    identity.RunID(in.RunID),
+			ThreadID: identity.ThreadID(threadID),
+			TurnID:   identity.TurnID(in.ID),
+			TraceID:  identity.TraceID(in.RunID),
 		}, events, nowUnixMS),
 		Replayed: in.Replayed,
 	}
@@ -3957,10 +3964,10 @@ func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID 
 		events = threadDetailEvents(detail.Events)
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: ThreadID(threadID),
+		ThreadID: identity.ThreadID(threadID),
 		TurnID:   result.TurnID,
 		RunID:    result.RunID,
-		TraceID:  TraceID(result.RunID),
+		TraceID:  identity.TraceID(result.RunID),
 		Events:   events,
 	})
 	failure := canonicalTurnFailure(events)
@@ -3998,7 +4005,7 @@ func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, con
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
-func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID RunID) bool {
+func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID identity.RunID) bool {
 	want := strings.TrimSpace(string(runID))
 	if want == "" {
 		return false
@@ -4017,8 +4024,8 @@ func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID
 	return false
 }
 
-func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResult {
-	out := WaitSubAgentsResult{TimedOut: in.TimedOut, Snapshots: make([]SubAgentSnapshot, 0, len(in.Snapshots))}
+func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) waitSubAgentsCommandResult {
+	out := waitSubAgentsCommandResult{TimedOut: in.TimedOut, Snapshots: make([]SubAgentSnapshot, 0, len(in.Snapshots))}
 	for _, snapshot := range in.Snapshots {
 		out.Snapshots = append(out.Snapshots, subAgentSnapshot(snapshot))
 	}
@@ -4027,16 +4034,16 @@ func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResul
 
 func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 	return SubAgentSnapshot{
-		ThreadID:        ThreadID(in.ThreadID),
+		ThreadID:        identity.ThreadID(in.ThreadID),
 		Path:            in.Path,
 		TaskName:        in.TaskName,
 		TaskDescription: in.TaskDescription,
-		ParentThreadID:  ThreadID(in.ParentThreadID),
-		ParentTurnID:    TurnID(in.ParentTurnID),
+		ParentThreadID:  identity.ThreadID(in.ParentThreadID),
+		ParentTurnID:    identity.TurnID(in.ParentTurnID),
 		HostProfileRef:  in.HostProfileRef,
 		ForkMode:        SubAgentForkMode(in.ForkMode),
 		Status:          SubAgentStatus(in.Status),
-		LatestTurnID:    TurnID(in.LatestTurnID),
+		LatestTurnID:    identity.TurnID(in.LatestTurnID),
 		LastMessage:     in.LastMessage,
 		WaitingPrompt:   in.WaitingPrompt,
 		QueuedInputs:    in.QueuedInputs,
@@ -4052,10 +4059,10 @@ func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot, generatedAt time.Time) observation.ActivityTimeline {
 	timeline := observation.ActivityTimeline{
 		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         strings.TrimSpace(meta.RunID),
-		ThreadID:      strings.TrimSpace(meta.ThreadID),
-		TurnID:        strings.TrimSpace(meta.TurnID),
-		TraceID:       strings.TrimSpace(meta.TraceID),
+		RunID:         identity.RunID(strings.TrimSpace(meta.RunID.String())),
+		ThreadID:      identity.ThreadID(strings.TrimSpace(meta.ThreadID.String())),
+		TurnID:        identity.TurnID(strings.TrimSpace(meta.TurnID.String())),
+		TraceID:       identity.TraceID(strings.TrimSpace(meta.TraceID.String())),
 		Summary: observation.ActivitySummary{
 			Status:   observation.ActivityStatusSuccess,
 			Severity: observation.ActivitySeverityQuiet,
@@ -4063,7 +4070,7 @@ func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agen
 		Items: []observation.ActivityItem{},
 	}
 	if timeline.ThreadID == "" {
-		timeline.ThreadID = strings.TrimSpace(string(metaThreadID(meta, snapshots)))
+		timeline.ThreadID = identity.ThreadID(strings.TrimSpace(string(metaThreadID(meta, snapshots))))
 	}
 	items := make([]agentharness.SubAgentSnapshot, 0, len(snapshots))
 	for _, snapshot := range snapshots {
@@ -4110,9 +4117,12 @@ func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agen
 			RequiresApproval: false,
 			StartedAtUnixMS:  startedAt,
 			EndedAtUnixMS:    endedAt,
-			Label:            title,
-			Description:      description,
-			Payload:          subAgentActivityPayload(snapshot),
+			Presentation: &tools.ActivityPresentation{
+				Label:       title,
+				Description: description,
+				Renderer:    tools.ActivityRendererSubAgent,
+				Payload:     subAgentActivityPayload(snapshot),
+			},
 		})
 	}
 	timeline.Summary.TotalItems = len(timeline.Items)
@@ -4121,41 +4131,41 @@ func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agen
 	return timeline
 }
 
-func metaThreadID(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot) ThreadID {
-	if strings.TrimSpace(meta.ThreadID) != "" {
-		return ThreadID(meta.ThreadID)
+func metaThreadID(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot) identity.ThreadID {
+	if strings.TrimSpace(meta.ThreadID.String()) != "" {
+		return identity.ThreadID(meta.ThreadID)
 	}
 	for _, snapshot := range snapshots {
 		if strings.TrimSpace(snapshot.ParentThreadID) != "" {
-			return ThreadID(snapshot.ParentThreadID)
+			return identity.ThreadID(snapshot.ParentThreadID)
 		}
 	}
 	return ""
 }
 
-func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) map[string]any {
+func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) tools.SubAgentActivityPayload {
 	title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID))
-	return map[string]any{
-		"thread_id":        strings.TrimSpace(snapshot.ThreadID),
-		"path":             strings.TrimSpace(snapshot.Path),
-		"task_name":        strings.TrimSpace(snapshot.TaskName),
-		"task_description": strings.TrimSpace(snapshot.TaskDescription),
-		"title":            title,
-		"host_profile_ref": strings.TrimSpace(snapshot.HostProfileRef),
-		"fork_mode":        strings.TrimSpace(string(snapshot.ForkMode)),
-		"status":           strings.TrimSpace(string(snapshot.Status)),
-		"last_message":     strings.TrimSpace(snapshot.LastMessage),
-		"waiting_prompt":   strings.TrimSpace(snapshot.WaitingPrompt),
-		"queued_inputs":    snapshot.QueuedInputs,
-		"parent_thread_id": strings.TrimSpace(snapshot.ParentThreadID),
-		"parent_turn_id":   strings.TrimSpace(snapshot.ParentTurnID),
-		"latest_turn_id":   strings.TrimSpace(snapshot.LatestTurnID),
-		"created_at_ms":    activityTimeUnixMS(snapshot.CreatedAt, 0),
-		"updated_at_ms":    activityTimeUnixMS(snapshot.UpdatedAt, 0),
-		"closed":           snapshot.Closed,
-		"can_send_input":   snapshot.CanSendInput,
-		"can_interrupt":    snapshot.CanInterrupt,
-		"can_close":        snapshot.CanClose,
+	return tools.SubAgentActivityPayload{
+		ThreadID:        identity.ThreadID(strings.TrimSpace(snapshot.ThreadID)),
+		Path:            strings.TrimSpace(snapshot.Path),
+		TaskName:        strings.TrimSpace(snapshot.TaskName),
+		TaskDescription: strings.TrimSpace(snapshot.TaskDescription),
+		Title:           title,
+		HostProfileRef:  strings.TrimSpace(snapshot.HostProfileRef),
+		ForkMode:        strings.TrimSpace(string(snapshot.ForkMode)),
+		Status:          strings.TrimSpace(string(snapshot.Status)),
+		LastMessage:     strings.TrimSpace(snapshot.LastMessage),
+		WaitingPrompt:   strings.TrimSpace(snapshot.WaitingPrompt),
+		QueuedInputs:    snapshot.QueuedInputs,
+		ParentThreadID:  identity.ThreadID(strings.TrimSpace(snapshot.ParentThreadID)),
+		ParentTurnID:    identity.TurnID(strings.TrimSpace(snapshot.ParentTurnID)),
+		LatestTurnID:    identity.TurnID(strings.TrimSpace(snapshot.LatestTurnID)),
+		CreatedAtUnixMS: activityTimeUnixMS(snapshot.CreatedAt, 0),
+		UpdatedAtUnixMS: activityTimeUnixMS(snapshot.UpdatedAt, 0),
+		Closed:          snapshot.Closed,
+		CanSendInput:    snapshot.CanSendInput,
+		CanInterrupt:    snapshot.CanInterrupt,
+		CanClose:        snapshot.CanClose,
 	}
 }
 
@@ -4267,7 +4277,7 @@ func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 
 func subAgentDetailContext(threadID string, in agentharness.ThreadContextSnapshot) ThreadContextSnapshot {
 	return ThreadContextSnapshot{
-		ThreadID: ThreadID(threadID),
+		ThreadID: identity.ThreadID(threadID),
 		Provider: in.Model.Provider,
 		Model:    in.Model.Model,
 		Policy: config.ContextPolicy{
@@ -4288,9 +4298,9 @@ func subAgentDetailContextCompactions(in []agentharness.ThreadContextCompaction)
 	out := make([]observation.CompactionEvent, 0, len(in))
 	for _, compact := range in {
 		out = append(out, observation.CompactionEvent{
-			RunID:               compact.RunID,
-			ThreadID:            compact.ThreadID,
-			TurnID:              compact.TurnID,
+			RunID:               identity.RunID(compact.RunID),
+			ThreadID:            identity.ThreadID(compact.ThreadID),
+			TurnID:              identity.TurnID(compact.TurnID),
 			Step:                compact.Step,
 			OperationID:         compact.OperationID,
 			RequestID:           compact.RequestID,
@@ -4337,8 +4347,8 @@ func threadDetailEvent(in agentharness.SubAgentDetailEvent) ThreadDetailEvent {
 		ID:         in.ID,
 		Ordinal:    in.Ordinal,
 		ParentID:   in.ParentID,
-		ThreadID:   ThreadID(in.ThreadID),
-		TurnID:     TurnID(in.TurnID),
+		ThreadID:   identity.ThreadID(in.ThreadID),
+		TurnID:     identity.TurnID(in.TurnID),
 		Kind:       ThreadDetailEventKind(in.Kind),
 		Type:       in.Type,
 		CreatedAt:  in.CreatedAt,
@@ -4410,7 +4420,7 @@ func threadDetailToolResult(in *agentharness.SubAgentDetailToolResult) *ThreadDe
 	}
 	if in.FullOutput != nil {
 		out.FullOutput = &ArtifactRef{
-			ID:        ArtifactID(in.FullOutput.ID),
+			ID:        identity.ArtifactID(in.FullOutput.ID),
 			SafeLabel: in.FullOutput.SafeLabel,
 			Kind:      in.FullOutput.Kind,
 			MIME:      in.FullOutput.MIME,
@@ -4613,7 +4623,7 @@ func cloneThreadTurnProjectionSegment(in ThreadTurnProjectionSegment) ThreadTurn
 	return out
 }
 
-func threadIDStrings(ids []ThreadID) []string {
+func threadIDStrings(ids []identity.ThreadID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, string(id))
@@ -4874,10 +4884,10 @@ func runtimeEvent(ev event.Event) Event {
 	ev = sanitized
 	return Event{
 		Type:               ev.Type,
-		TraceID:            TraceID(ev.TraceID),
-		RunID:              RunID(ev.RunID),
-		ThreadID:           ThreadID(ev.ThreadID),
-		TurnID:             TurnID(ev.TurnID),
+		TraceID:            identity.TraceID(ev.TraceID),
+		RunID:              identity.RunID(ev.RunID),
+		ThreadID:           identity.ThreadID(ev.ThreadID),
+		TurnID:             identity.TurnID(ev.TurnID),
 		Step:               ev.Step,
 		Provider:           ev.Provider,
 		Model:              ev.Model,
@@ -4916,7 +4926,7 @@ func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
 		return nil
 	}
 	out := threadDetailEvent(detail)
-	out.RunID = RunID(sanitized.RunID)
+	out.RunID = identity.RunID(sanitized.RunID)
 	out.Step = sanitized.Step
 	if out.Ordinal == 0 {
 		out.Ordinal = int64FromMetadata(meta, "ordinal")
@@ -4948,10 +4958,10 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 	events := append(r.eventsByTurn[key], cloneThreadDetailEvent(*ev.Committed))
 	r.eventsByTurn[key] = events
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: ThreadID(threadID),
-		TurnID:   TurnID(turnID),
-		RunID:    RunID(runID),
-		TraceID:  TraceID(runID),
+		ThreadID: identity.ThreadID(threadID),
+		TurnID:   identity.TurnID(turnID),
+		RunID:    identity.RunID(runID),
+		TraceID:  identity.TraceID(runID),
 		Events:   cloneThreadDetailEvents(events),
 	})
 	return cloneThreadTurnProjectionPtr(&projection)
@@ -4974,12 +4984,12 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 		}
 		estimate, _ := meta["request_estimate"].(contextpolicy.RequestEstimate)
 		status := observation.ContextStatusFromRequest(observation.RequestObservation{
-			RunID:             ev.RunID,
-			ThreadID:          ev.ThreadID,
-			TurnID:            ev.TurnID,
+			RunID:             identity.RunID(ev.RunID),
+			ThreadID:          identity.ThreadID(ev.ThreadID),
+			TurnID:            identity.TurnID(ev.TurnID),
 			Step:              ev.Step,
 			RequestID:         stringFromMetadata(meta, "request_id"),
-			LogicalRequestID:  stringFromMetadata(meta, "logical_request_id"),
+			LogicalRequestID:  identity.LogicalRequestID(stringFromMetadata(meta, "logical_request_id")),
 			Attempt:           intFromMetadata(meta, "attempt"),
 			Provider:          ev.Provider,
 			Model:             ev.Model,
@@ -4994,12 +5004,12 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 			return nil
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
-			RunID:            ev.RunID,
-			ThreadID:         ev.ThreadID,
-			TurnID:           ev.TurnID,
+			RunID:            identity.RunID(ev.RunID),
+			ThreadID:         identity.ThreadID(ev.ThreadID),
+			TurnID:           identity.TurnID(ev.TurnID),
 			Step:             ev.Step,
 			RequestID:        status.RequestID,
-			LogicalRequestID: status.LogicalRequestID,
+			LogicalRequestID: identity.LogicalRequestID(status.LogicalRequestID),
 			Attempt:          status.Attempt,
 			Provider:         ev.Provider,
 			Model:            ev.Model,
@@ -5036,9 +5046,9 @@ func runtimeCompactionEventWithError(raw, sanitized event.Event, sanitizedError 
 		return nil
 	}
 	out := observation.CompactionEvent{
-		RunID:               sanitized.RunID,
-		ThreadID:            sanitized.ThreadID,
-		TurnID:              sanitized.TurnID,
+		RunID:               identity.RunID(sanitized.RunID),
+		ThreadID:            identity.ThreadID(sanitized.ThreadID),
+		TurnID:              identity.TurnID(sanitized.TurnID),
 		Step:                sanitized.Step,
 		OperationID:         stringFromMetadata(meta, "operation_id"),
 		RequestID:           stringFromMetadata(meta, "request_id"),
@@ -5105,9 +5115,9 @@ func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedE
 		return nil
 	}
 	out := observation.CompactionDebugEvent{
-		RunID:                            sanitized.RunID,
-		ThreadID:                         sanitized.ThreadID,
-		TurnID:                           sanitized.TurnID,
+		RunID:                            identity.RunID(sanitized.RunID),
+		ThreadID:                         identity.ThreadID(sanitized.ThreadID),
+		TurnID:                           identity.TurnID(sanitized.TurnID),
 		Step:                             sanitized.Step,
 		OperationID:                      stringFromMetadata(meta, "operation_id"),
 		RequestID:                        stringFromMetadata(meta, "request_id"),
@@ -5387,10 +5397,10 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.Sanitize(ev)
 	return observation.Event{
 		Type:               sanitized.Type,
-		TraceID:            sanitized.TraceID,
-		RunID:              sanitized.RunID,
-		ThreadID:           sanitized.ThreadID,
-		TurnID:             sanitized.TurnID,
+		TraceID:            identity.TraceID(sanitized.TraceID),
+		RunID:              identity.RunID(sanitized.RunID),
+		ThreadID:           identity.ThreadID(sanitized.ThreadID),
+		TurnID:             identity.TurnID(sanitized.TurnID),
 		Step:               sanitized.Step,
 		Provider:           sanitized.Provider,
 		Model:              sanitized.Model,
@@ -5415,15 +5425,8 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 	}
 }
 
-func cloneActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
-	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
-	out.Payload = cloneAnyMap(in.Payload)
-	return &out
+func cloneActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
+	return tools.CloneActivityPresentation(in)
 }
 
 func cloneRuntimeActivityTimeline(in observation.ActivityTimeline) observation.ActivityTimeline {

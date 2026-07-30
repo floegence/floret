@@ -10,24 +10,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/internal/configbridge"
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/compaction"
-	"github.com/floegence/floret/v2/observation"
-	publicprovider "github.com/floegence/floret/v2/provider"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/configbridge"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/compaction"
+	publicprovider "github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type ManualCompactionPollRequest struct {
-	RunID         RunID         `json:"run_id,omitempty"`
-	ThreadID      ThreadID      `json:"thread_id,omitempty"`
-	TurnID        TurnID        `json:"turn_id,omitempty"`
-	TraceID       TraceID       `json:"trace_id,omitempty"`
-	PromptScopeID PromptScopeID `json:"prompt_scope_id,omitempty"`
-	Step          int           `json:"step,omitempty"`
+	RunID         identity.RunID         `json:"run_id,omitempty"`
+	ThreadID      identity.ThreadID      `json:"thread_id,omitempty"`
+	TurnID        identity.TurnID        `json:"turn_id,omitempty"`
+	TraceID       identity.TraceID       `json:"trace_id,omitempty"`
+	PromptScopeID identity.PromptScopeID `json:"prompt_scope_id,omitempty"`
+	Step          int                    `json:"step,omitempty"`
 }
 
 type ManualCompactionRequest struct {
@@ -39,7 +39,7 @@ type ManualCompactionRequest struct {
 // ManualCompactionOperationID returns the Floret operation identity that links
 // the start, debug, complete, and failed observations for a projected manual
 // compaction at the given provider-loop step.
-func ManualCompactionOperationID(runID RunID, step int, requestID string) string {
+func ManualCompactionOperationID(runID identity.RunID, step int, requestID string) string {
 	return engine.CompactionOperationID(string(runID), step, compaction.TriggerManual, compaction.ReasonManual, requestID)
 }
 
@@ -51,11 +51,11 @@ type ManualCompactionSource interface {
 // surface. Hosts may use it to refresh tool visibility, hosted tools, prompt
 // instructions, and host context between provider requests and tool dispatch.
 type ToolSurfaceRequest struct {
-	RunID         RunID
-	ThreadID      ThreadID
-	TurnID        TurnID
-	TraceID       TraceID
-	PromptScopeID PromptScopeID
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	TraceID       identity.TraceID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	Phase         string
 	Labels        RunLabels
@@ -126,11 +126,11 @@ type modelGatewayIdentity struct {
 
 // modelRequest is the host-safe model request shape passed to modelGateway.
 type modelRequest struct {
-	RunID           RunID
-	ThreadID        ThreadID
-	TurnID          TurnID
-	TraceID         TraceID
-	PromptScopeID   PromptScopeID
+	RunID           identity.RunID
+	ThreadID        identity.ThreadID
+	TurnID          identity.TurnID
+	TraceID         identity.TraceID
+	PromptScopeID   identity.PromptScopeID
 	Step            int
 	Provider        string
 	Model           string
@@ -343,20 +343,21 @@ const (
 
 // TurnSignal is a host-safe projection of a signal tool call.
 type TurnSignal struct {
-	Disposition SignalDisposition                 `json:"disposition"`
-	Name        string                            `json:"name"`
-	CallID      string                            `json:"call_id,omitempty"`
-	Payload     map[string]any                    `json:"payload,omitempty"`
-	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
-	OutputText  string                            `json:"output_text,omitempty"`
-	ArgsHash    string                            `json:"args_hash,omitempty"`
-	Labels      map[string]string                 `json:"labels,omitempty"`
+	Disposition SignalDisposition           `json:"disposition"`
+	Name        string                      `json:"name"`
+	CallID      string                      `json:"call_id,omitempty"`
+	Payload     map[string]any              `json:"payload,omitempty"`
+	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
+	OutputText  string                      `json:"output_text,omitempty"`
+	ArgsHash    string                      `json:"args_hash,omitempty"`
+	Labels      map[string]string           `json:"labels,omitempty"`
 }
 
 // TurnSignalSpec lets a host declare provider-visible signal tools without
 // importing Floret implementation packages.
 type TurnSignalSpec struct {
 	Definitions []tools.ToolDefinition
+	Identity    string
 	Project     func(tools.ToolCall) (TurnSignal, bool, error)
 }
 
@@ -376,11 +377,11 @@ func (s manualCompactionSourceAdapter) PollManualCompaction(ctx context.Context,
 		return engine.ManualCompactionRequest{}, false, nil
 	}
 	manual, ok, err := s.source.PollManualCompaction(ctx, ManualCompactionPollRequest{
-		RunID:         RunID(req.RunID),
-		ThreadID:      ThreadID(req.ThreadID),
-		TurnID:        TurnID(req.TurnID),
-		TraceID:       TraceID(req.TraceID),
-		PromptScopeID: PromptScopeID(req.PromptScopeID),
+		RunID:         identity.RunID(req.RunID),
+		ThreadID:      identity.ThreadID(req.ThreadID),
+		TurnID:        identity.TurnID(req.TurnID),
+		TraceID:       identity.TraceID(req.TraceID),
+		PromptScopeID: identity.PromptScopeID(req.PromptScopeID),
 		Step:          req.Step,
 	})
 	if err != nil || !ok {
@@ -650,16 +651,16 @@ func (p modelGatewayProvider) modelRequest(req provider.Request) (modelRequest, 
 		return modelRequest{}, err
 	}
 	return modelRequest{
-		RunID:           RunID(req.RunID),
-		ThreadID:        ThreadID(req.ThreadID),
-		TurnID:          TurnID(req.TurnID),
-		TraceID:         TraceID(req.TraceID),
-		PromptScopeID:   PromptScopeID(req.PromptScopeID),
+		RunID:           identity.RunID(req.RunID),
+		ThreadID:        identity.ThreadID(req.ThreadID),
+		TurnID:          identity.TurnID(req.TurnID),
+		TraceID:         identity.TraceID(req.TraceID),
+		PromptScopeID:   identity.PromptScopeID(req.PromptScopeID),
 		Step:            req.Step,
 		Provider:        p.identity.Provider,
 		Model:           p.identity.Model,
 		Messages:        messages,
-		Tools:           runtimeToolDefinitions(req.Tools),
+		Tools:           normalizeToolDefinitions(req.Tools),
 		HostedTools:     runtimeHostedToolDefinitions(req.HostedTools),
 		MaxOutputTokens: req.MaxOutputTokens,
 		Reasoning:       configbridge.PublicReasoningSelection(req.Reasoning),
@@ -956,22 +957,6 @@ func validateModelMessageSequence(messages []modelMessage) error {
 	return nil
 }
 
-func runtimeToolDefinitions(defs []provider.ToolDefinition) []tools.ToolDefinition {
-	out := make([]tools.ToolDefinition, 0, len(defs))
-	for _, def := range defs {
-		out = append(out, tools.ToolDefinition{
-			Name:         def.Name,
-			Title:        def.Title,
-			Description:  def.Description,
-			InputSchema:  cloneAnyMap(def.InputSchema),
-			OutputSchema: cloneAnyMap(def.OutputSchema),
-			Strict:       def.Strict,
-			Annotations:  cloneAnyMap(def.Annotations),
-		})
-	}
-	return out
-}
-
 func runtimeHostedToolDefinitions(defs []provider.HostedToolDefinition) []publicprovider.HostedToolDefinition {
 	out := make([]publicprovider.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -1187,11 +1172,11 @@ func runtimeToolSurfaceProvider(provider ToolSurfaceProvider) engine.ToolSurface
 	}
 	return func(ctx context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
 		surface, err := provider(ctx, ToolSurfaceRequest{
-			RunID:         RunID(req.RunID),
-			ThreadID:      ThreadID(req.ThreadID),
-			TurnID:        TurnID(req.TurnID),
-			TraceID:       TraceID(req.TraceID),
-			PromptScopeID: PromptScopeID(req.PromptScopeID),
+			RunID:         identity.RunID(req.RunID),
+			ThreadID:      identity.ThreadID(req.ThreadID),
+			TurnID:        identity.TurnID(req.TurnID),
+			TraceID:       identity.TraceID(req.TraceID),
+			PromptScopeID: identity.PromptScopeID(req.PromptScopeID),
 			Step:          req.Step,
 			Phase:         strings.TrimSpace(req.Phase),
 			Labels:        publicRunLabels(req.Labels),
@@ -1202,7 +1187,7 @@ func runtimeToolSurfaceProvider(provider ToolSurfaceProvider) engine.ToolSurface
 		}
 		return engine.ToolSurface{
 			Tools:                 surface.Tools,
-			ToolDefinitions:       providerToolDefinitionsFromRuntime(surface.ToolDefinitions),
+			ToolDefinitions:       normalizeToolDefinitions(surface.ToolDefinitions),
 			HostedToolDefinitions: providerHostedToolDefinitions(surface.HostedToolDefinitions),
 			SystemPrompt:          surface.SystemPrompt,
 			HostContext:           cloneStringMap(surface.HostContext),
@@ -1219,17 +1204,17 @@ func publicRunLabels(in engine.RunLabels) RunLabels {
 	}
 }
 
-func providerToolDefinitionsFromRuntime(defs []tools.ToolDefinition) []provider.ToolDefinition {
+func normalizeToolDefinitions(defs []tools.ToolDefinition) []tools.ToolDefinition {
 	if defs == nil {
 		return nil
 	}
-	out := make([]provider.ToolDefinition, 0, len(defs))
+	out := make([]tools.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		name := strings.TrimSpace(def.Name)
 		if name == "" {
 			continue
 		}
-		out = append(out, provider.ToolDefinition{
+		out = append(out, tools.ToolDefinition{
 			Name:         name,
 			Title:        strings.TrimSpace(def.Title),
 			Description:  strings.TrimSpace(def.Description),
@@ -1282,21 +1267,21 @@ func engineTurnSignalSpec(spec TurnSignalSpec, policy engine.CompletionPolicy) (
 			return engine.ControlSpec{}, errors.New("signal spec is required when completion policy is explicit_signal")
 		}
 		return engine.ControlSpec{
-			Definitions: []provider.ToolDefinition{},
+			Definitions: []tools.ToolDefinition{},
 			Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) {
 				return engine.ControlSignal{}, false, nil
 			},
 		}, nil
 	}
 	out := engine.ControlSpec{
-		Definitions: make([]provider.ToolDefinition, 0, len(spec.Definitions)),
+		Definitions: make([]tools.ToolDefinition, 0, len(spec.Definitions)),
 	}
 	for _, def := range spec.Definitions {
 		name := strings.TrimSpace(def.Name)
 		if name == "" {
 			continue
 		}
-		out.Definitions = append(out.Definitions, provider.ToolDefinition{
+		out.Definitions = append(out.Definitions, tools.ToolDefinition{
 			Name:         name,
 			Title:        strings.TrimSpace(def.Title),
 			Description:  strings.TrimSpace(def.Description),

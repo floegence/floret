@@ -6,7 +6,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const (
@@ -41,32 +43,32 @@ func (s ContextDisplayStatus) Valid() bool {
 }
 
 type Event struct {
-	Type               EventType             `json:"type"`
-	TraceID            string                `json:"trace_id,omitempty"`
-	RunID              string                `json:"run_id,omitempty"`
-	ThreadID           string                `json:"thread_id,omitempty"`
-	TurnID             string                `json:"turn_id,omitempty"`
-	Step               int                   `json:"step,omitempty"`
-	Provider           string                `json:"provider,omitempty"`
-	Model              string                `json:"model,omitempty"`
-	Message            string                `json:"message,omitempty"`
-	Result             string                `json:"result,omitempty"`
-	Error              string                `json:"error,omitempty"`
-	ToolID             string                `json:"tool_id,omitempty"`
-	ToolName           string                `json:"tool_name,omitempty"`
-	ToolKind           string                `json:"tool_kind,omitempty"`
-	ArgsHash           string                `json:"args_hash,omitempty"`
-	DurationMS         int64                 `json:"duration_ms,omitempty"`
-	FinishReason       FinishReason          `json:"finish_reason,omitempty"`
-	RawFinishReason    string                `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                  `json:"finish_inferred,omitempty"`
-	CompletionReason   CompletionReason      `json:"completion_reason,omitempty"`
-	ContinuationReason ContinuationReason    `json:"continuation_reason,omitempty"`
-	Activity           *ActivityPresentation `json:"activity,omitempty"`
-	Compaction         *CompactionEvent      `json:"compaction,omitempty"`
-	CompactionDebug    *CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Metadata           map[string]any        `json:"metadata,omitempty"`
-	ObservedAt         time.Time             `json:"observed_at"`
+	Type               EventType                   `json:"type"`
+	TraceID            identity.TraceID            `json:"trace_id,omitempty"`
+	RunID              identity.RunID              `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID           `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID             `json:"turn_id,omitempty"`
+	Step               int                         `json:"step,omitempty"`
+	Provider           string                      `json:"provider,omitempty"`
+	Model              string                      `json:"model,omitempty"`
+	Message            string                      `json:"message,omitempty"`
+	Result             string                      `json:"result,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	ToolID             string                      `json:"tool_id,omitempty"`
+	ToolName           string                      `json:"tool_name,omitempty"`
+	ToolKind           string                      `json:"tool_kind,omitempty"`
+	ArgsHash           string                      `json:"args_hash,omitempty"`
+	DurationMS         int64                       `json:"duration_ms,omitempty"`
+	FinishReason       FinishReason                `json:"finish_reason,omitempty"`
+	RawFinishReason    string                      `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                        `json:"finish_inferred,omitempty"`
+	CompletionReason   CompletionReason            `json:"completion_reason,omitempty"`
+	ContinuationReason ContinuationReason          `json:"continuation_reason,omitempty"`
+	Activity           *tools.ActivityPresentation `json:"activity,omitempty"`
+	Compaction         *CompactionEvent            `json:"compaction,omitempty"`
+	CompactionDebug    *CompactionDebugEvent       `json:"compaction_debug,omitempty"`
+	Metadata           map[string]any              `json:"metadata,omitempty"`
+	ObservedAt         time.Time                   `json:"observed_at"`
 }
 
 type ProviderUsage struct {
@@ -93,54 +95,54 @@ func (u ProviderUsage) Normalized() ProviderUsage {
 }
 
 type RequestObservation struct {
-	RunID             string                 `json:"run_id,omitempty"`
-	ThreadID          string                 `json:"thread_id,omitempty"`
-	TurnID            string                 `json:"turn_id,omitempty"`
-	Step              int                    `json:"step"`
-	RequestID         string                 `json:"request_id,omitempty"`
-	LogicalRequestID  string                 `json:"logical_request_id,omitempty"`
-	Attempt           int                    `json:"attempt,omitempty"`
-	Provider          string                 `json:"provider"`
-	Model             string                 `json:"model"`
-	ObservedAt        time.Time              `json:"observed_at"`
-	RequestEstimate   config.RequestEstimate `json:"request_estimate,omitempty"`
-	ProjectedPressure config.ContextPressure `json:"projected_context_pressure,omitempty"`
+	RunID             identity.RunID            `json:"run_id,omitempty"`
+	ThreadID          identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID            identity.TurnID           `json:"turn_id,omitempty"`
+	Step              int                       `json:"step"`
+	RequestID         string                    `json:"request_id,omitempty"`
+	LogicalRequestID  identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt           int                       `json:"attempt,omitempty"`
+	Provider          string                    `json:"provider"`
+	Model             string                    `json:"model"`
+	ObservedAt        time.Time                 `json:"observed_at"`
+	RequestEstimate   config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ProjectedPressure config.ContextPressure    `json:"projected_context_pressure,omitempty"`
 }
 
 type ProviderUsageObservation struct {
-	RunID            string                 `json:"run_id,omitempty"`
-	ThreadID         string                 `json:"thread_id,omitempty"`
-	TurnID           string                 `json:"turn_id,omitempty"`
-	Step             int                    `json:"step,omitempty"`
-	RequestID        string                 `json:"request_id,omitempty"`
-	LogicalRequestID string                 `json:"logical_request_id,omitempty"`
-	Attempt          int                    `json:"attempt,omitempty"`
-	Provider         string                 `json:"provider,omitempty"`
-	Model            string                 `json:"model,omitempty"`
-	ObservedAt       time.Time              `json:"observed_at"`
-	Usage            ProviderUsage          `json:"usage,omitempty"`
-	RequestEstimate  config.RequestEstimate `json:"request_estimate,omitempty"`
-	ContextPressure  config.ContextPressure `json:"context_pressure,omitempty"`
+	RunID            identity.RunID            `json:"run_id,omitempty"`
+	ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID           identity.TurnID           `json:"turn_id,omitempty"`
+	Step             int                       `json:"step,omitempty"`
+	RequestID        string                    `json:"request_id,omitempty"`
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt          int                       `json:"attempt,omitempty"`
+	Provider         string                    `json:"provider,omitempty"`
+	Model            string                    `json:"model,omitempty"`
+	ObservedAt       time.Time                 `json:"observed_at"`
+	Usage            ProviderUsage             `json:"usage,omitempty"`
+	RequestEstimate  config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ContextPressure  config.ContextPressure    `json:"context_pressure,omitempty"`
 }
 
 type ContextStatus struct {
-	RunID            string                 `json:"run_id,omitempty"`
-	ThreadID         string                 `json:"thread_id,omitempty"`
-	TurnID           string                 `json:"turn_id,omitempty"`
-	Step             int                    `json:"step,omitempty"`
-	RequestID        string                 `json:"request_id,omitempty"`
-	LogicalRequestID string                 `json:"logical_request_id,omitempty"`
-	Attempt          int                    `json:"attempt,omitempty"`
-	Phase            ContextPhase           `json:"phase"`
-	Provider         string                 `json:"provider,omitempty"`
-	Model            string                 `json:"model,omitempty"`
-	ObservedAt       time.Time              `json:"observed_at"`
-	Usage            ProviderUsage          `json:"usage,omitempty"`
-	RequestEstimate  config.RequestEstimate `json:"request_estimate,omitempty"`
-	ContextPressure  config.ContextPressure `json:"context_pressure,omitempty"`
-	UsedRatio        float64                `json:"used_ratio,omitempty"`
-	ThresholdRatio   float64                `json:"threshold_ratio,omitempty"`
-	Status           ContextDisplayStatus   `json:"status"`
+	RunID            identity.RunID            `json:"run_id,omitempty"`
+	ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID           identity.TurnID           `json:"turn_id,omitempty"`
+	Step             int                       `json:"step,omitempty"`
+	RequestID        string                    `json:"request_id,omitempty"`
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt          int                       `json:"attempt,omitempty"`
+	Phase            ContextPhase              `json:"phase"`
+	Provider         string                    `json:"provider,omitempty"`
+	Model            string                    `json:"model,omitempty"`
+	ObservedAt       time.Time                 `json:"observed_at"`
+	Usage            ProviderUsage             `json:"usage,omitempty"`
+	RequestEstimate  config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ContextPressure  config.ContextPressure    `json:"context_pressure,omitempty"`
+	UsedRatio        float64                   `json:"used_ratio,omitempty"`
+	ThresholdRatio   float64                   `json:"threshold_ratio,omitempty"`
+	Status           ContextDisplayStatus      `json:"status"`
 }
 
 func (s ContextStatus) Validate() error {
@@ -159,7 +161,7 @@ func ContextStatusFromRequest(req RequestObservation) ContextStatus {
 		ThreadID:         req.ThreadID,
 		TurnID:           req.TurnID,
 		Step:             req.Step,
-		RequestID:        requestIDOrDefault(req.RequestID, req.RunID, req.Step),
+		RequestID:        requestIDOrDefault(req.RequestID, req.RunID.String(), req.Step),
 		LogicalRequestID: req.LogicalRequestID,
 		Attempt:          req.Attempt,
 		Phase:            ContextPhaseProjectedRequest,
@@ -319,7 +321,7 @@ func ContextPressureThresholdRatio(pressure config.ContextPressure) float64 {
 type providerUsageContextStatus struct {
 	Phase            string
 	RequestID        string
-	LogicalRequestID string
+	LogicalRequestID identity.LogicalRequestID
 	Attempt          int
 	Usage            ProviderUsage
 	RequestEstimate  config.RequestEstimate
@@ -338,7 +340,7 @@ func providerUsageContextStatusFromMetadata(meta map[string]any) (providerUsageC
 	return providerUsageContextStatus{
 		Phase:            phase,
 		RequestID:        stringFromAny(meta["request_id"]),
-		LogicalRequestID: stringFromAny(meta["logical_request_id"]),
+		LogicalRequestID: identity.LogicalRequestID(stringFromAny(meta["logical_request_id"])),
 		Attempt:          intFromAny(meta["attempt"], 0),
 		Usage:            providerUsageFromAny(meta["usage"]),
 		RequestEstimate:  requestEstimateFromAny(meta["request_estimate"]),

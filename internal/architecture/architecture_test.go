@@ -14,12 +14,12 @@ import (
 	"strings"
 	"testing"
 
-	floretRuntime "github.com/floegence/floret/v2/runtime"
-	floretTools "github.com/floegence/floret/v2/tools"
+	floretRuntime "github.com/floegence/floret/v3/runtime"
+	floretTools "github.com/floegence/floret/v3/tools"
 )
 
 const (
-	modulePath        = "github.com/floegence/floret/v2"
+	modulePath        = "github.com/floegence/floret/v3"
 	redevenModulePath = "github.com/floegence/redeven"
 )
 
@@ -59,10 +59,12 @@ func TestPublicPackageAllowlist(t *testing.T) {
 		t.Fatalf("go list ./...: %v", err)
 	}
 	allowed := map[string]bool{
+		modulePath + "/identity":    true,
 		modulePath + "/config":      true,
 		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
 		modulePath + "/storage":     true,
+		modulePath + "/storage/spi": true,
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 	}
@@ -81,7 +83,7 @@ func TestPublicPackageAllowlist(t *testing.T) {
 }
 
 func TestProductionPublicPackagesHavePackageDocumentation(t *testing.T) {
-	for _, dir := range []string{"config", "provider", "runtime", "storage", "tools", "observation"} {
+	for _, dir := range []string{"identity", "config", "provider", "runtime", "storage", "storage/spi", "tools", "observation"} {
 		fset := token.NewFileSet()
 		packages, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
 			return !strings.HasSuffix(info.Name(), "_test.go")
@@ -89,19 +91,20 @@ func TestProductionPublicPackagesHavePackageDocumentation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse public package %s: %v", dir, err)
 		}
-		pkg := packages[dir]
+		pkg := packages[filepath.Base(dir)]
 		if pkg == nil {
 			t.Fatalf("public package %s is missing", dir)
 		}
 		hasPackageComment := false
+		packageName := filepath.Base(dir)
 		for _, file := range pkg.Files {
-			if file.Doc != nil && strings.HasPrefix(strings.TrimSpace(file.Doc.Text()), "Package "+dir) {
+			if file.Doc != nil && strings.HasPrefix(strings.TrimSpace(file.Doc.Text()), "Package "+packageName) {
 				hasPackageComment = true
 				break
 			}
 		}
 		if !hasPackageComment {
-			t.Fatalf("public package %s requires a Package %s comment", dir, dir)
+			t.Fatalf("public package %s requires a Package %s comment", dir, packageName)
 		}
 	}
 }
@@ -113,6 +116,7 @@ func TestFloretTestIsTheOnlyTestOnlyPublicPackage(t *testing.T) {
 		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
 		modulePath + "/storage":     true,
+		modulePath + "/storage/spi": true,
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 		modulePath + "/florettest":  true,
@@ -144,6 +148,7 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 		"config":      true,
 		"florettest":  true,
 		"internal":    true,
+		"identity":    true,
 		"observation": true,
 		"okf":         true,
 		"provider":    true,
@@ -271,22 +276,20 @@ func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
 			t.Fatalf("go doc -all %s: %v\n%s", pkg, err, out)
 		}
 		text := string(out)
-		for _, forbidden := range []string{
-			"/internal/",
-			"agentharness.",
-			"artifact.",
-			"builtin.",
-			"cache.",
-			"contextpolicy.",
-			"engine.",
-			"event.",
-			"mcp.",
-			"session.",
-			"sessiontree.",
-			"skills.",
+		if strings.Contains(text, "/internal/") {
+			t.Fatalf("%s public docs expose an internal import path", pkg)
+		}
+		for _, internalQualifier := range []string{
+			"agentharness", "artifact", "builtin", "cache",
+			"contextpolicy", "engine", "event", "mcp",
+			"session", "sessiontree", "skills",
 		} {
-			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s public docs expose internal contract %q", pkg, forbidden)
+			// go doc renders exported contract references as qualifier.ExportedName.
+			// Requiring an exported identifier avoids treating ordinary prose such
+			// as "this event." as a leaked Go contract.
+			leakedContract := regexp.MustCompile(`(?:^|[^[:alnum:]_])` + regexp.QuoteMeta(internalQualifier) + `\.[A-Z][[:alnum:]_]*`)
+			if leakedContract.MatchString(text) {
+				t.Fatalf("%s public docs expose internal contract qualifier %q", pkg, internalQualifier)
 			}
 		}
 	}
@@ -309,13 +312,13 @@ func TestRootPackageIsNotPublicAPI(t *testing.T) {
 	}
 }
 
-func TestModuleUsesV2SemanticImportPath(t *testing.T) {
+func TestModuleUsesV3SemanticImportPath(t *testing.T) {
 	data, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), "module github.com/floegence/floret/v2\n") {
-		t.Fatal("Floret v2 must use the /v2 semantic import path")
+	if !strings.HasPrefix(string(data), "module github.com/floegence/floret/v3\n") {
+		t.Fatal("Floret v3 must use the /v3 semantic import path")
 	}
 }
 
@@ -342,9 +345,10 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 func TestReadmeOnlyDocumentsDownstreamIntegrationSurface(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{
-		"runtime.Open", "runtime.NewAgent", "runtime.Host", "TurnRunner",
-		"provider.Gateway", "storage.Backend", "storage.Memory", "storage.SQLite",
-		"tools", "observation", "migrate-v2 --path",
+		"runtime.Open", "runtime.NewAgent", "runtime.Host", "Host.Threads",
+		"Host.Thread", "Thread.Snapshot", "Thread.Subscribe", "Host.Shutdown(ctx)",
+		"provider.Gateway", "storage.Source", "storage.Memory", "storage.SQLite",
+		"tools", "observation",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README downstream integration surface is missing API %q", want)
@@ -399,8 +403,8 @@ func TestRuntimePublicAPIDoesNotExposeContextLifecycleBackdoors(t *testing.T) {
 }
 
 func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
-	text := readTextFile(t, filepath.Join("runtime", "runtime.go")) + "\n" + readTextFile(t, filepath.Join("runtime", "thread_capabilities.go"))
-	for _, want := range []string{"type CreateThreadRequest struct", ") CreateThread("} {
+	text := readTextFile(t, filepath.Join("runtime", "v3_host.go"))
+	for _, want := range []string{"type CreateThreadCommand struct", "func (threads *Threads) CreateThread("} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runtime public API is missing explicit thread creation contract %q", want)
 		}
@@ -509,43 +513,25 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	}
 
 	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
-		"Close", "InterruptedTurnRecovery", "PendingToolRecovery", "SubAgentManager", "SubAgentReader",
-		"ThreadCompactor", "ThreadCreator", "ThreadDeleter", "ThreadForker", "ThreadInventory",
-		"ThreadReader", "ThreadTitleEditor", "TurnRunner")
+		"Shutdown", "Thread", "Threads")
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
-	exact("ThreadCreator", reflect.TypeOf((*floretRuntime.ThreadCreator)(nil)), "Create")
-	exact("ThreadReader", reflect.TypeOf((*floretRuntime.ThreadReader)(nil)),
-		"ListDetailEvents", "ListPendingToolTargets", "ListTurns", "Read", "ReadAgentTodos",
-		"ReadApprovalQueue", "ReadArtifact", "ReadContext", "ReadOverview", "ReadProjection", "ReadTurn")
-	exact("ThreadTitleEditor", reflect.TypeOf((*floretRuntime.ThreadTitleEditor)(nil)), "Set")
-	exact("ThreadForker", reflect.TypeOf((*floretRuntime.ThreadForker)(nil)), "Fork")
-	exact("ThreadDeleter", reflect.TypeOf((*floretRuntime.ThreadDeleter)(nil)), "Delete")
-	exact("TurnRunner", reflect.TypeOf((*floretRuntime.TurnRunner)(nil)),
-		"CompletePendingTool", "ResolveApproval", "Retry", "Run", "SettlePendingTool", "UpdateAgentTodos")
-	exact("ThreadCompactor", reflect.TypeOf((*floretRuntime.ThreadCompactor)(nil)), "Compact")
-	exact("SubAgentManager", reflect.TypeOf((*floretRuntime.SubAgentManager)(nil)),
-		"Close", "PublishPendingToolCompletion", "SendInput", "SettlePendingTool", "Spawn", "Wait")
-	exact("SubAgentReader", reflect.TypeOf((*floretRuntime.SubAgentReader)(nil)),
-		"ActivityTimeline", "List", "ListPendingToolTargets", "ListTurns", "ReadArtifact", "ReadDetail", "ReadTurn")
-	exact("PendingToolRecovery", reflect.TypeOf((*floretRuntime.PendingToolRecovery)(nil)), "Settle")
-	exact("InterruptedTurnRecovery", reflect.TypeOf((*floretRuntime.InterruptedTurnRecovery)(nil)), "Recover")
-	exact("ThreadInventory", reflect.TypeOf((*floretRuntime.ThreadInventory)(nil)), "List")
+	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
+	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
+		"Child", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Snapshot", "SubAgents", "Subscribe", "Turns")
+	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
+		"ContinuePendingTool", "RecordPendingToolOutcome", "ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
+	exact("Subscription", reflect.TypeOf((*floretRuntime.Subscription)(nil)), "Close", "Next")
 
 	for name, typ := range map[string]reflect.Type{
-		"Host":                    reflect.TypeOf(floretRuntime.Host{}),
-		"Agent":                   reflect.TypeOf(floretRuntime.Agent{}),
-		"ThreadCreator":           reflect.TypeOf(floretRuntime.ThreadCreator{}),
-		"ThreadReader":            reflect.TypeOf(floretRuntime.ThreadReader{}),
-		"ThreadTitleEditor":       reflect.TypeOf(floretRuntime.ThreadTitleEditor{}),
-		"ThreadForker":            reflect.TypeOf(floretRuntime.ThreadForker{}),
-		"ThreadDeleter":           reflect.TypeOf(floretRuntime.ThreadDeleter{}),
-		"TurnRunner":              reflect.TypeOf(floretRuntime.TurnRunner{}),
-		"ThreadCompactor":         reflect.TypeOf(floretRuntime.ThreadCompactor{}),
-		"SubAgentManager":         reflect.TypeOf(floretRuntime.SubAgentManager{}),
-		"SubAgentReader":          reflect.TypeOf(floretRuntime.SubAgentReader{}),
-		"PendingToolRecovery":     reflect.TypeOf(floretRuntime.PendingToolRecovery{}),
-		"InterruptedTurnRecovery": reflect.TypeOf(floretRuntime.InterruptedTurnRecovery{}),
-		"ThreadInventory":         reflect.TypeOf(floretRuntime.ThreadInventory{}),
+		"Host":             reflect.TypeOf(floretRuntime.Host{}),
+		"Agent":            reflect.TypeOf(floretRuntime.Agent{}),
+		"Threads":          reflect.TypeOf(floretRuntime.Threads{}),
+		"Thread":           reflect.TypeOf(floretRuntime.Thread{}),
+		"Turns":            reflect.TypeOf(floretRuntime.Turns{}),
+		"Child":            reflect.TypeOf(floretRuntime.Child{}),
+		"DescendantReader": reflect.TypeOf(floretRuntime.DescendantReader{}),
+		"SubAgents":        reflect.TypeOf(floretRuntime.SubAgents{}),
+		"Subscription":     reflect.TypeOf(floretRuntime.Subscription{}),
 	} {
 		for index := 0; index < typ.NumField(); index++ {
 			if typ.Field(index).PkgPath == "" {
@@ -568,8 +554,6 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	}
 	exactFields("ArtifactRef", reflect.TypeOf(floretRuntime.ArtifactRef{}),
 		"ID", "Kind", "MIME", "SHA256", "SafeLabel", "SizeBytes")
-	exactFields("ReadArtifactRequest", reflect.TypeOf(floretRuntime.ReadArtifactRequest{}),
-		"ArtifactID", "ThreadID")
 	exactFields("ArtifactContent", reflect.TypeOf(floretRuntime.ArtifactContent{}), "Ref", "Text")
 }
 
@@ -642,22 +626,14 @@ func TestBoundHandleRequestsDoNotRepeatBoundIdentity(t *testing.T) {
 		typ       reflect.Type
 		forbidden []string
 	}{
-		"TurnRequest":                          {reflect.TypeOf(floretRuntime.TurnRequest{}), []string{"ThreadID"}},
-		"ThreadForkRequest":                    {reflect.TypeOf(floretRuntime.ThreadForkRequest{}), []string{"SourceThreadID"}},
-		"ThreadCompactionRequest":              {reflect.TypeOf(floretRuntime.ThreadCompactionRequest{}), []string{"ThreadID"}},
-		"SpawnSubAgent":                        {reflect.TypeOf(floretRuntime.SpawnSubAgent{}), []string{"ParentThreadID"}},
-		"SendSubAgentInput":                    {reflect.TypeOf(floretRuntime.SendSubAgentInput{}), []string{"ParentThreadID"}},
-		"PublishSubAgentPendingToolCompletion": {reflect.TypeOf(floretRuntime.PublishSubAgentPendingToolCompletion{}), []string{"ParentThreadID"}},
-		"WaitSubAgents":                        {reflect.TypeOf(floretRuntime.WaitSubAgents{}), []string{"ParentThreadID"}},
-		"CloseSubAgent":                        {reflect.TypeOf(floretRuntime.CloseSubAgent{}), []string{"ParentThreadID"}},
-		"SubAgentDetailRequest":                {reflect.TypeOf(floretRuntime.SubAgentDetailRequest{}), []string{"ParentThreadID"}},
-		"PendingToolRecoveryRequest":           {reflect.TypeOf(floretRuntime.PendingToolRecoveryRequest{}), []string{"ThreadID", "ParentThreadID", "Target", "TurnID", "RunID", "ToolCallID"}},
-		"ThreadTurnsRequest":                   {reflect.TypeOf(floretRuntime.ThreadTurnsRequest{}), []string{"ThreadID"}},
-		"ThreadDetailRequest":                  {reflect.TypeOf(floretRuntime.ThreadDetailRequest{}), []string{"ThreadID"}},
-		"AgentTodoUpdateRequest":               {reflect.TypeOf(floretRuntime.AgentTodoUpdateRequest{}), []string{"ThreadID"}},
-		"ApprovalResolutionRequest":            {reflect.TypeOf(floretRuntime.ApprovalResolutionRequest{}), []string{"ThreadID", "ExpectedRootThreadID"}},
-		"ActivePendingToolCompletion":          {reflect.TypeOf(floretRuntime.ActivePendingToolCompletion{}), []string{"ThreadID"}},
-		"ActivePendingToolSettlement":          {reflect.TypeOf(floretRuntime.ActivePendingToolSettlement{}), []string{"ThreadID"}},
+		"ThreadTurnsRequest":              {reflect.TypeOf(floretRuntime.ThreadTurnsRequest{}), []string{"ThreadID"}},
+		"ThreadDetailRequest":             {reflect.TypeOf(floretRuntime.ThreadDetailRequest{}), []string{"ThreadID"}},
+		"StartTurnCommand":                {reflect.TypeOf(floretRuntime.StartTurnCommand{}), []string{"ThreadID", "TurnID", "RunID"}},
+		"RetryTurnCommand":                {reflect.TypeOf(floretRuntime.RetryTurnCommand{}), []string{"ThreadID", "TurnID", "RunID"}},
+		"ContinuePendingToolCommand":      {reflect.TypeOf(floretRuntime.ContinuePendingToolCommand{}), []string{"ThreadID", "ContinuationTurnID", "ContinuationRunID"}},
+		"RecordPendingToolOutcomeCommand": {reflect.TypeOf(floretRuntime.RecordPendingToolOutcomeCommand{}), []string{"ThreadID"}},
+		"ResolveApprovalCommand":          {reflect.TypeOf(floretRuntime.ResolveApprovalCommand{}), []string{"ThreadID", "ExpectedRootThreadID"}},
+		"UpdateTodosCommand":              {reflect.TypeOf(floretRuntime.UpdateTodosCommand{}), []string{"ThreadID"}},
 	} {
 		for _, field := range contract.forbidden {
 			if _, ok := contract.typ.FieldByName(field); ok {
@@ -667,28 +643,7 @@ func TestBoundHandleRequestsDoNotRepeatBoundIdentity(t *testing.T) {
 	}
 }
 
-func TestV2PublicAPISurfaceMatchesBaseline(t *testing.T) {
-	root, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command("go", "run", "./internal/architecture/apibaseline", "-root", root)
-	command.Dir = root
-	command.Env = append(os.Environ(), "GOWORK=off")
-	actual, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("generate public API baseline: %v\n%s", err, actual)
-	}
-	expected, err := os.ReadFile(filepath.Join(root, "internal", "architecture", "testdata", "v2-public-api.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(actual) != string(expected) {
-		t.Fatalf("public API differs from the v2 baseline; update the baseline only with API decision docs and compatibility review\n%s", firstSurfaceDifference(string(expected), string(actual)))
-	}
-}
-
-func TestV2RemovesLegacyHostCapabilityGraph(t *testing.T) {
+func TestV3RemovesLegacyHostCapabilityGraph(t *testing.T) {
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -931,7 +886,7 @@ func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
 		t.Fatalf("runtime retry source fields are not turn-only: %v", retryType)
 	}
 	cursorType := reflect.TypeOf(floretRuntime.ThreadTurnCursor(""))
-	requestType := reflect.TypeOf(floretRuntime.ListThreadTurnsRequest{})
+	requestType := reflect.TypeOf(floretRuntime.ThreadTurnsRequest{})
 	pageType := reflect.TypeOf(floretRuntime.ThreadTurnsPage{})
 	turnType := reflect.TypeOf(floretRuntime.ThreadTurnSnapshot{})
 	originType := reflect.TypeOf(floretRuntime.ThreadUserMessageOrigin(""))
@@ -972,13 +927,13 @@ func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
 	}
 }
 
-func TestReadmePresentsTheCompleteV2Boundary(t *testing.T) {
+func TestReadmePresentsTheCompleteV3Boundary(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{
-		"github.com/floegence/floret/v2", "## Quick Start", "## Public Packages",
-		"## Composition Boundary", "## Agent Immutability", "## Storage",
-		"## v1 Migration", "## Source Of Truth", "provider.Gateway",
-		"florettest.RunBackendContract", "runtime.MigrationRequiredError",
+		"github.com/floegence/floret/v3", "## Quick Start", "## Public Packages",
+		"## Runtime Boundary", "## Consistent Reads", "## Storage",
+		"## Source Of Truth", "## Shutdown", "provider.Gateway",
+		"storage/spi", "ErrRevisionUnavailable",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README lost polished presentation marker %q", want)

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestSQLiteMigratesSchemaVersion15RetrySource(t *testing.T) {

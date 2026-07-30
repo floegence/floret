@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/configbridge"
-	internalprovider "github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/adapters"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/configbridge"
+	internalprovider "github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/adapters"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // OpenAICompatibleOptions configures an explicit OpenAI chat-completions
@@ -168,10 +169,10 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 
 func internalRequest(request Request, identity Identity) internalprovider.Request {
 	return internalprovider.Request{
-		RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID,
-		TraceID: request.TraceID, PromptScopeID: request.PromptScopeID, Step: request.Step,
+		RunID: request.RunID.String(), ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(),
+		TraceID: request.TraceID.String(), PromptScopeID: request.PromptScopeID.String(), Step: request.Step,
 		Provider: identity.Provider, Model: identity.Model, Messages: internalMessages(request.Messages),
-		Tools: internalToolDefinitions(request.Tools), HostedTools: internalHostedToolDefinitions(request.HostedTools),
+		Tools: cloneToolDefinitions(request.Tools), HostedTools: internalHostedToolDefinitions(request.HostedTools),
 		MaxOutputTokens: request.MaxOutputTokens, Reasoning: configbridge.ReasoningSelection(request.Reasoning),
 		PreviousState: internalState(request.PreviousState), Labels: internalprovider.RequestLabels{
 			Correlation: cloneStringMap(request.Labels.Correlation), Host: cloneStringMap(request.Labels.Host),
@@ -205,16 +206,8 @@ func internalMessages(messages []Message) []session.Message {
 	return output
 }
 
-func internalToolDefinitions(definitions []ToolDefinition) []internalprovider.ToolDefinition {
-	output := make([]internalprovider.ToolDefinition, len(definitions))
-	for index, definition := range definitions {
-		output[index] = internalprovider.ToolDefinition{
-			Name: definition.Name, Title: definition.Title, Description: definition.Description,
-			InputSchema: definition.InputSchema, OutputSchema: definition.OutputSchema,
-			Strict: definition.Strict, Annotations: definition.Annotations,
-		}
-	}
-	return output
+func cloneToolDefinitions(definitions []tools.ToolDefinition) []tools.ToolDefinition {
+	return append([]tools.ToolDefinition(nil), definitions...)
 }
 
 func internalHostedToolDefinitions(definitions []HostedToolDefinition) []internalprovider.HostedToolDefinition {

@@ -3,8 +3,9 @@ package sessiontree
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
+
+	"github.com/floegence/floret/v3/internal/activityview"
 	"time"
 )
 
@@ -102,8 +103,7 @@ func pendingToolRecoveryTarget(path []Entry, req SettlePendingToolRecoveryReques
 			continue
 		}
 		pendingFound = true
-		if entry.Message.Activity != nil && entry.Message.Activity.Payload != nil &&
-			strings.TrimSpace(fmt.Sprint(entry.Message.Activity.Payload["pending_handle"])) == target.Handle &&
+		if activityview.PendingHandle(entry.Message.Activity) == target.Handle &&
 			strings.TrimSpace(entry.Metadata[PendingToolEffectAttemptIDKey]) == strings.TrimSpace(target.EffectAttemptID) {
 			matchingHandle = true
 		}

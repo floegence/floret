@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/backendtest"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/artifact"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	. "github.com/floegence/floret/v2/internal/storage"
-	publicstorage "github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	. "github.com/floegence/floret/v3/internal/storage"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 func TestBackendKernelDeletesRootAndPromptScopeAtomically(t *testing.T) {
@@ -135,13 +136,13 @@ func backendKernelSources(t *testing.T) []struct {
 	}
 }
 
-func openBackendKernel(t *testing.T, source publicstorage.Source) (publicstorage.Backend, *BackendKernel) {
+func openBackendKernel(t *testing.T, source publicstorage.Source) (spi.Backend, *BackendKernel) {
 	t.Helper()
-	backend, err := source.Open(context.Background())
+	backend, err := storagebridge.Open(context.Background(), storagebridge.Source(source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	kernel, err := NewBackendKernel(context.Background(), backendtest.Adapt(backend), sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := NewBackendKernel(context.Background(), backend, sessiontree.DefaultLeasePolicy, time.Now)
 	if err != nil {
 		_ = backend.Close()
 		t.Fatal(err)

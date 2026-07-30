@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/tools"
 )
 
 var ErrContextOverflow = errors.New("provider context overflow")
@@ -30,7 +31,7 @@ type Request struct {
 	Model            string
 	Messages         []session.Message
 	EphemeralUser    *EphemeralUserMessage
-	Tools            []ToolDefinition
+	Tools            []tools.ToolDefinition
 	HostedTools      []HostedToolDefinition
 	RawPlan          cache.RawPlan
 	Cache            cache.CachePolicy
@@ -101,16 +102,6 @@ type State struct {
 	Kind       string            `json:"kind,omitempty"`
 	ID         string            `json:"id,omitempty"`
 	Attributes map[string]string `json:"attributes,omitempty"`
-}
-
-type ToolDefinition struct {
-	Name         string
-	Title        string
-	Description  string
-	InputSchema  map[string]any
-	OutputSchema map[string]any
-	Strict       bool
-	Annotations  map[string]any
 }
 
 type HostedToolDefinition struct {
@@ -536,12 +527,12 @@ func estimateMessagesJSON(messages []session.Message) (int64, error) {
 	return contextpolicy.EstimateTextTokens(string(raw)), nil
 }
 
-func estimateToolsJSON(tools []ToolDefinition, hostedTools []HostedToolDefinition) (int64, error) {
-	if len(tools) == 0 && len(hostedTools) == 0 {
+func estimateToolsJSON(localTools []tools.ToolDefinition, hostedTools []HostedToolDefinition) (int64, error) {
+	if len(localTools) == 0 && len(hostedTools) == 0 {
 		return 0, nil
 	}
 	raw, err := json.Marshal(map[string]any{
-		"tools":        tools,
+		"tools":        localTools,
 		"hosted_tools": hostedTools,
 	})
 	if err != nil {

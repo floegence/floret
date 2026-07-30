@@ -1,16 +1,13 @@
 # Floret
 
 Floret is a reusable Go engine for interactive AI agents. It owns the model
-loop, durable conversation lifecycle, tool dispatch, approvals, context,
-SubAgents, recovery, provider state, and observable execution facts. The host
-application keeps product UI, routing, credentials, authorization policy, and
-product data.
+loop and the complete admitted Agent lifecycle: canonical messages, threads,
+turns, runs, tools, approvals, todos, artifacts, context, SubAgents, recovery,
+provider state, prompt cache, and observable execution facts.
 
-The v2 module path is:
-
-```text
-github.com/floegence/floret/v2
-```
+The host application owns product UI, credentials, provider profiles, resource
+authorization, routing, read state, uploads before admission, and transport
+diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 
 Floret is not a graph workflow framework, a multi-agent orchestrator, or a
 product persistence layer.
@@ -18,223 +15,205 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v2@v2.0.0
+go get github.com/floegence/floret/v3@v3.0.0
 ```
 
-Do not use a local `replace`, `go.work`, or sibling repository path for a
-production integration. v1 remains available only from its published Git tag.
+Production integrations must resolve the published module. Do not use a local
+`replace`, `go.work`, or sibling repository path. v1 and v2 remain available
+only from their published tags; v3 has no legacy facade or runtime decoder.
 
 ## Quick Start
 
-Every Agent uses one explicit `provider.Gateway`. There is no internal provider
-fallback and no production fake-provider configuration.
+Every Agent uses one explicit `provider.Gateway`. Floret allocates durable
+thread, turn, and run identities; an application supplies only a stable
+`identity.LogicalRequestID` for each logical mutation.
 
 ```go
 package main
 
 import (
-	"context"
-	"fmt"
+    "context"
+    "fmt"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/florettest"
-	"github.com/floegence/floret/v2/provider"
-	"github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/storage"
+    "github.com/floegence/floret/v3/config"
+    "github.com/floegence/floret/v3/florettest"
+    "github.com/floegence/floret/v3/provider"
+    "github.com/floegence/floret/v3/runtime"
+    "github.com/floegence/floret/v3/storage"
 )
 
 func main() {
-	ctx := context.Background()
-	gateway := florettest.NewScriptedGateway(
-		provider.Identity{
-			Provider: "example", Model: "deterministic",
-			StateCompatibilityKey: "example:deterministic:v1",
-		},
-		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-		florettest.Step{Events: []provider.Event{
-			{Type: provider.EventDelta, Text: "Hello from Floret v2."},
-			{Type: provider.EventDone, Reason: "stop"},
-		}},
-	)
-	agent, err := runtime.NewAgent(config.AgentConfig{
-		Profile:      config.AgentProfile{ID: "assistant", Name: "Assistant"},
-		SystemPrompt: "Answer clearly and concisely.",
-		Context:      config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-	}, gateway)
-	if err != nil {
-		panic(err)
-	}
-	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
-	if err != nil {
-		panic(err)
-	}
-	defer host.Close()
+    ctx := context.Background()
+    gateway := florettest.NewScriptedGateway(
+        provider.Identity{
+            Provider: "example", Model: "deterministic",
+            StateCompatibilityKey: "example:deterministic:v1",
+        },
+        provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+        florettest.Step{Events: []provider.Event{
+            {Type: provider.EventDelta, Text: "Hello from Floret v3."},
+            {Type: provider.EventDone, Reason: "stop"},
+        }},
+    )
+    agent, err := runtime.NewAgent(config.AgentConfig{
+        Profile:      config.AgentProfile{ID: "assistant", Name: "Assistant"},
+        SystemPrompt: "Answer clearly and concisely.",
+        Context:      config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+    }, gateway)
+    if err != nil {
+        panic(err)
+    }
 
-	creator, err := host.ThreadCreator("thread-1", "create-thread-1")
-	if err != nil {
-		panic(err)
-	}
-	if _, err := creator.Create(ctx); err != nil {
-		panic(err)
-	}
-	runner, err := host.TurnRunner(ctx, "thread-1", agent)
-	if err != nil {
-		panic(err)
-	}
-	result, err := runner.Run(ctx, runtime.TurnRequest{
-		RunID: "run-1", TurnID: "turn-1",
-		Input: runtime.TurnInput{Text: "Hello"},
-	})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(result.Output)
+    host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
+    if err != nil {
+        panic(err)
+    }
+    defer func() {
+        if err := host.Shutdown(context.Background()); err != nil {
+            panic(err)
+        }
+    }()
+
+    created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
+        LogicalRequestID: "create-conversation-42",
+    })
+    if err != nil {
+        panic(err)
+    }
+    thread, err := host.Thread(ctx, created.ThreadID)
+    if err != nil {
+        panic(err)
+    }
+    turns, err := thread.Turns(agent)
+    if err != nil {
+        panic(err)
+    }
+    started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+        LogicalRequestID: "send-message-42",
+        UserMessage:      runtime.TurnInput{Text: "Hello"},
+    })
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(started.ThreadID, started.TurnID, started.RunID)
 }
 ```
 
 `florettest` is test-only. Production applications normally construct a
-gateway with `provider.NewOpenAICompatible`, `provider.NewAnthropic`, or their
-own `provider.Gateway` implementation.
+gateway with `provider.NewOpenAICompatible`, `provider.NewAnthropic`, or a
+custom `provider.Gateway`.
 
 ## Public Packages
 
 | Package | Responsibility |
 | --- | --- |
+| `identity` | Thread, turn, run, prompt-scope, trace, logical-request, and artifact identities |
 | `config` | Provider-neutral Agent profile, prompt, context, and reasoning policy |
-| `provider` | Gateway, request, message, event, state, identity, capability, and prepared-request contracts |
-| `runtime` | Immutable Agent construction, durable Host lifecycle, and identity-bound handles |
-| `storage` | Third-party Backend SPI plus official memory and SQLite sources |
+| `runtime` | Immutable Agent construction, durable Host lifecycle, commands, queries, and subscriptions |
+| `observation` | Sanitized runtime events and host-facing projections |
 | `tools` | Local tool definitions, permissions, resources, effects, and results |
-| `observation` | Sanitized events and durable host-facing projections |
+| `provider` | Model Gateway contract and official provider constructors |
+| `storage` | Opaque storage values and official memory and SQLite constructors |
+| `storage/spi` | Advanced physical storage implementation contract |
 | `florettest` | Scripted gateways and public conformance suites for tests only |
 
-Downstream code must not import `internal/*`.
+Ordinary applications use `identity`, `config`, `runtime`, `observation`,
+`tools`, the official `provider` constructors, and opaque `storage.Source`
+values. Custom provider transports and physical storage implementations are
+advanced integration surfaces with separate conformance suites. Downstream
+code must never import `internal/*`.
 
-## Composition Boundary
+## Runtime Boundary
 
-`runtime.Host` belongs only in the composition root. It owns one opened
-`storage.Backend` and closes it after active runtime work has joined. The
-composition root immediately issues the narrow handle required by each local
-service:
+`runtime.Host` belongs in the composition root. Its public entry points are
+`Open`, `Host.Threads`, `Host.Thread`, recovery handles, and
+`Host.Shutdown(ctx)`. A `Thread` binds one exact `identity.ThreadID`; its
+`Turns`, `SubAgents`, child, and descendant capabilities do not repeat that
+authority in each command.
 
-| Handle | Bound authority |
-| --- | --- |
-| `ThreadCreator` | one `ThreadID` and create intent |
-| `ThreadReader` | one root thread |
-| `ThreadTitleEditor` | one root thread |
-| `ThreadForker` | one source root thread |
-| `ThreadDeleter` | one root thread tree |
-| `TurnRunner` | one root thread and immutable Agent |
-| `ThreadCompactor` | one root thread and immutable Agent |
-| `SubAgentManager` | one parent thread and immutable Agent |
-| `SubAgentReader` | one parent thread |
-| `PendingToolRecovery` | one exact settlement target |
-| `InterruptedTurnRecovery` | one exact interrupted turn target |
+Commands use stable logical request identities and explicit names:
+`CreateThread`, `StartTurn`, `RetryTurn`, `ForkThread`, `DeleteThread`,
+`ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,
+`UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`, and
+`InterruptSubAgent`. Floret allocates all lifecycle identities. Replaying the
+same logical request under the same operation and bound authority returns the
+original identities; changing durable input returns a typed request conflict.
 
-Requests do not repeat identities already bound by a handle. Services should
-declare local minimal interfaces and must not retain `*runtime.Host` or recover
-it through type assertions.
+`runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
+Gateway, tools, capabilities, reasoning policy, and execution policy. The
+effective snapshot and continuation state used by each run are Floret-owned
+durable facts. Provider credentials and editable profile sources remain in the
+host.
 
-`ThreadReader` is the complete provider-free read surface for its bound root:
-overview, exact and paged turns, detail events, approvals, todos, context,
-projections, artifacts, and pending settlement targets. `TurnRunner` owns the
-matching provider-backed retry, approval, todo, and active pending-work writes.
-`SubAgentReader` and `SubAgentManager` expose the same child facts and effects
-only through their bound parent authority.
+## Consistent Reads
 
-## Agent Immutability
+Every exact thread has one monotonic `runtime.ThreadRevision`. A reconnecting
+consumer uses one fixed handshake:
 
-`runtime.NewAgent` requires a non-empty `config.AgentProfile`, system prompt,
-context policy, and `provider.Gateway`. It snapshots configuration and static
-tools. Options configure effect authorization, event observation, dynamic tool
-surfaces, loop limits, title ownership, capabilities, and SubAgent timeout at
-construction time; an Agent has no mutating API afterward.
+1. Read `Thread.Snapshot` and retain revision `R`.
+2. Load every initial turn, approval, todo, pending-work, artifact, and
+   SubAgent page with `AtRevision=R`.
+3. Call `Thread.Subscribe` with `AfterRevision=R`.
 
-Provider API keys, base URLs, provider names, and fake responses are not Agent
-configuration. They belong to the gateway constructed by the host.
+Page cursors bind thread, revision, direction, and position. Page limits are
+1 through 200. If a revision is no longer readable, Floret returns
+`ErrRevisionUnavailable`; the consumer obtains a new snapshot instead of
+silently switching to current state.
 
-Runtime event sinks receive provider-neutral stream observations. The public
-`runtime.ToolCallStream` identifies in-progress tool calls without exposing
-arguments, so downstream hosts can render and test start/delta/end events
-without depending on provider or internal runtime types.
+`Thread.Subscribe` observes only the exact bound thread. It is a linearized
+pull protocol through `Subscription.Next(ctx)`, not a callback or bare channel.
+Durable revision events tell consumers which canonical domain to query.
+Provider, token, and tool progress is transient. On queue overflow the
+subscription yields one Gap with its last delivered and resync revisions, then
+returns `ErrSubscriptionStale` until the consumer repeats the snapshot/query/
+subscribe handshake. Parent streams contain child publication and close facts,
+not child execution events.
 
 ## Storage
 
-`storage.Source` and `storage.Backend` are the complete third-party persistence
-SPI. A Backend exposes only snapshot `View`, serializable `Update`, namespaced
-`Get` and bounded lexicographic `Scan`, `Put`, `Delete`, and `Close`. Floret owns
-the versioned tuple keys, JSON envelopes, domain indexes, and authority rules.
-
-Backend implementations must:
-
-- invoke each `Update` callback exactly once and never retry it implicitly;
-- roll back the complete write on callback error or panic;
-- return caller-owned bytes;
-- preserve snapshot reads and serializable writes;
-- classify missing records, conflicts, closed backends, and expired
-  transactions with the public storage errors.
-
-Use the public conformance suite:
-
-```go
-func TestBackend(t *testing.T) {
-	florettest.RunBackendContract(t, myBackendSource)
-}
-```
-
-The official sources run the same domain kernel:
+For ordinary hosts, `storage.Source` is an opaque value consumed exclusively by
+`runtime.Open`:
 
 ```go
 runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
 runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("agent.db")})
 ```
 
-SQLite v2 contains only backend metadata and opaque namespaced records. It does
-not implement a second domain state machine.
-
-## v1 Migration
-
-Normal v2 startup accepts only an empty backend or the exact v2 logical schema.
-An exact v1 schema-v16 SQLite store returns
-`runtime.MigrationRequiredError`. No startup path migrates, repairs, or reads a
-legacy shape.
-
-Before migration, move every non-empty v1 `metadata_records` row to the host's
-product store. Then run the explicit offline command:
-
-```bash
-go run github.com/floegence/floret/v2/cmd/floret-store@v2.0.0 \
-  migrate-v2 --path /absolute/path/agent.db --operation-id deploy-2026-07-29
-```
-
-The migrator accepts only the exact schema-v16 fingerprint. It converts all
-Floret-owned lifecycle state in one SQLite write transaction, validates counts,
-authority graph, opaque provider state, and a content hash, then removes the v1
-tables. Error, cancellation, or panic rolls back the transaction. Reusing the
-same operation ID on the exact migrated content returns replay success; another
-operation ID or corrupted content is rejected.
-
-Versions v3-v15, unversioned, unknown, future, fingerprint-mismatched, and
-corrupt databases are not guessed or repaired by v2.
+Applications cannot use a Source as a lifecycle query path. Teams implementing
+a physical backend use the advanced `storage/spi` contracts and their
+conformance suite. SPI records remain opaque Floret data; a backend must not
+decode them into a second Agent model. Memory, SQLite, and third-party backends
+all run the same Floret-owned domain kernel.
 
 ## Source Of Truth
 
-Floret's journal, canonical turn pages and projections, approval queue, Agent
-todo state, artifacts, pending settlement records, SubAgent tree, provider
-state, and prompt cache are the sole source of truth for admitted Agent
-lifecycle. Hosts may persist product authorization, security audit, routing,
-unadmitted commands, resources, and transport diagnostics, but must not persist
-or rebuild a second queryable Agent lifecycle.
+Floret exclusively owns admitted messages and references, thread/turn/run
+lifecycle, titles, approvals, todos, tool invocation and outcome, pending-work
+settlement, artifacts, control signals, context and compaction, provider
+ledgers and state, prompt cache, SubAgent hierarchy, and Activity projections.
 
-Canonical user references are opaque durable facts. Rich current-turn-only
-host context belongs in `SupplementalContext` and never becomes conversation
-history or provider continuation state.
+Hosts may persist product authorization and audit, routing, credentials,
+editable persona sources, resource catalogs, read state, unadmitted commands,
+upload staging, and transport diagnostics. Those records must not contain a
+serialized Floret DTO or support reconstruction of Agent state. Canonical
+message references are opaque durable facts; rich material needed only for the
+current provider turn belongs in `SupplementalContext` and never becomes
+conversation history or continuation state.
+
+## Shutdown
+
+`Host.Shutdown(ctx)` stops admission, cancels Host-managed provider and tool
+execution, waits for it to finish, and then closes storage. If the context
+expires, Shutdown returns `ctx.Err()` and Host remains closing; a later call
+continues waiting. After completion, every retained handle returns
+`ErrHostClosed`.
 
 ## Development
 
 ```bash
 GOWORK=off go test ./...
 GOWORK=off go vet ./...
+GOWORK=off go test -race ./...
 scripts/check_candidate_release_adoption.sh
 ```
 

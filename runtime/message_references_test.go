@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func canonicalReferenceFixture() []MessageReference {
@@ -273,10 +274,10 @@ func TestHostRejectsInvalidReferenceBeforeAdmissionWithoutMutation(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.RunTurn(ctx, RunTurnRequest{
+			if _, err := host.RunTurn(ctx, runTurnRequest{
 				ThreadID: "thread", TurnID: "turn", RunID: "run",
 				Input: TurnInput{Text: "inspect", References: []MessageReference{tc.reference}},
 			}); err == nil {
@@ -321,17 +322,17 @@ func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	references := canonicalReferenceFixture()
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		ThreadID: "thread", TurnID: "turn-1", RunID: "run-1",
 		Input: TurnInput{References: references}, SupplementalContext: renderableSupplementalFixture(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		ThreadID: "thread", TurnID: "turn-2", RunID: "run-2", Input: TurnInput{Text: "continue"},
 	}); err != nil {
 		t.Fatal(err)
@@ -373,17 +374,17 @@ func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	want := canonicalReferenceFixture()
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		ThreadID: "thread", TurnID: "turn", RunID: "run",
 		Input: TurnInput{References: want}, SupplementalContext: renderableSupplementalFixture(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	page, err := host.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 1})
 	if err != nil || len(page.Turns) != 1 || !reflect.DeepEqual(page.Turns[0].UserReferences, want) {
 		t.Fatalf("sqlite reference-only page=%#v err=%v", page, err)
 	}
@@ -391,7 +392,7 @@ func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "thread", TurnID: "turn"})
+	exact, err := maintenance.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: "thread", TurnID: "turn"})
 	if err != nil || !reflect.DeepEqual(exact.UserReferences, want) {
 		t.Fatalf("sqlite reference-only exact=%#v err=%v", exact, err)
 	}
@@ -440,10 +441,10 @@ func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: tc.items}); err == nil {
+			if _, err := host.RunTurn(ctx, runTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: tc.items}); err == nil {
 				t.Fatal("RunTurn succeeded")
 			}
 			overview, err := host.ReadThreadOverview(ctx, "thread")
@@ -490,10 +491,10 @@ func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 		return host
 	}
 	firstHost := newHost()
-	if _, err := firstHost.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := firstHost.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	request := RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture()}
+	request := runTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture()}
 	firstDone := make(chan error, 1)
 	go func() {
 		_, err := firstHost.RunTurn(ctx, request)
@@ -574,10 +575,10 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	request := RunTurnRequest{
+	request := runTurnRequest{
 		ThreadID: "thread", TurnID: "turn-original", RunID: "run-original",
 		Input: TurnInput{Text: "inspect", References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
 	}
@@ -585,7 +586,7 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	if err != nil || original.Status != TurnStatusCompleted || original.Output != "original answer" {
 		t.Fatalf("original=%#v err=%v", original, err)
 	}
-	retried, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "verify"})
+	retried, err := host.RetryTurn(ctx, retryTurnRequest{ThreadID: "thread", TurnID: "retry-turn", RunID: "retry-run", Reason: "verify"})
 	if err != nil || retried.Status != TurnStatusCompleted || retried.Output != "retry answer" {
 		t.Fatalf("retry=%#v err=%v", retried, err)
 	}
@@ -601,7 +602,7 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	if replayed.ProjectionAvailability != TurnProjectionAvailabilityReady || replayed.Projection == nil || replayed.Projection.Status != TurnStatusCompleted {
 		t.Fatalf("exact replay projection=%#v availability=%q", replayed.Projection, replayed.ProjectionAvailability)
 	}
-	readProjection, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-original", RunID: "run-original"})
+	readProjection, err := host.ReadTurnProjection(ctx, readTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-original", RunID: "run-original"})
 	if err != nil || readProjection.Status != TurnStatusCompleted {
 		t.Fatalf("exact read projection=%#v err=%v", readProjection, err)
 	}
@@ -631,10 +632,10 @@ func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{
+	if _, err := host.RunTurn(ctx, runTurnRequest{
 		ThreadID: "thread", TurnID: "turn", RunID: "run",
 		Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
 	}); err == nil {
@@ -644,7 +645,7 @@ func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
 	if err != nil || before.CanRetry {
 		t.Fatalf("reference-only snapshot=%#v err=%v", before, err)
 	}
-	if _, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "provider recovered"}); !errors.Is(err, ErrNoRetryTarget) {
+	if _, err := host.RetryTurn(ctx, retryTurnRequest{ThreadID: "thread", TurnID: "retry-turn", RunID: "retry-run", Reason: "provider recovered"}); !errors.Is(err, ErrNoRetryTarget) {
 		t.Fatalf("RetryTurn error=%v, want ErrNoRetryTarget", err)
 	}
 	after, err := host.ReadThread(ctx, "thread")
@@ -671,11 +672,11 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
 	want := canonicalReferenceFixture()
-	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "source", TurnID: "turn", RunID: "run", Input: TurnInput{Text: "inspect", References: want}, SupplementalContext: renderableSupplementalFixture()}); err != nil {
+	if _, err := host.RunTurn(ctx, runTurnRequest{ThreadID: "source", TurnID: "turn", RunID: "run", Input: TurnInput{Text: "inspect", References: want}, SupplementalContext: renderableSupplementalFixture()}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.repo.Entries(ctx, "source")
@@ -700,14 +701,14 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "source", Tail: 1})
+	page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "source", Tail: 1})
 	if err != nil || len(page.Turns) != 1 || !reflect.DeepEqual(page.Turns[0].UserReferences, want) {
 		t.Fatalf("reopened references page=%#v err=%v", page, err)
 	}
-	if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-op", SourceThreadID: "source", DestinationThreadID: "fork"}); err != nil {
+	if _, err := maintenance.ForkThread(ctx, forkThreadRequest{OperationID: "fork-op", SourceThreadID: "source", DestinationThreadID: "fork"}); err != nil {
 		t.Fatal(err)
 	}
-	forked, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 1})
+	forked, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "fork", Tail: 1})
 	if err != nil || len(forked.Turns) != 1 || !reflect.DeepEqual(forked.Turns[0].UserReferences, want) {
 		t.Fatalf("forked references page=%#v err=%v", forked, err)
 	}
@@ -722,17 +723,17 @@ func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	want := canonicalReferenceFixture()
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "worker", Message: "inspect", References: want, ForkMode: SubAgentForkNone}); err != nil {
+	if _, err := host.spawnSubAgentCommand(ctx, spawnSubAgentRequest{PublicationID: "publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "worker", Message: "inspect", References: want, ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
-	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: time.Second}); err != nil || waited.TimedOut {
+	if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
-	detail, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
+	detail, err := host.ReadSubAgentDetail(ctx, readSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,10 +742,10 @@ func TestHostSubAgentReferencesProjectInDetailAndRejectReferenceOnly(t *testing.
 	}) {
 		t.Fatalf("subagent detail missing references: %#v", detail.Events)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "reference-only", ParentThreadID: "parent", ThreadID: "child-2", TaskName: "worker", References: want, ForkMode: SubAgentForkNone}); err == nil || !strings.Contains(err.Error(), "reference-only") {
+	if _, err := host.spawnSubAgentCommand(ctx, spawnSubAgentRequest{PublicationID: "reference-only", ParentThreadID: "parent", ThreadID: "child-2", TaskName: "worker", References: want, ForkMode: SubAgentForkNone}); err == nil || !strings.Contains(err.Error(), "reference-only") {
 		t.Fatalf("reference-only subagent spawn error=%v", err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
+	if _, err := host.CompletePendingTool(ctx, pendingToolCompletionRequest{
 		CompletionRequestID: "completion", ContinuationTurnID: "next-turn", ContinuationRunID: "next-run", Status: PendingToolCompletionCompleted,
 		Target: PendingToolSettlementTarget{ThreadID: "parent", TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "tool", Handle: "handle"},
 		Input:  TurnInput{References: want},

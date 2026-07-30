@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 // ReadArtifact reads one artifact owned by the exact root thread bound to this
 // capability.
-func (h *threadReadCapability) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
+func (h *threadReadCapability) ReadArtifact(ctx context.Context, req readArtifactRequest) (ArtifactContent, error) {
 	if h == nil {
 		return ArtifactContent{}, errors.New("thread read host is required")
 	}
@@ -36,7 +37,7 @@ func (h *threadReadCapability) ReadArtifact(ctx context.Context, req ReadArtifac
 
 // ReadArtifact reads one artifact owned by any complete descendant of the
 // parent thread bound to this capability.
-func (h *subAgentReadCapability) ReadArtifact(ctx context.Context, req ReadArtifactRequest) (ArtifactContent, error) {
+func (h *subAgentReadCapability) ReadArtifact(ctx context.Context, req readArtifactRequest) (ArtifactContent, error) {
 	if h == nil {
 		return ArtifactContent{}, errors.New("subagent read host is required")
 	}
@@ -57,12 +58,12 @@ func (h *subAgentReadCapability) ReadArtifact(ctx context.Context, req ReadArtif
 	})
 }
 
-func normalizeArtifactReadRequest(req ReadArtifactRequest) (ThreadID, ArtifactID, error) {
-	threadID := ThreadID(strings.TrimSpace(string(req.ThreadID)))
+func normalizeArtifactReadRequest(req readArtifactRequest) (identity.ThreadID, identity.ArtifactID, error) {
+	threadID := identity.ThreadID(strings.TrimSpace(string(req.ThreadID)))
 	if threadID == "" {
 		return "", "", errors.New("artifact read requires thread id")
 	}
-	artifactID := ArtifactID(strings.TrimSpace(string(req.ArtifactID)))
+	artifactID := identity.ArtifactID(strings.TrimSpace(string(req.ArtifactID)))
 	if artifactID == "" {
 		return "", "", errors.New("artifact read requires artifact id")
 	}
@@ -80,7 +81,7 @@ func readArtifact(ctx context.Context, store *runtimeStore, req sessiontree.Arti
 	}
 	out := ArtifactContent{
 		Ref: ArtifactRef{
-			ID:        ArtifactID(content.Ref.ID),
+			ID:        identity.ArtifactID(content.Ref.ID),
 			SafeLabel: content.Ref.SafeLabel,
 			Kind:      content.Ref.Kind,
 			MIME:      content.Ref.MIME,

@@ -7,46 +7,48 @@ import (
 	"io"
 	"time"
 
-	"github.com/floegence/floret/v2/internal/session/artifact"
+	"github.com/floegence/floret/v3/internal/session/artifact"
 )
 
-const memoryStateVersion = 1
+const memoryStateVersion = 2
 
 type memoryState struct {
-	Version                        int                                            `json:"version"`
-	Threads                        map[string]ThreadMeta                          `json:"threads"`
-	Entries                        map[string][]Entry                             `json:"entries"`
-	EntryOrdinals                  map[string]map[string]int                      `json:"entry_ordinals"`
-	EntryDepths                    map[string]map[string]int64                    `json:"entry_depths"`
-	TurnEntryOrdinals              map[string]map[string][]int                    `json:"turn_entry_ordinals"`
-	TurnEntryCounts                map[string]map[string]int                      `json:"turn_entry_counts"`
-	Leases                         map[string]TurnLease                           `json:"leases"`
-	LeaseGeneration                map[string]int64                               `json:"lease_generation"`
-	LeasePolicy                    LeasePolicy                                    `json:"lease_policy"`
-	AuthorityClaims                map[string]string                              `json:"authority_claims"`
-	Todos                          map[string]AgentTodoState                      `json:"todos"`
-	SubAgentInputs                 map[string][]SubAgentInputRecord               `json:"subagent_inputs"`
-	SubAgentInputSequence          map[string]int64                               `json:"subagent_input_sequence"`
-	SubAgentPublications           map[string]subAgentRequestLedger               `json:"subagent_publications"`
-	SubAgentInputRequests          map[string]subAgentRequestLedger               `json:"subagent_input_requests"`
-	RootCreateIntents              map[string]rootCreateLedger                    `json:"root_create_intents"`
-	Tombstones                     map[string]ThreadTombstone                     `json:"tombstones"`
-	TurnAdmissions                 map[string]turnAdmissionLedger                 `json:"turn_admissions"`
-	TurnFinishes                   map[string]turnFinishLedger                    `json:"turn_finishes"`
-	EffectAttempts                 map[string]EffectAttempt                       `json:"effect_attempts"`
-	EffectAttemptByInvocation      map[string]string                              `json:"effect_attempt_by_invocation"`
-	EffectAttemptSequence          int64                                          `json:"effect_attempt_sequence"`
-	ApprovalQueues                 map[string]approvalQueueLedger                 `json:"approval_queues"`
-	Approvals                      map[string]ApprovalRecord                      `json:"approvals"`
-	ApprovalByEffectAttempt        map[string]string                              `json:"approval_by_effect_attempt"`
-	ApprovalDecisions              map[string]approvalDecisionLedger              `json:"approval_decisions"`
-	SubAgentCloseOperations        map[string]SubAgentCloseOperation              `json:"subagent_close_operations"`
-	PendingToolCompletions         map[string]pendingToolCompletionLedger         `json:"pending_tool_completions"`
-	SubAgentPendingToolCompletions map[string]subAgentPendingToolCompletionLedger `json:"subagent_pending_tool_completions"`
-	CompactionOperations           map[string]CompactionOperation                 `json:"compaction_operations"`
-	ProviderStates                 map[string]ProviderStateRecord                 `json:"provider_states"`
-	Artifacts                      map[string]artifact.Record                     `json:"artifacts"`
-	Sequence                       int64                                          `json:"sequence"`
+	Version                        int                                               `json:"version"`
+	Threads                        map[string]ThreadMeta                             `json:"threads"`
+	Entries                        map[string][]Entry                                `json:"entries"`
+	EntryOrdinals                  map[string]map[string]int                         `json:"entry_ordinals"`
+	EntryDepths                    map[string]map[string]int64                       `json:"entry_depths"`
+	TurnEntryOrdinals              map[string]map[string][]int                       `json:"turn_entry_ordinals"`
+	TurnEntryCounts                map[string]map[string]int                         `json:"turn_entry_counts"`
+	Leases                         map[string]TurnLease                              `json:"leases"`
+	LeaseGeneration                map[string]int64                                  `json:"lease_generation"`
+	LeasePolicy                    LeasePolicy                                       `json:"lease_policy"`
+	AuthorityClaims                map[string]string                                 `json:"authority_claims"`
+	Todos                          map[string]AgentTodoState                         `json:"todos"`
+	SubAgentInputs                 map[string][]SubAgentInputRecord                  `json:"subagent_inputs"`
+	SubAgentInputSequence          map[string]int64                                  `json:"subagent_input_sequence"`
+	SubAgentPublications           map[string]subAgentRequestLedger                  `json:"subagent_publications"`
+	SubAgentInputRequests          map[string]subAgentRequestLedger                  `json:"subagent_input_requests"`
+	RootCreateIntents              map[string]rootCreateLedger                       `json:"root_create_intents"`
+	Tombstones                     map[string]ThreadTombstone                        `json:"tombstones"`
+	TurnAdmissions                 map[string]turnAdmissionLedger                    `json:"turn_admissions"`
+	TurnFinishes                   map[string]turnFinishLedger                       `json:"turn_finishes"`
+	EffectAttempts                 map[string]EffectAttempt                          `json:"effect_attempts"`
+	EffectAttemptByInvocation      map[string]string                                 `json:"effect_attempt_by_invocation"`
+	EffectAttemptSequence          int64                                             `json:"effect_attempt_sequence"`
+	ApprovalQueues                 map[string]approvalQueueLedger                    `json:"approval_queues"`
+	Approvals                      map[string]ApprovalRecord                         `json:"approvals"`
+	ApprovalByEffectAttempt        map[string]string                                 `json:"approval_by_effect_attempt"`
+	ApprovalDecisions              map[string]approvalDecisionLedger                 `json:"approval_decisions"`
+	SubAgentCloseOperations        map[string]SubAgentCloseOperation                 `json:"subagent_close_operations"`
+	PendingToolCompletions         map[string]pendingToolCompletionLedger            `json:"pending_tool_completions"`
+	SubAgentPendingToolCompletions map[string]subAgentPendingToolCompletionLedger    `json:"subagent_pending_tool_completions"`
+	CompactionOperations           map[string]CompactionOperation                    `json:"compaction_operations"`
+	ProviderStates                 map[string]ProviderStateRecord                    `json:"provider_states"`
+	Artifacts                      map[string]artifact.Record                        `json:"artifacts"`
+	ThreadRevisions                map[string]ThreadRevision                         `json:"thread_revisions"`
+	ThreadRevisionHistory          map[string]map[ThreadRevision]threadRevisionDelta `json:"thread_revision_history"`
+	Sequence                       int64                                             `json:"sequence"`
 }
 
 // EncodeMemoryState returns a detached strict representation of the complete
@@ -78,7 +80,8 @@ func (repo *MemoryRepo) memoryStateLocked() memoryState {
 		PendingToolCompletions:         repo.pendingToolCompletions,
 		SubAgentPendingToolCompletions: repo.subAgentPendingToolCompletions,
 		CompactionOperations:           repo.compactionOperations, ProviderStates: repo.providerStates,
-		Artifacts: repo.artifacts, Sequence: repo.seq,
+		Artifacts: repo.artifacts, ThreadRevisions: repo.threadRevisions,
+		ThreadRevisionHistory: repo.threadRevisionHistory, Sequence: repo.seq,
 	}
 }
 
@@ -123,7 +126,8 @@ func DecodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, error) {
 		pendingToolCompletions:         state.PendingToolCompletions,
 		subAgentPendingToolCompletions: state.SubAgentPendingToolCompletions,
 		compactionOperations:           state.CompactionOperations, providerStates: state.ProviderStates,
-		artifacts: state.Artifacts, seq: state.Sequence,
+		artifacts: state.Artifacts, threadRevisions: state.ThreadRevisions,
+		threadRevisionHistory: state.ThreadRevisionHistory, seq: state.Sequence,
 	}
 	repo.ensurePersistentMaps()
 	if err := ValidateThreadAuthorityGraph(values(repo.threads)); err != nil {
@@ -164,6 +168,8 @@ func (repo *MemoryRepo) ensurePersistentMaps() {
 	emptyMap(&repo.compactionOperations)
 	emptyMap(&repo.providerStates)
 	emptyMap(&repo.artifacts)
+	emptyMap(&repo.threadRevisions)
+	emptyMap(&repo.threadRevisionHistory)
 }
 
 func emptyMap[K comparable, V any](target *map[K]V) {

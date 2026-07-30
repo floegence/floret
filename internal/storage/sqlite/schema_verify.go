@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v2/internal/storage"
+	"github.com/floegence/floret/v3/internal/storage"
 )
 
 type schemaColumnContract struct {

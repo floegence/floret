@@ -3,7 +3,7 @@ package runtime_test
 import (
 	"testing"
 
-	"github.com/floegence/floret/v2/runtime"
+	"github.com/floegence/floret/v3/runtime"
 )
 
 func TestStreamObservationToolCallIsPubliclyConstructible(t *testing.T) {

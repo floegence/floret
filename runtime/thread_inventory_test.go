@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v3/identity"
 )
 
 func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
@@ -29,9 +31,9 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 			initialStore := store
 			t.Cleanup(func() { _ = initialStore.Close() })
 			capabilities := mustTestCapabilities(t, store)
-			for _, threadID := range []ThreadID{"root-a", "root-b", "root-c"} {
+			for _, threadID := range []identity.ThreadID{"root-a", "root-b", "root-c"} {
 				req := testCreateThreadRequest(threadID)
-				create, err := capabilities.create.Bind(req.ThreadID, req.CreateIntentID)
+				create, err := capabilities.create.Bind(req.ThreadID, req.createIntentID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -70,10 +72,10 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 
 func assertRootInventoryPages(t *testing.T, ctx context.Context, inventory *threadInventoryCapability) {
 	t.Helper()
-	seen := map[ThreadID]bool{}
-	var cursor ThreadInventoryCursor
+	seen := map[identity.ThreadID]bool{}
+	var cursor threadInventoryCursor
 	for {
-		page, err := inventory.ListRootThreads(ctx, ListRootThreadsRequest{Cursor: cursor, Limit: 1})
+		page, err := inventory.ListRootThreads(ctx, listRootThreadsRequest{Cursor: cursor, Limit: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,14 +118,14 @@ func TestThreadInventoryCursorValidation(t *testing.T) {
 	wrongMode := testThreadInventoryCursor(t, threadInventoryCursorPayload{
 		Version: threadInventoryVersion, Mode: "children", CreatedAt: now.Format(time.RFC3339Nano), ThreadID: "root",
 	})
-	for name, cursor := range map[string]ThreadInventoryCursor{
+	for name, cursor := range map[string]threadInventoryCursor{
 		"malformed":     "not-base64!",
 		"tampered":      valid + "x",
 		"wrong version": wrongVersion,
 		"wrong mode":    wrongMode,
 	} {
 		t.Run(name, func(t *testing.T) {
-			page, err := inventory.ListRootThreads(context.Background(), ListRootThreadsRequest{Cursor: cursor, Limit: 1})
+			page, err := inventory.ListRootThreads(context.Background(), listRootThreadsRequest{Cursor: cursor, Limit: 1})
 			if !errors.Is(err, ErrInvalidThreadInventoryCursor) || len(page.Threads) != 0 {
 				t.Fatalf("page=%#v err=%v", page, err)
 			}
@@ -131,11 +133,11 @@ func TestThreadInventoryCursorValidation(t *testing.T) {
 	}
 }
 
-func testThreadInventoryCursor(t *testing.T, payload threadInventoryCursorPayload) ThreadInventoryCursor {
+func testThreadInventoryCursor(t *testing.T, payload threadInventoryCursorPayload) threadInventoryCursor {
 	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ThreadInventoryCursor(base64.RawURLEncoding.EncodeToString(raw))
+	return threadInventoryCursor(base64.RawURLEncoding.EncodeToString(raw))
 }

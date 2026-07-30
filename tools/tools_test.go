@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/floegence/floret/v2/observation"
 )
 
 type testArgs struct {
@@ -289,15 +287,15 @@ func TestApprovalRequestIncludesActivityPresentation(t *testing.T) {
 			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
 			Effects:     []Effect{EffectShell},
 			Permission:  PermissionSpec{Mode: PermissionAsk, ResourceKinds: []string{"command"}},
-			Activity: func(inv Invocation[any]) (*observation.ActivityPresentation, error) {
+			Activity: func(inv Invocation[any]) (*ActivityPresentation, error) {
 				args, ok := inv.Args.(testArgs)
 				if !ok {
 					t.Fatalf("activity args type = %T", inv.Args)
 				}
-				return &observation.ActivityPresentation{
+				return &ActivityPresentation{
 					Label:    args.Value,
-					Renderer: observation.ActivityRendererTerminal,
-					Payload:  map[string]any{"command": args.Value},
+					Renderer: ActivityRendererTerminal,
+					Payload:  TerminalActivityPayload{Command: args.Value},
 				}, nil
 			},
 		},
@@ -314,8 +312,8 @@ func TestApprovalRequestIncludesActivityPresentation(t *testing.T) {
 	got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"curl https://example.test"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
 		if req.Activity == nil ||
 			req.Activity.Label != "curl https://example.test" ||
-			req.Activity.Renderer != observation.ActivityRendererTerminal ||
-			req.Activity.Payload["command"] != "curl https://example.test" {
+			req.Activity.Renderer != ActivityRendererTerminal ||
+			req.Activity.Payload.(TerminalActivityPayload).Command != "curl https://example.test" {
 			t.Fatalf("approval activity = %#v", req.Activity)
 		}
 		return PermissionDecisionAllow, nil

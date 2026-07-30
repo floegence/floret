@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"html"
 	"strings"
-
-	"github.com/floegence/floret/v2/observation"
 )
 
 type PendingToolResultState string
@@ -97,19 +95,11 @@ func PendingToolResultMetadata(p PendingToolResult) map[string]any {
 	return metadata
 }
 
-func PendingToolActivity(p PendingToolResult, base *observation.ActivityPresentation) *observation.ActivityPresentation {
+func PendingToolActivity(p PendingToolResult, base *ActivityPresentation) *ActivityPresentation {
 	p = p.normalized()
-	out := &observation.ActivityPresentation{}
-	if base != nil {
-		*out = *base
-		out.Chips = append([]observation.ActivityChip(nil), base.Chips...)
-		out.TargetRefs = append([]observation.ActivityTargetRef(nil), base.TargetRefs...)
-		if base.Payload != nil {
-			out.Payload = make(map[string]any, len(base.Payload)+2)
-			for key, value := range base.Payload {
-				out.Payload[key] = value
-			}
-		}
+	out := CloneActivityPresentation(base)
+	if out == nil {
+		out = &ActivityPresentation{}
 	}
 	if out.Label == "" {
 		out.Label = p.Summary
@@ -118,14 +108,9 @@ func PendingToolActivity(p PendingToolResult, base *observation.ActivityPresenta
 		out.Description = p.Instruction
 	}
 	out.Chips = append(out.Chips,
-		observation.ActivityChip{Kind: "state", Label: "State", Value: string(p.State), Tone: "running"},
-		observation.ActivityChip{Kind: "handle", Label: "Handle", Value: p.Handle, Tone: "quiet"},
+		ActivityChip{Kind: "state", Label: "State", Value: string(p.State), Tone: "running"},
+		ActivityChip{Kind: "handle", Label: "Handle", Value: p.Handle, Tone: "quiet"},
 	)
-	if out.Payload == nil {
-		out.Payload = map[string]any{}
-	}
-	out.Payload["pending_handle"] = p.Handle
-	out.Payload["pending_state"] = string(p.State)
 	return out
 }
 

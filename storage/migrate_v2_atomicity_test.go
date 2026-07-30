@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	legacy "github.com/floegence/floret/v2/internal/storage/sqlite"
+	legacy "github.com/floegence/floret/v3/internal/storage/sqlite"
 )
 
 func TestMigrateV2RollsBackEveryWriteAndValidationBoundary(t *testing.T) {
@@ -27,7 +27,8 @@ func TestMigrateV2RollsBackEveryWriteAndValidationBoundary(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(string(stage), func(t *testing.T) {
 			path, before := newV16MigrationFile(t)
-			_, err := migrateV2(context.Background(), MigrateV2Request{Path: path, OperationID: "atomicity"}, func(actual migrationStage) error {
+			plan := newV2MigrationPlanForTest(t, path, "atomicity")
+			_, err := applyV2Migration(context.Background(), V2MigrationApplyRequest{Path: path, Plan: plan}, func(actual migrationStage) error {
 				if actual == stage {
 					return failure
 				}
@@ -44,8 +45,9 @@ func TestMigrateV2RollsBackEveryWriteAndValidationBoundary(t *testing.T) {
 func TestMigrateV2RollsBackCancellationAndPanic(t *testing.T) {
 	t.Run("cancellation", func(t *testing.T) {
 		path, before := newV16MigrationFile(t)
+		plan := newV2MigrationPlanForTest(t, path, "cancel")
 		ctx, cancel := context.WithCancel(context.Background())
-		_, err := migrateV2(ctx, MigrateV2Request{Path: path, OperationID: "cancel"}, func(stage migrationStage) error {
+		_, err := applyV2Migration(ctx, V2MigrationApplyRequest{Path: path, Plan: plan}, func(stage migrationStage) error {
 			if stage == migrationStageSourceExported {
 				cancel()
 			}
@@ -59,13 +61,14 @@ func TestMigrateV2RollsBackCancellationAndPanic(t *testing.T) {
 
 	t.Run("panic", func(t *testing.T) {
 		path, before := newV16MigrationFile(t)
+		plan := newV2MigrationPlanForTest(t, path, "panic")
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != "injected migration panic" {
 					t.Fatalf("recovered panic = %#v", recovered)
 				}
 			}()
-			_, _ = migrateV2(context.Background(), MigrateV2Request{Path: path, OperationID: "panic"}, func(stage migrationStage) error {
+			_, _ = applyV2Migration(context.Background(), V2MigrationApplyRequest{Path: path, Plan: plan}, func(stage migrationStage) error {
 				if stage == migrationStageRecordsWritten {
 					panic("injected migration panic")
 				}
@@ -74,6 +77,17 @@ func TestMigrateV2RollsBackCancellationAndPanic(t *testing.T) {
 		}()
 		assertMigrationFileUnchanged(t, path, before)
 	})
+}
+
+func newV2MigrationPlanForTest(t *testing.T, path, operationID string) V2MigrationPlan {
+	t.Helper()
+	plan, err := PreflightV2Migration(context.Background(), V2MigrationPreflightRequest{
+		Path: path, OperationID: operationID, CoordinatorCommitment: "sha256:test-coordinator",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 func newV16MigrationFile(t *testing.T) (string, []byte) {

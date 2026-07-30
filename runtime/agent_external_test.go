@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/provider"
-	floretruntime "github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/provider"
+	floretruntime "github.com/floegence/floret/v3/runtime"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type agentGateway struct{}

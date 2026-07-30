@@ -5,32 +5,34 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/provider"
-	"github.com/floegence/floret/v2/runtime"
-	"github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/provider"
+	"github.com/floegence/floret/v3/runtime"
+	"github.com/floegence/floret/v3/storage"
 )
 
 func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret-v2.db")
+	path := filepath.Join(t.TempDir(), "floret-v3.db")
 
-	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
+	host, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.SQLite(path),
+		IDSource: &deterministicIDs{
+			threads: []identity.ThreadID{"thread-1", "thread-2"},
+			turns:   []identity.TurnID{"turn-1"},
+			runs:    []identity.RunID{"run-1"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	creator, err := host.ThreadCreator("thread-1", "create-1")
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := creator.Create(ctx); err != nil {
-		t.Fatal(err)
-	}
-	titles, err := host.ThreadTitleEditor(ctx, "thread-1")
+	thread, err := host.Thread(ctx, created.ThreadID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := titles.Set(ctx, "Persistent thread"); err != nil {
 		t.Fatal(err)
 	}
 	agent, err := runtime.NewAgent(config.AgentConfig{
@@ -40,57 +42,49 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := host.TurnRunner(ctx, "thread-1", agent)
+	turns, err := thread.Turns(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.Run(ctx, runtime.TurnRequest{RunID: "run-1", TurnID: "turn-1", Input: runtime.TurnInput{Text: "hello"}}); err != nil {
-		t.Fatal(err)
-	}
-	forker, err := host.ThreadForker(ctx, "thread-1")
+	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "turn-request-1", UserMessage: runtime.TurnInput{Text: "hello"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := forker.Fork(ctx, runtime.ThreadForkRequest{OperationID: "fork-1", DestinationThreadID: "thread-2"}); err != nil {
+	forked, err := thread.ForkThread(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-1"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Close(); err != nil {
+	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
+	reopened, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.SQLite(path),
+		IDSource: &deterministicIDs{
+			turns: []identity.TurnID{"turn-2"}, runs: []identity.RunID{"run-2"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	reader, err := reopened.ThreadReader(ctx, "thread-1")
+	t.Cleanup(func() { _ = reopened.Shutdown(context.Background()) })
+	reopenedThread, err := reopened.Thread(ctx, created.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := reader.Read(ctx)
+	view, err := reopenedThread.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if thread.ID != "thread-1" {
-		t.Fatalf("thread id = %q", thread.ID)
+	if view.Thread.ID != created.ThreadID || view.Thread.LatestTurnID != started.TurnID || view.Thread.LatestRunID != started.RunID {
+		t.Fatalf("restarted thread = %#v", view)
 	}
-	if thread.Title != "Persistent thread" {
-		t.Fatalf("thread title = %q", thread.Title)
-	}
-	turn, err := reader.ReadTurn(ctx, "turn-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if turn.RunID != "run-1" || projectedAssistantText(turn.Projection) != "done" {
-		t.Fatalf("restarted turn = %#v", turn)
-	}
-	forkReader, err := reopened.ThreadReader(ctx, "thread-2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fork, err := forkReader.Read(ctx); err != nil || fork.ID != "thread-2" {
+	if fork, err := reopened.Thread(ctx, forked.ThreadID); err != nil || fork.ID() != forked.ThreadID {
 		t.Fatalf("restarted fork = %#v, err = %v", fork, err)
 	}
+
 	restartedGateway := &completingGateway{requests: make(chan provider.Request, 1)}
 	restartedAgent, err := runtime.NewAgent(config.AgentConfig{
 		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Answer precisely.",
@@ -99,11 +93,13 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedRunner, err := reopened.TurnRunner(ctx, "thread-1", restartedAgent)
+	restartedTurns, err := reopenedThread.Turns(restartedAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restartedRunner.Run(ctx, runtime.TurnRequest{RunID: "run-2", TurnID: "turn-2", Input: runtime.TurnInput{Text: "again"}}); err != nil {
+	if _, err := restartedTurns.StartTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "turn-request-2", UserMessage: runtime.TurnInput{Text: "again"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	request := <-restartedGateway.requests

@@ -3,12 +3,13 @@ package runtime
 import (
 	"context"
 
-	publicstorage "github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v3/storage"
 )
 
 func openSQLiteStoreForTest(path string) (*runtimeStore, error) {
 	ctx := context.Background()
-	backend, err := publicstorage.SQLite(path).Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.SQLite(path)))
 	if err != nil {
 		return nil, err
 	}

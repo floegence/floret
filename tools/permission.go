@@ -1,5 +1,7 @@
 package tools
 
+import "github.com/floegence/floret/v3/identity"
+
 type Effect string
 
 const (
@@ -27,10 +29,10 @@ type PermissionRequest struct {
 	Name          string
 	RawArgs       string
 	Args          any
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
+	RunID         identity.RunID
+	ThreadID      identity.ThreadID
+	TurnID        identity.TurnID
+	PromptScopeID identity.PromptScopeID
 	Step          int
 	Labels        map[string]string
 	HostContext   map[string]string

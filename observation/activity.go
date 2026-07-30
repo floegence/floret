@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const (
@@ -55,71 +58,27 @@ const (
 )
 
 type ActivityRunMeta struct {
-	RunID    string `json:"run_id,omitempty"`
-	ThreadID string `json:"thread_id,omitempty"`
-	TurnID   string `json:"turn_id,omitempty"`
-	TraceID  string `json:"trace_id,omitempty"`
-}
-
-type ActivityRenderer string
-
-const (
-	ActivityRendererStructured ActivityRenderer = "structured"
-	ActivityRendererTerminal   ActivityRenderer = "terminal"
-	ActivityRendererFile       ActivityRenderer = "file"
-	ActivityRendererPatch      ActivityRenderer = "patch"
-	ActivityRendererWebSearch  ActivityRenderer = "web_search"
-	ActivityRendererTodos      ActivityRenderer = "todos"
-	ActivityRendererQuestion   ActivityRenderer = "question"
-	ActivityRendererCompletion ActivityRenderer = "completion"
-)
-
-type ActivityChip struct {
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
-	Value string `json:"value,omitempty"`
-	Tone  string `json:"tone,omitempty"`
-}
-
-type ActivityTargetRef struct {
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
-	URI   string `json:"uri,omitempty"`
-	Path  string `json:"path,omitempty"`
-	Line  int    `json:"line,omitempty"`
-}
-
-type ActivityPresentation struct {
-	Label       string              `json:"label,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Renderer    ActivityRenderer    `json:"renderer,omitempty"`
-	Chips       []ActivityChip      `json:"chips,omitempty"`
-	TargetRefs  []ActivityTargetRef `json:"target_refs,omitempty"`
-	// Payload is host-supplied public display data. Floret preserves the generic
-	// activity shape and lifecycle, but product field policy belongs to the host.
-	Payload map[string]any `json:"payload,omitempty"`
+	RunID    identity.RunID    `json:"run_id,omitempty"`
+	ThreadID identity.ThreadID `json:"thread_id,omitempty"`
+	TurnID   identity.TurnID   `json:"turn_id,omitempty"`
+	TraceID  identity.TraceID  `json:"trace_id,omitempty"`
 }
 
 type ActivityItem struct {
-	ItemID           string                    `json:"item_id"`
-	ToolID           string                    `json:"tool_id,omitempty"`
-	ToolName         string                    `json:"tool_name,omitempty"`
-	Kind             ActivityKind              `json:"kind"`
-	Status           ActivityStatus            `json:"status"`
-	Severity         ActivitySeverity          `json:"severity"`
-	NeedsAttention   bool                      `json:"needs_attention"`
-	AttentionReasons []ActivityAttentionReason `json:"attention_reasons,omitempty"`
-	RequiresApproval bool                      `json:"requires_approval"`
-	ApprovalState    string                    `json:"approval_state,omitempty"`
-	StartedAtUnixMS  int64                     `json:"started_at_unix_ms,omitempty"`
-	EndedAtUnixMS    int64                     `json:"ended_at_unix_ms,omitempty"`
-	Label            string                    `json:"label,omitempty"`
-	Description      string                    `json:"description,omitempty"`
-	Renderer         ActivityRenderer          `json:"renderer,omitempty"`
-	Chips            []ActivityChip            `json:"chips,omitempty"`
-	TargetRefs       []ActivityTargetRef       `json:"target_refs,omitempty"`
-	Payload          map[string]any            `json:"payload,omitempty"`
-	Metadata         map[string]string         `json:"metadata,omitempty"`
+	ItemID           string                      `json:"item_id"`
+	ToolID           string                      `json:"tool_id,omitempty"`
+	ToolName         string                      `json:"tool_name,omitempty"`
+	Kind             ActivityKind                `json:"kind"`
+	Status           ActivityStatus              `json:"status"`
+	Severity         ActivitySeverity            `json:"severity"`
+	NeedsAttention   bool                        `json:"needs_attention"`
+	AttentionReasons []ActivityAttentionReason   `json:"attention_reasons,omitempty"`
+	RequiresApproval bool                        `json:"requires_approval"`
+	ApprovalState    string                      `json:"approval_state,omitempty"`
+	StartedAtUnixMS  int64                       `json:"started_at_unix_ms,omitempty"`
+	EndedAtUnixMS    int64                       `json:"ended_at_unix_ms,omitempty"`
+	Presentation     *tools.ActivityPresentation `json:"presentation,omitempty"`
+	Metadata         map[string]string           `json:"metadata,omitempty"`
 }
 
 type ActivityCounts struct {
@@ -143,27 +102,17 @@ type ActivitySummary struct {
 }
 
 type ActivityTimeline struct {
-	SchemaVersion int             `json:"schema_version"`
-	RunID         string          `json:"run_id,omitempty"`
-	ThreadID      string          `json:"thread_id,omitempty"`
-	TurnID        string          `json:"turn_id,omitempty"`
-	TraceID       string          `json:"trace_id,omitempty"`
-	Summary       ActivitySummary `json:"summary"`
-	Items         []ActivityItem  `json:"items"`
+	SchemaVersion int               `json:"schema_version"`
+	RunID         identity.RunID    `json:"run_id,omitempty"`
+	ThreadID      identity.ThreadID `json:"thread_id,omitempty"`
+	TurnID        identity.TurnID   `json:"turn_id,omitempty"`
+	TraceID       identity.TraceID  `json:"trace_id,omitempty"`
+	Summary       ActivitySummary   `json:"summary"`
+	Items         []ActivityItem    `json:"items"`
 }
 
-func CloneActivityPresentation(in *ActivityPresentation) *ActivityPresentation {
-	if in == nil {
-		return nil
-	}
-	return &ActivityPresentation{
-		Label:       in.Label,
-		Description: in.Description,
-		Renderer:    in.Renderer,
-		Chips:       cloneActivityChips(in.Chips),
-		TargetRefs:  cloneActivityTargetRefs(in.TargetRefs),
-		Payload:     cloneActivityPayload(in.Payload),
-	}
+func CloneActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
+	return tools.CloneActivityPresentation(in)
 }
 
 func CloneActivityTimeline(in *ActivityTimeline) *ActivityTimeline {
@@ -210,9 +159,7 @@ func RebuildActivitySummary(timeline ActivityTimeline) ActivitySummary {
 
 func cloneActivityItem(in ActivityItem) ActivityItem {
 	in.AttentionReasons = append([]ActivityAttentionReason(nil), in.AttentionReasons...)
-	in.Chips = cloneActivityChips(in.Chips)
-	in.TargetRefs = cloneActivityTargetRefs(in.TargetRefs)
-	in.Payload = cloneActivityPayload(in.Payload)
+	in.Presentation = tools.CloneActivityPresentation(in.Presentation)
 	in.Metadata = cloneActivityMetadata(in.Metadata)
 	return in
 }
@@ -225,14 +172,14 @@ type activityItemState struct {
 
 // BuildActivityTimeline projects sanitized runtime events into a stable
 // activity summary. Tool-facing display details enter the timeline only through
-// an explicit ActivityPresentation that has already crossed the event sanitizer.
+// an explicit tools.ActivityPresentation that has already crossed the event sanitizer.
 func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64) ActivityTimeline {
 	timeline := ActivityTimeline{
 		SchemaVersion: ActivityTimelineSchemaVersion,
-		RunID:         strings.TrimSpace(meta.RunID),
-		ThreadID:      strings.TrimSpace(meta.ThreadID),
-		TurnID:        strings.TrimSpace(meta.TurnID),
-		TraceID:       strings.TrimSpace(meta.TraceID),
+		RunID:         identity.RunID(strings.TrimSpace(meta.RunID.String())),
+		ThreadID:      identity.ThreadID(strings.TrimSpace(meta.ThreadID.String())),
+		TurnID:        identity.TurnID(strings.TrimSpace(meta.TurnID.String())),
+		TraceID:       identity.TraceID(strings.TrimSpace(meta.TraceID.String())),
 		Summary: ActivitySummary{
 			Status:   ActivityStatusPending,
 			Severity: ActivitySeverityQuiet,
@@ -250,16 +197,16 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 	hasExplicitControlActivity := false
 	for index, ev := range events {
 		if timeline.RunID == "" {
-			timeline.RunID = strings.TrimSpace(ev.RunID)
+			timeline.RunID = identity.RunID(strings.TrimSpace(ev.RunID.String()))
 		}
 		if timeline.ThreadID == "" {
-			timeline.ThreadID = strings.TrimSpace(ev.ThreadID)
+			timeline.ThreadID = identity.ThreadID(strings.TrimSpace(ev.ThreadID.String()))
 		}
 		if timeline.TurnID == "" {
-			timeline.TurnID = strings.TrimSpace(ev.TurnID)
+			timeline.TurnID = identity.TurnID(strings.TrimSpace(ev.TurnID.String()))
 		}
 		if timeline.TraceID == "" {
-			timeline.TraceID = strings.TrimSpace(ev.TraceID)
+			timeline.TraceID = identity.TraceID(strings.TrimSpace(ev.TraceID.String()))
 		}
 		observedAt := eventUnixMS(ev, nowUnixMS)
 		switch ev.Type {
@@ -395,10 +342,8 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			if state.item.Status != ActivityStatusRunning {
-				pending := activityHasPendingMetadata(state.item.Metadata) || activityHasPendingPayload(state.item.Payload)
 				state.item.Metadata = activityTerminalMetadata(state.item.Metadata)
-				state.item.Payload = activityTerminalPayload(state.item.Payload)
-				state.item.Chips = activityTerminalChips(state.item.Chips, pending)
+				state.item.Presentation = tools.ClearPendingActivity(state.item.Presentation)
 			}
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
@@ -626,28 +571,11 @@ func ValidateActivityTimeline(timeline ActivityTimeline) error {
 	return nil
 }
 
-func mergeActivityPresentationIntoItem(item *ActivityItem, presentation *ActivityPresentation) {
+func mergeActivityPresentationIntoItem(item *ActivityItem, presentation *tools.ActivityPresentation) {
 	if item == nil || presentation == nil {
 		return
 	}
-	if value := strings.TrimSpace(presentation.Label); value != "" {
-		item.Label = value
-	}
-	if value := strings.TrimSpace(presentation.Description); value != "" {
-		item.Description = value
-	}
-	if presentation.Renderer != "" {
-		item.Renderer = presentation.Renderer
-	}
-	if len(presentation.Chips) > 0 {
-		item.Chips = cloneActivityChips(presentation.Chips)
-	}
-	if len(presentation.TargetRefs) > 0 {
-		item.TargetRefs = cloneActivityTargetRefs(presentation.TargetRefs)
-	}
-	if len(presentation.Payload) > 0 {
-		item.Payload = mergeActivityPayload(item.Payload, presentation.Payload)
-	}
+	item.Presentation = tools.MergeActivityPresentations(item.Presentation, presentation)
 }
 
 func ensureActivityItem(items map[string]*activityItemState, order *[]string, key string, index int, create func() ActivityItem) *activityItemState {
@@ -734,7 +662,7 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if !activityRunEndIsTerminal(runEnd) {
 		return
 	}
-	if (activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)) &&
+	if activityHasPendingMetadata(item.Metadata) &&
 		!activityRunEndIsCanceled(runEnd) &&
 		!activityEventHasError(runEnd) {
 		return
@@ -760,13 +688,12 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if item.EndedAtUnixMS == 0 {
 		item.EndedAtUnixMS = eventUnixMS(runEnd, nowUnixMS)
 	}
-	pending := activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)
+	pending := activityHasPendingMetadata(item.Metadata)
 	item.Metadata = activityTerminalMetadata(item.Metadata)
-	item.Payload = activityTerminalPayload(item.Payload)
-	item.Chips = activityTerminalChips(item.Chips, pending)
-	if pending {
-		item.Label = ""
-		item.Description = ""
+	item.Presentation = tools.ClearPendingActivity(item.Presentation)
+	if pending && item.Presentation != nil {
+		item.Presentation.Label = ""
+		item.Presentation.Description = ""
 	}
 	if item.RequiresApproval {
 		item.ApprovalState = approvalTerminalStateForRunEnd(runEnd, item.ApprovalState)
@@ -848,57 +775,8 @@ func activityTerminalMetadata(metadata map[string]string) map[string]string {
 	return out
 }
 
-func activityTerminalPayload(payload map[string]any) map[string]any {
-	if len(payload) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(payload))
-	for key, value := range payload {
-		if strings.HasPrefix(key, "pending_") {
-			continue
-		}
-		out[key] = cloneActivityPayloadValue(value)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func activityTerminalChips(chips []ActivityChip, pending bool) []ActivityChip {
-	if len(chips) == 0 {
-		return nil
-	}
-	out := make([]ActivityChip, 0, len(chips))
-	for _, chip := range chips {
-		if pending && activityPendingChip(chip) {
-			continue
-		}
-		out = append(out, chip)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func activityPendingChip(chip ActivityChip) bool {
-	kind := strings.TrimSpace(chip.Kind)
-	value := strings.TrimSpace(chip.Value)
-	return kind == "handle" || kind == "state" && value == string(ActivityStatusRunning)
-}
-
 func activityHasPendingMetadata(metadata map[string]string) bool {
 	for key := range metadata {
-		if strings.HasPrefix(key, "pending_") {
-			return true
-		}
-	}
-	return false
-}
-
-func activityHasPendingPayload(payload map[string]any) bool {
-	for key := range payload {
 		if strings.HasPrefix(key, "pending_") {
 			return true
 		}
@@ -1267,143 +1145,10 @@ func validateActivityItemMetadata(metadata map[string]string) error {
 }
 
 func validateActivityItemPresentation(item ActivityItem) error {
-	if len([]rune(strings.TrimSpace(item.Label))) > 200 {
-		return errors.New("label is too long")
-	}
-	if len([]rune(strings.TrimSpace(item.Description))) > 500 {
-		return errors.New("description is too long")
-	}
-	if item.Renderer != "" {
-		if err := validateActivityRenderer(item.Renderer); err != nil {
-			return fmt.Errorf("renderer: %w", err)
-		}
-	}
-	for i, chip := range item.Chips {
-		if err := validateActivityChip(chip); err != nil {
-			return fmt.Errorf("chip %d: %w", i, err)
-		}
-	}
-	for i, ref := range item.TargetRefs {
-		if err := validateActivityTargetRef(ref); err != nil {
-			return fmt.Errorf("target ref %d: %w", i, err)
-		}
-	}
-	if err := validateActivityPayload(item.Payload, 0); err != nil {
-		return fmt.Errorf("payload: %w", err)
-	}
-	return nil
-}
-
-func validateActivityRenderer(value ActivityRenderer) error {
-	switch value {
-	case ActivityRendererStructured,
-		ActivityRendererTerminal,
-		ActivityRendererFile,
-		ActivityRendererPatch,
-		ActivityRendererWebSearch,
-		ActivityRendererTodos,
-		ActivityRendererQuestion,
-		ActivityRendererCompletion:
-		return nil
-	default:
-		return fmt.Errorf("%q is not supported", value)
-	}
-}
-
-func validateActivityChip(chip ActivityChip) error {
-	if !activityTokenIsValid(chip.Kind, 64) {
-		return errors.New("kind is required")
-	}
-	if strings.TrimSpace(chip.Label) == "" || len([]rune(strings.TrimSpace(chip.Label))) > 120 {
-		return errors.New("label is required")
-	}
-	if len([]rune(strings.TrimSpace(chip.Value))) > 120 {
-		return errors.New("value is too long")
-	}
-	if chip.Tone != "" && !activityTokenIsValid(chip.Tone, 32) {
-		return errors.New("tone is invalid")
-	}
-	return nil
-}
-
-func validateActivityTargetRef(ref ActivityTargetRef) error {
-	if !activityTokenIsValid(ref.Kind, 64) {
-		return errors.New("kind is required")
-	}
-	if strings.TrimSpace(ref.Label) == "" || len([]rune(strings.TrimSpace(ref.Label))) > 240 {
-		return errors.New("label is required")
-	}
-	if ref.Line < 0 {
-		return errors.New("line must be non-negative")
-	}
-	if ref.URI != "" && !activityURIIsValid(ref.URI) {
-		return errors.New("uri is invalid")
-	}
-	if len([]rune(strings.TrimSpace(ref.Path))) > 500 {
-		return errors.New("path is too long")
-	}
-	return nil
-}
-
-func validateActivityPayload(value any, depth int) error {
-	if value == nil {
+	if item.Presentation == nil {
 		return nil
 	}
-	if depth > 5 {
-		return errors.New("too deeply nested")
-	}
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, item := range typed {
-			if !activityTokenIsValid(key, 80) {
-				return fmt.Errorf("key %q is invalid", key)
-			}
-			if err := validateActivityPayload(item, depth+1); err != nil {
-				return fmt.Errorf("%s: %w", key, err)
-			}
-		}
-	case []any:
-		for i, item := range typed {
-			if err := validateActivityPayload(item, depth+1); err != nil {
-				return fmt.Errorf("[%d]: %w", i, err)
-			}
-		}
-	case string:
-		if len([]rune(typed)) > 8000 {
-			return errors.New("string is too long")
-		}
-	case bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return nil
-	default:
-		return fmt.Errorf("%T is unsupported", value)
-	}
-	return nil
-}
-
-func activityTokenIsValid(value string, limit int) bool {
-	value = strings.TrimSpace(value)
-	if value == "" || len([]rune(value)) > limit {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			continue
-		}
-		switch r {
-		case '_', '-', '.', ':':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func activityURIIsValid(value string) bool {
-	value = strings.TrimSpace(value)
-	return strings.HasPrefix(value, "http://") ||
-		strings.HasPrefix(value, "https://") ||
-		strings.HasPrefix(value, "artifact://")
+	return item.Presentation.Validate()
 }
 
 func mergeActivityMetadata(left, right map[string]string) map[string]string {
@@ -1428,63 +1173,6 @@ func cloneActivityMetadata(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
-}
-
-func cloneActivityChips(in []ActivityChip) []ActivityChip {
-	if len(in) == 0 {
-		return nil
-	}
-	return append([]ActivityChip(nil), in...)
-}
-
-func cloneActivityTargetRefs(in []ActivityTargetRef) []ActivityTargetRef {
-	if len(in) == 0 {
-		return nil
-	}
-	return append([]ActivityTargetRef(nil), in...)
-}
-
-func cloneActivityPayload(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = cloneActivityPayloadValue(value)
-	}
-	return out
-}
-
-func mergeActivityPayload(left, right map[string]any) map[string]any {
-	if len(left) == 0 {
-		return cloneActivityPayload(right)
-	}
-	out := cloneActivityPayload(left)
-	for key, value := range right {
-		out[key] = cloneActivityPayloadValue(value)
-	}
-	return out
-}
-
-func cloneActivityPayloadValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneActivityPayload(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = cloneActivityPayloadValue(item)
-		}
-		return out
-	case []string:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = item
-		}
-		return out
-	default:
-		return typed
-	}
 }
 
 func activityItemAttentionReasons(item ActivityItem) []ActivityAttentionReason {

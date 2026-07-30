@@ -8,24 +8,27 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/provider"
-	publicstorage "github.com/floegence/floret/v2/storage"
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/provider"
+	publicstorage "github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v3/tools"
 )
 
 const (
 	logicalSchemaNamespace   = "floret.system"
 	logicalSchemaKey         = "logical-schema"
-	logicalSchemaVersion     = "2"
-	logicalSchemaFingerprint = "sha256:3343ff9e64073d543e491de34b1d1aaee222ca7099f3d321de9c66f266b90e03"
+	logicalSchemaVersion     = "3"
+	logicalSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 )
 
 var (
 	// ErrMigrationRequired reports an exact legacy schema that runtime.Open
 	// refuses to migrate implicitly.
 	ErrMigrationRequired = errors.New("floret storage migration required")
-	// ErrUnsupportedSchema reports a nonempty schema outside the v2 contract.
+	// ErrUnsupportedSchema reports a nonempty schema outside the v3 contract.
 	ErrUnsupportedSchema = errors.New("unsupported floret logical schema")
 )
 
@@ -50,18 +53,28 @@ func (failure *MigrationRequiredError) Is(target error) bool {
 
 // Options configures one runtime Host.
 type Options struct {
-	Storage publicstorage.Source
+	Storage            publicstorage.Source
+	IDSource           IDSource
+	SubscriptionBuffer int
 }
 
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
-	store    *runtimeStore
-	backend  publicstorage.Backend
-	binders  hostBinders
-	closeMu  sync.Mutex
-	closed   bool
-	closeErr error
+	store              *runtimeStore
+	backend            spi.Backend
+	binders            hostBinders
+	idSource           IDSource
+	idMu               sync.Mutex
+	mutationMu         sync.Mutex
+	subscriptionMu     sync.Mutex
+	subscriptions      map[*Subscription]struct{}
+	subscriptionBuffer int
+	closeMu            sync.Mutex
+	closing            bool
+	closed             bool
+	closeErr           error
+	closeDone          chan struct{}
 }
 
 type hostBinders struct {
@@ -84,18 +97,15 @@ type logicalSchemaEnvelope struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// Open validates the exact v2 logical schema, initializes an empty Backend,
+// Open validates the exact v3 logical schema, initializes an empty Backend,
 // and transfers exclusive backend lifecycle ownership to a new Host.
 func Open(ctx context.Context, options Options) (*Host, error) {
 	if ctx == nil {
 		return nil, errors.New("runtime open context is required")
 	}
-	if options.Storage == nil {
-		return nil, errors.New("runtime storage source is required")
-	}
-	backend, err := options.Storage.Open(ctx)
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(options.Storage))
 	if err != nil {
-		if errors.Is(err, publicstorage.ErrMigrationRequired) {
+		if errors.Is(err, spi.ErrMigrationRequired) {
 			return nil, &MigrationRequiredError{Version: "16"}
 		}
 		return nil, err
@@ -112,7 +122,23 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		_ = backend.Close()
 		return nil, err
 	}
-	host := &Host{store: store, backend: backend}
+	idSource := options.IDSource
+	if idSource == nil {
+		idSource = randomIDSource{}
+	}
+	buffer := options.SubscriptionBuffer
+	if buffer < 0 || buffer > 65_536 {
+		_ = store.Close()
+		_ = backend.Close()
+		return nil, errors.New("runtime subscription buffer must be between 1 and 65536")
+	}
+	if buffer == 0 {
+		buffer = 256
+	}
+	host := &Host{
+		store: store, backend: backend, idSource: idSource, closeDone: make(chan struct{}),
+		subscriptions: make(map[*Subscription]struct{}), subscriptionBuffer: buffer,
+	}
 	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		constructors := []func() error{
 			func() (err error) { host.binders.create, err = newThreadCreateBinder(bootstrap); return err },
@@ -148,24 +174,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	return host, nil
 }
 
-// Close waits for active runtime work, then closes the owned Backend. It is
-// idempotent.
-func (host *Host) Close() error {
-	if host == nil {
-		return nil
-	}
-	host.closeMu.Lock()
-	defer host.closeMu.Unlock()
-	if host.closed {
-		return host.closeErr
-	}
-	host.closed = true
-	host.closeErr = errors.Join(host.store.Close(), host.backend.Close())
-	return host.closeErr
-}
-
-// ThreadCreator binds root-thread and create-intent identity before creation.
-func (host *Host) ThreadCreator(threadID ThreadID, createIntentID CreateIntentID) (*ThreadCreator, error) {
+func (host *Host) threadCreator(threadID identity.ThreadID, createIntentID createIntentID) (*threadCreatorHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -173,11 +182,10 @@ func (host *Host) ThreadCreator(threadID ThreadID, createIntentID CreateIntentID
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCreator{inner: inner}, nil
+	return &threadCreatorHandle{inner: inner}, nil
 }
 
-// ThreadReader binds all canonical reads to one root thread.
-func (host *Host) ThreadReader(ctx context.Context, threadID ThreadID) (*ThreadReader, error) {
+func (host *Host) threadReader(ctx context.Context, threadID identity.ThreadID) (*threadReaderHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -185,11 +193,10 @@ func (host *Host) ThreadReader(ctx context.Context, threadID ThreadID) (*ThreadR
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadReader{inner: inner, threadID: threadID}, nil
+	return &threadReaderHandle{inner: inner, threadID: threadID}, nil
 }
 
-// TurnRunner binds one immutable Agent to one root thread.
-func (host *Host) TurnRunner(ctx context.Context, threadID ThreadID, agent *Agent) (*TurnRunner, error) {
+func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, agent *Agent) (*turnRunnerHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -204,7 +211,7 @@ func (host *Host) TurnRunner(ctx context.Context, threadID ThreadID, agent *Agen
 	if err != nil {
 		return nil, err
 	}
-	return &TurnRunner{inner: inner, threadID: threadID}, nil
+	return &turnRunnerHandle{inner: inner, threadID: threadID}, nil
 }
 
 func (host *Host) available() error {
@@ -213,33 +220,33 @@ func (host *Host) available() error {
 	}
 	host.closeMu.Lock()
 	defer host.closeMu.Unlock()
-	if host.closed {
-		return ErrStoreClosed
+	if host.closing || host.closed {
+		return ErrHostClosed
 	}
 	return nil
 }
 
-// ThreadCreator is exact root-thread creation authority.
-type ThreadCreator struct {
+// threadCreatorHandle is exact root-thread creation authority.
+type threadCreatorHandle struct {
 	inner *threadCreateCapability
 }
 
 // Create creates or replays the bound root thread.
-func (creator *ThreadCreator) Create(ctx context.Context) (ThreadSummary, error) {
+func (creator *threadCreatorHandle) Create(ctx context.Context) (ThreadSummary, error) {
 	if creator == nil || creator.inner == nil {
 		return ThreadSummary{}, errors.New("thread creator is required")
 	}
-	return creator.inner.CreateThread(ctx, CreateThreadRequest{})
+	return creator.inner.CreateThread(ctx, createThreadRequest{})
 }
 
-// ThreadReader is read authority for one exact root thread.
-type ThreadReader struct {
+// threadReaderHandle is read authority for one exact root thread.
+type threadReaderHandle struct {
 	inner    *threadReadCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Read returns the current canonical thread snapshot.
-func (reader *ThreadReader) Read(ctx context.Context) (ThreadSnapshot, error) {
+func (reader *threadReaderHandle) Read(ctx context.Context) (ThreadSnapshot, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadSnapshot{}, errors.New("thread reader is required")
 	}
@@ -247,18 +254,18 @@ func (reader *ThreadReader) Read(ctx context.Context) (ThreadSnapshot, error) {
 }
 
 // ReadTurn returns one canonical turn from the bound thread.
-func (reader *ThreadReader) ReadTurn(ctx context.Context, turnID TurnID) (ThreadTurnSnapshot, error) {
+func (reader *threadReaderHandle) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
 	if reader == nil || reader.inner == nil {
 		return ThreadTurnSnapshot{}, errors.New("thread reader is required")
 	}
-	return reader.inner.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: reader.threadID, TurnID: turnID})
+	return reader.inner.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: reader.threadID, TurnID: turnID})
 }
 
-// TurnRequest describes one provider execution after ThreadID is bound by a
-// TurnRunner.
-type TurnRequest struct {
-	RunID               RunID
-	TurnID              TurnID
+// turnExecutionRequest describes one provider execution after ThreadID is bound by a
+// turnRunnerHandle.
+type turnExecutionRequest struct {
+	RunID               identity.RunID
+	TurnID              identity.TurnID
 	Input               TurnInput
 	SupplementalContext []TurnSupplementalContextItem
 	Labels              RunLabels
@@ -270,18 +277,18 @@ type TurnRequest struct {
 	ToolSurfaceProvider ToolSurfaceProvider
 }
 
-// TurnRunner owns provider-backed execution for one exact root thread.
-type TurnRunner struct {
+// turnRunnerHandle owns provider-backed execution for one exact root thread.
+type turnRunnerHandle struct {
 	inner    *turnExecutionCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Run admits and executes one turn on the bound thread.
-func (runner *TurnRunner) Run(ctx context.Context, request TurnRequest) (TurnResult, error) {
+func (runner *turnRunnerHandle) Run(ctx context.Context, request turnExecutionRequest) (TurnResult, error) {
 	if runner == nil || runner.inner == nil {
 		return TurnResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.RunTurn(ctx, RunTurnRequest{
+	return runner.inner.RunTurn(ctx, runTurnRequest{
 		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
@@ -290,10 +297,10 @@ func (runner *TurnRunner) Run(ctx context.Context, request TurnRequest) (TurnRes
 	})
 }
 
-func ensureLogicalSchema(ctx context.Context, backend publicstorage.Backend) error {
-	return backend.Update(ctx, func(tx publicstorage.WriteTx) error {
+func ensureLogicalSchema(ctx context.Context, backend spi.Backend) error {
+	return backend.Update(ctx, func(tx spi.WriteTx) error {
 		encoded, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey))
-		if errors.Is(err, publicstorage.ErrNotFound) {
+		if errors.Is(err, spi.ErrNotFound) {
 			envelope, marshalErr := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
 			if marshalErr != nil {
 				return marshalErr
@@ -408,9 +415,9 @@ func providerRequest(request modelRequest) provider.Request {
 	for index, message := range request.Messages {
 		messages[index] = providerMessage(message)
 	}
-	definitions := make([]provider.ToolDefinition, len(request.Tools))
+	definitions := make([]tools.ToolDefinition, len(request.Tools))
 	for index, definition := range request.Tools {
-		definitions[index] = provider.ToolDefinition{
+		definitions[index] = tools.ToolDefinition{
 			Name: definition.Name, Title: definition.Title, Description: definition.Description,
 			InputSchema: definition.InputSchema, OutputSchema: definition.OutputSchema,
 			Strict: definition.Strict, Annotations: definition.Annotations,
@@ -418,8 +425,8 @@ func providerRequest(request modelRequest) provider.Request {
 	}
 	hosted := append([]provider.HostedToolDefinition(nil), request.HostedTools...)
 	return provider.Request{
-		RunID: string(request.RunID), ThreadID: string(request.ThreadID), TurnID: string(request.TurnID),
-		TraceID: string(request.TraceID), PromptScopeID: string(request.PromptScopeID), Step: request.Step,
+		RunID: identity.RunID(request.RunID), ThreadID: identity.ThreadID(request.ThreadID), TurnID: identity.TurnID(request.TurnID),
+		TraceID: identity.TraceID(request.TraceID), PromptScopeID: identity.PromptScopeID(request.PromptScopeID), Step: request.Step,
 		Messages: messages, Tools: definitions, HostedTools: hosted, MaxOutputTokens: request.MaxOutputTokens,
 		Reasoning: request.Reasoning, PreviousState: gatewayProviderState(request.PreviousState),
 		Labels: provider.Labels{Correlation: request.Labels.Correlation, Host: request.Labels.Host},

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/tools"
+	"github.com/floegence/floret/v3/tools"
 )
 
 // ToolContractInvocation is the product-neutral invocation shape exercised by
@@ -235,7 +235,7 @@ func contractDispatchOptions() tools.DispatchOptions {
 func contractToolInvocation[T any](inv tools.Invocation[T], value string) ToolContractInvocation {
 	return ToolContractInvocation{
 		CallID: inv.CallID, Name: inv.Name, RawArgs: inv.RawArgs, Value: value,
-		RunID: inv.RunID, ThreadID: inv.ThreadID, TurnID: inv.TurnID, PromptScopeID: inv.PromptScopeID,
+		RunID: inv.RunID.String(), ThreadID: inv.ThreadID.String(), TurnID: inv.TurnID.String(), PromptScopeID: inv.PromptScopeID.String(),
 		Step: inv.Step, Labels: cloneStringMap(inv.Labels), HostContext: cloneStringMap(inv.HostContext),
 	}
 }

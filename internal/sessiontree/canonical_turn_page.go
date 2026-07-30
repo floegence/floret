@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/session"
 )
 
 type CanonicalTurnBeforeCursor struct {

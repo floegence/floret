@@ -7,7 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/storage"
 )
 
 func TestSQLiteBackendContract(t *testing.T) {
@@ -17,7 +18,7 @@ func TestSQLiteBackendContract(t *testing.T) {
 }
 
 func TestSQLiteSourceRejectsMissingPath(t *testing.T) {
-	if _, err := storage.SQLite("").Open(context.Background()); err == nil {
+	if _, err := storagebridge.Open(context.Background(), storagebridge.Source(storage.SQLite(""))); err == nil {
 		t.Fatal("empty SQLite path opened successfully")
 	}
 }

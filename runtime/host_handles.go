@@ -5,12 +5,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/observation"
 )
 
-// ThreadTitleEditor binds title mutation to one root thread.
-func (host *Host) ThreadTitleEditor(ctx context.Context, threadID ThreadID) (*ThreadTitleEditor, error) {
+func (host *Host) threadTitleEditor(ctx context.Context, threadID identity.ThreadID) (*threadTitleEditorHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -18,11 +18,10 @@ func (host *Host) ThreadTitleEditor(ctx context.Context, threadID ThreadID) (*Th
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadTitleEditor{inner: inner, threadID: threadID}, nil
+	return &threadTitleEditorHandle{inner: inner, threadID: threadID}, nil
 }
 
-// ThreadForker binds fork source identity to one root thread.
-func (host *Host) ThreadForker(ctx context.Context, threadID ThreadID) (*ThreadForker, error) {
+func (host *Host) threadForker(ctx context.Context, threadID identity.ThreadID) (*threadForkerHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -30,11 +29,10 @@ func (host *Host) ThreadForker(ctx context.Context, threadID ThreadID) (*ThreadF
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadForker{inner: inner, threadID: threadID}, nil
+	return &threadForkerHandle{inner: inner, threadID: threadID}, nil
 }
 
-// ThreadDeleter binds deletion to one root thread tree.
-func (host *Host) ThreadDeleter(ctx context.Context, threadID ThreadID) (*ThreadDeleter, error) {
+func (host *Host) threadDeleter(ctx context.Context, threadID identity.ThreadID) (*threadDeleterHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -42,11 +40,10 @@ func (host *Host) ThreadDeleter(ctx context.Context, threadID ThreadID) (*Thread
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadDeleter{inner: inner, threadID: threadID}, nil
+	return &threadDeleterHandle{inner: inner, threadID: threadID}, nil
 }
 
-// ThreadCompactor binds one immutable Agent to compaction for a root thread.
-func (host *Host) ThreadCompactor(ctx context.Context, threadID ThreadID, agent *Agent) (*ThreadCompactor, error) {
+func (host *Host) threadCompactor(ctx context.Context, threadID identity.ThreadID, agent *Agent) (*threadCompactorHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -61,11 +58,10 @@ func (host *Host) ThreadCompactor(ctx context.Context, threadID ThreadID, agent 
 	if err != nil {
 		return nil, err
 	}
-	return &ThreadCompactor{inner: inner, threadID: threadID}, nil
+	return &threadCompactorHandle{inner: inner, threadID: threadID}, nil
 }
 
-// SubAgentManager binds child lifecycle to one parent and one immutable Agent.
-func (host *Host) SubAgentManager(ctx context.Context, parentThreadID ThreadID, agent *Agent) (*SubAgentManager, error) {
+func (host *Host) subAgentManager(ctx context.Context, parentThreadID identity.ThreadID, agent *Agent) (*subAgentManagerHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -80,11 +76,10 @@ func (host *Host) SubAgentManager(ctx context.Context, parentThreadID ThreadID, 
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentManager{inner: inner, parentThreadID: parentThreadID}, nil
+	return &subAgentManagerHandle{inner: inner, parentThreadID: parentThreadID}, nil
 }
 
-// SubAgentReader binds child reads to one exact parent.
-func (host *Host) SubAgentReader(ctx context.Context, parentThreadID ThreadID) (*SubAgentReader, error) {
+func (host *Host) subAgentReader(ctx context.Context, parentThreadID identity.ThreadID) (*subAgentReaderHandle, error) {
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -92,62 +87,62 @@ func (host *Host) SubAgentReader(ctx context.Context, parentThreadID ThreadID) (
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgentReader{inner: inner, parentThreadID: parentThreadID}, nil
+	return &subAgentReaderHandle{inner: inner, parentThreadID: parentThreadID}, nil
 }
 
-// ThreadTitleEditor is title authority for one exact root thread.
-type ThreadTitleEditor struct {
+// threadTitleEditorHandle is title authority for one exact root thread.
+type threadTitleEditorHandle struct {
 	inner    *threadTitleCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Set replaces the canonical title of the bound thread.
-func (editor *ThreadTitleEditor) Set(ctx context.Context, title string) (ThreadSnapshot, error) {
+func (editor *threadTitleEditorHandle) Set(ctx context.Context, title string) (ThreadSnapshot, error) {
 	if editor == nil || editor.inner == nil {
 		return ThreadSnapshot{}, errors.New("thread title editor is required")
 	}
-	return editor.inner.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: editor.threadID, Title: title})
+	return editor.inner.SetThreadTitle(ctx, setThreadTitleRequest{ThreadID: editor.threadID, Title: title})
 }
 
-// ThreadForkRequest describes a fork after the source thread is bound.
-type ThreadForkRequest struct {
-	OperationID         ForkOperationID
-	DestinationThreadID ThreadID
+// boundThreadForkRequest describes a fork after the source thread is bound.
+type boundThreadForkRequest struct {
+	OperationID         forkOperationID
+	DestinationThreadID identity.ThreadID
 }
 
-// ThreadForker is fork authority for one exact source thread.
-type ThreadForker struct {
+// threadForkerHandle is fork authority for one exact source thread.
+type threadForkerHandle struct {
 	inner    *threadForkCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Fork creates or replays a fork from the bound source.
-func (forker *ThreadForker) Fork(ctx context.Context, request ThreadForkRequest) (ForkThreadResult, error) {
+func (forker *threadForkerHandle) Fork(ctx context.Context, request boundThreadForkRequest) (forkThreadResult, error) {
 	if forker == nil || forker.inner == nil {
-		return ForkThreadResult{}, errors.New("thread forker is required")
+		return forkThreadResult{}, errors.New("thread forker is required")
 	}
-	return forker.inner.ForkThread(ctx, ForkThreadRequest{
+	return forker.inner.ForkThread(ctx, forkThreadRequest{
 		OperationID: request.OperationID, SourceThreadID: forker.threadID,
 		DestinationThreadID: request.DestinationThreadID,
 	})
 }
 
-// ThreadDeleter is deletion authority for one exact root thread tree.
-type ThreadDeleter struct {
+// threadDeleterHandle is deletion authority for one exact root thread tree.
+type threadDeleterHandle struct {
 	inner    *threadDeleteCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Delete deletes or replays deletion of the bound root thread tree.
-func (deleter *ThreadDeleter) Delete(ctx context.Context) error {
+func (deleter *threadDeleterHandle) Delete(ctx context.Context) error {
 	if deleter == nil || deleter.inner == nil {
 		return errors.New("thread deleter is required")
 	}
 	return deleter.inner.DeleteThread(ctx, deleter.threadID)
 }
 
-// ThreadCompactionRequest describes compaction after ThreadID is bound.
-type ThreadCompactionRequest struct {
+// threadCompactionRequest describes compaction after ThreadID is bound.
+type threadCompactionRequest struct {
 	RequestID string
 	Source    string
 	Labels    RunLabels
@@ -155,28 +150,28 @@ type ThreadCompactionRequest struct {
 	Reasoning config.ReasoningSelection
 }
 
-// ThreadCompactor owns provider-backed compaction for one exact thread.
-type ThreadCompactor struct {
+// threadCompactorHandle owns provider-backed compaction for one exact thread.
+type threadCompactorHandle struct {
 	inner    *threadCompactionCapability
-	threadID ThreadID
+	threadID identity.ThreadID
 }
 
 // Compact compacts the bound thread.
-func (compactor *ThreadCompactor) Compact(ctx context.Context, request ThreadCompactionRequest) (CompactThreadResult, error) {
+func (compactor *threadCompactorHandle) Compact(ctx context.Context, request threadCompactionRequest) (compactThreadResult, error) {
 	if compactor == nil || compactor.inner == nil {
-		return CompactThreadResult{}, errors.New("thread compactor is required")
+		return compactThreadResult{}, errors.New("thread compactor is required")
 	}
-	return compactor.inner.CompactThread(ctx, CompactThreadRequest{
+	return compactor.inner.CompactThread(ctx, compactThreadRequest{
 		ThreadID: compactor.threadID, RequestID: request.RequestID, Source: request.Source,
 		Labels: request.Labels, Limits: request.Limits, Reasoning: request.Reasoning,
 	})
 }
 
-// SpawnSubAgent describes child creation after ParentThreadID is bound.
-type SpawnSubAgent struct {
+// spawnSubAgentCommand describes child creation after ParentThreadID is bound.
+type spawnSubAgentCommand struct {
 	PublicationID   string
-	ParentTurnID    TurnID
-	ThreadID        ThreadID
+	ParentTurnID    identity.TurnID
+	ThreadID        identity.ThreadID
 	TaskName        string
 	TaskDescription string
 	Message         string
@@ -187,10 +182,10 @@ type SpawnSubAgent struct {
 	Labels          RunLabels
 }
 
-// SendSubAgentInput describes child input after ParentThreadID is bound.
-type SendSubAgentInput struct {
+// sendSubAgentInputCommand describes child input after ParentThreadID is bound.
+type sendSubAgentInputCommand struct {
 	InputRequestID string
-	ChildThreadID  ThreadID
+	ChildThreadID  identity.ThreadID
 	Message        string
 	Attachments    []MessageAttachment
 	References     []MessageReference
@@ -198,11 +193,11 @@ type SendSubAgentInput struct {
 	Labels         RunLabels
 }
 
-// PublishSubAgentPendingToolCompletion describes host-owned child continuation
+// publishSubAgentPendingToolCompletionCommand describes host-owned child continuation
 // input after ParentThreadID is bound.
-type PublishSubAgentPendingToolCompletion struct {
+type publishSubAgentPendingToolCompletionCommand struct {
 	InputRequestID string
-	ChildThreadID  ThreadID
+	ChildThreadID  identity.ThreadID
 	Target         PendingToolSettlementTarget
 	Status         PendingToolCompletionStatus
 	Summary        string
@@ -211,31 +206,31 @@ type PublishSubAgentPendingToolCompletion struct {
 	Labels         RunLabels
 }
 
-// WaitSubAgents describes a bounded wait after ParentThreadID is bound.
-type WaitSubAgents struct {
-	ChildThreadIDs []ThreadID
+// waitSubAgentsCommand describes a bounded wait after ParentThreadID is bound.
+type waitSubAgentsCommand struct {
+	ChildThreadIDs []identity.ThreadID
 	Timeout        time.Duration
 }
 
-// CloseSubAgent describes child closure after ParentThreadID is bound.
-type CloseSubAgent struct {
+// closeSubAgentCommand describes child closure after ParentThreadID is bound.
+type closeSubAgentCommand struct {
 	CloseOperationID string
-	ChildThreadID    ThreadID
+	ChildThreadID    identity.ThreadID
 	Reason           string
 }
 
-// SubAgentManager owns child lifecycle for one exact parent.
-type SubAgentManager struct {
+// subAgentManagerHandle owns child lifecycle for one exact parent.
+type subAgentManagerHandle struct {
 	inner          *subAgentCapability
-	parentThreadID ThreadID
+	parentThreadID identity.ThreadID
 }
 
 // Spawn creates or replays one child publication.
-func (manager *SubAgentManager) Spawn(ctx context.Context, request SpawnSubAgent) (SubAgentSnapshot, error) {
+func (manager *subAgentManagerHandle) Spawn(ctx context.Context, request spawnSubAgentCommand) (SubAgentSnapshot, error) {
 	if manager == nil || manager.inner == nil {
 		return SubAgentSnapshot{}, errors.New("SubAgent manager is required")
 	}
-	return manager.inner.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+	return manager.inner.spawnSubAgentCommand(ctx, spawnSubAgentRequest{
 		PublicationID: request.PublicationID, ParentThreadID: manager.parentThreadID,
 		ParentTurnID: request.ParentTurnID, ThreadID: request.ThreadID, TaskName: request.TaskName,
 		TaskDescription: request.TaskDescription, Message: request.Message,
@@ -246,11 +241,11 @@ func (manager *SubAgentManager) Spawn(ctx context.Context, request SpawnSubAgent
 }
 
 // SendInput appends or interrupts with one child input.
-func (manager *SubAgentManager) SendInput(ctx context.Context, request SendSubAgentInput) (SubAgentSnapshot, error) {
+func (manager *subAgentManagerHandle) SendInput(ctx context.Context, request sendSubAgentInputCommand) (SubAgentSnapshot, error) {
 	if manager == nil || manager.inner == nil {
 		return SubAgentSnapshot{}, errors.New("SubAgent manager is required")
 	}
-	return manager.inner.SendSubAgentInput(ctx, SendSubAgentInputRequest{
+	return manager.inner.sendSubAgentInputCommand(ctx, sendSubAgentInputRequest{
 		InputRequestID: request.InputRequestID, ParentThreadID: manager.parentThreadID,
 		ChildThreadID: request.ChildThreadID, Message: request.Message,
 		Attachments: append([]MessageAttachment(nil), request.Attachments...),
@@ -260,11 +255,11 @@ func (manager *SubAgentManager) SendInput(ctx context.Context, request SendSubAg
 }
 
 // PublishPendingToolCompletion admits one host-owned child continuation.
-func (manager *SubAgentManager) PublishPendingToolCompletion(ctx context.Context, request PublishSubAgentPendingToolCompletion) (SubAgentSnapshot, error) {
+func (manager *subAgentManagerHandle) PublishPendingToolCompletion(ctx context.Context, request publishSubAgentPendingToolCompletionCommand) (SubAgentSnapshot, error) {
 	if manager == nil || manager.inner == nil {
 		return SubAgentSnapshot{}, errors.New("SubAgent manager is required")
 	}
-	return manager.inner.PublishPendingToolCompletion(ctx, PublishSubAgentPendingToolCompletionRequest{
+	return manager.inner.PublishPendingToolCompletion(ctx, publishSubAgentPendingToolCompletionRequest{
 		InputRequestID: request.InputRequestID, ParentThreadID: manager.parentThreadID,
 		ChildThreadID: request.ChildThreadID, Target: request.Target, Status: request.Status,
 		Summary: request.Summary, Output: request.Output, Input: request.Input, Labels: request.Labels,
@@ -272,43 +267,43 @@ func (manager *SubAgentManager) PublishPendingToolCompletion(ctx context.Context
 }
 
 // Wait waits for selected children of the bound parent.
-func (manager *SubAgentManager) Wait(ctx context.Context, request WaitSubAgents) (WaitSubAgentsResult, error) {
+func (manager *subAgentManagerHandle) Wait(ctx context.Context, request waitSubAgentsCommand) (waitSubAgentsCommandResult, error) {
 	if manager == nil || manager.inner == nil {
-		return WaitSubAgentsResult{}, errors.New("SubAgent manager is required")
+		return waitSubAgentsCommandResult{}, errors.New("SubAgent manager is required")
 	}
-	return manager.inner.WaitSubAgents(ctx, WaitSubAgentsRequest{
+	return manager.inner.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
 		ParentThreadID: manager.parentThreadID,
-		ChildThreadIDs: append([]ThreadID(nil), request.ChildThreadIDs...), Timeout: request.Timeout,
+		ChildThreadIDs: append([]identity.ThreadID(nil), request.ChildThreadIDs...), Timeout: request.Timeout,
 	})
 }
 
 // Close closes one child of the bound parent.
-func (manager *SubAgentManager) Close(ctx context.Context, request CloseSubAgent) (SubAgentSnapshot, error) {
+func (manager *subAgentManagerHandle) Close(ctx context.Context, request closeSubAgentCommand) (SubAgentSnapshot, error) {
 	if manager == nil || manager.inner == nil {
 		return SubAgentSnapshot{}, errors.New("SubAgent manager is required")
 	}
-	return manager.inner.CloseSubAgent(ctx, CloseSubAgentRequest{
+	return manager.inner.closeSubAgentCommand(ctx, closeSubAgentRequest{
 		CloseOperationID: request.CloseOperationID, ParentThreadID: manager.parentThreadID,
 		ChildThreadID: request.ChildThreadID, Reason: request.Reason,
 	})
 }
 
-// SubAgentDetailRequest identifies one child after ParentThreadID is bound.
-type SubAgentDetailRequest struct {
-	ChildThreadID ThreadID
+// subAgentDetailRequest identifies one child after ParentThreadID is bound.
+type subAgentDetailRequest struct {
+	ChildThreadID identity.ThreadID
 	AfterOrdinal  int64
 	Limit         int
 	IncludeRaw    bool
 }
 
-// SubAgentReader reads descendants of one exact parent.
-type SubAgentReader struct {
+// subAgentReaderHandle reads descendants of one exact parent.
+type subAgentReaderHandle struct {
 	inner          *subAgentReadCapability
-	parentThreadID ThreadID
+	parentThreadID identity.ThreadID
 }
 
 // List returns direct children of the bound parent.
-func (reader *SubAgentReader) List(ctx context.Context) ([]SubAgentSnapshot, error) {
+func (reader *subAgentReaderHandle) List(ctx context.Context) ([]SubAgentSnapshot, error) {
 	if reader == nil || reader.inner == nil {
 		return nil, errors.New("SubAgent reader is required")
 	}
@@ -316,11 +311,11 @@ func (reader *SubAgentReader) List(ctx context.Context) ([]SubAgentSnapshot, err
 }
 
 // ReadDetail returns canonical detail for one child of the bound parent.
-func (reader *SubAgentReader) ReadDetail(ctx context.Context, request SubAgentDetailRequest) (SubAgentDetail, error) {
+func (reader *subAgentReaderHandle) ReadDetail(ctx context.Context, request subAgentDetailRequest) (SubAgentDetail, error) {
 	if reader == nil || reader.inner == nil {
 		return SubAgentDetail{}, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
+	return reader.inner.ReadSubAgentDetail(ctx, readSubAgentDetailRequest{
 		ParentThreadID: reader.parentThreadID, ChildThreadID: request.ChildThreadID,
 		AfterOrdinal: request.AfterOrdinal, Limit: request.Limit, IncludeRaw: request.IncludeRaw,
 	})
@@ -328,11 +323,11 @@ func (reader *SubAgentReader) ReadDetail(ctx context.Context, request SubAgentDe
 
 // ActivityTimeline returns the canonical activity projection for the bound
 // parent and supplied run metadata.
-func (reader *SubAgentReader) ActivityTimeline(ctx context.Context, meta observation.ActivityRunMeta) (SubAgentActivityTimelineResult, error) {
+func (reader *subAgentReaderHandle) ActivityTimeline(ctx context.Context, meta observation.ActivityRunMeta) (subAgentActivityTimelineResult, error) {
 	if reader == nil || reader.inner == nil {
-		return SubAgentActivityTimelineResult{}, errors.New("SubAgent reader is required")
+		return subAgentActivityTimelineResult{}, errors.New("SubAgent reader is required")
 	}
-	return reader.inner.ListSubAgentActivityTimeline(ctx, ListSubAgentActivityTimelineRequest{
+	return reader.inner.ListSubAgentActivityTimeline(ctx, listSubAgentActivityTimelineRequest{
 		ParentThreadID: reader.parentThreadID, Meta: meta,
 	})
 }

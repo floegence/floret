@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/v2/config"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/identity"
 )
 
 const (
@@ -52,9 +53,9 @@ func (s CompactionDebugStatus) Valid() bool {
 }
 
 type CompactionDebugEvent struct {
-	RunID                            string                 `json:"run_id,omitempty"`
-	ThreadID                         string                 `json:"thread_id,omitempty"`
-	TurnID                           string                 `json:"turn_id,omitempty"`
+	RunID                            identity.RunID         `json:"run_id,omitempty"`
+	ThreadID                         identity.ThreadID      `json:"thread_id,omitempty"`
+	TurnID                           identity.TurnID        `json:"turn_id,omitempty"`
 	Step                             int                    `json:"step,omitempty"`
 	OperationID                      string                 `json:"operation_id,omitempty"`
 	RequestID                        string                 `json:"request_id,omitempty"`

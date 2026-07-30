@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: Storage Package
-description: Opaque transactional Backend SPI and explicit v1-to-v2 migration.
+description: Opaque ordinary-host Sources, advanced physical storage SPI, and explicit v2.2-to-v3 migration.
 resource: /storage
 tags: [api, storage, backend, migration]
 timestamp: 2026-07-29T00:00:00Z
@@ -9,17 +9,19 @@ timestamp: 2026-07-29T00:00:00Z
 
 # Storage
 
-`storage.Source` opens one `storage.Backend`. Runtime Host takes exclusive
-ownership of the opened Backend lifecycle. Backends expose only snapshot
-`View`, serializable `Update`, namespaced `Get` and bounded lexicographic
-`Scan`, `Put`, `Delete`, and `Close`.
+`storage.Source` is an opaque value consumed by `runtime.Open`. Ordinary hosts
+cannot transact through it or use it as an Agent lifecycle query path. Runtime
+Host takes exclusive ownership of the opened storage lifecycle.
 
-Floret owns the tuple key codec, versioned JSON envelopes, indexes, lifecycle
+Floret owns the tuple key codec, versioned envelopes, indexes, lifecycle
 authority, and all domain interpretation. Memory and SQLite are physical
-sources for the same internal domain kernel. Third-party implementations run
-`florettest.RunBackendContract`.
+sources for the same internal domain kernel. Advanced physical implementations
+use `storage/spi` and its dedicated conformance suite; SPI records remain opaque
+and must not be decoded into another Agent model.
 
-SQLite v2 contains only `floret_backend_metadata` and
-`floret_backend_records`. `storage.MigrateV2` and `cmd/floret-store migrate-v2`
-accept only exact schema-v16 and never run during normal startup. Non-empty v1
-`metadata_records` are rejected because they are host-owned product data.
+The v2.2-to-v3 migration surface provides representability preflight, an
+immutable plan, preview, apply, semantic hashes, and a receipt. Only built-in
+v2.2 states named by the conversion table are supported. A legal extension
+without one unique v3 representation returns `UnsupportedLegacyContentError`
+without mutation. Migration-only readers do not become runtime decoders, and
+normal startup never migrates, dual-reads, or falls back to a legacy shape.

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/control"
-	"github.com/floegence/floret/v2/internal/event"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/internal/control"
+	"github.com/floegence/floret/v3/internal/event"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type ControlDisposition string
@@ -26,7 +26,7 @@ type ControlSignal struct {
 	Name        string
 	CallID      string
 	Payload     map[string]any
-	Activity    *observation.ActivityPresentation
+	Activity    *tools.ActivityPresentation
 	// OutputText is the human-readable control result. For ControlContinue it is
 	// provider-visible; host-only details must stay in Payload.
 	OutputText string
@@ -35,7 +35,7 @@ type ControlSignal struct {
 }
 
 type ControlSpec struct {
-	Definitions []provider.ToolDefinition
+	Definitions []tools.ToolDefinition
 	Project     func(provider.ToolCall) (ControlSignal, bool, error)
 }
 
@@ -105,7 +105,7 @@ func normalizeControlSpec(spec ControlSpec, policy CompletionPolicy) ControlSpec
 	if spec.Project == nil && len(spec.Definitions) == 0 {
 		spec = DefaultControlSpec(policy)
 	}
-	defs := make([]provider.ToolDefinition, 0, len(spec.Definitions))
+	defs := make([]tools.ToolDefinition, 0, len(spec.Definitions))
 	for _, def := range spec.Definitions {
 		def.Name = strings.TrimSpace(def.Name)
 		if def.Name == "" {

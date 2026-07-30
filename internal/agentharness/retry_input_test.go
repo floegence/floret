@@ -6,11 +6,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session"
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	scriptharness "github.com/floegence/floret/v2/internal/testing/harness"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	scriptharness "github.com/floegence/floret/v3/internal/testing/harness"
 )
 
 func TestReferenceOnlyTurnCannotRetryDirectUserOrSavePoint(t *testing.T) {
@@ -69,7 +69,7 @@ func TestReferenceOnlyTurnCannotRetryDirectUserOrSavePoint(t *testing.T) {
 				t.Fatalf("reference-only retry projection snapshot=%#v overview=%#v", snapshot, overview.Thread)
 			}
 
-			_, retryErr := thread.Retry(ctx, RetryOptions{Reason: "retry reference-only"})
+			_, retryErr := thread.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "retry reference-only"})
 			if !errors.Is(retryErr, ErrNoRetryTarget) {
 				t.Fatalf("Retry error = %v, want ErrNoRetryTarget", retryErr)
 			}
@@ -118,7 +118,7 @@ func TestReferencesRemainRetryableWithTextOrAttachment(t *testing.T) {
 				t.Fatalf("retryable snapshot=%#v err=%v", snapshot, err)
 			}
 			h.options.Provider = scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()))
-			result, err := thread.Retry(ctx, RetryOptions{Reason: "provider recovered"})
+			result, err := thread.Retry(ctx, RetryOptions{TurnID: "retry-turn", RunID: "retry-run", Reason: "provider recovered"})
 			if err != nil || result.Status != engine.Completed || result.Output != "done" {
 				t.Fatalf("Retry result=%#v err=%v", result, err)
 			}

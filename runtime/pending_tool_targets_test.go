@@ -40,7 +40,7 @@ func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {
 	publishTestSubAgentFixture(t, ctx, store, "publish-child", "root", "child", "")
 	seedRuntimePendingToolCompletionTargetOnRepo(t, store.repo, "child")
 	childRead := newTestSubAgentReadHost(t, store, "root")
-	childTargets, err := childRead.ListPendingToolSettlementTargets(ctx, ListSubAgentPendingToolSettlementTargetsRequest{
+	childTargets, err := childRead.ListPendingToolSettlementTargets(ctx, listSubAgentPendingToolSettlementTargetsRequest{
 		ParentThreadID: "root",
 		ChildThreadID:  "child",
 	})
@@ -53,13 +53,13 @@ func TestReadHostsListCanonicalPendingToolSettlementTargets(t *testing.T) {
 		t.Fatalf("child targets = %#v, want %#v", childTargets, wantChild)
 	}
 
-	if _, err := childRead.ListPendingToolSettlementTargets(ctx, ListSubAgentPendingToolSettlementTargetsRequest{
+	if _, err := childRead.ListPendingToolSettlementTargets(ctx, listSubAgentPendingToolSettlementTargetsRequest{
 		ParentThreadID: "other",
 		ChildThreadID:  "child",
 	}); err == nil {
 		t.Fatal("parent-bound child read accepted a different parent")
 	}
-	if _, err := childRead.ListPendingToolSettlementTargets(ctx, ListSubAgentPendingToolSettlementTargetsRequest{
+	if _, err := childRead.ListPendingToolSettlementTargets(ctx, listSubAgentPendingToolSettlementTargetsRequest{
 		ParentThreadID: "root",
 		ChildThreadID:  "root",
 	}); !errors.Is(err, ErrSubAgentNotFound) {

@@ -3,10 +3,10 @@ package configbridge
 import (
 	"strings"
 
-	"github.com/floegence/floret/v2/config"
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/session/contextpolicy"
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/session/contextpolicy"
 )
 
 func ContextPolicy(policy config.ContextPolicy) contextpolicy.Policy {

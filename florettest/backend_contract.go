@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v2/storage"
+	"github.com/floegence/floret/v3/storage/spi"
 )
 
 // RunBackendContract verifies the transactional, ownership, ordering, rollback,
 // cancellation, and lifecycle semantics required from a storage Backend.
-func RunBackendContract(t *testing.T, source storage.Source) {
+func RunBackendContract(t *testing.T, source spi.Source) {
 	t.Helper()
 	if source == nil {
 		t.Fatal("florettest: backend source is required")
@@ -24,8 +24,8 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		backend := openContractBackend(t, source)
 		defer backend.Close()
 		key, value := []byte("a"), []byte("one")
-		if err := backend.Update(context.Background(), func(tx storage.WriteTx) error {
-			for _, record := range []storage.Record{
+		if err := backend.Update(context.Background(), func(tx spi.WriteTx) error {
+			for _, record := range []spi.Record{
 				{Key: key, Value: value},
 				{Key: []byte("b"), Value: []byte("two")},
 				{Key: []byte("c"), Value: []byte("three")},
@@ -39,7 +39,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 			t.Fatal(err)
 		}
 		key[0], value[0] = 'x', 'x'
-		if err := backend.View(context.Background(), func(tx storage.ReadTx) error {
+		if err := backend.View(context.Background(), func(tx spi.ReadTx) error {
 			got, err := tx.Get("contract", []byte("a"))
 			if err != nil || string(got) != "one" {
 				return fmt.Errorf("get = %q, %w", got, err)
@@ -49,7 +49,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 			if err != nil || string(again) != "one" {
 				return fmt.Errorf("aliased get = %q, %w", again, err)
 			}
-			first, err := tx.Scan(storage.ScanRequest{Namespace: "contract", Start: []byte("a"), End: []byte("z"), Limit: 2})
+			first, err := tx.Scan(spi.ScanRequest{Namespace: "contract", Start: []byte("a"), End: []byte("z"), Limit: 2})
 			if err != nil {
 				return err
 			}
@@ -57,7 +57,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 				return fmt.Errorf("first scan page = %#v", first)
 			}
 			first.Records[0].Value[0] = 'x'
-			second, err := tx.Scan(storage.ScanRequest{Namespace: "contract", After: first.Next, Limit: 2})
+			second, err := tx.Scan(spi.ScanRequest{Namespace: "contract", After: first.Next, Limit: 2})
 			if err != nil {
 				return err
 			}
@@ -73,7 +73,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 	t.Run("snapshot isolation", func(t *testing.T) {
 		backend := openContractBackend(t, source)
 		defer backend.Close()
-		if err := backend.Update(context.Background(), func(tx storage.WriteTx) error {
+		if err := backend.Update(context.Background(), func(tx spi.WriteTx) error {
 			return tx.Put("contract", []byte("key"), []byte("before"))
 		}); err != nil {
 			t.Fatal(err)
@@ -82,7 +82,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		writeDone := make(chan error, 1)
 		readDone := make(chan error, 1)
 		go func() {
-			readDone <- backend.View(context.Background(), func(tx storage.ReadTx) error {
+			readDone <- backend.View(context.Background(), func(tx spi.ReadTx) error {
 				before, err := tx.Get("contract", []byte("key"))
 				if err != nil || string(before) != "before" {
 					return fmt.Errorf("initial snapshot read = %q, %w", before, err)
@@ -100,7 +100,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		}()
 		<-readStarted
 		go func() {
-			writeDone <- backend.Update(context.Background(), func(tx storage.WriteTx) error {
+			writeDone <- backend.Update(context.Background(), func(tx spi.WriteTx) error {
 				return tx.Put("contract", []byte("key"), []byte("after"))
 			})
 		}()
@@ -119,7 +119,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		defer backend.Close()
 		rollback := errors.New("rollback")
 		calls := 0
-		if err := backend.Update(context.Background(), func(tx storage.WriteTx) error {
+		if err := backend.Update(context.Background(), func(tx spi.WriteTx) error {
 			calls++
 			if err := tx.Put("contract", []byte("error"), []byte("no")); err != nil {
 				return err
@@ -137,7 +137,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 					t.Fatalf("recovered panic = %#v", recovered)
 				}
 			}()
-			_ = backend.Update(context.Background(), func(tx storage.WriteTx) error {
+			_ = backend.Update(context.Background(), func(tx spi.WriteTx) error {
 				if err := tx.Put("contract", []byte("panic"), []byte("no")); err != nil {
 					return err
 				}
@@ -145,9 +145,9 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 			})
 		}()
 		for _, key := range [][]byte{[]byte("error"), []byte("panic")} {
-			if err := backend.View(context.Background(), func(tx storage.ReadTx) error {
+			if err := backend.View(context.Background(), func(tx spi.ReadTx) error {
 				_, err := tx.Get("contract", key)
-				if !errors.Is(err, storage.ErrNotFound) {
+				if !errors.Is(err, spi.ErrNotFound) {
 					return fmt.Errorf("rolled-back key %q: %w", key, err)
 				}
 				return nil
@@ -161,8 +161,8 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		backend := openContractBackend(t, source)
 		defer backend.Close()
 		ctx, cancel := context.WithCancel(context.Background())
-		var retained storage.WriteTx
-		if err := backend.Update(ctx, func(tx storage.WriteTx) error {
+		var retained spi.WriteTx
+		if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 			retained = tx
 			if err := tx.Put("contract", []byte("cancel"), []byte("no")); err != nil {
 				return err
@@ -172,12 +172,12 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled update = %v", err)
 		}
-		if _, err := retained.Get("contract", []byte("cancel")); !errors.Is(err, storage.ErrTransactionClosed) {
+		if _, err := retained.Get("contract", []byte("cancel")); !errors.Is(err, spi.ErrTransactionClosed) {
 			t.Fatalf("retained transaction = %v", err)
 		}
-		if err := backend.View(context.Background(), func(tx storage.ReadTx) error {
+		if err := backend.View(context.Background(), func(tx spi.ReadTx) error {
 			_, err := tx.Get("contract", []byte("cancel"))
-			if !errors.Is(err, storage.ErrNotFound) {
+			if !errors.Is(err, spi.ErrNotFound) {
 				return fmt.Errorf("cancelled value persisted: %w", err)
 			}
 			return nil
@@ -193,7 +193,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		results := make(chan error, 2)
 		for writer := range 2 {
 			go func() {
-				results <- backend.Update(context.Background(), func(tx storage.WriteTx) error {
+				results <- backend.Update(context.Background(), func(tx spi.WriteTx) error {
 					calls.Add(1)
 					return tx.Put("contract", []byte{byte('a' + writer)}, []byte("value"))
 				})
@@ -204,7 +204,7 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 			err := <-results
 			if err == nil {
 				successes++
-			} else if !errors.Is(err, storage.ErrConflict) {
+			} else if !errors.Is(err, spi.ErrConflict) {
 				t.Fatalf("concurrent update error = %v", err)
 			}
 		}
@@ -221,13 +221,13 @@ func RunBackendContract(t *testing.T, source storage.Source) {
 		if err := backend.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := backend.View(context.Background(), func(storage.ReadTx) error { return nil }); !errors.Is(err, storage.ErrClosed) {
+		if err := backend.View(context.Background(), func(spi.ReadTx) error { return nil }); !errors.Is(err, spi.ErrClosed) {
 			t.Fatalf("view after close = %v", err)
 		}
 	})
 }
 
-func openContractBackend(t *testing.T, source storage.Source) storage.Backend {
+func openContractBackend(t *testing.T, source spi.Source) spi.Backend {
 	t.Helper()
 	backend, err := source.Open(context.Background())
 	if err != nil {
@@ -239,6 +239,6 @@ func openContractBackend(t *testing.T, source storage.Source) storage.Backend {
 	return backend
 }
 
-func equalRecord(left, right storage.Record) bool {
+func equalRecord(left, right spi.Record) bool {
 	return bytes.Equal(left.Key, right.Key) && bytes.Equal(left.Value, right.Value)
 }

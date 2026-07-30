@@ -6,7 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
@@ -42,7 +43,7 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, threadID := range []ThreadID{"source", "fork"} {
+				for _, threadID := range []identity.ThreadID{"source", "fork"} {
 					snapshot, err := maintenance.ReadThread(ctx, threadID)
 					if err != nil {
 						t.Fatalf("reopened ReadThread(%q): %v", threadID, err)
@@ -79,12 +80,12 @@ func TestPublicThreadReadModelPathsReturnValidDTOsAcrossStores(t *testing.T) {
 					t.Fatalf("ReadThread: %v", err)
 				}
 				assertValidThreadSnapshot(t, read)
-				titled, err := maintenance.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "source", Title: "Canonical title"})
+				titled, err := maintenance.SetThreadTitle(ctx, setThreadTitleRequest{ThreadID: "source", Title: "Canonical title"})
 				if err != nil {
 					t.Fatalf("SetThreadTitle: %v", err)
 				}
 				assertValidThreadSnapshot(t, titled)
-				forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{
+				forked, err := maintenance.ForkThread(ctx, forkThreadRequest{
 					OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork",
 				})
 				if err != nil {

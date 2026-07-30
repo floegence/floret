@@ -9,11 +9,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/floegence/floret/v2/internal/provider"
-	"github.com/floegence/floret/v2/internal/provider/cache"
-	"github.com/floegence/floret/v2/internal/provider/catalog"
-	"github.com/floegence/floret/v2/internal/searchcap"
-	"github.com/floegence/floret/v2/internal/session"
+	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/provider/cache"
+	"github.com/floegence/floret/v3/internal/provider/catalog"
+	"github.com/floegence/floret/v3/internal/searchcap"
+	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v3/tools"
 )
 
 type AnthropicProvider struct {
@@ -451,7 +452,7 @@ func (p AnthropicProvider) MessageRaw(kind cache.SegmentKind, msg session.Messag
 }
 
 func (p AnthropicProvider) ToolRaw(def cache.ToolDefinition) (string, string, error) {
-	rendered := renderAnthropicTools([]provider.ToolDefinition{{
+	rendered := renderAnthropicTools([]tools.ToolDefinition{{
 		Name:         def.Name,
 		Title:        def.Title,
 		Description:  def.Description,
@@ -581,7 +582,7 @@ func renderAnthropicMessagesFromRawPlan(plan cache.RawPlan) ([]anthropicMessage,
 	return out, nil
 }
 
-func renderAnthropicTools(defs []provider.ToolDefinition, cacheControl *anthropicCacheControl) []anthropicTool {
+func renderAnthropicTools(defs []tools.ToolDefinition, cacheControl *anthropicCacheControl) []anthropicTool {
 	tools := make([]anthropicTool, 0, len(defs))
 	for i, def := range defs {
 		if def.Name == "" {
@@ -601,7 +602,7 @@ func renderAnthropicTools(defs []provider.ToolDefinition, cacheControl *anthropi
 	return tools
 }
 
-func inputSchemaForAnthropic(def provider.ToolDefinition) map[string]any {
+func inputSchemaForAnthropic(def tools.ToolDefinition) map[string]any {
 	if def.InputSchema != nil {
 		return def.InputSchema
 	}

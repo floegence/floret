@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/engine"
-	"github.com/floegence/floret/v2/internal/sessiontree"
+	"github.com/floegence/floret/v3/internal/engine"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 func validateTurnTerminalOutcome(threadID, turnID, runID string, outcome *sessiontree.TurnTerminalOutcome) error {

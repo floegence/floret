@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/floegence/floret/v2/observation"
+import "github.com/floegence/floret/v3/identity"
 
 type ToolCall struct {
 	ID        string
@@ -10,13 +10,13 @@ type ToolCall struct {
 }
 
 type ToolDefinition struct {
-	Name         string
-	Title        string
-	Description  string
-	InputSchema  map[string]any
-	OutputSchema map[string]any
-	Strict       bool
-	Annotations  map[string]any
+	Name         string         `json:"name"`
+	Title        string         `json:"title,omitempty"`
+	Description  string         `json:"description"`
+	InputSchema  map[string]any `json:"input_schema"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	Strict       bool           `json:"strict,omitempty"`
+	Annotations  map[string]any `json:"annotations,omitempty"`
 }
 
 type ArtifactRef struct {
@@ -33,10 +33,10 @@ type Invocation[T any] struct {
 	Name            string
 	RawArgs         string
 	Args            T
-	RunID           string
-	ThreadID        string
-	TurnID          string
-	PromptScopeID   string
+	RunID           identity.RunID
+	ThreadID        identity.ThreadID
+	TurnID          identity.TurnID
+	PromptScopeID   identity.PromptScopeID
 	Step            int
 	Labels          map[string]string
 	HostContext     map[string]string
@@ -44,7 +44,7 @@ type Invocation[T any] struct {
 }
 
 type ActivityUpdate struct {
-	Activity *observation.ActivityPresentation
+	Activity *ActivityPresentation
 	Metadata map[string]any
 }
 
@@ -62,7 +62,7 @@ type Result struct {
 	Text         string
 	Structured   map[string]any
 	Metadata     map[string]any
-	Activity     *observation.ActivityPresentation
+	Activity     *ActivityPresentation
 	Artifacts    []ArtifactRef
 	OutputPolicy *OutputPolicy
 	Pending      *PendingToolResult

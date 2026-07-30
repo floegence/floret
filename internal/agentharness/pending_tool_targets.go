@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/floegence/floret/v2/internal/sessiontree"
-	"github.com/floegence/floret/v2/observation"
+	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v3/observation"
 )
 
 // ListPendingToolSettlementTargets returns every active pending tool target on
