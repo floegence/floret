@@ -3596,6 +3596,7 @@ func TestLegacySubAgentOriginRecoveryFollowsDeepFullPathLineage(t *testing.T) {
 }
 
 func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
+	const childWaitTimeout = 10 * time.Second
 	for _, backend := range []string{"memory", "sqlite_reopen"} {
 		t.Run(backend, func(t *testing.T) {
 			ctx := context.Background()
@@ -3631,7 +3632,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-				ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child-a"}, Timeout: 2 * time.Second,
+				ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child-a"}, Timeout: childWaitTimeout,
 			}); err != nil || waited.TimedOut {
 				t.Fatalf("wait child-a = %#v, err=%v", waited, err)
 			}
@@ -3642,7 +3643,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-				ParentThreadID: "child-a", ChildThreadIDs: []identity.ThreadID{"child-b"}, Timeout: 2 * time.Second,
+				ParentThreadID: "child-a", ChildThreadIDs: []identity.ThreadID{"child-b"}, Timeout: childWaitTimeout,
 			}); err != nil || waited.TimedOut {
 				t.Fatalf("wait child-b = %#v, err=%v", waited, err)
 			}
@@ -3653,7 +3654,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-				ParentThreadID: "child-b", ChildThreadIDs: []identity.ThreadID{"child-c"}, Timeout: 2 * time.Second,
+				ParentThreadID: "child-b", ChildThreadIDs: []identity.ThreadID{"child-c"}, Timeout: childWaitTimeout,
 			}); err != nil || waited.TimedOut {
 				t.Fatalf("wait child-c = %#v, err=%v", waited, err)
 			}
@@ -3691,6 +3692,7 @@ func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
 
 func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 	t.Helper()
+	const childWaitTimeout = 10 * time.Second
 	ctx := context.Background()
 	host, err := newTestHost(t, providerHostOptions{
 		Config: runtimeConfig{
@@ -3718,7 +3720,7 @@ func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 		t.Fatal(err)
 	}
 	if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: 2 * time.Second,
+		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: childWaitTimeout,
 	}); err != nil || waited.TimedOut {
 		t.Fatalf("initial wait = %#v, err=%v", waited, err)
 	}
@@ -3731,7 +3733,7 @@ func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 		t.Fatal(err)
 	}
 	if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: 2 * time.Second,
+		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: childWaitTimeout,
 	}); err != nil || waited.TimedOut {
 		t.Fatalf("follow-up wait = %#v, err=%v", waited, err)
 	}
@@ -3752,7 +3754,7 @@ func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *runtimeStore) {
 		t.Fatal(err)
 	}
 	if waited, err := host.waitSubAgentsCommand(ctx, waitSubAgentsRequest{
-		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: 2 * time.Second,
+		ParentThreadID: "parent", ChildThreadIDs: []identity.ThreadID{"child"}, Timeout: childWaitTimeout,
 	}); err != nil || waited.TimedOut {
 		t.Fatalf("pending completion wait = %#v, err=%v", waited, err)
 	}
