@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-01
+* **Partial live projection status**: Host-facing committed-event recorders now
+  report `running` when their local mid-turn window starts after the durable
+  turn-start marker, keeping every emitted live projection valid until a
+  terminal marker is observed.
 * **Least-authority host SDK**: Added native read, lifecycle, turn execution,
   compaction, and SubAgent capability views issued from an exact bound Thread.
   Added an atomic bootstrap read model that connects directly to pull

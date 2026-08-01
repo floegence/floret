@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.1.1 - 2026-08-01
+
+- Keep host-facing live turn projections valid when a recorder first observes a
+  committed mid-turn tool entry without the earlier turn-start marker. Such
+  partial live projections now report `running` until a durable terminal marker
+  is observed.
+
 ## v3.1.0 - 2026-08-01
 
 - Add native `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`,

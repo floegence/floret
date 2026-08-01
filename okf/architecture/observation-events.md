@@ -104,7 +104,11 @@ or validation failures require a canonical reload rather than event replay.
   projection on those committed events, so hosts can render live display order
   without reading Floret storage internals or rebuilding activity from host
   audit records. The committed turn-start marker gives live projections the
-  explicit `running` status until a terminal marker becomes durable.
+  explicit `running` status until a terminal marker becomes durable. A
+  host-facing recorder whose local window begins with a later committed
+  mid-turn entry also reports `running`; recorder-local history must never make
+  an emitted public projection invalid merely because the earlier marker was
+  delivered through another host event path.
   `TurnResult.Projection`, pending settlement projections, and live event
   projections are built inside the runtime host from raw-capable current-turn
   facts, while default detail reads remain bounded previews for inspection

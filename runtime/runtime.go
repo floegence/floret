@@ -5114,6 +5114,11 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 		TraceID:  identity.TraceID(runID),
 		Events:   cloneThreadDetailEvents(events),
 	})
+	// A host-facing recorder may observe a committed mid-turn entry without the
+	// earlier turn marker. Such a partial live projection is still running.
+	if projection.Status == "" {
+		projection.Status = TurnStatusRunning
+	}
 	return cloneThreadTurnProjectionPtr(&projection)
 }
 

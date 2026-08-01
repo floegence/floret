@@ -6846,6 +6846,45 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeLiveProjectionRecorderMarksPartialCommittedTurnRunning(t *testing.T) {
+	now := time.UnixMilli(1_700_032_000_000)
+	committed := ThreadDetailEvent{
+		ID:        "entry-tool-dispatch",
+		Ordinal:   5,
+		ThreadID:  "thread-partial-live",
+		TurnID:    "turn-partial-live",
+		RunID:     "run-partial-live",
+		Kind:      ThreadDetailEventToolDispatch,
+		Type:      string(observation.EventTypeToolDispatchStarted),
+		CreatedAt: now,
+		Message: &ThreadDetailMessage{Activity: &tools.ActivityPresentation{
+			Label:    "running command",
+			Renderer: tools.ActivityRendererTerminal,
+			Payload:  tools.TerminalActivityPayload{Command: "sleep 10"},
+		}},
+		ToolCall: &ThreadDetailToolCall{ID: "call-partial-live", Name: "terminal.exec"},
+	}
+	projection := (&runtimeLiveProjectionRecorder{}).project(Event{
+		Type:      observation.EventTypeThreadEntryCommitted,
+		RunID:     "run-partial-live",
+		ThreadID:  "thread-partial-live",
+		TurnID:    "turn-partial-live",
+		Committed: &committed,
+	})
+	if projection == nil {
+		t.Fatal("partial committed event did not produce a live projection")
+	}
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("partial live projection failed validation: %v; projection=%#v", err, projection)
+	}
+	if projection.Status != TurnStatusRunning {
+		t.Fatalf("partial live projection status=%q, want %q", projection.Status, TurnStatusRunning)
+	}
+	if item := runtimeProjectionToolItem(*projection, "call-partial-live"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("partial live projection tool item=%#v, want running", item)
+	}
+}
+
 func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
