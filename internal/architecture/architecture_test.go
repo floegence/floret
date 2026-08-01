@@ -523,7 +523,8 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"ReadOverview", "ReadProjection", "ReadTurn", "SetTitle", "Snapshot",
 		"SubAgents", "Subscribe", "Turns")
 	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
-		"ContinuePendingTool", "RecordPendingToolOutcome", "ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
+		"AdmitTurn", "ContinuePendingTool", "ExecuteAdmittedTurn", "RecordPendingToolOutcome",
+		"ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
 		"ID", "InterruptedTurnRecovery", "ListPendingToolTargets", "ListTurns",
 		"PendingToolRecovery", "ReadDetail", "ReadTurn")

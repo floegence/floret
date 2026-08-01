@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-01
+* **Receipt-first turn admission**: Added `Turns.AdmitTurn` and
+  `Turns.ExecuteAdmittedTurn` so hosts can persist product coordination after
+  Floret admits the canonical user message and before provider execution.
+  The admission receipt is the durable handoff; Floret remains the sole source
+  of admitted conversation and turn lifecycle facts.
+
 ## 2026-07-30
 * **v3 host adoption completion**: Added bound root-thread and direct-child
   canonical reads, replayable title mutation, exact-target pending-tool

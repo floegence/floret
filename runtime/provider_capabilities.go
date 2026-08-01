@@ -20,6 +20,22 @@ type turnExecutionCapability struct {
 	host     *providerHost
 }
 
+func (capability *turnExecutionCapability) AdmitTurn(ctx context.Context, req runTurnRequest) (turnAdmissionResult, error) {
+	if capability == nil || capability.host == nil {
+		return turnAdmissionResult{}, errors.New("turn execution capability is required")
+	}
+	req.ThreadID = capability.threadID
+	return capability.host.AdmitTurn(ctx, req)
+}
+
+func (capability *turnExecutionCapability) ExecuteAdmittedTurn(ctx context.Context, admission turnAdmissionResult, req runTurnRequest) (TurnResult, error) {
+	if capability == nil || capability.host == nil {
+		return TurnResult{}, errors.New("turn execution capability is required")
+	}
+	req.ThreadID = capability.threadID
+	return capability.host.ExecuteAdmittedTurn(ctx, admission, req)
+}
+
 // threadCompactionCapability owns provider-backed compaction for one canonical thread.
 type threadCompactionCapability struct {
 	threadID identity.ThreadID
@@ -256,7 +272,7 @@ func (f *turnExecutionFactory) NewHost(ctx context.Context, opts turnExecutionOp
 		return nil, err
 	}
 	defer done()
-	if err := validateRootHostConstructionAuthority(ctx, f.store, f.threadID); err != nil {
+	if err := validateRootBoundAuthority(ctx, f.store, f.threadID); err != nil {
 		return nil, err
 	}
 	if err := opts.validate(); err != nil {

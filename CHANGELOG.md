@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.0.3 - 2026-08-01
+
+- Add receipt-first two-stage turn admission for hosts that must durably bind
+  product coordination before provider execution.
+- Add `Turns.AdmitTurn` and `Turns.ExecuteAdmittedTurn`; admission persists the
+  canonical user message and lifecycle identities without issuing a provider
+  request, while execution consumes the Floret-owned admission receipt.
+- Keep `Turns.StartTurn` source-compatible and make same-process
+  `AdmitTurnResult.Execute` a convenience over the receipt-first path.
+- Extend the public API baseline, behavior contract, README, and OKF runtime
+  documentation for downstream release adoption.
+
 ## v3.0.2 - 2026-07-30
 
 - Complete the bound v3 host-adoption surface with canonical root-thread and

@@ -42,6 +42,15 @@ replay returns the original receipt, while changed durable input returns a
 typed request conflict. There is no bootstrap, binder, factory, Store facade,
 rename-only adapter, or caller-assigned lifecycle identity.
 
+`Turns.AdmitTurn` splits canonical user-message admission from provider
+execution. It persists the admitted user message, allocates the `TurnID` and
+`RunID`, returns a `TurnAdmissionReceipt`, and does not issue a provider
+request. Hosts may persist product coordination beside that receipt, then call
+`Turns.ExecuteAdmittedTurn` with the receipt and the same logical command; the
+provider execution reads the canonical user input from Floret admission
+authority. `AdmitTurnResult.Execute` is only a same-process convenience over
+the same receipt-first execution path.
+
 Every thread has a monotonic `ThreadRevision`. Consumers read `Snapshot`, load
 all first-screen queries at that revision, then call `Subscribe(after=revision)`.
 Pages have stable ordering, limits from 1 through 200, and cursors bound to the

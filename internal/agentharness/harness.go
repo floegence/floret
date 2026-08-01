@@ -194,6 +194,15 @@ type RunOptions struct {
 	Sink                     event.Sink
 }
 
+type TurnAdmission struct {
+	ThreadID    string
+	TurnID      string
+	RunID       string
+	UserEntryID string
+	BaseLeafID  string
+	Replayed    bool
+}
+
 type CompactOptions struct {
 	RequestID              string
 	Source                 string
@@ -1216,6 +1225,124 @@ func threadMessages(path []sessiontree.Entry) []ThreadMessage {
 
 func (t *Thread) Run(ctx context.Context, input string, opts RunOptions) (TurnResult, error) {
 	return t.run(ctx, input, opts, nil)
+}
+
+func (t *Thread) Admit(ctx context.Context, input string, opts RunOptions) (TurnAdmission, error) {
+	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 {
+		return TurnAdmission{}, errors.New("input is required")
+	}
+	turnID := strings.TrimSpace(opts.TurnID)
+	if turnID == "" {
+		return TurnAdmission{}, errors.New("turn id is required")
+	}
+	runID := strings.TrimSpace(opts.RunID)
+	if runID == "" {
+		return TurnAdmission{}, errors.New("run id is required")
+	}
+	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+	if !ok {
+		return TurnAdmission{}, errors.New("session tree repo does not support atomic turn admission")
+	}
+	existing, existingAdmission, err := authority.ReadTurnAdmission(ctx, t.id, turnID, runID)
+	if err != nil {
+		return TurnAdmission{}, err
+	}
+	if !existingAdmission {
+		normalized, err := engine.NormalizeAndValidateTurnSupplementalContext(opts.SupplementalContext)
+		if err != nil {
+			return TurnAdmission{}, err
+		}
+		if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) > 0 && len(normalized) == 0 {
+			return TurnAdmission{}, errors.New("reference-only turn input requires renderable supplemental context")
+		}
+	}
+	message := session.Message{
+		Role: session.User, Content: input,
+		Attachments: session.CloneMessageAttachments(opts.Attachments),
+		References:  append([]session.MessageReference(nil), opts.References...),
+	}
+	admission := existing
+	if !existingAdmission {
+		var err error
+		admission, err = t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
+			ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"), Input: message,
+		})
+		if err != nil {
+			return TurnAdmission{}, err
+		}
+	}
+	t.harness.cacheThreadAfterCommit(t)
+	if admission.Terminal == nil {
+		if err := t.beginActiveTurnLease(admission.Lease); err != nil {
+			return TurnAdmission{}, err
+		}
+	}
+	if !admission.Replayed {
+		t.harness.emitEntryCommitted(admission.TurnStarted, runID)
+		t.harness.emitEntryCommitted(admission.UserMessage, runID)
+		t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
+		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: admission.UserMessage.ID, ParentID: admission.UserMessage.ParentID})
+	}
+	return TurnAdmission{
+		ThreadID: t.id, TurnID: turnID, RunID: runID, UserEntryID: admission.UserMessage.ID,
+		BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
+	}, nil
+}
+
+func (t *Thread) ExecuteAdmitted(ctx context.Context, admission TurnAdmission, input string, opts RunOptions) (TurnResult, error) {
+	if admission.ThreadID != t.id || strings.TrimSpace(admission.TurnID) == "" || strings.TrimSpace(admission.RunID) == "" {
+		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+	if !ok {
+		return TurnResult{}, errors.New("session tree repo does not support atomic turn admission")
+	}
+	admitted, found, err := authority.ReadTurnAdmission(ctx, t.id, admission.TurnID, admission.RunID)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	if !found {
+		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if admitted.Terminal != nil {
+		return t.turnAdmissionReplayResult(ctx, admitted, admission.TurnID, admission.RunID)
+	}
+	lease := admitted.Lease
+	if err := t.beginActiveTurnLease(lease); err != nil {
+		return t.finalizeTurnStartupFailure(ctx, lease, admission.TurnID, admission.RunID, "local_owner_bind_error", err)
+	}
+	defer t.leaveTurn()
+	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
+	runCtx, stopRenewal, err := t.startLeaseRenewal(leaseCtx, lease)
+	if err != nil {
+		return t.finalizeTurnStartupFailure(leaseCtx, lease, admission.TurnID, admission.RunID, "lease_renewal_start_error", err)
+	}
+	defer func() {
+		if current, ok := sessiontree.TurnLeaseFromContext(leaseCtx); ok {
+			t.clearActiveLease(current)
+		}
+	}()
+	message := admitted.UserMessage.Message
+	automaticTitleExecution, titleErr := t.startAutomaticTitle(runCtx, admission.TurnID, admission.RunID, admitted.UserMessage.ID, message)
+	if titleErr != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(runCtx)
+		result, runErr := t.finalizeFailedTurn(persistCtx, admission.TurnID, admission.RunID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
+		cancelPersist()
+		if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
+			return result, renewalErr
+		}
+		return result, runErr
+	}
+	opts.TurnID = admission.TurnID
+	opts.RunID = admission.RunID
+	opts.AdmissionCommitted = true
+	opts.AdmissionBaseLeafID = admitted.BaseLeafID
+	result, runErr := t.runLeased(runCtx, input, opts, nil)
+	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
+		runErr = renewalErr
+	}
+	automaticTitleExecution.FinishMain(automaticTitleWorkerMustJoin(result, runErr))
+	return result, runErr
 }
 
 func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, error) {
@@ -2737,6 +2864,46 @@ func (t *Thread) bindActiveLease(lease sessiontree.TurnLease) error {
 			t.mu.Lock()
 			if sameTurnLease(t.activeLease, lease) {
 				t.activeLease = sessiontree.TurnLease{}
+			}
+			t.mu.Unlock()
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Thread) beginActiveTurnLease(lease sessiontree.TurnLease) error {
+	if strings.TrimSpace(lease.OwnerID) == "" {
+		return nil
+	}
+	purpose, err := lease.Purpose.Normalize()
+	if err != nil {
+		return err
+	}
+	lease.Purpose = purpose
+	if lease.ThreadID != t.id || purpose != sessiontree.TurnLeasePurposeTurn || strings.TrimSpace(lease.TurnID) == "" {
+		return ErrActiveTurn
+	}
+	t.mu.Lock()
+	if t.active {
+		if sameTurnLease(t.activeLease, lease) {
+			t.mu.Unlock()
+			return nil
+		}
+		t.mu.Unlock()
+		return ErrActiveTurn
+	}
+	t.active = true
+	t.phase = threadPhaseTurn
+	t.activeLease = lease
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() {
+		if err := registry.Register(lease); err != nil {
+			t.mu.Lock()
+			if sameTurnLease(t.activeLease, lease) {
+				t.active = false
+				t.activeLease = sessiontree.TurnLease{}
+				t.phase = threadPhaseIdle
 			}
 			t.mu.Unlock()
 			return err

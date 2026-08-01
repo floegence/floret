@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v3@v3.0.2
+go get github.com/floegence/floret/v3@v3.0.3
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -88,10 +88,11 @@ func main() {
     if err != nil {
         panic(err)
     }
-    started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+    command := runtime.StartTurnCommand{
         LogicalRequestID: "send-message-42",
         UserMessage:      runtime.TurnInput{Text: "Hello"},
-    })
+    }
+    started, err := turns.StartTurn(ctx, command)
     if err != nil {
         panic(err)
     }
@@ -145,13 +146,22 @@ request and durable receipt. Interrupted-turn and provider-free pending-tool
 recovery use one-time handles bound to the exact current proof or target.
 
 Commands use stable logical request identities and explicit names:
-`CreateThread`, `StartTurn`, `RetryTurn`, `ForkThread`, `DeleteThread`,
+`CreateThread`, `StartTurn`, `AdmitTurn`, `ExecuteAdmittedTurn`, `RetryTurn`,
+`ForkThread`, `DeleteThread`,
 `Compact`,
 `ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,
 `UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`, and
 `InterruptSubAgent`, `WaitSubAgents`, and `CloseSubAgent`. Floret allocates all lifecycle identities. Replaying the
 same logical request under the same operation and bound authority returns the
 original identities; changing durable input returns a typed request conflict.
+
+Hosts that must bind product coordination after canonical admission can use
+`Turns.AdmitTurn` to persist the user message and receive a
+`TurnAdmissionReceipt` before any provider request is sent. They then call
+`Turns.ExecuteAdmittedTurn` with that receipt and the same logical command, or
+use `AdmitTurnResult.Execute` as a same-process convenience. The receipt is
+the durable handoff point; hosts do not maintain a second queryable turn
+lifecycle.
 
 `runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
 Gateway, tools, capabilities, reasoning policy, and execution policy. The

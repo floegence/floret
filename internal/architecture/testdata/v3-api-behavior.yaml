@@ -232,6 +232,24 @@ methods:
     concurrency: serialized by bound ThreadRevision CAS
     cancellation: provider cancellation cannot erase an already admitted turn
     closing: managed provider and tool work is cancelled after closing begins
+  - method: Turns.AdmitTurn
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact replay is safe; busy is transient; conflict is permanent
+    commit: canonical user admission, TurnID, RunID, UserEntryID, and TurnAdmissionReceipt commit before provider execution
+    replay: same logical command returns the original admission receipt without a provider request
+    concurrency: serialized by bound ThreadRevision CAS and active-turn lease authority
+    cancellation: cancellation cannot erase an already admitted canonical user message
+    closing: no new admission starts after closing begins
+  - method: Turns.ExecuteAdmittedTurn
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict, ErrAuthorityCorrupt]
+    errors_as: [RequestConflictError, CommittedEffectError]
+    retryability: exact replay is safe after terminal commit; busy is transient; corrupt receipt-command mismatch is permanent
+    commit: provider execution consumes the Floret admission receipt and commits the normal turn terminal receipt
+    replay: terminal replay returns the committed request receipt and marks the admission receipt replayed
+    concurrency: only the receipt-matching active turn lease may execute
+    cancellation: provider cancellation cannot erase the admitted user message or any committed terminal outcome
+    closing: managed provider and tool work is cancelled after closing begins
   - method: Turns.RetryTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrNoRetryTarget, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]

@@ -153,10 +153,42 @@ type CompactThreadResult struct {
 // StartTurnResult returns the canonical result and Floret-allocated execution
 // identities for one admitted turn.
 type StartTurnResult struct {
-	ThreadID identity.ThreadID `json:"thread_id"`
-	TurnID   identity.TurnID   `json:"turn_id"`
-	RunID    identity.RunID    `json:"run_id"`
-	Receipt  MutationReceipt   `json:"receipt"`
+	ThreadID         identity.ThreadID     `json:"thread_id"`
+	TurnID           identity.TurnID       `json:"turn_id"`
+	RunID            identity.RunID        `json:"run_id"`
+	Receipt          MutationReceipt       `json:"receipt"`
+	AdmissionReceipt *TurnAdmissionReceipt `json:"admission_receipt,omitempty"`
+}
+
+// TurnAdmissionReceipt is the durable proof that Floret has admitted the
+// canonical user message before provider execution starts.
+type TurnAdmissionReceipt struct {
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id"`
+	ThreadID         identity.ThreadID         `json:"thread_id"`
+	TurnID           identity.TurnID           `json:"turn_id"`
+	RunID            identity.RunID            `json:"run_id"`
+	UserEntryID      string                    `json:"user_entry_id"`
+	Revision         ThreadRevision            `json:"revision"`
+	Replayed         bool                      `json:"replayed,omitempty"`
+}
+
+// AdmitTurnResult returns a durable admission receipt plus a process-local
+// execution handle. Persist the receipt, not the handle.
+type AdmitTurnResult struct {
+	ThreadID    identity.ThreadID    `json:"thread_id"`
+	TurnID      identity.TurnID      `json:"turn_id"`
+	RunID       identity.RunID       `json:"run_id"`
+	UserEntryID string               `json:"user_entry_id"`
+	Receipt     TurnAdmissionReceipt `json:"receipt"`
+
+	execution *turnAdmissionExecution
+}
+
+type turnAdmissionExecution struct {
+	thread  *Thread
+	agent   *Agent
+	command StartTurnCommand
+	receipt TurnAdmissionReceipt
 }
 
 // RetryTurnCommand retries the latest eligible canonical turn.
@@ -1902,6 +1934,164 @@ func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (St
 	return out, runErr
 }
 
+// AdmitTurn admits one canonical user message and returns before provider
+// execution starts. Hosts can durably bind product-owned coordination state to
+// the returned receipt, then call Execute on the returned result.
+func (turns *Turns) AdmitTurn(ctx context.Context, command StartTurnCommand) (AdmitTurnResult, error) {
+	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
+		return AdmitTurnResult{}, errors.New("turn authority is required")
+	}
+	host := turns.thread.host
+	if err := host.available(); err != nil {
+		return AdmitTurnResult{}, err
+	}
+	if _, err := identity.ParseLogicalRequestID(command.LogicalRequestID.String()); err != nil {
+		return AdmitTurnResult{}, err
+	}
+	if err := command.UserMessage.Validate(); err != nil {
+		return AdmitTurnResult{}, err
+	}
+	agentHash, err := resolvedAgentFingerprint(turns.agent)
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	fingerprint, err := startTurnFingerprint(command, agentHash)
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	record, requestReplayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint)
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	executionAgent := *turns.agent
+	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	admission, err := runner.Admit(ctx, turnExecutionRequest{
+		RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
+		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
+		Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
+		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
+	})
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	revision, err := host.currentThreadRevision(ctx, record.ThreadID)
+	if err != nil {
+		return AdmitTurnResult{}, err
+	}
+	receipt := TurnAdmissionReceipt{
+		LogicalRequestID: record.LogicalRequestID, ThreadID: record.ThreadID,
+		TurnID: *record.TurnID, RunID: *record.RunID, UserEntryID: admission.UserEntryID,
+		Revision: revision, Replayed: requestReplayed || admission.Replayed,
+	}
+	out := AdmitTurnResult{
+		ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID,
+		UserEntryID: admission.UserEntryID, Receipt: receipt,
+	}
+	out.execution = &turnAdmissionExecution{
+		thread: turns.thread, agent: turns.agent, command: command, receipt: receipt,
+	}
+	return out, nil
+}
+
+// Execute starts or replays provider execution for this admitted turn.
+func (result AdmitTurnResult) Execute(ctx context.Context) (StartTurnResult, error) {
+	if result.execution == nil {
+		return StartTurnResult{}, errors.New("turn admission execution handle is unavailable")
+	}
+	return result.execution.turns().ExecuteAdmittedTurn(ctx, result.execution.receipt, result.execution.command)
+}
+
+func (execution *turnAdmissionExecution) turns() *Turns {
+	if execution == nil {
+		return nil
+	}
+	return &Turns{thread: execution.thread, agent: execution.agent}
+}
+
+// ExecuteAdmittedTurn starts or replays provider execution for a previously
+// admitted turn receipt.
+func (turns *Turns) ExecuteAdmittedTurn(ctx context.Context, receipt TurnAdmissionReceipt, command StartTurnCommand) (StartTurnResult, error) {
+	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
+		return StartTurnResult{}, errors.New("turn authority is required")
+	}
+	host := turns.thread.host
+	if err := host.available(); err != nil {
+		return StartTurnResult{}, err
+	}
+	if err := validateTurnAdmissionReceipt(receipt); err != nil {
+		return StartTurnResult{}, err
+	}
+	if command.LogicalRequestID != receipt.LogicalRequestID {
+		return StartTurnResult{}, fmt.Errorf("%w: admitted turn command logical request mismatch", ErrAuthorityCorrupt)
+	}
+	if err := command.UserMessage.Validate(); err != nil {
+		return StartTurnResult{}, err
+	}
+	agentHash, err := resolvedAgentFingerprint(turns.agent)
+	if err != nil {
+		return StartTurnResult{}, err
+	}
+	fingerprint, err := startTurnFingerprint(command, agentHash)
+	if err != nil {
+		return StartTurnResult{}, err
+	}
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	record, replayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint)
+	if err != nil {
+		return StartTurnResult{}, err
+	}
+	if err := validateAdmittedTurnRecord(record, receipt); err != nil {
+		return StartTurnResult{}, err
+	}
+	admissionReceipt := receipt
+	admissionReceipt.Replayed = admissionReceipt.Replayed || replayed || record.State == requestStateCommitted
+	out := StartTurnResult{
+		ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID,
+		AdmissionReceipt: &admissionReceipt,
+	}
+	if record.State == requestStateCommitted {
+		out.Receipt = receiptFromRecord(record, true)
+		return out, nil
+	}
+	executionAgent := *turns.agent
+	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
+	if err != nil {
+		return StartTurnResult{}, err
+	}
+	result, runErr := runner.ExecuteAdmitted(ctx, admittedTurnExecutionRequest{
+		Admission: turnAdmissionResult{
+			ThreadID: receipt.ThreadID, TurnID: receipt.TurnID,
+			RunID: receipt.RunID, UserEntryID: receipt.UserEntryID,
+			Replayed: receipt.Replayed,
+		},
+		RunID: receipt.RunID, TurnID: receipt.TurnID, Input: command.UserMessage,
+		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
+		Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
+		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
+	})
+	if result.TurnID != "" {
+		view, snapshotErr := turns.thread.Snapshot(context.WithoutCancel(ctx))
+		if snapshotErr != nil {
+			return out, errors.Join(runErr, snapshotErr)
+		}
+		record.Revision = view.Revision
+		record.State = requestStateCommitted
+		if commitErr := host.commitRequest(context.WithoutCancel(ctx), record); commitErr != nil {
+			return out, errors.Join(runErr, commitErr)
+		}
+	}
+	out.Receipt = receiptFromRecord(record, replayed)
+	return out, runErr
+}
+
 // RetryTurn executes or permanently replays one retry mutation.
 func (turns *Turns) RetryTurn(ctx context.Context, command RetryTurnCommand) (RetryTurnResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
@@ -2885,6 +3075,36 @@ func receiptFromRecord(record requestLedgerRecord, replayed bool) MutationReceip
 		receipt.RunID = *record.RunID
 	}
 	return receipt
+}
+
+func validateTurnAdmissionReceipt(receipt TurnAdmissionReceipt) error {
+	if _, err := identity.ParseLogicalRequestID(receipt.LogicalRequestID.String()); err != nil {
+		return err
+	}
+	if _, err := identity.ParseThreadID(receipt.ThreadID.String()); err != nil {
+		return err
+	}
+	if _, err := identity.ParseTurnID(receipt.TurnID.String()); err != nil {
+		return err
+	}
+	if _, err := identity.ParseRunID(receipt.RunID.String()); err != nil {
+		return err
+	}
+	if strings.TrimSpace(receipt.UserEntryID) == "" {
+		return errors.New("turn admission receipt requires a user entry identity")
+	}
+	if receipt.Revision <= 0 {
+		return errors.New("turn admission receipt requires a positive revision")
+	}
+	return nil
+}
+
+func validateAdmittedTurnRecord(record requestLedgerRecord, receipt TurnAdmissionReceipt) error {
+	if record.Operation != "start_turn" || record.LogicalRequestID != receipt.LogicalRequestID || record.ThreadID != receipt.ThreadID ||
+		record.TurnID == nil || *record.TurnID != receipt.TurnID || record.RunID == nil || *record.RunID != receipt.RunID {
+		return fmt.Errorf("%w: admitted turn receipt does not match the request ledger", ErrAuthorityCorrupt)
+	}
+	return nil
 }
 
 func sameOptionalTurnID(left, right *identity.TurnID) bool {

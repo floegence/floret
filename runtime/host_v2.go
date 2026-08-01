@@ -277,10 +277,54 @@ type turnExecutionRequest struct {
 	ToolSurfaceProvider ToolSurfaceProvider
 }
 
+type admittedTurnExecutionRequest struct {
+	Admission           turnAdmissionResult
+	RunID               identity.RunID
+	TurnID              identity.TurnID
+	Input               TurnInput
+	SupplementalContext []TurnSupplementalContextItem
+	Labels              RunLabels
+	Completion          TurnCompletionPolicy
+	Signals             TurnSignalSpec
+	Limits              TurnLimits
+	Reasoning           config.ReasoningSelection
+	ManualCompactions   ManualCompactionSource
+	ToolSurfaceProvider ToolSurfaceProvider
+}
+
 // turnRunnerHandle owns provider-backed execution for one exact root thread.
 type turnRunnerHandle struct {
 	inner    *turnExecutionCapability
 	threadID identity.ThreadID
+}
+
+// Admit records one canonical user message on the bound thread before provider
+// execution starts.
+func (runner *turnRunnerHandle) Admit(ctx context.Context, request turnExecutionRequest) (turnAdmissionResult, error) {
+	if runner == nil || runner.inner == nil {
+		return turnAdmissionResult{}, errors.New("turn runner is required")
+	}
+	return runner.inner.AdmitTurn(ctx, runTurnRequest{
+		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		Input: request.Input, SupplementalContext: request.SupplementalContext,
+		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
+		Limits: request.Limits, Reasoning: request.Reasoning,
+		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
+	})
+}
+
+// ExecuteAdmitted runs provider execution for an already admitted turn.
+func (runner *turnRunnerHandle) ExecuteAdmitted(ctx context.Context, request admittedTurnExecutionRequest) (TurnResult, error) {
+	if runner == nil || runner.inner == nil {
+		return TurnResult{}, errors.New("turn runner is required")
+	}
+	return runner.inner.ExecuteAdmittedTurn(ctx, request.Admission, runTurnRequest{
+		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		Input: request.Input, SupplementalContext: request.SupplementalContext,
+		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
+		Limits: request.Limits, Reasoning: request.Reasoning,
+		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
+	})
 }
 
 // Run admits and executes one turn on the bound thread.

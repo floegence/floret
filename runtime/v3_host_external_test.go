@@ -196,6 +196,136 @@ func (source *deterministicIDs) NewRunID() (identity.RunID, error) {
 	return value, nil
 }
 
+func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	ids := &deterministicIDs{
+		threads: []identity.ThreadID{"thread-admit"},
+		turns:   []identity.TurnID{"turn-admit"},
+		runs:    []identity.RunID{"run-admit"},
+	}
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path), IDSource: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-admit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "executed"}, {Type: provider.EventDone}}},
+	)
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.Turns(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startCommand := runtime.StartTurnCommand{
+		LogicalRequestID: "admit-turn",
+		UserMessage:      runtime.TurnInput{Text: "hello"},
+	}
+	admitted, err := turns.AdmitTurn(ctx, startCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted.ThreadID != created.ThreadID || admitted.TurnID != "turn-admit" || admitted.RunID != "run-admit" ||
+		admitted.UserEntryID == "" || admitted.Receipt.Replayed || admitted.Receipt.Revision <= created.Receipt.Revision {
+		t.Fatalf("admission = %#v", admitted)
+	}
+	if requests := gateway.Requests(); len(requests) != 0 {
+		t.Fatalf("provider was called during admission: %#v", requests)
+	}
+	running, err := thread.ReadTurn(ctx, admitted.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Status != runtime.TurnStatusRunning || running.UserEntryID != admitted.UserEntryID ||
+		running.UserMessageOrigin != runtime.ThreadUserMessageOriginUser || running.UserInput != "hello" {
+		t.Fatalf("running turn after admission = %#v", running)
+	}
+	if err := host.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path), IDSource: &deterministicIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = restarted.Shutdown(context.Background()) }()
+	restartedThread, err := restarted.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedGateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "executed"}, {Type: provider.EventDone}}},
+	)
+	restartedAgent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, restartedGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedTurns, err := restartedThread.Turns(restartedAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAdmission, err := restartedTurns.AdmitTurn(ctx, startCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedAdmission.ThreadID != admitted.ThreadID || replayedAdmission.TurnID != admitted.TurnID ||
+		replayedAdmission.RunID != admitted.RunID || replayedAdmission.UserEntryID != admitted.UserEntryID ||
+		!replayedAdmission.Receipt.Replayed {
+		t.Fatalf("replayed admission = %#v, want %#v", replayedAdmission, admitted)
+	}
+	if requests := restartedGateway.Requests(); len(requests) != 0 {
+		t.Fatalf("provider was called during admission replay: %#v", requests)
+	}
+	executed, err := restartedTurns.ExecuteAdmittedTurn(ctx, admitted.Receipt, startCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.AdmissionReceipt == nil {
+		t.Fatalf("executed admission receipt is nil")
+	}
+	if executed.ThreadID != admitted.ThreadID || executed.TurnID != admitted.TurnID || executed.RunID != admitted.RunID ||
+		executed.AdmissionReceipt.UserEntryID != admitted.UserEntryID {
+		t.Fatalf("executed = %#v", executed)
+	}
+	if requests := restartedGateway.Requests(); len(requests) != 1 {
+		t.Fatalf("provider requests after execute = %#v", requests)
+	}
+	replayedExecution, err := restartedTurns.ExecuteAdmittedTurn(ctx, admitted.Receipt, startCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedExecution.AdmissionReceipt == nil {
+		t.Fatalf("replayed execution admission receipt is nil")
+	}
+	if !replayedExecution.Receipt.Replayed || replayedExecution.TurnID != admitted.TurnID || !replayedExecution.AdmissionReceipt.Replayed {
+		t.Fatalf("replayed execution = %#v", replayedExecution)
+	}
+	if requests := restartedGateway.Requests(); len(requests) != 1 {
+		t.Fatalf("provider was called during execution replay: %#v", requests)
+	}
+}
+
 func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	ctx := context.Background()
 	ids := &deterministicIDs{

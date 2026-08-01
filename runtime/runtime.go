@@ -3027,6 +3027,107 @@ func (h *providerHost) RunTurn(ctx context.Context, req runTurnRequest) (TurnRes
 	return out, runtimeHostError(runErr)
 }
 
+type turnAdmissionResult struct {
+	ThreadID    identity.ThreadID
+	TurnID      identity.TurnID
+	RunID       identity.RunID
+	UserEntryID string
+	BaseLeafID  string
+	Replayed    bool
+}
+
+func (h *providerHost) AdmitTurn(ctx context.Context, req runTurnRequest) (turnAdmissionResult, error) {
+	validated, err := validateRunTurnRequest(req)
+	if err != nil {
+		return turnAdmissionResult{}, err
+	}
+	input := validated.input
+	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
+		return turnAdmissionResult{}, errors.New("opaque message attachments require a modelGateway host")
+	}
+	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
+	if err != nil {
+		return turnAdmissionResult{}, err
+	}
+	defer done()
+	thread, err := h.harness.ResumeThread(operationCtx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return turnAdmissionResult{}, runtimeHostError(err)
+	}
+	admission, err := thread.Admit(operationCtx, input.Text, agentharness.RunOptions{
+		RunID: string(req.RunID), TurnID: string(req.TurnID),
+		SupplementalContext: agentHarnessSupplementalContext(req.SupplementalContext),
+		Attachments:         sessionMessageAttachments(input.Attachments),
+		References:          sessionMessageReferences(input.References),
+	})
+	if err != nil {
+		return turnAdmissionResult{}, runtimeHostError(err)
+	}
+	return turnAdmissionResult{
+		ThreadID: identity.ThreadID(admission.ThreadID), TurnID: identity.TurnID(admission.TurnID),
+		RunID: identity.RunID(admission.RunID), UserEntryID: admission.UserEntryID,
+		BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
+	}, nil
+}
+
+func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAdmissionResult, req runTurnRequest) (TurnResult, error) {
+	validated, err := validateRunTurnRequest(req)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	input := validated.input
+	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
+	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
+		return TurnResult{}, errors.New("opaque message attachments require a modelGateway host")
+	}
+	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	defer done()
+	thread, err := h.harness.ResumeThread(operationCtx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return TurnResult{}, runtimeHostError(err)
+	}
+	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
+	result, runErr := thread.ExecuteAdmitted(operationCtx, agentharness.TurnAdmission{
+		ThreadID: string(admission.ThreadID), TurnID: string(admission.TurnID), RunID: string(admission.RunID),
+		UserEntryID: admission.UserEntryID, BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
+	}, input.Text, agentharness.RunOptions{
+		RunID: string(req.RunID), TurnID: string(req.TurnID),
+		Labels: engine.RunLabels{
+			Correlation: cloneStringMap(req.Labels.Correlation),
+			Host:        cloneStringMap(req.Labels.Host),
+		},
+		CompletionPolicy:         validated.completionPolicy,
+		ControlSpec:              validated.signalSpec,
+		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
+		MaxInputTokens:           req.Limits.MaxInputTokens,
+		MaxTotalTokens:           req.Limits.MaxTotalTokens,
+		MaxCostUSD:               req.Limits.MaxCostUSD,
+		MaxToolCalls:             req.Limits.MaxToolCalls,
+		MaxLengthContinuations:   req.Limits.MaxLengthContinuations,
+		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
+		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
+		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
+		SupplementalContext:      supplementalContext,
+		Attachments:              sessionMessageAttachments(input.Attachments),
+		References:               sessionMessageReferences(input.References),
+		Sink:                     activityRecorder,
+	})
+	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
+	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(operationCtx)
+	defer cancelProjection()
+	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
+	if err := out.Validate(); err != nil {
+		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
+			return out, runtimeHostError(runErr)
+		}
+		return TurnResult{}, invalidPublicResult("turn result", err)
+	}
+	return out, runtimeHostError(runErr)
+}
+
 type validatedRunTurnRequest struct {
 	input            TurnInput
 	completionPolicy engine.CompletionPolicy

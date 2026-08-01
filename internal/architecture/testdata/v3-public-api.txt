@@ -362,6 +362,13 @@ field ActivePendingToolTarget.ToolCallID string
 field ActivePendingToolTarget.ToolName string
 field ActivePendingToolTarget.Handle string
 field ActivePendingToolTarget.EffectAttemptID string
+type AdmitTurnResult struct
+field AdmitTurnResult.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field AdmitTurnResult.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
+field AdmitTurnResult.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field AdmitTurnResult.UserEntryID string tag="json:\"user_entry_id\""
+field AdmitTurnResult.Receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt tag="json:\"receipt\""
+method AdmitTurnResult.Execute func(ctx context.Context) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
 type Agent struct
 method *Agent.Config func() github.com/floegence/floret/v3/config.AgentConfig
 method *Agent.ProviderIdentity func() github.com/floegence/floret/v3/provider.Identity
@@ -939,6 +946,7 @@ field StartTurnResult.ThreadID github.com/floegence/floret/v3/identity.ThreadID 
 field StartTurnResult.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
 field StartTurnResult.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
 field StartTurnResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+field StartTurnResult.AdmissionReceipt *github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt tag="json:\"admission_receipt,omitempty\""
 type StreamObservation struct
 field StreamObservation.Type github.com/floegence/floret/v3/runtime.StreamObservationType tag="json:\"type\""
 field StreamObservation.Text string tag="json:\"text,omitempty\""
@@ -1386,6 +1394,14 @@ field ToolSurfaceRequest.Step int
 field ToolSurfaceRequest.Phase string
 field ToolSurfaceRequest.Labels github.com/floegence/floret/v3/runtime.RunLabels
 field ToolSurfaceRequest.HostContext map[string]string
+type TurnAdmissionReceipt struct
+field TurnAdmissionReceipt.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field TurnAdmissionReceipt.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field TurnAdmissionReceipt.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
+field TurnAdmissionReceipt.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field TurnAdmissionReceipt.UserEntryID string tag="json:\"user_entry_id\""
+field TurnAdmissionReceipt.Revision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"revision\""
+field TurnAdmissionReceipt.Replayed bool tag="json:\"replayed,omitempty\""
 const TurnCompletionExplicitSignal github.com/floegence/floret/v3/runtime.TurnCompletionPolicy = "explicit_signal"
 const TurnCompletionNaturalStop github.com/floegence/floret/v3/runtime.TurnCompletionPolicy = "natural_stop"
 type TurnCompletionPolicy string
@@ -1457,6 +1473,8 @@ field TurnSupplementalContextItem.Sensitive bool
 field TurnSupplementalContextItem.Truncated bool
 type Turns struct
 method *Turns.StartTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
+method *Turns.AdmitTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.AdmitTurnResult, error)
+method *Turns.ExecuteAdmittedTurn func(ctx context.Context, receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
 method *Turns.RetryTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RetryTurnCommand) (github.com/floegence/floret/v3/runtime.RetryTurnResult, error)
 method *Turns.ContinuePendingTool func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ContinuePendingToolCommand) (github.com/floegence/floret/v3/runtime.ContinuePendingToolResult, error)
 method *Turns.RecordPendingToolOutcome func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeCommand) (github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeResult, error)
