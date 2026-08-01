@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.2.0 - 2026-08-01
+
+- Remove the broad compatibility runtime entry points for thread reads, turn
+  execution, SubAgent management, lifecycle mutation, and compaction. Hosts now
+  integrate through `Thread.Reader`, `Thread.Lifecycle`,
+  `Thread.TurnExecutor`, `Thread.Compactor`, and `Thread.SubAgentManager`.
+- Remove command-bearing admitted-turn execution compatibility. Restart-safe
+  execution now requires Floret-owned admission plans and
+  `TurnExecutor.ExecuteAdmission`.
+- Fail explicitly with `ErrExecutionPlanUnavailable` when a stored admitted turn
+  lacks the execution plan required for replay, instead of silently rebuilding
+  provider work from host command data.
+
 ## v3.1.1 - 2026-08-01
 
 - Keep host-facing live turn projections valid when a recorder first observes a
