@@ -19,11 +19,12 @@
 * **Adoption quality**: Added a production OpenAI-compatible SQLite example,
   documented-symbol validation, deterministic `florettest.NewIDSource`, and
   blank-module bootstrap/restart/provider-constructor coverage.
-* **Receipt-first turn admission**: Added `Turns.AdmitTurn` and
-  `Turns.ExecuteAdmittedTurn` so hosts can persist product coordination after
-  Floret admits the canonical user message and before provider execution.
+* **Receipt-first turn admission**: Added `TurnExecutor.AdmitTurn` and
+  `TurnExecutor.ExecuteAdmission` so hosts can persist product coordination
+  after Floret admits the canonical user message and before provider execution.
   The admission receipt is the durable handoff; Floret remains the sole source
-  of admitted conversation and turn lifecycle facts.
+  of admitted conversation and turn lifecycle facts, and no command-bearing
+  execution compatibility API is exposed.
 
 ## 2026-07-30
 * **v3 host adoption completion**: Added bound root-thread and direct-child

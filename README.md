@@ -140,20 +140,23 @@ corrupt ancestry fails closed.
 
 Root canonical reads are issued through `ThreadReader`: bootstrap, overview,
 exact turn, turn pages, todos, context, approval queue, authoritative
-projections, pending-tool targets, and direct-child inventory. `Child` provides the corresponding exact
-turn and turn-page authority for one direct child. Title updates use a logical
-request and durable receipt. Interrupted-turn and provider-free pending-tool
-recovery use one-time handles bound to the exact current proof or target.
+projections, pending-tool targets, and direct-child inventory. `Child` provides
+the corresponding exact turn and turn-page authority for one direct child.
+Title updates use `ThreadLifecycle.SetTitle`. Interrupted-turn and
+provider-free pending-tool recovery use `ThreadLifecycle` to issue one-time
+handles bound to the exact current proof or target.
 
 Commands use stable logical request identities and explicit names:
 `CreateThread`, `StartTurn`, `AdmitTurn`, `ExecuteAdmission`, `RetryTurn`,
 `Fork`, `Delete`,
-`Compact`,
-`ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,
-`UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`, and
-`InterruptSubAgent`, `WaitSubAgents`, and `CloseSubAgent`. Floret allocates all lifecycle identities. Replaying the
-same logical request under the same operation and bound authority returns the
-original identities; changing durable input returns a typed request conflict.
+`Compact`, `ContinuePendingTool`, `RecordPendingToolOutcome`,
+`ResolveApproval`, `UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`,
+`InterruptSubAgent`, `WaitSubAgents`, and `CloseSubAgent`. Floret allocates all
+lifecycle identities. Replaying the same logical request under the same
+operation and bound authority returns the original identities; changing durable
+input returns a typed request conflict.
+Turn execution begins through `TurnExecutor.StartTurn` or the receipt-first
+`TurnExecutor.AdmitTurn`/`TurnExecutor.ExecuteAdmission` pair.
 
 Hosts that must bind product coordination after canonical admission can use
 `TurnExecutor.AdmitTurn` to persist the user message and immutable execution
@@ -174,12 +177,10 @@ host.
 `ThreadReader.ReadAuthoritativeProjection` returns a canonical projection with
 its revision and provenance. `DeriveThreadTurn` is only a validated offline
 calculation from caller-supplied detail events and must not be stored as Agent
-lifecycle authority. Direct read/write methods on `Thread`, `Turns`, and
-`SubAgents` remain for v3 source compatibility; new applications use the narrow
-capability views. Production hosts leave `runtime.Options.IDSource` nil;
-deterministic identity injection belongs to `florettest.NewIDSource`.
-For v3 source compatibility, `Thread.Snapshot` and `Thread.Subscribe` remain
-available but are deprecated in favor of the `ThreadReader` methods.
+lifecycle authority. `Thread` exposes only capability issuers and identity; it
+does not expose direct read, mutation, execution, compaction, or SubAgent
+methods. Production hosts leave `runtime.Options.IDSource` nil; deterministic
+identity injection belongs to `florettest.NewIDSource`.
 
 ## Consistent Reads
 

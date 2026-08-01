@@ -104,7 +104,7 @@ func TestV3AgentManualCompactionCapabilityIsPolledByBoundTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,14 +157,15 @@ func TestV3BoundThreadCompactionReturnsCanonicalResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := turns.StartTurn(ctx, runtime.StartTurnCommand{LogicalRequestID: "start-compact", UserMessage: runtime.TurnInput{Text: "short"}}); err != nil {
 		t.Fatal(err)
 	}
-	result, compactErr := thread.Compact(ctx, agent, runtime.CompactThreadCommand{
+	compactor := mustThreadCompactor(t, thread, agent)
+	result, compactErr := compactor.Compact(ctx, runtime.CompactThreadCommand{
 		LogicalRequestID: "compact-request", Source: "idle",
 	})
 	if compactErr == nil {
@@ -194,6 +195,33 @@ func (source *deterministicIDs) NewRunID() (identity.RunID, error) {
 	value := source.runs[0]
 	source.runs = source.runs[1:]
 	return value, nil
+}
+
+func mustThreadReader(t *testing.T, thread *runtime.Thread) runtime.ThreadReader {
+	t.Helper()
+	reader, err := thread.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reader
+}
+
+func mustThreadLifecycle(t *testing.T, thread *runtime.Thread) runtime.ThreadLifecycle {
+	t.Helper()
+	lifecycle, err := thread.Lifecycle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lifecycle
+}
+
+func mustThreadCompactor(t *testing.T, thread *runtime.Thread, agent *runtime.Agent) runtime.ThreadCompactor {
+	t.Helper()
+	compactor, err := thread.Compactor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compactor
 }
 
 func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
@@ -228,7 +256,7 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +276,8 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if requests := gateway.Requests(); len(requests) != 0 {
 		t.Fatalf("provider was called during admission: %#v", requests)
 	}
-	running, err := thread.ReadTurn(ctx, admitted.TurnID)
+	reader := mustThreadReader(t, thread)
+	running, err := reader.ReadTurn(ctx, admitted.TurnID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +310,7 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedTurns, err := restartedThread.Turns(restartedAgent)
+	restartedTurns, err := restartedThread.TurnExecutor(restartedAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +326,7 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if requests := restartedGateway.Requests(); len(requests) != 0 {
 		t.Fatalf("provider was called during admission replay: %#v", requests)
 	}
-	executed, err := restartedTurns.ExecuteAdmittedTurn(ctx, admitted.Receipt, startCommand)
+	executed, err := restartedTurns.ExecuteAdmission(ctx, admitted.Receipt, runtime.ExecutionContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +340,7 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if requests := restartedGateway.Requests(); len(requests) != 1 {
 		t.Fatalf("provider requests after execute = %#v", requests)
 	}
-	replayedExecution, err := restartedTurns.ExecuteAdmittedTurn(ctx, admitted.Receipt, startCommand)
+	replayedExecution, err := restartedTurns.ExecuteAdmission(ctx, admitted.Receipt, runtime.ExecutionContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +391,9 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := thread.Snapshot(ctx)
+	reader := mustThreadReader(t, thread)
+	lifecycle := mustThreadLifecycle(t, thread)
+	snapshot, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +414,7 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,48 +428,48 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if started.TurnID != "turn-allocated" || started.RunID != "run-allocated" || started.Receipt.Replayed {
 		t.Fatalf("start result = %#v", started)
 	}
-	overview, err := thread.ReadOverview(ctx)
+	overview, err := reader.ReadOverview(ctx)
 	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != started.TurnID {
 		t.Fatalf("thread overview = %#v err=%v", overview, err)
 	}
-	page, err := thread.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
+	page, err := reader.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
 	if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != started.TurnID {
 		t.Fatalf("thread turns = %#v err=%v", page, err)
 	}
-	readTurn, err := thread.ReadTurn(ctx, started.TurnID)
+	readTurn, err := reader.ReadTurn(ctx, started.TurnID)
 	if err != nil || readTurn.RunID != started.RunID {
 		t.Fatalf("thread turn = %#v err=%v", readTurn, err)
 	}
-	if _, err := thread.ReadAgentTodos(ctx); err != nil {
+	if _, err := reader.ReadAgentTodos(ctx); err != nil {
 		t.Fatalf("read todos: %v", err)
 	}
-	if _, err := thread.ReadContext(ctx); err != nil {
+	if _, err := reader.ReadContext(ctx); err != nil {
 		t.Fatalf("read context: %v", err)
 	}
-	if _, err := thread.ReadApprovalQueue(ctx); err != nil {
+	if _, err := reader.ReadApprovalQueue(ctx); err != nil {
 		t.Fatalf("read approval queue: %v", err)
 	}
-	if _, err := thread.ReadProjection(ctx, started.TurnID, started.RunID); err != nil {
+	if _, err := reader.ReadAuthoritativeProjection(ctx, started.TurnID, started.RunID); err != nil {
 		t.Fatalf("read projection: %v", err)
 	}
-	if targets, err := thread.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
+	if targets, err := reader.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
 		t.Fatalf("root pending targets = %#v err=%v", targets, err)
 	}
-	titled, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
+	titled, err := lifecycle.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
 	if err != nil || titled.Thread.Title != "Canonical title" || titled.Receipt.Replayed {
 		t.Fatalf("set title = %#v err=%v", titled, err)
 	}
-	titleReplay, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
+	titleReplay, err := lifecycle.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Canonical title"})
 	if err != nil || !titleReplay.Receipt.Replayed || titleReplay.Thread.Title != titled.Thread.Title {
 		t.Fatalf("title replay = %#v err=%v", titleReplay, err)
 	}
-	if _, err := thread.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Changed title"}); !errors.Is(err, runtime.ErrRequestConflict) {
+	if _, err := lifecycle.SetTitle(ctx, runtime.SetThreadTitleCommand{LogicalRequestID: "title-request", Title: "Changed title"}); !errors.Is(err, runtime.ErrRequestConflict) {
 		t.Fatalf("changed title replay = %v", err)
 	}
-	if _, err := thread.InterruptedTurnRecovery(ctx); !errors.Is(err, runtime.ErrInterruptedTurnNotFound) {
+	if _, err := lifecycle.InterruptedTurnRecovery(ctx); !errors.Is(err, runtime.ErrInterruptedTurnNotFound) {
 		t.Fatalf("missing root interrupted turn = %v", err)
 	}
-	if _, err := thread.PendingToolRecovery(ctx, runtime.PendingToolSettlementTarget{ThreadID: "other-thread"}); !errors.Is(err, runtime.ErrThreadAuthorityInvariant) {
+	if _, err := lifecycle.PendingToolRecovery(ctx, runtime.PendingToolSettlementTarget{ThreadID: "other-thread"}); !errors.Is(err, runtime.ErrThreadAuthorityInvariant) {
 		t.Fatalf("mismatched root pending target = %v", err)
 	}
 	replayedTurn, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
@@ -477,7 +508,7 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := thread.Snapshot(ctx); !errors.Is(err, runtime.ErrHostClosed) {
+	if _, err := reader.Snapshot(ctx); !errors.Is(err, runtime.ErrHostClosed) {
 		t.Fatalf("snapshot after shutdown = %v", err)
 	}
 
@@ -508,7 +539,7 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedTurns, err := restartedThread.Turns(restartedAgent)
+	restartedTurns, err := restartedThread.TurnExecutor(restartedAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +585,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := parent.SubAgents(ctx, agent)
+	subAgents, err := parent.SubAgentManager(ctx, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,14 +601,15 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 		t.Fatalf("spawn result = %#v", spawned)
 	}
 	waitForV3SubAgentStatus(t, ctx, subAgents, spawned.Child.ThreadID, runtime.SubAgentStatusCompleted)
-	child, err := parent.Child(ctx, spawned.Child.ThreadID)
+	reader := mustThreadReader(t, parent)
+	child, err := reader.Child(ctx, spawned.Child.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if child.ID() != spawned.Child.ThreadID {
 		t.Fatalf("child id = %q, want %q", child.ID(), spawned.Child.ThreadID)
 	}
-	children, err := parent.ListSubAgents(ctx)
+	children, err := reader.ListSubAgents(ctx)
 	if err != nil || len(children) != 1 || children[0].ThreadID != child.ID() {
 		t.Fatalf("bound parent children = %#v err=%v", children, err)
 	}
@@ -588,7 +620,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if targets, err := child.ListPendingToolTargets(ctx); err != nil || len(targets) != 0 {
 		t.Fatalf("child pending targets = %#v err=%v", targets, err)
 	}
-	descendant, err := parent.DescendantReader(ctx, spawned.Child.ThreadID)
+	descendant, err := reader.Descendant(ctx, spawned.Child.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +652,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if _, err := descendant.ReadArtifact(ctx, "missing-artifact"); !errors.Is(err, runtime.ErrArtifactNotFound) {
 		t.Fatalf("missing descendant artifact error = %v", err)
 	}
-	if _, err := parent.Child(ctx, parent.ID()); !errors.Is(err, runtime.ErrSubAgentNotFound) {
+	if _, err := reader.Child(ctx, parent.ID()); !errors.Is(err, runtime.ErrSubAgentNotFound) {
 		t.Fatalf("parent bound as child error = %v", err)
 	}
 	spawnReplay, err := subAgents.SpawnSubAgent(ctx, spawnCommand)
@@ -726,7 +758,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedSubAgents, err := restartedParent.SubAgents(ctx, restartedAgent)
+	restartedSubAgents, err := restartedParent.SubAgentManager(ctx, restartedAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +776,7 @@ func TestV3SubAgentMutationsReplayAcrossRestart(t *testing.T) {
 	}
 }
 
-func waitForV3SubAgentStatus(t *testing.T, ctx context.Context, subAgents *runtime.SubAgents, childThreadID identity.ThreadID, want runtime.SubAgentStatus) {
+func waitForV3SubAgentStatus(t *testing.T, ctx context.Context, subAgents runtime.SubAgentManager, childThreadID identity.ThreadID, want runtime.SubAgentStatus) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -785,11 +817,12 @@ func TestV3SubscriptionSuspendsWithOneGapOnTransientOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := thread.Snapshot(ctx)
+	reader := mustThreadReader(t, thread)
+	view, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscription, err := thread.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
+	subscription, err := reader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,7 +844,7 @@ func TestV3SubscriptionSuspendsWithOneGapOnTransientOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,11 +890,13 @@ func TestV3SubscriptionGapFreezesResyncRevisionAtOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := thread.Snapshot(ctx)
+	reader := mustThreadReader(t, thread)
+	lifecycle := mustThreadLifecycle(t, thread)
+	initial, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscription, err := thread.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: initial.Revision})
+	subscription, err := reader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: initial.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +917,7 @@ func TestV3SubscriptionGapFreezesResyncRevisionAtOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,11 +926,11 @@ func TestV3SubscriptionGapFreezesResyncRevisionAtOverflow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	atTurnEnd, err := thread.Snapshot(ctx)
+	atTurnEnd, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := thread.DeleteThread(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "gap-delete"})
+	deleted, err := lifecycle.Delete(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "gap-delete"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,14 +970,15 @@ func TestV3ForkAndDeleteReplayUseFloretOwnedTombstones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forked, err := thread.ForkThread(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-request"})
+	lifecycle := mustThreadLifecycle(t, thread)
+	forked, err := lifecycle.Fork(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-request"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if forked.ThreadID != "thread-fork" || forked.Receipt.Replayed {
 		t.Fatalf("fork result = %#v", forked)
 	}
-	forkReplay, err := thread.ForkThread(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-request"})
+	forkReplay, err := lifecycle.Fork(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-request"})
 	if err != nil || forkReplay.ThreadID != forked.ThreadID || !forkReplay.Receipt.Replayed {
 		t.Fatalf("fork replay = %#v err=%v", forkReplay, err)
 	}
@@ -951,15 +987,17 @@ func TestV3ForkAndDeleteReplayUseFloretOwnedTombstones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := destination.Snapshot(ctx)
+	destinationReader := mustThreadReader(t, destination)
+	destinationLifecycle := mustThreadLifecycle(t, destination)
+	view, err := destinationReader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscription, err := destination.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
+	subscription, err := destinationReader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := destination.DeleteThread(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "delete-request"})
+	deleted, err := destinationLifecycle.Delete(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "delete-request"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -982,14 +1020,16 @@ func TestV3ForkAndDeleteReplayUseFloretOwnedTombstones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tombstoned.Snapshot(ctx); !errors.Is(err, runtime.ErrThreadDeleted) {
+	tombstonedReader := mustThreadReader(t, tombstoned)
+	tombstonedLifecycle := mustThreadLifecycle(t, tombstoned)
+	if _, err := tombstonedReader.Snapshot(ctx); !errors.Is(err, runtime.ErrThreadDeleted) {
 		t.Fatalf("tombstone snapshot = %v", err)
 	}
-	replayedDelete, err := tombstoned.DeleteThread(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "delete-request"})
+	replayedDelete, err := tombstonedLifecycle.Delete(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "delete-request"})
 	if err != nil || !replayedDelete.Receipt.Replayed || replayedDelete.Receipt.Revision != deleted.Receipt.Revision {
 		t.Fatalf("delete replay = %#v err=%v", replayedDelete, err)
 	}
-	replaySubscription, err := tombstoned.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
+	replaySubscription, err := tombstonedReader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: view.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +1039,7 @@ func TestV3ForkAndDeleteReplayUseFloretOwnedTombstones(t *testing.T) {
 	if err != nil || !durableOK || !deletedOK {
 		t.Fatalf("new subscription Deleted replay = %#v err=%v", replayedMessage, err)
 	}
-	eofSubscription, err := tombstoned.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: deleted.Receipt.Revision})
+	eofSubscription, err := tombstonedReader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: deleted.Receipt.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}

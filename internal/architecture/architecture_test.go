@@ -347,7 +347,9 @@ func TestReadmeOnlyDocumentsDownstreamIntegrationSurface(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{
 		"runtime.Open", "runtime.NewAgent", "runtime.Host", "Host.Threads",
-		"Host.Thread", "Thread.Snapshot", "Thread.Subscribe", "Host.Shutdown(ctx)",
+		"Host.Thread", "Thread.Reader", "Thread.Lifecycle", "Thread.TurnExecutor",
+		"Thread.Compactor", "Thread.SubAgentManager", "ThreadReader.Bootstrap",
+		"ThreadReader.Subscribe", "TurnExecutor.StartTurn", "Host.Shutdown(ctx)",
 		"provider.Gateway", "storage.Source", "storage.Memory", "storage.SQLite",
 		"tools", "observation",
 	} {
@@ -376,6 +378,9 @@ func TestCurrentCapabilityDocsDoNotAdvertiseRemovedFacade(t *testing.T) {
 			"HostBootstrap", "HostBinder", "HostFactory", "HostOptions",
 			"ConfigureHostCapabilities", "floret-host-init", "ProviderFake", "FakeResponse",
 			"runtime.NewHost(", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore",
+			"`Thread.Snapshot`", "`Thread.Subscribe`", "`Thread.Turns`", "`Thread.SubAgents`",
+			"`Thread.ForkThread`", "`Thread.DeleteThread`", "`Thread.Compact`",
+			"`Turns.", "`SubAgents.",
 		} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s advertises removed capability facade %q", file, forbidden)
@@ -518,21 +523,12 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
 	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
-		"Child", "Compact", "Compactor", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Lifecycle",
-		"InterruptedTurnRecovery", "ListPendingToolTargets", "ListSubAgents", "ListTurns",
-		"PendingToolRecovery", "ReadAgentTodos", "ReadApprovalQueue", "ReadContext",
-		"ReadOverview", "ReadProjection", "ReadTurn", "Reader", "SetTitle", "Snapshot",
-		"SubAgentManager", "SubAgents", "Subscribe", "TurnExecutor", "Turns")
-	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
-		"AdmitTurn", "ContinuePendingTool", "ExecuteAdmission", "ExecuteAdmittedTurn", "RecordPendingToolOutcome",
-		"ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
+		"Compactor", "ID", "Lifecycle", "Reader", "SubAgentManager", "TurnExecutor")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
 		"ID", "InterruptedTurnRecovery", "ListPendingToolTargets", "ListTurns",
 		"PendingToolRecovery", "ReadDetail", "ReadTurn")
 	exact("DescendantReader", reflect.TypeOf((*floretRuntime.DescendantReader)(nil)),
 		"ID", "ListTurns", "ReadArtifact", "ReadTurn")
-	exact("SubAgents", reflect.TypeOf((*floretRuntime.SubAgents)(nil)),
-		"CloseSubAgent", "InterruptSubAgent", "List", "SendSubAgentMessage", "SpawnSubAgent", "WaitSubAgents")
 	exact("Subscription", reflect.TypeOf((*floretRuntime.Subscription)(nil)), "Close", "Next")
 	exact("PendingToolRecovery", reflect.TypeOf((*floretRuntime.PendingToolRecovery)(nil)), "Settle")
 	exact("InterruptedTurnRecovery", reflect.TypeOf((*floretRuntime.InterruptedTurnRecovery)(nil)), "Recover")
@@ -542,10 +538,8 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"Agent":                   reflect.TypeOf(floretRuntime.Agent{}),
 		"Threads":                 reflect.TypeOf(floretRuntime.Threads{}),
 		"Thread":                  reflect.TypeOf(floretRuntime.Thread{}),
-		"Turns":                   reflect.TypeOf(floretRuntime.Turns{}),
 		"Child":                   reflect.TypeOf(floretRuntime.Child{}),
 		"DescendantReader":        reflect.TypeOf(floretRuntime.DescendantReader{}),
-		"SubAgents":               reflect.TypeOf(floretRuntime.SubAgents{}),
 		"Subscription":            reflect.TypeOf(floretRuntime.Subscription{}),
 		"PendingToolRecovery":     reflect.TypeOf(floretRuntime.PendingToolRecovery{}),
 		"InterruptedTurnRecovery": reflect.TypeOf(floretRuntime.InterruptedTurnRecovery{}),

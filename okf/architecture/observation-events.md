@@ -51,7 +51,7 @@ or validation failures require a canonical reload rather than event replay.
   successful turn does not complete host-owned pending work. Save-point markers
   remain journal checkpoints and do not settle activity. Host-owned pending work
   that finishes after the provider turn is closed through
-  `Turns.RecordPendingToolOutcome`;
+  `TurnExecutor.RecordPendingToolOutcome`;
   that settlement updates the original tool item by id and remains outside
   provider-visible history. Explicit approval resolution events remain
   authoritative when present. Waiting run-end markers are the visible control

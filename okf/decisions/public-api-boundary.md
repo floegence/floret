@@ -28,9 +28,9 @@ resubmitted by the host. Authoritative projections carry revision/provenance,
 while offline derivation uses a distinct result type.
 
 Production lifecycle identities are Floret-allocated. Deterministic injection
-is test-only through `florettest.NewIDSource`. v3.0 direct methods remain deprecated
-for one minor compatibility series; they are not the documented default and may
-be removed only in the next major version.
+is test-only through `florettest.NewIDSource`. v3 exposes no broad direct
+read/write methods on `Thread`; hosts must choose the narrow capability issuer
+that matches the service boundary they are composing.
 
 Public additions require external-package tests, API baseline review, README
 and OKF updates, changelog entry, backend conformance where relevant, and a

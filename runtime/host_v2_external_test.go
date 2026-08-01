@@ -103,7 +103,7 @@ func TestHostIssuesV3IdentityBoundHandlesAndOwnsBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,9 @@ func TestHostIssuesV3IdentityBoundHandlesAndOwnsBackend(t *testing.T) {
 	if request.ThreadID != created.ThreadID || request.TurnID != started.TurnID || request.RunID != started.RunID || len(request.Messages) == 0 {
 		t.Fatalf("provider request = %#v", request)
 	}
-	view, err := thread.Snapshot(ctx)
+	reader := mustThreadReader(t, thread)
+	lifecycle := mustThreadLifecycle(t, thread)
+	view, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +127,7 @@ func TestHostIssuesV3IdentityBoundHandlesAndOwnsBackend(t *testing.T) {
 		t.Fatalf("thread snapshot = %#v", view)
 	}
 
-	forked, err := thread.ForkThread(ctx, floretruntime.ForkThreadCommand{LogicalRequestID: "fork-1"})
+	forked, err := lifecycle.Fork(ctx, floretruntime.ForkThreadCommand{LogicalRequestID: "fork-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,8 @@ func TestHostIssuesV3IdentityBoundHandlesAndOwnsBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := destination.DeleteThread(ctx, floretruntime.DeleteThreadCommand{LogicalRequestID: "delete-1"}); err != nil {
+	destinationLifecycle := mustThreadLifecycle(t, destination)
+	if _, err := destinationLifecycle.Delete(ctx, floretruntime.DeleteThreadCommand{LogicalRequestID: "delete-1"}); err != nil {
 		t.Fatal(err)
 	}
 

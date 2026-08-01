@@ -761,7 +761,7 @@ type Thread struct {
 }
 
 // Turns is turn authority bound to one exact Thread and immutable Agent.
-type Turns struct {
+type turnExecutorView struct {
 	thread *Thread
 	agent  *Agent
 }
@@ -783,7 +783,7 @@ type DescendantReader struct {
 
 // SubAgents is direct-child lifecycle authority bound to one parent Thread
 // and immutable Agent snapshot.
-type SubAgents struct {
+type subAgentManagerView struct {
 	parent  *Thread
 	agent   *Agent
 	manager *subAgentManagerHandle
@@ -840,7 +840,7 @@ func (host *Host) Thread(ctx context.Context, threadID identity.ThreadID) (*Thre
 		return nil, err
 	}
 	handle := &Thread{host: host, id: threadID}
-	if _, err := handle.Snapshot(ctx); err != nil {
+	if _, err := handle.snapshot(ctx); err != nil {
 		if !errors.Is(err, ErrThreadDeleted) {
 			return nil, err
 		}
@@ -879,7 +879,7 @@ func (threads *Threads) CreateThread(ctx context.Context, command CreateThreadCo
 		return CreateThreadResult{}, err
 	}
 	thread := &Thread{host: host, id: record.ThreadID}
-	view, err := thread.Snapshot(ctx)
+	view, err := thread.snapshot(ctx)
 	if err != nil {
 		return CreateThreadResult{}, err
 	}
@@ -952,8 +952,7 @@ func (thread *Thread) ID() identity.ThreadID {
 }
 
 // Snapshot returns the current canonical state and its shared revision.
-// Deprecated: use Thread.Reader and ThreadReader.Bootstrap or Snapshot.
-func (thread *Thread) Snapshot(ctx context.Context) (ThreadView, error) {
+func (thread *Thread) snapshot(ctx context.Context) (ThreadView, error) {
 	if thread == nil || thread.host == nil {
 		return ThreadView{}, errors.New("thread is required")
 	}
@@ -983,8 +982,7 @@ func (thread *Thread) reader(ctx context.Context) (*threadReaderHandle, error) {
 }
 
 // ReadOverview returns the bound thread and its latest canonical turn.
-// Deprecated: use Thread.Reader and ThreadReader.ReadOverview.
-func (thread *Thread) ReadOverview(ctx context.Context) (ThreadOverview, error) {
+func (thread *Thread) readOverview(ctx context.Context) (ThreadOverview, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadOverview{}, err
@@ -993,8 +991,7 @@ func (thread *Thread) ReadOverview(ctx context.Context) (ThreadOverview, error) 
 }
 
 // ReadTurn returns one exact canonical turn from the bound Thread.
-// Deprecated: use Thread.Reader and ThreadReader.ReadTurn.
-func (thread *Thread) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
+func (thread *Thread) readTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -1003,8 +1000,7 @@ func (thread *Thread) ReadTurn(ctx context.Context, turnID identity.TurnID) (Thr
 }
 
 // ListTurns returns one canonical turn page from the bound Thread.
-// Deprecated: use Thread.Reader and ThreadReader.ListTurns.
-func (thread *Thread) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (thread *Thread) listTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadTurnsPage{}, err
@@ -1013,8 +1009,7 @@ func (thread *Thread) ListTurns(ctx context.Context, request ThreadTurnsRequest)
 }
 
 // ReadAgentTodos returns the bound Thread's canonical typed Agent todo state.
-// Deprecated: use Thread.Reader and ThreadReader.ReadAgentTodos.
-func (thread *Thread) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
+func (thread *Thread) readAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadAgentTodoState{}, err
@@ -1023,8 +1018,7 @@ func (thread *Thread) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState,
 }
 
 // ReadContext returns canonical context usage and compaction state.
-// Deprecated: use Thread.Reader and ThreadReader.ReadContext.
-func (thread *Thread) ReadContext(ctx context.Context) (ThreadContextSnapshot, error) {
+func (thread *Thread) readContext(ctx context.Context) (ThreadContextSnapshot, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadContextSnapshot{}, err
@@ -1033,8 +1027,7 @@ func (thread *Thread) ReadContext(ctx context.Context) (ThreadContextSnapshot, e
 }
 
 // ReadApprovalQueue returns the canonical approval queue rooted at the bound Thread.
-// Deprecated: use Thread.Reader and ThreadReader.ReadApprovalQueue.
-func (thread *Thread) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
+func (thread *Thread) readApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ApprovalQueue{}, err
@@ -1043,9 +1036,8 @@ func (thread *Thread) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, err
 }
 
 // ReadProjection returns one canonical turn/run projection from the bound Thread.
-// Deprecated: use Thread.Reader and
 // ThreadReader.ReadAuthoritativeProjection.
-func (thread *Thread) ReadProjection(ctx context.Context, turnID identity.TurnID, runID identity.RunID) (ThreadTurnProjection, error) {
+func (thread *Thread) readProjection(ctx context.Context, turnID identity.TurnID, runID identity.RunID) (ThreadTurnProjection, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return ThreadTurnProjection{}, err
@@ -1054,8 +1046,7 @@ func (thread *Thread) ReadProjection(ctx context.Context, turnID identity.TurnID
 }
 
 // ListPendingToolTargets returns unsettled host-owned work on the bound Thread.
-// Deprecated: use Thread.Reader and ThreadReader.ListPendingToolTargets.
-func (thread *Thread) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
+func (thread *Thread) listPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
 	reader, err := thread.reader(ctx)
 	if err != nil {
 		return nil, err
@@ -1064,8 +1055,7 @@ func (thread *Thread) ListPendingToolTargets(ctx context.Context) ([]PendingTool
 }
 
 // ListSubAgents returns canonical direct children of the bound Thread.
-// Deprecated: use Thread.Reader and ThreadReader.ListSubAgents.
-func (thread *Thread) ListSubAgents(ctx context.Context) ([]SubAgentSnapshot, error) {
+func (thread *Thread) listSubAgents(ctx context.Context) ([]SubAgentSnapshot, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1077,8 +1067,7 @@ func (thread *Thread) ListSubAgents(ctx context.Context) ([]SubAgentSnapshot, er
 }
 
 // SetTitle replaces or permanently replays the bound Thread's canonical title.
-// Deprecated: use Thread.Lifecycle and ThreadLifecycle.SetTitle.
-func (thread *Thread) SetTitle(ctx context.Context, command SetThreadTitleCommand) (SetThreadTitleResult, error) {
+func (thread *Thread) setTitle(ctx context.Context, command SetThreadTitleCommand) (SetThreadTitleResult, error) {
 	if thread == nil || thread.host == nil {
 		return SetThreadTitleResult{}, errors.New("thread is required")
 	}
@@ -1121,9 +1110,8 @@ func (thread *Thread) SetTitle(ctx context.Context, command SetThreadTitleComman
 
 // PendingToolRecovery binds provider-free settlement authority for one exact
 // target on the bound Thread.
-// Deprecated: use Thread.Lifecycle and
 // ThreadLifecycle.PendingToolRecovery.
-func (thread *Thread) PendingToolRecovery(ctx context.Context, target PendingToolSettlementTarget) (*PendingToolRecovery, error) {
+func (thread *Thread) pendingToolRecovery(ctx context.Context, target PendingToolSettlementTarget) (*PendingToolRecovery, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1139,9 +1127,8 @@ func (thread *Thread) PendingToolRecovery(ctx context.Context, target PendingToo
 
 // InterruptedTurnRecovery binds the current durable interrupted proof without
 // recovering it yet.
-// Deprecated: use Thread.Lifecycle and
 // ThreadLifecycle.InterruptedTurnRecovery.
-func (thread *Thread) InterruptedTurnRecovery(ctx context.Context) (*InterruptedTurnRecovery, error) {
+func (thread *Thread) interruptedTurnRecovery(ctx context.Context) (*InterruptedTurnRecovery, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1176,8 +1163,7 @@ func (host *Host) currentThreadRevision(ctx context.Context, threadID identity.T
 }
 
 // ForkThread forks the bound thread or permanently replays the same fork.
-// Deprecated: use Thread.Lifecycle and ThreadLifecycle.Fork.
-func (thread *Thread) ForkThread(ctx context.Context, command ForkThreadCommand) (ForkThreadResultV3, error) {
+func (thread *Thread) forkThread(ctx context.Context, command ForkThreadCommand) (ForkThreadResultV3, error) {
 	if thread == nil || thread.host == nil {
 		return ForkThreadResultV3{}, errors.New("thread is required")
 	}
@@ -1209,7 +1195,7 @@ func (thread *Thread) ForkThread(ctx context.Context, command ForkThreadCommand)
 			return ForkThreadResultV3{}, err
 		}
 		destination := &Thread{host: host, id: record.ThreadID}
-		view, err := destination.Snapshot(ctx)
+		view, err := destination.snapshot(ctx)
 		if err != nil {
 			return ForkThreadResultV3{}, err
 		}
@@ -1223,8 +1209,7 @@ func (thread *Thread) ForkThread(ctx context.Context, command ForkThreadCommand)
 }
 
 // DeleteThread deletes the bound lifecycle or permanently replays its tombstone.
-// Deprecated: use Thread.Lifecycle and ThreadLifecycle.Delete.
-func (thread *Thread) DeleteThread(ctx context.Context, command DeleteThreadCommand) (DeleteThreadResult, error) {
+func (thread *Thread) deleteThread(ctx context.Context, command DeleteThreadCommand) (DeleteThreadResult, error) {
 	if thread == nil || thread.host == nil {
 		return DeleteThreadResult{}, errors.New("thread is required")
 	}
@@ -1250,7 +1235,7 @@ func (thread *Thread) DeleteThread(ctx context.Context, command DeleteThreadComm
 		record := requestLedgerRecord{Version: requestLedgerVersion, Operation: "delete_thread", Authority: thread.id.String(), LogicalRequestID: tombstone.LogicalRequestID, Fingerprint: tombstone.Fingerprint, ThreadID: thread.id, Revision: tombstone.Revision, State: requestStateCommitted}
 		return DeleteThreadResult{ThreadID: thread.id, Receipt: receiptFromRecord(record, true)}, nil
 	}
-	view, err := thread.Snapshot(ctx)
+	view, err := thread.snapshot(ctx)
 	if err != nil {
 		return DeleteThreadResult{}, err
 	}
@@ -1281,8 +1266,7 @@ func (thread *Thread) DeleteThread(ctx context.Context, command DeleteThreadComm
 }
 
 // Turns binds immutable Agent capabilities to the Thread.
-// Deprecated: use Thread.TurnExecutor.
-func (thread *Thread) Turns(agent *Agent) (*Turns, error) {
+func (thread *Thread) turns(agent *Agent) (*turnExecutorView, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1292,12 +1276,11 @@ func (thread *Thread) Turns(agent *Agent) (*Turns, error) {
 	if agent == nil {
 		return nil, errors.New("turns require an Agent")
 	}
-	return &Turns{thread: thread, agent: agent}, nil
+	return &turnExecutorView{thread: thread, agent: agent}, nil
 }
 
 // Compact runs provider-backed compaction for the exact bound Thread.
-// Deprecated: use Thread.Compactor and ThreadCompactor.Compact.
-func (thread *Thread) Compact(ctx context.Context, agent *Agent, command CompactThreadCommand) (CompactThreadResult, error) {
+func (thread *Thread) compact(ctx context.Context, agent *Agent, command CompactThreadCommand) (CompactThreadResult, error) {
 	if thread == nil || thread.host == nil {
 		return CompactThreadResult{}, errors.New("thread is required")
 	}
@@ -1319,8 +1302,7 @@ func (thread *Thread) Compact(ctx context.Context, agent *Agent, command Compact
 }
 
 // Child binds read authority to one direct child of the Thread.
-// Deprecated: use Thread.Reader and ThreadReader.Child.
-func (thread *Thread) Child(ctx context.Context, childThreadID identity.ThreadID) (*Child, error) {
+func (thread *Thread) child(ctx context.Context, childThreadID identity.ThreadID) (*Child, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1344,8 +1326,7 @@ func (thread *Thread) Child(ctx context.Context, childThreadID identity.ThreadID
 // DescendantReader binds read authority to one descendant below the Thread.
 // The target may be deeper than a direct child, but never the bound Thread
 // itself or a thread outside its canonical subtree.
-// Deprecated: use Thread.Reader and ThreadReader.Descendant.
-func (thread *Thread) DescendantReader(ctx context.Context, descendantThreadID identity.ThreadID) (*DescendantReader, error) {
+func (thread *Thread) descendantReader(ctx context.Context, descendantThreadID identity.ThreadID) (*DescendantReader, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1368,8 +1349,7 @@ func (thread *Thread) DescendantReader(ctx context.Context, descendantThreadID i
 
 // SubAgents binds direct-child lifecycle authority to the Thread and one
 // immutable Agent snapshot.
-// Deprecated: use Thread.SubAgentManager.
-func (thread *Thread) SubAgents(ctx context.Context, agent *Agent) (*SubAgents, error) {
+func (thread *Thread) subAgents(ctx context.Context, agent *Agent) (*subAgentManagerView, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
@@ -1384,7 +1364,7 @@ func (thread *Thread) SubAgents(ctx context.Context, agent *Agent) (*SubAgents, 
 	if err != nil {
 		return nil, err
 	}
-	return &SubAgents{parent: thread, agent: agent, manager: manager, reader: reader}, nil
+	return &subAgentManagerView{parent: thread, agent: agent, manager: manager, reader: reader}, nil
 }
 
 // ID returns the direct child identity bound to this read handle.
@@ -1513,7 +1493,7 @@ func (reader *DescendantReader) ReadArtifact(ctx context.Context, artifactID ide
 }
 
 // List returns the direct children of the bound parent.
-func (subAgents *SubAgents) List(ctx context.Context) ([]SubAgentSnapshot, error) {
+func (subAgents *subAgentManagerView) List(ctx context.Context) ([]SubAgentSnapshot, error) {
 	if subAgents == nil || subAgents.reader == nil {
 		return nil, errors.New("SubAgents authority is required")
 	}
@@ -1521,7 +1501,7 @@ func (subAgents *SubAgents) List(ctx context.Context) ([]SubAgentSnapshot, error
 }
 
 // SpawnSubAgent creates or permanently replays one direct-child publication.
-func (subAgents *SubAgents) SpawnSubAgent(ctx context.Context, command SpawnSubAgentCommand) (SpawnSubAgentResult, error) {
+func (subAgents *subAgentManagerView) SpawnSubAgent(ctx context.Context, command SpawnSubAgentCommand) (SpawnSubAgentResult, error) {
 	if subAgents == nil || subAgents.parent == nil || subAgents.parent.host == nil || subAgents.manager == nil {
 		return SpawnSubAgentResult{}, errors.New("SubAgents authority is required")
 	}
@@ -1582,19 +1562,19 @@ func (subAgents *SubAgents) SpawnSubAgent(ctx context.Context, command SpawnSubA
 }
 
 // SendSubAgentMessage admits or permanently replays one child input.
-func (subAgents *SubAgents) SendSubAgentMessage(ctx context.Context, command SendSubAgentMessageCommand) (SendSubAgentMessageResult, error) {
+func (subAgents *subAgentManagerView) SendSubAgentMessage(ctx context.Context, command SendSubAgentMessageCommand) (SendSubAgentMessageResult, error) {
 	return subAgents.sendSubAgentInput(ctx, "send_subagent_message", command.LogicalRequestID, command.ChildThreadID, command.Input, command.Labels, false)
 }
 
 // InterruptSubAgent admits or permanently replays one interrupting child
 // input without closing the child lifecycle.
-func (subAgents *SubAgents) InterruptSubAgent(ctx context.Context, command InterruptSubAgentCommand) (InterruptSubAgentResult, error) {
+func (subAgents *subAgentManagerView) InterruptSubAgent(ctx context.Context, command InterruptSubAgentCommand) (InterruptSubAgentResult, error) {
 	result, err := subAgents.sendSubAgentInput(ctx, "interrupt_subagent", command.LogicalRequestID, command.ChildThreadID, command.Input, command.Labels, true)
 	return InterruptSubAgentResult(result), err
 }
 
 // WaitSubAgents waits for selected direct children of the bound parent.
-func (subAgents *SubAgents) WaitSubAgents(ctx context.Context, command WaitSubAgentsCommand) (WaitSubAgentsResult, error) {
+func (subAgents *subAgentManagerView) WaitSubAgents(ctx context.Context, command WaitSubAgentsCommand) (WaitSubAgentsResult, error) {
 	if subAgents == nil || subAgents.manager == nil {
 		return WaitSubAgentsResult{}, errors.New("SubAgents authority is required")
 	}
@@ -1605,7 +1585,7 @@ func (subAgents *SubAgents) WaitSubAgents(ctx context.Context, command WaitSubAg
 }
 
 // CloseSubAgent closes or permanently replays closure of one direct child.
-func (subAgents *SubAgents) CloseSubAgent(ctx context.Context, command CloseSubAgentCommand) (CloseSubAgentResult, error) {
+func (subAgents *subAgentManagerView) CloseSubAgent(ctx context.Context, command CloseSubAgentCommand) (CloseSubAgentResult, error) {
 	if subAgents == nil || subAgents.parent == nil || subAgents.parent.host == nil || subAgents.manager == nil {
 		return CloseSubAgentResult{}, errors.New("SubAgents authority is required")
 	}
@@ -1650,7 +1630,7 @@ func (subAgents *SubAgents) CloseSubAgent(ctx context.Context, command CloseSubA
 	return out, nil
 }
 
-func (subAgents *SubAgents) sendSubAgentInput(ctx context.Context, operation string, requestID identity.LogicalRequestID, childThreadID identity.ThreadID, input TurnInput, labels RunLabels, interrupt bool) (SendSubAgentMessageResult, error) {
+func (subAgents *subAgentManagerView) sendSubAgentInput(ctx context.Context, operation string, requestID identity.LogicalRequestID, childThreadID identity.ThreadID, input TurnInput, labels RunLabels, interrupt bool) (SendSubAgentMessageResult, error) {
 	if subAgents == nil || subAgents.parent == nil || subAgents.parent.host == nil || subAgents.manager == nil {
 		return SendSubAgentMessageResult{}, errors.New("SubAgents authority is required")
 	}
@@ -1709,7 +1689,7 @@ func (subAgents *SubAgents) sendSubAgentInput(ctx context.Context, operation str
 	return out, nil
 }
 
-func (subAgents *SubAgents) activateCommittedChild(ctx context.Context, childThreadID identity.ThreadID) error {
+func (subAgents *subAgentManagerView) activateCommittedChild(ctx context.Context, childThreadID identity.ThreadID) error {
 	activationCtx := context.Background()
 	if ctx != nil {
 		activationCtx = context.WithoutCancel(ctx)
@@ -1721,12 +1701,11 @@ func (subAgents *SubAgents) activateCommittedChild(ctx context.Context, childThr
 }
 
 // Subscribe starts an exact-thread stream after a canonical revision.
-// Deprecated: use Thread.Reader and ThreadReader.Subscribe.
-func (thread *Thread) Subscribe(ctx context.Context, options SubscribeOptions) (*Subscription, error) {
+func (thread *Thread) subscribe(ctx context.Context, options SubscribeOptions) (*Subscription, error) {
 	if thread == nil || thread.host == nil {
 		return nil, errors.New("thread is required")
 	}
-	view, err := thread.Snapshot(ctx)
+	view, err := thread.snapshot(ctx)
 	if err != nil {
 		if !errors.Is(err, ErrThreadDeleted) {
 			return nil, err
@@ -1922,7 +1901,7 @@ func runtimeThreadChangeDomains(domains []sessiontree.ThreadRevisionDomain) ([]T
 }
 
 // StartTurn admits, executes, or permanently replays one logical turn.
-func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (StartTurnResult, error) {
+func (turns *turnExecutorView) StartTurn(ctx context.Context, command StartTurnCommand) (StartTurnResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return StartTurnResult{}, errors.New("turn authority is required")
 	}
@@ -1945,13 +1924,9 @@ func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (St
 	if err != nil {
 		return StartTurnResult{}, err
 	}
-	legacyFingerprint, err := startTurnFingerprint(command, agentHash)
-	if err != nil {
-		return StartTurnResult{}, err
-	}
 	host.mutationMu.Lock()
 	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, legacyFingerprint, &plan)
+	record, replayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
 	if err != nil {
 		return StartTurnResult{}, err
 	}
@@ -1979,7 +1954,7 @@ func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (St
 		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
 	})
 	if result.TurnID != "" {
-		view, snapshotErr := turns.thread.Snapshot(context.WithoutCancel(ctx))
+		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
 		if snapshotErr != nil {
 			return out, errors.Join(runErr, snapshotErr)
 		}
@@ -1996,7 +1971,7 @@ func (turns *Turns) StartTurn(ctx context.Context, command StartTurnCommand) (St
 // AdmitTurn admits one canonical user message and returns before provider
 // execution starts. Hosts can durably bind product-owned coordination state to
 // the returned receipt, then call Execute on the returned result.
-func (turns *Turns) AdmitTurn(ctx context.Context, command StartTurnCommand) (AdmitTurnResult, error) {
+func (turns *turnExecutorView) AdmitTurn(ctx context.Context, command StartTurnCommand) (AdmitTurnResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return AdmitTurnResult{}, errors.New("turn authority is required")
 	}
@@ -2019,13 +1994,9 @@ func (turns *Turns) AdmitTurn(ctx context.Context, command StartTurnCommand) (Ad
 	if err != nil {
 		return AdmitTurnResult{}, err
 	}
-	legacyFingerprint, err := startTurnFingerprint(command, agentHash)
-	if err != nil {
-		return AdmitTurnResult{}, err
-	}
 	host.mutationMu.Lock()
 	defer host.mutationMu.Unlock()
-	record, requestReplayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, legacyFingerprint, &plan)
+	record, requestReplayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
 	if err != nil {
 		return AdmitTurnResult{}, err
 	}
@@ -2073,65 +2044,16 @@ func (result AdmitTurnResult) Execute(ctx context.Context) (StartTurnResult, err
 	return result.execution.turns().ExecuteAdmission(ctx, result.execution.receipt, result.execution.context)
 }
 
-func (execution *turnAdmissionExecution) turns() *Turns {
+func (execution *turnAdmissionExecution) turns() *turnExecutorView {
 	if execution == nil {
 		return nil
 	}
-	return &Turns{thread: execution.thread, agent: execution.agent}
-}
-
-// ExecuteAdmittedTurn starts or replays provider execution for a previously
-// admitted turn receipt.
-// Deprecated: use ExecuteAdmission. This compatibility entry point accepts a
-// repeated canonical command only to backfill v3.0 admission records.
-func (turns *Turns) ExecuteAdmittedTurn(ctx context.Context, receipt TurnAdmissionReceipt, command StartTurnCommand) (StartTurnResult, error) {
-	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
-		return StartTurnResult{}, errors.New("turn authority is required")
-	}
-	host := turns.thread.host
-	if err := host.available(); err != nil {
-		return StartTurnResult{}, err
-	}
-	if err := validateTurnAdmissionReceipt(receipt); err != nil {
-		return StartTurnResult{}, err
-	}
-	if command.LogicalRequestID != receipt.LogicalRequestID {
-		return StartTurnResult{}, fmt.Errorf("%w: admitted turn command logical request mismatch", ErrAuthorityCorrupt)
-	}
-	if err := command.UserMessage.Validate(); err != nil {
-		return StartTurnResult{}, err
-	}
-	agentHash, err := resolvedAgentFingerprint(turns.agent)
-	if err != nil {
-		return StartTurnResult{}, err
-	}
-	plan := newTurnExecutionPlan(command, agentHash)
-	fingerprint, err := turnExecutionPlanFingerprint(command.LogicalRequestID, plan)
-	if err != nil {
-		return StartTurnResult{}, err
-	}
-	legacyFingerprint, err := startTurnFingerprint(command, agentHash)
-	if err != nil {
-		return StartTurnResult{}, err
-	}
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, legacyFingerprint, &plan)
-	if err != nil {
-		return StartTurnResult{}, err
-	}
-	if err := validateAdmittedTurnRecord(record, receipt); err != nil {
-		return StartTurnResult{}, err
-	}
-	return turns.executeAdmissionRecord(ctx, record, receipt, ExecutionContext{
-		SupplementalContext: command.SupplementalContext,
-		SignalProjector:     command.Signals.Project,
-	}, replayed)
+	return &turnExecutorView{thread: execution.thread, agent: execution.agent}
 }
 
 // ExecuteAdmission starts or replays provider execution from the immutable
 // plan persisted by AdmitTurn. The caller supplies only ephemeral context.
-func (turns *Turns) ExecuteAdmission(ctx context.Context, receipt TurnAdmissionReceipt, executionContext ExecutionContext) (StartTurnResult, error) {
+func (turns *turnExecutorView) ExecuteAdmission(ctx context.Context, receipt TurnAdmissionReceipt, executionContext ExecutionContext) (StartTurnResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return StartTurnResult{}, errors.New("turn authority is required")
 	}
@@ -2157,7 +2079,7 @@ func (turns *Turns) ExecuteAdmission(ctx context.Context, receipt TurnAdmissionR
 	return turns.executeAdmissionRecord(ctx, record, receipt, executionContext, true)
 }
 
-func (turns *Turns) executeAdmissionRecord(ctx context.Context, record requestLedgerRecord, receipt TurnAdmissionReceipt, executionContext ExecutionContext, replayed bool) (StartTurnResult, error) {
+func (turns *turnExecutorView) executeAdmissionRecord(ctx context.Context, record requestLedgerRecord, receipt TurnAdmissionReceipt, executionContext ExecutionContext, replayed bool) (StartTurnResult, error) {
 	admissionReceipt := receipt
 	admissionReceipt.Replayed = admissionReceipt.Replayed || replayed || record.State == requestStateCommitted
 	out := StartTurnResult{
@@ -2165,10 +2087,6 @@ func (turns *Turns) executeAdmissionRecord(ctx context.Context, record requestLe
 		AdmissionReceipt: &admissionReceipt,
 	}
 	if record.ExecutionPlan == nil {
-		if record.State == requestStateCommitted {
-			out.Receipt = receiptFromRecord(record, true)
-			return out, nil
-		}
 		return StartTurnResult{}, ErrExecutionPlanUnavailable
 	}
 	agentHash, err := resolvedAgentFingerprint(turns.agent)
@@ -2213,7 +2131,7 @@ func (turns *Turns) executeAdmissionRecord(ctx context.Context, record requestLe
 		ManualCompactions: turns.agent.manualCompactions,
 	})
 	if result.TurnID != "" {
-		view, snapshotErr := turns.thread.Snapshot(context.WithoutCancel(ctx))
+		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
 		if snapshotErr != nil {
 			return out, errors.Join(runErr, snapshotErr)
 		}
@@ -2228,7 +2146,7 @@ func (turns *Turns) executeAdmissionRecord(ctx context.Context, record requestLe
 }
 
 // RetryTurn executes or permanently replays one retry mutation.
-func (turns *Turns) RetryTurn(ctx context.Context, command RetryTurnCommand) (RetryTurnResult, error) {
+func (turns *turnExecutorView) RetryTurn(ctx context.Context, command RetryTurnCommand) (RetryTurnResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return RetryTurnResult{}, errors.New("turn authority is required")
 	}
@@ -2278,7 +2196,7 @@ func (turns *Turns) RetryTurn(ctx context.Context, command RetryTurnCommand) (Re
 		TurnID: *record.TurnID, RunID: *record.RunID, Reason: command.Reason, Labels: command.Labels,
 	})
 	if result.TurnID != "" {
-		view, snapshotErr := turns.thread.Snapshot(context.WithoutCancel(ctx))
+		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
 		if snapshotErr != nil {
 			return out, errors.Join(retryErr, snapshotErr)
 		}
@@ -2294,7 +2212,7 @@ func (turns *Turns) RetryTurn(ctx context.Context, command RetryTurnCommand) (Re
 
 // ContinuePendingTool settles one active pending tool and resumes provider
 // execution with identities allocated by this Host.
-func (turns *Turns) ContinuePendingTool(ctx context.Context, command ContinuePendingToolCommand) (ContinuePendingToolResult, error) {
+func (turns *turnExecutorView) ContinuePendingTool(ctx context.Context, command ContinuePendingToolCommand) (ContinuePendingToolResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return ContinuePendingToolResult{}, errors.New("turn authority is required")
 	}
@@ -2359,7 +2277,7 @@ func (turns *Turns) ContinuePendingTool(ctx context.Context, command ContinuePen
 
 // RecordPendingToolOutcome records one terminal outcome without resuming the
 // provider loop.
-func (turns *Turns) RecordPendingToolOutcome(ctx context.Context, command RecordPendingToolOutcomeCommand) (RecordPendingToolOutcomeResult, error) {
+func (turns *turnExecutorView) RecordPendingToolOutcome(ctx context.Context, command RecordPendingToolOutcomeCommand) (RecordPendingToolOutcomeResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return RecordPendingToolOutcomeResult{}, errors.New("turn authority is required")
 	}
@@ -2405,7 +2323,7 @@ func (turns *Turns) RecordPendingToolOutcome(ctx context.Context, command Record
 }
 
 // ResolveApproval resolves one exact canonical approval authority snapshot.
-func (turns *Turns) ResolveApproval(ctx context.Context, command ResolveApprovalCommand) (ResolveApprovalCommandResult, error) {
+func (turns *turnExecutorView) ResolveApproval(ctx context.Context, command ResolveApprovalCommand) (ResolveApprovalCommandResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return ResolveApprovalCommandResult{}, errors.New("turn authority is required")
 	}
@@ -2452,7 +2370,7 @@ func (turns *Turns) ResolveApproval(ctx context.Context, command ResolveApproval
 }
 
 // UpdateTodos atomically replaces the canonical typed todo state.
-func (turns *Turns) UpdateTodos(ctx context.Context, command UpdateTodosCommand) (UpdateTodosResult, error) {
+func (turns *turnExecutorView) UpdateTodos(ctx context.Context, command UpdateTodosCommand) (UpdateTodosResult, error) {
 	if turns == nil || turns.thread == nil || turns.thread.host == nil || turns.agent == nil {
 		return UpdateTodosResult{}, errors.New("turn authority is required")
 	}
@@ -2827,20 +2745,12 @@ func (host *Host) reserveDeleteThread(ctx context.Context, threadID identity.Thr
 	return host.reserveRequest(ctx, requestLedgerRecord{Version: requestLedgerVersion, Operation: "delete_thread", Authority: threadID.String(), LogicalRequestID: requestID, Fingerprint: fingerprint, ThreadID: threadID, Revision: revision, State: requestStatePrepared})
 }
 
-func (host *Host) reserveStartTurn(ctx context.Context, threadID identity.ThreadID, requestID identity.LogicalRequestID, fingerprint, legacyFingerprint string, plan *turnExecutionPlan) (requestLedgerRecord, bool, error) {
+func (host *Host) reserveStartTurn(ctx context.Context, threadID identity.ThreadID, requestID identity.LogicalRequestID, fingerprint string, plan *turnExecutionPlan) (requestLedgerRecord, bool, error) {
 	if existing, found, err := host.loadRequest(ctx, "start_turn", threadID.String(), requestID); err != nil {
 		return requestLedgerRecord{}, false, err
 	} else if found {
-		if existing.Fingerprint != fingerprint && existing.Fingerprint != legacyFingerprint {
+		if existing.Fingerprint != fingerprint {
 			return requestLedgerRecord{}, false, &RequestConflictError{Operation: "start_turn", RequestID: requestID.String(), Err: ErrRequestConflict}
-		}
-		if existing.ExecutionPlan == nil && plan != nil && existing.State == requestStatePrepared {
-			previousFingerprint := existing.Fingerprint
-			existing.ExecutionPlan = plan
-			existing.Fingerprint = fingerprint
-			if err := host.updatePreparedRequest(ctx, existing, previousFingerprint); err != nil {
-				return requestLedgerRecord{}, false, err
-			}
 		}
 		return existing, true, nil
 	}
@@ -3075,33 +2985,6 @@ func (host *Host) commitRequest(ctx context.Context, record requestLedgerRecord)
 	})
 }
 
-func (host *Host) updatePreparedRequest(ctx context.Context, record requestLedgerRecord, previousFingerprint string) error {
-	if record.State != requestStatePrepared || record.ExecutionPlan == nil {
-		return ErrAuthorityCorrupt
-	}
-	key := requestLedgerKey(record.Operation, record.Authority, record.LogicalRequestID)
-	return host.backend.Update(ctx, func(tx spi.WriteTx) error {
-		raw, err := tx.Get(requestLedgerNamespace, key)
-		if err != nil {
-			return err
-		}
-		existing, err := decodeRequestLedgerRecord(raw)
-		if err != nil {
-			return err
-		}
-		if existing.State != requestStatePrepared || existing.ExecutionPlan != nil ||
-			existing.Fingerprint != previousFingerprint || existing.ThreadID != record.ThreadID ||
-			!sameOptionalTurnID(existing.TurnID, record.TurnID) || !sameOptionalRunID(existing.RunID, record.RunID) {
-			return ErrAuthorityCorrupt
-		}
-		encoded, err := json.Marshal(record)
-		if err != nil {
-			return err
-		}
-		return tx.Put(requestLedgerNamespace, key, encoded)
-	})
-}
-
 func (host *Host) commitDeleteRequest(ctx context.Context, record requestLedgerRecord, deletedAt time.Time) error {
 	if record.State != requestStateCommitted || deletedAt.IsZero() {
 		return ErrAuthorityCorrupt
@@ -3222,30 +3105,6 @@ func stableFingerprint(value any) (string, error) {
 	}
 	sum := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-func startTurnFingerprint(command StartTurnCommand, agentHash string) (string, error) {
-	if command.Signals.Project != nil && command.Signals.Identity == "" {
-		return "", errors.New("custom turn signal projector requires an identity")
-	}
-	return stableFingerprint(struct {
-		LogicalRequestID    identity.LogicalRequestID     `json:"logical_request_id"`
-		UserMessage         TurnInput                     `json:"user_message"`
-		SupplementalContext []TurnSupplementalContextItem `json:"supplemental_context,omitempty"`
-		Labels              RunLabels                     `json:"labels,omitempty"`
-		Completion          TurnCompletionPolicy          `json:"completion,omitempty"`
-		SignalDefinitions   []tools.ToolDefinition        `json:"signal_definitions,omitempty"`
-		SignalIdentity      string                        `json:"signal_identity,omitempty"`
-		Limits              TurnLimits                    `json:"limits,omitempty"`
-		Reasoning           config.ReasoningSelection     `json:"reasoning,omitempty"`
-		AgentHash           string                        `json:"agent_hash"`
-	}{
-		LogicalRequestID: command.LogicalRequestID, UserMessage: command.UserMessage,
-		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
-		Completion: command.Completion, SignalDefinitions: command.Signals.Definitions,
-		SignalIdentity: command.Signals.Identity, Limits: command.Limits,
-		Reasoning: command.Reasoning, AgentHash: agentHash,
-	})
 }
 
 func turnExecutionPlanFingerprint(requestID identity.LogicalRequestID, plan turnExecutionPlan) (string, error) {

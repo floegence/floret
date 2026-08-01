@@ -106,7 +106,11 @@ func TestMigrateV2ConvertsExactSchemaV16AndReplaysOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := handle.Snapshot(ctx)
+	reader, err := handle.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

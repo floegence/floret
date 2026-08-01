@@ -61,7 +61,7 @@ methods:
     concurrency: competing same-key requests linearize to commit or conflict
     cancellation: a committed result may accompany a committed error; caller must inspect errors.As
     closing: no new request is admitted after closing begins
-  - method: Thread.Snapshot
+  - method: ThreadReader.Snapshot
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRevisionUnavailable]
     errors_as: []
     retryability: refresh only after revision-unavailable
@@ -70,7 +70,7 @@ methods:
     concurrency: linearizable with mutations on the exact thread
     cancellation: returns ctx.Err and no partial snapshot
     closing: existing handles reject after Host is closed
-  - method: Thread.Subscribe
+  - method: ThreadReader.Subscribe
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRevisionUnavailable]
     errors_as: []
     retryability: snapshot-query-subscribe again after unavailable history
@@ -79,7 +79,7 @@ methods:
     concurrency: registration is linearized with mutation publication
     cancellation: cancellation before registration returns ctx.Err
     closing: active subscriptions terminate when Host closes
-  - method: Thread.ReadOverview
+  - method: ThreadReader.ReadOverview
     errors_is: [ErrHostClosed, ErrThreadDeleted]
     errors_as: []
     retryability: retry only after an independently observed canonical mutation
@@ -88,7 +88,7 @@ methods:
     concurrency: exact-thread authority is fixed by the handle
     cancellation: returns ctx.Err with no partial overview
     closing: issued handles reject after Host closes
-  - method: Thread.ReadTurn
+  - method: ThreadReader.ReadTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrTurnNotFound]
     errors_as: []
     retryability: missing turns change only after an independently observed mutation
@@ -97,7 +97,7 @@ methods:
     concurrency: exact-thread authority is fixed by the handle
     cancellation: returns ctx.Err with no partial turn
     closing: issued handles reject after Host closes
-  - method: Thread.ListTurns
+  - method: ThreadReader.ListTurns
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrInvalidThreadTurnCursor, ErrStaleThreadTurnCursor]
     errors_as: []
     retryability: stale cursors require a fresh canonical page
@@ -106,7 +106,7 @@ methods:
     concurrency: page provenance stays bound to the exact thread
     cancellation: returns ctx.Err with no partial page
     closing: issued handles reject after Host closes
-  - method: Thread.ReadAgentTodos
+  - method: ThreadReader.ReadAgentTodos
     errors_is: [ErrHostClosed, ErrThreadDeleted]
     errors_as: []
     retryability: retry only after an independently observed todo mutation
@@ -115,7 +115,7 @@ methods:
     concurrency: todo authority cannot be redirected to another thread
     cancellation: returns ctx.Err with no partial state
     closing: issued handles reject after Host closes
-  - method: Thread.ReadContext
+  - method: ThreadReader.ReadContext
     errors_is: [ErrHostClosed, ErrThreadDeleted]
     errors_as: []
     retryability: retry only after an independently observed context mutation
@@ -124,7 +124,7 @@ methods:
     concurrency: context authority cannot be redirected to another thread
     cancellation: returns ctx.Err with no partial snapshot
     closing: issued handles reject after Host closes
-  - method: Thread.ReadApprovalQueue
+  - method: ThreadReader.ReadApprovalQueue
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrAuthorityCorrupt]
     errors_as: []
     retryability: corrupt authority is permanent; otherwise refresh after canonical mutation
@@ -133,7 +133,7 @@ methods:
     concurrency: root approval authority cannot be redirected to another thread
     cancellation: returns ctx.Err with no partial queue
     closing: issued handles reject after Host closes
-  - method: Thread.ReadProjection
+  - method: ThreadReader.ReadAuthoritativeProjection
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrTurnNotFound, ErrRunNotFound]
     errors_as: []
     retryability: missing identities change only after an independently observed mutation
@@ -142,7 +142,7 @@ methods:
     concurrency: supplied turn and run cannot escape the bound thread
     cancellation: returns ctx.Err with no partial projection
     closing: issued handles reject after Host closes
-  - method: Thread.ListPendingToolTargets
+  - method: ThreadReader.ListPendingToolTargets
     errors_is: [ErrHostClosed, ErrThreadDeleted]
     errors_as: []
     retryability: retry only after an independently observed pending-tool mutation
@@ -151,7 +151,7 @@ methods:
     concurrency: target enumeration cannot escape the bound thread
     cancellation: returns ctx.Err with no partial list
     closing: issued handles reject after Host closes
-  - method: Thread.ListSubAgents
+  - method: ThreadReader.ListSubAgents
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadAuthorityInvariant]
     errors_as: []
     retryability: retry only after an independently observed child mutation
@@ -160,7 +160,7 @@ methods:
     concurrency: child enumeration cannot select another parent
     cancellation: returns ctx.Err with no partial list
     closing: issued handles reject after Host closes
-  - method: Thread.SetTitle
+  - method: ThreadLifecycle.SetTitle
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; conflicting title input is permanent
@@ -169,7 +169,7 @@ methods:
     concurrency: serialized with other v3 mutations on the bound thread
     cancellation: cancellation cannot erase an already committed title
     closing: rejected after closing begins
-  - method: Thread.PendingToolRecovery
+  - method: ThreadLifecycle.PendingToolRecovery
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadAuthorityInvariant, ErrPendingToolNotFound]
     errors_as: []
     retryability: issue again only after a fresh canonical pending-target read
@@ -178,7 +178,7 @@ methods:
     concurrency: a target for any other thread is rejected before issuance
     cancellation: returns ctx.Err without settling the target
     closing: rejected after closing begins
-  - method: Thread.InterruptedTurnRecovery
+  - method: ThreadLifecycle.InterruptedTurnRecovery
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrInterruptedTurnNotFound, ErrStaleAuthority]
     errors_as: []
     retryability: reissue after stale authority or an independently observed interruption
@@ -196,7 +196,7 @@ methods:
     concurrency: calls are serialized; multiple concurrent callers are unsupported by contract
     cancellation: returns ctx.Err without consuming an unavailable next message
     closing: returns ErrHostClosed after managed shutdown; Deleted is delivered before EOF
-  - method: Thread.ForkThread
+  - method: ThreadLifecycle.Fork
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrRequestConflict, ErrThreadBusy]
     errors_as: [RequestConflictError, CommittedCleanupError]
     retryability: exact replay is safe; busy is transient; conflict is permanent
@@ -205,7 +205,7 @@ methods:
     concurrency: serialized by source ThreadRevision CAS
     cancellation: committed errors expose commit state through errors.As
     closing: not admitted after closing begins
-  - method: Thread.DeleteThread
+  - method: ThreadLifecycle.Delete
     errors_is: [ErrHostClosed, ErrRequestConflict, ErrThreadBusy]
     errors_as: [RequestConflictError, CommittedCleanupError]
     retryability: exact replay is permanent; busy is transient
@@ -214,7 +214,7 @@ methods:
     concurrency: delete linearizes after prior mutations and excludes later mutations
     cancellation: committed cleanup failure remains classified as committed
     closing: not admitted after closing begins
-  - method: Thread.Compact
+  - method: ThreadCompactor.Compact
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact request replay is safe; busy is transient; changed request input is permanent
@@ -223,7 +223,7 @@ methods:
     concurrency: bound thread authority serializes standalone compaction against turns and deletion
     cancellation: cancellation preserves any compaction checkpoint already committed by the engine
     closing: new compaction is rejected after closing begins and admitted work is joined by shutdown
-  - method: Turns.StartTurn
+  - method: TurnExecutor.StartTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; busy is transient; conflict is permanent
@@ -232,7 +232,7 @@ methods:
     concurrency: serialized by bound ThreadRevision CAS
     cancellation: provider cancellation cannot erase an already admitted turn
     closing: managed provider and tool work is cancelled after closing begins
-  - method: Turns.AdmitTurn
+  - method: TurnExecutor.AdmitTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; busy is transient; conflict is permanent
@@ -241,16 +241,7 @@ methods:
     concurrency: serialized by bound ThreadRevision CAS and active-turn lease authority
     cancellation: cancellation cannot erase an already admitted canonical user message
     closing: no new admission starts after closing begins
-  - method: Turns.ExecuteAdmittedTurn
-    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict, ErrAuthorityCorrupt]
-    errors_as: [RequestConflictError, CommittedEffectError]
-    retryability: exact replay is safe after terminal commit; busy is transient; corrupt receipt-command mismatch is permanent
-    commit: provider execution consumes the Floret admission receipt and commits the normal turn terminal receipt
-    replay: terminal replay returns the committed request receipt and marks the admission receipt replayed
-    concurrency: only the receipt-matching active turn lease may execute
-    cancellation: provider cancellation cannot erase the admitted user message or any committed terminal outcome
-    closing: managed provider and tool work is cancelled after closing begins
-  - method: Turns.RetryTurn
+  - method: TurnExecutor.RetryTurn
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrNoRetryTarget, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; busy is transient; no-target changes only after lifecycle mutation
@@ -259,7 +250,7 @@ methods:
     concurrency: serialized by bound ThreadRevision CAS
     cancellation: provider cancellation preserves admitted retry lifecycle
     closing: managed provider and tool work is cancelled
-  - method: Turns.ContinuePendingTool
+  - method: TurnExecutor.ContinuePendingTool
     errors_is: [ErrHostClosed, ErrPendingToolNotFound, ErrPendingToolNotActive, ErrPendingToolSettlementConflict, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; target/conflict errors are permanent
@@ -268,7 +259,7 @@ methods:
     concurrency: exact target and ThreadRevision CAS serialize settlement
     cancellation: a committed settlement is never rolled back by provider cancellation
     closing: new continuation is rejected and managed work is cancelled
-  - method: Turns.RecordPendingToolOutcome
+  - method: TurnExecutor.RecordPendingToolOutcome
     errors_is: [ErrHostClosed, ErrPendingToolNotFound, ErrPendingToolNotActive, ErrPendingToolSettlementConflict, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; conflicting outcome is permanent
@@ -277,7 +268,7 @@ methods:
     concurrency: exact target and ThreadRevision CAS serialize settlement
     cancellation: cancellation cannot erase a committed outcome
     closing: rejected after closing begins
-  - method: Turns.ResolveApproval
+  - method: TurnExecutor.ResolveApproval
     errors_is: [ErrHostClosed, ErrStaleAuthority, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; stale authority requires a fresh approval query
@@ -286,7 +277,7 @@ methods:
     concurrency: approval generation and ThreadRevision CAS both apply
     cancellation: cancellation cannot erase a committed decision
     closing: rejected after closing begins
-  - method: Turns.UpdateTodos
+  - method: TurnExecutor.UpdateTodos
     errors_is: [ErrHostClosed, ErrAgentTodoVersionConflict, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; version conflict requires a fresh todo read
@@ -394,7 +385,7 @@ methods:
     concurrency: complete ancestry is validated before the descendant read
     cancellation: returns ctx.Err with no partial artifact
     closing: issued handles reject after Host closes
-  - method: SubAgents.SpawnSubAgent
+  - method: SubAgentManager.SpawnSubAgent
     errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; busy is transient; conflict is permanent
@@ -403,7 +394,7 @@ methods:
     concurrency: parent ThreadRevision CAS serializes child publication
     cancellation: child admission remains durable if provider execution is cancelled
     closing: new child is rejected and managed child work is cancelled
-  - method: SubAgents.SendSubAgentMessage
+  - method: SubAgentManager.SendSubAgentMessage
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrThreadBusy, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; busy is transient; closed/conflict are permanent
@@ -412,7 +403,7 @@ methods:
     concurrency: child ThreadRevision CAS serializes input
     cancellation: cancellation preserves admitted child input
     closing: new message rejected and managed child work cancelled
-  - method: SubAgents.InterruptSubAgent
+  - method: SubAgentManager.InterruptSubAgent
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrRequestConflict]
     errors_as: [RequestConflictError, CommittedEffectError]
     retryability: exact replay is safe; missing/closed/conflict are permanent
@@ -421,7 +412,7 @@ methods:
     concurrency: child lease generation and ThreadRevision CAS both apply
     cancellation: cancellation cannot erase a committed interruption
     closing: shutdown cancellation and explicit interrupt remain distinguishable durable facts
-  - method: SubAgents.WaitSubAgents
+  - method: SubAgentManager.WaitSubAgents
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrThreadAuthorityInvariant]
     errors_as: []
     retryability: timeout is a successful observation; missing or unrelated children require a fresh canonical read
@@ -430,7 +421,7 @@ methods:
     concurrency: selected direct children are validated under the bound parent before waiting
     cancellation: returns ctx.Err without closing, interrupting, or otherwise mutating children
     closing: active waits finish when managed child work stops during shutdown
-  - method: SubAgents.CloseSubAgent
+  - method: SubAgentManager.CloseSubAgent
     errors_is: [ErrHostClosed, ErrSubAgentNotFound, ErrSubAgentClosed, ErrRequestConflict]
     errors_as: [RequestConflictError]
     retryability: exact replay is safe; missing, closed under another request, or conflicting input is permanent
@@ -502,10 +493,10 @@ methods:
     concurrency: a changed revision discards the projection and restarts
     cancellation: returns ctx.Err and no projection envelope
     closing: issued readers reject after Host closes
-  - method: Turns.ExecuteAdmission
+  - method: TurnExecutor.ExecuteAdmission
     errors_is: [ErrHostClosed, ErrExecutionPlanUnavailable, ErrExecutionPlanMismatch, ErrExecutionContextIncomplete, ErrAuthorityCorrupt]
     errors_as: [CommittedEffectError]
-    retryability: exact receipt replay is safe; unavailable legacy plans require the deprecated backfill path
+    retryability: exact receipt replay is safe; unavailable execution plans are permanent authority errors
     commit: execution consumes the immutable Floret-owned plan and commits one terminal turn result
     replay: the same receipt returns the original lifecycle identities without a second provider call
     concurrency: request authority serializes competing execution attempts

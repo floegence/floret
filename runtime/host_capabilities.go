@@ -167,7 +167,7 @@ func (thread *Thread) Lifecycle() (ThreadLifecycle, error) {
 
 // TurnExecutor grants turn authority bound to this exact Thread and Agent.
 func (thread *Thread) TurnExecutor(agent *Agent) (TurnExecutor, error) {
-	return thread.Turns(agent)
+	return thread.turns(agent)
 }
 
 // Compactor grants provider-backed compaction authority bound to this exact
@@ -188,30 +188,30 @@ func (thread *Thread) Compactor(agent *Agent) (ThreadCompactor, error) {
 // SubAgentManager grants direct-child lifecycle authority bound to this exact
 // parent Thread and Agent.
 func (thread *Thread) SubAgentManager(ctx context.Context, agent *Agent) (SubAgentManager, error) {
-	return thread.SubAgents(ctx, agent)
+	return thread.subAgents(ctx, agent)
 }
 
 func (reader threadReaderView) ID() identity.ThreadID { return reader.thread.ID() }
 func (reader threadReaderView) Snapshot(ctx context.Context) (ThreadView, error) {
-	return reader.thread.Snapshot(ctx)
+	return reader.thread.snapshot(ctx)
 }
 func (reader threadReaderView) ReadOverview(ctx context.Context) (ThreadOverview, error) {
-	return reader.thread.ReadOverview(ctx)
+	return reader.thread.readOverview(ctx)
 }
 func (reader threadReaderView) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
-	return reader.thread.ReadTurn(ctx, turnID)
+	return reader.thread.readTurn(ctx, turnID)
 }
 func (reader threadReaderView) ListTurns(ctx context.Context, request ThreadTurnsRequest) (ThreadTurnsPage, error) {
-	return reader.thread.ListTurns(ctx, request)
+	return reader.thread.listTurns(ctx, request)
 }
 func (reader threadReaderView) ReadAgentTodos(ctx context.Context) (ThreadAgentTodoState, error) {
-	return reader.thread.ReadAgentTodos(ctx)
+	return reader.thread.readAgentTodos(ctx)
 }
 func (reader threadReaderView) ReadContext(ctx context.Context) (ThreadContextSnapshot, error) {
-	return reader.thread.ReadContext(ctx)
+	return reader.thread.readContext(ctx)
 }
 func (reader threadReaderView) ReadApprovalQueue(ctx context.Context) (ApprovalQueue, error) {
-	return reader.thread.ReadApprovalQueue(ctx)
+	return reader.thread.readApprovalQueue(ctx)
 }
 func (reader threadReaderView) ReadAuthoritativeProjection(ctx context.Context, turnID identity.TurnID, runID identity.RunID) (AuthoritativeThreadTurnProjection, error) {
 	for {
@@ -222,7 +222,7 @@ func (reader threadReaderView) ReadAuthoritativeProjection(ctx context.Context, 
 		if err != nil {
 			return AuthoritativeThreadTurnProjection{}, err
 		}
-		projection, err := reader.thread.ReadProjection(ctx, turnID, runID)
+		projection, err := reader.thread.readProjection(ctx, turnID, runID)
 		if err != nil {
 			return AuthoritativeThreadTurnProjection{}, err
 		}
@@ -243,19 +243,19 @@ func (reader threadReaderView) ReadAuthoritativeProjection(ctx context.Context, 
 	}
 }
 func (reader threadReaderView) ListPendingToolTargets(ctx context.Context) ([]PendingToolSettlementTarget, error) {
-	return reader.thread.ListPendingToolTargets(ctx)
+	return reader.thread.listPendingToolTargets(ctx)
 }
 func (reader threadReaderView) ListSubAgents(ctx context.Context) ([]SubAgentSnapshot, error) {
-	return reader.thread.ListSubAgents(ctx)
+	return reader.thread.listSubAgents(ctx)
 }
 func (reader threadReaderView) Child(ctx context.Context, childThreadID identity.ThreadID) (*Child, error) {
-	return reader.thread.Child(ctx, childThreadID)
+	return reader.thread.child(ctx, childThreadID)
 }
 func (reader threadReaderView) Descendant(ctx context.Context, descendantThreadID identity.ThreadID) (*DescendantReader, error) {
-	return reader.thread.DescendantReader(ctx, descendantThreadID)
+	return reader.thread.descendantReader(ctx, descendantThreadID)
 }
 func (reader threadReaderView) Subscribe(ctx context.Context, options SubscribeOptions) (*Subscription, error) {
-	return reader.thread.Subscribe(ctx, options)
+	return reader.thread.subscribe(ctx, options)
 }
 
 func (reader threadReaderView) Bootstrap(ctx context.Context, request ThreadBootstrapRequest) (ThreadBootstrap, error) {
@@ -302,7 +302,7 @@ func (reader threadReaderView) Bootstrap(ctx context.Context, request ThreadBoot
 		if err != nil {
 			return ThreadBootstrap{}, err
 		}
-		subAgents, err := reader.thread.ListSubAgents(ctx)
+		subAgents, err := reader.thread.listSubAgents(ctx)
 		if err != nil {
 			return ThreadBootstrap{}, err
 		}
@@ -327,22 +327,22 @@ func (reader threadReaderView) Bootstrap(ctx context.Context, request ThreadBoot
 
 func (lifecycle threadLifecycleView) ID() identity.ThreadID { return lifecycle.thread.ID() }
 func (lifecycle threadLifecycleView) SetTitle(ctx context.Context, command SetThreadTitleCommand) (SetThreadTitleResult, error) {
-	return lifecycle.thread.SetTitle(ctx, command)
+	return lifecycle.thread.setTitle(ctx, command)
 }
 func (lifecycle threadLifecycleView) Fork(ctx context.Context, command ForkThreadCommand) (ForkThreadResult, error) {
-	result, err := lifecycle.thread.ForkThread(ctx, command)
+	result, err := lifecycle.thread.forkThread(ctx, command)
 	return ForkThreadResult(result), err
 }
 func (lifecycle threadLifecycleView) Delete(ctx context.Context, command DeleteThreadCommand) (DeleteThreadResult, error) {
-	return lifecycle.thread.DeleteThread(ctx, command)
+	return lifecycle.thread.deleteThread(ctx, command)
 }
 func (lifecycle threadLifecycleView) PendingToolRecovery(ctx context.Context, target PendingToolSettlementTarget) (*PendingToolRecovery, error) {
-	return lifecycle.thread.PendingToolRecovery(ctx, target)
+	return lifecycle.thread.pendingToolRecovery(ctx, target)
 }
 func (lifecycle threadLifecycleView) InterruptedTurnRecovery(ctx context.Context) (*InterruptedTurnRecovery, error) {
-	return lifecycle.thread.InterruptedTurnRecovery(ctx)
+	return lifecycle.thread.interruptedTurnRecovery(ctx)
 }
 
 func (compactor threadCompactorView) Compact(ctx context.Context, command CompactThreadCommand) (CompactThreadResult, error) {
-	return compactor.thread.Compact(ctx, compactor.agent, command)
+	return compactor.thread.compact(ctx, compactor.agent, command)
 }

@@ -1032,13 +1032,6 @@ const SubAgentStatusIdle github.com/floegence/floret/v3/runtime.SubAgentStatus =
 const SubAgentStatusInterrupted github.com/floegence/floret/v3/runtime.SubAgentStatus = "interrupted"
 const SubAgentStatusRunning github.com/floegence/floret/v3/runtime.SubAgentStatus = "running"
 const SubAgentStatusWaiting github.com/floegence/floret/v3/runtime.SubAgentStatus = "waiting"
-type SubAgents struct
-method *SubAgents.List func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.SubAgentSnapshot, error)
-method *SubAgents.SpawnSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SpawnSubAgentCommand) (github.com/floegence/floret/v3/runtime.SpawnSubAgentResult, error)
-method *SubAgents.SendSubAgentMessage func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SendSubAgentMessageCommand) (github.com/floegence/floret/v3/runtime.SendSubAgentMessageResult, error)
-method *SubAgents.InterruptSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.InterruptSubAgentCommand) (github.com/floegence/floret/v3/runtime.InterruptSubAgentResult, error)
-method *SubAgents.WaitSubAgents func(ctx context.Context, command github.com/floegence/floret/v3/runtime.WaitSubAgentsCommand) (github.com/floegence/floret/v3/runtime.WaitSubAgentsResult, error)
-method *SubAgents.CloseSubAgent func(ctx context.Context, command github.com/floegence/floret/v3/runtime.CloseSubAgentCommand) (github.com/floegence/floret/v3/runtime.CloseSubAgentResult, error)
 type SubscribeOptions struct
 field SubscribeOptions.AfterRevision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"after_revision\""
 type Subscription struct
@@ -1065,27 +1058,6 @@ method *Thread.TurnExecutor func(agent *github.com/floegence/floret/v3/runtime.A
 method *Thread.Compactor func(agent *github.com/floegence/floret/v3/runtime.Agent) (github.com/floegence/floret/v3/runtime.ThreadCompactor, error)
 method *Thread.SubAgentManager func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent) (github.com/floegence/floret/v3/runtime.SubAgentManager, error)
 method *Thread.ID func() github.com/floegence/floret/v3/identity.ThreadID
-method *Thread.Snapshot func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadView, error)
-method *Thread.ReadOverview func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadOverview, error)
-method *Thread.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
-method *Thread.ListTurns func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error)
-method *Thread.ReadAgentTodos func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadAgentTodoState, error)
-method *Thread.ReadContext func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadContextSnapshot, error)
-method *Thread.ReadApprovalQueue func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ApprovalQueue, error)
-method *Thread.ReadProjection func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID, runID github.com/floegence/floret/v3/identity.RunID) (github.com/floegence/floret/v3/runtime.ThreadTurnProjection, error)
-method *Thread.ListPendingToolTargets func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error)
-method *Thread.ListSubAgents func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.SubAgentSnapshot, error)
-method *Thread.SetTitle func(ctx context.Context, command github.com/floegence/floret/v3/runtime.SetThreadTitleCommand) (github.com/floegence/floret/v3/runtime.SetThreadTitleResult, error)
-method *Thread.PendingToolRecovery func(ctx context.Context, target github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget) (*github.com/floegence/floret/v3/runtime.PendingToolRecovery, error)
-method *Thread.InterruptedTurnRecovery func(ctx context.Context) (*github.com/floegence/floret/v3/runtime.InterruptedTurnRecovery, error)
-method *Thread.ForkThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ForkThreadCommand) (github.com/floegence/floret/v3/runtime.ForkThreadResultV3, error)
-method *Thread.DeleteThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.DeleteThreadCommand) (github.com/floegence/floret/v3/runtime.DeleteThreadResult, error)
-method *Thread.Turns func(agent *github.com/floegence/floret/v3/runtime.Agent) (*github.com/floegence/floret/v3/runtime.Turns, error)
-method *Thread.Compact func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent, command github.com/floegence/floret/v3/runtime.CompactThreadCommand) (github.com/floegence/floret/v3/runtime.CompactThreadResult, error)
-method *Thread.Child func(ctx context.Context, childThreadID github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.Child, error)
-method *Thread.DescendantReader func(ctx context.Context, descendantThreadID github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.DescendantReader, error)
-method *Thread.SubAgents func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent) (*github.com/floegence/floret/v3/runtime.SubAgents, error)
-method *Thread.Subscribe func(ctx context.Context, options github.com/floegence/floret/v3/runtime.SubscribeOptions) (*github.com/floegence/floret/v3/runtime.Subscription, error)
 type ThreadAgentTodoState struct
 field ThreadAgentTodoState.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
 field ThreadAgentTodoState.Version int64 tag="json:\"version\""
@@ -1516,16 +1488,6 @@ field TurnSupplementalContextItem.Text string
 field TurnSupplementalContextItem.Metadata map[string]string
 field TurnSupplementalContextItem.Sensitive bool
 field TurnSupplementalContextItem.Truncated bool
-type Turns struct
-method *Turns.StartTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
-method *Turns.AdmitTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.AdmitTurnResult, error)
-method *Turns.ExecuteAdmittedTurn func(ctx context.Context, receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
-method *Turns.ExecuteAdmission func(ctx context.Context, receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, executionContext github.com/floegence/floret/v3/runtime.ExecutionContext) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
-method *Turns.RetryTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RetryTurnCommand) (github.com/floegence/floret/v3/runtime.RetryTurnResult, error)
-method *Turns.ContinuePendingTool func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ContinuePendingToolCommand) (github.com/floegence/floret/v3/runtime.ContinuePendingToolResult, error)
-method *Turns.RecordPendingToolOutcome func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeCommand) (github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeResult, error)
-method *Turns.ResolveApproval func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ResolveApprovalCommand) (github.com/floegence/floret/v3/runtime.ResolveApprovalCommandResult, error)
-method *Turns.UpdateTodos func(ctx context.Context, command github.com/floegence/floret/v3/runtime.UpdateTodosCommand) (github.com/floegence/floret/v3/runtime.UpdateTodosResult, error)
 type UpdateTodosCommand struct
 field UpdateTodosCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
 field UpdateTodosCommand.ExpectedVersion int64 tag="json:\"expected_version\""

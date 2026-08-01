@@ -16,12 +16,13 @@ small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread` and
 returns a handle bound to one exact `identity.ThreadID`. The composition root
 grants `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`, `ThreadCompactor`, or
 `SubAgentManager`; downstream services retain only the narrow interface they
-need. The direct methods on `Thread`, `Turns`, and `SubAgents` remain only for
-v3 source compatibility and are not the recommended application boundary.
+need. `Thread` itself exposes only capability issuers and identity, so consumers
+cannot accidentally mix read, lifecycle, execution, compaction, or SubAgent
+authority through one broad object.
 Standalone compaction remains exact-thread authority. Active-turn manual
 compaction is an immutable Agent capability polled only at engine safe points.
-`SubAgents.WaitSubAgents` and `CloseSubAgent` validate direct children beneath
-the bound parent; close is a durable, replayable logical mutation.
+`SubAgentManager.WaitSubAgents` and `CloseSubAgent` validate direct children
+beneath the bound parent; close is a durable, replayable logical mutation.
 
 `Child.ReadDetail` and `Child.ListPendingToolTargets` apply only to the bound
 direct child. `DescendantReader.ListTurns`, `ReadTurn`, and `ReadArtifact` apply
@@ -32,11 +33,11 @@ issued.
 The bound `ThreadReader` is the canonical read source for an atomic bootstrap,
 overview, exact turn, turn pages, typed todos, context, approval queue,
 authoritative turn projection, pending-tool targets, and direct-child inventory.
-`Child.ReadTurn` and `Child.ListTurns`
-provide the corresponding direct-child reads. `Thread.SetTitle` is a durable
-logical mutation. `PendingToolRecovery` binds one exact settlement target, and
-`InterruptedTurnRecovery` binds one exact current interrupted lease proof before
-either operation can mutate lifecycle state.
+`Child.ReadTurn` and `Child.ListTurns` provide the corresponding direct-child
+reads. `ThreadLifecycle.SetTitle` is a durable logical mutation.
+`ThreadLifecycle.PendingToolRecovery` binds one exact settlement target, and
+`ThreadLifecycle.InterruptedTurnRecovery` binds one exact current interrupted
+lease proof before either operation can mutate lifecycle state.
 
 Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
 allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
@@ -54,8 +55,7 @@ that receipt, then call `TurnExecutor.ExecuteAdmission` with the receipt and an
 `ExecutionContext` containing only ephemeral supplemental context and executable
 signal bindings. The host never persists or resubmits the canonical command.
 `AdmitTurnResult.Execute` is only a same-process convenience over the same
-receipt-first path. The deprecated command-bearing execution API exists only to
-backfill admissions created by v3.0 releases.
+receipt-first path. There is no command-bearing execution fallback.
 
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,

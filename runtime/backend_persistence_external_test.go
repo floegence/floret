@@ -42,7 +42,7 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,8 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forked, err := thread.ForkThread(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-1"})
+	lifecycle := mustThreadLifecycle(t, thread)
+	forked, err := lifecycle.Fork(ctx, runtime.ForkThreadCommand{LogicalRequestID: "fork-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,8 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := reopenedThread.Snapshot(ctx)
+	reader := mustThreadReader(t, reopenedThread)
+	view, err := reader.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +95,7 @@ func TestSQLiteBackendPersistsCanonicalThreadsAcrossHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedTurns, err := reopenedThread.Turns(restartedAgent)
+	restartedTurns, err := reopenedThread.TurnExecutor(restartedAgent)
 	if err != nil {
 		t.Fatal(err)
 	}

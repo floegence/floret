@@ -65,7 +65,7 @@ func run(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	turns, err := thread.Turns(agent)
+	turns, err := thread.TurnExecutor(agent)
 	if err != nil {
 		return err
 	}
