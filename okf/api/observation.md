@@ -42,7 +42,7 @@ lifecycle observations do not imply tool completion. `runtime.ProjectThreadTurn`
 applies failed and cancelled terminal markers across all activity timeline
 segments for the turn. Successful turns keep host-owned pending work running
 until the host reports the observed outcome through the runtime
-`SettlePendingTool` API, which updates the original activity item instead of
+`Turns.RecordPendingToolOutcome` API, which updates the original activity item instead of
 creating a separate UI row. Durable turn projection also treats
 `tool_result_batch` save points as segment boundaries, not activity items, and
 keeps repeated facts for the same tool invocation merged into one item.

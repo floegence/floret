@@ -83,6 +83,8 @@ func TestV3BehaviorContractCoversHostSurface(t *testing.T) {
 	data := string(readContractInput(t, "v3-api-behavior.yaml"))
 	for _, method := range []string{
 		"Open", "Host.Threads", "Host.Thread", "Host.Shutdown",
+		"Thread.Reader", "Thread.Lifecycle", "Thread.TurnExecutor", "Thread.Compactor", "Thread.SubAgentManager",
+		"ThreadReader.Bootstrap", "ThreadReader.ReadAuthoritativeProjection", "Turns.ExecuteAdmission",
 		"Threads.ListThreads", "Threads.CreateThread", "Thread.Snapshot", "Thread.Subscribe", "Subscription.Next",
 		"Thread.ReadOverview", "Thread.ReadTurn", "Thread.ListTurns", "Thread.ReadAgentTodos",
 		"Thread.ReadContext", "Thread.ReadApprovalQueue", "Thread.ReadProjection",

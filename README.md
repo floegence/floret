@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v3@v3.0.3
+go get github.com/floegence/floret/v3@v3.1.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -26,17 +26,17 @@ only from their published tags; v3 has no legacy facade or runtime decoder.
 
 Every Agent uses one explicit `provider.Gateway`. Floret allocates durable
 thread, turn, and run identities; an application supplies only a stable
-`identity.LogicalRequestID` for each logical mutation.
+`identity.LogicalRequestID` for each logical mutation. This production example
+uses the official OpenAI-compatible Gateway and SQLite:
 
 ```go
 package main
 
 import (
     "context"
-    "fmt"
+    "os"
 
     "github.com/floegence/floret/v3/config"
-    "github.com/floegence/floret/v3/florettest"
     "github.com/floegence/floret/v3/provider"
     "github.com/floegence/floret/v3/runtime"
     "github.com/floegence/floret/v3/storage"
@@ -44,17 +44,16 @@ import (
 
 func main() {
     ctx := context.Background()
-    gateway := florettest.NewScriptedGateway(
-        provider.Identity{
-            Provider: "example", Model: "deterministic",
-            StateCompatibilityKey: "example:deterministic:v1",
+    gateway, err := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
+        Provider: "openai", Model: "gpt-4.1-mini",
+        BaseURL: "https://api.openai.com/v1", APIKey: os.Getenv("OPENAI_API_KEY"),
+        StateCompatibilityKey: "openai:gpt-4.1-mini:chat-completions:v1",
+        Capabilities: provider.Capabilities{
+            Reasoning: provider.ReasoningUnsupported,
+            AttachmentPayload: provider.AttachmentDescriptors,
         },
-        provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-        florettest.Step{Events: []provider.Event{
-            {Type: provider.EventDelta, Text: "Hello from Floret v3."},
-            {Type: provider.EventDone, Reason: "stop"},
-        }},
-    )
+    })
+    if err != nil { panic(err) }
     agent, err := runtime.NewAgent(config.AgentConfig{
         Profile:      config.AgentProfile{ID: "assistant", Name: "Assistant"},
         SystemPrompt: "Answer clearly and concisely.",
@@ -64,7 +63,7 @@ func main() {
         panic(err)
     }
 
-    host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
+    host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("floret.db")})
     if err != nil {
         panic(err)
     }
@@ -84,7 +83,7 @@ func main() {
     if err != nil {
         panic(err)
     }
-    turns, err := thread.Turns(agent)
+    executor, err := thread.TurnExecutor(agent)
     if err != nil {
         panic(err)
     }
@@ -92,17 +91,17 @@ func main() {
         LogicalRequestID: "send-message-42",
         UserMessage:      runtime.TurnInput{Text: "Hello"},
     }
-    started, err := turns.StartTurn(ctx, command)
+    _, err = executor.StartTurn(ctx, command)
     if err != nil {
         panic(err)
     }
-    fmt.Println(started.ThreadID, started.TurnID, started.RunID)
 }
 ```
 
-`florettest` is test-only. Production applications normally construct a
-gateway with `provider.NewOpenAICompatible`, `provider.NewAnthropic`, or a
-custom `provider.Gateway`.
+Run it with `OPENAI_API_KEY=... go run ./cmd/examples/openai-sqlite`. The complete
+example also reads the authoritative assistant projection. `florettest` remains
+test-only; use it for deterministic provider scripts and `florettest.NewIDSource`
+for deterministic lifecycle identities.
 
 ## Public Packages
 
@@ -127,27 +126,28 @@ code must never import `internal/*`.
 ## Runtime Boundary
 
 `runtime.Host` belongs in the composition root. Its public entry points are
-`Open`, `Host.Threads`, `Host.Thread`, recovery handles, and
-`Host.Shutdown(ctx)`. A `Thread` binds one exact `identity.ThreadID`; its
-`Turns`, `SubAgents`, child, and descendant capabilities do not repeat that
-authority in each command.
+`Open`, `Host.Threads`, `Host.Thread`, and `Host.Shutdown(ctx)`. A `Thread`
+binds one exact `identity.ThreadID`. The composition root grants
+`Thread.Reader`, `Thread.Lifecycle`, `Thread.TurnExecutor`, `Thread.Compactor`,
+or `Thread.SubAgentManager`; application services accept only the narrow
+interface they need.
 
-`Thread.Child` binds direct-child read authority for canonical detail and
-pending tool targets. `Thread.DescendantReader` binds one validated descendant
+`ThreadReader.Child` binds direct-child read authority for canonical detail and
+pending tool targets. `ThreadReader.Descendant` binds one validated descendant
 at any depth for turn pages, exact turn reads, and artifacts. Neither handle
 accepts another thread identity after binding, and unrelated, deleted, or
 corrupt ancestry fails closed.
 
-Root canonical reads are issued directly by the bound `Thread`: overview, exact
-turn, turn pages, todos, context, approval queue, projections, pending-tool
-targets, and direct-child inventory. `Child` provides the corresponding exact
+Root canonical reads are issued through `ThreadReader`: bootstrap, overview,
+exact turn, turn pages, todos, context, approval queue, authoritative
+projections, pending-tool targets, and direct-child inventory. `Child` provides the corresponding exact
 turn and turn-page authority for one direct child. Title updates use a logical
 request and durable receipt. Interrupted-turn and provider-free pending-tool
 recovery use one-time handles bound to the exact current proof or target.
 
 Commands use stable logical request identities and explicit names:
-`CreateThread`, `StartTurn`, `AdmitTurn`, `ExecuteAdmittedTurn`, `RetryTurn`,
-`ForkThread`, `DeleteThread`,
+`CreateThread`, `StartTurn`, `AdmitTurn`, `ExecuteAdmission`, `RetryTurn`,
+`Fork`, `Delete`,
 `Compact`,
 `ContinuePendingTool`, `RecordPendingToolOutcome`, `ResolveApproval`,
 `UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`, and
@@ -156,12 +156,14 @@ same logical request under the same operation and bound authority returns the
 original identities; changing durable input returns a typed request conflict.
 
 Hosts that must bind product coordination after canonical admission can use
-`Turns.AdmitTurn` to persist the user message and receive a
-`TurnAdmissionReceipt` before any provider request is sent. They then call
-`Turns.ExecuteAdmittedTurn` with that receipt and the same logical command, or
+`TurnExecutor.AdmitTurn` to persist the user message and immutable execution
+plan, then receive a `TurnAdmissionReceipt` before any provider request is sent.
+They then call `TurnExecutor.ExecuteAdmission` with that receipt and an
+`ExecutionContext` containing only current-turn supplemental context or an
+executable signal binding, or
 use `AdmitTurnResult.Execute` as a same-process convenience. The receipt is
 the durable handoff point; hosts do not maintain a second queryable turn
-lifecycle.
+lifecycle or persist a duplicate `StartTurnCommand`.
 
 `runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
 Gateway, tools, capabilities, reasoning policy, and execution policy. The
@@ -169,22 +171,32 @@ effective snapshot and continuation state used by each run are Floret-owned
 durable facts. Provider credentials and editable profile sources remain in the
 host.
 
+`ThreadReader.ReadAuthoritativeProjection` returns a canonical projection with
+its revision and provenance. `DeriveThreadTurn` is only a validated offline
+calculation from caller-supplied detail events and must not be stored as Agent
+lifecycle authority. Direct read/write methods on `Thread`, `Turns`, and
+`SubAgents` remain for v3 source compatibility; new applications use the narrow
+capability views. Production hosts leave `runtime.Options.IDSource` nil;
+deterministic identity injection belongs to `florettest.NewIDSource`.
+For v3 source compatibility, `Thread.Snapshot` and `Thread.Subscribe` remain
+available but are deprecated in favor of the `ThreadReader` methods.
+
 ## Consistent Reads
 
 Every exact thread has one monotonic `runtime.ThreadRevision`. A reconnecting
-consumer uses one fixed handshake:
+consumer uses one fixed handshake through the read-only capability:
 
-1. Read `Thread.Snapshot` and retain revision `R`.
-2. Load every initial turn, approval, todo, pending-work, artifact, and
-   SubAgent page with `AtRevision=R`.
-3. Call `Thread.Subscribe` with `AfterRevision=R`.
+1. Call `ThreadReader.Bootstrap` to atomically load thread, initial turn page,
+   approvals, todos, context, pending work, and direct SubAgents at revision R.
+2. Render that complete read model and retain its page cursors.
+3. Call `ThreadReader.Subscribe` with `AfterRevision=R`.
 
 Page cursors bind thread, revision, direction, and position. Page limits are
 1 through 200. If a revision is no longer readable, Floret returns
 `ErrRevisionUnavailable`; the consumer obtains a new snapshot instead of
 silently switching to current state.
 
-`Thread.Subscribe` observes only the exact bound thread. It is a linearized
+`ThreadReader.Subscribe` observes only the exact bound thread. It is a linearized
 pull protocol through `Subscription.Next(ctx)`, not a callback or bare channel.
 Durable revision events tell consumers which canonical domain to query.
 Provider, token, and tool progress is transient. On queue overflow the

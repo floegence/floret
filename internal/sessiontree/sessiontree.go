@@ -686,6 +686,9 @@ type ThreadPublishRepo interface {
 
 type AgentTodoStatus string
 
+// MaxAgentTodoItems is the canonical upper bound for one Agent todo state.
+const MaxAgentTodoItems = 40
+
 const (
 	AgentTodoPending    AgentTodoStatus = "pending"
 	AgentTodoInProgress AgentTodoStatus = "in_progress"
@@ -696,6 +699,39 @@ type AgentTodoItem struct {
 	ID      string          `json:"id"`
 	Content string          `json:"content"`
 	Status  AgentTodoStatus `json:"status"`
+}
+
+// ValidateAgentTodoItems checks canonical todo identity, content, status, and
+// state-machine invariants at the storage boundary.
+func ValidateAgentTodoItems(items []AgentTodoItem) error {
+	if len(items) > MaxAgentTodoItems {
+		return fmt.Errorf("agent todo state has %d items, maximum is %d", len(items), MaxAgentTodoItems)
+	}
+	seen := make(map[string]struct{}, len(items))
+	inProgress := 0
+	for index, item := range items {
+		id := strings.TrimSpace(item.ID)
+		content := strings.TrimSpace(item.Content)
+		switch item.Status {
+		case AgentTodoPending, AgentTodoInProgress, AgentTodoCompleted:
+		default:
+			return fmt.Errorf("agent todo item %d has unsupported status %q", index, item.Status)
+		}
+		if id == "" || content == "" {
+			return fmt.Errorf("agent todo item %d requires id and content", index)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("agent todo state repeats item %q", id)
+		}
+		seen[id] = struct{}{}
+		if item.Status == AgentTodoInProgress {
+			inProgress++
+			if inProgress > 1 {
+				return errors.New("agent todo state has more than one in-progress item")
+			}
+		}
+	}
+	return nil
 }
 
 type AgentTodoState struct {
@@ -1025,6 +1061,9 @@ func (r *MemoryRepo) ReadAgentTodoState(_ context.Context, threadID string) (Age
 func (r *MemoryRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := ValidateAgentTodoItems(state.Items); err != nil {
+		return AgentTodoState{}, err
+	}
 	if _, ok := r.threads[state.ThreadID]; !ok {
 		return AgentTodoState{}, ErrThreadNotFound
 	}
@@ -2744,6 +2783,9 @@ func (r *FileRepo) load(ctx context.Context) error {
 			}
 			if todo.ThreadID != meta.ID {
 				return fmt.Errorf("agent todo state thread id %q does not match %q", todo.ThreadID, meta.ID)
+			}
+			if err := ValidateAgentTodoItems(todo.Items); err != nil {
+				return fmt.Errorf("invalid agent todo state for thread %q: %w", meta.ID, err)
 			}
 			mem.todos[meta.ID] = cloneAgentTodoState(todo)
 		} else if !errors.Is(err, os.ErrNotExist) {

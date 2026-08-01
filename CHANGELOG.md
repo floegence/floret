@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.1.0 - 2026-08-01
+
+- Add native `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`,
+  `ThreadCompactor`, and `SubAgentManager` capability views so composition roots
+  can grant least authority without downstream adapter graphs.
+- Add atomic `ThreadReader.Bootstrap` and authoritative projection provenance
+  for gap-free initial read models and subscription handoff.
+- Persist immutable admission execution plans in Floret and add
+  `TurnExecutor.ExecuteAdmission`, which accepts only a receipt and ephemeral
+  execution context after restart.
+- Make Agent todo limits and single-in-progress semantics canonical in the
+  runtime and storage kernel; distinguish validated offline projections from
+  authoritative Floret reads.
+- Move deterministic identity injection guidance to `florettest.NewIDSource`, add
+  an official-provider SQLite example, validate documented runtime symbols, and
+  expand blank-module release adoption coverage.
+- Deprecate broad v3.0 thread methods, command-bearing admitted execution,
+  caller-provided production ID sources, and inconsistent result naming while
+  preserving v3 source compatibility for one minor release series.
+
 ## v3.0.3 - 2026-08-01
 
 - Add receipt-first two-stage turn admission for hosts that must durably bind

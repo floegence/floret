@@ -10,11 +10,12 @@ timestamp: 2026-07-29T00:00:00Z
 # Host Capability Authority
 
 `runtime.Host` exposes only `Threads`, `Thread`, and `Shutdown`. `Host.Thread`
-binds one exact `ThreadID`; `Thread.Turns`, `Thread.SubAgents`, `Child`, and
-`DescendantReader` derive narrower authority without accepting the same identity
-again. Commands cannot select a different bound thread.
-`Thread.Compact` uses that same exact-thread authority. `SubAgents.WaitSubAgents`
-and `CloseSubAgent` remain restricted to direct children of the bound parent.
+binds one exact `ThreadID`; the composition root grants `ThreadReader`,
+`ThreadLifecycle`, `TurnExecutor`, `ThreadCompactor`, or `SubAgentManager`.
+Services accept only the capability they require and cannot recover the broad
+`Thread` from those interfaces. Child and descendant handles remain bound to
+their validated ancestry. `SubAgentManager.WaitSubAgents` and `CloseSubAgent`
+remain restricted to direct children of the bound parent.
 
 Host and every issued handle share one lifetime fence. Shutdown prevents new
 work, cancels and joins managed execution, and closes owned storage.
@@ -36,7 +37,7 @@ execution. `Child` exposes detail and pending-target reads for one direct child;
 at any depth. Both remain scoped beneath their bound parent and fail closed for
 unrelated, deleted, or corrupt ancestry.
 Root overview, turn, todo, context, approval, projection, pending-target, and
-direct-child queries remain methods on the exact bound `Thread`; direct-child
+direct-child queries remain methods on the exact bound `ThreadReader`; direct-child
 turn queries remain methods on the exact bound `Child`.
 
 No public aggregate can recover or reissue composition-root authority.

@@ -14,9 +14,8 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 
 # Steps
 
-1. Bootstrap from `ListThreadTurns`, `ReadThread`, `ReadApprovalQueue`, todo and
-   context reads, then render `ThreadTurnProjection` segments in their supplied
-   order.
+1. Call `ThreadReader.Bootstrap`, retain its revision and page cursor, then
+   render canonical `ThreadTurnProjection` segments in their supplied order.
 2. Treat `runtime.Event` and `observation.Event` as transient hints. Validate
    each event and apply live projection updates only to matching thread, turn,
    and run identities.
@@ -26,9 +25,9 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
    running, failed, cancelled, pending, and completed tool states distinctly.
    Preserve stable row geometry while text and progress change.
 5. On reconnect, gaps, validation failure, or unavailable terminal projection,
-   reload the durable public snapshots/projections from Floret. Do not replay a
+   bootstrap again and reload authoritative projections from Floret. Do not replay a
    stored event stream or rebuild activity from product audit records.
-6. Use `ReadThreadTurn` for a known canonical `TurnID`; use `ListThreadTurns`
+6. Use `ThreadReader.ReadTurn` for a known canonical `TurnID`; use `ThreadReader.ListTurns`
    for bootstrap and history pagination. Validate returned snapshots before
    mapping them into host presentation state.
 
@@ -45,3 +44,7 @@ Floret owns product-neutral projection order and Agent lifecycle facts. The host
 owns components, typography, spacing, responsive layout, localized copy,
 accessibility, focus behavior, and product navigation; it does not persist a
 second Agent lifecycle to support rendering.
+
+Use `ThreadReader.ReadAuthoritativeProjection` for application state. Use
+`DeriveThreadTurn` only for offline analysis or tests; its derived provenance is
+not canonical authority.

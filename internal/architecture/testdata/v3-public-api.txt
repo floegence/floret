@@ -465,6 +465,11 @@ field ArtifactRef.MIME string tag="json:\"mime,omitempty\""
 field ArtifactRef.SizeBytes int64 tag="json:\"size_bytes,omitempty\""
 field ArtifactRef.SHA256 string tag="json:\"sha256,omitempty\""
 method ArtifactRef.Validate func() error
+type AuthoritativeThreadTurnProjection struct
+field AuthoritativeThreadTurnProjection.Projection github.com/floegence/floret/v3/runtime.ThreadTurnProjection tag="json:\"projection\""
+field AuthoritativeThreadTurnProjection.Revision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"revision\""
+field AuthoritativeThreadTurnProjection.Provenance github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance tag="json:\"provenance\""
+method AuthoritativeThreadTurnProjection.Validate func() error
 const AuthorityBusyAuthority github.com/floegence/floret/v3/runtime.AuthorityBusyKind = "authority"
 type AuthorityBusyError struct
 field AuthorityBusyError.Kind github.com/floegence/floret/v3/runtime.AuthorityBusyKind
@@ -553,6 +558,11 @@ type DeletedEvent struct
 field DeletedEvent.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
 field DeletedEvent.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
 field DeletedEvent.DeletedAt time.Time tag="json:\"deleted_at\""
+func DeriveThreadTurn func(req github.com/floegence/floret/v3/runtime.ProjectThreadTurnRequest) (github.com/floegence/floret/v3/runtime.DerivedThreadTurnProjection, error)
+type DerivedThreadTurnProjection struct
+field DerivedThreadTurnProjection.Projection github.com/floegence/floret/v3/runtime.ThreadTurnProjection tag="json:\"projection\""
+field DerivedThreadTurnProjection.Provenance github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance tag="json:\"provenance\""
+method DerivedThreadTurnProjection.Validate func() error
 type DescendantReader struct
 method *DescendantReader.ID func() github.com/floegence/floret/v3/identity.ThreadID
 method *DescendantReader.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
@@ -617,6 +627,9 @@ var ErrAuthorizationUnavailable error
 var ErrEffectDispatchConsumed error
 var ErrEffectOutcomeUnknown error
 var ErrEffectUnauthorized error
+var ErrExecutionContextIncomplete error
+var ErrExecutionPlanMismatch error
+var ErrExecutionPlanUnavailable error
 var ErrForkDestinationConflict error
 var ErrForkOperationConflict error
 var ErrHostClosed error
@@ -685,8 +698,12 @@ field Event.Metadata map[string]any tag="json:\"metadata,omitempty\""
 field Event.Timestamp time.Time tag="json:\"timestamp,omitempty\""
 method Event.Validate func() error
 type EventSink interface interface{EmitEvent(github.com/floegence/floret/v3/runtime.Event)}
+type ExecutionContext struct
+field ExecutionContext.SupplementalContext []github.com/floegence/floret/v3/runtime.TurnSupplementalContextItem
+field ExecutionContext.SignalProjector func(github.com/floegence/floret/v3/tools.ToolCall) (github.com/floegence/floret/v3/runtime.TurnSignal, bool, error)
 type ForkThreadCommand struct
 field ForkThreadCommand.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id\""
+type ForkThreadResult = github.com/floegence/floret/v3/runtime.ForkThreadResultV3
 type ForkThreadResultV3 struct
 field ForkThreadResultV3.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
 field ForkThreadResultV3.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
@@ -726,6 +743,7 @@ field ManualCompactionRequest.RequestID string tag="json:\"request_id\""
 field ManualCompactionRequest.Source string tag="json:\"source\""
 field ManualCompactionRequest.RequestedAt time.Time tag="json:\"requested_at,omitempty\""
 type ManualCompactionSource interface interface{PollManualCompaction(context.Context, github.com/floegence/floret/v3/runtime.ManualCompactionPollRequest) (github.com/floegence/floret/v3/runtime.ManualCompactionRequest, bool, error)}
+const MaxAgentTodos untyped int = 40
 const MaxMessageAttachmentMIMETypeBytes untyped int = 512
 const MaxMessageAttachmentNameRunes untyped int = 1024
 const MaxMessageAttachmentResourceRefBytes untyped int = 16384
@@ -876,6 +894,7 @@ field ResolveApprovalCommand.Decision github.com/floegence/floret/v3/runtime.App
 type ResolveApprovalCommandResult struct
 field ResolveApprovalCommandResult.Resolution github.com/floegence/floret/v3/runtime.ResolveApprovalResult tag="json:\"resolution\""
 field ResolveApprovalCommandResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+type ResolveApprovalMutationResult = github.com/floegence/floret/v3/runtime.ResolveApprovalCommandResult
 type ResolveApprovalResult struct
 field ResolveApprovalResult.Receipt github.com/floegence/floret/v3/runtime.ApprovalDecisionReceipt tag="json:\"receipt\""
 field ResolveApprovalResult.Queue github.com/floegence/floret/v3/runtime.ApprovalQueue tag="json:\"queue\""
@@ -981,6 +1000,7 @@ method SubAgentDetail.Validate func() error
 const SubAgentForkFullPath github.com/floegence/floret/v3/runtime.SubAgentForkMode = "full_path"
 type SubAgentForkMode string
 const SubAgentForkNone github.com/floegence/floret/v3/runtime.SubAgentForkMode = "none"
+type SubAgentManager interface interface{CloseSubAgent(context.Context, github.com/floegence/floret/v3/runtime.CloseSubAgentCommand) (github.com/floegence/floret/v3/runtime.CloseSubAgentResult, error); InterruptSubAgent(context.Context, github.com/floegence/floret/v3/runtime.InterruptSubAgentCommand) (github.com/floegence/floret/v3/runtime.InterruptSubAgentResult, error); List(context.Context) ([]github.com/floegence/floret/v3/runtime.SubAgentSnapshot, error); SendSubAgentMessage(context.Context, github.com/floegence/floret/v3/runtime.SendSubAgentMessageCommand) (github.com/floegence/floret/v3/runtime.SendSubAgentMessageResult, error); SpawnSubAgent(context.Context, github.com/floegence/floret/v3/runtime.SpawnSubAgentCommand) (github.com/floegence/floret/v3/runtime.SpawnSubAgentResult, error); WaitSubAgents(context.Context, github.com/floegence/floret/v3/runtime.WaitSubAgentsCommand) (github.com/floegence/floret/v3/runtime.WaitSubAgentsResult, error)}
 type SubAgentSnapshot struct
 field SubAgentSnapshot.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
 field SubAgentSnapshot.Path string tag="json:\"path\""
@@ -1039,6 +1059,11 @@ const SubscriptionMessageGap github.com/floegence/floret/v3/runtime.Subscription
 type SubscriptionMessageKind string
 const SubscriptionMessageTransient github.com/floegence/floret/v3/runtime.SubscriptionMessageKind = "transient"
 type Thread struct
+method *Thread.Reader func() (github.com/floegence/floret/v3/runtime.ThreadReader, error)
+method *Thread.Lifecycle func() (github.com/floegence/floret/v3/runtime.ThreadLifecycle, error)
+method *Thread.TurnExecutor func(agent *github.com/floegence/floret/v3/runtime.Agent) (github.com/floegence/floret/v3/runtime.TurnExecutor, error)
+method *Thread.Compactor func(agent *github.com/floegence/floret/v3/runtime.Agent) (github.com/floegence/floret/v3/runtime.ThreadCompactor, error)
+method *Thread.SubAgentManager func(ctx context.Context, agent *github.com/floegence/floret/v3/runtime.Agent) (github.com/floegence/floret/v3/runtime.SubAgentManager, error)
 method *Thread.ID func() github.com/floegence/floret/v3/identity.ThreadID
 method *Thread.Snapshot func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadView, error)
 method *Thread.ReadOverview func(ctx context.Context) (github.com/floegence/floret/v3/runtime.ThreadOverview, error)
@@ -1070,6 +1095,19 @@ field ThreadAgentTodoState.UpdatedByTurnID github.com/floegence/floret/v3/identi
 field ThreadAgentTodoState.UpdatedByRunID github.com/floegence/floret/v3/identity.RunID tag="json:\"updated_by_run_id,omitempty\""
 field ThreadAgentTodoState.UpdatedByToolCall string tag="json:\"updated_by_tool_call_id,omitempty\""
 method ThreadAgentTodoState.Validate func() error
+type ThreadBootstrap struct
+field ThreadBootstrap.Revision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"revision\""
+field ThreadBootstrap.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""
+field ThreadBootstrap.Overview github.com/floegence/floret/v3/runtime.ThreadOverview tag="json:\"overview\""
+field ThreadBootstrap.Turns github.com/floegence/floret/v3/runtime.ThreadTurnsPage tag="json:\"turns\""
+field ThreadBootstrap.Approvals github.com/floegence/floret/v3/runtime.ApprovalQueue tag="json:\"approvals\""
+field ThreadBootstrap.AgentTodos github.com/floegence/floret/v3/runtime.ThreadAgentTodoState tag="json:\"agent_todos\""
+field ThreadBootstrap.Context github.com/floegence/floret/v3/runtime.ThreadContextSnapshot tag="json:\"context\""
+field ThreadBootstrap.PendingToolTargets []github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget tag="json:\"pending_tool_targets,omitempty\""
+field ThreadBootstrap.SubAgents []github.com/floegence/floret/v3/runtime.SubAgentSnapshot tag="json:\"subagents,omitempty\""
+method ThreadBootstrap.Validate func() error
+type ThreadBootstrapRequest struct
+field ThreadBootstrapRequest.TurnLimit int tag="json:\"turn_limit,omitempty\""
 const ThreadChangeApproval github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "approval"
 const ThreadChangeArtifact github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "artifact"
 const ThreadChangeCompaction github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "compaction"
@@ -1080,6 +1118,7 @@ const ThreadChangeProviderState github.com/floegence/floret/v3/runtime.ThreadCha
 const ThreadChangeSubAgent github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "subagent"
 const ThreadChangeThread github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "thread"
 const ThreadChangeTodo github.com/floegence/floret/v3/runtime.ThreadChangeDomain = "todo"
+type ThreadCompactor interface interface{Compact(context.Context, github.com/floegence/floret/v3/runtime.CompactThreadCommand) (github.com/floegence/floret/v3/runtime.CompactThreadResult, error)}
 type ThreadContextSnapshot struct
 field ThreadContextSnapshot.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
 field ThreadContextSnapshot.Provider string tag="json:\"provider,omitempty\""
@@ -1199,6 +1238,7 @@ field ThreadDetailToolResult.FullOutput *github.com/floegence/floret/v3/runtime.
 type ThreadDetailTurnMarker struct
 field ThreadDetailTurnMarker.Status string tag="json:\"status,omitempty\""
 field ThreadDetailTurnMarker.Metadata map[string]string tag="json:\"metadata,omitempty\""
+type ThreadLifecycle interface interface{Delete(context.Context, github.com/floegence/floret/v3/runtime.DeleteThreadCommand) (github.com/floegence/floret/v3/runtime.DeleteThreadResult, error); Fork(context.Context, github.com/floegence/floret/v3/runtime.ForkThreadCommand) (github.com/floegence/floret/v3/runtime.ForkThreadResultV3, error); ID() github.com/floegence/floret/v3/identity.ThreadID; InterruptedTurnRecovery(context.Context) (*github.com/floegence/floret/v3/runtime.InterruptedTurnRecovery, error); PendingToolRecovery(context.Context, github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget) (*github.com/floegence/floret/v3/runtime.PendingToolRecovery, error); SetTitle(context.Context, github.com/floegence/floret/v3/runtime.SetThreadTitleCommand) (github.com/floegence/floret/v3/runtime.SetThreadTitleResult, error)}
 type ThreadListCursor string
 type ThreadListItem struct
 field ThreadListItem.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""
@@ -1211,6 +1251,7 @@ type ThreadPhase string
 method ThreadPhase.Valid func() bool
 const ThreadPhaseIdle github.com/floegence/floret/v3/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v3/runtime.ThreadPhase = "turn"
+type ThreadReader interface interface{Bootstrap(context.Context, github.com/floegence/floret/v3/runtime.ThreadBootstrapRequest) (github.com/floegence/floret/v3/runtime.ThreadBootstrap, error); Child(context.Context, github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.Child, error); Descendant(context.Context, github.com/floegence/floret/v3/identity.ThreadID) (*github.com/floegence/floret/v3/runtime.DescendantReader, error); ID() github.com/floegence/floret/v3/identity.ThreadID; ListPendingToolTargets(context.Context) ([]github.com/floegence/floret/v3/runtime.PendingToolSettlementTarget, error); ListSubAgents(context.Context) ([]github.com/floegence/floret/v3/runtime.SubAgentSnapshot, error); ListTurns(context.Context, github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error); ReadAgentTodos(context.Context) (github.com/floegence/floret/v3/runtime.ThreadAgentTodoState, error); ReadApprovalQueue(context.Context) (github.com/floegence/floret/v3/runtime.ApprovalQueue, error); ReadAuthoritativeProjection(context.Context, github.com/floegence/floret/v3/identity.TurnID, github.com/floegence/floret/v3/identity.RunID) (github.com/floegence/floret/v3/runtime.AuthoritativeThreadTurnProjection, error); ReadContext(context.Context) (github.com/floegence/floret/v3/runtime.ThreadContextSnapshot, error); ReadOverview(context.Context) (github.com/floegence/floret/v3/runtime.ThreadOverview, error); ReadTurn(context.Context, github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error); Snapshot(context.Context) (github.com/floegence/floret/v3/runtime.ThreadView, error); Subscribe(context.Context, github.com/floegence/floret/v3/runtime.SubscribeOptions) (*github.com/floegence/floret/v3/runtime.Subscription, error)}
 type ThreadRevision int64
 type ThreadRevisionEvent struct
 field ThreadRevisionEvent.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
@@ -1304,6 +1345,9 @@ field ThreadTurnProjection.Segments []github.com/floegence/floret/v3/runtime.Thr
 field ThreadTurnProjection.ThroughOrdinal int64 tag="json:\"through_ordinal\""
 field ThreadTurnProjection.ProjectedAt time.Time tag="json:\"projected_at,omitempty\""
 method ThreadTurnProjection.Validate func() error
+const ThreadTurnProjectionAuthoritative github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance = "authoritative"
+const ThreadTurnProjectionDerived github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance = "derived"
+type ThreadTurnProjectionProvenance string
 type ThreadTurnProjectionSegment struct
 field ThreadTurnProjectionSegment.Kind github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegmentKind tag="json:\"kind\""
 field ThreadTurnProjectionSegment.Text string tag="json:\"text,omitempty\""
@@ -1405,6 +1449,7 @@ field TurnAdmissionReceipt.Replayed bool tag="json:\"replayed,omitempty\""
 const TurnCompletionExplicitSignal github.com/floegence/floret/v3/runtime.TurnCompletionPolicy = "explicit_signal"
 const TurnCompletionNaturalStop github.com/floegence/floret/v3/runtime.TurnCompletionPolicy = "natural_stop"
 type TurnCompletionPolicy string
+type TurnExecutor interface interface{AdmitTurn(context.Context, github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.AdmitTurnResult, error); ContinuePendingTool(context.Context, github.com/floegence/floret/v3/runtime.ContinuePendingToolCommand) (github.com/floegence/floret/v3/runtime.ContinuePendingToolResult, error); ExecuteAdmission(context.Context, github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, github.com/floegence/floret/v3/runtime.ExecutionContext) (github.com/floegence/floret/v3/runtime.StartTurnResult, error); RecordPendingToolOutcome(context.Context, github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeCommand) (github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeResult, error); ResolveApproval(context.Context, github.com/floegence/floret/v3/runtime.ResolveApprovalCommand) (github.com/floegence/floret/v3/runtime.ResolveApprovalCommandResult, error); RetryTurn(context.Context, github.com/floegence/floret/v3/runtime.RetryTurnCommand) (github.com/floegence/floret/v3/runtime.RetryTurnResult, error); StartTurn(context.Context, github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error); UpdateTodos(context.Context, github.com/floegence/floret/v3/runtime.UpdateTodosCommand) (github.com/floegence/floret/v3/runtime.UpdateTodosResult, error)}
 type TurnInput struct
 field TurnInput.Text string tag="json:\"text,omitempty\""
 field TurnInput.Attachments []github.com/floegence/floret/v3/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
@@ -1475,6 +1520,7 @@ type Turns struct
 method *Turns.StartTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
 method *Turns.AdmitTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.AdmitTurnResult, error)
 method *Turns.ExecuteAdmittedTurn func(ctx context.Context, receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, command github.com/floegence/floret/v3/runtime.StartTurnCommand) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
+method *Turns.ExecuteAdmission func(ctx context.Context, receipt github.com/floegence/floret/v3/runtime.TurnAdmissionReceipt, executionContext github.com/floegence/floret/v3/runtime.ExecutionContext) (github.com/floegence/floret/v3/runtime.StartTurnResult, error)
 method *Turns.RetryTurn func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RetryTurnCommand) (github.com/floegence/floret/v3/runtime.RetryTurnResult, error)
 method *Turns.ContinuePendingTool func(ctx context.Context, command github.com/floegence/floret/v3/runtime.ContinuePendingToolCommand) (github.com/floegence/floret/v3/runtime.ContinuePendingToolResult, error)
 method *Turns.RecordPendingToolOutcome func(ctx context.Context, command github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeCommand) (github.com/floegence/floret/v3/runtime.RecordPendingToolOutcomeResult, error)
@@ -1490,6 +1536,7 @@ field UpdateTodosCommand.ToolCallID string tag="json:\"tool_call_id\""
 type UpdateTodosResult struct
 field UpdateTodosResult.State github.com/floegence/floret/v3/runtime.ThreadAgentTodoState tag="json:\"state\""
 field UpdateTodosResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
+func ValidateAgentTodos func(items []github.com/floegence/floret/v3/runtime.AgentTodo) error
 type WaitSubAgentsCommand struct
 field WaitSubAgentsCommand.ChildThreadIDs []github.com/floegence/floret/v3/identity.ThreadID tag="json:\"child_thread_ids\""
 field WaitSubAgentsCommand.Timeout time.Duration tag="json:\"timeout\""
@@ -2302,6 +2349,15 @@ func ValidateActivityTimeline func(timeline github.com/floegence/floret/v3/obser
 
 package github.com/floegence/floret/v3/florettest
 var ErrGatewayScriptExhausted error
+type IDSource struct
+method *IDSource.NewThreadID func() (github.com/floegence/floret/v3/identity.ThreadID, error)
+method *IDSource.NewTurnID func() (github.com/floegence/floret/v3/identity.TurnID, error)
+method *IDSource.NewRunID func() (github.com/floegence/floret/v3/identity.RunID, error)
+type IDSourceOptions struct
+field IDSourceOptions.ThreadIDs []github.com/floegence/floret/v3/identity.ThreadID
+field IDSourceOptions.TurnIDs []github.com/floegence/floret/v3/identity.TurnID
+field IDSourceOptions.RunIDs []github.com/floegence/floret/v3/identity.RunID
+func NewIDSource func(options github.com/floegence/floret/v3/florettest.IDSourceOptions) *github.com/floegence/floret/v3/florettest.IDSource
 func NewScriptedGateway func(identity github.com/floegence/floret/v3/provider.Identity, capabilities github.com/floegence/floret/v3/provider.Capabilities, steps ...github.com/floegence/floret/v3/florettest.Step) *github.com/floegence/floret/v3/florettest.ScriptedGateway
 func NewToolContractRegistry func(t testing.TB, spec github.com/floegence/floret/v3/florettest.ToolContractSpec) *github.com/floegence/floret/v3/tools.Registry
 func RunBackendContract func(t *testing.T, source github.com/floegence/floret/v3/storage/spi.Source)

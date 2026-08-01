@@ -1534,11 +1534,17 @@ func loadAgentTodoState(ctx context.Context, q sqlRunner, threadID string) (sess
 	if err := json.Unmarshal([]byte(itemsJSON), &state.Items); err != nil {
 		return sessiontree.AgentTodoState{}, false, fmt.Errorf("decode agent todo state for thread %q: %w", threadID, err)
 	}
+	if err := sessiontree.ValidateAgentTodoItems(state.Items); err != nil {
+		return sessiontree.AgentTodoState{}, false, fmt.Errorf("invalid agent todo state for thread %q: %w", threadID, err)
+	}
 	state.UpdatedAt = parseTime(updatedAt)
 	return state, true, nil
 }
 
 func putAgentTodoState(ctx context.Context, q sqlRunner, state sessiontree.AgentTodoState) error {
+	if err := sessiontree.ValidateAgentTodoItems(state.Items); err != nil {
+		return err
+	}
 	itemsJSON, err := json.Marshal(state.Items)
 	if err != nil {
 		return err

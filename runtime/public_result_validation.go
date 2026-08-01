@@ -88,17 +88,7 @@ func (s ThreadAgentTodoState) Validate() error {
 	if !metadataPresent && s.Version != 0 {
 		return errors.New("versioned agent todo state requires update metadata")
 	}
-	seen := make(map[string]struct{}, len(s.Items))
-	for index, item := range s.Items {
-		if !trimStableNonEmpty(item.ID) || !trimStableNonEmpty(item.Content) || !item.Status.Valid() {
-			return fmt.Errorf("agent todo item %d is invalid", index)
-		}
-		if _, duplicate := seen[item.ID]; duplicate {
-			return fmt.Errorf("agent todo state repeats item %q", item.ID)
-		}
-		seen[item.ID] = struct{}{}
-	}
-	return nil
+	return ValidateAgentTodos(s.Items)
 }
 
 // Validate checks one public detail-event page.

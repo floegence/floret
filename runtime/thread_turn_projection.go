@@ -36,6 +36,46 @@ type ProjectThreadTurnRequest struct {
 	Events   []ThreadDetailEvent
 }
 
+// ThreadTurnProjectionProvenance distinguishes authoritative Floret reads from
+// projections derived offline from caller-supplied detail events.
+type ThreadTurnProjectionProvenance string
+
+const (
+	ThreadTurnProjectionAuthoritative ThreadTurnProjectionProvenance = "authoritative"
+	ThreadTurnProjectionDerived       ThreadTurnProjectionProvenance = "derived"
+)
+
+// DerivedThreadTurnProjection is a validated offline calculation. It is not a
+// canonical read and must not be persisted as Floret lifecycle authority.
+type DerivedThreadTurnProjection struct {
+	Projection ThreadTurnProjection           `json:"projection"`
+	Provenance ThreadTurnProjectionProvenance `json:"provenance"`
+}
+
+// Validate checks one derived projection without claiming canonical authority.
+func (projection DerivedThreadTurnProjection) Validate() error {
+	if projection.Provenance != ThreadTurnProjectionDerived {
+		return errors.New("derived turn projection provenance is invalid")
+	}
+	return projection.Projection.Validate()
+}
+
+// AuthoritativeThreadTurnProjection is a canonical projection read from
+// Floret at one exact thread revision.
+type AuthoritativeThreadTurnProjection struct {
+	Projection ThreadTurnProjection           `json:"projection"`
+	Revision   ThreadRevision                 `json:"revision"`
+	Provenance ThreadTurnProjectionProvenance `json:"provenance"`
+}
+
+// Validate checks one authoritative projection envelope.
+func (projection AuthoritativeThreadTurnProjection) Validate() error {
+	if projection.Provenance != ThreadTurnProjectionAuthoritative || projection.Revision <= 0 {
+		return errors.New("authoritative turn projection provenance is invalid")
+	}
+	return projection.Projection.Validate()
+}
+
 type ThreadTurnProjection struct {
 	ThreadID       identity.ThreadID             `json:"thread_id"`
 	TurnID         identity.TurnID               `json:"turn_id"`
@@ -98,6 +138,10 @@ func (p ThreadTurnProjection) Validate() error {
 	return nil
 }
 
+// ProjectThreadTurn calculates a projection without validating the caller-
+// supplied events.
+// Deprecated: use DeriveThreadTurn, or ThreadReader.ReadAuthoritativeProjection
+// for canonical application state.
 func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	projection := ThreadTurnProjection{
 		ThreadID:    req.ThreadID,
@@ -230,6 +274,18 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
 	threadTurnProjectionMergeDuplicateActivityItems(&projection)
 	return projection
+}
+
+// DeriveThreadTurn validates an offline projection from caller-supplied detail
+// events and labels it as non-authoritative.
+func DeriveThreadTurn(req ProjectThreadTurnRequest) (DerivedThreadTurnProjection, error) {
+	projection := ProjectThreadTurn(req)
+	if err := projection.Validate(); err != nil {
+		return DerivedThreadTurnProjection{}, err
+	}
+	return DerivedThreadTurnProjection{
+		Projection: projection, Provenance: ThreadTurnProjectionDerived,
+	}, nil
 }
 
 func threadTurnProjectionThroughOrdinal(events []ThreadDetailEvent) int64 {

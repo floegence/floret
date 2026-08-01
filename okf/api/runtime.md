@@ -13,9 +13,11 @@ timestamp: 2026-07-29T00:00:00Z
 composition-root-only `*runtime.Host`. Its public method set is intentionally
 small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread` and
 `Threads.ListThreads` are the only unbound collection operations. `Host.Thread`
-returns a handle bound to one exact `identity.ThreadID`; `Thread.Turns`,
-`Thread.Compact`, `Thread.SubAgents`, `Thread.Child`, and `Thread.DescendantReader` preserve that
-authority without repeating it in command DTOs.
+returns a handle bound to one exact `identity.ThreadID`. The composition root
+grants `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`, `ThreadCompactor`, or
+`SubAgentManager`; downstream services retain only the narrow interface they
+need. The direct methods on `Thread`, `Turns`, and `SubAgents` remain only for
+v3 source compatibility and are not the recommended application boundary.
 Standalone compaction remains exact-thread authority. Active-turn manual
 compaction is an immutable Agent capability polled only at engine safe points.
 `SubAgents.WaitSubAgents` and `CloseSubAgent` validate direct children beneath
@@ -27,9 +29,10 @@ to the one validated descendant bound beneath the parent, including deeper
 descendants. Callers cannot substitute a target identity after either handle is
 issued.
 
-The bound `Thread` is also the canonical read source for overview, exact turn,
-turn pages, typed todos, context, approval queue, turn projection, pending-tool
-targets, and direct-child inventory. `Child.ReadTurn` and `Child.ListTurns`
+The bound `ThreadReader` is the canonical read source for an atomic bootstrap,
+overview, exact turn, turn pages, typed todos, context, approval queue,
+authoritative turn projection, pending-tool targets, and direct-child inventory.
+`Child.ReadTurn` and `Child.ListTurns`
 provide the corresponding direct-child reads. `Thread.SetTitle` is a durable
 logical mutation. `PendingToolRecovery` binds one exact settlement target, and
 `InterruptedTurnRecovery` binds one exact current interrupted lease proof before
@@ -39,25 +42,34 @@ Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
 allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
 request key combines operation kind, bound authority, and logical request ID;
 replay returns the original receipt, while changed durable input returns a
-typed request conflict. There is no bootstrap, binder, factory, Store facade,
-rename-only adapter, or caller-assigned lifecycle identity.
+typed request conflict. Production `runtime.Open` allocates lifecycle identity;
+deterministic identity injection belongs to `florettest.NewIDSource`. There is no
+host-owned Store facade or caller-assigned production lifecycle identity.
 
-`Turns.AdmitTurn` splits canonical user-message admission from provider
-execution. It persists the admitted user message, allocates the `TurnID` and
-`RunID`, returns a `TurnAdmissionReceipt`, and does not issue a provider
-request. Hosts may persist product coordination beside that receipt, then call
-`Turns.ExecuteAdmittedTurn` with the receipt and the same logical command; the
-provider execution reads the canonical user input from Floret admission
-authority. `AdmitTurnResult.Execute` is only a same-process convenience over
-the same receipt-first execution path.
+`TurnExecutor.AdmitTurn` splits canonical user-message admission from provider
+execution. It persists the admitted user message and immutable execution plan,
+allocates the `TurnID` and `RunID`, returns a `TurnAdmissionReceipt`, and does
+not issue a provider request. Hosts may persist product coordination beside
+that receipt, then call `TurnExecutor.ExecuteAdmission` with the receipt and an
+`ExecutionContext` containing only ephemeral supplemental context and executable
+signal bindings. The host never persists or resubmits the canonical command.
+`AdmitTurnResult.Execute` is only a same-process convenience over the same
+receipt-first path. The deprecated command-bearing execution API exists only to
+backfill admissions created by v3.0 releases.
 
-Every thread has a monotonic `ThreadRevision`. Consumers read `Snapshot`, load
-all first-screen queries at that revision, then call `Subscribe(after=revision)`.
-Pages have stable ordering, limits from 1 through 200, and cursors bound to the
-thread, revision, direction, and position. An unavailable revision fails with
-`ErrRevisionUnavailable`; it never silently reads current state. Exact-thread
-subscriptions use `Next(ctx)`. A queue overflow returns one Gap and then
-`ErrSubscriptionStale` until the consumer resynchronizes.
+Every thread has a monotonic `ThreadRevision`.
+`ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,
+todo state, context, pending work, and direct SubAgents while the exact thread
+remains at one revision. Consumers then call `Subscribe(after=revision)`.
+History pages retain stable cursor semantics. An unavailable revision fails
+with `ErrRevisionUnavailable`; it never silently reads current state.
+Exact-thread subscriptions use `Next(ctx)`. A queue overflow returns one Gap
+and then `ErrSubscriptionStale` until the consumer bootstraps again.
+
+`ThreadReader.ReadAuthoritativeProjection` returns canonical projection plus
+revision and authoritative provenance. `DeriveThreadTurn` is a validated offline
+calculation from caller-supplied events and always reports derived provenance;
+it must not be persisted as Floret lifecycle authority.
 
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect

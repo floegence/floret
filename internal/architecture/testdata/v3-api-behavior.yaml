@@ -439,3 +439,75 @@ methods:
     concurrency: child authority and parent-bound request serialization prevent cross-parent closure
     cancellation: cancellation cannot erase a closure already committed by the child lifecycle
     closing: explicit closure remains distinct from Host shutdown cancellation
+  - method: Thread.Reader
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: never after Host reaches closed
+    commit: read-only capability issuance
+    replay: repeated calls issue equivalent exact-thread read authority
+    concurrency: safe with concurrent reads and lifecycle mutation
+    cancellation: no context is accepted because issuance performs no IO
+    closing: rejects after closing begins
+  - method: Thread.Lifecycle
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: never after Host reaches closed
+    commit: lifecycle capability issuance only
+    replay: repeated calls issue equivalent exact-thread lifecycle authority
+    concurrency: safe because mutations still serialize through request and revision authority
+    cancellation: no context is accepted because issuance performs no IO
+    closing: rejects after closing begins
+  - method: Thread.TurnExecutor
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: retry only with a valid immutable Agent before closing
+    commit: binds one immutable Agent to exact-thread turn authority
+    replay: repeated binding with the same Agent is equivalent
+    concurrency: issued executors share the exact thread mutation authority
+    cancellation: no context is accepted because issuance performs no IO
+    closing: rejects after closing begins
+  - method: Thread.Compactor
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: retry only with a valid immutable Agent before closing
+    commit: binds one immutable Agent to exact-thread compaction authority
+    replay: repeated binding with the same Agent is equivalent
+    concurrency: compaction still serializes through exact-thread authority
+    cancellation: no context is accepted because issuance performs no IO
+    closing: rejects after closing begins
+  - method: Thread.SubAgentManager
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrThreadAuthorityInvariant]
+    errors_as: []
+    retryability: retry only after an independently observed authority change
+    commit: binds exact-parent direct-child authority and one immutable Agent
+    replay: repeated valid binding is equivalent
+    concurrency: parent authority is validated before issuance
+    cancellation: returns ctx.Err without creating or activating child work
+    closing: rejects after closing begins
+  - method: ThreadReader.Bootstrap
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrAuthorityCorrupt, context.Canceled, context.DeadlineExceeded]
+    errors_as: []
+    retryability: concurrent revision changes retry internally; cancellation requires a new call
+    commit: returns a complete initial read model only while all reads share one exact revision
+    replay: unchanged canonical state returns equivalent content and the same revision
+    concurrency: a changed revision discards the partial read and restarts
+    cancellation: returns ctx.Err and never exposes a partial bootstrap
+    closing: issued readers reject after Host closes
+  - method: ThreadReader.ReadAuthoritativeProjection
+    errors_is: [ErrHostClosed, ErrThreadDeleted, ErrTurnNotFound, ErrRunNotFound, ErrAuthorityCorrupt]
+    errors_as: []
+    retryability: retry after an independently observed canonical mutation
+    commit: returns canonical projection with authoritative provenance and one exact revision
+    replay: unchanged canonical state returns equivalent projection content
+    concurrency: a changed revision discards the projection and restarts
+    cancellation: returns ctx.Err and no projection envelope
+    closing: issued readers reject after Host closes
+  - method: Turns.ExecuteAdmission
+    errors_is: [ErrHostClosed, ErrExecutionPlanUnavailable, ErrExecutionPlanMismatch, ErrExecutionContextIncomplete, ErrAuthorityCorrupt]
+    errors_as: [CommittedEffectError]
+    retryability: exact receipt replay is safe; unavailable legacy plans require the deprecated backfill path
+    commit: execution consumes the immutable Floret-owned plan and commits one terminal turn result
+    replay: the same receipt returns the original lifecycle identities without a second provider call
+    concurrency: request authority serializes competing execution attempts
+    cancellation: cancellation cannot erase canonical admission or a committed terminal result
+    closing: new execution is rejected and managed active execution is cancelled

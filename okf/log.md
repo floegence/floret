@@ -1,6 +1,20 @@
 # Floret OKF Update Log
 
 ## 2026-08-01
+* **Least-authority host SDK**: Added native read, lifecycle, turn execution,
+  compaction, and SubAgent capability views issued from an exact bound Thread.
+  Added an atomic bootstrap read model that connects directly to pull
+  subscriptions at one revision.
+* **Durable admission plans**: Floret now persists canonical execution intent at
+  admission. Restart execution consumes only the admission receipt and
+  ephemeral `ExecutionContext`; supplemental context is excluded from durable
+  request fingerprints and lifecycle state.
+* **Projection and todo authority**: Canonical projection reads carry
+  authoritative revision/provenance, offline derivation has a distinct validated
+  type, and the storage kernel owns the 40-item/single-in-progress todo rules.
+* **Adoption quality**: Added a production OpenAI-compatible SQLite example,
+  documented-symbol validation, deterministic `florettest.NewIDSource`, and
+  blank-module bootstrap/restart/provider-constructor coverage.
 * **Receipt-first turn admission**: Added `Turns.AdmitTurn` and
   `Turns.ExecuteAdmittedTurn` so hosts can persist product coordination after
   Floret admits the canonical user message and before provider execution.

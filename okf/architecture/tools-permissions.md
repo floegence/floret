@@ -79,7 +79,7 @@ not skip later sibling finalizers.
 
 Floret owns the generic approval lifecycle and the aggregate root/descendant
 approval queue for local tool dispatch. Approval events update the durable
-thread detail audit trail, while `runtime.ReadApprovalQueue` exposes queue
+thread detail audit trail, while `runtime.ThreadReader.ReadApprovalQueue` exposes queue
 generation, ordered items, and exactly one decisionable current item. The queue
 carries product-neutral ids, canonical root/child and turn/run identity, tool
 names, effects, resources, labels, host context, state, timing, revision, batch

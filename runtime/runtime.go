@@ -80,6 +80,16 @@ var (
 	ErrRequestConflict = errors.New("floret request conflicts with persisted authority")
 	// ErrAuthorityCorrupt reports an impossible durable authority shape.
 	ErrAuthorityCorrupt = errors.New("floret authority state is corrupt")
+	// ErrExecutionPlanUnavailable means an uncommitted admitted turn predates
+	// durable execution plans and must first be replayed through the deprecated
+	// command-bearing execution API with its exact v3.0 command.
+	ErrExecutionPlanUnavailable = errors.New("floret admitted turn execution plan is unavailable")
+	// ErrExecutionPlanMismatch means the current Agent cannot execute the
+	// immutable plan bound at admission.
+	ErrExecutionPlanMismatch = errors.New("floret admitted turn execution plan does not match the Agent")
+	// ErrExecutionContextIncomplete means a durable plan requires a process-
+	// local implementation, such as a signal projector, that was not supplied.
+	ErrExecutionContextIncomplete = errors.New("floret admitted turn execution context is incomplete")
 	// ErrUnsupportedStoreCapability reports a backend that lacks required atomicity.
 	ErrUnsupportedStoreCapability = errors.New("floret store capability is unsupported")
 	// ErrEffectUnauthorized reports a current host-policy denial before handler entry.
@@ -667,6 +677,9 @@ type readTurnProjectionRequest struct {
 
 type AgentTodoStatus string
 
+// MaxAgentTodos is the canonical upper bound for one Agent todo state.
+const MaxAgentTodos = 40
+
 const (
 	AgentTodoPending    AgentTodoStatus = "pending"
 	AgentTodoInProgress AgentTodoStatus = "in_progress"
@@ -686,6 +699,33 @@ type AgentTodo struct {
 	ID      string          `json:"id"`
 	Content string          `json:"content"`
 	Status  AgentTodoStatus `json:"status"`
+}
+
+// ValidateAgentTodos checks the canonical Agent todo collection invariants.
+func ValidateAgentTodos(items []AgentTodo) error {
+	if len(items) > MaxAgentTodos {
+		return fmt.Errorf("agent todo state has %d items, maximum is %d", len(items), MaxAgentTodos)
+	}
+	seen := make(map[string]struct{}, len(items))
+	inProgress := 0
+	for index, item := range items {
+		id := strings.TrimSpace(item.ID)
+		content := strings.TrimSpace(item.Content)
+		if id == "" || content == "" || !item.Status.Valid() {
+			return fmt.Errorf("agent todo item %d is invalid", index)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("agent todo state repeats item %q", id)
+		}
+		seen[id] = struct{}{}
+		if item.Status == AgentTodoInProgress {
+			inProgress++
+			if inProgress > 1 {
+				return errors.New("agent todo state has more than one in-progress item")
+			}
+		}
+	}
+	return nil
 }
 
 type ThreadAgentTodoState struct {
@@ -2777,18 +2817,13 @@ func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req update
 	if err := validateAgentTodoUpdateIdentity(ctx, store.repo, req); err != nil {
 		return ThreadAgentTodoState{}, err
 	}
+	if err := ValidateAgentTodos(req.Items); err != nil {
+		return ThreadAgentTodoState{}, err
+	}
 	items := make([]sessiontree.AgentTodoItem, 0, len(req.Items))
-	seen := make(map[string]struct{}, len(req.Items))
-	for index, item := range req.Items {
+	for _, item := range req.Items {
 		id := strings.TrimSpace(item.ID)
 		content := strings.TrimSpace(item.Content)
-		if id == "" || content == "" || !item.Status.Valid() {
-			return ThreadAgentTodoState{}, fmt.Errorf("todo item %d is invalid", index)
-		}
-		if _, ok := seen[id]; ok {
-			return ThreadAgentTodoState{}, fmt.Errorf("duplicate todo id %q", id)
-		}
-		seen[id] = struct{}{}
 		items = append(items, sessiontree.AgentTodoItem{ID: id, Content: content, Status: sessiontree.AgentTodoStatus(item.Status)})
 	}
 	state, err := store.agentTodos.CompareAndSwapAgentTodoState(ctx, sessiontree.AgentTodoState{

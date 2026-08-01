@@ -112,6 +112,7 @@ func TestProductionPublicPackagesHavePackageDocumentation(t *testing.T) {
 func TestFloretTestIsTheOnlyTestOnlyPublicPackage(t *testing.T) {
 	imports := packageImports(t, "florettest", false, true)
 	allowedFloretImports := map[string]bool{
+		modulePath + "/identity":    true,
 		modulePath + "/config":      true,
 		modulePath + "/provider":    true,
 		modulePath + "/runtime":     true,
@@ -517,13 +518,13 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
 	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
 	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
-		"Child", "Compact", "DeleteThread", "DescendantReader", "ForkThread", "ID",
+		"Child", "Compact", "Compactor", "DeleteThread", "DescendantReader", "ForkThread", "ID", "Lifecycle",
 		"InterruptedTurnRecovery", "ListPendingToolTargets", "ListSubAgents", "ListTurns",
 		"PendingToolRecovery", "ReadAgentTodos", "ReadApprovalQueue", "ReadContext",
-		"ReadOverview", "ReadProjection", "ReadTurn", "SetTitle", "Snapshot",
-		"SubAgents", "Subscribe", "Turns")
+		"ReadOverview", "ReadProjection", "ReadTurn", "Reader", "SetTitle", "Snapshot",
+		"SubAgentManager", "SubAgents", "Subscribe", "TurnExecutor", "Turns")
 	exact("Turns", reflect.TypeOf((*floretRuntime.Turns)(nil)),
-		"AdmitTurn", "ContinuePendingTool", "ExecuteAdmittedTurn", "RecordPendingToolOutcome",
+		"AdmitTurn", "ContinuePendingTool", "ExecuteAdmission", "ExecuteAdmittedTurn", "RecordPendingToolOutcome",
 		"ResolveApproval", "RetryTurn", "StartTurn", "UpdateTodos")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
 		"ID", "InterruptedTurnRecovery", "ListPendingToolTargets", "ListTurns",

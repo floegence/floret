@@ -53,7 +53,10 @@ func (failure *MigrationRequiredError) Is(target error) bool {
 
 // Options configures one runtime Host.
 type Options struct {
-	Storage            publicstorage.Source
+	Storage publicstorage.Source
+	// IDSource exists only for v3 source compatibility.
+	// Deprecated: production hosts must leave this nil; tests should use
+	// florettest.NewIDSource.
 	IDSource           IDSource
 	SubscriptionBuffer int
 }

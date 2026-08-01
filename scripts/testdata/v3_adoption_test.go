@@ -32,17 +32,17 @@ func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := root.Turns(agent)
+	executor, err := root.TurnExecutor(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+	started, err := executor.StartTurn(ctx, runtime.StartTurnCommand{
 		LogicalRequestID: "root-turn", UserMessage: runtime.TurnInput{Text: "coordinate"},
 	})
 	if err != nil {
 		t.Fatalf("root turn = %#v, err = %v", started, err)
 	}
-	subAgents, err := root.SubAgents(ctx, agent)
+	subAgents, err := root.SubAgentManager(ctx, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,11 @@ func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
 	if err != nil || len(children) != 1 || children[0].ThreadID != spawned.Child.ThreadID {
 		t.Fatalf("children = %#v, err = %v", children, err)
 	}
-	child, err := root.Child(ctx, spawned.Child.ThreadID)
+	rootReader, err := root.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := rootReader.Child(ctx, spawned.Child.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +70,7 @@ func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
 	if err != nil || detail.Snapshot.LastMessage != "child done" {
 		t.Fatalf("child detail = %#v, err = %v", detail, err)
 	}
-	reader, err := root.DescendantReader(ctx, spawned.Child.ThreadID)
+	reader, err := rootReader.Descendant(ctx, spawned.Child.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +84,7 @@ func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
 	}
 }
 
-func waitForSubAgent(t *testing.T, ctx context.Context, subAgents *runtime.SubAgents, childThreadID identity.ThreadID, want runtime.SubAgentStatus) {
+func waitForSubAgent(t *testing.T, ctx context.Context, subAgents runtime.SubAgentManager, childThreadID identity.ThreadID, want runtime.SubAgentStatus) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -113,11 +117,11 @@ func TestPublishedSQLiteRestartUsesCanonicalRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	turns, err := thread.Turns(adoptionAgent(t, scriptedGateway("persisted")))
+	executor, err := thread.TurnExecutor(adoptionAgent(t, scriptedGateway("persisted")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{LogicalRequestID: "turn", UserMessage: runtime.TurnInput{Text: "persist"}})
+	started, err := executor.StartTurn(ctx, runtime.StartTurnCommand{LogicalRequestID: "turn", UserMessage: runtime.TurnInput{Text: "persist"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +134,85 @@ func TestPublishedSQLiteRestartUsesCanonicalRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = reopened.Shutdown(context.Background()) }()
-	reader, err := reopened.Thread(ctx, created.ThreadID)
+	reopenedThread, err := reopened.Thread(ctx, created.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := reader.Snapshot(ctx)
-	if err != nil || view.Thread.LatestTurnID != started.TurnID || view.Thread.LatestRunID != started.RunID {
-		t.Fatalf("snapshot = %#v, err = %v", view, err)
+	reader, err := reopenedThread.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := reader.Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 20})
+	if err != nil || bootstrap.Thread.LatestTurnID != started.TurnID || bootstrap.Thread.LatestRunID != started.RunID {
+		t.Fatalf("bootstrap = %#v, err = %v", bootstrap, err)
+	}
+	subscription, err := reader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: bootstrap.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := subscription.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishedAdmissionPlanExecutesAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-admission"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := thread.TurnExecutor(adoptionAgent(t, scriptedGateway()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := executor.AdmitTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "admit", UserMessage: runtime.TurnInput{Text: "execute after restart"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Shutdown(context.Background()) }()
+	reopenedThread, err := reopened.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedExecutor, err := reopenedThread.TurnExecutor(adoptionAgent(t, scriptedGateway("executed")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed, err := reopenedExecutor.ExecuteAdmission(ctx, admitted.Receipt, runtime.ExecutionContext{})
+	if err != nil || executed.TurnID != admitted.TurnID || executed.RunID != admitted.RunID {
+		t.Fatalf("executed = %#v, err = %v", executed, err)
+	}
+}
+
+func TestPublishedOfficialProviderConstructor(t *testing.T) {
+	gateway, err := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
+		Provider: "openai", Model: "gpt-4.1-mini", BaseURL: "https://api.openai.com/v1",
+		APIKey: "test-only", StateCompatibilityKey: "openai:gpt-4.1-mini:chat-completions:v1",
+		Capabilities: provider.Capabilities{
+			Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors,
+		},
+	})
+	if err != nil || gateway == nil {
+		t.Fatalf("gateway = %T, err = %v", gateway, err)
 	}
 }
 
