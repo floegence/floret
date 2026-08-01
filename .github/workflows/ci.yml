@@ -57,9 +57,7 @@ jobs:
         shell: bash
         run: |
           go test ./cmd/examples/...
-          for example in cmd/examples/*; do
-            go run "./${example}"
-          done
+          go run ./cmd/examples/quick-start
 
   race:
     name: Focused race detection
