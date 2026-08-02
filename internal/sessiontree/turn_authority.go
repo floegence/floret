@@ -615,7 +615,7 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 		return result, nil
 	}
 	active, ok := r.leases[req.Lease.ThreadID]
-	if !ok || !SameTurnLease(active, req.Lease) || !active.Fresh(r.now().UTC()) {
+	if !ok || ValidateTurnLeaseSuccessor(req.Lease, active) != nil || !active.Fresh(r.now().UTC()) {
 		return FinishTurnResult{}, ErrStaleAuthority
 	}
 	meta, ok := r.threads[req.Lease.ThreadID]

@@ -335,7 +335,7 @@ func (s *Store) FinishTurn(ctx context.Context, req sessiontree.FinishTurnReques
 		if err != nil {
 			return err
 		}
-		if !activeOK || !sessiontree.SameTurnLease(active, req.Lease) || !active.Fresh(s.now().UTC()) {
+		if !activeOK || sessiontree.ValidateTurnLeaseSuccessor(req.Lease, active) != nil || !active.Fresh(s.now().UTC()) {
 			return sessiontree.ErrStaleAuthority
 		}
 		meta, err := loadThread(ctx, tx, threadID)

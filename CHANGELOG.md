@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.2.3 - 2026-08-02
+
+- Keep an approved effect callback attached to the turn's renewable lease
+  binding. An approval that spans one or more heartbeat renewals now dispatches
+  with the current proof instead of failing with stale authority or an
+  active-turn conflict.
+- Apply the same strict authority-lineage successor rule at atomic approval,
+  provider-request, and turn-finalization boundaries while continuing to reject
+  different owners, generations, acquisitions, and turns.
+- Cover consecutive approval-gated provider steps across lease renewal with
+  both memory storage and the production BackendKernel over SQLite.
+
 ## v3.2.2 - 2026-08-02
 
 - Keep historical interrupted turns readable when recovery recorded an error

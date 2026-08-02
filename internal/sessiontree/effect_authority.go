@@ -129,10 +129,10 @@ func validateEffectLease(lease TurnLease, threadID, turnID string) error {
 	return nil
 }
 
-// ValidateEffectLeaseSuccessor permits an effect authority operation to use a
-// proof captured before one or more durable heartbeat renewals. Ownership,
+// ValidateTurnLeaseSuccessor permits an authority operation to use a proof
+// captured before one or more durable heartbeat renewals. Ownership,
 // generation, acquisition identity, and monotonic lease time must remain exact.
-func ValidateEffectLeaseSuccessor(proof, current TurnLease) error {
+func ValidateTurnLeaseSuccessor(proof, current TurnLease) error {
 	if err := proof.Validate(); err != nil {
 		return ErrStaleAuthority
 	}
@@ -420,7 +420,7 @@ func (r *MemoryRepo) MarkEffectUnknown(_ context.Context, req MarkEffectUnknownR
 
 func (r *MemoryRepo) validateFreshEffectLeaseLocked(lease TurnLease) error {
 	active, ok := r.leases[lease.ThreadID]
-	if !ok || ValidateEffectLeaseSuccessor(lease, active) != nil || !active.Fresh(r.now().UTC()) {
+	if !ok || ValidateTurnLeaseSuccessor(lease, active) != nil || !active.Fresh(r.now().UTC()) {
 		return ErrStaleAuthority
 	}
 	meta, ok := r.threads[lease.ThreadID]

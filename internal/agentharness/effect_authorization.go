@@ -520,7 +520,10 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			stopTurnCancellation()
 			cancelDispatch(context.Canceled)
 		}()
-		dispatchCtx = sessiontree.ContextWithTurnLease(dispatchCtx, lease)
+		dispatchCtx, inheritErr := sessiontree.ContextWithInheritedTurnLease(dispatchCtx, ctx)
+		if inheritErr != nil {
+			return EffectDispatchResult{}, inheritErr
+		}
 		if err := validateEffectAuthorizationProof(authorizationRequest, proof); err != nil {
 			return EffectDispatchResult{}, err
 		}

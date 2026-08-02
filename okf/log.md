@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-02
+* **Renewable approval dispatch authority**: Approved effect callbacks now
+  inherit the active turn's renewable lease binding, so host authorization that
+  crosses a heartbeat uses the current proof without weakening owner,
+  generation, or authority-lineage validation.
 * **Interrupted approval compatibility**: Canonical projection now settles a
   requested approval from failed or aborted terminal authority when older
   recovery history contains a terminal tool result without the corresponding

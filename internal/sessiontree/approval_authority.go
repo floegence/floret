@@ -674,13 +674,14 @@ func (r *MemoryRepo) CommitApprovalDispatch(ctx context.Context, req CommitAppro
 	if err := r.validateFreshEffectLeaseLocked(req.Lease); err != nil {
 		return CommitApprovalDispatchResult{}, err
 	}
+	activeLease := r.leases[req.Lease.ThreadID]
 	now := nonZeroAuthorityTime(req.Now, r.now)
 	if _, err := r.approvalQueueLocked(record.RootThreadID, now); err != nil {
 		return CommitApprovalDispatchResult{}, err
 	}
 	approvedEntry := cloneEntry(req.ApprovedEntry)
 	approvedEntry.CreatedAt = now
-	approvedEntry, err = r.appendLocked(ContextWithTurnLease(ctx, req.Lease), approvedEntry, AppendOptions{ID: approvedEntry.ID, Now: now})
+	approvedEntry, err = r.appendLocked(ContextWithTurnLease(ctx, activeLease), approvedEntry, AppendOptions{ID: approvedEntry.ID, Now: now})
 	if err != nil {
 		return CommitApprovalDispatchResult{}, err
 	}

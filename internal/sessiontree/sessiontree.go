@@ -578,6 +578,28 @@ func ContextWithTurnLease(ctx context.Context, lease TurnLease) context.Context 
 	return context.WithValue(ctx, turnLeaseContextKey{}, &turnLeaseBinding{lease: lease})
 }
 
+// ContextWithInheritedTurnLease binds ctx to the same renewable authority as
+// authorityCtx. Heartbeat updates remain visible to both contexts.
+func ContextWithInheritedTurnLease(ctx, authorityCtx context.Context) (context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if authorityCtx == nil {
+		return nil, ErrStaleAuthority
+	}
+	binding, ok := authorityCtx.Value(turnLeaseContextKey{}).(*turnLeaseBinding)
+	if !ok || binding == nil {
+		return nil, ErrStaleAuthority
+	}
+	binding.mu.RLock()
+	err := binding.lease.Validate()
+	binding.mu.RUnlock()
+	if err != nil {
+		return nil, ErrStaleAuthority
+	}
+	return context.WithValue(ctx, turnLeaseContextKey{}, binding), nil
+}
+
 // TurnLeaseFromContext returns the durable mutation owner bound to ctx.
 func TurnLeaseFromContext(ctx context.Context) (TurnLease, bool) {
 	if ctx == nil {

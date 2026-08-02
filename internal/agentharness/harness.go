@@ -972,6 +972,14 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 					err = t.replaceActiveLease(proof, renewed)
 				}
 				if err != nil {
+					if isContextCancellationError(err) && renewalCtx.Err() != nil {
+						t.authorityMu.RUnlock()
+						return
+					}
+					if errors.Is(err, sessiontree.ErrStaleAuthority) && !t.hasActiveLease(proof) {
+						t.authorityMu.RUnlock()
+						return
+					}
 					t.authorityMu.RUnlock()
 					renewalMu.Lock()
 					renewalErr = err
@@ -2496,7 +2504,7 @@ func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, 
 		}
 		t.harness.emitEntryCommitted(result.Terminal, runID)
 	}
-	t.clearActiveLease(lease)
+	t.clearActiveLeaseLineage(lease)
 	return result, nil
 }
 
@@ -2927,6 +2935,23 @@ func (t *Thread) clearActiveLease(lease sessiontree.TurnLease) {
 	}
 }
 
+func (t *Thread) clearActiveLeaseLineage(lease sessiontree.TurnLease) {
+	if strings.TrimSpace(lease.OwnerID) == "" {
+		return
+	}
+	t.mu.Lock()
+	active := t.activeLease
+	matched := t.active && (sessiontree.ValidateTurnLeaseSuccessor(lease, active) == nil ||
+		sessiontree.ValidateTurnLeaseSuccessor(active, lease) == nil)
+	if matched {
+		t.activeLease = sessiontree.TurnLease{}
+	}
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; matched && registry != nil && registry.validate() && active.Purpose == sessiontree.TurnLeasePurposeTurn {
+		registry.Unregister(active)
+	}
+}
+
 func (t *Thread) replaceActiveLease(previous, renewed sessiontree.TurnLease) error {
 	t.mu.Lock()
 	if !t.active || !sameTurnLease(t.activeLease, previous) {
@@ -2993,7 +3018,7 @@ func (t *Thread) enterProviderRequest(ctx context.Context) (func(), error) {
 		return nil, sessiontree.ErrStaleAuthority
 	}
 	local, ok := t.ownedActiveTurnLease(lease.TurnID)
-	if !ok || !sessiontree.SameTurnLease(local, lease) {
+	if !ok {
 		release()
 		return nil, sessiontree.ErrStaleAuthority
 	}
@@ -3019,7 +3044,10 @@ func (t *Thread) enterProviderRequest(ctx context.Context) (func(), error) {
 		}
 		return nil, sessiontree.ErrThreadClosed
 	}
-	if snapshot.Lease == nil || !sessiontree.SameTurnLease(*snapshot.Lease, lease) || !snapshot.Lease.Fresh(t.harness.now().UTC()) || snapshot.ClaimOperationID != "" {
+	if snapshot.Lease == nil ||
+		sessiontree.ValidateTurnLeaseSuccessor(lease, *snapshot.Lease) != nil ||
+		sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) != nil ||
+		!snapshot.Lease.Fresh(t.harness.now().UTC()) || snapshot.ClaimOperationID != "" {
 		release()
 		return nil, sessiontree.ErrStaleAuthority
 	}
