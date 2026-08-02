@@ -94,26 +94,57 @@ type keyedMutexEntry struct {
 // runtime.Open owns one backend, so all domain and request-ledger transactions
 // share this short fence instead of surfacing backend-specific write races.
 type serializedBackend struct {
-	mu      sync.Mutex
-	backend spi.Backend
+	gateOnce sync.Once
+	gate     chan struct{}
+	backend  spi.Backend
 }
 
 func (backend *serializedBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
 	return backend.backend.View(ctx, read)
 }
 
 func (backend *serializedBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
+	if err := backend.acquire(ctx); err != nil {
+		return err
+	}
+	defer backend.release()
 	return backend.backend.Update(ctx, mutate)
 }
 
 func (backend *serializedBackend) Close() error {
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
+	if err := backend.acquire(context.Background()); err != nil {
+		return err
+	}
+	defer backend.release()
 	return backend.backend.Close()
+}
+
+func (backend *serializedBackend) acquire(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: backend operation context is required", spi.ErrInvalidArgument)
+	}
+	backend.gateOnce.Do(func() {
+		backend.gate = make(chan struct{}, 1)
+		backend.gate <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-backend.gate:
+		if err := ctx.Err(); err != nil {
+			backend.release()
+			return err
+		}
+		return nil
+	}
+}
+
+func (backend *serializedBackend) release() {
+	backend.gate <- struct{}{}
 }
 
 func (mutex *keyedMutex) lock(key string) func() {

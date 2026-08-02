@@ -713,6 +713,47 @@ func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnSettlesInterruptedApprovalAfterRecoveryToolResult(t *testing.T) {
+	now := time.Unix(450, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-interrupted-approval",
+		TurnID:   "turn-interrupted-approval",
+		RunID:    "run-interrupted-approval",
+		TraceID:  "run-interrupted-approval",
+		Events: []ThreadDetailEvent{
+			{
+				ID: "tool-call", Ordinal: 1, ThreadID: "thread-interrupted-approval", TurnID: "turn-interrupted-approval",
+				Kind: ThreadDetailEventToolCall, CreatedAt: now,
+				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+			{
+				ID: "approval-requested", Ordinal: 2, ThreadID: "thread-interrupted-approval", TurnID: "turn-interrupted-approval",
+				Kind: ThreadDetailEventApproval, Type: string(observation.EventTypeToolApprovalRequested), CreatedAt: now.Add(time.Second),
+				Approval: &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
+			},
+			{
+				ID: "recovery-tool-result", Ordinal: 3, ThreadID: "thread-interrupted-approval", TurnID: "turn-interrupted-approval",
+				Kind: ThreadDetailEventToolResult, CreatedAt: now.Add(2 * time.Second),
+				ToolResult: &ThreadDetailToolResult{CallID: "call-1", ToolName: "terminal.exec", Status: string(observation.ActivityStatusError)},
+			},
+			{
+				ID: "interrupted-turn", Ordinal: 4, ThreadID: "thread-interrupted-approval", TurnID: "turn-interrupted-approval",
+				Kind: ThreadDetailEventTurnMarker, CreatedAt: now.Add(3 * time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{Status: "aborted"},
+			},
+		},
+	})
+
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("interrupted approval projection: %v", err)
+	}
+	item := projectionToolItem(t, projection, "call-1")
+	if projection.Status != TurnStatusCancelled || item.Status != observation.ActivityStatusCanceled ||
+		item.ApprovalState != "canceled" || item.EndedAtUnixMS != now.Add(3*time.Second).UnixMilli() {
+		t.Fatalf("interrupted approval item = %#v, projection status = %q", item, projection.Status)
+	}
+}
+
 func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 	now := time.Unix(500, 0)
 	tests := []struct {

@@ -104,7 +104,13 @@ primary in a product surface. `requires_approval` remains true after approval or
 denial because it is lifecycle history, not the current decision-needed state. A
 host should treat only `approval_state=requested` with `status=waiting` as an
 active pending approval. `approval_state=approved` may briefly pair with
-`status=pending` between approval resolution and tool dispatch.
+`status=pending` between approval resolution and tool dispatch. Canonical turn
+projection also closes a historical requested approval when the durable turn
+is failed or aborted, including interrupted recovery records that contain a
+terminal tool result but predate the matching approval-resolution detail event.
+The failed turn projects `timed_out` plus `error`; the aborted turn projects
+`canceled` plus `canceled`. Non-terminal and successful conflicts remain invalid
+instead of being repaired speculatively.
 
 A submitted decision is durable before the host authorization gate runs. Exact
 response-loss replay does not call the gate twice. Finalization atomically
@@ -117,9 +123,10 @@ approval queue.
 
 An active provider turn does not hold the host mutation fence while it waits for
 this decision. Approval resolution and the resumed dispatch use separate short,
-serialized backend transactions, while a per-thread execution coordinator keeps
-duplicate or overlapping turn execution from invoking the provider or handler
-twice.
+serialized backend transactions. Transaction-fence acquisition respects the
+operation context so cancellation and request deadlines remain effective while
+another transaction is active. A per-thread execution coordinator keeps duplicate
+or overlapping turn execution from invoking the provider or handler twice.
 
 For polling tools, presentation-only arguments can be excluded from generic
 repeat identity through the validated tools annotation contract. This keeps

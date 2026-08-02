@@ -611,6 +611,10 @@ func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, 
 	if status != observation.ActivityStatusSuccess && threadTurnProjectionHasPendingPresentation(item) {
 		return true
 	}
+	if item.RequiresApproval && strings.TrimSpace(item.ApprovalState) == "requested" &&
+		(status == observation.ActivityStatusError || status == observation.ActivityStatusCanceled) {
+		return true
+	}
 	switch item.Status {
 	case observation.ActivityStatusPending, observation.ActivityStatusRunning:
 		return true

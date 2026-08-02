@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.2 - 2026-08-02
+
+- Keep historical interrupted turns readable when recovery recorded an error
+  tool result after approval was requested but before an approval-resolution
+  detail event was journaled. Canonical projection now settles that item from
+  the failed or aborted terminal turn without rewriting stored history.
+- Make the shared backend transaction fence honor an operation context while
+  waiting, so approval, cancellation, and shutdown callers can stop promptly
+  instead of waiting indefinitely behind another transaction.
+
 ## v3.2.1 - 2026-08-02
 
 - Allow canonical approval resolution while an admitted turn is waiting for

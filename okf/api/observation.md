@@ -55,7 +55,11 @@ tool invocation passed through approval; it is not the current decision-needed
 flag. Only `approval_state=requested` with `status=waiting` means the item is
 currently waiting for a decision. After approval, the item may be `pending`
 before dispatch starts, then `running` or terminal when later lifecycle facts
-arrive.
+arrive. When an interrupted historical turn contains a requested approval and
+a recovery error result but no approval-resolution detail event, the failed or
+aborted terminal turn settles that item to a coherent terminal approval and
+activity state during canonical projection. This same-schema compatibility is
+derived from durable terminal authority and does not rewrite the journal.
 For local tools, `tool_call` is the queued model request and remains `pending`
 until `tool_dispatch_started` records that Floret has passed validation,
 permission, and approval gates and is about to invoke the handler. Batched

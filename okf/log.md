@@ -1,6 +1,13 @@
 # Floret OKF Update Log
 
 ## 2026-08-02
+* **Interrupted approval compatibility**: Canonical projection now settles a
+  requested approval from failed or aborted terminal authority when older
+  recovery history contains a terminal tool result without the corresponding
+  approval-resolution detail event. The journal and schema remain unchanged.
+* **Cancelable backend serialization**: Waiting for the shared backend
+  transaction fence now respects the operation context, keeping approval,
+  cancellation, and shutdown latency bounded behind active transactions.
 * **Approval execution concurrency**: Long-running provider turns no longer
   retain the host-wide mutation lock while waiting for canonical approval.
   Same-thread execution remains serialized, and one backend transaction fence
