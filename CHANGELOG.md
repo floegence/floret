@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.2.1 - 2026-08-02
+
+- Allow canonical approval resolution while an admitted turn is waiting for
+  permission. Long-running provider execution no longer owns the global host
+  mutation lock; same-thread execution remains serialized and durable backend
+  transactions share one short coordination boundary.
+- Keep concurrent execution replay idempotent across Memory and SQLite-backed
+  hosts: one admission invokes the provider and approved tool exactly once.
+
 ## v3.2.0 - 2026-08-01
 
 - Remove the broad compatibility runtime entry points for thread reads, turn

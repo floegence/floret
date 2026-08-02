@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/floegence/floret/v3/provider"
 	"github.com/floegence/floret/v3/runtime"
 	"github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestV3SubscriptionMessageStrictJSON(t *testing.T) {
@@ -48,6 +50,222 @@ func TestV3SubscriptionMessageStrictJSON(t *testing.T) {
 				t.Fatalf("accepted invalid subscription JSON: %s", payload)
 			}
 		})
+	}
+}
+
+func TestExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source func(*testing.T) storage.Source
+	}{
+		{name: "memory", source: func(*testing.T) storage.Source { return storage.Memory() }},
+		{name: "sqlite", source: func(t *testing.T) storage.Source {
+			return storage.SQLite(filepath.Join(t.TempDir(), "floret.db"))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testExecuteAdmissionAllowsConcurrentApprovalResolution(t, test.source(t))
+		})
+	}
+}
+
+func testExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T, source storage.Source) {
+	t.Helper()
+	ctx := context.Background()
+	host, err := runtime.Open(ctx, runtime.Options{
+		Storage: source,
+		IDSource: &deterministicIDs{
+			threads: []identity.ThreadID{"thread-approval"},
+			turns:   []identity.TurnID{"turn-approval"},
+			runs:    []identity.RunID{"run-approval"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-approval"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := mustThreadReader(t, thread)
+
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "call-approval", Name: "write_note", Args: `{}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var executions atomic.Int32
+	tool := tools.Define[struct{}](tools.Definition{
+		Name: "write_note", Title: "Write note", Description: "Write a note.",
+		InputSchema: tools.StrictObject(map[string]any{}, nil),
+		Effects:     []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+	}, nil, nil, func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
+		executions.Add(1)
+		return tools.Result{Text: "written"}, nil
+	})
+	gate := runtime.EffectAuthorizationGateFunc(func(ctx context.Context, request runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		return effect(ctx, runtime.EffectAuthorizationProof{
+			EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+			ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+			LeaseOwnerID: request.LeaseOwnerID, LeaseGeneration: request.LeaseGeneration,
+			PolicyRevision: "test-policy-v1", AuditReference: "test-audit", AuditHash: "test-audit-hash",
+			AuthorizedAt: time.Now(),
+		})
+	})
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, runtime.WithAgentTools(tool), runtime.WithAgentEffectAuthorization(gate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.TurnExecutor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := turns.AdmitTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "admit-approval", UserMessage: runtime.TurnInput{Text: "write a note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	executeCtx, cancelExecute := context.WithCancel(ctx)
+	defer cancelExecute()
+	executed := make(chan struct {
+		result runtime.StartTurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, executeErr := turns.ExecuteAdmission(executeCtx, admitted.Receipt, runtime.ExecutionContext{})
+		executed <- struct {
+			result runtime.StartTurnResult
+			err    error
+		}{result: result, err: executeErr}
+	}()
+
+	queue := waitForPublicApprovalQueue(t, reader, 1)
+	replayedExecution := make(chan struct {
+		result runtime.StartTurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, executeErr := turns.ExecuteAdmission(executeCtx, admitted.Receipt, runtime.ExecutionContext{})
+		replayedExecution <- struct {
+			result runtime.StartTurnResult
+			err    error
+		}{result: result, err: executeErr}
+	}()
+	approval := queue.Items[0]
+	command := runtime.ResolveApprovalCommand{
+		LogicalRequestID: "resolve-approval", DecisionID: "decision-approval",
+		ExpectedGeneration: queue.Generation, ExpectedRevision: queue.Revision,
+		ExpectedCurrent: runtime.ApprovalIdentity{
+			ApprovalID: approval.ApprovalID, ThreadID: approval.ThreadID, TurnID: approval.TurnID,
+			RunID: approval.RunID, ToolCallID: approval.ToolCallID, EffectAttemptID: approval.EffectAttemptID,
+		},
+		ExpectedApprovalRevision: approval.Revision, Decision: runtime.ApprovalDecisionApprove,
+	}
+	resolved := make(chan struct {
+		result runtime.ResolveApprovalMutationResult
+		err    error
+	}, 1)
+	go func() {
+		result, resolveErr := turns.ResolveApproval(ctx, command)
+		resolved <- struct {
+			result runtime.ResolveApprovalMutationResult
+			err    error
+		}{result: result, err: resolveErr}
+	}()
+
+	var resolution runtime.ResolveApprovalMutationResult
+	select {
+	case outcome := <-resolved:
+		if outcome.err != nil {
+			t.Fatalf("resolve approval: %v", outcome.err)
+		}
+		resolution = outcome.result
+	case <-time.After(500 * time.Millisecond):
+		cancelExecute()
+		<-executed
+		<-replayedExecution
+		<-resolved
+		t.Fatal("approval resolution blocked behind active turn execution")
+	}
+	if resolution.Resolution.Receipt.State != "decision_submitted" || resolution.Receipt.Replayed {
+		t.Fatalf("approval resolution = %#v", resolution)
+	}
+	select {
+	case outcome := <-executed:
+		if outcome.err != nil {
+			finalTurn, _ := reader.ReadTurn(ctx, admitted.TurnID)
+			failure := runtime.ThreadTurnFailure{}
+			if finalTurn.Failure != nil {
+				failure = *finalTurn.Failure
+			}
+			t.Fatalf("execute admitted turn: %v; failure=%#v", outcome.err, failure)
+		}
+		if outcome.result.TurnID != admitted.TurnID || outcome.result.RunID != admitted.RunID {
+			t.Fatalf("executed turn = %#v", outcome.result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not resume after approval")
+	}
+	select {
+	case outcome := <-replayedExecution:
+		if outcome.err != nil {
+			t.Fatalf("replay admitted execution: %v", outcome.err)
+		}
+		if !outcome.result.Receipt.Replayed || outcome.result.TurnID != admitted.TurnID || outcome.result.RunID != admitted.RunID {
+			t.Fatalf("replayed execution = %#v", outcome.result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent execution replay did not converge")
+	}
+	replayed, err := turns.ResolveApproval(ctx, command)
+	if err != nil {
+		t.Fatalf("replay approval resolution: %v", err)
+	}
+	if !replayed.Receipt.Replayed || replayed.Resolution.Receipt.DecisionID != resolution.Resolution.Receipt.DecisionID {
+		t.Fatalf("approval replay = %#v", replayed)
+	}
+	if got := executions.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1", got)
+	}
+	if requests := gateway.Requests(); len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(requests))
+	}
+	queue = waitForPublicApprovalQueue(t, reader, 0)
+	if queue.CurrentApprovalID != "" {
+		t.Fatalf("settled approval queue = %#v", queue)
+	}
+}
+
+func waitForPublicApprovalQueue(t *testing.T, reader runtime.ThreadReader, count int) runtime.ApprovalQueue {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		queue, err := reader.ReadApprovalQueue(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Items) == count {
+			return queue
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d approvals: %#v", count, queue)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-08-02
+* **Approval execution concurrency**: Long-running provider turns no longer
+  retain the host-wide mutation lock while waiting for canonical approval.
+  Same-thread execution remains serialized, and one backend transaction fence
+  coordinates session-tree, prompt, and logical-request ledger writes.
+
 ## 2026-08-01
 * **Partial live projection status**: Host-facing committed-event recorders now
   report `running` when their local mid-turn window starts after the durable

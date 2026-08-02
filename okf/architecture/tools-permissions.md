@@ -115,6 +115,12 @@ outcomes each have one deterministic terminal mapping. A downstream host submits
 the decision and maps typed conflicts; it does not persist or promote its own
 approval queue.
 
+An active provider turn does not hold the host mutation fence while it waits for
+this decision. Approval resolution and the resumed dispatch use separate short,
+serialized backend transactions, while a per-thread execution coordinator keeps
+duplicate or overlapping turn execution from invoking the provider or handler
+twice.
+
 For polling tools, presentation-only arguments can be excluded from generic
 repeat identity through the validated tools annotation contract. This keeps
 product copy available to activity presentation without allowing copy changes

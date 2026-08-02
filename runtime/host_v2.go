@@ -70,6 +70,7 @@ type Host struct {
 	idSource           IDSource
 	idMu               sync.Mutex
 	mutationMu         sync.Mutex
+	turnExecutions     keyedMutex
 	subscriptionMu     sync.Mutex
 	subscriptions      map[*Subscription]struct{}
 	subscriptionBuffer int
@@ -78,6 +79,66 @@ type Host struct {
 	closed             bool
 	closeErr           error
 	closeDone          chan struct{}
+}
+
+type keyedMutex struct {
+	mu      sync.Mutex
+	entries map[string]*keyedMutexEntry
+}
+
+type keyedMutexEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// runtime.Open owns one backend, so all domain and request-ledger transactions
+// share this short fence instead of surfacing backend-specific write races.
+type serializedBackend struct {
+	mu      sync.Mutex
+	backend spi.Backend
+}
+
+func (backend *serializedBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	return backend.backend.View(ctx, read)
+}
+
+func (backend *serializedBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	return backend.backend.Update(ctx, mutate)
+}
+
+func (backend *serializedBackend) Close() error {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	return backend.backend.Close()
+}
+
+func (mutex *keyedMutex) lock(key string) func() {
+	mutex.mu.Lock()
+	if mutex.entries == nil {
+		mutex.entries = make(map[string]*keyedMutexEntry)
+	}
+	entry := mutex.entries[key]
+	if entry == nil {
+		entry = &keyedMutexEntry{}
+		mutex.entries[key] = entry
+	}
+	entry.refs++
+	mutex.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		mutex.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(mutex.entries, key)
+		}
+		mutex.mu.Unlock()
+	}
 }
 
 type hostBinders struct {
@@ -120,9 +181,10 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		_ = backend.Close()
 		return nil, err
 	}
-	store, err := newBackendRuntimeStore(ctx, backend)
+	coordinatedBackend := &serializedBackend{backend: backend}
+	store, err := newBackendRuntimeStore(ctx, coordinatedBackend)
 	if err != nil {
-		_ = backend.Close()
+		_ = coordinatedBackend.Close()
 		return nil, err
 	}
 	idSource := options.IDSource
@@ -132,14 +194,14 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	buffer := options.SubscriptionBuffer
 	if buffer < 0 || buffer > 65_536 {
 		_ = store.Close()
-		_ = backend.Close()
+		_ = coordinatedBackend.Close()
 		return nil, errors.New("runtime subscription buffer must be between 1 and 65536")
 	}
 	if buffer == 0 {
 		buffer = 256
 	}
 	host := &Host{
-		store: store, backend: backend, idSource: idSource, closeDone: make(chan struct{}),
+		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}),
 		subscriptions: make(map[*Subscription]struct{}), subscriptionBuffer: buffer,
 	}
 	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {

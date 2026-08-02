@@ -56,6 +56,12 @@ that receipt, then call `TurnExecutor.ExecuteAdmission` with the receipt and an
 signal bindings. The host never persists or resubmits the canonical command.
 `AdmitTurnResult.Execute` is only a same-process convenience over the same
 receipt-first path. There is no command-bearing execution fallback.
+Provider execution is serialized per thread rather than by the host-wide
+mutation fence. It may wait for a canonical approval while
+`TurnExecutor.ResolveApproval` commits that exact decision; concurrent replay of
+the same admission converges on the committed receipt without a second provider
+or tool invocation. Physical backend transactions remain short and serialized
+across session-tree state, prompt state, and the logical-request ledger.
 
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,
