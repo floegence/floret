@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -50,7 +51,7 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 		if migrated {
 			return repo.save(tx, memory)
 		}
-		return nil
+		return repo.verifyRootThreadInventory(tx, memory)
 	}); err != nil {
 		return nil, err
 	}
@@ -85,7 +86,29 @@ func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) error {
 	if err != nil {
 		return err
 	}
-	return tx.Put(backendDomainNamespace, backendStateKey, encoded)
+	inventory, err := encodeRootThreadInventory(memory)
+	if err != nil {
+		return err
+	}
+	if err := tx.Put(backendDomainNamespace, backendStateKey, encoded); err != nil {
+		return err
+	}
+	return tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventory)
+}
+
+func (repo *BackendRepo) verifyRootThreadInventory(tx spi.ReadTx, memory *MemoryRepo) error {
+	persisted, err := tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)
+	if err != nil {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	want, err := encodeRootThreadInventory(memory)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(persisted, want) {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("root thread inventory does not match canonical domain"))
+	}
+	return nil
 }
 
 func (repo *BackendRepo) view(ctx context.Context, read func(*MemoryRepo) error) error {

@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
 	"reflect"
@@ -10,14 +11,16 @@ import (
 
 	"github.com/floegence/floret/v3/identity"
 	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/internal/storagecodec"
 	"github.com/floegence/floret/v3/runtime"
 	"github.com/floegence/floret/v3/storage"
 	"github.com/floegence/floret/v3/storage/spi"
 )
 
 type inventoryCountingSource struct {
-	source    storage.Source
-	viewCalls atomic.Int64
+	source          storage.Source
+	viewCalls       atomic.Int64
+	fullDomainReads atomic.Int64
 }
 
 func (source *inventoryCountingSource) Open(ctx context.Context) (spi.Backend, error) {
@@ -25,17 +28,36 @@ func (source *inventoryCountingSource) Open(ctx context.Context) (spi.Backend, e
 	if err != nil {
 		return nil, err
 	}
-	return &inventoryCountingBackend{Backend: backend, viewCalls: &source.viewCalls}, nil
+	return &inventoryCountingBackend{
+		Backend: backend, viewCalls: &source.viewCalls, fullDomainReads: &source.fullDomainReads,
+	}, nil
 }
 
 type inventoryCountingBackend struct {
 	spi.Backend
-	viewCalls *atomic.Int64
+	viewCalls       *atomic.Int64
+	fullDomainReads *atomic.Int64
 }
 
 func (backend *inventoryCountingBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
 	backend.viewCalls.Add(1)
-	return backend.Backend.View(ctx, read)
+	return backend.Backend.View(ctx, func(tx spi.ReadTx) error {
+		return read(inventoryCountingReadTx{ReadTx: tx, fullDomainReads: backend.fullDomainReads})
+	})
+}
+
+type inventoryCountingReadTx struct {
+	spi.ReadTx
+	fullDomainReads *atomic.Int64
+}
+
+func (tx inventoryCountingReadTx) Get(namespace string, key []byte) ([]byte, error) {
+	if namespace == "floret.domain" && bytes.Equal(key, storagecodec.Tuple(
+		storagecodec.TupleString("sessiontree"), storagecodec.TupleString("state"),
+	)) {
+		tx.fullDomainReads.Add(1)
+	}
+	return tx.ReadTx.Get(namespace, key)
 }
 
 func TestV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T) {
@@ -95,6 +117,7 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 	direct := bootstrap.Thread
 
 	source.viewCalls.Store(0)
+	source.fullDomainReads.Store(0)
 	page, err := host.Threads().ListThreads(ctx, runtime.ListThreadsOptions{Limit: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -114,5 +137,8 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 	}
 	if calls := source.viewCalls.Load(); calls != 1 {
 		t.Fatalf("canonical domain reads = %d, want 1 bounded page snapshot", calls)
+	}
+	if reads := source.fullDomainReads.Load(); reads != 0 {
+		t.Fatalf("full session-tree domain reads = %d, want lightweight inventory record only", reads)
 	}
 }

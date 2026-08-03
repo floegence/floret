@@ -20,6 +20,7 @@ import (
 	internalstorage "github.com/floegence/floret/v3/internal/storage"
 	legacy "github.com/floegence/floret/v3/internal/storage/sqlite"
 	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/internal/storagecodec"
 	floretruntime "github.com/floegence/floret/v3/runtime"
 	"github.com/floegence/floret/v3/storage"
 )
@@ -197,11 +198,19 @@ func TestMigrateV2RejectsHostOwnedLegacyMetadataWithoutMutation(t *testing.T) {
 func TestMigrateV2ReplayRejectsCorruptLogicalContent(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {
-		name   string
-		mutate string
+		name       string
+		mutate     string
+		mutateArgs []any
 	}{
 		{name: "logical schema", mutate: `UPDATE floret_backend_records SET value = '{"version":"2","fingerprint":"wrong"}' WHERE namespace = 'floret.system'`},
-		{name: "domain state", mutate: `UPDATE floret_backend_records SET value = X'00' WHERE namespace = 'floret.domain' AND key = (SELECT key FROM floret_backend_records WHERE namespace = 'floret.domain' ORDER BY key LIMIT 1)`},
+		{
+			name: "session tree state", mutate: `UPDATE floret_backend_records SET value = X'00' WHERE namespace = ? AND key = ?`,
+			mutateArgs: []any{"floret.domain", storagecodec.Tuple(storagecodec.TupleString("sessiontree"), storagecodec.TupleString("state"))},
+		},
+		{
+			name: "root thread inventory", mutate: `UPDATE floret_backend_records SET value = X'00' WHERE namespace = ? AND key = ?`,
+			mutateArgs: []any{"floret.domain", storagecodec.Tuple(storagecodec.TupleString("sessiontree"), storagecodec.TupleString("root_thread_inventory"))},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "floret.db")
@@ -223,7 +232,7 @@ func TestMigrateV2ReplayRejectsCorruptLogicalContent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := database.Exec(test.mutate); err != nil {
+			if _, err := database.Exec(test.mutate, test.mutateArgs...); err != nil {
 				database.Close()
 				t.Fatal(err)
 			}

@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.2.7 - 2026-08-03
+
+- Automatically migrate session-tree domain schema v3 to v4 and commit a
+  strict root-thread inventory record atomically with the complete domain.
+  Startup verifies exact index/domain agreement; missing, drifted, corrupt, or
+  future state fails closed without mutation.
+- Read `Threads.ListThreads` from the bounded inventory record so large
+  artifacts, provider state, and revision history are not decoded for every
+  sidebar refresh. Memory and SQLite retain identical snapshots and ordering.
+- Make explicit v2.2-to-v3 physical conversion produce the complete current v4
+  record set. Its immutable plan, semantic target hash, atomic apply, replay
+  validation, and rollback checks now cover the derived inventory as well as
+  canonical session, prompt, and fork-operation state. Plans issued by the
+  prior `/1` contract remain applicable and replayable after automatic v4
+  upgrade; new preflight operations issue the complete `/2` contract.
+- Require Go 1.26.5 for builds and upgrade `golang.org/x/sys` to v0.44.0,
+  removing GO-2026-5024 from the dependency graph.
+
 ## v3.2.6 - 2026-08-03
 
 - Project each bounded `Threads.ListThreads` page from one canonical domain

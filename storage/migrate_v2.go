@@ -26,8 +26,10 @@ const (
 	migrationSchemaVersion     = "3"
 	migrationSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 	migrationPlanVersion       = 1
-	migrationAlgorithmVersion  = "floret-v2.2-to-v3/1"
-	migrationProjectionVersion = "floret-v3-domain/1"
+	legacyMigrationAlgorithm   = "floret-v2.2-to-v3/1"
+	legacyMigrationProjection  = "floret-v3-domain/1"
+	migrationAlgorithmVersion  = "floret-v2.2-to-v3/2"
+	migrationProjectionVersion = "floret-v3-domain/2"
 )
 
 var (
@@ -199,12 +201,18 @@ var (
 )
 
 type analyzedV2Migration struct {
-	exported        legacy.ExportedV16State
-	sessionEnvelope []byte
-	promptEnvelope  []byte
-	forkRecords     []migratedForkRecord
-	sourceHash      string
-	targetHash      string
+	exported              legacy.ExportedV16State
+	sessionEnvelope       []byte
+	legacySession         []byte
+	legacySessionEnvelope []byte
+	inventoryKey          []byte
+	inventoryValue        []byte
+	promptEnvelope        []byte
+	forkRecords           []migratedForkRecord
+	sourceHash            string
+	legacySourceHash      string
+	targetHash            string
+	legacyTargetHash      string
 }
 
 func validateMigrationPath(ctx context.Context, value string) (string, error) {
@@ -272,6 +280,22 @@ func analyzeV2Migration(ctx context.Context, runner legacy.V16Runner) (analyzedV
 	if err != nil {
 		return analyzedV2Migration{}, err
 	}
+	legacySession, err := projectCurrentSessionToLegacyV3(exported.Session)
+	if err != nil {
+		return analyzedV2Migration{}, err
+	}
+	legacySessionEnvelope, err := storagecodec.EncodeEnvelope("sessiontree", legacySession)
+	if err != nil {
+		return analyzedV2Migration{}, err
+	}
+	memory, err := sessiontree.DecodeMemoryState(exported.Session, time.Now)
+	if err != nil {
+		return analyzedV2Migration{}, fmt.Errorf("decode migrated session-tree inventory source: %w", err)
+	}
+	inventoryKey, inventoryValue, err := sessiontree.EncodeBackendRootThreadInventoryRecord(memory)
+	if err != nil {
+		return analyzedV2Migration{}, fmt.Errorf("encode migrated root-thread inventory: %w", err)
+	}
 	promptEnvelope, err := storagecodec.EncodeEnvelope("prompt", exported.Prompt)
 	if err != nil {
 		return analyzedV2Migration{}, err
@@ -281,10 +305,25 @@ func analyzeV2Migration(ctx context.Context, runner legacy.V16Runner) (analyzedV
 		return analyzedV2Migration{}, err
 	}
 	return analyzedV2Migration{
-		exported: exported, sessionEnvelope: sessionEnvelope, promptEnvelope: promptEnvelope, forkRecords: forkRecords,
-		sourceHash: sourceSemanticHash(exported.Session, exported.Prompt, forkRecords),
-		targetHash: targetSemanticHash(exported.Session, exported.Prompt, forkRecords),
+		exported: exported, sessionEnvelope: sessionEnvelope, legacySession: legacySession,
+		legacySessionEnvelope: legacySessionEnvelope, inventoryKey: inventoryKey, inventoryValue: inventoryValue,
+		promptEnvelope: promptEnvelope, forkRecords: forkRecords,
+		sourceHash:       sourceSemanticHash(exported.Session, exported.Prompt, forkRecords),
+		legacySourceHash: sourceSemanticHash(legacySession, exported.Prompt, forkRecords),
+		targetHash:       targetSemanticHash(exported.Session, inventoryKey, inventoryValue, exported.Prompt, forkRecords),
+		legacyTargetHash: legacyTargetSemanticHash(legacySession, exported.Prompt, forkRecords),
 	}, nil
+}
+
+func projectCurrentSessionToLegacyV3(current []byte) ([]byte, error) {
+	const currentPrefix = `{"version":4,`
+	if !bytes.HasPrefix(current, []byte(currentPrefix)) {
+		return nil, errors.New("canonical migrated session-tree state does not start at version 4")
+	}
+	legacy := make([]byte, 0, len(current))
+	legacy = append(legacy, `{"version":3,`...)
+	legacy = append(legacy, current[len(currentPrefix):]...)
+	return legacy, nil
 }
 
 func sourceSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
@@ -315,8 +354,8 @@ func migrationPlanHash(wire v2MigrationPlanWire) string {
 
 func validateV2MigrationPlan(wire v2MigrationPlanWire) error {
 	version, fingerprint := legacy.V16Identity()
-	if wire.Version != migrationPlanVersion || wire.AlgorithmVersion != migrationAlgorithmVersion ||
-		wire.ProjectionVersion != migrationProjectionVersion || wire.SourceVersion != version || wire.SourceFingerprint != fingerprint ||
+	if wire.Version != migrationPlanVersion || !supportedMigrationContract(wire.AlgorithmVersion, wire.ProjectionVersion) ||
+		wire.SourceVersion != version || wire.SourceFingerprint != fingerprint ||
 		strings.TrimSpace(wire.OperationID) == "" || wire.OperationID != strings.TrimSpace(wire.OperationID) ||
 		strings.TrimSpace(wire.CoordinatorCommitment) == "" || wire.CoordinatorCommitment != strings.TrimSpace(wire.CoordinatorCommitment) ||
 		wire.Threads < 0 || wire.Entries < 0 || !validSemanticHash(wire.SourceSemanticHash) ||
@@ -324,6 +363,11 @@ func validateV2MigrationPlan(wire v2MigrationPlanWire) error {
 		return fmt.Errorf("%w: invalid or tampered v2 migration plan", spi.ErrInvalidArgument)
 	}
 	return nil
+}
+
+func supportedMigrationContract(algorithm, projection string) bool {
+	return algorithm == migrationAlgorithmVersion && projection == migrationProjectionVersion ||
+		algorithm == legacyMigrationAlgorithm && projection == legacyMigrationProjection
 }
 
 func validSemanticHash(value string) bool {
@@ -335,7 +379,13 @@ func validSemanticHash(value string) bool {
 }
 
 func matchMigrationPlan(plan v2MigrationPlanWire, analyzed analyzedV2Migration) error {
-	if plan.SourceSemanticHash != analyzed.sourceHash || plan.TargetSemanticHash != analyzed.targetHash ||
+	sourceHash := analyzed.sourceHash
+	targetHash := analyzed.targetHash
+	if plan.AlgorithmVersion == legacyMigrationAlgorithm && plan.ProjectionVersion == legacyMigrationProjection {
+		sourceHash = analyzed.legacySourceHash
+		targetHash = analyzed.legacyTargetHash
+	}
+	if plan.SourceSemanticHash != sourceHash || plan.TargetSemanticHash != targetHash ||
 		plan.Threads != analyzed.exported.Threads || plan.Entries != analyzed.exported.Entries {
 		return ErrMigrationConflict
 	}
@@ -565,7 +615,7 @@ func applyV2Migration(ctx context.Context, request V2MigrationApplyRequest, chec
 	}
 	plan := request.Plan.wire
 	receipt := migrationReceipt{
-		Version: migrationPlanVersion, AlgorithmVersion: migrationAlgorithmVersion, ProjectionVersion: migrationProjectionVersion,
+		Version: migrationPlanVersion, AlgorithmVersion: plan.AlgorithmVersion, ProjectionVersion: plan.ProjectionVersion,
 		OperationID: plan.OperationID, PlanHash: plan.PlanHash, CoordinatorCommitment: plan.CoordinatorCommitment,
 		SourceVersion: plan.SourceVersion, SourceFingerprint: plan.SourceFingerprint, Threads: plan.Threads, Entries: plan.Entries,
 		SourceSemanticHash: plan.SourceSemanticHash, TargetSemanticHash: plan.TargetSemanticHash,
@@ -573,7 +623,11 @@ func applyV2Migration(ctx context.Context, request V2MigrationApplyRequest, chec
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageSourceExported); err != nil {
 		return result, err
 	}
-	if err := replaceV16WithV3(ctx, connection, analyzed.sessionEnvelope, analyzed.promptEnvelope, analyzed.forkRecords, receipt, checkpoint); err != nil {
+	sessionEnvelope, inventoryKey, inventoryValue := analyzed.sessionEnvelope, analyzed.inventoryKey, analyzed.inventoryValue
+	if plan.AlgorithmVersion == legacyMigrationAlgorithm && plan.ProjectionVersion == legacyMigrationProjection {
+		sessionEnvelope, inventoryKey, inventoryValue = analyzed.legacySessionEnvelope, nil, nil
+	}
+	if err := replaceV16WithV3(ctx, connection, sessionEnvelope, inventoryKey, inventoryValue, analyzed.promptEnvelope, analyzed.forkRecords, receipt, checkpoint); err != nil {
 		return result, err
 	}
 	if err := runMigrationCheckpoint(ctx, checkpoint, migrationStageBeforeCommit); err != nil {
@@ -642,7 +696,7 @@ type migratedForkRecord struct {
 	value []byte
 }
 
-func replaceV16WithV3(ctx context.Context, connection *sql.Conn, sessionEnvelope, promptEnvelope []byte, forkRecords []migratedForkRecord, receipt migrationReceipt, checkpoint migrationCheckpoint) error {
+func replaceV16WithV3(ctx context.Context, connection *sql.Conn, sessionEnvelope, inventoryKey, inventoryValue, promptEnvelope []byte, forkRecords []migratedForkRecord, receipt migrationReceipt, checkpoint migrationCheckpoint) error {
 	rows, err := connection.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return err
@@ -709,6 +763,13 @@ func replaceV16WithV3(ctx context.Context, connection *sql.Conn, sessionEnvelope
 		{migrationBackendNamespace, migrationSessionKey, sessionEnvelope},
 		{migrationBackendNamespace, migrationPromptKey, promptEnvelope},
 	}
+	if len(inventoryKey) > 0 {
+		records = append(records, struct {
+			namespace string
+			key       []byte
+			value     []byte
+		}{migrationBackendNamespace, inventoryKey, inventoryValue})
+	}
 	for _, record := range records {
 		if _, err := connection.ExecContext(ctx, `INSERT INTO floret_backend_records(namespace, key, value) VALUES (?, ?, ?)`, record.namespace, record.key, record.value); err != nil {
 			return err
@@ -750,10 +811,27 @@ func validateMigratedContent(ctx context.Context, connection *sql.Conn, receipt 
 	if err != nil {
 		return err
 	}
-	if _, err := sessiontree.DecodeMemoryState(session, time.Now); err != nil {
+	memory, err := sessiontree.DecodeMemoryState(session, time.Now)
+	if err != nil {
 		return fmt.Errorf("invalid session-tree state: %w", err)
 	}
+	inventoryKey, expectedInventory, err := sessiontree.EncodeBackendRootThreadInventoryRecord(memory)
+	if err != nil {
+		return fmt.Errorf("derive root-thread inventory: %w", err)
+	}
+	var inventoryValue []byte
+	inventoryFound := true
+	if err := connection.QueryRowContext(ctx, `SELECT value FROM floret_backend_records WHERE namespace = ? AND key = ?`, migrationBackendNamespace, inventoryKey).Scan(&inventoryValue); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		inventoryFound = false
+	}
+	if inventoryFound && !bytes.Equal(inventoryValue, expectedInventory) {
+		return errors.New("root-thread inventory does not match canonical session-tree state")
+	}
 	var counts struct {
+		Version int                          `json:"version"`
 		Threads map[string]json.RawMessage   `json:"threads"`
 		Entries map[string][]json.RawMessage `json:"entries"`
 	}
@@ -771,11 +849,37 @@ func validateMigratedContent(ctx context.Context, connection *sql.Conn, receipt 
 	if err != nil {
 		return err
 	}
-	forkRecords, err := readMigratedForkRecords(ctx, connection)
+	forkRecords, err := readMigratedForkRecords(ctx, connection, inventoryKey)
 	if err != nil {
 		return err
 	}
-	if got := targetSemanticHash(session, prompt, forkRecords); got != receipt.TargetSemanticHash {
+	var got string
+	if receipt.AlgorithmVersion == legacyMigrationAlgorithm && receipt.ProjectionVersion == legacyMigrationProjection {
+		legacySession := session
+		switch counts.Version {
+		case 3:
+			if inventoryFound {
+				return errors.New("legacy v3 migration target contains a premature root-thread inventory")
+			}
+		case 4:
+			if !inventoryFound {
+				return errors.New("upgraded v4 migration target is missing root-thread inventory")
+			}
+			legacySession, err = projectCurrentSessionToLegacyV3(session)
+			if err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("legacy migration target has unsupported session-tree version %d", counts.Version)
+		}
+		got = legacyTargetSemanticHash(legacySession, prompt, forkRecords)
+	} else {
+		if counts.Version != 4 || !inventoryFound {
+			return errors.New("current migration target requires complete v4 session-tree records")
+		}
+		got = targetSemanticHash(session, inventoryKey, inventoryValue, prompt, forkRecords)
+	}
+	if got != receipt.TargetSemanticHash {
 		return &MigrationSchemaError{Version: migrationSchemaVersion, Reason: "migration content hash mismatch"}
 	}
 	return nil
@@ -797,10 +901,14 @@ func decodeMigrationLogicalSchema(encoded []byte) (migrationLogicalSchema, error
 	return schema, nil
 }
 
-func targetSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
+func targetSemanticHash(session, inventoryKey, inventoryValue, prompt []byte, forkRecords []migratedForkRecord) string {
 	hash := sha256.New()
-	_, _ = hash.Write([]byte("floret-v3-target-semantic/1\x00"))
+	_, _ = hash.Write([]byte("floret-v3-target-semantic/2\x00"))
 	_, _ = hash.Write(session)
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write(inventoryKey)
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write(inventoryValue)
 	_, _ = hash.Write([]byte{0})
 	_, _ = hash.Write(prompt)
 	for _, record := range forkRecords {
@@ -809,6 +917,13 @@ func targetSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write(record.value)
 	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+func legacyTargetSemanticHash(session, prompt []byte, forkRecords []migratedForkRecord) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("floret-v3-target-semantic/1\x00"))
+	writeMigrationSemanticContent(hash, session, prompt, forkRecords)
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -829,9 +944,9 @@ func encodeMigratedForkOperations(operations []internalstorage.ForkOperationReco
 	return records, nil
 }
 
-func readMigratedForkRecords(ctx context.Context, connection *sql.Conn) ([]migratedForkRecord, error) {
+func readMigratedForkRecords(ctx context.Context, connection *sql.Conn, inventoryKey []byte) ([]migratedForkRecord, error) {
 	rows, err := connection.QueryContext(ctx, `SELECT key, value FROM floret_backend_records
-		WHERE namespace = ? AND key NOT IN (?, ?) ORDER BY key`, migrationBackendNamespace, migrationSessionKey, migrationPromptKey)
+		WHERE namespace = ? AND key NOT IN (?, ?, ?) ORDER BY key`, migrationBackendNamespace, migrationSessionKey, inventoryKey, migrationPromptKey)
 	if err != nil {
 		return nil, err
 	}
@@ -853,8 +968,8 @@ func decodeMigrationReceipt(encoded []byte) (migrationReceipt, error) {
 		return receipt, err
 	}
 	version, fingerprint := legacy.V16Identity()
-	if receipt.Version != migrationPlanVersion || receipt.AlgorithmVersion != migrationAlgorithmVersion ||
-		receipt.ProjectionVersion != migrationProjectionVersion || strings.TrimSpace(receipt.OperationID) == "" ||
+	if receipt.Version != migrationPlanVersion || !supportedMigrationContract(receipt.AlgorithmVersion, receipt.ProjectionVersion) ||
+		strings.TrimSpace(receipt.OperationID) == "" ||
 		receipt.SourceVersion != version || receipt.SourceFingerprint != fingerprint || receipt.Threads < 0 || receipt.Entries < 0 ||
 		!validSemanticHash(receipt.PlanHash) || !validSemanticHash(receipt.SourceSemanticHash) || !validSemanticHash(receipt.TargetSemanticHash) {
 		return receipt, errors.New("unsupported migration receipt")

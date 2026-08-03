@@ -170,10 +170,11 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret v3 backend session-tree domain schema is a permanent migration
-  lineage. Version 3 is the current schema, and the exact version 2 to version
-  3 migration is the first required automatic edge. Future changes must append
-  every contiguous `n -> n+1` edge; they must not reset the lineage, raise the
-  minimum version, or remove an already released migration.
+  lineage. Version 4 is the current schema. The exact version 2 to version 3
+  SubAgent admission migration and version 3 to version 4 transactional root
+  inventory migration are the first required automatic edges. Future changes
+  must append every contiguous `n -> n+1` edge; they must not reset the lineage,
+  raise the minimum version, or remove an already released migration.
 - `runtime.Open` and `NewBackendRepo` must migrate Floret-owned domain state
   automatically before making the Host available. Migration, version update,
   and final current-schema verification must commit in one backend transaction.

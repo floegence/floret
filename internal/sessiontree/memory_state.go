@@ -10,7 +10,7 @@ import (
 	"github.com/floegence/floret/v3/internal/session/artifact"
 )
 
-const memoryStateVersion = 3
+const memoryStateVersion = 4
 
 type memoryState struct {
 	Version                        int                                               `json:"version"`
@@ -111,6 +111,14 @@ func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, er
 	switch state.Version {
 	case 2:
 		if err := migrateMemoryStateV2ToV3(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := migrateMemoryStateV3ToV4(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		migrated = true
+	case 3:
+		if err := migrateMemoryStateV3ToV4(&state); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 		migrated = true

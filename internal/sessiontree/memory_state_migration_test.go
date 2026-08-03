@@ -10,7 +10,7 @@ import (
 	"github.com/floegence/floret/v3/internal/session"
 )
 
-func TestMemoryStateV3FreshAndCurrentRoundTrip(t *testing.T) {
+func TestMemoryStateV4FreshAndCurrentRoundTrip(t *testing.T) {
 	repo := NewMemoryRepo()
 	encoded, err := repo.EncodeMemoryState()
 	if err != nil {
@@ -22,8 +22,8 @@ func TestMemoryStateV3FreshAndCurrentRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(encoded, &header); err != nil {
 		t.Fatal(err)
 	}
-	if header.Version != 3 {
-		t.Fatalf("fresh state version=%d, want 3", header.Version)
+	if header.Version != 4 {
+		t.Fatalf("fresh state version=%d, want 4", header.Version)
 	}
 	decoded, err := DecodeMemoryState(encoded, time.Now)
 	if err != nil {
@@ -133,21 +133,21 @@ func TestMemoryStateMigrationRejectsDriftAndFutureVersions(t *testing.T) {
 		repo, request, _ := newLegacySubAgentAdmissionState(t, false)
 		key := turnAdmissionKey(request.ChildThreadID, request.TurnID)
 		state := repo.memoryStateLocked()
-		state.Version = 3
+		state.Version = 4
 		delete(state.TurnAdmissions, key)
 		encoded, err := json.Marshal(state)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := DecodeMemoryState(encoded, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
-			t.Fatalf("invalid v3 state err=%v, want ErrAuthorityCorrupt", err)
+			t.Fatalf("invalid v4 state err=%v, want ErrAuthorityCorrupt", err)
 		}
 	})
 
 	t.Run("future version", func(t *testing.T) {
 		repo := NewMemoryRepo()
 		state := repo.memoryStateLocked()
-		state.Version = 4
+		state.Version = 5
 		encoded, err := json.Marshal(state)
 		if err != nil {
 			t.Fatal(err)

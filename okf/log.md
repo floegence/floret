@@ -1,6 +1,14 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Indexed inventory migration**: Session-tree domain schema v4 adds a strict
+  root-thread inventory record committed atomically with the complete domain.
+  Startup migrates v3 automatically, verifies current index/domain agreement,
+  and lets list reads avoid decoding unrelated artifacts and provider state.
+  Explicit v2.2 physical conversion emits and validates the same complete v4
+  record set and includes the inventory in its target semantic commitment,
+  while previously issued `/1` plans remain applicable and replayable across
+  the automatic v4 upgrade.
 * **Bounded inventory projection**: `Threads.ListThreads` now derives a complete
   page of exact root snapshots and revisions from one canonical domain read.
   Inventory refresh no longer multiplies full session-tree decoding per item or
