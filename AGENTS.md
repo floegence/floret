@@ -167,6 +167,32 @@ Rules:
   compare the exact published module with `HEAD`; v1 remains only in its Git
   tag and must not be reintroduced through aliases or deprecated facades.
 
+### Domain Schema Migration Contract
+
+- The Floret v3 backend session-tree domain schema is a permanent migration
+  lineage. Version 3 is the current schema, and the exact version 2 to version
+  3 migration is the first required automatic edge. Future changes must append
+  every contiguous `n -> n+1` edge; they must not reset the lineage, raise the
+  minimum version, or remove an already released migration.
+- `runtime.Open` and `NewBackendRepo` must migrate Floret-owned domain state
+  automatically before making the Host available. Migration, version update,
+  and final current-schema verification must commit in one backend transaction.
+- Fresh stores initialize directly at the current domain schema. Existing
+  current stores open without rewriting canonical bytes. Supported older state
+  migrates exactly once, and repeated startup is idempotent.
+- Every migration must validate the exact source authority used to derive new
+  state and validate the complete current invariant before commit. Unknown,
+  ambiguous, drifted, corrupt, or future state fails closed without mutation.
+- Tests for each edge must cover fresh and current state, every supported
+  source shape, preservation of durable records, restart idempotency, write
+  failure, cancellation, panic rollback, schema drift, and future versions.
+- This automatic domain migration is distinct from the public explicit
+  v2.2/SQLite-v16 to v3 backend conversion. Normal startup must not inspect,
+  convert, dual-read, or mutate that external legacy physical schema.
+- Floret migrates only Floret-owned state through its own storage kernel. Hosts
+  and downstream products must treat the backend records as opaque and must
+  not reconstruct, patch, or migrate Floret domain records themselves.
+
 ### Conflict Resolution Principles
 
 - Resolve conflicts only in the feature worktree.

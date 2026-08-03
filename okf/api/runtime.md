@@ -87,6 +87,16 @@ Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache
 facts. Hosts read these through handles and do not persist a second Agent
 lifecycle.
 
+Opening a Floret v3 backend validates the exact persisted session-tree domain
+schema before the Host becomes available. Exact supported older domain state is
+migrated through every contiguous version edge and committed atomically with the
+new version and final verification. Current state is not rewritten. Drifted,
+ambiguous, corrupt, unknown, or future state fails closed without mutation.
+SubAgent admission migration preserves an active lease exactly; terminal
+history receives only a source-bound read proof and never a fabricated
+executable lease.
+
 `Host.Shutdown(ctx)` stops admission, cancels Host-managed execution, and waits
 for completion. A deadline leaves the Host closing so a later call can continue
-waiting. Runtime never migrates or dual-reads legacy state.
+waiting. Runtime does not automatically convert or dual-read the external
+v2.2/SQLite-v16 physical schema; that separate migration remains explicit.

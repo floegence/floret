@@ -346,7 +346,34 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 		if input.AdmittedTurnID != req.TurnID || input.AdmittedRunID != req.RunID {
 			return AdmitSubAgentInputResult{}, ErrRequestConflict
 		}
-		return AdmitSubAgentInputResult{Input: cloneSubAgentInputRecord(input), Replayed: true}, nil
+		admission, ok := r.turnAdmissions[turnAdmissionKey(req.ChildThreadID, req.TurnID)]
+		if !ok {
+			return AdmitSubAgentInputResult{}, ErrAuthorityCorrupt
+		}
+		if admission.LegacyTerminalProof != nil {
+			replayed, err := r.replayLegacySubAgentTerminalAdmissionLocked(admission)
+			if err != nil {
+				return AdmitSubAgentInputResult{}, err
+			}
+			return AdmitSubAgentInputResult{
+				Input: cloneSubAgentInputRecord(input), TurnStarted: replayed.TurnStarted,
+				UserMessage: replayed.UserMessage, Replayed: true,
+			}, nil
+		}
+		fingerprint := SubAgentInputAdmissionFingerprint(
+			req.ParentThreadID, req.ChildThreadID, req.TurnID, req.RunID, req.OwnerID, input.SubAgentInputID,
+		)
+		if admission.RunID != req.RunID || admission.RequestFingerprint != fingerprint {
+			return AdmitSubAgentInputResult{}, ErrRequestConflict
+		}
+		replayed, err := r.replayTurnAdmissionLocked(admission)
+		if err != nil {
+			return AdmitSubAgentInputResult{}, err
+		}
+		return AdmitSubAgentInputResult{
+			Input: cloneSubAgentInputRecord(input), Lease: replayed.Lease,
+			TurnStarted: replayed.TurnStarted, UserMessage: replayed.UserMessage, Replayed: true,
+		}, nil
 	}
 	if r.threadAuthorityClaimedLocked(req.ParentThreadID) || r.threadAuthorityClaimedLocked(req.ChildThreadID) {
 		return AdmitSubAgentInputResult{}, ErrThreadAuthorityBusy
@@ -410,6 +437,13 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 	input.AdmittedRunID = req.RunID
 	input.AdmittedAt = now
 	r.subAgentInputs[req.ChildThreadID][inputIndex] = input
+	r.turnAdmissions[turnAdmissionKey(req.ChildThreadID, req.TurnID)] = turnAdmissionLedger{
+		ThreadID: req.ChildThreadID, TurnID: req.TurnID, RunID: req.RunID,
+		RequestFingerprint: SubAgentInputAdmissionFingerprint(
+			req.ParentThreadID, req.ChildThreadID, req.TurnID, req.RunID, req.OwnerID, input.SubAgentInputID,
+		),
+		Lease: lease, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: started.ParentID,
+	}
 	return AdmitSubAgentInputResult{Input: cloneSubAgentInputRecord(input), Lease: lease, TurnStarted: started, UserMessage: user}, nil
 }
 

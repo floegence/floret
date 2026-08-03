@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.2.4 - 2026-08-03
+
+- Persist complete turn-admission authority when a SubAgent input is admitted,
+  so interrupted child turns remain recoverable after process restart.
+- Automatically migrate exact session-tree domain state v2 to v3 inside the
+  startup backend transaction. Active child turns retain their original lease;
+  terminal child turns receive a source-bound read-only proof without an
+  executable lease.
+- Reject ambiguous, drifted, corrupt, and future domain state without mutation,
+  and cover Memory and SQLite migration, restart idempotency, preservation, and
+  write-failure, cancellation, and panic rollback.
+
 ## v3.2.3 - 2026-08-02
 
 - Keep an approved effect callback attached to the turn's renewable lease

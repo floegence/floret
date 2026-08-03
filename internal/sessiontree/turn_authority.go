@@ -92,15 +92,16 @@ type TurnAuthorityRepo interface {
 }
 
 type turnAdmissionLedger struct {
-	ThreadID           string
-	TurnID             string
-	RunID              string
-	RequestFingerprint string
-	Lease              TurnLease
-	TurnStartedID      string
-	UserMessageID      string
-	BoundaryTerminalID string
-	BaseLeafID         string
+	ThreadID            string
+	TurnID              string
+	RunID               string
+	RequestFingerprint  string
+	Lease               TurnLease
+	TurnStartedID       string
+	UserMessageID       string
+	BoundaryTerminalID  string
+	BaseLeafID          string
+	LegacyTerminalProof *legacySubAgentTerminalAdmissionProof `json:",omitempty"`
 }
 
 type turnFinishLedger struct {
@@ -509,6 +510,9 @@ func (r *MemoryRepo) ReadTurnAdmission(_ context.Context, threadID, turnID, runI
 }
 
 func (r *MemoryRepo) replayTurnAdmissionLocked(existing turnAdmissionLedger) (AdmitTurnResult, error) {
+	if existing.LegacyTerminalProof != nil {
+		return r.replayLegacySubAgentTerminalAdmissionLocked(existing)
+	}
 	key := turnAdmissionKey(existing.ThreadID, existing.TurnID)
 	var terminal *TurnTerminalOutcome
 	if finished, finishedOK := r.turnFinishes[key]; finishedOK {
@@ -584,6 +588,34 @@ func (r *MemoryRepo) replayTurnAdmissionLocked(existing turnAdmissionLedger) (Ad
 		}
 	}
 	return AdmitTurnResult{Lease: existing.Lease, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Terminal: terminal, Replayed: true}, nil
+}
+
+func (r *MemoryRepo) replayLegacySubAgentTerminalAdmissionLocked(existing turnAdmissionLedger) (AdmitTurnResult, error) {
+	var input *SubAgentInputRecord
+	for index := range r.subAgentInputs[existing.ThreadID] {
+		candidate := &r.subAgentInputs[existing.ThreadID][index]
+		if candidate.State == SubAgentInputAdmitted && candidate.AdmittedTurnID == existing.TurnID && candidate.AdmittedRunID == existing.RunID {
+			if input != nil {
+				return AdmitTurnResult{}, ErrAuthorityCorrupt
+			}
+			input = candidate
+		}
+	}
+	if input == nil || validateSubAgentAdmission(r, existing.ThreadID, *input, existing) != nil {
+		return AdmitTurnResult{}, ErrAuthorityCorrupt
+	}
+	started, _ := findEntry(r.entries[existing.ThreadID], existing.TurnStartedID)
+	user, _ := findEntry(r.entries[existing.ThreadID], existing.UserMessageID)
+	finished := r.turnFinishes[turnAdmissionKey(existing.ThreadID, existing.TurnID)]
+	terminalEntry, _ := findEntry(r.entries[existing.ThreadID], finished.TerminalEntryID)
+	terminal := &TurnTerminalOutcome{Terminal: terminalEntry}
+	if finished.FailureEntryID != "" {
+		failure, _ := findEntry(r.entries[existing.ThreadID], finished.FailureEntryID)
+		terminal.Failure = &failure
+	}
+	return AdmitTurnResult{
+		TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Terminal: terminal, Replayed: true,
+	}, nil
 }
 
 func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (FinishTurnResult, error) {

@@ -19,9 +19,18 @@ sources for the same internal domain kernel. Advanced physical implementations
 use `storage/spi` and its dedicated conformance suite; SPI records remain opaque
 and must not be decoded into another Agent model.
 
+Within an existing v3 backend, the storage kernel owns a permanent internal
+session-tree domain schema lineage. Startup migrates each exact supported older
+domain version in the same backend transaction that writes the new version and
+verifies current authority. Failure, cancellation, panic, schema drift, or a
+future version rolls back and leaves the prior bytes intact. Downstream hosts
+must not inspect or patch these opaque records.
+
 The v2.2-to-v3 migration surface provides representability preflight, an
 immutable plan, preview, apply, semantic hashes, and a receipt. Only built-in
 v2.2 states named by the conversion table are supported. A legal extension
 without one unique v3 representation returns `UnsupportedLegacyContentError`
 without mutation. Migration-only readers do not become runtime decoders, and
-normal startup never migrates, dual-reads, or falls back to a legacy shape.
+normal startup never converts, dual-reads, or falls back to that external legacy
+physical shape. This explicit conversion is separate from automatic internal
+domain-version migration inside an already valid v3 backend.

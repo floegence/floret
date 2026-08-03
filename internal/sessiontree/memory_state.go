@@ -10,7 +10,7 @@ import (
 	"github.com/floegence/floret/v3/internal/session/artifact"
 )
 
-const memoryStateVersion = 2
+const memoryStateVersion = 3
 
 type memoryState struct {
 	Version                        int                                               `json:"version"`
@@ -87,26 +87,42 @@ func (repo *MemoryRepo) memoryStateLocked() memoryState {
 
 // DecodeMemoryState constructs a repo from one exact encoded state.
 func DecodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, error) {
+	repo, _, err := decodeMemoryState(data, now)
+	return repo, err
+}
+
+func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, error) {
 	if now == nil {
-		return nil, errors.New("lease authority clock is required")
+		return nil, false, errors.New("lease authority clock is required")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var state memoryState
 	if err := decoder.Decode(&state); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, errors.New("session-tree state contains trailing data")
+			return nil, false, errors.New("session-tree state contains trailing data")
 		}
-		return nil, err
+		return nil, false, err
 	}
-	if state.Version != memoryStateVersion {
-		return nil, errors.New("unsupported session-tree state version")
+	migrated := false
+	switch state.Version {
+	case 2:
+		if err := migrateMemoryStateV2ToV3(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		migrated = true
+	case memoryStateVersion:
+	default:
+		return nil, false, errors.New("unsupported session-tree state version")
+	}
+	if err := validateRequiredMemoryStateMaps(state); err != nil {
+		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	if err := state.LeasePolicy.Validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	repo := &MemoryRepo{
 		threads: state.Threads, entries: state.Entries, entryOrdinals: state.EntryOrdinals,
@@ -131,9 +147,27 @@ func DecodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, error) {
 	}
 	repo.ensurePersistentMaps()
 	if err := ValidateThreadAuthorityGraph(values(repo.threads)); err != nil {
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
+		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	return repo, nil
+	if err := validateSubAgentAdmissionState(repo); err != nil {
+		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return repo, migrated, nil
+}
+
+func validateRequiredMemoryStateMaps(state memoryState) error {
+	if state.Threads == nil || state.Entries == nil || state.EntryOrdinals == nil || state.EntryDepths == nil ||
+		state.TurnEntryOrdinals == nil || state.TurnEntryCounts == nil || state.Leases == nil || state.LeaseGeneration == nil ||
+		state.AuthorityClaims == nil || state.Todos == nil || state.SubAgentInputs == nil || state.SubAgentInputSequence == nil ||
+		state.SubAgentPublications == nil || state.SubAgentInputRequests == nil || state.RootCreateIntents == nil ||
+		state.Tombstones == nil || state.TurnAdmissions == nil || state.TurnFinishes == nil || state.EffectAttempts == nil ||
+		state.EffectAttemptByInvocation == nil || state.ApprovalQueues == nil || state.Approvals == nil ||
+		state.ApprovalByEffectAttempt == nil || state.ApprovalDecisions == nil || state.SubAgentCloseOperations == nil ||
+		state.PendingToolCompletions == nil || state.SubAgentPendingToolCompletions == nil || state.CompactionOperations == nil ||
+		state.ProviderStates == nil || state.Artifacts == nil || state.ThreadRevisions == nil || state.ThreadRevisionHistory == nil {
+		return errors.New("session-tree persistent maps must not be null")
+	}
+	return nil
 }
 
 func (repo *MemoryRepo) ensurePersistentMaps() {

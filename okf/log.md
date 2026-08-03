@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-03
+* **Automatic domain migration**: The v3 backend session-tree schema now has a
+  permanent contiguous lineage. Startup atomically migrates exact v2 state to
+  v3, reconstructs missing SubAgent admission authority from canonical source
+  facts, preserves active leases, uses read-only terminal proofs, and fails
+  closed without mutation for drift, ambiguity, corruption, or future state.
+
 ## 2026-08-02
 * **Renewable approval dispatch authority**: Approved effect callbacks now
   inherit the active turn's renewable lease binding, so host authorization that

@@ -35,7 +35,7 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 	}
 	repo := &BackendRepo{backend: backend, now: now, policy: policy, change: make(chan struct{})}
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
-		memory, found, err := repo.load(tx)
+		memory, found, migrated, err := repo.load(tx)
 		if err != nil {
 			return err
 		}
@@ -47,6 +47,9 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			return repo.save(tx, memory)
 		}
 		repo.policy = memory.AuthorityLeasePolicy()
+		if migrated {
+			return repo.save(tx, memory)
+		}
 		return nil
 	}); err != nil {
 		return nil, err
@@ -54,23 +57,23 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 	return repo, nil
 }
 
-func (repo *BackendRepo) load(tx spi.ReadTx) (*MemoryRepo, bool, error) {
+func (repo *BackendRepo) load(tx spi.ReadTx) (*MemoryRepo, bool, bool, error) {
 	encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
 	if errors.Is(err, spi.ErrNotFound) {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	payload, err := storagecodec.DecodeEnvelope(encoded, "sessiontree")
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	memory, err := DecodeMemoryState(payload, repo.now)
+	memory, migrated, err := decodeMemoryState(payload, repo.now)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	return memory, true, nil
+	return memory, true, migrated, nil
 }
 
 func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) error {
@@ -94,7 +97,7 @@ func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, 
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
-		memory, found, err := repo.load(tx)
+		memory, found, _, err := repo.load(tx)
 		if err != nil {
 			return err
 		}
@@ -120,7 +123,7 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 	defer repo.mu.Unlock()
 	changed := false
 	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
-		memory, found, err := repo.load(tx)
+		memory, found, _, err := repo.load(tx)
 		if err != nil {
 			return err
 		}
