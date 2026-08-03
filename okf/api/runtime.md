@@ -67,8 +67,12 @@ Provider execution is serialized per thread rather than by the host-wide
 mutation fence. It may wait for a canonical approval while
 `TurnExecutor.ResolveApproval` commits that exact decision; concurrent replay of
 the same admission converges on the committed receipt without a second provider
-or tool invocation. Physical backend transactions remain short and serialized
-across session-tree state, prompt state, and the logical-request ledger.
+or tool invocation. Terminal turn commit and stale-renewal classification share
+a narrow settlement fence from durable commit through local lease cleanup, so
+completion cannot race into a committed result paired with a stale-authority
+error. Renewal I/O and detached thread-title work remain independent. Physical
+backend transactions remain short and serialized across session-tree state,
+prompt state, and the logical-request ledger.
 
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,

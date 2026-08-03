@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Terminal lease settlement**: Turn finalization and stale-renewal
+  classification now share a narrow fence from durable commit through local
+  lease cleanup. Slow approved effects no longer commit a completed turn and
+  then surface a stale-authority error from a concurrent final heartbeat,
+  while blocked renewal I/O and detached thread-title work remain independent.
 * **Batch latest-turn projection**: `Threads.ListThreads` now returns each
   optional latest turn from the same validated v4 inventory path as its root
   snapshot and revision. Hosts can build navigation lists without reopening

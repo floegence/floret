@@ -9,6 +9,9 @@
 - Preserve one bounded inventory read and zero complete session-tree domain
   reads per page. Empty threads omit `latest_turn`, and the session-tree domain
   schema remains v4 with the existing automatic v2-to-v3-to-v4 lineage.
+- Reconcile stale heartbeat renewal with terminal lease settlement so a slow
+  approved effect cannot commit `completed` and still return a stale-authority
+  error when finalization removes the durable lease at the same instant.
 
 ## v3.2.7 - 2026-08-03
 

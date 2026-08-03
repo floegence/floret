@@ -437,15 +437,16 @@ type ApprovalRecord struct {
 }
 
 type Thread struct {
-	harness          *AgentHarness
-	id               string
-	mu               sync.Mutex
-	authorityMu      sync.RWMutex
-	effectFinalizeMu sync.Mutex
-	effectFinalizers map[string]func(context.Context, engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error)
-	active           bool
-	activeLease      sessiontree.TurnLease
-	phase            string
+	harness           *AgentHarness
+	id                string
+	mu                sync.Mutex
+	authorityMu       sync.RWMutex
+	leaseSettlementMu sync.Mutex
+	effectFinalizeMu  sync.Mutex
+	effectFinalizers  map[string]func(context.Context, engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error)
+	active            bool
+	activeLease       sessiontree.TurnLease
+	phase             string
 }
 
 func New(options Options) *AgentHarness {
@@ -976,9 +977,14 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 						t.authorityMu.RUnlock()
 						return
 					}
-					if errors.Is(err, sessiontree.ErrStaleAuthority) && !t.hasActiveLease(proof) {
-						t.authorityMu.RUnlock()
-						return
+					if errors.Is(err, sessiontree.ErrStaleAuthority) {
+						t.leaseSettlementMu.Lock()
+						terminalSettled := !t.hasActiveLease(proof)
+						t.leaseSettlementMu.Unlock()
+						if terminalSettled {
+							t.authorityMu.RUnlock()
+							return
+						}
 					}
 					t.authorityMu.RUnlock()
 					renewalMu.Lock()
@@ -2502,7 +2508,12 @@ func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, 
 			State: *provider.CloneState(providerState), CreatedByRunID: strings.TrimSpace(runID), CreatedByTurnID: lease.TurnID, UpdatedAt: t.harness.now(),
 		}
 	}
+	t.leaseSettlementMu.Lock()
 	result, err := repo.FinishTurn(ctx, request)
+	if err == nil {
+		t.clearActiveLeaseLineage(lease)
+	}
+	t.leaseSettlementMu.Unlock()
 	if err != nil {
 		return sessiontree.FinishTurnResult{}, err
 	}
@@ -2512,7 +2523,6 @@ func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, 
 		}
 		t.harness.emitEntryCommitted(result.Terminal, runID)
 	}
-	t.clearActiveLeaseLineage(lease)
 	return result, nil
 }
 
