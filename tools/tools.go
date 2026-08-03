@@ -36,6 +36,9 @@ type Definition struct {
 	InputSchema  map[string]any
 	OutputSchema map[string]any
 	Activity     func(Invocation[any]) (*ActivityPresentation, error)
+	// InvalidActivity may derive presentation-only metadata from a JSON object
+	// rejected by InputSchema. It never participates in permission or dispatch.
+	InvalidActivity func(Invocation[map[string]any]) (*ActivityPresentation, error)
 
 	Effects     []Effect
 	ReadOnly    bool
@@ -557,16 +560,19 @@ func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*Activi
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
-	if !ok || t.Definition.Activity == nil {
+	if !ok || (t.Definition.Activity == nil && t.Definition.InvalidActivity == nil) {
 		return nil, nil
 	}
 	raw := strings.TrimSpace(call.Args)
-	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {
-		return nil, err
+	if _, validationErr := Validate(t.Definition.InputSchema, []byte(raw)); validationErr != nil {
+		return invalidCallActivity(t.Definition, call, opts, raw), validationErr
 	}
 	args, err := t.decode([]byte(raw))
 	if err != nil {
-		return nil, err
+		return invalidCallActivity(t.Definition, call, opts, raw), err
+	}
+	if t.Definition.Activity == nil {
+		return nil, nil
 	}
 	return t.Definition.Activity(Invocation[any]{
 		CallID:        call.ID,
@@ -581,6 +587,38 @@ func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*Activi
 		Labels:        cloneStringMap(opts.Labels),
 		HostContext:   cloneStringMap(opts.HostContext),
 	})
+}
+
+func invalidCallActivity(def Definition, call ToolCall, opts DispatchOptions, raw string) (out *ActivityPresentation) {
+	if def.InvalidActivity == nil {
+		return nil
+	}
+	defer func() {
+		if recover() != nil {
+			out = nil
+		}
+	}()
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil || args == nil {
+		return nil
+	}
+	activity, err := def.InvalidActivity(Invocation[map[string]any]{
+		CallID:        call.ID,
+		Name:          call.Name,
+		RawArgs:       raw,
+		Args:          args,
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          opts.Step,
+		Labels:        cloneStringMap(opts.Labels),
+		HostContext:   cloneStringMap(opts.HostContext),
+	})
+	if err != nil {
+		return nil
+	}
+	return activity
 }
 
 type preparedDispatch struct {

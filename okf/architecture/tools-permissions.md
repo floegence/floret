@@ -24,6 +24,13 @@ Each local tool has:
 * resource extraction for approval and observation;
 * an output policy for visible and preserved output.
 
+Schema rejection remains a non-executable tool result. A host may separately
+project safe display metadata from a parseable invalid JSON object through
+`Definition.InvalidActivity`; that callback has no resource, permission,
+approval, effect, or handler authority. Floret preserves the sanitized
+presentation on the call and error result so canonical timelines do not lose a
+useful label merely because another argument violated the schema.
+
 Read-only safe tools may default to allow. Riskier tools must explicitly ask,
 allow, or deny. Open-world and destructive tools require careful permission
 declarations.

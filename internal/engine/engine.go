@@ -1036,10 +1036,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
 			for i, call := range calls {
-				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
-				if activityErr != nil {
-					activity = nil
-				}
+				activity, _ := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
 				callActivities[call.ID] = sanitizeActivityPresentation(activity)
 				callBatchMetadata[call.ID] = map[string]any{"batch_index": i, "batch_size": len(calls)}
 			}

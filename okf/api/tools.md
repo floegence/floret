@@ -24,6 +24,13 @@ strict provider-visible schemas and typed handlers.
   `EffectDispatcher` supplied by Floret's durable thread runtime.
 * Schema helpers build strict tool input shapes.
 
+`tools.Definition.InvalidActivity` is an optional presentation-only callback
+for a parseable JSON object rejected by the declared input schema or typed
+decoder. It lets a host retain safe fields such as a command label on the
+terminal error activity. Floret still returns the original validation error,
+does not resolve resources or permissions, and never dispatches the handler.
+Malformed JSON and callback failure or panic produce no presentation fallback.
+
 # Permission Model
 
 Tools declare effects and permission behavior. A public registry does not expose

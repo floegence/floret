@@ -123,6 +123,11 @@ values. Custom provider transports and physical storage implementations are
 advanced integration surfaces with separate conformance suites. Downstream
 code must never import `internal/*`.
 
+Tool definitions may provide `InvalidActivity` when a host needs to preserve a
+safe display label from a parseable JSON object that fails the input schema.
+Floret uses that callback only for presentation: the invalid invocation still
+fails closed before permission, effect dispatch, and handler execution.
+
 ## Runtime Boundary
 
 `runtime.Host` belongs in the composition root. Its public entry points are

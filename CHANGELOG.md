@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.9 - 2026-08-03
+
+- Let host tool definitions preserve sanitized presentation metadata from a
+  parseable schema-invalid JSON object without granting it invocation authority.
+  Invalid calls still fail before resource, permission, effect, and handler
+  execution, while canonical activity can retain labels such as an attempted
+  terminal command.
+- Contain invalid-activity callback failures and panics, and never invoke the
+  callback for valid calls or malformed JSON.
+
 ## v3.2.8 - 2026-08-03
 
 - Return each root thread's optional latest turn from `Threads.ListThreads`

@@ -1673,6 +1673,7 @@ field Definition.Description string
 field Definition.InputSchema map[string]any
 field Definition.OutputSchema map[string]any
 field Definition.Activity func(github.com/floegence/floret/v3/tools.Invocation[any]) (*github.com/floegence/floret/v3/tools.ActivityPresentation, error)
+field Definition.InvalidActivity func(github.com/floegence/floret/v3/tools.Invocation[map[string]any]) (*github.com/floegence/floret/v3/tools.ActivityPresentation, error)
 field Definition.Effects []github.com/floegence/floret/v3/tools.Effect
 field Definition.ReadOnly bool
 field Definition.Destructive bool

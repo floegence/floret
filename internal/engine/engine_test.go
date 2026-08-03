@@ -2318,6 +2318,59 @@ func TestSchemaErrorReturnsToolResultAndAllowsModelRecovery(t *testing.T) {
 	}
 }
 
+func TestSchemaErrorPreservesHostInvalidCallActivity(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("exec-1", "terminal", `{"command":"sleep 30","yield_ms":60000}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("recovered"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	called := false
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "terminal",
+			InputSchema: tools.StrictObject(map[string]any{
+				"command":  tools.String("command"),
+				"yield_ms": map[string]any{"type": "integer", "maximum": 30_000},
+			}, []string{"command"}),
+			ReadOnly:   true,
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+			InvalidActivity: func(inv tools.Invocation[map[string]any]) (*tools.ActivityPresentation, error) {
+				return &tools.ActivityPresentation{
+					Label:    inv.Args["command"].(string),
+					Renderer: tools.ActivityRendererTerminal,
+					Payload:  tools.TerminalActivityPayload{Command: inv.Args["command"].(string)},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			called = true
+			return tools.Result{Text: "unexpected"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "run")
+
+	if got.Status != engine.Completed || got.Output != "recovered" {
+		t.Fatalf("result = %#v", got)
+	}
+	if called {
+		t.Fatal("handler ran for schema-invalid args")
+	}
+	result := firstToolResultEvent(t, rec.Events, "exec-1")
+	if result.Activity == nil || result.Activity.Label != "sleep 30" || result.Activity.Renderer != tools.ActivityRendererTerminal {
+		t.Fatalf("tool result activity = %#v", result.Activity)
+	}
+	payload, ok := result.Activity.Payload.(tools.TerminalActivityPayload)
+	if !ok || payload.Command != "sleep 30" || payload.Error == nil || !strings.Contains(payload.Error.Message, "invalid arguments") {
+		t.Fatalf("tool result payload = %#v", result.Activity.Payload)
+	}
+}
+
 func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 	tests := []struct {
 		name          string

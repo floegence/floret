@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Invalid tool activity presentation**: Host tool definitions can now derive
+  presentation-only metadata from parseable schema-invalid JSON. The original
+  validation error still fails closed before permission and dispatch, while
+  canonical activity keeps safe labels such as the attempted terminal command.
 * **Terminal lease settlement**: Turn finalization and stale-renewal
   classification now share a narrow fence from durable commit through local
   lease cleanup. Slow approved effects no longer commit a completed turn and
