@@ -77,7 +77,10 @@ prompt state, and the logical-request ledger.
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,
 todo state, context, pending work, and direct SubAgents while the exact thread
-remains at one revision. Consumers then call `Subscribe(after=revision)`.
+remains at one revision. The standard backend projects all of those read models
+from one canonical domain snapshot and one backend read transaction; it does
+not repeatedly decode the complete session tree or weaken consistency through
+a cache. Consumers then call `Subscribe(after=revision)`.
 History pages retain stable cursor semantics. An unavailable revision fails
 with `ErrRevisionUnavailable`; it never silently reads current state.
 Exact-thread subscriptions use `Next(ctx)`. A queue overflow returns one Gap

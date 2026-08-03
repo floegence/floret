@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.10 - 2026-08-03
+
+- Project `ThreadReader.Bootstrap` from one canonical backend snapshot instead
+  of reopening and decoding the complete session-tree domain for each included
+  read model. Thread, turn, approval, todo, context, pending-tool, and SubAgent
+  projections retain one exact revision and the existing subscription handoff.
+- Preserve the public API, JSON contract, error classification, and domain
+  schema v4 while reducing bootstrap backend reads from 30 to one for both
+  Memory and SQLite stores.
+
 ## v3.2.9 - 2026-08-03
 
 - Let host tool definitions preserve sanitized presentation metadata from a

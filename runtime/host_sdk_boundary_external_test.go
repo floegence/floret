@@ -69,7 +69,7 @@ func TestThreadCapabilityViewsExposeNarrowNativeContracts(t *testing.T) {
 	}
 }
 
-func TestThreadReaderBootstrapRetriesConcurrentMutationsAndHandsOffToSubscription(t *testing.T) {
+func TestThreadReaderBootstrapKeepsOneSnapshotDuringConcurrentMutationsAndHandsOffToSubscription(t *testing.T) {
 	ctx := context.Background()
 	host, err := runtime.Open(ctx, runtime.Options{
 		Storage:  storage.Memory(),

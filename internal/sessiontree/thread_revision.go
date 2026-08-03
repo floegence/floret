@@ -79,6 +79,30 @@ type ThreadRevisionReader interface {
 	ThreadStateAtRevision(context.Context, string, ThreadRevision) (ThreadRevisionState, error)
 }
 
+// CurrentThreadView executes one read against the complete current domain
+// snapshot and reports the exact revision of the selected thread.
+func (repo *BackendRepo) CurrentThreadView(ctx context.Context, threadID string, read func(*MemoryRepo, ThreadRevision) error) error {
+	if read == nil {
+		return errors.New("current thread view callback is required")
+	}
+	threadID = strings.TrimSpace(threadID)
+	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
+		memory.mu.Lock()
+		if _, live := memory.threads[threadID]; !live {
+			if _, deleted := memory.tombstones[threadID]; !deleted {
+				memory.mu.Unlock()
+				return ErrThreadNotFound
+			}
+		}
+		revision := memory.threadRevisions[threadID]
+		memory.mu.Unlock()
+		if revision <= 0 {
+			return ErrAuthorityCorrupt
+		}
+		return read(memory, revision)
+	})
+}
+
 // ThreadRevisionUpdater serializes a mutation against one exact thread
 // revision. Implementations commit the mutation and revision advancement in
 // the same backend transaction.

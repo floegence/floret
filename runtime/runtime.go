@@ -2786,10 +2786,20 @@ func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadI
 }
 
 func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
+	if store == nil {
+		return ThreadAgentTodoState{}, errors.New("runtime store is required")
+	}
+	return readThreadAgentTodosFromRepo(ctx, store.agentTodos, threadID)
+}
+
+func readThreadAgentTodosFromRepo(ctx context.Context, repo sessiontree.AgentTodoStateRepo, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
 	if strings.TrimSpace(string(threadID)) == "" {
 		return ThreadAgentTodoState{}, errors.New("thread id is required")
 	}
-	state, err := store.agentTodos.ReadAgentTodoState(ctx, string(threadID))
+	if repo == nil {
+		return ThreadAgentTodoState{}, errors.New("agent todo state repo is required")
+	}
+	state, err := repo.ReadAgentTodoState(ctx, string(threadID))
 	if err != nil {
 		return ThreadAgentTodoState{}, runtimeHostError(err)
 	}

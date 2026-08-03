@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Single-snapshot thread bootstrap**: `ThreadReader.Bootstrap` now projects
+  its complete read model from one canonical backend snapshot and revision.
+  Memory and SQLite avoid repeated full-domain decoding while preserving the
+  public contract, error classification, and gap-free subscription handoff.
 * **Invalid tool activity presentation**: Host tool definitions can now derive
   presentation-only metadata from parseable schema-invalid JSON. The original
   validation error still fails closed before permission and dispatch, while

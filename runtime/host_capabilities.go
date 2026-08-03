@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v3/internal/agentharness"
+	"github.com/floegence/floret/v3/internal/sessiontree"
 )
 
 // ThreadReader is read-only authority for one exact canonical Thread.
@@ -262,6 +265,9 @@ func (reader threadReaderView) Bootstrap(ctx context.Context, request ThreadBoot
 	if request.TurnLimit < 0 {
 		return ThreadBootstrap{}, errors.New("thread bootstrap turn limit must be non-negative")
 	}
+	if result, ok, err := reader.bootstrapCurrentSnapshot(ctx, request); ok {
+		return result, err
+	}
 	bound, err := reader.thread.reader(ctx)
 	if err != nil {
 		return ThreadBootstrap{}, err
@@ -323,6 +329,94 @@ func (reader threadReaderView) Bootstrap(ctx context.Context, request ThreadBoot
 		}
 		return result, nil
 	}
+}
+
+type currentThreadSnapshotRepo interface {
+	CurrentThreadView(context.Context, string, func(*sessiontree.MemoryRepo, sessiontree.ThreadRevision) error) error
+}
+
+func (reader threadReaderView) bootstrapCurrentSnapshot(ctx context.Context, request ThreadBootstrapRequest) (ThreadBootstrap, bool, error) {
+	if reader.thread == nil || reader.thread.host == nil || reader.thread.host.store == nil {
+		return ThreadBootstrap{}, false, nil
+	}
+	store := reader.thread.host.store
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	repo, ok := store.repo.(currentThreadSnapshotRepo)
+	if !ok {
+		return ThreadBootstrap{}, false, nil
+	}
+	operationDone, err := beginHostOperation(store)
+	if err != nil {
+		return ThreadBootstrap{}, true, err
+	}
+	defer operationDone()
+	threadID := reader.thread.id
+	var result ThreadBootstrap
+	err = repo.CurrentThreadView(ctx, threadID.String(), func(memory *sessiontree.MemoryRepo, revision sessiontree.ThreadRevision) error {
+		meta, readErr := memory.Thread(ctx, threadID.String())
+		if readErr != nil {
+			return readErr
+		}
+		if strings.TrimSpace(meta.ParentThreadID) != "" {
+			return fmt.Errorf("%w: %s", ErrSubAgentParentRequired, threadID)
+		}
+		if readErr := validateLiveThreadLifecycle(meta); readErr != nil {
+			return readErr
+		}
+		harness := agentharness.New(agentharness.Options{Repo: memory})
+		result, readErr = bootstrapThreadFromSnapshot(ctx, harness, memory, threadID, request, ThreadRevision(revision))
+		return readErr
+	})
+	if err != nil {
+		return ThreadBootstrap{}, true, runtimeHostError(err)
+	}
+	return result, true, nil
+}
+
+func bootstrapThreadFromSnapshot(ctx context.Context, harness *agentharness.AgentHarness, todoRepo sessiontree.AgentTodoStateRepo, threadID identity.ThreadID, request ThreadBootstrapRequest, revision ThreadRevision) (ThreadBootstrap, error) {
+	thread, err := readThreadByID(ctx, harness, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	overview, err := readThreadOverview(ctx, harness, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	turns, err := listThreadTurns(ctx, harness, listThreadTurnsRequest{ThreadID: threadID, Tail: request.TurnLimit})
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	approvals, err := readApprovalQueue(ctx, harness, readApprovalQueueRequest{ThreadID: threadID})
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	todos, err := readThreadAgentTodosFromRepo(ctx, todoRepo, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	contextSnapshot, err := readThreadContext(ctx, harness, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	pending, err := listPendingToolSettlementTargets(ctx, harness, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	subAgents, err := listSubAgents(ctx, harness, threadID)
+	if err != nil {
+		return ThreadBootstrap{}, err
+	}
+	result := ThreadBootstrap{
+		Revision: revision, Thread: thread, Overview: overview, Turns: turns,
+		Approvals: approvals, AgentTodos: todos, Context: contextSnapshot,
+		PendingToolTargets: pending, SubAgents: subAgents,
+	}
+	if err := result.Validate(); err != nil {
+		return ThreadBootstrap{}, invalidPublicResult("thread bootstrap", err)
+	}
+	return result, nil
 }
 
 func (lifecycle threadLifecycleView) ID() identity.ThreadID { return lifecycle.thread.ID() }

@@ -80,6 +80,84 @@ func TestV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T) {
 	}
 }
 
+func TestV3ThreadBootstrapReadsCanonicalDomainOnce(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source func(*testing.T) storage.Source
+	}{
+		{name: "memory", source: func(*testing.T) storage.Source { return storage.Memory() }},
+		{name: "sqlite", source: func(t *testing.T) storage.Source {
+			return storage.SQLite(filepath.Join(t.TempDir(), "floret.db"))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			source := &inventoryCountingSource{source: test.source(t)}
+			host, err := runtime.Open(ctx, runtime.Options{
+				Storage: storage.NewSource(source),
+				IDSource: &deterministicIDs{
+					threads: []identity.ThreadID{"thread-bootstrap"},
+					turns:   []identity.TurnID{"turn-bootstrap"},
+					runs:    []identity.RunID{"run-bootstrap"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = host.Shutdown(context.Background()) }()
+
+			created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
+				LogicalRequestID: "create-bootstrap",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			thread, err := host.Thread(ctx, created.ThreadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateway := florettest.NewScriptedGateway(
+				provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+				provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "bootstrap response"}, {Type: provider.EventDone}}},
+			)
+			agent, err := runtime.NewAgent(config.AgentConfig{
+				Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+				Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			}, gateway)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor, err := thread.TurnExecutor(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := executor.StartTurn(ctx, runtime.StartTurnCommand{
+				LogicalRequestID: "start-bootstrap", UserMessage: runtime.TurnInput{Text: "bootstrap request"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			reader := mustThreadReader(t, thread)
+
+			source.viewCalls.Store(0)
+			source.fullDomainReads.Store(0)
+			bootstrap, err := reader.Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bootstrap.Thread.ID != created.ThreadID || bootstrap.Overview.LatestTurn == nil || len(bootstrap.Turns.Turns) != 1 {
+				t.Fatalf("bootstrap=%#v, want complete canonical thread and turn", bootstrap)
+			}
+			if calls := source.viewCalls.Load(); calls != 1 {
+				t.Fatalf("backend views=%d, want one exact bootstrap snapshot", calls)
+			}
+			if reads := source.fullDomainReads.Load(); reads != 1 {
+				t.Fatalf("full session-tree domain reads=%d, want one exact bootstrap snapshot", reads)
+			}
+		})
+	}
+}
+
 func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSource storage.Source) {
 	t.Helper()
 	ctx := context.Background()

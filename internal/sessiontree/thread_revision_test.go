@@ -34,6 +34,15 @@ func TestBackendRepoThreadRevisionContract(t *testing.T) {
 			backend, repo := openRevisionRepo(t, test.source)
 			defer backend.Close()
 
+			if err := repo.CurrentThreadView(ctx, "missing", func(*MemoryRepo, ThreadRevision) error {
+				t.Fatal("missing current view invoked callback")
+				return nil
+			}); !errors.Is(err, ErrThreadNotFound) {
+				t.Fatalf("missing current view error = %v, want ErrThreadNotFound", err)
+			}
+			if err := repo.CurrentThreadView(ctx, "missing", nil); err == nil {
+				t.Fatal("nil current view callback succeeded")
+			}
 			if _, err := repo.CurrentThreadRevision(ctx, "missing"); !errors.Is(err, ErrThreadNotFound) {
 				t.Fatalf("missing current revision error = %v, want ErrThreadNotFound", err)
 			}
@@ -43,6 +52,26 @@ func TestBackendRepoThreadRevisionContract(t *testing.T) {
 			createdRevision := currentRevision(t, repo, "root")
 			if createdRevision != 1 {
 				t.Fatalf("created revision = %d, want 1", createdRevision)
+			}
+			viewCalls := 0
+			if err := repo.CurrentThreadView(ctx, "root", func(memory *MemoryRepo, revision ThreadRevision) error {
+				viewCalls++
+				if revision != createdRevision {
+					t.Fatalf("current view revision = %d, want %d", revision, createdRevision)
+				}
+				meta, err := memory.Thread(ctx, "root")
+				if err != nil {
+					return err
+				}
+				if meta.ID != "root" {
+					t.Fatalf("current view thread = %#v", meta)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if viewCalls != 1 {
+				t.Fatalf("current view callbacks = %d, want 1", viewCalls)
 			}
 			created := stateAt(t, repo, "root", createdRevision)
 			if created.Thread == nil || created.Thread.ID != "root" || len(created.Entries) != 0 || created.CommittedAt.IsZero() ||

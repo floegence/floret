@@ -21,6 +21,7 @@ func TestBackendRepoMethodSetTracksCanonicalMemoryRepo(t *testing.T) {
 	memoryType := reflect.TypeOf((*MemoryRepo)(nil))
 	backendType := reflect.TypeOf((*BackendRepo)(nil))
 	backendOnly := map[string]bool{
+		"CurrentThreadView":      true,
 		"CurrentThreadRevision":  true,
 		"ThreadStateAtRevision":  true,
 		"UpdateDomain":           true,
