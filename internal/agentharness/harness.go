@@ -1195,19 +1195,27 @@ func (t *Thread) canonicalThreadPhase(ctx context.Context, localPhase string) (s
 	if err != nil {
 		return "", err
 	}
+	return t.canonicalThreadPhaseFromAuthority(localPhase, snapshot), nil
+}
+
+func (t *Thread) canonicalThreadPhaseFromAuthority(localPhase string, snapshot sessiontree.ThreadAuthoritySnapshot) string {
+	registry := t.harness.options.TurnExecutions
+	if registry == nil || !registry.validate() {
+		return localPhase
+	}
 	if snapshot.Lease != nil && snapshot.Lease.Purpose == sessiontree.TurnLeasePurposeTurn &&
 		snapshot.Lease.Fresh(t.harness.now().UTC()) && snapshot.ClaimOperationID == "" {
 		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok && sessiontree.SameTurnLease(local, *snapshot.Lease) {
-			return threadPhaseTurn, nil
+			return threadPhaseTurn
 		}
 		if active, ok := registry.Active(t.id); ok && sessiontree.SameTurnLease(active, *snapshot.Lease) {
-			return threadPhaseTurn, nil
+			return threadPhaseTurn
 		}
 	}
 	if localPhase == threadPhaseTurn {
-		return threadPhaseIdle, nil
+		return threadPhaseIdle
 	}
-	return localPhase, nil
+	return localPhase
 }
 
 func threadMessages(path []sessiontree.Entry) []ThreadMessage {

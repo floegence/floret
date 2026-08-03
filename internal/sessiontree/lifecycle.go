@@ -265,6 +265,10 @@ func (r *MemoryRepo) ThreadTombstone(_ context.Context, threadID string) (Thread
 func (r *MemoryRepo) InspectThreadAuthority(_ context.Context, threadID string) (ThreadAuthoritySnapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.inspectThreadAuthorityLocked(threadID)
+}
+
+func (r *MemoryRepo) inspectThreadAuthorityLocked(threadID string) (ThreadAuthoritySnapshot, error) {
 	threadID = strings.TrimSpace(threadID)
 	meta, ok := r.threads[threadID]
 	if !ok {

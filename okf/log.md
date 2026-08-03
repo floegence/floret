@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Bounded inventory projection**: `Threads.ListThreads` now derives a complete
+  page of exact root snapshots and revisions from one canonical domain read.
+  Inventory refresh no longer multiplies full session-tree decoding per item or
+  starves concurrent approval mutations behind repeated read fences.
 * **Interrupted approval timeline closure**: Terminal tool errors now close a
   requested approval as `timed_out` when no later run marker exists, while an
   aborted marker takes precedence with `canceled`. Stop/dispatch races no

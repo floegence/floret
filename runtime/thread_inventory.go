@@ -34,10 +34,16 @@ type listRootThreadsRequest struct {
 }
 
 type rootThreadsPage struct {
-	Threads     []ThreadSummary       `json:"threads"`
-	NextCursor  threadInventoryCursor `json:"next_cursor,omitempty"`
-	HasMore     bool                  `json:"has_more,omitempty"`
-	GeneratedAt time.Time             `json:"generated_at"`
+	Threads     []rootThreadInventoryItem `json:"threads"`
+	NextCursor  threadInventoryCursor     `json:"next_cursor,omitempty"`
+	HasMore     bool                      `json:"has_more,omitempty"`
+	GeneratedAt time.Time                 `json:"generated_at"`
+}
+
+type rootThreadInventoryItem struct {
+	ThreadSummary
+	Snapshot ThreadSnapshot `json:"snapshot"`
+	Revision ThreadRevision `json:"revision"`
 }
 
 type threadInventoryCursorPayload struct {
@@ -85,7 +91,7 @@ func (h *threadInventoryCapability) ListRootThreads(ctx context.Context, req lis
 		afterCreatedAt = parsedCreatedAt
 		afterID = payload.ThreadID.String()
 	}
-	summaries, err := h.harness.ListRootThreadSummaries(ctx, agentharness.ListRootThreadSummariesOptions{
+	items, err := h.harness.ListRootThreadInventory(ctx, agentharness.ListRootThreadSummariesOptions{
 		Limit:          limit + 1,
 		AfterCreatedAt: afterCreatedAt,
 		AfterID:        afterID,
@@ -93,7 +99,7 @@ func (h *threadInventoryCapability) ListRootThreads(ctx context.Context, req lis
 	if err != nil {
 		return rootThreadsPage{}, runtimeHostError(err)
 	}
-	page := rootThreadsPage{Threads: summariesToRuntime(summaries), GeneratedAt: time.Now().UTC()}
+	page := rootThreadsPage{Threads: rootThreadInventoryToRuntime(items), GeneratedAt: time.Now().UTC()}
 	if len(page.Threads) > limit {
 		page.Threads = page.Threads[:limit]
 		page.HasMore = true
@@ -117,32 +123,55 @@ func (p rootThreadsPage) Validate() error {
 		return errors.New("root thread page continuation state is inconsistent")
 	}
 	seen := make(map[identity.ThreadID]struct{}, len(p.Threads))
-	for index, summary := range p.Threads {
-		if err := summary.Validate(); err != nil {
+	for index, item := range p.Threads {
+		if err := item.ThreadSummary.Validate(); err != nil {
 			return fmt.Errorf("thread %d: %w", index, err)
 		}
-		if _, duplicate := seen[summary.ID]; duplicate {
-			return fmt.Errorf("duplicate thread %q", summary.ID)
+		if err := item.Snapshot.Validate(); err != nil {
+			return fmt.Errorf("thread %d snapshot: %w", index, err)
 		}
-		seen[summary.ID] = struct{}{}
+		if item.Snapshot.ID != item.ID || item.Revision < 0 {
+			return fmt.Errorf("thread %d inventory identity or revision is invalid", index)
+		}
+		if _, duplicate := seen[item.ID]; duplicate {
+			return fmt.Errorf("duplicate thread %q", item.ID)
+		}
+		seen[item.ID] = struct{}{}
 		if index == 0 {
 			continue
 		}
 		previous := p.Threads[index-1]
-		if summary.CreatedAt.After(previous.CreatedAt) ||
-			(summary.CreatedAt.Equal(previous.CreatedAt) && summary.ID < previous.ID) {
+		if item.CreatedAt.After(previous.CreatedAt) ||
+			(item.CreatedAt.Equal(previous.CreatedAt) && item.ID < previous.ID) {
 			return errors.New("root thread page order is invalid")
 		}
 	}
 	return nil
 }
 
-func summariesToRuntime(in []agentharness.ThreadSummary) []ThreadSummary {
-	out := make([]ThreadSummary, 0, len(in))
-	for _, summary := range in {
-		out = append(out, threadSummary(summary))
+func rootThreadInventoryToRuntime(in []agentharness.RootThreadInventoryItem) []rootThreadInventoryItem {
+	out := make([]rootThreadInventoryItem, 0, len(in))
+	for _, item := range in {
+		snapshot := threadSnapshot(item.Thread)
+		out = append(out, rootThreadInventoryItem{
+			ThreadSummary: threadSummaryFromSnapshot(snapshot),
+			Snapshot:      snapshot,
+			Revision:      ThreadRevision(item.Revision),
+		})
 	}
 	return out
+}
+
+func threadSummaryFromSnapshot(snapshot ThreadSnapshot) ThreadSummary {
+	return ThreadSummary{
+		ID: snapshot.ID, Title: snapshot.Title, TitleStatus: snapshot.TitleStatus,
+		TitleSource: snapshot.TitleSource, TitleUpdatedAt: snapshot.TitleUpdatedAt,
+		TitleError: snapshot.TitleError, TitleGeneration: snapshot.TitleGeneration,
+		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt, Phase: snapshot.Phase,
+		Status: snapshot.Status, LatestTurnID: snapshot.LatestTurnID,
+		WaitingPrompt: snapshot.WaitingPrompt, Recoverable: snapshot.Recoverable,
+		CanAppendMessage: snapshot.CanAppendMessage, CanRetry: snapshot.CanRetry,
+	}
 }
 
 func encodeThreadInventoryCursor(createdAt time.Time, threadID identity.ThreadID) (threadInventoryCursor, error) {

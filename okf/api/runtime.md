@@ -19,6 +19,10 @@ grants `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`, `ThreadCompactor`, or
 need. `Thread` itself exposes only capability issuers and identity, so consumers
 cannot accidentally mix read, lifecycle, execution, compaction, or SubAgent
 authority through one broad object.
+Each bounded `Threads.ListThreads` page projects its exact thread snapshots and
+revisions from one canonical domain snapshot. Page size therefore does not
+multiply backend domain decoding or hold a sequence of read fences that can
+starve approval and lifecycle mutations.
 Standalone compaction remains exact-thread authority. Active-turn manual
 compaction is an immutable Agent capability polled only at engine safe points.
 `SubAgentManager.WaitSubAgents` and `CloseSubAgent` validate direct children

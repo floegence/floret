@@ -30,7 +30,9 @@ a `PendingToolRecovery` or `InterruptedTurnRecovery` bound to the exact target
 or proof, and only that narrower handle may settle or recover it.
 
 `Threads.ListThreads` is a bounded batch snapshot for product inventory. It does
-not grant mutation authority. Canonical read completeness does not widen
+not grant mutation authority. The whole page, including each exact thread
+snapshot and revision, is projected at one canonical domain linearization
+point rather than through per-thread backend reads. Canonical read completeness does not widen
 authority: exact-thread queries and subscriptions never aggregate child
 execution. `Child` exposes detail and pending-target reads for one direct child;
 `DescendantReader` exposes turn and artifact reads for one validated descendant

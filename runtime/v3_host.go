@@ -925,20 +925,11 @@ func (threads *Threads) ListThreads(ctx context.Context, options ListThreadsOpti
 		Threads:    make([]ThreadListItem, 0, len(page.Threads)),
 		NextCursor: ThreadListCursor(page.NextCursor), HasMore: page.HasMore,
 	}
-	for _, summary := range page.Threads {
-		reader, err := host.threadReader(ctx, summary.ID)
-		if err != nil {
-			return ThreadsPage{}, err
+	for _, item := range page.Threads {
+		if item.Revision <= 0 {
+			return ThreadsPage{}, fmt.Errorf("%w: canonical thread revision is invalid", ErrAuthorityCorrupt)
 		}
-		snapshot, err := reader.Read(ctx)
-		if err != nil {
-			return ThreadsPage{}, err
-		}
-		revision, err := host.currentThreadRevision(ctx, summary.ID)
-		if err != nil {
-			return ThreadsPage{}, err
-		}
-		result.Threads = append(result.Threads, ThreadListItem{Thread: snapshot, Revision: revision})
+		result.Threads = append(result.Threads, ThreadListItem{Thread: item.Snapshot, Revision: item.Revision})
 	}
 	return result, nil
 }

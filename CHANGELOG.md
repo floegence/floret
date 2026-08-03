@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.6 - 2026-08-03
+
+- Project each bounded `Threads.ListThreads` page from one canonical domain
+  snapshot instead of decoding the complete session tree repeatedly for every
+  item. Exact thread snapshots and revisions retain the same authority and
+  ordering while approval writes are no longer starved by inventory refreshes.
+
 ## v3.2.5 - 2026-08-03
 
 - Close approval activity as `timed_out` when a terminal tool error is the last
