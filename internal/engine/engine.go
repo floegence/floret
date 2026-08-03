@@ -310,6 +310,9 @@ func failureOrigin(status Status, err error) FailureOrigin {
 		errors.Is(err, ErrFixedContextOverBudget):
 		return FailureOriginContract
 	default:
+		if status == Failed {
+			return FailureOriginContract
+		}
 		return FailureOriginNone
 	}
 }

@@ -1800,7 +1800,7 @@ func TestCustomControlSpecRejectsNonJSONPayload(t *testing.T) {
 
 	got := e.Run(context.Background(), "continue")
 
-	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), `control signal "host_wait" payload is not valid JSON`) {
+	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginContract || got.Err == nil || !strings.Contains(got.Err.Error(), `control signal "host_wait" payload is not valid JSON`) {
 		t.Fatalf("result = %#v, want invalid JSON payload failure", got)
 	}
 }

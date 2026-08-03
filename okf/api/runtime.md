@@ -74,6 +74,12 @@ error. Renewal I/O and detached thread-title work remain independent. Physical
 backend transactions remain short and serialized across session-tree state,
 prompt state, and the logical-request ledger.
 
+Every failed engine result carries an explicit failure origin. Provider,
+tool-dispatch, storage, and cancellation errors keep their specific origin;
+otherwise an internal validation failure is classified as an engine contract
+failure. AgentHarness persists that original classified error and never replaces
+it with a secondary missing-classification failure.
+
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,
 todo state, context, pending work, and direct SubAgents while the exact thread

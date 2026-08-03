@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Complete engine failure classification**: Every failed engine result now
+  has an explicit origin. Specific provider, tool-dispatch, storage, and
+  cancellation origins retain precedence, while remaining internal validation
+  failures are classified as engine contract failures before AgentHarness
+  persists the terminal outcome.
 * **Bootstrap tombstone classification**: The single-snapshot bootstrap path
   preserves `ErrThreadDeleted` for a retained tombstone and reserves
   `ErrThreadNotFound` for an identity absent from both live and deleted state.

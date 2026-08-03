@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.2.12 - 2026-08-03
+
+- Classify every failed engine result with an explicit failure origin. Existing
+  provider, tool-dispatch, storage, and cancellation classifications retain
+  precedence; otherwise an internal validation failure is classified as an
+  engine contract failure so AgentHarness persists the original error instead
+  of replacing it with a secondary failure-classification error.
+
 ## v3.2.11 - 2026-08-03
 
 - Preserve `ErrThreadDeleted` when `ThreadReader.Bootstrap` targets a
