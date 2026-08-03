@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,6 +12,21 @@ import (
 	"github.com/floegence/floret/v3/internal/session/artifact"
 	"github.com/floegence/floret/v3/internal/sessiontree"
 )
+
+func TestForkOperationPlanAuthorityThreadIDsPreservesNodePairOrder(t *testing.T) {
+	plan := ForkOperationPlan{
+		Root: ForkOperationPlanNode{SourceThreadID: " source-a ", DestinationThreadID: " destination-a "},
+		TerminalChildren: []ForkOperationPlanNode{
+			{SourceThreadID: "source-b", DestinationThreadID: "destination-b"},
+			{SourceThreadID: "source-c", DestinationThreadID: "destination-c"},
+		},
+	}
+	got := ForkOperationPlanAuthorityThreadIDs(plan)
+	want := []string{"source-a", "destination-a", "source-b", "destination-b", "source-c", "destination-c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("authority thread IDs = %v, want %v", got, want)
+	}
+}
 
 func TestMemoryForkOperationCommitIsAllNodeAtomic(t *testing.T) {
 	ctx := context.Background()

@@ -6,7 +6,7 @@ Please do not report suspected vulnerabilities in a public issue, discussion,
 or pull request. Use GitHub's private vulnerability reporting for this
 repository:
 
-<https://github.com/floegence/floret/v2/security/advisories/new>
+<https://github.com/floegence/floret/security/advisories/new>
 
 If private reporting is unavailable, open a minimal issue asking the
 maintainers for a private contact channel. Do not include vulnerability details

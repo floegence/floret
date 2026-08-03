@@ -338,7 +338,7 @@ func ForkOperationPlanSourceThreadIDs(plan ForkOperationPlan) []string {
 
 func ForkOperationPlanAuthorityThreadIDs(plan ForkOperationPlan) []string {
 	nodes := append([]ForkOperationPlanNode{plan.Root}, plan.TerminalChildren...)
-	values := make([]string, 0, len(nodes)*2)
+	values := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		values = append(values, strings.TrimSpace(node.SourceThreadID), strings.TrimSpace(node.DestinationThreadID))
 	}

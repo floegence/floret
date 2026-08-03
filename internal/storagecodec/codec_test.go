@@ -3,10 +3,14 @@ package storagecodec
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"testing"
 )
 
 func TestTupleEncodingIsUnambiguousAndOrdinalOrdered(t *testing.T) {
+	if got, want := TupleString("abc"), []byte{1, 0, 0, 0, 3, 'a', 'b', 'c'}; !bytes.Equal(got, want) {
+		t.Fatalf("tuple string encoding = %v, want %v", got, want)
+	}
 	left := Tuple(TupleString("a"), TupleString("bc"))
 	right := Tuple(TupleString("ab"), TupleString("c"))
 	if bytes.Equal(left, right) {
@@ -17,6 +21,15 @@ func TestTupleEncodingIsUnambiguousAndOrdinalOrdered(t *testing.T) {
 			t.Fatalf("ordinal encoding does not preserve order at %d", lower)
 		}
 	}
+}
+
+func TestTupleComponentRejectsUnrepresentableLength(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("tuple component accepted a length larger than uint32")
+		}
+	}()
+	tupleComponentHeader(1, uint64(math.MaxUint32)+1)
 }
 
 func TestEnvelopeRejectsUnknownAndTrailingShapes(t *testing.T) {

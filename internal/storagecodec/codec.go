@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 )
 
 const (
@@ -37,11 +38,18 @@ func Tuple(components ...[]byte) []byte {
 }
 
 func tupleComponent(tag byte, value []byte) []byte {
-	encoded := make([]byte, 5+len(value))
-	encoded[0] = tag
-	binary.BigEndian.PutUint32(encoded[1:5], uint32(len(value)))
-	copy(encoded[5:], value)
-	return encoded
+	header := tupleComponentHeader(tag, uint64(len(value)))
+	return append(header[:], value...)
+}
+
+func tupleComponentHeader(tag byte, length uint64) [5]byte {
+	if length > math.MaxUint32 {
+		panic("storagecodec: tuple component exceeds uint32 length")
+	}
+	var header [5]byte
+	header[0] = tag
+	binary.BigEndian.PutUint32(header[1:], uint32(length))
+	return header
 }
 
 type envelope struct {
