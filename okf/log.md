@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Bootstrap tombstone classification**: The single-snapshot bootstrap path
+  preserves `ErrThreadDeleted` for a retained tombstone and reserves
+  `ErrThreadNotFound` for an identity absent from both live and deleted state.
 * **Single-snapshot thread bootstrap**: `ThreadReader.Bootstrap` now projects
   its complete read model from one canonical backend snapshot and revision.
   Memory and SQLite avoid repeated full-domain decoding while preserving the

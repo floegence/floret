@@ -170,6 +170,12 @@ func TestBackendRepoThreadRevisionContract(t *testing.T) {
 			if !containsRevisionDomain(deleted.ChangedDomains, ThreadRevisionDomainDeleted) {
 				t.Fatalf("deleted revision domains = %#v", deleted.ChangedDomains)
 			}
+			if err := repo.CurrentThreadView(ctx, "root", func(*MemoryRepo, ThreadRevision) error {
+				t.Fatal("deleted current view invoked callback")
+				return nil
+			}); !errors.Is(err, ErrThreadDeleted) {
+				t.Fatalf("deleted current view error = %v, want ErrThreadDeleted", err)
+			}
 			if _, err := repo.ThreadStateAtRevision(ctx, "root", parentPublicationRevision); !errors.Is(err, ErrRevisionUnavailable) {
 				t.Fatalf("pre-delete revision error = %v, want ErrRevisionUnavailable", err)
 			}

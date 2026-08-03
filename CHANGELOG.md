@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.11 - 2026-08-03
+
+- Preserve `ErrThreadDeleted` when `ThreadReader.Bootstrap` targets a
+  tombstoned identity through the single-snapshot backend path. Missing
+  identities remain `ErrThreadNotFound`, and deleted snapshots never invoke
+  the bootstrap projection callback.
+
 ## v3.2.10 - 2026-08-03
 
 - Project `ThreadReader.Bootstrap` from one canonical backend snapshot instead

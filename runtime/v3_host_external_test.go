@@ -1243,6 +1243,9 @@ func TestV3ForkAndDeleteReplayUseFloretOwnedTombstones(t *testing.T) {
 	if _, err := tombstonedReader.Snapshot(ctx); !errors.Is(err, runtime.ErrThreadDeleted) {
 		t.Fatalf("tombstone snapshot = %v", err)
 	}
+	if _, err := tombstonedReader.Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 20}); !errors.Is(err, runtime.ErrThreadDeleted) {
+		t.Fatalf("tombstone bootstrap = %v", err)
+	}
 	replayedDelete, err := tombstonedLifecycle.Delete(ctx, runtime.DeleteThreadCommand{LogicalRequestID: "delete-request"})
 	if err != nil || !replayedDelete.Receipt.Replayed || replayedDelete.Receipt.Revision != deleted.Receipt.Revision {
 		t.Fatalf("delete replay = %#v err=%v", replayedDelete, err)

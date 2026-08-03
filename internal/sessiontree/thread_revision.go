@@ -89,10 +89,12 @@ func (repo *BackendRepo) CurrentThreadView(ctx context.Context, threadID string,
 	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
 		memory.mu.Lock()
 		if _, live := memory.threads[threadID]; !live {
-			if _, deleted := memory.tombstones[threadID]; !deleted {
+			if _, deleted := memory.tombstones[threadID]; deleted {
 				memory.mu.Unlock()
-				return ErrThreadNotFound
+				return ErrThreadDeleted
 			}
+			memory.mu.Unlock()
+			return ErrThreadNotFound
 		}
 		revision := memory.threadRevisions[threadID]
 		memory.mu.Unlock()
