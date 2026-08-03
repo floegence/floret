@@ -1214,6 +1214,7 @@ type ThreadLifecycle interface interface{Delete(context.Context, github.com/floe
 type ThreadListCursor string
 type ThreadListItem struct
 field ThreadListItem.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""
+field ThreadListItem.LatestTurn *github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot tag="json:\"latest_turn,omitempty\""
 field ThreadListItem.Revision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"revision\""
 type ThreadOverview struct
 field ThreadOverview.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""

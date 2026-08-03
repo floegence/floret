@@ -146,6 +146,20 @@ func TestPublishedSQLiteRestartUsesCanonicalRead(t *testing.T) {
 	if err != nil || bootstrap.Thread.LatestTurnID != started.TurnID || bootstrap.Thread.LatestRunID != started.RunID {
 		t.Fatalf("bootstrap = %#v, err = %v", bootstrap, err)
 	}
+	page, err := reopened.Threads().ListThreads(ctx, runtime.ListThreadsOptions{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed *runtime.ThreadListItem
+	for index := range page.Threads {
+		if page.Threads[index].Thread.ID == created.ThreadID {
+			listed = &page.Threads[index]
+			break
+		}
+	}
+	if listed == nil || listed.LatestTurn == nil || listed.LatestTurn.TurnID != started.TurnID || listed.LatestTurn.RunID != started.RunID {
+		t.Fatalf("listed thread = %#v, want latest turn %q/%q", listed, started.TurnID, started.RunID)
+	}
 	subscription, err := reader.Subscribe(ctx, runtime.SubscribeOptions{AfterRevision: bootstrap.Revision})
 	if err != nil {
 		t.Fatal(err)

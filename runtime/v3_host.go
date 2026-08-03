@@ -101,12 +101,14 @@ type ListThreadsOptions struct {
 	Limit  int              `json:"limit,omitempty"`
 }
 
-// ThreadListItem pairs one canonical root snapshot with its own monotonic
-// revision. Thread revisions are intentionally not conflated into a global
+// ThreadListItem pairs one canonical root snapshot and optional latest turn
+// with its own monotonic revision. All fields come from the same inventory
+// snapshot. Thread revisions are intentionally not conflated into a global
 // inventory revision.
 type ThreadListItem struct {
-	Thread   ThreadSnapshot `json:"thread"`
-	Revision ThreadRevision `json:"revision"`
+	Thread     ThreadSnapshot      `json:"thread"`
+	LatestTurn *ThreadTurnSnapshot `json:"latest_turn,omitempty"`
+	Revision   ThreadRevision      `json:"revision"`
 }
 
 // ThreadsPage is one stable, bounded root-thread batch.
@@ -892,9 +894,9 @@ func (threads *Threads) CreateThread(ctx context.Context, command CreateThreadCo
 	return CreateThreadResult{ThreadID: record.ThreadID, Receipt: receipt}, nil
 }
 
-// ListThreads returns root-thread snapshots in one Floret call. Each item
-// carries the revision of its exact thread; product ordering and read state
-// remain host-owned.
+// ListThreads returns root-thread snapshots and optional latest turns in one
+// Floret call. Each item carries the revision of its exact thread; product
+// ordering and read state remain host-owned.
 func (threads *Threads) ListThreads(ctx context.Context, options ListThreadsOptions) (ThreadsPage, error) {
 	if threads == nil || threads.host == nil {
 		return ThreadsPage{}, errors.New("thread collection is required")
@@ -929,7 +931,9 @@ func (threads *Threads) ListThreads(ctx context.Context, options ListThreadsOpti
 		if item.Revision <= 0 {
 			return ThreadsPage{}, fmt.Errorf("%w: canonical thread revision is invalid", ErrAuthorityCorrupt)
 		}
-		result.Threads = append(result.Threads, ThreadListItem{Thread: item.Snapshot, Revision: item.Revision})
+		result.Threads = append(result.Threads, ThreadListItem{
+			Thread: item.Snapshot, LatestTurn: item.LatestTurn, Revision: item.Revision,
+		})
 	}
 	return result, nil
 }

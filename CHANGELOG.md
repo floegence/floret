@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.8 - 2026-08-03
+
+- Return each root thread's optional latest turn from `Threads.ListThreads`
+  using the same validated projection as `ThreadReader.ReadOverview`.
+  Navigation lists can now obtain status, failure, waiting input, and message
+  preview authority without reopening every thread.
+- Preserve one bounded inventory read and zero complete session-tree domain
+  reads per page. Empty threads omit `latest_turn`, and the session-tree domain
+  schema remains v4 with the existing automatic v2-to-v3-to-v4 lineage.
+
 ## v3.2.7 - 2026-08-03
 
 - Automatically migrate session-tree domain schema v3 to v4 and commit a

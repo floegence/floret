@@ -1,5 +1,5 @@
 consumer_kind	consumer	floret_public_source	product_projection	owner
-go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads	runtime.Threads.ListThreads batch snapshots at one revision	merge Redeven pin/read-state/routing then stable product sort	floret
+go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads	runtime.Threads.ListThreads batch snapshots and latest turns at one revision	merge Redeven pin/read-state/routing then stable product sort	floret
 go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}	runtime.ThreadReader.Snapshot	map canonical snapshot plus Redeven product settings	floret
 go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}/messages	runtime.ThreadReader.ListTurns at one revision	map canonical messages and references to transport DTO	floret
 go_endpoint	internal/codeapp/appserver/server.go GET /api/ai/threads/{id}/todos	runtime.ThreadReader.ReadAgentTodos at one revision	map typed todo state to transport DTO	floret

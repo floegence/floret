@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Batch latest-turn projection**: `Threads.ListThreads` now returns each
+  optional latest turn from the same validated v4 inventory path as its root
+  snapshot and revision. Hosts can build navigation lists without reopening
+  and decoding every canonical thread domain; empty threads omit the field and
+  the durable schema remains v4.
 * **Indexed inventory migration**: Session-tree domain schema v4 adds a strict
   root-thread inventory record committed atomically with the complete domain.
   Startup migrates v3 automatically, verifies current index/domain agreement,

@@ -492,12 +492,16 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 	if err != nil {
 		return ThreadOverview{}, runtimeHostError(err)
 	}
+	return projectThreadOverview(overview)
+}
+
+func projectThreadOverview(overview agentharness.ThreadOverview) (ThreadOverview, error) {
 	thread := threadSnapshot(overview.Thread)
 	if err := thread.Validate(); err != nil {
 		return ThreadOverview{}, invalidPublicResult("thread snapshot", err)
 	}
 	events := threadDetailEvents(overview.LatestTurn.Events)
-	turns, _, err := projectThreadTurnSnapshots(threadID, events)
+	turns, _, err := projectThreadTurnSnapshots(thread.ID, events)
 	if err != nil {
 		return ThreadOverview{}, err
 	}

@@ -42,8 +42,9 @@ type rootThreadsPage struct {
 
 type rootThreadInventoryItem struct {
 	ThreadSummary
-	Snapshot ThreadSnapshot `json:"snapshot"`
-	Revision ThreadRevision `json:"revision"`
+	Snapshot   ThreadSnapshot      `json:"snapshot"`
+	LatestTurn *ThreadTurnSnapshot `json:"latest_turn,omitempty"`
+	Revision   ThreadRevision      `json:"revision"`
 }
 
 type threadInventoryCursorPayload struct {
@@ -99,7 +100,11 @@ func (h *threadInventoryCapability) ListRootThreads(ctx context.Context, req lis
 	if err != nil {
 		return rootThreadsPage{}, runtimeHostError(err)
 	}
-	page := rootThreadsPage{Threads: rootThreadInventoryToRuntime(items), GeneratedAt: time.Now().UTC()}
+	projected, err := rootThreadInventoryToRuntime(items)
+	if err != nil {
+		return rootThreadsPage{}, err
+	}
+	page := rootThreadsPage{Threads: projected, GeneratedAt: time.Now().UTC()}
 	if len(page.Threads) > limit {
 		page.Threads = page.Threads[:limit]
 		page.HasMore = true
@@ -130,6 +135,9 @@ func (p rootThreadsPage) Validate() error {
 		if err := item.Snapshot.Validate(); err != nil {
 			return fmt.Errorf("thread %d snapshot: %w", index, err)
 		}
+		if err := (ThreadOverview{Thread: item.Snapshot, LatestTurn: item.LatestTurn}).Validate(); err != nil {
+			return fmt.Errorf("thread %d overview: %w", index, err)
+		}
 		if item.Snapshot.ID != item.ID || item.Revision < 0 {
 			return fmt.Errorf("thread %d inventory identity or revision is invalid", index)
 		}
@@ -149,17 +157,22 @@ func (p rootThreadsPage) Validate() error {
 	return nil
 }
 
-func rootThreadInventoryToRuntime(in []agentharness.RootThreadInventoryItem) []rootThreadInventoryItem {
+func rootThreadInventoryToRuntime(in []agentharness.RootThreadInventoryItem) ([]rootThreadInventoryItem, error) {
 	out := make([]rootThreadInventoryItem, 0, len(in))
 	for _, item := range in {
-		snapshot := threadSnapshot(item.Thread)
+		overview, err := projectThreadOverview(item.Overview)
+		if err != nil {
+			return nil, err
+		}
+		snapshot := overview.Thread
 		out = append(out, rootThreadInventoryItem{
 			ThreadSummary: threadSummaryFromSnapshot(snapshot),
 			Snapshot:      snapshot,
+			LatestTurn:    overview.LatestTurn,
 			Revision:      ThreadRevision(item.Revision),
 		})
 	}
-	return out
+	return out, nil
 }
 
 func threadSummaryFromSnapshot(snapshot ThreadSnapshot) ThreadSummary {

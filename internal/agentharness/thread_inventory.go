@@ -16,7 +16,7 @@ type ListRootThreadSummariesOptions struct {
 }
 
 type RootThreadInventoryItem struct {
-	Thread   ThreadSnapshot
+	Overview ThreadOverview
 	Revision sessiontree.ThreadRevision
 }
 
@@ -49,10 +49,13 @@ func (h *AgentHarness) ListRootThreadInventory(ctx context.Context, opts ListRoo
 		phase := thread.phase
 		thread.mu.Unlock()
 		phase = thread.canonicalThreadPhaseFromAuthority(phase, item.Authority)
+		journal := ThreadJournalSnapshot{Meta: item.Meta, Path: item.Path, Phase: phase}
+		latest, err := h.latestThreadDetailEventsFromPath(ctx, item.Path, true)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, RootThreadInventoryItem{
-			Thread: threadSnapshotFromJournal(ThreadJournalSnapshot{
-				Meta: item.Meta, Path: item.Path, Phase: phase,
-			}),
+			Overview: ThreadOverview{Thread: threadSnapshotFromJournal(journal), LatestTurn: latest},
 			Revision: item.Revision,
 		})
 	}

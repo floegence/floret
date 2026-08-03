@@ -47,7 +47,7 @@ methods:
     errors_is: [ErrHostClosed, ErrRevisionUnavailable]
     errors_as: []
     retryability: obtain a new snapshot revision after ErrRevisionUnavailable
-    commit: read-only batch snapshots from one revision
+    commit: read-only batch snapshots and optional latest turns from one inventory revision
     replay: same cursor and AtRevision return the same stable page
     concurrency: concurrent mutation is excluded from the bound revision
     cancellation: returns ctx.Err with no partial page

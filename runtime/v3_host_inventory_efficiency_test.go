@@ -8,10 +8,14 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/floegence/floret/v3/config"
+	"github.com/floegence/floret/v3/florettest"
 	"github.com/floegence/floret/v3/identity"
 	"github.com/floegence/floret/v3/internal/storagebridge"
 	"github.com/floegence/floret/v3/internal/storagecodec"
+	"github.com/floegence/floret/v3/provider"
 	"github.com/floegence/floret/v3/runtime"
 	"github.com/floegence/floret/v3/storage"
 	"github.com/floegence/floret/v3/storage/spi"
@@ -86,7 +90,7 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 			"thread-inventory-1",
 			"thread-inventory-2",
 			"thread-inventory-3",
-		}},
+		}, turns: []identity.TurnID{"turn-inventory-2"}, runs: []identity.RunID{"run-inventory-2"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,11 +114,32 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 	}); err != nil {
 		t.Fatal(err)
 	}
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "inventory response"}, {Type: provider.EventDone}}},
+	)
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := thread.TurnExecutor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.StartTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "turn-inventory-2", UserMessage: runtime.TurnInput{Text: "inventory request"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	bootstrap, err := mustThreadReader(t, thread).Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct := bootstrap.Thread
+	direct := bootstrap.Overview
 
 	source.viewCalls.Store(0)
 	source.fullDomainReads.Store(0)
@@ -125,15 +150,31 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 	if len(page.Threads) != 3 {
 		t.Fatalf("thread count = %d, want 3", len(page.Threads))
 	}
-	var listed runtime.ThreadSnapshot
+	var listed runtime.ThreadListItem
 	for _, item := range page.Threads {
-		if item.Thread.ID == direct.ID {
-			listed = item.Thread
-			break
+		if item.Thread.ID == direct.Thread.ID {
+			listed = item
+			continue
+		}
+		if item.LatestTurn != nil {
+			t.Fatalf("empty thread %q latest turn = %+v, want nil", item.Thread.ID, item.LatestTurn)
 		}
 	}
-	if !reflect.DeepEqual(listed, direct) {
-		t.Fatalf("listed thread = %#v, want exact snapshot %#v", listed, direct)
+	if !reflect.DeepEqual(listed.Thread, direct.Thread) {
+		t.Fatalf("listed thread = %#v, want exact thread %#v", listed.Thread, direct.Thread)
+	}
+	if listed.LatestTurn == nil || direct.LatestTurn == nil {
+		t.Fatalf("listed latest turn = %+v, want exact latest turn %+v", listed.LatestTurn, direct.LatestTurn)
+	}
+	if listed.LatestTurn.Projection.ProjectedAt.IsZero() || listed.LatestTurn.Projection.ProjectedAt.Location() != time.UTC {
+		t.Fatalf("listed projection time = %v, want non-zero UTC", listed.LatestTurn.Projection.ProjectedAt)
+	}
+	listedLatest := *listed.LatestTurn
+	directLatest := *direct.LatestTurn
+	listedLatest.Projection.ProjectedAt = time.Time{}
+	directLatest.Projection.ProjectedAt = time.Time{}
+	if !reflect.DeepEqual(listedLatest, directLatest) {
+		t.Fatalf("listed latest turn = %+v, want exact latest turn %+v", listedLatest, directLatest)
 	}
 	if calls := source.viewCalls.Load(); calls != 1 {
 		t.Fatalf("canonical domain reads = %d, want 1 bounded page snapshot", calls)
