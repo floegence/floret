@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Interrupted approval timeline closure**: Terminal tool errors now close a
+  requested approval as `timed_out` when no later run marker exists, while an
+  aborted marker takes precedence with `canceled`. Stop/dispatch races no
+  longer make historical Floret projections unreadable.
 * **Automatic domain migration**: The v3 backend session-tree schema now has a
   permanent contiguous lineage. Startup atomically migrates exact v2 state to
   v3, reconstructs missing SubAgent admission authority from canonical source

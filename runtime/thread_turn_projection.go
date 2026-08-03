@@ -611,8 +611,9 @@ func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, 
 	if status != observation.ActivityStatusSuccess && threadTurnProjectionHasPendingPresentation(item) {
 		return true
 	}
-	if item.RequiresApproval && strings.TrimSpace(item.ApprovalState) == "requested" &&
-		(status == observation.ActivityStatusError || status == observation.ActivityStatusCanceled) {
+	if item.RequiresApproval &&
+		(status == observation.ActivityStatusError && strings.TrimSpace(item.ApprovalState) == "requested" ||
+			status == observation.ActivityStatusCanceled && (strings.TrimSpace(item.ApprovalState) == "requested" || strings.TrimSpace(item.ApprovalState) == "timed_out")) {
 		return true
 	}
 	switch item.Status {
@@ -679,6 +680,9 @@ func threadTurnProjectionTerminalEndedAtUnixMS(item observation.ActivityItem, at
 
 func threadTurnProjectionTerminalApprovalState(status observation.ActivityStatus, current string) string {
 	current = strings.TrimSpace(current)
+	if status == observation.ActivityStatusCanceled && (current == "requested" || current == "timed_out") {
+		return "canceled"
+	}
 	switch current {
 	case "approved", "rejected", "timed_out", "canceled":
 		return current

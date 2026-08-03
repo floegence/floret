@@ -534,6 +534,23 @@ func TestBuildActivityTimelineFailsUnresolvedApprovalAtRunEnd(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineSettlesApprovalWhenToolResultFails(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_500)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-tool-failed", ThreadID: "thread-tool-failed", TurnID: "turn-tool-failed"}, []Event{
+		{Type: EventTypeToolApprovalRequested, RunID: "run-tool-failed", ThreadID: "thread-tool-failed", TurnID: "turn-tool-failed", Step: 1, ToolID: "exec-1", ToolName: "terminal.terminate", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start},
+		{Type: EventTypeToolResult, RunID: "run-tool-failed", ThreadID: "thread-tool-failed", TurnID: "turn-tool-failed", Step: 1, ToolID: "exec-1", ToolName: "terminal.terminate", ToolKind: "local", Metadata: map[string]any{"tool_result_status": string(ActivityStatusError)}, ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate after failed approved tool dispatch: %v", err)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusError || item.Severity != ActivitySeverityError ||
+		item.ApprovalState != "timed_out" || item.EndedAtUnixMS == 0 || !item.RequiresApproval {
+		t.Fatalf("failed approval tool item mismatch: %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 	start := time.UnixMilli(1_700_000_002_000)
 	command := "curl -s https://example.test"

@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.2.5 - 2026-08-03
+
+- Close approval activity as `timed_out` when a terminal tool error is the last
+  durable event, and prefer `canceled` when an interrupted turn later records
+  an aborted marker. Historical stop/dispatch races now remain readable.
+
 ## v3.2.4 - 2026-08-03
 
 - Persist complete turn-admission authority when a SubAgent input is admitted,
