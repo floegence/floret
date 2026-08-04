@@ -5143,11 +5143,12 @@ func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
 }
 
 type runtimeLiveProjectionRecorder struct {
-	eventsByTurn map[string][]ThreadDetailEvent
+	eventsByTurn            map[string][]ThreadDetailEvent
+	toolPresentationsByTurn map[string]map[string]*tools.ActivityPresentation
 }
 
 func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection {
-	if r == nil || ev.Committed == nil {
+	if r == nil {
 		return nil
 	}
 	threadID := strings.TrimSpace(string(ev.ThreadID))
@@ -5156,11 +5157,39 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 	if threadID == "" || turnID == "" || runID == "" {
 		return nil
 	}
+	key := runtimeLiveProjectionTurnKey(threadID, turnID, runID)
+	toolID := strings.TrimSpace(ev.ToolID)
+	if (ev.Type == observation.EventTypeToolCall || ev.Type == observation.EventTypeHostedToolCall) && toolID != "" && ev.Activity != nil {
+		if r.toolPresentationsByTurn == nil {
+			r.toolPresentationsByTurn = map[string]map[string]*tools.ActivityPresentation{}
+		}
+		if r.toolPresentationsByTurn[key] == nil {
+			r.toolPresentationsByTurn[key] = map[string]*tools.ActivityPresentation{}
+		}
+		r.toolPresentationsByTurn[key][toolID] = cloneActivityPresentation(ev.Activity)
+	}
+	if ev.Committed == nil {
+		return nil
+	}
 	if r.eventsByTurn == nil {
 		r.eventsByTurn = map[string][]ThreadDetailEvent{}
 	}
-	key := runtimeLiveProjectionTurnKey(threadID, turnID, runID)
-	events := append(r.eventsByTurn[key], cloneThreadDetailEvent(*ev.Committed))
+	committed := cloneThreadDetailEvent(*ev.Committed)
+	if committed.Kind == ThreadDetailEventApproval && committed.Approval != nil &&
+		(committed.Message == nil || committed.Message.Activity == nil) {
+		approvalToolID := strings.TrimSpace(committed.Approval.ToolID)
+		if presentation := r.toolPresentationsByTurn[key][approvalToolID]; presentation != nil {
+			if committed.ActivityTimeline != nil {
+				for index := range committed.ActivityTimeline.Items {
+					item := &committed.ActivityTimeline.Items[index]
+					if strings.TrimSpace(item.ToolID) == approvalToolID {
+						item.Presentation = cloneActivityPresentation(presentation)
+					}
+				}
+			}
+		}
+	}
+	events := append(r.eventsByTurn[key], committed)
 	r.eventsByTurn[key] = events
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: identity.ThreadID(threadID),

@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Live approval presentation continuity**: Host-facing live turn projection
+  now retains the tool presentation already observed for the run while approval
+  request and resolution detail commits arrive before dispatch. The durable
+  journal remains unchanged, and approval-only history keeps its neutral
+  fallback.
 * **Approval presentation continuity**: Durable turn projection now applies
   approval request and resolution details without replacing an existing
   tool-authored activity label, renderer, or payload. Approval-only history

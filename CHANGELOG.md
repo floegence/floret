@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.22 - 2026-08-04
+
+- Preserve the tool-authored activity presentation in host-facing live turn
+  projections while approval request and resolution details commit before
+  dispatch. Approval-only history retains its neutral fallback, and the
+  durable journal remains unchanged.
+
 ## v3.2.20 - 2026-08-04
 
 - Preserve the process-local turn execution proof in the single-snapshot

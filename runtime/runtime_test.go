@@ -6885,6 +6885,90 @@ func TestRuntimeLiveProjectionRecorderMarksPartialCommittedTurnRunning(t *testin
 	}
 }
 
+func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprovalDetails(t *testing.T) {
+	now := time.UnixMilli(1_700_032_100_000)
+	command := "pwd && whoami"
+	recorder := &runtimeLiveProjectionRecorder{}
+	if projection := recorder.project(Event{
+		Type:      observation.EventTypeToolCall,
+		RunID:     "run-live-approval-presentation",
+		ThreadID:  "thread-live-approval-presentation",
+		TurnID:    "turn-live-approval-presentation",
+		ToolID:    "call-1",
+		ToolName:  "terminal.exec",
+		Timestamp: now,
+		Activity: &tools.ActivityPresentation{
+			Label:       command,
+			Description: "Run in the main thread",
+			Renderer:    tools.ActivityRendererTerminal,
+			Payload:     tools.TerminalActivityPayload{Command: command},
+		},
+	}); projection != nil {
+		t.Fatalf("non-committed tool event produced projection: %#v", projection)
+	}
+	approvalTimeline := func(eventType observation.EventType, state string, at time.Time) *observation.ActivityTimeline {
+		timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    "run-live-approval-presentation",
+			ThreadID: "thread-live-approval-presentation",
+			TurnID:   "turn-live-approval-presentation",
+			TraceID:  "run-live-approval-presentation",
+		}, []observation.Event{{
+			Type:       eventType,
+			RunID:      "run-live-approval-presentation",
+			ThreadID:   "thread-live-approval-presentation",
+			TurnID:     "turn-live-approval-presentation",
+			TraceID:    "run-live-approval-presentation",
+			ToolID:     "call-1",
+			ToolName:   "terminal.exec",
+			ObservedAt: at,
+		}}, at.UnixMilli())
+		if len(timeline.Items) != 1 {
+			t.Fatalf("approval timeline items = %#v", timeline.Items)
+		}
+		timeline.Items[0].Presentation = &tools.ActivityPresentation{
+			Label:       "Tool approval",
+			Description: state,
+			Renderer:    tools.ActivityRendererStructured,
+		}
+		return &timeline
+	}
+	projectApproval := func(ordinal int64, eventType observation.EventType, state string, at time.Time) *ThreadTurnProjection {
+		return recorder.project(Event{
+			Type:      observation.EventTypeThreadEntryCommitted,
+			RunID:     "run-live-approval-presentation",
+			ThreadID:  "thread-live-approval-presentation",
+			TurnID:    "turn-live-approval-presentation",
+			Timestamp: at,
+			Committed: &ThreadDetailEvent{
+				ID:               fmt.Sprintf("approval-%s", state),
+				Ordinal:          ordinal,
+				ThreadID:         "thread-live-approval-presentation",
+				TurnID:           "turn-live-approval-presentation",
+				RunID:            "run-live-approval-presentation",
+				Kind:             ThreadDetailEventApproval,
+				Type:             string(eventType),
+				CreatedAt:        at,
+				Approval:         &ThreadDetailApproval{State: state, ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: approvalTimeline(eventType, state, at),
+			},
+		})
+	}
+	requested := projectApproval(1, observation.EventTypeToolApprovalRequested, "requested", now.Add(time.Second))
+	approved := projectApproval(2, observation.EventTypeToolApprovalApproved, "approved", now.Add(2*time.Second))
+	for name, projection := range map[string]*ThreadTurnProjection{"requested": requested, "approved": approved} {
+		if projection == nil {
+			t.Fatalf("%s approval did not produce a projection", name)
+		}
+		item := runtimeProjectionToolItem(*projection, "call-1")
+		presentation := runtimeActivityPresentation(t, item)
+		payload := runtimeTerminalActivityPayload(t, presentation)
+		if presentation.Label != command || presentation.Description != "Run in the main thread" ||
+			presentation.Renderer != tools.ActivityRendererTerminal || payload.Command != command {
+			t.Fatalf("%s approval replaced observed tool presentation: %#v", name, item)
+		}
+	}
+}
+
 func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
