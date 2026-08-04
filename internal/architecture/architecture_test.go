@@ -1294,7 +1294,9 @@ func TestToolRegistryExposesOnlyAuthorityGatedDispatch(t *testing.T) {
 	for _, want := range []string{
 		"if opts.EffectDispatcher == nil",
 		"ErrEffectDispatcherRequired",
-		"result = dispatcher(ctx, p.request, p.invoke)",
+		"result = dispatcher(ctx, p.request, func(invokeCtx context.Context) Result {",
+		"invoked.Store(true)",
+		"result.DispatchErr == nil && invoked.Load()",
 		"result.effectFinalizationRequired = true",
 	} {
 		if !strings.Contains(text, want) {

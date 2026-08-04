@@ -330,6 +330,137 @@ func testExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T, source
 	}
 }
 
+func TestExecuteAdmissionContinuesAfterApprovalRejection(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source func(*testing.T) storage.Source
+	}{
+		{name: "memory", source: func(*testing.T) storage.Source { return storage.Memory() }},
+		{name: "sqlite", source: func(t *testing.T) storage.Source {
+			return storage.SQLite(filepath.Join(t.TempDir(), "floret.db"))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testExecuteAdmissionContinuesAfterApprovalRejection(t, test.source(t))
+		})
+	}
+}
+
+func testExecuteAdmissionContinuesAfterApprovalRejection(t *testing.T, source storage.Source) {
+	t.Helper()
+	ctx := context.Background()
+	host, err := runtime.Open(ctx, runtime.Options{
+		Storage: source,
+		IDSource: &deterministicIDs{
+			threads: []identity.ThreadID{"thread-rejection"},
+			turns:   []identity.TurnID{"turn-rejection"},
+			runs:    []identity.RunID{"run-rejection"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-rejection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := mustThreadReader(t, thread)
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "call-rejection", Name: "write_note", Args: `{}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "understood"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var executions atomic.Int32
+	tool := tools.Define[struct{}](tools.Definition{
+		Name: "write_note", Title: "Write note", Description: "Write a note.",
+		InputSchema: tools.StrictObject(map[string]any{}, nil),
+		Effects:     []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+	}, nil, nil, func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
+		executions.Add(1)
+		return tools.Result{Text: "unexpected"}, nil
+	})
+	var gateCalls atomic.Int32
+	gate := runtime.EffectAuthorizationGateFunc(func(context.Context, runtime.EffectAuthorizationRequest, runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		gateCalls.Add(1)
+		return runtime.EffectDispatchResult{}, errors.New("authorization gate must not run after rejection")
+	})
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, runtime.WithAgentTools(tool), runtime.WithAgentEffectAuthorization(gate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.TurnExecutor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := turns.AdmitTurn(ctx, runtime.StartTurnCommand{
+		LogicalRequestID: "admit-rejection", UserMessage: runtime.TurnInput{Text: "write a note"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed := make(chan error, 1)
+	go func() {
+		_, executeErr := turns.ExecuteAdmission(ctx, admitted.Receipt, runtime.ExecutionContext{})
+		executed <- executeErr
+	}()
+	queue := waitForPublicApprovalQueue(t, reader, 1)
+	approval := queue.Items[0]
+	command := runtime.ResolveApprovalCommand{
+		LogicalRequestID: "resolve-rejection", DecisionID: "decision-rejection",
+		ExpectedGeneration: queue.Generation, ExpectedRevision: queue.Revision,
+		ExpectedCurrent: runtime.ApprovalIdentity{
+			ApprovalID: approval.ApprovalID, ThreadID: approval.ThreadID, TurnID: approval.TurnID,
+			RunID: approval.RunID, ToolCallID: approval.ToolCallID, EffectAttemptID: approval.EffectAttemptID,
+		},
+		ExpectedApprovalRevision: approval.Revision, Decision: runtime.ApprovalDecisionReject,
+	}
+	resolution, err := turns.ResolveApproval(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Receipt.Replayed || resolution.Resolution.Receipt.State != "rejected" || resolution.Resolution.Receipt.Reason != "user_rejected" {
+		t.Fatalf("approval rejection=%#v", resolution)
+	}
+	replayed, err := turns.ResolveApproval(ctx, command)
+	if err != nil || !replayed.Receipt.Replayed {
+		t.Fatalf("approval rejection replay=%#v err=%v", replayed, err)
+	}
+	select {
+	case err := <-executed:
+		if err != nil {
+			t.Fatalf("execute rejected turn: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not continue after approval rejection")
+	}
+	if executions.Load() != 0 || gateCalls.Load() != 0 {
+		t.Fatalf("tool/gate calls=%d/%d, want 0/0", executions.Load(), gateCalls.Load())
+	}
+	if requests := gateway.Requests(); len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(requests))
+	}
+	turn, err := reader.ReadTurn(ctx, admitted.TurnID)
+	if err != nil || turn.Status != runtime.TurnStatusCompleted || turn.Failure != nil {
+		t.Fatalf("completed rejected turn=%#v err=%v", turn, err)
+	}
+	queue = waitForPublicApprovalQueue(t, reader, 0)
+	if queue.CurrentApprovalID != "" {
+		t.Fatalf("settled rejection queue=%#v", queue)
+	}
+}
+
 func TestExecuteAdmissionCancellationSettlesWaitingApproval(t *testing.T) {
 	for _, test := range []struct {
 		name   string

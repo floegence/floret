@@ -51,6 +51,11 @@ commits the captured success or failure once, or marks the attempt `unknown` if
 that exact result cannot be durably finalized. Cancellation and adapter return
 errors never authorize a second handler call.
 
+An effect dispatcher result requires durable effect-result finalization only if
+the dispatcher invoked the supplied handler callback. A pre-handler rejection
+returns an ordinary failed tool result to the provider and cannot be mistaken
+for a completed or failed handler effect.
+
 # Dispatch Observation
 
 `tools.DispatchOptions.DispatchStarted` is the product-neutral observer used by the

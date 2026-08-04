@@ -375,7 +375,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		}
 		switch receipt.State {
 		case sessiontree.ApprovalRejected:
-			return effectDispatchError(request.CallID, request.Name, ErrEffectUnauthorized)
+			return tools.ErrorResult(request.CallID, request.Name, tools.ErrRejected.Error())
 		case sessiontree.ApprovalDecisionSubmitted:
 		default:
 			return effectDispatchError(request.CallID, request.Name, sessiontree.ErrAuthorityCorrupt)

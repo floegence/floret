@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/floegence/floret/v3/identity"
 )
@@ -629,13 +630,17 @@ type preparedDispatch struct {
 }
 
 func (p preparedDispatch) dispatch(ctx context.Context, dispatcher EffectDispatcher) (result Result) {
+	var invoked atomic.Bool
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = ErrorResult(p.request.CallID, p.request.Name, fmt.Sprintf("tool %q panicked: %v", p.request.Name, recovered))
 		}
 	}()
-	result = dispatcher(ctx, p.request, p.invoke)
-	if result.DispatchErr == nil {
+	result = dispatcher(ctx, p.request, func(invokeCtx context.Context) Result {
+		invoked.Store(true)
+		return p.invoke(invokeCtx)
+	})
+	if result.DispatchErr == nil && invoked.Load() {
 		result.effectFinalizationRequired = true
 	}
 	return result

@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.2.27 - 2026-08-05
+
+- Return a user-rejected approval to the provider as a failed tool result
+  without entering the tool handler or failing the whole turn. Durable
+  approval identity remains `rejected` with reason `user_rejected`, exact
+  decision replay stays idempotent, and memory and SQLite hosts continue the
+  provider loop so the assistant can respond naturally to the decision.
+- Require effect-result finalization only when the authorization dispatcher
+  actually enters the handler. Pre-handler rejection remains non-executable,
+  while authorization, authority, proof, and persistence failures continue to
+  stop the turn fail-closed.
+
+## v3.2.26 - 2026-08-04
+
+- Cancel a turn waiting for approval with the current renewable lease proof,
+  so normal heartbeat renewals cannot leave the canonical approval or turn
+  stuck after a stop request.
+
 ## v3.2.25 - 2026-08-04
 
 - Preserve tool-authored activity presentation in durable approval entries and

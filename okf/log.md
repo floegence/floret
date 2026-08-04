@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-05
+* **Approval rejection continuation**: A canonical user rejection now returns a
+  failed tool result without entering the authorization gate or handler, then
+  lets the provider complete the turn naturally. Only dispatcher paths that
+  enter the handler require effect-result finalization; authority and storage
+  failures remain fail-closed.
+
 ## 2026-08-04
 * **Renewed approval cancellation authority**: Canceling a turn while its
   effect waits for approval now settles the approval batch with the current

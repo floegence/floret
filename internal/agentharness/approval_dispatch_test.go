@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/v3/internal/session"
 	"github.com/floegence/floret/v3/internal/sessiontree"
 	"github.com/floegence/floret/v3/internal/testing/harness"
+	"github.com/floegence/floret/v3/observation"
 	"github.com/floegence/floret/v3/tools"
 )
 
@@ -244,6 +245,96 @@ func TestApprovalDecisionNotifiesDifferentHarness(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("runner harness did not observe resolver harness decision")
+	}
+}
+
+func TestApprovalRejectionReturnsToolResultAndAllowsProviderContinuation(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	provider := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("write-1", "write_file", `{"value":"notes.md"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("understood"), harness.Done()),
+	)
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
+	var handlers atomic.Int32
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "write_file", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk}, Effects: []tools.Effect{tools.EffectWrite},
+		}, nil, nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			handlers.Add(1)
+			return tools.Result{Text: "unexpected"}, nil
+		},
+	))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := thread.Run(ctx, "write", RunOptions{RunID: "run", TurnID: "turn"})
+		done <- outcome{result: result, err: err}
+	}()
+	queue := waitForApprovalQueue(t, ctx, h, "thread")
+	pending := queue.Approvals[0]
+	if _, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
+		DecisionID: "decision", ExpectedRootThreadID: queue.RootThreadID, ExpectedGeneration: queue.Generation,
+		ExpectedRevision: queue.Revision, ExpectedCurrent: sessiontree.ApprovalIdentity{
+			ApprovalID: pending.ApprovalID, ThreadID: pending.ThreadID, TurnID: pending.TurnID, RunID: pending.RunID,
+			ToolCallID: pending.ToolCallID, EffectAttemptID: pending.EffectAttemptID,
+		}, ExpectedApprovalRevision: pending.Revision, Decision: sessiontree.ApprovalDecisionReject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Status != engine.Completed || got.result.Output != "understood" {
+			t.Fatalf("result=%#v err=%v", got.result, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not continue after approval rejection")
+	}
+	if handlers.Load() != 0 {
+		t.Fatalf("handler calls=%d, want 0", handlers.Load())
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(provider.Requests))
+	}
+	var rejectedResult *session.Message
+	for index := range provider.Requests[1].Messages {
+		message := &provider.Requests[1].Messages[index]
+		if message.Role == session.Tool && message.ToolCallID == "write-1" {
+			rejectedResult = message
+			break
+		}
+	}
+	if rejectedResult == nil || rejectedResult.Content != "ERROR: "+tools.ErrRejected.Error() {
+		t.Fatalf("provider rejection result=%#v", rejectedResult)
+	}
+	approval, err := repo.Approval(ctx, pending.ApprovalID)
+	if err != nil || approval.State != sessiontree.ApprovalRejected || approval.Reason != sessiontree.ApprovalReasonUserRejected {
+		t.Fatalf("approval=%#v err=%v", approval, err)
+	}
+	detail, found, err := h.ReadTurnDetailEvents(ctx, "thread", "turn", "run", true)
+	if err != nil || !found {
+		t.Fatalf("turn detail found=%v err=%v", found, err)
+	}
+	var canonicalResult *SubAgentDetailToolResult
+	for index := range detail.Events {
+		if detail.Events[index].Kind == SubAgentDetailEventToolResult && detail.Events[index].ToolResult != nil &&
+			detail.Events[index].ToolResult.CallID == "write-1" {
+			canonicalResult = detail.Events[index].ToolResult
+			break
+		}
+	}
+	if canonicalResult == nil || canonicalResult.Status != string(observation.ActivityStatusError) ||
+		canonicalResult.Content != "ERROR: "+tools.ErrRejected.Error() {
+		t.Fatalf("canonical rejection result=%#v", canonicalResult)
 	}
 }
 

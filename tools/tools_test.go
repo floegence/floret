@@ -149,6 +149,14 @@ func TestRegistryDispatchInvokesHandlerOnlyInsideEffectDispatcher(t *testing.T) 
 	if !unknown.IsError || unknown.RequiresEffectFinalization() {
 		t.Fatalf("pre-dispatch failure incorrectly requires effect finalization: %#v", unknown)
 	}
+	handlerCalled = false
+	opts.EffectDispatcher = func(_ context.Context, req EffectDispatchRequest, _ func(context.Context) Result) Result {
+		return ErrorResult(req.CallID, req.Name, ErrRejected.Error())
+	}
+	rejected := reg.Dispatch(context.Background(), ToolCall{ID: "call", Name: "read", Args: `{"value":"x"}`}, opts)
+	if !rejected.IsError || rejected.Text != ErrRejected.Error() || handlerCalled || rejected.RequiresEffectFinalization() {
+		t.Fatalf("dispatcher rejection result=%#v handler=%v", rejected, handlerCalled)
+	}
 }
 
 func TestRegisterValidatesRepeatIdentityIgnoredArguments(t *testing.T) {

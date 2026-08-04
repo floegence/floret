@@ -133,6 +133,15 @@ outcomes each have one deterministic terminal mapping. A downstream host submits
 the decision and maps typed conflicts; it does not persist or promote its own
 approval queue.
 
+A user rejection settles the canonical approval as `rejected` with reason
+`user_rejected`, never enters the host authorization gate or tool handler, and
+returns a failed tool result to the provider. The provider loop may then explain,
+revise, or complete the turn naturally. This expected user decision is not a
+turn-level authorization failure. System policy, proof, authority, persistence,
+and unknown-outcome failures remain turn-level failures and fail closed. Effect
+result finalization applies only after the dispatcher actually enters the
+handler; a pre-handler rejection has no effect result to finalize.
+
 An authorized effect callback inherits the active turn's renewable lease
 binding rather than a copied heartbeat proof. Approval and host-policy work may
 span any number of normal heartbeat renewals; dispatch observes the current
