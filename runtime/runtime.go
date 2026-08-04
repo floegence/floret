@@ -2053,6 +2053,7 @@ type runtimeStore struct {
 	threadAuthorityMu sync.Mutex
 	turnExecutionMu   sync.Mutex
 	turnExecutions    map[string]sessiontree.TurnLease
+	turnAdmissions    map[string]map[string]int
 	bootstrapMu       sync.Mutex
 	bootstrapIssued   bool
 	titleRecoveryMu   sync.Mutex
@@ -2334,10 +2335,54 @@ func (s *runtimeStore) activeTurnExecution(threadID string) (sessiontree.TurnLea
 	return lease, ok
 }
 
+func (s *runtimeStore) beginTurnAdmission(threadID, turnID string) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	if threadID == "" || turnID == "" {
+		return
+	}
+	s.turnExecutionMu.Lock()
+	if s.turnAdmissions == nil {
+		s.turnAdmissions = make(map[string]map[string]int)
+	}
+	if s.turnAdmissions[threadID] == nil {
+		s.turnAdmissions[threadID] = make(map[string]int)
+	}
+	s.turnAdmissions[threadID][turnID]++
+	s.turnExecutionMu.Unlock()
+}
+
+func (s *runtimeStore) endTurnAdmission(threadID, turnID string) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	s.turnExecutionMu.Lock()
+	admissions := s.turnAdmissions[threadID]
+	if count := admissions[turnID]; count > 1 {
+		admissions[turnID] = count - 1
+	} else {
+		delete(admissions, turnID)
+		if len(admissions) == 0 {
+			delete(s.turnAdmissions, threadID)
+		}
+	}
+	s.turnExecutionMu.Unlock()
+}
+
+func (s *runtimeStore) turnExecutionSnapshot(threadID, turnID string) (sessiontree.TurnLease, bool, bool) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	s.turnExecutionMu.Lock()
+	defer s.turnExecutionMu.Unlock()
+	lease, active := s.turnExecutions[threadID]
+	return lease, active, s.turnAdmissions[threadID][turnID] > 0
+}
+
 func (s *runtimeStore) turnExecutionRegistry() *agentharness.TurnExecutionRegistry {
 	return &agentharness.TurnExecutionRegistry{
 		Register: s.registerTurnExecution, Renew: s.renewTurnExecution,
 		Unregister: s.unregisterTurnExecution, Active: s.activeTurnExecution,
+		BeginAdmission: s.beginTurnAdmission, EndAdmission: s.endTurnAdmission,
+		Snapshot: s.turnExecutionSnapshot,
 	}
 }
 

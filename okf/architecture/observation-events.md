@@ -112,8 +112,11 @@ or validation failures require a canonical reload rather than event replay.
   authority before the process-local execution registry advances. During that
   interval, a validated monotonic durable successor of the registry heartbeat
   remains the same running turn; owner, generation, acquisition, thread, or
-  turn drift still fails closed. A fresh durable lease without a matching
-  process-local execution remains interrupted after process restart.
+  turn drift still fails closed. Initial admission also records a process-local
+  handoff before its durable commit and replaces that handoff atomically with
+  the active execution proof, so inventory reads cannot misclassify the brief
+  commit-to-registration interval as an interruption. A fresh durable lease
+  without either process-local proof remains interrupted after process restart.
   `TurnResult.Projection`, pending settlement projections, and live event
   projections are built inside the runtime host from raw-capable current-turn
   facts, while default detail reads remain bounded previews for inspection

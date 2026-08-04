@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.19 - 2026-08-04
+
+- Keep a thread projected as `running` across the short admission handoff
+  between its durable lease commit and process-local execution registration.
+  The handoff is tracked only in memory and does not weaken expiry, restart,
+  owner, generation, acquisition, thread, or turn drift checks.
+
 ## v3.2.18 - 2026-08-04
 
 - Keep a running turn projected as `running` while a durable lease renewal has

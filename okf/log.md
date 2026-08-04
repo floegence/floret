@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Admission projection continuity**: Turn admission now records a
+  process-local handoff before the durable commit and replaces it atomically
+  with the active execution lease. Concurrent inventory reads remain running
+  during that handoff without weakening restart, expiry, or lease-drift
+  interruption checks.
 * **Running lease projection continuity**: Canonical thread reads now accept a
   durable heartbeat renewal as the monotonic successor of the process-local
   execution proof. Inventory reads cannot transiently project a live turn as

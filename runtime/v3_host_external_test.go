@@ -210,6 +210,16 @@ func testExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T, source
 	}()
 
 	queue := waitForPublicApprovalQueue(t, reader, 1)
+	page, err := host.Threads().ListThreads(ctx, runtime.ListThreadsOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Threads) != 1 {
+		t.Fatalf("thread inventory length = %d, want 1", len(page.Threads))
+	}
+	if snapshot := page.Threads[0].Thread; snapshot.Status != runtime.ThreadStatusRunning || snapshot.LatestRunID != admitted.RunID {
+		t.Fatalf("active approval thread inventory = %#v, want running run %q", snapshot, admitted.RunID)
+	}
 	replayedExecution := make(chan struct {
 		result runtime.StartTurnResult
 		err    error

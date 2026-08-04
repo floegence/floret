@@ -1213,12 +1213,18 @@ func (t *Thread) canonicalThreadPhaseFromAuthority(localPhase string, snapshot s
 	}
 	if snapshot.Lease != nil && snapshot.Lease.Purpose == sessiontree.TurnLeasePurposeTurn &&
 		snapshot.Lease.Fresh(t.harness.now().UTC()) && snapshot.ClaimOperationID == "" {
-		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok &&
-			sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) == nil {
-			return threadPhaseTurn
+		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok {
+			if sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) == nil {
+				return threadPhaseTurn
+			}
+			return threadPhaseIdle
 		}
-		if active, ok := registry.Active(t.id); ok &&
-			sessiontree.ValidateTurnLeaseSuccessor(active, *snapshot.Lease) == nil {
+		if active, ok, admitting := registry.snapshot(t.id, snapshot.Lease.TurnID); ok {
+			if sessiontree.ValidateTurnLeaseSuccessor(active, *snapshot.Lease) == nil {
+				return threadPhaseTurn
+			}
+			return threadPhaseIdle
+		} else if admitting {
 			return threadPhaseTurn
 		}
 	}
@@ -1269,6 +1275,8 @@ func (t *Thread) Admit(ctx context.Context, input string, opts RunOptions) (Turn
 	if !ok {
 		return TurnAdmission{}, errors.New("session tree repo does not support atomic turn admission")
 	}
+	finishAdmission := t.harness.options.TurnExecutions.beginAdmission(t.id, turnID)
+	defer finishAdmission()
 	existing, existingAdmission, err := authority.ReadTurnAdmission(ctx, t.id, turnID, runID)
 	if err != nil {
 		return TurnAdmission{}, err

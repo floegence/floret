@@ -2,6 +2,7 @@ package agentharness
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +10,83 @@ import (
 	"github.com/floegence/floret/v3/internal/sessionlifecycle"
 	"github.com/floegence/floret/v3/internal/sessiontree"
 )
+
+type blockingTurnAdmissionRepo struct {
+	*sessiontree.MemoryRepo
+	committed chan sessiontree.AdmitTurnResult
+	release   chan struct{}
+}
+
+func (r *blockingTurnAdmissionRepo) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error) {
+	result, err := r.MemoryRepo.AdmitTurn(ctx, req)
+	if err != nil {
+		return result, err
+	}
+	r.committed <- result
+	<-r.release
+	return result, nil
+}
+
+type mutableTurnExecutionRegistry struct {
+	mu         sync.Mutex
+	active     map[string]sessiontree.TurnLease
+	admissions map[string]map[string]int
+}
+
+func (r *mutableTurnExecutionRegistry) registry() *TurnExecutionRegistry {
+	return &TurnExecutionRegistry{
+		Register: func(lease sessiontree.TurnLease) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.active[lease.ThreadID] = lease
+			return nil
+		},
+		Renew: func(previous, renewed sessiontree.TurnLease) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.active[renewed.ThreadID] = renewed
+			return nil
+		},
+		Unregister: func(lease sessiontree.TurnLease) {
+			r.mu.Lock()
+			delete(r.active, lease.ThreadID)
+			r.mu.Unlock()
+		},
+		Active: func(threadID string) (sessiontree.TurnLease, bool) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			lease, ok := r.active[threadID]
+			return lease, ok
+		},
+		BeginAdmission: func(threadID, turnID string) {
+			r.mu.Lock()
+			if r.admissions[threadID] == nil {
+				r.admissions[threadID] = make(map[string]int)
+			}
+			r.admissions[threadID][turnID]++
+			r.mu.Unlock()
+		},
+		EndAdmission: func(threadID, turnID string) {
+			r.mu.Lock()
+			admissions := r.admissions[threadID]
+			if count := admissions[turnID]; count > 1 {
+				admissions[turnID] = count - 1
+			} else {
+				delete(admissions, turnID)
+				if len(admissions) == 0 {
+					delete(r.admissions, threadID)
+				}
+			}
+			r.mu.Unlock()
+		},
+		Snapshot: func(threadID, turnID string) (sessiontree.TurnLease, bool, bool) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			lease, ok := r.active[threadID]
+			return lease, ok, r.admissions[threadID][turnID] > 0
+		},
+	}
+}
 
 func TestRootThreadInventoryProjectionCacheReusesExactRevisionAndIsolatesCallers(t *testing.T) {
 	ctx := context.Background()
@@ -123,6 +201,81 @@ func TestRootThreadInventoryProjectsFreshDurableTurnLeaseAsRunning(t *testing.T)
 	thread := inventory[0].Overview.Thread
 	if thread.Status != "running" || thread.Phase != sessionlifecycle.PhaseTurn || thread.LatestTurnID != "turn-active" || thread.Recoverable {
 		t.Fatalf("fresh durable turn projection = %#v, want active turn running without stale interruption", thread)
+	}
+}
+
+func TestRootThreadInventoryProjectsInFlightAdmissionAsRunning(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := &blockingTurnAdmissionRepo{
+		MemoryRepo: sessiontree.NewMemoryRepo(),
+		committed:  make(chan sessiontree.AdmitTurnResult, 1),
+		release:    make(chan struct{}),
+	}
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	executions := &mutableTurnExecutionRegistry{
+		active: make(map[string]sessiontree.TurnLease), admissions: make(map[string]map[string]int),
+	}
+	harness := New(Options{Repo: repo, Now: func() time.Time { return now }, TurnExecutions: executions.registry()})
+	thread, err := harness.ResumeThread(ctx, "thread", ResumeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := make(chan error, 1)
+	go func() {
+		_, admitErr := thread.Admit(ctx, "continue", RunOptions{TurnID: "turn-active", RunID: "run-active"})
+		admitted <- admitErr
+	}()
+	<-repo.committed
+
+	inventory, err := harness.ListRootThreadInventory(ctx, ListRootThreadSummariesOptions{Limit: 10})
+	close(repo.release)
+	if admitErr := <-admitted; admitErr != nil {
+		t.Fatal(admitErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory) != 1 {
+		t.Fatalf("inventory length = %d, want 1", len(inventory))
+	}
+	snapshot := inventory[0].Overview.Thread
+	if snapshot.Status != "running" || snapshot.Phase != sessionlifecycle.PhaseTurn || snapshot.LatestRunID != "run-active" || snapshot.Recoverable {
+		t.Fatalf("in-flight admission projection = %#v, want active turn running", snapshot)
+	}
+}
+
+func TestRootThreadInventoryRejectsDriftedExecutionDuringAdmission(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := sessiontree.NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn-active", RunID: "run-active", OwnerID: "owner-active",
+		RequestFingerprint: "request-active", Now: now,
+		Input: session.Message{Role: session.User, Content: "continue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := admitted.Lease
+	drifted.OwnerID = "owner-drifted"
+	executions := &mutableTurnExecutionRegistry{
+		active:     map[string]sessiontree.TurnLease{"thread": drifted},
+		admissions: map[string]map[string]int{"thread": {"turn-active": 1}},
+	}
+	harness := New(Options{Repo: repo, Now: func() time.Time { return now }, TurnExecutions: executions.registry()})
+	inventory, err := harness.ListRootThreadInventory(ctx, ListRootThreadSummariesOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := inventory[0].Overview.Thread
+	if snapshot.Status != "interrupted" || snapshot.Phase != sessionlifecycle.PhaseIdle || !snapshot.Recoverable {
+		t.Fatalf("drifted admission projection = %#v, want recoverable interruption", snapshot)
 	}
 }
 
