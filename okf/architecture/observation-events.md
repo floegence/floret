@@ -133,11 +133,13 @@ or validation failures require a canonical reload rather than event replay.
   tool-authored presentation. The live projection recorder retains presentation
   observed on the tool call while committed approval detail is arriving, even
   when that detail carries a generic message activity as well as a generic
-  timeline item, so the label, renderer, and payload do not regress before
-  dispatch. Presentation is matched by exact turn and tool identity; approval-only
-  history may still use its neutral single-event presentation as a fallback. The
-  read model carries the same Floret-owned row activity projection as subagent
-  detail reads.
+  timeline item. One recorder is shared by the host harness and execution event
+  paths, so a tool call and its committed approval detail cannot be separated by
+  process-local projection ownership. The label, renderer, and payload therefore
+  do not regress before dispatch. Presentation is matched by exact thread, turn,
+  run, and tool identity; approval-only history may still use its neutral
+  single-event presentation as a fallback. The read model carries the same
+  Floret-owned row activity projection as subagent detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.24 - 2026-08-04
+
+- Share one live turn projection recorder across the host harness and execution
+  event paths. Tool-authored presentation observed during execution is now
+  available when committed approval details are projected, so requested and
+  approved lifecycle updates cannot briefly regress to a generic tool label.
+
 ## v3.2.23 - 2026-08-04
 
 - Preserve the observed tool presentation when a live committed approval

@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Host-wide live projection ownership**: The harness and execution event
+  paths now share one live turn projection recorder for a Host. Tool-authored
+  presentation observed on the execution path remains available when approval
+  detail commits on the harness path, while exact thread, turn, run, and tool
+  identity prevents cross-turn presentation reuse.
 * **Production approval detail continuity**: Live projection now keeps the
   exact tool-authored presentation when a committed approval detail includes
   both a generic message activity and a generic timeline item. Exact tool

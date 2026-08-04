@@ -6992,6 +6992,14 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
 			Destructive: true,
 			OpenWorld:   true,
+			Activity: func(tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+				return &tools.ActivityPresentation{
+					Label:       "write_note notes.md",
+					Description: "Write the requested note",
+					Renderer:    tools.ActivityRendererTerminal,
+					Payload:     tools.TerminalActivityPayload{Command: "write_note notes.md"},
+				}, nil
+			},
 		},
 		nil,
 		func(inv tools.Invocation[runtimeEchoArgs]) ([]tools.ResourceRef, error) {
@@ -7070,6 +7078,11 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 		item := runtimeLiveProjectionItem(rec.snapshot(), "call-1")
 		if item.ToolID == "call-1" && item.Status == observation.ActivityStatusWaiting &&
 			item.RequiresApproval && item.ApprovalState == "requested" {
+			presentation := runtimeActivityPresentation(t, item)
+			payload := runtimeTerminalActivityPayload(t, presentation)
+			if presentation.Label != "write_note notes.md" || presentation.Renderer != tools.ActivityRendererTerminal || payload.Command != "write_note notes.md" {
+				t.Fatalf("requested approval replaced tool presentation: %#v", item)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -7123,6 +7136,32 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 		t.Fatal("timed out waiting for product authorization after canonical decision")
 	}
 	close(release)
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		var approvedItem observation.ActivityItem
+		for _, ev := range rec.snapshot() {
+			if ev.Projection == nil {
+				continue
+			}
+			item := runtimeProjectionToolItem(*ev.Projection, "call-1")
+			if item.ToolID == "call-1" && item.ApprovalState == "approved" {
+				approvedItem = item
+				break
+			}
+		}
+		if approvedItem.ToolID == "call-1" {
+			presentation := runtimeActivityPresentation(t, approvedItem)
+			payload := runtimeTerminalActivityPayload(t, presentation)
+			if presentation.Label != "write_note notes.md" || presentation.Renderer != tools.ActivityRendererTerminal || payload.Command != "write_note notes.md" {
+				t.Fatalf("approved approval replaced tool presentation: %#v", approvedItem)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for approved live projection")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	select {
 	case err := <-runErr:
 		if err != nil {

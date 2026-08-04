@@ -277,7 +277,7 @@ func (e *CommittedEffectError) Unwrap() error {
 type providerHost struct {
 	cfg                       runtimeConfig
 	store                     *runtimeStore
-	sink                      EventSink
+	sink                      runtimeEventSink
 	harness                   *agentharness.AgentHarness
 	supportsOpaqueAttachments bool
 }
@@ -2448,11 +2448,12 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	if err := store.validate(); err != nil {
 		return nil, err
 	}
+	runtimeSink := newRuntimeEventSink(opts.Sink)
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
 		store:                    store,
 		Tools:                    opts.Tools,
 		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
-		Sink:                     newRuntimeEventSink(opts.Sink),
+		Sink:                     runtimeSink,
 		SinkPolicy:               runtimeHarnessSinkPolicy(),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
 		NewID:                    opts.IDGenerator,
@@ -2469,7 +2470,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	return &providerHost{
 		cfg:                       cfg,
 		store:                     store,
-		sink:                      opts.Sink,
+		sink:                      runtimeSink,
 		harness:                   harness,
 		supportsOpaqueAttachments: opts.modelGateway != nil,
 	}, nil
@@ -3080,7 +3081,7 @@ func (h *providerHost) RunTurn(ctx context.Context, req runTurnRequest) (TurnRes
 	if err != nil {
 		return TurnResult{}, runtimeHostError(err)
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
+	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
 	result, runErr := thread.Run(ctx, input.Text, agentharness.RunOptions{
 		RunID:  string(req.RunID),
 		TurnID: string(req.TurnID),
@@ -3179,7 +3180,7 @@ func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAd
 	if err != nil {
 		return TurnResult{}, runtimeHostError(err)
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
+	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
 	result, runErr := thread.ExecuteAdmitted(operationCtx, agentharness.TurnAdmission{
 		ThreadID: string(admission.ThreadID), TurnID: string(admission.TurnID), RunID: string(admission.RunID),
 		UserEntryID: admission.UserEntryID, BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
@@ -3351,7 +3352,7 @@ func (h *providerHost) CompactThread(ctx context.Context, req compactThreadReque
 	if err != nil {
 		return compactThreadResult{}, runtimeHostError(err)
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
+	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
 	result, compactErr := thread.Compact(ctx, agentharness.CompactOptions{
 		RequestID:              req.RequestID,
 		Source:                 req.Source,
