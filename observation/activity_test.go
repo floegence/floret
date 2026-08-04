@@ -551,6 +551,24 @@ func TestBuildActivityTimelineSettlesApprovalWhenToolResultFails(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineSettlesApprovalWhenToolResultIsCanceled(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_750)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-tool-canceled", ThreadID: "thread-tool-canceled", TurnID: "turn-tool-canceled"}, []Event{
+		{Type: EventTypeToolApprovalRequested, RunID: "run-tool-canceled", ThreadID: "thread-tool-canceled", TurnID: "turn-tool-canceled", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start},
+		{Type: EventTypeToolCall, RunID: "run-tool-canceled", ThreadID: "thread-tool-canceled", TurnID: "turn-tool-canceled", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-tool-canceled", ThreadID: "thread-tool-canceled", TurnID: "turn-tool-canceled", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"tool_result_status": string(ActivityStatusCanceled)}, ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate after canceled approved tool dispatch: %v", err)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusCanceled || item.Severity != ActivitySeverityWarning ||
+		item.ApprovalState != "canceled" || item.EndedAtUnixMS == 0 || !item.RequiresApproval || item.NeedsAttention {
+		t.Fatalf("canceled approval tool item mismatch: %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 	start := time.UnixMilli(1_700_000_002_000)
 	command := "curl -s https://example.test"

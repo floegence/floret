@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.14 - 2026-08-04
+
+- Close a requested approval as `canceled` when an interrupted tool batch
+  persists a canceled terminal result without a later run-end marker. Canonical
+  thread projections remain readable during startup recovery while preserving
+  the existing session-tree schema v4 lineage.
+
 ## v3.2.13 - 2026-08-04
 
 - Add `Threads.ListInterruptedTurnRecoveryCandidates` for one-snapshot,

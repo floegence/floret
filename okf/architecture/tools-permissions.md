@@ -115,9 +115,11 @@ active pending approval. `approval_state=approved` may briefly pair with
 projection also closes a historical requested approval when the durable turn
 is failed or aborted, including interrupted recovery records that contain a
 terminal tool result but predate the matching approval-resolution detail event.
-When no later run marker exists, the terminal tool error closes the requested
-approval as `timed_out`; an ensuing aborted marker takes precedence and closes
-it as `canceled`. Projection never exposes `requested` with a terminal error.
+When no later run marker exists, a terminal tool error closes the requested
+approval as `timed_out`; a canceled terminal tool result from an interrupted
+batch closes it as `canceled`; an ensuing aborted marker also takes precedence
+and closes it as `canceled`. Projection never exposes `requested` with a
+terminal error or canceled result.
 The failed turn projects `timed_out` plus `error`; the aborted turn projects
 `canceled` plus `canceled`. Non-terminal and successful conflicts remain invalid
 instead of being repaired speculatively.

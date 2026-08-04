@@ -48,6 +48,10 @@
   requested approval as `timed_out` when no later run marker exists, while an
   aborted marker takes precedence with `canceled`. Stop/dispatch races no
   longer make historical Floret projections unreadable.
+* **Canceled interrupted batch closure**: A canceled terminal tool result in an
+  interrupted batch now closes its requested approval as `canceled` even when
+  the batch has no later run-end marker. This keeps startup inventory and
+  recovery discovery readable without changing the session-tree schema.
 * **Automatic domain migration**: The v3 backend session-tree schema now has a
   permanent contiguous lineage. Startup atomically migrates exact v2 state to
   v3, reconstructs missing SubAgent admission authority from canonical source

@@ -754,6 +754,62 @@ func TestProjectThreadTurnSettlesInterruptedApprovalAfterRecoveryToolResult(t *t
 	}
 }
 
+func TestProjectThreadTurnSettlesCanceledApprovalBeforeInterruptedBatchTerminal(t *testing.T) {
+	now := time.Unix(475, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-interrupted-batch",
+		TurnID:   "turn-interrupted-batch",
+		RunID:    "run-interrupted-batch",
+		TraceID:  "run-interrupted-batch",
+		Events: []ThreadDetailEvent{
+			{
+				ID: "turn-started", Ordinal: 1, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventTurnMarker, CreatedAt: now,
+				TurnMarker: &ThreadDetailTurnMarker{Status: "started"},
+			},
+			{
+				ID: "approval-requested", Ordinal: 2, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventApproval, Type: string(observation.EventTypeToolApprovalRequested), CreatedAt: now.Add(time.Second),
+				Approval: &ThreadDetailApproval{State: "requested", ToolID: "call-shell", ToolName: "terminal.exec"},
+			},
+			{
+				ID: "read-call", Ordinal: 3, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventToolCall, CreatedAt: now.Add(2 * time.Second),
+				ToolCall: &ThreadDetailToolCall{ID: "call-read", Name: "okf.search"},
+			},
+			{
+				ID: "shell-call", Ordinal: 4, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventToolCall, CreatedAt: now.Add(2 * time.Second),
+				ToolCall: &ThreadDetailToolCall{ID: "call-shell", Name: "terminal.exec"},
+			},
+			{
+				ID: "read-result", Ordinal: 5, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventToolResult, CreatedAt: now.Add(3 * time.Second),
+				ToolResult: &ThreadDetailToolResult{CallID: "call-read", ToolName: "okf.search", Status: string(observation.ActivityStatusSuccess)},
+			},
+			{
+				ID: "shell-result", Ordinal: 6, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventToolResult, CreatedAt: now.Add(4 * time.Second),
+				ToolResult: &ThreadDetailToolResult{CallID: "call-shell", ToolName: "terminal.exec", Status: string(observation.ActivityStatusCanceled)},
+			},
+			{
+				ID: "interrupted-batch-save-point", Ordinal: 7, ThreadID: "thread-interrupted-batch", TurnID: "turn-interrupted-batch",
+				Kind: ThreadDetailEventTurnMarker, CreatedAt: now.Add(5 * time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{Status: "save_point", Metadata: map[string]string{"reason": "interrupted_tool_result_batch"}},
+			},
+		},
+	})
+
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("interrupted batch projection: %v", err)
+	}
+	item := projectionToolItem(t, projection, "call-shell")
+	if projection.Status != TurnStatusRunning || item.Status != observation.ActivityStatusCanceled ||
+		item.ApprovalState != "canceled" || item.EndedAtUnixMS != now.Add(4*time.Second).UnixMilli() || item.NeedsAttention {
+		t.Fatalf("interrupted batch approval item = %#v, projection status = %q", item, projection.Status)
+	}
+}
+
 func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 	now := time.Unix(500, 0)
 	tests := []struct {

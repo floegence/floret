@@ -487,11 +487,16 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 	}
 	for _, key := range order {
 		state := items[key]
-		if runEnd == nil && state.item.RequiresApproval && state.item.Status == ActivityStatusError && state.item.ApprovalState == "requested" {
-			// A terminal tool error without a later run marker is the only
-			// durable outcome when approval races with cancellation or dispatch
-			// failure. Close it so the public timeline remains recoverable.
-			state.item.ApprovalState = "timed_out"
+		if runEnd == nil && state.item.RequiresApproval && state.item.ApprovalState == "requested" {
+			// A terminal tool result can commit before interrupted-turn recovery
+			// appends its run marker. Close the approval from that durable outcome
+			// so the intermediate timeline remains readable after a restart.
+			switch state.item.Status {
+			case ActivityStatusError:
+				state.item.ApprovalState = "timed_out"
+			case ActivityStatusCanceled:
+				state.item.ApprovalState = "canceled"
+			}
 		}
 		if runEnd != nil {
 			settleUnresolvedActivityItemAtRunEnd(&state.item, *runEnd, nowUnixMS)
