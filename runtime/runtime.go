@@ -5175,8 +5175,7 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 		r.eventsByTurn = map[string][]ThreadDetailEvent{}
 	}
 	committed := cloneThreadDetailEvent(*ev.Committed)
-	if committed.Kind == ThreadDetailEventApproval && committed.Approval != nil &&
-		(committed.Message == nil || committed.Message.Activity == nil) {
+	if committed.Kind == ThreadDetailEventApproval && committed.Approval != nil {
 		approvalToolID := strings.TrimSpace(committed.Approval.ToolID)
 		if presentation := r.toolPresentationsByTurn[key][approvalToolID]; presentation != nil {
 			if committed.ActivityTimeline != nil {

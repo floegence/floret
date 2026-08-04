@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Production approval detail continuity**: Live projection now keeps the
+  exact tool-authored presentation when a committed approval detail includes
+  both a generic message activity and a generic timeline item. Exact tool
+  identity remains required, and approval-only history keeps its neutral
+  fallback.
 * **Live approval presentation continuity**: Host-facing live turn projection
   now retains the tool presentation already observed for the run while approval
   request and resolution detail commits arrive before dispatch. The durable

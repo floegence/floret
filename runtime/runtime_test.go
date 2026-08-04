@@ -6906,7 +6906,7 @@ func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprov
 	}); projection != nil {
 		t.Fatalf("non-committed tool event produced projection: %#v", projection)
 	}
-	approvalTimeline := func(eventType observation.EventType, state string, at time.Time) *observation.ActivityTimeline {
+	approvalTimeline := func(eventType observation.EventType, state string, at time.Time, toolID string) *observation.ActivityTimeline {
 		timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
 			RunID:    "run-live-approval-presentation",
 			ThreadID: "thread-live-approval-presentation",
@@ -6918,7 +6918,7 @@ func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprov
 			ThreadID:   "thread-live-approval-presentation",
 			TurnID:     "turn-live-approval-presentation",
 			TraceID:    "run-live-approval-presentation",
-			ToolID:     "call-1",
+			ToolID:     toolID,
 			ToolName:   "terminal.exec",
 			ObservedAt: at,
 		}}, at.UnixMilli())
@@ -6932,7 +6932,7 @@ func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprov
 		}
 		return &timeline
 	}
-	projectApproval := func(ordinal int64, eventType observation.EventType, state string, at time.Time) *ThreadTurnProjection {
+	projectApproval := func(ordinal int64, eventType observation.EventType, state string, at time.Time, toolID string) *ThreadTurnProjection {
 		return recorder.project(Event{
 			Type:      observation.EventTypeThreadEntryCommitted,
 			RunID:     "run-live-approval-presentation",
@@ -6940,21 +6940,26 @@ func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprov
 			TurnID:    "turn-live-approval-presentation",
 			Timestamp: at,
 			Committed: &ThreadDetailEvent{
-				ID:               fmt.Sprintf("approval-%s", state),
-				Ordinal:          ordinal,
-				ThreadID:         "thread-live-approval-presentation",
-				TurnID:           "turn-live-approval-presentation",
-				RunID:            "run-live-approval-presentation",
-				Kind:             ThreadDetailEventApproval,
-				Type:             string(eventType),
-				CreatedAt:        at,
-				Approval:         &ThreadDetailApproval{State: state, ToolID: "call-1", ToolName: "terminal.exec"},
-				ActivityTimeline: approvalTimeline(eventType, state, at),
+				ID:        fmt.Sprintf("approval-%s", state),
+				Ordinal:   ordinal,
+				ThreadID:  "thread-live-approval-presentation",
+				TurnID:    "turn-live-approval-presentation",
+				RunID:     "run-live-approval-presentation",
+				Kind:      ThreadDetailEventApproval,
+				Type:      string(eventType),
+				CreatedAt: at,
+				Message: &ThreadDetailMessage{Activity: &tools.ActivityPresentation{
+					Label:       "Tool approval",
+					Description: state,
+					Renderer:    tools.ActivityRendererStructured,
+				}},
+				Approval:         &ThreadDetailApproval{State: state, ToolID: toolID, ToolName: "terminal.exec"},
+				ActivityTimeline: approvalTimeline(eventType, state, at, toolID),
 			},
 		})
 	}
-	requested := projectApproval(1, observation.EventTypeToolApprovalRequested, "requested", now.Add(time.Second))
-	approved := projectApproval(2, observation.EventTypeToolApprovalApproved, "approved", now.Add(2*time.Second))
+	requested := projectApproval(1, observation.EventTypeToolApprovalRequested, "requested", now.Add(time.Second), "call-1")
+	approved := projectApproval(2, observation.EventTypeToolApprovalApproved, "approved", now.Add(2*time.Second), "call-1")
 	for name, projection := range map[string]*ThreadTurnProjection{"requested": requested, "approved": approved} {
 		if projection == nil {
 			t.Fatalf("%s approval did not produce a projection", name)
@@ -6966,6 +6971,12 @@ func TestRuntimeLiveProjectionRecorderPreservesObservedToolPresentationForApprov
 			presentation.Renderer != tools.ActivityRendererTerminal || payload.Command != command {
 			t.Fatalf("%s approval replaced observed tool presentation: %#v", name, item)
 		}
+	}
+	unobserved := projectApproval(3, observation.EventTypeToolApprovalRequested, "requested", now.Add(3*time.Second), "call-2")
+	item := runtimeProjectionToolItem(*unobserved, "call-2")
+	presentation := runtimeActivityPresentation(t, item)
+	if presentation.Label != "Tool approval" || presentation.Renderer != tools.ActivityRendererStructured || presentation.Payload != nil {
+		t.Fatalf("unobserved tool borrowed another tool presentation: %#v", item)
 	}
 }
 

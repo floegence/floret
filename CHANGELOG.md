@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.23 - 2026-08-04
+
+- Preserve the observed tool presentation when a live committed approval
+  detail carries both a generic message activity and a generic timeline item.
+  Approval lifecycle facts still update the matching tool only, and tools with
+  no observed presentation retain the neutral fallback.
+
 ## v3.2.22 - 2026-08-04
 
 - Preserve the tool-authored activity presentation in host-facing live turn

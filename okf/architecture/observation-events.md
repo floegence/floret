@@ -131,8 +131,10 @@ or validation failures require a canonical reload rather than event replay.
   facts for the same tool invocation collapse back into the original item.
   Approval detail advances that item's lifecycle without replacing an existing
   tool-authored presentation. The live projection recorder retains presentation
-  observed on the tool call while committed approval detail is arriving, so the
-  label, renderer, and payload do not regress before dispatch. Approval-only
+  observed on the tool call while committed approval detail is arriving, even
+  when that detail carries a generic message activity as well as a generic
+  timeline item, so the label, renderer, and payload do not regress before
+  dispatch. Presentation is matched by exact turn and tool identity; approval-only
   history may still use its neutral single-event presentation as a fallback. The
   read model carries the same Floret-owned row activity projection as subagent
   detail reads.
