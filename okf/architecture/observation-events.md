@@ -140,6 +140,13 @@ or validation failures require a canonical reload rather than event replay.
   run, and tool identity; approval-only history may still use its neutral
   single-event presentation as a fallback. The read model carries the same
   Floret-owned row activity projection as subagent detail reads.
+  Effect dispatch and public host authorization requests carry a detached copy
+  of the tool-authored presentation into each newly requested canonical
+  approval entry. Presentation is not authorization evidence and is excluded
+  from approval request fingerprints and replay identity. Detail reads for
+  journals written before this addition recover a missing approval presentation
+  from the matching durable tool call in the same thread and turn; they do not
+  rewrite state or change domain schema v4.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

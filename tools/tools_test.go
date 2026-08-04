@@ -1020,6 +1020,70 @@ func TestDispatchBatchPreflightFailurePreventsEveryPreparedHandler(t *testing.T)
 	}
 }
 
+func TestDispatchBatchPreflightCarriesDetachedActivityPerCall(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "shell",
+			InputSchema: StrictObject(map[string]any{"value": String("command")}, []string{"value"}),
+			Effects:     []Effect{EffectShell},
+			Permission:  PermissionSpec{Mode: PermissionAsk},
+			Activity: func(inv Invocation[any]) (*ActivityPresentation, error) {
+				args := inv.Args.(testArgs)
+				return &ActivityPresentation{
+					Label:    args.Value,
+					Renderer: ActivityRendererTerminal,
+					Payload:  TerminalActivityPayload{Command: args.Value},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			return Result{Text: "ok"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests []EffectDispatchRequest
+	results := reg.DispatchBatch(context.Background(), []ToolCall{
+		{ID: "first", Name: "shell", Args: `{"value":"printf first"}`},
+		{ID: "second", Name: "shell", Args: `{"value":"printf second"}`},
+	}, DispatchOptions{
+		EffectBatchPreflight: func(_ context.Context, got []EffectDispatchRequest) error {
+			requests = got
+			return nil
+		},
+		EffectDispatcher: func(ctx context.Context, _ EffectDispatchRequest, invoke func(context.Context) Result) Result {
+			return invoke(ctx)
+		},
+	})
+	if len(results) != 2 || results[0].IsError || results[1].IsError {
+		t.Fatalf("results = %#v", results)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	first := requests[0].Activity
+	second := requests[1].Activity
+	if first == nil || first.Label != "printf first" || first.Renderer != ActivityRendererTerminal ||
+		first.Payload.(TerminalActivityPayload).Command != "printf first" {
+		t.Fatalf("first activity = %#v", first)
+	}
+	if second == nil || second.Label != "printf second" || second.Renderer != ActivityRendererTerminal ||
+		second.Payload.(TerminalActivityPayload).Command != "printf second" {
+		t.Fatalf("second activity = %#v", second)
+	}
+	if first == second {
+		t.Fatal("batch requests share one activity pointer")
+	}
+	first.Label = "mutated"
+	if second.Label != "printf second" {
+		t.Fatalf("second activity changed with first: %#v", second)
+	}
+}
+
 func contains(value, substr string) bool {
 	return strings.Contains(value, substr)
 }

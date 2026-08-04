@@ -78,6 +78,7 @@ type EffectAuthorizationRequest struct {
 	BatchSize          int
 	Labels             map[string]string
 	HostContext        map[string]string
+	Activity           *tools.ActivityPresentation
 	Resources          []tools.ResourceRef
 	Effects            []tools.Effect
 	Permission         tools.PermissionSpec
@@ -968,6 +969,7 @@ func (t *Thread) effectApprovalEvent(typ event.Type, req EffectAuthorizationRequ
 		Type: typ, RunID: req.RunID, ThreadID: req.ThreadID, TurnID: req.TurnID, Step: req.Step,
 		ToolID: req.ToolCallID, ToolName: req.ToolName, ToolKind: "local", ArgsHash: req.ArgumentHash,
 		Err: strings.TrimSpace(reason), Timestamp: t.harness.now(),
+		Activity: tools.CloneActivityPresentation(req.Activity),
 		Metadata: map[string]any{
 			"approval_id": req.EffectAttemptID, "resources": resources, "effects": effects,
 			"read_only": req.ReadOnly, "destructive": req.Destructive, "open_world": req.OpenWorld,

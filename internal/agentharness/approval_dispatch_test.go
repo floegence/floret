@@ -17,6 +17,34 @@ import (
 	"github.com/floegence/floret/v3/tools"
 )
 
+func TestApprovalRequestFingerprintExcludesPresentation(t *testing.T) {
+	item := sessiontree.ApprovalPreflightItem{
+		EffectAttemptID: "effect",
+		Invocation: sessiontree.EffectInvocationIdentity{
+			ThreadID: "thread", TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "shell", ArgumentHash: "args",
+		},
+		RequestedEntry: sessiontree.Entry{
+			ID: "requested", ThreadID: "thread", TurnID: "turn", Type: sessiontree.EntryCustom,
+			Metadata: map[string]string{"approval_state": "requested"},
+		},
+	}
+	withoutPresentation, err := approvalRequestFingerprint(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.RequestedEntry.Message.Activity = &session.ActivityPresentation{
+		Label: "printf test", Renderer: tools.ActivityRendererTerminal,
+		Payload: tools.TerminalActivityPayload{Command: "printf test"},
+	}
+	withPresentation, err := approvalRequestFingerprint(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withPresentation != withoutPresentation {
+		t.Fatalf("presentation changed approval fingerprint: without=%q with=%q", withoutPresentation, withPresentation)
+	}
+}
+
 func TestEffectApprovalWaitReturnsCanonicalCancellationDeterministically(t *testing.T) {
 	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
 	repo, err := sessiontree.NewMemoryRepoWithLeasePolicy(sessiontree.DefaultLeasePolicy, func() time.Time { return now })

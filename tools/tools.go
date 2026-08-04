@@ -81,12 +81,14 @@ type EffectDispatchRequest struct {
 	BatchSize     int
 	Labels        map[string]string
 	HostContext   map[string]string
-	Resources     []ResourceRef
-	Effects       []Effect
-	Permission    PermissionSpec
-	ReadOnly      bool
-	Destructive   bool
-	OpenWorld     bool
+	// Activity is detached tool-authored display data. It is never authority.
+	Activity    *ActivityPresentation
+	Resources   []ResourceRef
+	Effects     []Effect
+	Permission  PermissionSpec
+	ReadOnly    bool
+	Destructive bool
+	OpenWorld   bool
 }
 
 // EffectDispatcher authorizes one prepared effect and chooses the execution
@@ -736,10 +738,27 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 		CallID: call.ID, Name: call.Name, RawArgs: raw, RunID: opts.RunID, ThreadID: opts.ThreadID,
 		TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step,
 		BatchIndex: opts.BatchIndex, BatchSize: opts.BatchSize, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext),
+		Activity:  preparedDispatchActivity(t.Definition, inv),
 		Resources: append([]ResourceRef(nil), resources...), Effects: append([]Effect(nil), t.Definition.Effects...), Permission: permission,
 		ReadOnly: t.Definition.ReadOnly, Destructive: t.Definition.Destructive, OpenWorld: t.Definition.OpenWorld,
 	}
 	return preparedDispatch{request: request, invoke: invoke}, Result{}, true
+}
+
+func preparedDispatchActivity(def Definition, inv erasedInvocation) *ActivityPresentation {
+	if def.Activity == nil {
+		return nil
+	}
+	activity, err := def.Activity(Invocation[any]{
+		CallID: inv.CallID, Name: inv.Name, RawArgs: inv.RawArgs, Args: inv.Args,
+		RunID: inv.RunID, ThreadID: inv.ThreadID, TurnID: inv.TurnID,
+		PromptScopeID: inv.PromptScopeID, Step: inv.Step,
+		Labels: cloneStringMap(inv.Labels), HostContext: cloneStringMap(inv.HostContext),
+	})
+	if err != nil {
+		return nil
+	}
+	return CloneActivityPresentation(activity)
 }
 
 func invocationPermission(def Definition, inv erasedInvocation) (PermissionSpec, error) {

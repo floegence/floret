@@ -1672,6 +1672,8 @@ func approvalDispatchEntryRequestMatches(stored, requested Entry) bool {
 	stored.CreatedAt = time.Time{}
 	stored.Raw = ""
 	stored.RawHash = ""
+	stored.Message.Activity = nil
+	requested.Message.Activity = nil
 	return reflect.DeepEqual(stored, requested)
 }
 

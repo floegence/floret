@@ -487,28 +487,30 @@ type MessageReference struct {
 }
 
 type EffectAuthorizationRequest struct {
-	EffectAttemptID    string               `json:"effect_attempt_id"`
-	RequestFingerprint string               `json:"request_fingerprint"`
-	ThreadID           identity.ThreadID    `json:"thread_id"`
-	TurnID             identity.TurnID      `json:"turn_id"`
-	RunID              identity.RunID       `json:"run_id"`
-	ToolCallID         string               `json:"tool_call_id"`
-	ToolName           string               `json:"tool_name"`
-	ArgumentHash       string               `json:"argument_hash"`
-	Step               int                  `json:"step"`
-	BatchIndex         int                  `json:"batch_index"`
-	BatchSize          int                  `json:"batch_size"`
-	Labels             map[string]string    `json:"labels,omitempty"`
-	HostContext        map[string]string    `json:"host_context,omitempty"`
-	Resources          []tools.ResourceRef  `json:"resources,omitempty"`
-	Effects            []tools.Effect       `json:"effects,omitempty"`
-	Permission         tools.PermissionSpec `json:"permission"`
-	ReadOnly           bool                 `json:"read_only"`
-	Destructive        bool                 `json:"destructive"`
-	OpenWorld          bool                 `json:"open_world"`
-	LeaseOwnerID       string               `json:"lease_owner_id"`
-	LeaseGeneration    int64                `json:"lease_generation"`
-	ObservedHeartbeat  int64                `json:"observed_heartbeat"`
+	EffectAttemptID    string            `json:"effect_attempt_id"`
+	RequestFingerprint string            `json:"request_fingerprint"`
+	ThreadID           identity.ThreadID `json:"thread_id"`
+	TurnID             identity.TurnID   `json:"turn_id"`
+	RunID              identity.RunID    `json:"run_id"`
+	ToolCallID         string            `json:"tool_call_id"`
+	ToolName           string            `json:"tool_name"`
+	ArgumentHash       string            `json:"argument_hash"`
+	Step               int               `json:"step"`
+	BatchIndex         int               `json:"batch_index"`
+	BatchSize          int               `json:"batch_size"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	HostContext        map[string]string `json:"host_context,omitempty"`
+	// Activity is detached tool-authored display data. It is never authority.
+	Activity          *tools.ActivityPresentation `json:"activity,omitempty"`
+	Resources         []tools.ResourceRef         `json:"resources,omitempty"`
+	Effects           []tools.Effect              `json:"effects,omitempty"`
+	Permission        tools.PermissionSpec        `json:"permission"`
+	ReadOnly          bool                        `json:"read_only"`
+	Destructive       bool                        `json:"destructive"`
+	OpenWorld         bool                        `json:"open_world"`
+	LeaseOwnerID      string                      `json:"lease_owner_id"`
+	LeaseGeneration   int64                       `json:"lease_generation"`
+	ObservedHeartbeat int64                       `json:"observed_heartbeat"`
 }
 
 type EffectAuthorizationProof struct {
@@ -556,6 +558,7 @@ func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.E
 			ToolCallID: req.ToolCallID, ToolName: req.ToolName, ArgumentHash: req.ArgumentHash,
 			Step: req.Step, BatchIndex: req.BatchIndex, BatchSize: req.BatchSize,
 			Labels: cloneStringMap(req.Labels), HostContext: cloneStringMap(req.HostContext),
+			Activity:  tools.CloneActivityPresentation(req.Activity),
 			Resources: append([]tools.ResourceRef(nil), req.Resources...), Effects: append([]tools.Effect(nil), req.Effects...),
 			Permission: req.Permission, ReadOnly: req.ReadOnly, Destructive: req.Destructive, OpenWorld: req.OpenWorld,
 			LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration, ObservedHeartbeat: req.ObservedHeartbeat,

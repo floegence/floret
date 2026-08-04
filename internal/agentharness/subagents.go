@@ -791,10 +791,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	}
 	entries := journal.Path
 	retainedFrom := subAgentDetailRetainedFrom(entries)
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	generatedAt := h.now()
 	activityTimeline := h.subAgentDetailActivityTimeline(entries, retainedFrom, activityContext, generatedAt)
 	contextSnapshot, err := h.subAgentDetailContext(entries, retainedFrom, activityContext, generatedAt)
@@ -1061,10 +1058,7 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 	}
 	entries := journal.Path
 	retainedFrom := threadDetailRetainedFrom(entries)
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -1094,10 +1088,7 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 }
 
 func (h *AgentHarness) detailEventsForCanonicalEntries(ctx context.Context, entries []sessiontree.Entry, includeRaw bool) ([]SubAgentDetailEvent, error) {
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	for index, entry := range entries {
 		entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, entry, activityContext.runIDForTurn(entry.TurnID))
@@ -1211,10 +1202,7 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 	for _, item := range selected {
 		entries = append(entries, item.entry)
 	}
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	for _, item := range selected {
@@ -1275,10 +1263,7 @@ func (h *AgentHarness) latestThreadDetailEventsFromPath(ctx context.Context, pat
 		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
 	}
 	entries := path[latestStartedIndex:]
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	for offset, entry := range entries {
@@ -1316,10 +1301,7 @@ func (h *AgentHarness) ReadThreadContext(ctx context.Context, threadID string) (
 		return ThreadContextSnapshot{}, err
 	}
 	entries := journal.Path
-	activityContext := subAgentDetailActivityContext{
-		resultCallIDs: subAgentDetailResultCallIDs(entries),
-		runIDs:        subAgentDetailTurnRunIDs(entries),
-	}
+	activityContext := newSubAgentDetailActivityContext(entries)
 	return h.subAgentDetailContext(entries, threadDetailRetainedFrom(entries), activityContext, h.now())
 }
 
@@ -1448,6 +1430,20 @@ func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 type subAgentDetailActivityContext struct {
 	resultCallIDs map[string]struct{}
 	runIDs        map[string]string
+	presentations map[subAgentDetailActivityKey]*tools.ActivityPresentation
+}
+
+type subAgentDetailActivityKey struct {
+	turnID string
+	callID string
+}
+
+func newSubAgentDetailActivityContext(entries []sessiontree.Entry) subAgentDetailActivityContext {
+	return subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+		presentations: subAgentDetailToolPresentations(entries),
+	}
 }
 
 func (c subAgentDetailActivityContext) hasResult(callID string) bool {
@@ -1464,6 +1460,37 @@ func (c subAgentDetailActivityContext) runIDForTurn(turnID string) string {
 		return ""
 	}
 	return strings.TrimSpace(c.runIDs[strings.TrimSpace(turnID)])
+}
+
+func (c subAgentDetailActivityContext) presentation(turnID, callID string) *tools.ActivityPresentation {
+	if len(c.presentations) == 0 {
+		return nil
+	}
+	return tools.CloneActivityPresentation(c.presentations[subAgentDetailActivityKey{
+		turnID: strings.TrimSpace(turnID),
+		callID: strings.TrimSpace(callID),
+	}])
+}
+
+func subAgentDetailToolPresentations(entries []sessiontree.Entry) map[subAgentDetailActivityKey]*tools.ActivityPresentation {
+	out := map[subAgentDetailActivityKey]*tools.ActivityPresentation{}
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryToolCall || entry.Message.Activity == nil {
+			continue
+		}
+		key := subAgentDetailActivityKey{
+			turnID: strings.TrimSpace(entry.TurnID),
+			callID: strings.TrimSpace(entry.Message.ToolCallID),
+		}
+		if key.turnID == "" || key.callID == "" {
+			continue
+		}
+		out[key] = observationActivityPresentation(entry.Message.Activity)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func subAgentDetailTurnRunIDs(entries []sessiontree.Entry) map[string]string {
@@ -1598,6 +1625,9 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		base.ToolKind = firstSubAgentDetailNonEmpty(detail.Approval.ToolKind, "local")
 		base.ArgsHash = detail.Approval.ArgsHash
 		base.Activity = observationActivityPresentation(entry.Message.Activity)
+		if base.Activity == nil {
+			base.Activity = activityContext.presentation(detail.TurnID, detail.Approval.ToolID)
+		}
 		if base.Activity == nil {
 			base.Activity = subAgentDetailActivityPresentation("Tool approval", detail.Approval.State)
 		}

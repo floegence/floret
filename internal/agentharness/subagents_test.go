@@ -32,6 +32,34 @@ type missingThreadMemoryRepo struct {
 	missingThreadID string
 }
 
+func TestSubAgentDetailApprovalRecoversLegacyDurableToolPresentation(t *testing.T) {
+	entries := []sessiontree.Entry{
+		{
+			ThreadID: "child", TurnID: "turn", Type: sessiontree.EntryToolCall,
+			Message: session.Message{
+				Role: session.Assistant, ToolCallID: "call", ToolName: "terminal.exec",
+				Activity: &session.ActivityPresentation{
+					Label: "printf legacy", Renderer: tools.ActivityRendererTerminal,
+					Payload: tools.TerminalActivityPayload{Command: "printf legacy"},
+				},
+			},
+		},
+	}
+	context := newSubAgentDetailActivityContext(entries)
+	detail := SubAgentDetailEvent{
+		ThreadID: "child", TurnID: "turn", Kind: SubAgentDetailEventApproval,
+		Approval: &SubAgentDetailApproval{State: "requested", ToolID: "call", ToolName: "terminal.exec"},
+	}
+	event, ok := subAgentDetailObservationEvent(detail, sessiontree.Entry{CreatedAt: time.Now()}, context)
+	if !ok || event.Activity == nil || event.Activity.Label != "printf legacy" || event.Activity.Renderer != tools.ActivityRendererTerminal {
+		t.Fatalf("legacy approval activity = %#v ok=%v", event.Activity, ok)
+	}
+	payload, ok := event.Activity.Payload.(tools.TerminalActivityPayload)
+	if !ok || payload.Command != "printf legacy" {
+		t.Fatalf("legacy approval payload = %#v", event.Activity.Payload)
+	}
+}
+
 func (r *missingThreadMemoryRepo) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
 	if strings.TrimSpace(threadID) == strings.TrimSpace(r.missingThreadID) {
 		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadNotFound
@@ -635,7 +663,8 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 			scriptharness.DoneReason("tool_calls"),
 		),
 	)
-	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
 	h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error) {
 		return EffectDispatchResult{}, ErrEffectUnauthorized
 	})
@@ -645,6 +674,14 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
 			Effects:     []tools.Effect{tools.EffectWrite},
+			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+				args := inv.Args.(stringArgs)
+				return &tools.ActivityPresentation{
+					Label:    "write " + args.Value,
+					Renderer: tools.ActivityRendererFile,
+					Payload:  tools.FileActivityPayload{Path: args.Value, Operation: "write"},
+				}, nil
+			},
 		},
 		nil,
 		nil,
@@ -692,6 +729,30 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	pending := queue.Approvals[0]
+	assertPendingActivity := func(t *testing.T, reader *AgentHarness) {
+		t.Helper()
+		detail, err := reader.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{
+			ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		approval := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventApproval)
+		if approval.ActivityTimeline == nil || len(approval.ActivityTimeline.Items) != 1 {
+			t.Fatalf("pending approval timeline = %#v", approval.ActivityTimeline)
+		}
+		presentation := approval.ActivityTimeline.Items[0].Presentation
+		if presentation == nil || presentation.Label != "write danger" || presentation.Renderer != tools.ActivityRendererFile {
+			t.Fatalf("pending approval presentation = %#v", presentation)
+		}
+		payload, ok := presentation.Payload.(tools.FileActivityPayload)
+		if !ok || payload.Path != "danger" || payload.Operation != "write" {
+			t.Fatalf("pending approval payload = %#v", presentation.Payload)
+		}
+	}
+	assertPendingActivity(t, h)
+	restarted := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	assertPendingActivity(t, restarted)
 	if _, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
 		DecisionID: "decision-approve-child-write", ExpectedRootThreadID: queue.RootThreadID,
 		ExpectedGeneration: queue.Generation, ExpectedRevision: queue.Revision,

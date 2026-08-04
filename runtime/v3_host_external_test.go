@@ -164,11 +164,25 @@ func testExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T, source
 		Name: "write_note", Title: "Write note", Description: "Write a note.",
 		InputSchema: tools.StrictObject(map[string]any{}, nil),
 		Effects:     []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		Activity: func(tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+			return &tools.ActivityPresentation{
+				Label:    "write note",
+				Renderer: tools.ActivityRendererFile,
+				Payload:  tools.FileActivityPayload{Path: "note.md", Operation: "write"},
+			}, nil
+		},
 	}, nil, nil, func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
 		executions.Add(1)
 		return tools.Result{Text: "written"}, nil
 	})
 	gate := runtime.EffectAuthorizationGateFunc(func(ctx context.Context, request runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		if request.Activity == nil || request.Activity.Label != "write note" || request.Activity.Renderer != tools.ActivityRendererFile {
+			t.Fatalf("authorization activity = %#v", request.Activity)
+		}
+		payload, ok := request.Activity.Payload.(tools.FileActivityPayload)
+		if !ok || payload.Path != "note.md" || payload.Operation != "write" {
+			t.Fatalf("authorization activity payload = %#v", request.Activity.Payload)
+		}
 		return effect(ctx, runtime.EffectAuthorizationProof{
 			EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
 			ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,

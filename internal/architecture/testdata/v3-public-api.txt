@@ -609,6 +609,7 @@ field EffectAuthorizationRequest.BatchIndex int tag="json:\"batch_index\""
 field EffectAuthorizationRequest.BatchSize int tag="json:\"batch_size\""
 field EffectAuthorizationRequest.Labels map[string]string tag="json:\"labels,omitempty\""
 field EffectAuthorizationRequest.HostContext map[string]string tag="json:\"host_context,omitempty\""
+field EffectAuthorizationRequest.Activity *github.com/floegence/floret/v3/tools.ActivityPresentation tag="json:\"activity,omitempty\""
 field EffectAuthorizationRequest.Resources []github.com/floegence/floret/v3/tools.ResourceRef tag="json:\"resources,omitempty\""
 field EffectAuthorizationRequest.Effects []github.com/floegence/floret/v3/tools.Effect tag="json:\"effects,omitempty\""
 field EffectAuthorizationRequest.Permission github.com/floegence/floret/v3/tools.PermissionSpec tag="json:\"permission\""
@@ -1726,6 +1727,7 @@ field EffectDispatchRequest.BatchIndex int
 field EffectDispatchRequest.BatchSize int
 field EffectDispatchRequest.Labels map[string]string
 field EffectDispatchRequest.HostContext map[string]string
+field EffectDispatchRequest.Activity *github.com/floegence/floret/v3/tools.ActivityPresentation
 field EffectDispatchRequest.Resources []github.com/floegence/floret/v3/tools.ResourceRef
 field EffectDispatchRequest.Effects []github.com/floegence/floret/v3/tools.Effect
 field EffectDispatchRequest.Permission github.com/floegence/floret/v3/tools.PermissionSpec

@@ -130,6 +130,7 @@ func approvalPreflightItem(request tools.EffectDispatchRequest, effectFingerprin
 
 func approvalRequestFingerprint(item sessiontree.ApprovalPreflightItem) (string, error) {
 	item.ApprovalRequestFingerprint = ""
+	item.RequestedEntry.Message.Activity = nil
 	payload, err := json.Marshal(item)
 	if err != nil {
 		return "", err
@@ -144,7 +145,8 @@ func effectAuthorizationRequest(request tools.EffectDispatchRequest, lease sessi
 		ToolName: request.Name, ArgumentHash: attempt.Invocation.ArgumentHash, Resources: append([]tools.ResourceRef(nil), request.Resources...),
 		Step: request.Step, BatchIndex: request.BatchIndex, BatchSize: request.BatchSize,
 		Labels: cloneStringMap(request.Labels), HostContext: cloneStringMap(request.HostContext),
-		Effects: append([]tools.Effect(nil), request.Effects...), Permission: request.Permission,
+		Activity: tools.CloneActivityPresentation(request.Activity),
+		Effects:  append([]tools.Effect(nil), request.Effects...), Permission: request.Permission,
 		ReadOnly: request.ReadOnly, Destructive: request.Destructive, OpenWorld: request.OpenWorld,
 		LeaseOwnerID: lease.OwnerID, LeaseGeneration: lease.Generation, ObservedHeartbeat: lease.Heartbeat,
 	}

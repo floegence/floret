@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.2.25 - 2026-08-04
+
+- Preserve tool-authored activity presentation in durable approval entries and
+  public effect authorization requests. Subagent detail reads retain the exact
+  command or resource renderer while approval is waiting and after restart;
+  journals written by earlier v3 releases recover presentation from the
+  matching durable tool call without changing approval identity or schema v4.
+
 ## v3.2.24 - 2026-08-04
 
 - Share one live turn projection recorder across the host harness and execution

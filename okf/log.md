@@ -1,6 +1,12 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Durable approval presentation**: Effect dispatch and host authorization
+  requests now carry a detached tool-authored presentation into canonical
+  approval entries. SubAgent and turn detail reads keep exact renderer payloads
+  after restart, while earlier v3 journals recover them from the matching
+  durable tool call. Presentation remains excluded from approval identity and
+  schema v4 is unchanged.
 * **Host-wide live projection ownership**: The harness and execution event
   paths now share one live turn projection recorder for a Host. Tool-authored
   presentation observed on the execution path remains available when approval

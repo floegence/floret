@@ -12,6 +12,28 @@ import (
 	"github.com/floegence/floret/v3/internal/session"
 )
 
+func TestApprovalDispatchEntryRequestMatchesIgnoresPresentationOnlyDifferences(t *testing.T) {
+	requested := Entry{
+		ID: "approval-requested", ThreadID: "thread", TurnID: "turn", Type: EntryCustom,
+		Message:  session.Message{Activity: &session.ActivityPresentation{Label: "printf current"}},
+		Metadata: map[string]string{"approval_state": "requested"},
+	}
+	stored := requested
+	stored.ParentID = "parent"
+	stored.PathDepth = 4
+	stored.CreatedAt = time.Now()
+	stored.Raw = "stored"
+	stored.RawHash = "hash"
+	stored.Message.Activity = nil
+	if !ApprovalDispatchEntryRequestMatches(stored, requested) {
+		t.Fatal("presentation-only upgrade difference changed approval request identity")
+	}
+	stored.Metadata = map[string]string{"approval_state": "approved"}
+	if ApprovalDispatchEntryRequestMatches(stored, requested) {
+		t.Fatal("authority metadata difference was ignored")
+	}
+}
+
 func TestMemoryFinalizeApprovalRejectsAuthorityTamperingWithoutMutation(t *testing.T) {
 	now := time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC)
 	type authoritySnapshot struct {
