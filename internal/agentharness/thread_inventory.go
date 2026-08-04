@@ -16,8 +16,9 @@ type ListRootThreadSummariesOptions struct {
 }
 
 type RootThreadInventoryItem struct {
-	Overview ThreadOverview
-	Revision sessiontree.ThreadRevision
+	Overview              ThreadOverview
+	Revision              sessiontree.ThreadRevision
+	ProjectionFingerprint [32]byte
 }
 
 type rootThreadInventoryReader interface {
@@ -50,13 +51,18 @@ func (h *AgentHarness) ListRootThreadInventory(ctx context.Context, opts ListRoo
 		thread.mu.Unlock()
 		phase = thread.canonicalThreadPhaseFromAuthority(phase, item.Authority)
 		journal := ThreadJournalSnapshot{Meta: item.Meta, Path: item.Path, Phase: phase}
+		if overview, ok := h.rootThreadInventoryProjection(item.Meta.ID, item.Revision, item.ProjectionFingerprint, phase); ok {
+			out = append(out, RootThreadInventoryItem{Overview: overview, Revision: item.Revision, ProjectionFingerprint: item.ProjectionFingerprint})
+			continue
+		}
 		latest, err := h.latestThreadDetailEventsFromPath(ctx, item.Path, true)
 		if err != nil {
 			return nil, err
 		}
+		overview := ThreadOverview{Thread: threadSnapshotFromJournal(journal), LatestTurn: latest}
+		h.rememberRootThreadInventoryProjection(item.Meta.ID, item.Revision, item.ProjectionFingerprint, phase, overview)
 		out = append(out, RootThreadInventoryItem{
-			Overview: ThreadOverview{Thread: threadSnapshotFromJournal(journal), LatestTurn: latest},
-			Revision: item.Revision,
+			Overview: overview, Revision: item.Revision, ProjectionFingerprint: item.ProjectionFingerprint,
 		})
 	}
 	return out, nil

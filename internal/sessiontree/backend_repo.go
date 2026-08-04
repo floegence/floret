@@ -61,6 +61,9 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			if err != nil {
 				return err
 			}
+			if err := attachRootThreadInventoryProjectionFingerprints(committedInventory); err != nil {
+				return err
+			}
 			return nil
 		}
 		repo.policy = memory.AuthorityLeasePolicy()
@@ -71,6 +74,9 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			}
 			committedInventory, err = memory.rootThreadInventoryLocked()
 			if err != nil {
+				return err
+			}
+			if err := attachRootThreadInventoryProjectionFingerprints(committedInventory); err != nil {
 				return err
 			}
 			return nil
@@ -203,6 +209,9 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		}
 		committedInventory, err = memory.rootThreadInventoryLocked()
 		if err != nil {
+			return err
+		}
+		if err := attachRootThreadInventoryProjectionFingerprints(committedInventory); err != nil {
 			return err
 		}
 		return nil

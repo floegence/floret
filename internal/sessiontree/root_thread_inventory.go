@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,10 @@ type RootThreadInventoryItem struct {
 	Path      []Entry
 	Authority ThreadAuthoritySnapshot
 	Revision  ThreadRevision
+	// ProjectionFingerprint identifies the validated source facts used by
+	// host-facing runtime projections. It is intentionally process-local and
+	// never part of the persisted inventory contract.
+	ProjectionFingerprint [32]byte `json:"-"`
 }
 
 // ListRootThreadInventory reads a bounded root-thread page and the lifecycle
@@ -139,7 +144,29 @@ func decodeRootThreadInventory(encoded []byte) ([]RootThreadInventoryItem, error
 	if err := validateRootThreadInventory(inventory.Items); err != nil {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
+	if err := attachRootThreadInventoryProjectionFingerprints(inventory.Items); err != nil {
+		return nil, err
+	}
 	return inventory.Items, nil
+}
+
+func attachRootThreadInventoryProjectionFingerprints(items []RootThreadInventoryItem) error {
+	for index := range items {
+		fingerprint, err := rootThreadInventoryProjectionFingerprint(items[index])
+		if err != nil {
+			return err
+		}
+		items[index].ProjectionFingerprint = fingerprint
+	}
+	return nil
+}
+
+func rootThreadInventoryProjectionFingerprint(item RootThreadInventoryItem) ([32]byte, error) {
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 func validateRootThreadInventory(items []RootThreadInventoryItem) error {
@@ -243,6 +270,9 @@ func (r *MemoryRepo) ListRootThreadInventory(_ context.Context, opts ListThreads
 		out = append(out, RootThreadInventoryItem{
 			Meta: meta, Path: path, Authority: authority, Revision: revision,
 		})
+	}
+	if err := attachRootThreadInventoryProjectionFingerprints(out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

@@ -141,15 +141,16 @@ type LoopLimits struct {
 }
 
 type AgentHarness struct {
-	mu                          sync.Mutex
-	subagentSpawnMu             sync.Mutex
-	options                     Options
-	effectFinalizationTimeout   time.Duration
-	effectOutcomeFingerprinter  func(tools.Result, session.Message, *artifact.FullOutput) (string, error)
-	effectFinalizerRegistration func(error)
-	threads                     map[string]*Thread
-	subagents                   map[string]*subagentController
-	subagentUpdates             chan struct{}
+	mu                                 sync.Mutex
+	subagentSpawnMu                    sync.Mutex
+	options                            Options
+	effectFinalizationTimeout          time.Duration
+	effectOutcomeFingerprinter         func(tools.Result, session.Message, *artifact.FullOutput) (string, error)
+	effectFinalizerRegistration        func(error)
+	threads                            map[string]*Thread
+	subagents                          map[string]*subagentController
+	subagentUpdates                    chan struct{}
+	rootThreadInventoryProjectionCache map[string]rootThreadInventoryProjectionCacheEntry
 }
 
 type ResumeOptions struct{}
@@ -463,11 +464,12 @@ func New(options Options) *AgentHarness {
 		options.Now = time.Now
 	}
 	return &AgentHarness{
-		options:                    options,
-		effectOutcomeFingerprinter: effectOutcomeFingerprint,
-		threads:                    map[string]*Thread{},
-		subagents:                  map[string]*subagentController{},
-		subagentUpdates:            make(chan struct{}),
+		options:                            options,
+		effectOutcomeFingerprinter:         effectOutcomeFingerprint,
+		threads:                            map[string]*Thread{},
+		subagents:                          map[string]*subagentController{},
+		subagentUpdates:                    make(chan struct{}),
+		rootThreadInventoryProjectionCache: make(map[string]rootThreadInventoryProjectionCacheEntry),
 	}
 }
 
