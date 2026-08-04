@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-03
+* **Batch interrupted-turn discovery**: Added the read-only
+  `Threads.ListInterruptedTurnRecoveryCandidates` contract. Floret scans active
+  turn leases from one canonical v4 domain snapshot and returns deterministic
+  root/parent-child identities; hosts still bind exact recovery proofs and the
+  schema lineage remains unchanged.
 * **Complete engine failure classification**: Every failed engine result now
   has an explicit origin. Specific provider, tool-dispatch, storage, and
   cancellation origins retain precedence, while remaining internal validation

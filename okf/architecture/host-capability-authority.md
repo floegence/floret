@@ -38,6 +38,12 @@ execution. `Child` exposes detail and pending-target reads for one direct child;
 `DescendantReader` exposes turn and artifact reads for one validated descendant
 at any depth. Both remain scoped beneath their bound parent and fail closed for
 unrelated, deleted, or corrupt ancestry.
+`Threads.ListInterruptedTurnRecoveryCandidates` is a separate read-only,
+store-wide discovery operation. It scans active turn leases once and returns
+only stable root or direct-parent identities; it never returns a lease proof or
+grants recovery. Hosts must bind each candidate through the exact root or child
+recovery capability, so candidate discovery cannot be used to bypass ancestry
+or lifecycle checks.
 Root overview, turn, todo, context, approval, projection, pending-target, and
 direct-child queries remain methods on the exact bound `ThreadReader`; direct-child
 turn queries remain methods on the exact bound `Child`.

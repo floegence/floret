@@ -52,6 +52,15 @@ methods:
     concurrency: concurrent mutation is excluded from the bound revision
     cancellation: returns ctx.Err with no partial page
     closing: rejects after closing begins
+  - method: Threads.ListInterruptedTurnRecoveryCandidates
+    errors_is: [ErrHostClosed, ErrAuthorityCorrupt, ErrUnsupportedStoreCapability]
+    errors_as: []
+    retryability: retry after a transient read failure; authority corruption requires repair
+    commit: read-only candidate identities are observed from one canonical domain snapshot
+    replay: repeated reads return the same deterministic candidate order while leases are unchanged
+    concurrency: candidate discovery is linearized with host mutations
+    cancellation: returns ctx.Err with no partial candidate list
+    closing: rejects after closing begins
   - method: Threads.CreateThread
     errors_is: [ErrHostClosed, ErrRequestConflict]
     errors_as: [RequestConflictError]

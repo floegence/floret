@@ -53,6 +53,61 @@ func TestV3SubscriptionMessageStrictJSON(t *testing.T) {
 	}
 }
 
+func TestV3ThreadsListInterruptedTurnRecoveryCandidatesReturnsIdentitiesOnly(t *testing.T) {
+	ctx := context.Background()
+	ids := &deterministicIDs{threads: []identity.ThreadID{"recovery-thread"}, turns: []identity.TurnID{"recovery-turn"}, runs: []identity.RunID{"recovery-run"}}
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory(), IDSource: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-recovery-candidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.TurnExecutor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turns.AdmitTurn(ctx, runtime.StartTurnCommand{LogicalRequestID: "admit-recovery-candidate", UserMessage: runtime.TurnInput{Text: "unfinished"}}); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := host.Threads().ListInterruptedTurnRecoveryCandidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ThreadID != created.ThreadID || candidates[0].ParentThreadID != "" {
+		t.Fatalf("recovery candidates = %#v", candidates)
+	}
+}
+
+func TestV3ThreadsListInterruptedTurnRecoveryCandidatesHonorsCancellation(t *testing.T) {
+	host, err := runtime.Open(context.Background(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := host.Threads().ListInterruptedTurnRecoveryCandidates(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled candidate discovery err=%v, want context.Canceled", err)
+	}
+}
+
 func TestExecuteAdmissionAllowsConcurrentApprovalResolution(t *testing.T) {
 	for _, test := range []struct {
 		name   string

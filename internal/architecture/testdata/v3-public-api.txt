@@ -722,6 +722,9 @@ field InterruptSubAgentResult.Child github.com/floegence/floret/v3/runtime.SubAg
 field InterruptSubAgentResult.Receipt github.com/floegence/floret/v3/runtime.MutationReceipt tag="json:\"receipt\""
 type InterruptedTurnRecovery struct
 method *InterruptedTurnRecovery.Recover func(ctx context.Context) (github.com/floegence/floret/v3/runtime.RecoverInterruptedTurnResult, error)
+type InterruptedTurnRecoveryCandidate struct
+field InterruptedTurnRecoveryCandidate.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field InterruptedTurnRecoveryCandidate.ParentThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"parent_thread_id,omitempty\""
 type ListThreadsOptions struct
 field ListThreadsOptions.Cursor github.com/floegence/floret/v3/runtime.ThreadListCursor tag="json:\"cursor,omitempty\""
 field ListThreadsOptions.Limit int tag="json:\"limit,omitempty\""
@@ -1383,6 +1386,7 @@ type ThreadView struct
 field ThreadView.Thread github.com/floegence/floret/v3/runtime.ThreadSnapshot tag="json:\"thread\""
 field ThreadView.Revision github.com/floegence/floret/v3/runtime.ThreadRevision tag="json:\"revision\""
 type Threads struct
+method *Threads.ListInterruptedTurnRecoveryCandidates func(ctx context.Context) ([]github.com/floegence/floret/v3/runtime.InterruptedTurnRecoveryCandidate, error)
 method *Threads.CreateThread func(ctx context.Context, command github.com/floegence/floret/v3/runtime.CreateThreadCommand) (github.com/floegence/floret/v3/runtime.CreateThreadResult, error)
 method *Threads.ListThreads func(ctx context.Context, options github.com/floegence/floret/v3/runtime.ListThreadsOptions) (github.com/floegence/floret/v3/runtime.ThreadsPage, error)
 type ThreadsPage struct

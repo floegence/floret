@@ -18,7 +18,8 @@ var readMethods = map[string]bool{
 	"ActiveTurnLease": true, "Approval": true, "ArtifactClosure": true,
 	"CanonicalTurnEntries": true, "Entries": true, "Entry": true,
 	"InspectSubAgentThreadAuthority": true, "InspectThreadAuthority": true,
-	"ListCanonicalTurns": true, "ListSubAgentInputs": true, "ListThreads": true,
+	"ListInterruptedTurnRecoveryCandidates": true,
+	"ListCanonicalTurns":                    true, "ListSubAgentInputs": true, "ListThreads": true,
 	"Path": true, "PathPage": true, "PendingAutomaticThreadTitles": true,
 	"ProviderState": true, "ReadAgentTodoState": true, "ReadApprovalQueue": true,
 	"ReadArtifact": true, "ReadCanonicalTurn": true, "ReadCompaction": true,
@@ -30,6 +31,7 @@ var readMethods = map[string]bool{
 var handwritten = map[string]bool{
 	"AuthorityLeasePolicy": true, "CommitForkBatch": true, "FailForkClaim": true,
 	"EncodeMemoryState": true, "ReleaseThreadAuthorityClaim": true, "WaitApprovalDecision": true,
+	"ListRootThreadInventory": true,
 }
 
 func main() {

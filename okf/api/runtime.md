@@ -11,8 +11,9 @@ timestamp: 2026-07-29T00:00:00Z
 
 `runtime.Open` accepts `runtime.Options{Storage: storage.Source}` and returns a
 composition-root-only `*runtime.Host`. Its public method set is intentionally
-small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread` and
-`Threads.ListThreads` are the only unbound collection operations. `Host.Thread`
+small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread`,
+`Threads.ListThreads`, and `Threads.ListInterruptedTurnRecoveryCandidates` are
+the unbound collection operations. `Host.Thread`
 returns a handle bound to one exact `identity.ThreadID`. The composition root
 grants `ThreadReader`, `ThreadLifecycle`, `TurnExecutor`, `ThreadCompactor`, or
 `SubAgentManager`; downstream services retain only the narrow interface they
@@ -26,6 +27,10 @@ validated projection as `ThreadReader.ReadOverview`. Page size therefore does
 not multiply backend domain decoding or hold a sequence of read fences that can
 starve approval and lifecycle mutations. This projection reuses the existing
 v4 inventory path; it does not change the session-tree schema lineage.
+`Threads.ListInterruptedTurnRecoveryCandidates` performs one canonical,
+read-only scan of active turn leases and returns only stable root/parent-child
+identities. It does not grant recovery authority; hosts bind each returned
+identity through the exact interrupted-turn capability before recovery.
 Standalone compaction remains exact-thread authority. Active-turn manual
 compaction is an immutable Agent capability polled only at engine safe points.
 `SubAgentManager.WaitSubAgents` and `CloseSubAgent` validate direct children

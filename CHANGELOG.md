@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.13 - 2026-08-04
+
+- Add `Threads.ListInterruptedTurnRecoveryCandidates` for one-snapshot,
+  deterministic discovery of root and SubAgent interrupted-turn identities.
+  The read-only API leaves recovery authorization and lease proof binding to
+  the host and does not change the session-tree schema v4 lineage.
+
 ## v3.2.12 - 2026-08-03
 
 - Classify every failed engine result with an explicit failure origin. Existing

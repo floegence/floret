@@ -88,7 +88,7 @@ func TestV3BehaviorContractCoversHostSurface(t *testing.T) {
 		"ThreadReader.ReadTurn", "ThreadReader.ListTurns", "ThreadReader.ReadAgentTodos",
 		"ThreadReader.ReadContext", "ThreadReader.ReadApprovalQueue", "ThreadReader.ReadAuthoritativeProjection",
 		"ThreadReader.ListPendingToolTargets", "ThreadReader.ListSubAgents", "Subscription.Next",
-		"Threads.ListThreads", "Threads.CreateThread",
+		"Threads.ListThreads", "Threads.CreateThread", "Threads.ListInterruptedTurnRecoveryCandidates",
 		"ThreadLifecycle.SetTitle", "ThreadLifecycle.PendingToolRecovery", "ThreadLifecycle.InterruptedTurnRecovery",
 		"ThreadLifecycle.Fork", "ThreadLifecycle.Delete",
 		"ThreadCompactor.Compact",

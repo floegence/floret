@@ -356,6 +356,16 @@ func (repo *BackendRepo) ListCanonicalTurns(ctx context.Context, opts ListCanoni
 	return result0, err
 }
 
+func (repo *BackendRepo) ListInterruptedTurnRecoveryCandidates(ctx context.Context) ([]InterruptedTurnRecoveryCandidate, error) {
+	var result0 []InterruptedTurnRecoveryCandidate
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ListInterruptedTurnRecoveryCandidates(ctx)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) ListSubAgentInputs(ctx context.Context, childThreadID string, state SubAgentInputState) ([]SubAgentInputRecord, error) {
 	var result0 []SubAgentInputRecord
 	err := repo.view(ctx, func(memory *MemoryRepo) error {

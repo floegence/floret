@@ -521,7 +521,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
 		"Shutdown", "Thread", "Threads")
 	exact("Agent", reflect.TypeOf((*floretRuntime.Agent)(nil)), "Config", "ProviderIdentity", "ToolDefinitions")
-	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListThreads")
+	exact("Threads", reflect.TypeOf((*floretRuntime.Threads)(nil)), "CreateThread", "ListInterruptedTurnRecoveryCandidates", "ListThreads")
 	exact("Thread", reflect.TypeOf((*floretRuntime.Thread)(nil)),
 		"Compactor", "ID", "Lifecycle", "Reader", "SubAgentManager", "TurnExecutor")
 	exact("Child", reflect.TypeOf((*floretRuntime.Child)(nil)),
