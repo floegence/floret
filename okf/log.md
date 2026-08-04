@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Approval presentation continuity**: Durable turn projection now applies
+  approval request and resolution details without replacing an existing
+  tool-authored activity label, renderer, or payload. Approval-only history
+  retains its neutral fallback, and later dispatch or result presentation still
+  updates the same tool item.
 * **Bootstrap execution continuity**: The one-snapshot thread bootstrap path
   now uses the same process-local execution registry as ordinary canonical
   reads. Active admission and execution leases remain running in every read

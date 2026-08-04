@@ -546,6 +546,94 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnApprovalLifecyclePreservesToolPresentationBeforeDispatch(t *testing.T) {
+	now := time.UnixMilli(1_700_032_000_000)
+	command := "pwd && whoami"
+	toolPresentation := &tools.ActivityPresentation{
+		Label:       command,
+		Description: "Run in the main thread",
+		Renderer:    tools.ActivityRendererTerminal,
+		Payload:     tools.TerminalActivityPayload{Command: command},
+	}
+	approvalPresentation := func(state string) *tools.ActivityPresentation {
+		return &tools.ActivityPresentation{
+			Label:       "Tool approval",
+			Description: state,
+			Renderer:    tools.ActivityRendererStructured,
+		}
+	}
+	approvalTimeline := func(state string, status observation.ActivityStatus, at time.Time) *observation.ActivityTimeline {
+		return projectionSingleItemTimeline("run-approval-presentation", "thread-approval-presentation", "turn-approval-presentation", observation.ActivityItem{
+			ItemID:           "tool:call-1",
+			ToolID:           "call-1",
+			ToolName:         "terminal.exec",
+			Kind:             observation.ActivityKindTool,
+			Status:           status,
+			Severity:         observation.ActivitySeverityNormal,
+			RequiresApproval: true,
+			ApprovalState:    state,
+			StartedAtUnixMS:  at.UnixMilli(),
+			Presentation:     approvalPresentation(state),
+		})
+	}
+
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-approval-presentation",
+		TurnID:   "turn-approval-presentation",
+		RunID:    "run-approval-presentation",
+		TraceID:  "run-approval-presentation",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "tool-call",
+				Ordinal:   1,
+				ThreadID:  "thread-approval-presentation",
+				TurnID:    "turn-approval-presentation",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				Message:   &ThreadDetailMessage{Role: "assistant", Activity: toolPresentation},
+				ToolCall:  &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+			{
+				ID:               "approval-requested",
+				Ordinal:          2,
+				ThreadID:         "thread-approval-presentation",
+				TurnID:           "turn-approval-presentation",
+				Kind:             ThreadDetailEventApproval,
+				Type:             string(observation.EventTypeToolApprovalRequested),
+				CreatedAt:        now.Add(time.Second),
+				Approval:         &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: approvalTimeline("requested", observation.ActivityStatusWaiting, now.Add(time.Second)),
+			},
+			{
+				ID:               "approval-approved",
+				Ordinal:          3,
+				ThreadID:         "thread-approval-presentation",
+				TurnID:           "turn-approval-presentation",
+				Kind:             ThreadDetailEventApproval,
+				Type:             string(observation.EventTypeToolApprovalApproved),
+				CreatedAt:        now.Add(2 * time.Second),
+				Approval:         &ThreadDetailApproval{State: "approved", ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: approvalTimeline("approved", observation.ActivityStatusPending, now.Add(2*time.Second)),
+			},
+		},
+	})
+
+	item := projectionToolItem(t, projection, "call-1")
+	presentation := projectionActivityPresentation(t, item)
+	payload := projectionTerminalPayload(t, item)
+	if item.Status != observation.ActivityStatusPending || item.ApprovalState != "approved" ||
+		presentation.Label != command || presentation.Description != "Run in the main thread" ||
+		presentation.Renderer != tools.ActivityRendererTerminal || payload.Command != command {
+		t.Fatalf("approval lifecycle replaced tool presentation: %#v", item)
+	}
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	if err := observation.ValidateActivityTimeline(*projection.Segments[0].ActivityTimeline); err != nil {
+		t.Fatalf("projection should validate: %v", err)
+	}
+}
+
 func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 	now := time.Unix(300, 0)
 
@@ -585,6 +673,21 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 				Type:      string(observation.EventTypeToolApprovalApproved),
 				CreatedAt: now.Add(time.Second),
 				Approval:  &ThreadDetailApproval{State: "approved", ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
+					ItemID:           "tool:call-1",
+					ToolID:           "call-1",
+					ToolName:         "terminal.exec",
+					Kind:             observation.ActivityKindTool,
+					Status:           observation.ActivityStatusPending,
+					Severity:         observation.ActivitySeverityNormal,
+					RequiresApproval: true,
+					ApprovalState:    "approved",
+					Presentation: &tools.ActivityPresentation{
+						Label:       "Tool approval",
+						Description: "approved",
+						Renderer:    tools.ActivityRendererStructured,
+					},
+				}),
 			},
 			{
 				ID:        "tool-call",

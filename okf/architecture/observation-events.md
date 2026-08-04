@@ -128,7 +128,10 @@ or validation failures require a canonical reload rather than event replay.
   pending handles and running pending state before hosts receive terminal
   activity. `tool_result_batch` save points split durable turn activity into
   product-neutral segments without creating marker activity rows, and repeated
-  facts for the same tool invocation collapse back into the original item. The
+  facts for the same tool invocation collapse back into the original item.
+  Approval detail advances that item's lifecycle without replacing an existing
+  tool-authored presentation; approval-only history may still use its neutral
+  single-event presentation as a fallback. The
   read model carries the same Floret-owned row activity projection as subagent
   detail reads.
 * Context statuses show projected and provider-reported context pressure.

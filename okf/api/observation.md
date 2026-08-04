@@ -55,7 +55,11 @@ tool invocation passed through approval; it is not the current decision-needed
 flag. Only `approval_state=requested` with `status=waiting` means the item is
 currently waiting for a decision. After approval, the item may be `pending`
 before dispatch starts, then `running` or terminal when later lifecycle facts
-arrive. When an interrupted historical turn contains a requested approval and
+arrive. Durable turn projection keeps an existing tool-authored presentation
+authoritative while applying approval detail state; a single-event approval
+presentation is only a fallback when no tool presentation exists, so approval
+resolution cannot replace the tool renderer, label, or payload. When an
+interrupted historical turn contains a requested approval and
 a recovery error result but no approval-resolution detail event, the failed or
 aborted terminal turn settles that item to a coherent terminal approval and
 activity state during canonical projection. This same-schema compatibility is

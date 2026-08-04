@@ -817,8 +817,17 @@ func threadTurnProjectionActivityTimeline(meta observation.ActivityRunMeta, deta
 		return observation.ActivityTimeline{}
 	}
 	events := make([]observation.Event, 0, len(detailEvents))
+	presentedToolIDs := map[string]struct{}{}
 	for _, detail := range detailEvents {
 		if ev, ok := threadTurnProjectionObservationEvent(meta, detail); ok {
+			toolID := strings.TrimSpace(ev.ToolID)
+			if detail.Kind == ThreadDetailEventApproval && detail.Message == nil {
+				if _, presented := presentedToolIDs[toolID]; presented {
+					ev.Activity = nil
+				}
+			} else if toolID != "" && ev.Activity != nil {
+				presentedToolIDs[toolID] = struct{}{}
+			}
 			events = append(events, ev)
 		}
 	}
