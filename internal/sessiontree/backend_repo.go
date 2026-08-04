@@ -24,6 +24,12 @@ type BackendRepo struct {
 	mu       sync.Mutex
 	changeMu sync.Mutex
 	change   chan struct{}
+	// rootInventoryEncoded is compared with the durable record before serving
+	// the decoded projection. Root inventory reads are frequent and the record
+	// can contain large activity payloads, so decoding it on every poll causes
+	// avoidable CPU and allocation pressure.
+	rootInventoryEncoded []byte
+	rootInventoryItems   []RootThreadInventoryItem
 }
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
@@ -35,6 +41,8 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 		return nil, err
 	}
 	repo := &BackendRepo{backend: backend, now: now, policy: policy, change: make(chan struct{})}
+	var committedInventory []RootThreadInventoryItem
+	var committedInventoryEncoded []byte
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 		memory, found, migrated, err := repo.load(tx)
 		if err != nil {
@@ -45,16 +53,42 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			if err != nil {
 				return err
 			}
-			return repo.save(tx, memory)
+			committedInventoryEncoded, err = repo.save(tx, memory)
+			if err != nil {
+				return err
+			}
+			committedInventory, err = memory.rootThreadInventoryLocked()
+			if err != nil {
+				return err
+			}
+			return nil
 		}
 		repo.policy = memory.AuthorityLeasePolicy()
 		if migrated {
-			return repo.save(tx, memory)
+			committedInventoryEncoded, err = repo.save(tx, memory)
+			if err != nil {
+				return err
+			}
+			committedInventory, err = memory.rootThreadInventoryLocked()
+			if err != nil {
+				return err
+			}
+			return nil
 		}
-		return repo.verifyRootThreadInventory(tx, memory)
+		if err := repo.verifyRootThreadInventory(tx, memory); err != nil {
+			return err
+		}
+		committedInventory, err = memory.rootThreadInventoryLocked()
+		if err != nil {
+			return err
+		}
+		committedInventoryEncoded, err = tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)
+		return err
 	}); err != nil {
 		return nil, err
 	}
+	repo.rootInventoryEncoded = bytes.Clone(committedInventoryEncoded)
+	repo.rootInventoryItems = cloneRootThreadInventoryItems(committedInventory)
 	return repo, nil
 }
 
@@ -77,23 +111,26 @@ func (repo *BackendRepo) load(tx spi.ReadTx) (*MemoryRepo, bool, bool, error) {
 	return memory, true, migrated, nil
 }
 
-func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) error {
+func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) ([]byte, error) {
 	payload, err := memory.EncodeMemoryState()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	encoded, err := storagecodec.EncodeEnvelope("sessiontree", payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	inventory, err := encodeRootThreadInventory(memory)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := tx.Put(backendDomainNamespace, backendStateKey, encoded); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventory)
+	if err := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventory); err != nil {
+		return nil, err
+	}
+	return inventory, nil
 }
 
 func (repo *BackendRepo) verifyRootThreadInventory(tx spi.ReadTx, memory *MemoryRepo) error {
@@ -145,6 +182,8 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	changed := false
+	var committedInventory []RootThreadInventoryItem
+	var committedInventoryEncoded []byte
 	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
 		memory, found, _, err := repo.load(tx)
 		if err != nil {
@@ -158,8 +197,20 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 			return err
 		}
 		changed = memory.advanceThreadRevisions(before)
-		return repo.save(tx, memory)
+		committedInventoryEncoded, err = repo.save(tx, memory)
+		if err != nil {
+			return err
+		}
+		committedInventory, err = memory.rootThreadInventoryLocked()
+		if err != nil {
+			return err
+		}
+		return nil
 	})
+	if err == nil {
+		repo.rootInventoryEncoded = bytes.Clone(committedInventoryEncoded)
+		repo.rootInventoryItems = cloneRootThreadInventoryItems(committedInventory)
+	}
 	if err == nil && changed {
 		repo.signalChange()
 	}

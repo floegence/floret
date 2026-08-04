@@ -46,11 +46,17 @@ func (repo *BackendRepo) ListRootThreadInventory(ctx context.Context, opts ListT
 		if err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
+		if bytes.Equal(encoded, repo.rootInventoryEncoded) && repo.rootInventoryItems != nil {
+			out = applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(repo.rootInventoryItems), opts)
+			return nil
+		}
 		items, err := decodeRootThreadInventory(encoded)
 		if err != nil {
 			return err
 		}
-		out = applyRootThreadInventoryOptions(items, opts)
+		repo.rootInventoryEncoded = bytes.Clone(encoded)
+		repo.rootInventoryItems = cloneRootThreadInventoryItems(items)
+		out = applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(items), opts)
 		return nil
 	})
 	return out, err
@@ -189,6 +195,22 @@ func applyRootThreadInventoryOptions(items []RootThreadInventoryItem, opts ListT
 		if opts.Limit > 0 && len(out) >= opts.Limit {
 			break
 		}
+	}
+	return out
+}
+
+func cloneRootThreadInventoryItems(items []RootThreadInventoryItem) []RootThreadInventoryItem {
+	if items == nil {
+		return nil
+	}
+	out := make([]RootThreadInventoryItem, len(items))
+	for index, item := range items {
+		item.Path = cloneEntries(item.Path)
+		if item.Authority.Lease != nil {
+			lease := *item.Authority.Lease
+			item.Authority.Lease = &lease
+		}
+		out[index] = item
 	}
 	return out
 }
