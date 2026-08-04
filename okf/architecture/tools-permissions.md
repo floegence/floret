@@ -137,11 +137,14 @@ An authorized effect callback inherits the active turn's renewable lease
 binding rather than a copied heartbeat proof. Approval and host-policy work may
 span any number of normal heartbeat renewals; dispatch observes the current
 proof while retaining the same thread, turn, owner, acquisition, and generation
-authority. A different owner, generation, turn, or authority lineage remains a
-stale proof and fails closed. Atomic approval dispatch, provider-request
-inspection, and turn finalization apply this same monotonic successor rule so a
-heartbeat transition cannot create contradictory authority decisions between
-adjacent persistence boundaries.
+authority. Cancellation while an effect is waiting for approval uses that same
+current proof to atomically cancel the approval batch and settle the canonical
+turn; it must not leave a prepared admission or requested approval behind after
+normal heartbeat renewal. A different owner, generation, turn, or authority
+lineage remains a stale proof and fails closed. Atomic approval dispatch,
+provider-request inspection, and turn finalization apply this same monotonic
+successor rule so a heartbeat transition cannot create contradictory authority
+decisions between adjacent persistence boundaries.
 
 An active provider turn does not hold the host mutation fence while it waits for
 this decision. Approval resolution and the resumed dispatch use separate short,

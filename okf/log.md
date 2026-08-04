@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Renewed approval cancellation authority**: Canceling a turn while its
+  effect waits for approval now settles the approval batch with the current
+  renewable lease proof, leaving the canonical turn canceled and admission
+  replayable after any number of normal heartbeat renewals.
 * **Durable approval presentation**: Effect dispatch and host authorization
   requests now carry a detached tool-authored presentation into canonical
   approval entries. SubAgent and turn detail reads keep exact renderer payloads

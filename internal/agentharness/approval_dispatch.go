@@ -236,7 +236,7 @@ func (t *Thread) cancelApprovalBatchForTurn(ctx context.Context, lease sessiontr
 	defer cancel()
 	queue, err := authority.ReadApprovalQueue(persistCtx, lease.ThreadID)
 	if err != nil {
-		return err
+		return fmt.Errorf("read approval queue for cancellation: %w", err)
 	}
 	fingerprint := approvalBatchCancellationFingerprint(lease, runID, "turn_cancelled")
 	now := t.harness.now()
@@ -262,7 +262,7 @@ func (t *Thread) cancelApprovalBatchForTurn(ctx context.Context, lease sessiontr
 		CancellationFingerprint: fingerprint, CancellationEntries: candidates, Now: now,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("commit approval batch cancellation: %w", err)
 	}
 	for _, record := range result.Approvals {
 		if record.ThreadID != lease.ThreadID || record.TurnID != lease.TurnID || record.RunID != strings.TrimSpace(runID) ||

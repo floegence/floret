@@ -22,6 +22,7 @@ type approvalAuthorityTestRepo interface {
 	AdmitTurn(context.Context, sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error)
 	Entries(context.Context, string) ([]sessiontree.Entry, error)
 	ActiveTurnLease(context.Context, string) (sessiontree.TurnLease, bool, error)
+	RenewTurnLease(context.Context, sessiontree.TurnLease) (sessiontree.TurnLease, error)
 	FinishTurn(context.Context, sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error)
 	Append(context.Context, sessiontree.Entry, sessiontree.AppendOptions) (sessiontree.Entry, error)
 	ReleaseTurnLease(context.Context, sessiontree.TurnLease) error
@@ -1207,14 +1208,27 @@ func TestCancelApprovalBatchAtomicallyCancelsExactRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			renewed, err := repo.RenewTurnLease(context.Background(), lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if renewed.Heartbeat <= lease.Heartbeat {
+				t.Fatalf("renewed lease = %#v, want heartbeat after %#v", renewed, lease)
+			}
 			cancelReq := sessiontree.CancelApprovalBatchRequest{
-				Lease: lease, RunID: "run", CancellationFingerprint: "caller-cancelled", Now: now.Add(time.Second),
+				Lease: renewed, RunID: "run", CancellationFingerprint: "caller-cancelled", Now: now.Add(time.Second),
+			}
+			for _, approval := range prepared.Approvals {
+				cancelReq.CancellationEntries = append(cancelReq.CancellationEntries, sessiontree.ApprovalCancellationEntry{
+					ApprovalID: approval.ApprovalID,
+					Entry:      approvalCancelledTestEntry(cancelReq.CancellationFingerprint, approval.Identity()),
+				})
 			}
 			cancelled, err := repo.CancelApprovalBatch(context.Background(), cancelReq)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cancelled.Replayed || len(cancelled.Approvals) != 2 || len(cancelled.Effects) != 2 || cancelled.Queue.Revision != 3 ||
+			if cancelled.Replayed || len(cancelled.Approvals) != 2 || len(cancelled.Effects) != 2 || len(cancelled.CancellationEntries) != 2 || cancelled.Queue.Revision != 3 ||
 				cancelled.Queue.CurrentApprovalID != tail.Approvals[0].ApprovalID || len(cancelled.Queue.Items) != 1 {
 				t.Fatalf("cancelled batch = %#v", cancelled)
 			}
@@ -1230,6 +1244,7 @@ func TestCancelApprovalBatchAtomicallyCancelsExactRun(t *testing.T) {
 			}
 			conflict := cancelReq
 			conflict.CancellationFingerprint = "different"
+			conflict.CancellationEntries = nil
 			if _, err := repo.CancelApprovalBatch(context.Background(), conflict); !errors.Is(err, sessiontree.ErrRequestConflict) {
 				t.Fatalf("cancel replay conflict err=%v", err)
 			}

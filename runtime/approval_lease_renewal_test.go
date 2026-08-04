@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -74,6 +75,144 @@ func TestApprovedEffectDispatchUsesRenewedLeaseAuthority(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			runApprovedEffectDispatchAcrossLeaseRenewal(t, test.store(t))
 		})
+	}
+}
+
+func TestWaitingApprovalCancellationUsesRenewedLeaseAuthority(t *testing.T) {
+	policy := sessiontree.LeasePolicy{
+		TTL:                60 * time.Second,
+		RenewInterval:      100 * time.Millisecond,
+		ClockSkewAllowance: 20 * time.Millisecond,
+	}
+	for _, test := range []struct {
+		name  string
+		store func(*testing.T) *runtimeStore
+	}{
+		{
+			name: "memory",
+			store: func(t *testing.T) *runtimeStore {
+				repo, err := sessiontree.NewMemoryRepoWithLeasePolicy(policy, time.Now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prompt := cache.NewMemoryStore()
+				store := &runtimeStore{
+					repo: repo, prompt: prompt, forkOperations: storage.NewMemoryForkOperationStore(repo),
+					agentTodos: repo, rootAuthority: repo,
+					deleteCleanup: func(ctx context.Context, threadIDs []string) error {
+						return prompt.DeletePromptScopes(ctx, threadIDs...)
+					},
+				}
+				store.self = store
+				store.initLifetime()
+				return store
+			},
+		},
+		{
+			name: "backend_sqlite",
+			store: func(t *testing.T) *runtimeStore {
+				ctx := context.Background()
+				backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.SQLite(filepath.Join(t.TempDir(), "approval-cancel-renewal.db"))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				kernel, err := storage.NewBackendKernel(ctx, backend, policy, time.Now)
+				if err != nil {
+					_ = backend.Close()
+					t.Fatal(err)
+				}
+				store := &runtimeStore{
+					repo: kernel, prompt: kernel, forkOperations: kernel, agentTodos: kernel, rootAuthority: kernel,
+					deleteCleanup: func(context.Context, []string) error { return nil }, close: backend.Close,
+				}
+				store.self = store
+				store.initLifetime()
+				return store
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runWaitingApprovalCancellationAcrossLeaseRenewal(t, test.store(t))
+		})
+	}
+}
+
+func runWaitingApprovalCancellationAcrossLeaseRenewal(t *testing.T, store *runtimeStore) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	var handlerCalls atomic.Int32
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name: "write_note", InputSchema: runtimeEchoSchema(), Effects: []tools.Effect{tools.EffectWrite},
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			handlerCalls.Add(1)
+			return tools.Result{Text: "wrote " + inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
+		events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-cancel", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+		events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("approval cancellation renewal"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("approval-cancel-renewal"), store: store, Tools: registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+			return tooltest.PermissionDecisionAllow, nil
+		}},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread-cancel-renewal"}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	type runOutcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, runErr := host.RunTurn(runCtx, runTurnRequest{
+			ThreadID: "thread-cancel-renewal", TurnID: "turn-cancel-renewal", RunID: "run-cancel-renewal",
+			Input: TurnInput{Text: "write a note"},
+		})
+		done <- runOutcome{result: result, err: runErr}
+	}()
+	pendingQueue := waitRuntimeApprovalForCall(t, ctx, host, "thread-cancel-renewal", "call-cancel")
+	pendingApprovalID := pendingQueue.Items[0].ApprovalID
+	waitRuntimeLeaseHeartbeat(t, store.repo, "thread-cancel-renewal", 0)
+	cancelRun()
+	select {
+	case outcome := <-done:
+		if !errors.Is(outcome.err, context.Canceled) || outcome.result.Status != TurnStatusCancelled {
+			authority := store.repo.(sessiontree.ApprovalAuthorityRepo)
+			approval, approvalErr := authority.Approval(ctx, pendingApprovalID)
+			lease, active, leaseErr := store.repo.(sessiontree.TurnLeaseRepo).ActiveTurnLease(ctx, "thread-cancel-renewal")
+			t.Fatalf("cancelled run result=%#v err=%v approval=%#v approval_err=%v active_lease=%#v active=%v lease_err=%v", outcome.result, outcome.err, approval, approvalErr, lease, active, leaseErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled run did not settle after lease renewal")
+	}
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread-cancel-renewal", 0)
+	if queue.CurrentApprovalID != "" || handlerCalls.Load() != 0 {
+		t.Fatalf("queue=%#v handler_calls=%d", queue, handlerCalls.Load())
 	}
 }
 

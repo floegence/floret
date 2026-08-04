@@ -321,7 +321,11 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	}
 	approvalRequested := request.Permission.Mode == tools.PermissionAsk
 	cancelApprovalForExecution := func(cancellation error) error {
-		if err := t.cancelApprovalBatchForTurn(ctx, lease, request.RunID.String()); err != nil {
+		cancellationLease, ok := sessiontree.TurnLeaseFromContext(ctx)
+		if !ok || sessiontree.ValidateTurnLeaseSuccessor(lease, cancellationLease) != nil {
+			return sessiontree.ErrStaleAuthority
+		}
+		if err := t.cancelApprovalBatchForTurn(ctx, cancellationLease, request.RunID.String()); err != nil {
 			return err
 		}
 		if cancellation == nil {
