@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.20 - 2026-08-04
+
+- Preserve the process-local turn execution proof in the single-snapshot
+  `ThreadReader.Bootstrap` path, so an admitted or executing turn cannot be
+  transiently projected as a recoverable interruption. Restarted hosts still
+  fail closed without that in-memory proof.
+
 ## v3.2.19 - 2026-08-04
 
 - Keep a thread projected as `running` across the short admission handoff

@@ -568,6 +568,33 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 		running.UserMessageOrigin != runtime.ThreadUserMessageOriginUser || running.UserInput != "hello" {
 		t.Fatalf("running turn after admission = %#v", running)
 	}
+	overview, err := reader.ReadOverview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Thread.Status != runtime.ThreadStatusRunning || overview.Thread.LatestTurnID != admitted.TurnID ||
+		overview.Thread.LatestRunID != admitted.RunID || overview.Thread.Recoverable {
+		t.Fatalf("thread overview after admission = %#v, want running turn %q run %q", overview.Thread, admitted.TurnID, admitted.RunID)
+	}
+	bootstrap, err := reader.Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.Thread.Status != runtime.ThreadStatusRunning || bootstrap.Thread.LatestTurnID != admitted.TurnID ||
+		bootstrap.Thread.LatestRunID != admitted.RunID || bootstrap.Thread.Recoverable {
+		t.Fatalf("thread bootstrap after admission = %#v, want running turn %q run %q", bootstrap.Thread, admitted.TurnID, admitted.RunID)
+	}
+	page, err := host.Threads().ListThreads(ctx, runtime.ListThreadsOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Threads) != 1 {
+		t.Fatalf("thread inventory length after admission = %d, want 1", len(page.Threads))
+	}
+	if snapshot := page.Threads[0].Thread; snapshot.Status != runtime.ThreadStatusRunning ||
+		snapshot.LatestTurnID != admitted.TurnID || snapshot.LatestRunID != admitted.RunID || snapshot.Recoverable {
+		t.Fatalf("thread inventory after admission = %#v, want running turn %q run %q", snapshot, admitted.TurnID, admitted.RunID)
+	}
 	if err := host.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -580,6 +607,14 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	restartedThread, err := restarted.Thread(ctx, created.ThreadID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	restartedReader := mustThreadReader(t, restartedThread)
+	restartedBootstrap, err := restartedReader.Bootstrap(ctx, runtime.ThreadBootstrapRequest{TurnLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartedBootstrap.Thread.Status != runtime.ThreadStatusInterrupted || !restartedBootstrap.Thread.Recoverable {
+		t.Fatalf("restarted thread bootstrap = %#v, want recoverable interruption without in-memory admission proof", restartedBootstrap.Thread)
 	}
 	restartedGateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},

@@ -90,8 +90,12 @@ Every thread has a monotonic `ThreadRevision`.
 todo state, context, pending work, and direct SubAgents while the exact thread
 remains at one revision. The standard backend projects all of those read models
 from one canonical domain snapshot and one backend read transaction; it does
-not repeatedly decode the complete session tree. Each transaction compares the
-exact durable domain envelope with the last validated in-process snapshot;
+not repeatedly decode the complete session tree. That snapshot projection uses
+the same process-local execution registry as ordinary reads, so an admitted or
+executing turn remains running while its exact lease proof is active. A restarted
+host has no such in-memory proof and projects the unfinished turn as a recoverable
+interruption. Each transaction compares the exact durable domain envelope with
+the last validated in-process snapshot;
 only byte-identical state reuses its decoded projection, while any change is
 strictly decoded before use. Tombstoned identities retain the public `ErrThreadDeleted`
 classification, while identities absent from both live state and tombstones

@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Bootstrap execution continuity**: The one-snapshot thread bootstrap path
+  now uses the same process-local execution registry as ordinary canonical
+  reads. Active admission and execution leases remain running in every read
+  model, while restart still projects unfinished durable authority as a
+  recoverable interruption.
 * **Admission projection continuity**: Turn admission now records a
   process-local handoff before the durable commit and replaces it atomically
   with the active execution lease. Concurrent inventory reads remain running

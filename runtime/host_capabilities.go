@@ -365,7 +365,10 @@ func (reader threadReaderView) bootstrapCurrentSnapshot(ctx context.Context, req
 		if readErr := validateLiveThreadLifecycle(meta); readErr != nil {
 			return readErr
 		}
-		harness := agentharness.New(agentharness.Options{Repo: memory})
+		harness := agentharness.New(agentharness.Options{
+			Repo:           memory,
+			TurnExecutions: store.turnExecutionRegistry(),
+		})
 		result, readErr = bootstrapThreadFromSnapshot(ctx, harness, memory, threadID, request, ThreadRevision(revision))
 		return readErr
 	})
