@@ -1213,10 +1213,12 @@ func (t *Thread) canonicalThreadPhaseFromAuthority(localPhase string, snapshot s
 	}
 	if snapshot.Lease != nil && snapshot.Lease.Purpose == sessiontree.TurnLeasePurposeTurn &&
 		snapshot.Lease.Fresh(t.harness.now().UTC()) && snapshot.ClaimOperationID == "" {
-		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok && sessiontree.SameTurnLease(local, *snapshot.Lease) {
+		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok &&
+			sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) == nil {
 			return threadPhaseTurn
 		}
-		if active, ok := registry.Active(t.id); ok && sessiontree.SameTurnLease(active, *snapshot.Lease) {
+		if active, ok := registry.Active(t.id); ok &&
+			sessiontree.ValidateTurnLeaseSuccessor(active, *snapshot.Lease) == nil {
 			return threadPhaseTurn
 		}
 	}

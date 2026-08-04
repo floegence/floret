@@ -108,7 +108,12 @@ or validation failures require a canonical reload rather than event replay.
   host-facing recorder whose local window begins with a later committed
   mid-turn entry also reports `running`; recorder-local history must never make
   an emitted public projection invalid merely because the earlier marker was
-  delivered through another host event path.
+  delivered through another host event path. A lease renewal commits durable
+  authority before the process-local execution registry advances. During that
+  interval, a validated monotonic durable successor of the registry heartbeat
+  remains the same running turn; owner, generation, acquisition, thread, or
+  turn drift still fails closed. A fresh durable lease without a matching
+  process-local execution remains interrupted after process restart.
   `TurnResult.Projection`, pending settlement projections, and live event
   projections are built inside the runtime host from raw-capable current-turn
   facts, while default detail reads remain bounded previews for inspection

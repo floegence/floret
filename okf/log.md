@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-04
+* **Running lease projection continuity**: Canonical thread reads now accept a
+  durable heartbeat renewal as the monotonic successor of the process-local
+  execution proof. Inventory reads cannot transiently project a live turn as
+  interrupted between the durable renewal commit and registry update, while
+  expired, replaced, restarted, and claimed authority remains fail closed.
 * **Validated domain read cache**: Complete-domain reads still open an exact
   backend snapshot and compare its full durable envelope. Byte-identical state
   reuses the last strictly decoded domain, while changed, corrupt, drifted, or

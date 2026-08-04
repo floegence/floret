@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.2.18 - 2026-08-04
+
+- Keep a running turn projected as `running` while a durable lease renewal has
+  committed but the process-local execution registry still holds the preceding
+  heartbeat proof. The reader accepts only a validated monotonic successor in
+  the same owner, generation, acquisition, thread, and turn lineage; expired,
+  replaced, restarted, or authority-claimed executions remain interrupted.
+
 ## v3.2.17 - 2026-08-04
 
 - Reuse the validated decoded session-tree domain while the exact durable
