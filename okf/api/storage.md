@@ -30,6 +30,14 @@ missing or mismatched inventory, schema drift, or a future version rolls back or
 fails closed and leaves prior bytes intact. Downstream hosts must not inspect or
 patch these opaque records.
 
+Complete-domain runtime reads still enter one backend snapshot and read the
+exact durable envelope. When those bytes match the last successfully validated
+snapshot, the kernel reuses its decoded in-process domain; any byte change
+forces strict envelope and schema decoding before the result can replace the
+cache. Mutations continue to load an independent transactional state, so a
+failed update cannot contaminate the read cache. This optimization adds no
+persisted field, schema edge, compatibility reader, or host-visible authority.
+
 The v2.2-to-v3 migration surface provides representability preflight, an
 immutable plan, preview, apply, semantic hashes, and a receipt. Only built-in
 v2.2 states named by the conversion table are supported. A legal extension

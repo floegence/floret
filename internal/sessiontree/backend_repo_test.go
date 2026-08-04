@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/v3/internal/session"
 	. "github.com/floegence/floret/v3/internal/sessiontree"
 	"github.com/floegence/floret/v3/internal/storagebridge"
+	"github.com/floegence/floret/v3/internal/storagecodec"
 	publicstorage "github.com/floegence/floret/v3/storage"
 	"github.com/floegence/floret/v3/storage/spi"
 )
@@ -179,5 +180,77 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBackendRepoViewDomainCachesOnlyExactValidatedDurableState(t *testing.T) {
+	ctx := context.Background()
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	repo, err := NewBackendRepo(ctx, backend, DefaultLeasePolicy, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readPointer := func() *MemoryRepo {
+		t.Helper()
+		var memory *MemoryRepo
+		if err := repo.ViewDomain(ctx, func(current *MemoryRepo, _ spi.ReadTx) error {
+			memory = current
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return memory
+	}
+
+	first := readPointer()
+	if second := readPointer(); second != first {
+		t.Fatal("unchanged durable domain was decoded again")
+	}
+
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "committed"}); err != nil {
+		t.Fatal(err)
+	}
+	committed := readPointer()
+	if committed == first {
+		t.Fatal("committed durable domain reused stale decoded state")
+	}
+	if meta, err := committed.Thread(ctx, "committed"); err != nil || meta.ID != "committed" {
+		t.Fatalf("committed thread read = %#v, %v", meta, err)
+	}
+	if again := readPointer(); again != committed {
+		t.Fatal("new committed durable domain was decoded again")
+	}
+
+	var durable []byte
+	if err := backend.View(ctx, func(tx spi.ReadTx) error {
+		durable, err = tx.Get(testDomainNamespace, testStateKey)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := storagecodec.EncodeEnvelope("sessiontree", []byte(`{"version":4,"unknown":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		return tx.Put(testDomainNamespace, testStateKey, corrupt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ViewDomain(ctx, func(*MemoryRepo, spi.ReadTx) error { return nil }); err == nil {
+		t.Fatal("corrupt external durable domain was accepted")
+	}
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		return tx.Put(testDomainNamespace, testStateKey, durable)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if restored := readPointer(); restored != committed {
+		t.Fatal("failed external decode polluted the last validated cache")
 	}
 }

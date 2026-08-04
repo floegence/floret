@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-04
+* **Validated domain read cache**: Complete-domain reads still open an exact
+  backend snapshot and compare its full durable envelope. Byte-identical state
+  reuses the last strictly decoded domain, while changed, corrupt, drifted, or
+  future state follows the existing fail-closed validation path. Transactional
+  mutations remain independently decoded, and schema v4 is unchanged.
+
 ## 2026-08-03
 * **Batch interrupted-turn discovery**: Added the read-only
   `Threads.ListInterruptedTurnRecoveryCandidates` contract. Floret scans active

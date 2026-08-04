@@ -30,6 +30,12 @@ type BackendRepo struct {
 	// avoidable CPU and allocation pressure.
 	rootInventoryEncoded []byte
 	rootInventoryItems   []RootThreadInventoryItem
+	// domainEncoded/domainMemory cache one exact, validated durable snapshot.
+	// The encoded bytes remain authoritative: every view reads them from the
+	// backend transaction before deciding whether the decoded projection can be
+	// reused.
+	domainEncoded []byte
+	domainMemory  *MemoryRepo
 }
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
@@ -117,6 +123,28 @@ func (repo *BackendRepo) load(tx spi.ReadTx) (*MemoryRepo, bool, bool, error) {
 	return memory, true, migrated, nil
 }
 
+func (repo *BackendRepo) loadView(tx spi.ReadTx) (*MemoryRepo, bool, []byte, bool, error) {
+	encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
+	if errors.Is(err, spi.ErrNotFound) {
+		return nil, false, nil, false, nil
+	}
+	if err != nil {
+		return nil, false, nil, false, err
+	}
+	if repo.domainMemory != nil && bytes.Equal(encoded, repo.domainEncoded) {
+		return repo.domainMemory, true, nil, true, nil
+	}
+	payload, err := storagecodec.DecodeEnvelope(encoded, "sessiontree")
+	if err != nil {
+		return nil, false, nil, false, err
+	}
+	memory, _, err := decodeMemoryState(payload, repo.now)
+	if err != nil {
+		return nil, false, nil, false, err
+	}
+	return memory, true, encoded, false, nil
+}
+
 func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) ([]byte, error) {
 	payload, err := memory.EncodeMemoryState()
 	if err != nil {
@@ -158,19 +186,29 @@ func (repo *BackendRepo) view(ctx context.Context, read func(*MemoryRepo) error)
 	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error { return read(memory) })
 }
 
-// ViewDomain executes one read against an exact backend snapshot.
+// ViewDomain executes one read against an exact backend snapshot. The read
+// callback must be observational only; durable mutations belong in
+// UpdateDomain. This permits the validated snapshot to be reused by the
+// frequent read projections without exposing an alternate mutable copy.
 func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, spi.ReadTx) error) error {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
-		memory, found, _, err := repo.load(tx)
+		memory, found, encoded, cacheHit, err := repo.loadView(tx)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return errors.New("session-tree state is missing")
 		}
-		return read(memory, tx)
+		if err := read(memory, tx); err != nil {
+			return err
+		}
+		if !cacheHit {
+			repo.domainEncoded = bytes.Clone(encoded)
+			repo.domainMemory = memory
+		}
+		return nil
 	})
 }
 

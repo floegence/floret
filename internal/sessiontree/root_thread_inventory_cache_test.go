@@ -17,6 +17,9 @@ var testDomainNamespace = "floret.domain"
 var testInventoryKey = storagecodec.Tuple(
 	storagecodec.TupleString("sessiontree"), storagecodec.TupleString("root_thread_inventory"),
 )
+var testStateKey = storagecodec.Tuple(
+	storagecodec.TupleString("sessiontree"), storagecodec.TupleString("state"),
+)
 
 func TestBackendRootThreadInventoryCacheTracksCommittedStateAndIsolatesCallers(t *testing.T) {
 	ctx := context.Background()

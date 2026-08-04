@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.2.17 - 2026-08-04
+
+- Reuse the validated decoded session-tree domain while the exact durable
+  envelope bytes remain unchanged. Every read still enters one backend
+  snapshot and compares its complete persisted bytes; external changes are
+  decoded and validated strictly, while corrupt or future state continues to
+  fail closed without changing schema v4 or its migration lineage.
+
+## v3.2.16 - 2026-08-04
+
+- Cache validated host-facing thread-list projections by their canonical
+  inventory fingerprints, avoiding repeated projection work when the durable
+  bounded inventory has not changed.
+
+## v3.2.15 - 2026-08-04
+
+- Cache the validated decoded root-thread inventory while its exact durable
+  record bytes remain unchanged. External drift is still detected and rejected
+  before any cached projection is served.
+
 ## v3.2.14 - 2026-08-04
 
 - Close a requested approval as `canceled` when an interrupted tool batch
