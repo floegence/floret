@@ -187,7 +187,11 @@ host.
 `ThreadReader.ReadAuthoritativeProjection` returns a canonical projection with
 its revision and provenance. `DeriveThreadTurn` is only a validated offline
 calculation from caller-supplied detail events and must not be stored as Agent
-lifecycle authority. `Thread` exposes only capability issuers and identity; it
+lifecycle authority. Committed `runtime.Event` values carry both the compatible
+full projection and an ordinal-bound `ThreadTurnProjectionDelta`. Live hosts
+apply deltas with `ApplyThreadTurnProjectionDelta`; an identity or base-ordinal
+mismatch requires a canonical reload rather than a guessed merge. `Thread`
+exposes only capability issuers and identity; it
 does not expose direct read, mutation, execution, compaction, or SubAgent
 methods. Production hosts leave `runtime.Options.IDSource` nil; deterministic
 identity injection belongs to `florettest.NewIDSource`.

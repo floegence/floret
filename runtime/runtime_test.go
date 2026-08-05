@@ -4910,6 +4910,34 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 	}).Validate(); err != nil {
 		t.Fatalf("runtime event with valid running projection rejected: %v", err)
 	}
+	validDelta, err := DiffThreadTurnProjections(nil, validProjection)
+	if err != nil {
+		t.Fatalf("diff valid projection: %v", err)
+	}
+	if err := (Event{
+		Type: observation.EventTypeThreadEntryCommitted, ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Projection: &validProjection, ProjectionDelta: &validDelta,
+		Committed: &ThreadDetailEvent{ID: "entry", ThreadID: "thread", TurnID: "turn", RunID: "run", Kind: ThreadDetailEventTurnMarker},
+	}).Validate(); err != nil {
+		t.Fatalf("runtime event with matching projection delta rejected: %v", err)
+	}
+	withoutProjection := Event{
+		Type: observation.EventTypeThreadEntryCommitted, ThreadID: "thread", TurnID: "turn", RunID: "run",
+		ProjectionDelta: &validDelta,
+		Committed:       &ThreadDetailEvent{ID: "entry", ThreadID: "thread", TurnID: "turn", RunID: "run", Kind: ThreadDetailEventTurnMarker},
+	}
+	if err := withoutProjection.Validate(); err == nil {
+		t.Fatal("runtime event projection delta without full projection validated")
+	}
+	mismatchedDelta := validDelta
+	mismatchedDelta.Status = TurnStatusCompleted
+	if err := (Event{
+		Type: observation.EventTypeThreadEntryCommitted, ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Projection: &validProjection, ProjectionDelta: &mismatchedDelta,
+		Committed: &ThreadDetailEvent{ID: "entry", ThreadID: "thread", TurnID: "turn", RunID: "run", Kind: ThreadDetailEventTurnMarker},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with projection delta mismatch validated")
+	}
 	if err := (Event{
 		Type:       observation.EventTypeThreadEntryCommitted,
 		ThreadID:   "other-thread",

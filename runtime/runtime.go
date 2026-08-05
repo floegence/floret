@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1741,6 +1742,7 @@ type Event struct {
 	Activity           *tools.ActivityPresentation       `json:"activity,omitempty"`
 	ActivityTimeline   *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
 	Projection         *ThreadTurnProjection             `json:"projection,omitempty"`
+	ProjectionDelta    *ThreadTurnProjectionDelta        `json:"projection_delta,omitempty"`
 	Stream             *StreamObservation                `json:"stream,omitempty"`
 	Committed          *ThreadDetailEvent                `json:"committed,omitempty"`
 	ContextStatus      *observation.ContextStatus        `json:"context_status,omitempty"`
@@ -1815,6 +1817,20 @@ func (e Event) Validate() error {
 			return errors.New("runtime event projection identity mismatch")
 		}
 	}
+	if e.ProjectionDelta != nil {
+		if err := e.ProjectionDelta.Validate(); err != nil {
+			return fmt.Errorf("invalid event turn projection delta: %w", err)
+		}
+		if e.ThreadID != e.ProjectionDelta.ThreadID || e.TurnID != e.ProjectionDelta.TurnID || e.RunID != e.ProjectionDelta.RunID {
+			return errors.New("runtime event projection delta identity mismatch")
+		}
+		if e.Projection == nil {
+			return errors.New("runtime event projection delta requires full projection")
+		}
+		if !runtimeEventProjectionDeltaMatchesProjection(*e.ProjectionDelta, *e.Projection) {
+			return errors.New("runtime event projection delta does not match full projection")
+		}
+	}
 	if e.Type == observation.EventTypeThreadEntryCommitted && e.Committed == nil {
 		return errors.New("runtime thread entry committed event requires committed detail")
 	}
@@ -1830,6 +1846,20 @@ func (e Event) Validate() error {
 		}
 	}
 	return nil
+}
+
+func runtimeEventProjectionDeltaMatchesProjection(delta ThreadTurnProjectionDelta, projection ThreadTurnProjection) bool {
+	if delta.ThreadID != projection.ThreadID || delta.TurnID != projection.TurnID || delta.RunID != projection.RunID || delta.TraceID != projection.TraceID ||
+		delta.ThroughOrdinal != projection.ThroughOrdinal || delta.Status != projection.Status || delta.SegmentCount != len(projection.Segments) ||
+		!delta.ProjectedAt.Equal(projection.ProjectedAt) {
+		return false
+	}
+	for _, change := range delta.Changes {
+		if change.Index < 0 || change.Index >= len(projection.Segments) || !reflect.DeepEqual(change.Segment, projection.Segments[change.Index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateCommittedUserMessage(committed ThreadDetailEvent) error {
@@ -4813,6 +4843,10 @@ func cloneThreadTurnProjectionPtr(in *ThreadTurnProjection) *ThreadTurnProjectio
 		return nil
 	}
 	out := *in
+	if len(in.Segments) == 0 {
+		out.Segments = nil
+		return &out
+	}
 	out.Segments = make([]ThreadTurnProjectionSegment, 0, len(in.Segments))
 	for _, segment := range in.Segments {
 		out.Segments = append(out.Segments, cloneThreadTurnProjectionSegment(segment))
@@ -5078,7 +5112,7 @@ func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *obs
 	out := runtimeEvent(ev)
 	out.ActivityTimeline = observation.CloneActivityTimeline(timeline)
 	if s.projection != nil {
-		out.Projection = s.projection.project(out)
+		out.Projection, out.ProjectionDelta = s.projection.projectWithDelta(out)
 	}
 	s.sink.EmitEvent(out)
 }
@@ -5147,19 +5181,24 @@ func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
 }
 
 type runtimeLiveProjectionRecorder struct {
-	eventsByTurn            map[string][]ThreadDetailEvent
+	statesByTurn            map[string]*runtimeLiveTurnProjectionState
 	toolPresentationsByTurn map[string]map[string]*tools.ActivityPresentation
 }
 
 func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection {
+	projection, _ := r.projectWithDelta(ev)
+	return projection
+}
+
+func (r *runtimeLiveProjectionRecorder) projectWithDelta(ev Event) (*ThreadTurnProjection, *ThreadTurnProjectionDelta) {
 	if r == nil {
-		return nil
+		return nil, nil
 	}
 	threadID := strings.TrimSpace(string(ev.ThreadID))
 	turnID := strings.TrimSpace(string(ev.TurnID))
 	runID := strings.TrimSpace(string(ev.RunID))
 	if threadID == "" || turnID == "" || runID == "" {
-		return nil
+		return nil, nil
 	}
 	key := runtimeLiveProjectionTurnKey(threadID, turnID, runID)
 	toolID := strings.TrimSpace(ev.ToolID)
@@ -5173,10 +5212,7 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 		r.toolPresentationsByTurn[key][toolID] = cloneActivityPresentation(ev.Activity)
 	}
 	if ev.Committed == nil {
-		return nil
-	}
-	if r.eventsByTurn == nil {
-		r.eventsByTurn = map[string][]ThreadDetailEvent{}
+		return nil, nil
 	}
 	committed := cloneThreadDetailEvent(*ev.Committed)
 	if committed.Kind == ThreadDetailEventApproval && committed.Approval != nil {
@@ -5192,21 +5228,21 @@ func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection 
 			}
 		}
 	}
-	events := append(r.eventsByTurn[key], committed)
-	r.eventsByTurn[key] = events
-	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: identity.ThreadID(threadID),
-		TurnID:   identity.TurnID(turnID),
-		RunID:    identity.RunID(runID),
-		TraceID:  identity.TraceID(runID),
-		Events:   cloneThreadDetailEvents(events),
-	})
-	// A host-facing recorder may observe a committed mid-turn entry without the
-	// earlier turn marker. Such a partial live projection is still running.
-	if projection.Status == "" {
-		projection.Status = TurnStatusRunning
+	if r.statesByTurn == nil {
+		r.statesByTurn = map[string]*runtimeLiveTurnProjectionState{}
 	}
-	return cloneThreadTurnProjectionPtr(&projection)
+	state := r.statesByTurn[key]
+	if state == nil {
+		state = newRuntimeLiveTurnProjectionState(threadID, turnID, runID)
+		r.statesByTurn[key] = state
+	}
+	previous := state.lastProjection
+	projection := state.append(committed)
+	delta, err := DiffThreadTurnProjections(previous, projection)
+	if err != nil {
+		return cloneThreadTurnProjectionPtr(&projection), nil
+	}
+	return cloneThreadTurnProjectionPtr(&projection), &delta
 }
 
 func runtimeLiveProjectionTurnKey(threadID string, turnID string, runID string) string {

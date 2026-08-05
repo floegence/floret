@@ -10,6 +10,23 @@ import (
 	"github.com/floegence/floret/v3/tools"
 )
 
+func TestCloneActivityTimelinePreservesNilAndEmptySliceShape(t *testing.T) {
+	t.Parallel()
+
+	nilShape := CloneActivityTimeline(&ActivityTimeline{})
+	if nilShape.Items != nil || nilShape.Summary.AttentionReasons != nil {
+		t.Fatalf("nil slice shape changed: %#v", nilShape)
+	}
+
+	emptyShape := CloneActivityTimeline(&ActivityTimeline{
+		Summary: ActivitySummary{AttentionReasons: []ActivityAttentionReason{}},
+		Items:   []ActivityItem{{AttentionReasons: []ActivityAttentionReason{}}},
+	})
+	if emptyShape.Items == nil || emptyShape.Summary.AttentionReasons == nil || emptyShape.Items[0].AttentionReasons == nil {
+		t.Fatalf("empty slice shape changed: %#v", emptyShape)
+	}
+}
+
 func TestRebuildActivitySummaryUsesItemsAndPreservesDuration(t *testing.T) {
 	timeline := ActivityTimeline{
 		Summary: ActivitySummary{

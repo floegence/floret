@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.2.29 - 2026-08-05
+
+- Add validated `ThreadTurnProjectionDelta` updates to committed runtime events.
+  Live projection now retains only a bounded open event suffix instead of
+  replaying the complete turn journal for every commit. Hosts can apply exact
+  ordinal-bound segment replacements and reload canonical state on identity or
+  ordinal gaps; the existing full projection remains available for compatible
+  consumers and the domain schema stays at v4.
+
 ## v3.2.28 - 2026-08-05
 
 - Add optional host-authored answer summaries to question activity

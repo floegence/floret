@@ -110,6 +110,14 @@ revision and authoritative provenance. `DeriveThreadTurn` is a validated offline
 calculation from caller-supplied events and always reports derived provenance;
 it must not be persisted as Floret lifecycle authority.
 
+Committed runtime events expose a compatible full `ThreadTurnProjection` and a
+validated `ThreadTurnProjectionDelta`. `DiffThreadTurnProjections` produces the
+minimal index replacements from one exact ordinal to the next, and
+`ApplyThreadTurnProjectionDelta` rejects incomplete identity, stale bases,
+non-advancing ordinals, duplicate or unordered indexes, truncation drift, and
+invalid reconstructed projections. Delta streams are transient observation,
+not durable authority; any gap returns the consumer to the authoritative read.
+
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect
 gate, event sink, dynamic tool surface, loop limits, title mode, capabilities,

@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-05
+* **Incremental live turn projection**: Committed runtime events now include a
+  strict ordinal-bound projection delta while retaining the compatible full
+  projection. The recorder keeps a bounded open event suffix, delta apply
+  fails closed on identity or ordering drift, and reconnect still reloads the
+  authoritative projection. Domain schema v4 is unchanged.
 * **Question answer presentation**: Question activity may now carry optional
   host-authored, presentation-safe answer summaries. Secret answers require a
   value-free redacted marker, and the display payload remains separate from

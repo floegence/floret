@@ -764,7 +764,7 @@ func threadTurnProjectionTerminalMetadata(metadata map[string]string) map[string
 }
 
 func threadTurnProjectionAttentionReasons(item observation.ActivityItem) []observation.ActivityAttentionReason {
-	var reasons []observation.ActivityAttentionReason
+	reasons := []observation.ActivityAttentionReason{}
 	if item.RequiresApproval {
 		reasons = append(reasons, observation.ActivityAttentionApproval)
 	}

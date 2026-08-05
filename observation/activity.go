@@ -120,10 +120,14 @@ func CloneActivityTimeline(in *ActivityTimeline) *ActivityTimeline {
 		return nil
 	}
 	out := *in
-	out.Summary.AttentionReasons = append([]ActivityAttentionReason(nil), in.Summary.AttentionReasons...)
-	out.Items = make([]ActivityItem, len(in.Items))
-	for i, item := range in.Items {
-		out.Items[i] = cloneActivityItem(item)
+	if in.Summary.AttentionReasons != nil {
+		out.Summary.AttentionReasons = append([]ActivityAttentionReason{}, in.Summary.AttentionReasons...)
+	}
+	if in.Items != nil {
+		out.Items = make([]ActivityItem, len(in.Items))
+		for i, item := range in.Items {
+			out.Items[i] = cloneActivityItem(item)
+		}
 	}
 	return &out
 }
@@ -158,7 +162,9 @@ func RebuildActivitySummary(timeline ActivityTimeline) ActivitySummary {
 }
 
 func cloneActivityItem(in ActivityItem) ActivityItem {
-	in.AttentionReasons = append([]ActivityAttentionReason(nil), in.AttentionReasons...)
+	if in.AttentionReasons != nil {
+		in.AttentionReasons = append([]ActivityAttentionReason{}, in.AttentionReasons...)
+	}
 	in.Presentation = tools.CloneActivityPresentation(in.Presentation)
 	in.Metadata = cloneActivityMetadata(in.Metadata)
 	return in

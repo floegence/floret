@@ -100,10 +100,18 @@ or validation failures require a canonical reload rather than event replay.
   complete entry/thread/turn/run identity, creation time, a user payload, and
   valid attachments. Floret emits that user admission event only after
   `ListThreadTurns` can synchronously read the same running turn, and before
-  provider or assistant lifecycle events. `runtime.Event.Projection` carries the current hosted-turn display
-  projection on those committed events, so hosts can render live display order
-  without reading Floret storage internals or rebuilding activity from host
-  audit records. The committed turn-start marker gives live projections the
+  provider or assistant lifecycle events. `runtime.Event.Projection` carries
+  the current hosted-turn display projection on those committed events, while
+  `ProjectionDelta` carries the minimal changed segments bound to the exact
+  preceding and current journal ordinals. The first delta uses base ordinal
+  zero. Later deltas must match thread, turn, run, trace, and base ordinal
+  exactly; a mismatch fails closed and requires an authoritative reload.
+  `DiffThreadTurnProjections` and `ApplyThreadTurnProjectionDelta` validate this
+  contract. The live recorder retains stable projected segments plus a bounded
+  open event suffix, so it does not replay the complete turn journal for each
+  committed event. Hosts can therefore render live display order without
+  reading Floret storage internals or rebuilding activity from host audit
+  records. The committed turn-start marker gives live projections the
   explicit `running` status until a terminal marker becomes durable. A
   host-facing recorder whose local window begins with a later committed
   mid-turn entry also reports `running`; recorder-local history must never make

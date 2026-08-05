@@ -17,10 +17,12 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 1. Call `ThreadReader.Bootstrap`, retain its revision and page cursor, then
    render canonical `ThreadTurnProjection` segments in their supplied order.
 2. Treat `runtime.Event` and `observation.Event` as transient hints. Validate
-   each event and apply live projection updates only to matching thread, turn,
-   and run identities.
-3. Compare `ThroughOrdinal` only within those exact identities to discard stale
-   or duplicate projections. Do not order by `ProjectedAt`.
+   each event and apply `ProjectionDelta` with
+   `ApplyThreadTurnProjectionDelta` only to matching thread, turn, run, and
+   trace identities.
+3. Require each delta's `BaseThroughOrdinal` to match the locally applied
+   `ThroughOrdinal`. The first delta uses base zero. Do not order by
+   `ProjectedAt` and do not guess across an ordinal gap.
 4. Give waiting approvals and user-input requests clear primary actions; show
    running, failed, cancelled, pending, and completed tool states distinctly.
    Preserve stable row geometry while text and progress change.
@@ -33,8 +35,8 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 
 # Verify
 
-Test fake-provider streaming, dropped/duplicated events, reconnect, approval,
-cancellation, unavailable projection, and narrow/mobile layouts. The durable
+Test fake-provider streaming, dropped, duplicated, and out-of-order deltas,
+reconnect, approval, cancellation, unavailable projection, and narrow/mobile layouts. The durable
 contracts are documented in the [`runtime` API](../api/runtime.md), and event
 lifetime is defined by [Observation and Events](../architecture/observation-events.md).
 

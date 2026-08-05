@@ -383,6 +383,7 @@ const AgentTodoInProgress github.com/floegence/floret/v3/runtime.AgentTodoStatus
 const AgentTodoPending github.com/floegence/floret/v3/runtime.AgentTodoStatus = "pending"
 type AgentTodoStatus string
 method AgentTodoStatus.Valid func() bool
+func ApplyThreadTurnProjectionDelta func(previous *github.com/floegence/floret/v3/runtime.ThreadTurnProjection, delta github.com/floegence/floret/v3/runtime.ThreadTurnProjectionDelta) (github.com/floegence/floret/v3/runtime.ThreadTurnProjection, error)
 type ApprovalDecision string
 const ApprovalDecisionApprove github.com/floegence/floret/v3/runtime.ApprovalDecision = "approve"
 type ApprovalDecisionReceipt struct
@@ -568,6 +569,7 @@ method *DescendantReader.ID func() github.com/floegence/floret/v3/identity.Threa
 method *DescendantReader.ReadTurn func(ctx context.Context, turnID github.com/floegence/floret/v3/identity.TurnID) (github.com/floegence/floret/v3/runtime.ThreadTurnSnapshot, error)
 method *DescendantReader.ListTurns func(ctx context.Context, request github.com/floegence/floret/v3/runtime.ThreadTurnsRequest) (github.com/floegence/floret/v3/runtime.ThreadTurnsPage, error)
 method *DescendantReader.ReadArtifact func(ctx context.Context, artifactID github.com/floegence/floret/v3/identity.ArtifactID) (github.com/floegence/floret/v3/runtime.ArtifactContent, error)
+func DiffThreadTurnProjections func(previous *github.com/floegence/floret/v3/runtime.ThreadTurnProjection, current github.com/floegence/floret/v3/runtime.ThreadTurnProjection) (github.com/floegence/floret/v3/runtime.ThreadTurnProjectionDelta, error)
 type DurableThreadEvent struct
 method DurableThreadEvent.Kind func() github.com/floegence/floret/v3/runtime.DurableThreadEventKind
 method DurableThreadEvent.Revision func() github.com/floegence/floret/v3/runtime.ThreadRevision
@@ -689,6 +691,7 @@ field Event.ContinuationReason github.com/floegence/floret/v3/observation.Contin
 field Event.Activity *github.com/floegence/floret/v3/tools.ActivityPresentation tag="json:\"activity,omitempty\""
 field Event.ActivityTimeline *github.com/floegence/floret/v3/observation.ActivityTimeline tag="json:\"activity_timeline,omitempty\""
 field Event.Projection *github.com/floegence/floret/v3/runtime.ThreadTurnProjection tag="json:\"projection,omitempty\""
+field Event.ProjectionDelta *github.com/floegence/floret/v3/runtime.ThreadTurnProjectionDelta tag="json:\"projection_delta,omitempty\""
 field Event.Stream *github.com/floegence/floret/v3/runtime.StreamObservation tag="json:\"stream,omitempty\""
 field Event.Committed *github.com/floegence/floret/v3/runtime.ThreadDetailEvent tag="json:\"committed,omitempty\""
 field Event.ContextStatus *github.com/floegence/floret/v3/observation.ContextStatus tag="json:\"context_status,omitempty\""
@@ -1323,6 +1326,18 @@ field ThreadTurnProjection.ThroughOrdinal int64 tag="json:\"through_ordinal\""
 field ThreadTurnProjection.ProjectedAt time.Time tag="json:\"projected_at,omitempty\""
 method ThreadTurnProjection.Validate func() error
 const ThreadTurnProjectionAuthoritative github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance = "authoritative"
+type ThreadTurnProjectionDelta struct
+field ThreadTurnProjectionDelta.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="json:\"thread_id\""
+field ThreadTurnProjectionDelta.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
+field ThreadTurnProjectionDelta.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field ThreadTurnProjectionDelta.TraceID github.com/floegence/floret/v3/identity.TraceID tag="json:\"trace_id,omitempty\""
+field ThreadTurnProjectionDelta.BaseThroughOrdinal int64 tag="json:\"base_through_ordinal\""
+field ThreadTurnProjectionDelta.ThroughOrdinal int64 tag="json:\"through_ordinal\""
+field ThreadTurnProjectionDelta.Status github.com/floegence/floret/v3/runtime.TurnStatus tag="json:\"status\""
+field ThreadTurnProjectionDelta.SegmentCount int tag="json:\"segment_count\""
+field ThreadTurnProjectionDelta.Changes []github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegmentChange tag="json:\"changes,omitempty\""
+field ThreadTurnProjectionDelta.ProjectedAt time.Time tag="json:\"projected_at,omitempty\""
+method ThreadTurnProjectionDelta.Validate func() error
 const ThreadTurnProjectionDerived github.com/floegence/floret/v3/runtime.ThreadTurnProjectionProvenance = "derived"
 type ThreadTurnProjectionProvenance string
 type ThreadTurnProjectionSegment struct
@@ -1333,6 +1348,9 @@ field ThreadTurnProjectionSegment.Signal *github.com/floegence/floret/v3/runtime
 field ThreadTurnProjectionSegment.EventIDs []string tag="json:\"event_ids,omitempty\""
 const ThreadTurnProjectionSegmentActivityTimeline github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegmentKind = "activity_timeline"
 const ThreadTurnProjectionSegmentAssistantText github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegmentKind = "assistant_text"
+type ThreadTurnProjectionSegmentChange struct
+field ThreadTurnProjectionSegmentChange.Index int tag="json:\"index\""
+field ThreadTurnProjectionSegmentChange.Segment github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegment tag="json:\"segment\""
 const ThreadTurnProjectionSegmentControlSignal github.com/floegence/floret/v3/runtime.ThreadTurnProjectionSegmentKind = "control_signal"
 type ThreadTurnProjectionSegmentKind string
 type ThreadTurnProjectionSignal struct
