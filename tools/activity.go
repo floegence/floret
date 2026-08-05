@@ -148,9 +148,18 @@ type QuestionActivityItem struct {
 	Options  []QuestionActivityOption `json:"options,omitempty"`
 }
 
+// QuestionActivityAnswer is a host-authored, presentation-safe answer summary.
+// Secret answers must set Redacted and omit Values.
+type QuestionActivityAnswer struct {
+	QuestionID string   `json:"question_id"`
+	Values     []string `json:"values,omitempty"`
+	Redacted   bool     `json:"redacted,omitempty"`
+}
+
 type QuestionActivityPayload struct {
-	PromptID  string                 `json:"prompt_id,omitempty"`
-	Questions []QuestionActivityItem `json:"questions,omitempty"`
+	PromptID  string                   `json:"prompt_id,omitempty"`
+	Questions []QuestionActivityItem   `json:"questions,omitempty"`
+	Answers   []QuestionActivityAnswer `json:"answers,omitempty"`
 }
 
 func (QuestionActivityPayload) activityRenderer() ActivityRenderer {
@@ -634,6 +643,21 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.Error = cloneActivityError(r.Error)
 		}
 		return l
+	case QuestionActivityPayload:
+		l, ok := left.(QuestionActivityPayload)
+		if !ok {
+			return cloneActivityPayload(r)
+		}
+		if r.PromptID != "" {
+			l.PromptID = r.PromptID
+		}
+		if len(r.Questions) > 0 {
+			l.Questions = cloneQuestionActivityQuestions(r.Questions)
+		}
+		if len(r.Answers) > 0 {
+			l.Answers = cloneQuestionActivityAnswers(r.Answers)
+		}
+		return l
 	default:
 		return cloneActivityPayload(right)
 	}
@@ -670,10 +694,8 @@ func cloneActivityPayload(payload ActivityPayload) ActivityPayload {
 		typed.Items = append([]TodoActivityItem(nil), typed.Items...)
 		return typed
 	case QuestionActivityPayload:
-		typed.Questions = append([]QuestionActivityItem(nil), typed.Questions...)
-		for i := range typed.Questions {
-			typed.Questions[i].Options = append([]QuestionActivityOption(nil), typed.Questions[i].Options...)
-		}
+		typed.Questions = cloneQuestionActivityQuestions(typed.Questions)
+		typed.Answers = cloneQuestionActivityAnswers(typed.Answers)
 		return typed
 	case CompletionActivityPayload:
 		return typed
@@ -682,6 +704,22 @@ func cloneActivityPayload(payload ActivityPayload) ActivityPayload {
 	default:
 		return nil
 	}
+}
+
+func cloneQuestionActivityQuestions(in []QuestionActivityItem) []QuestionActivityItem {
+	out := append([]QuestionActivityItem(nil), in...)
+	for i := range out {
+		out[i].Options = append([]QuestionActivityOption(nil), out[i].Options...)
+	}
+	return out
+}
+
+func cloneQuestionActivityAnswers(in []QuestionActivityAnswer) []QuestionActivityAnswer {
+	out := append([]QuestionActivityAnswer(nil), in...)
+	for i := range out {
+		out[i].Values = append([]string(nil), out[i].Values...)
+	}
+	return out
 }
 
 func cloneStructuredActivityPayload(payload StructuredActivityPayload) StructuredActivityPayload {
@@ -768,10 +806,11 @@ func validateActivityPayload(payload ActivityPayload) error {
 		}
 		return validatePayloadTextAndError(values, nil)
 	case QuestionActivityPayload:
-		if len(typed.Questions) > maxActivityPayloadItems {
-			return errors.New("too many questions")
+		if len(typed.Questions) > maxActivityPayloadItems || len(typed.Answers) > maxActivityPayloadItems {
+			return errors.New("too many questions or answers")
 		}
 		values := []string{typed.PromptID}
+		answerValueCount := 0
 		for _, question := range typed.Questions {
 			if strings.TrimSpace(question.ID) == "" || strings.TrimSpace(question.Question) == "" {
 				return errors.New("question requires id and text")
@@ -785,6 +824,29 @@ func validateActivityPayload(payload ActivityPayload) error {
 					return errors.New("question option requires a label")
 				}
 				values = append(values, option.Label, option.Description)
+			}
+		}
+		for _, answer := range typed.Answers {
+			if strings.TrimSpace(answer.QuestionID) == "" {
+				return errors.New("question answer requires a question id")
+			}
+			if answer.Redacted {
+				if len(answer.Values) > 0 {
+					return errors.New("redacted question answer must not include values")
+				}
+			} else if len(answer.Values) == 0 {
+				return errors.New("question answer requires a value or redaction")
+			}
+			answerValueCount += len(answer.Values)
+			if answerValueCount > maxActivityPayloadItems {
+				return errors.New("too many question answer values")
+			}
+			values = append(values, answer.QuestionID)
+			for _, value := range answer.Values {
+				if strings.TrimSpace(value) == "" {
+					return errors.New("question answer values must be non-empty")
+				}
+				values = append(values, value)
 			}
 		}
 		return validatePayloadTextAndError(values, nil)

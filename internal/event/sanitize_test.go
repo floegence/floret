@@ -89,6 +89,30 @@ func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuestionActivityAnswersRedactsPathsAndSecrets(t *testing.T) {
+	path := "/Users/alice/work/floret/secret.txt"
+	got := Sanitize(Event{Activity: &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererQuestion,
+		Payload: tools.QuestionActivityPayload{
+			Answers: []tools.QuestionActivityAnswer{
+				{QuestionID: "target", Values: []string{"open " + path, "token sk-test-secret"}},
+				{QuestionID: "credential", Redacted: true},
+			},
+		},
+	}})
+	if got.Activity == nil {
+		t.Fatal("activity missing after sanitize")
+	}
+	payload, ok := got.Activity.Payload.(tools.QuestionActivityPayload)
+	if !ok || len(payload.Answers) != 2 || !payload.Answers[1].Redacted {
+		t.Fatalf("question payload = %#v", got.Activity.Payload)
+	}
+	data := strings.Join(payload.Answers[0].Values, "\n")
+	if strings.Contains(data, path) || strings.Contains(data, "sk-test-secret") {
+		t.Fatalf("question answers were not sanitized: %#v", payload.Answers)
+	}
+}
+
 func TestSanitizePathRefsCoversRawEventStrings(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"
 	got := SanitizePathRefs(Event{

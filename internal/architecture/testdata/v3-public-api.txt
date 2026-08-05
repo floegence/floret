@@ -1843,6 +1843,10 @@ type PermissionResolver func(github.com/floegence/floret/v3/tools.PermissionRequ
 type PermissionSpec struct
 field PermissionSpec.Mode github.com/floegence/floret/v3/tools.PermissionMode
 field PermissionSpec.ResourceKinds []string
+type QuestionActivityAnswer struct
+field QuestionActivityAnswer.QuestionID string tag="json:\"question_id\""
+field QuestionActivityAnswer.Values []string tag="json:\"values,omitempty\""
+field QuestionActivityAnswer.Redacted bool tag="json:\"redacted,omitempty\""
 type QuestionActivityItem struct
 field QuestionActivityItem.ID string tag="json:\"id\""
 field QuestionActivityItem.Question string tag="json:\"question\""
@@ -1853,6 +1857,7 @@ field QuestionActivityOption.Description string tag="json:\"description,omitempt
 type QuestionActivityPayload struct
 field QuestionActivityPayload.PromptID string tag="json:\"prompt_id,omitempty\""
 field QuestionActivityPayload.Questions []github.com/floegence/floret/v3/tools.QuestionActivityItem tag="json:\"questions,omitempty\""
+field QuestionActivityPayload.Answers []github.com/floegence/floret/v3/tools.QuestionActivityAnswer tag="json:\"answers,omitempty\""
 type Registry struct
 method *Registry.Register func(t github.com/floegence/floret/v3/tools.Tool) error
 method *Registry.Seal func()

@@ -933,6 +933,7 @@ func TestValidateActivityTimelineAllowsHostPublicDetailPayloads(t *testing.T) {
 			name: "question",
 			presentation: &tools.ActivityPresentation{Renderer: tools.ActivityRendererQuestion, Payload: tools.QuestionActivityPayload{
 				PromptID: "prompt-1", Questions: []tools.QuestionActivityItem{{ID: "target", Question: "Which target should I use?", Options: []tools.QuestionActivityOption{{Label: "Local"}}}},
+				Answers: []tools.QuestionActivityAnswer{{QuestionID: "target", Values: []string{"Local"}}, {QuestionID: "token", Redacted: true}},
 			}},
 		},
 		{

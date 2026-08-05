@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.2.28 - 2026-08-05
+
+- Add optional host-authored answer summaries to question activity
+  presentation. Non-secret answers retain ordered display values, while secret
+  answers must use an explicit redacted marker with no values. Validation,
+  cloning, merging, event sanitization, and observation projection preserve the
+  same public contract without changing the domain schema v4 lineage.
+
 ## v3.2.27 - 2026-08-05
 
 - Return a user-rejected approval to the provider as a failed tool result

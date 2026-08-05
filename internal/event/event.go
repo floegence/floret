@@ -372,6 +372,12 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 				payload.Questions[i].Options[j].Description = sanitizeText(payload.Questions[i].Options[j].Description)
 			}
 		}
+		for i := range payload.Answers {
+			payload.Answers[i].QuestionID = sanitizeText(payload.Answers[i].QuestionID)
+			for j := range payload.Answers[i].Values {
+				payload.Answers[i].Values[j] = sanitizeText(payload.Answers[i].Values[j])
+			}
+		}
 		return payload
 	case tools.CompletionActivityPayload:
 		payload.Status = sanitizeText(payload.Status)

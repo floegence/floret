@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-05
+* **Question answer presentation**: Question activity may now carry optional
+  host-authored, presentation-safe answer summaries. Secret answers require a
+  value-free redacted marker, and the display payload remains separate from
+  input admission and canonical user messages.
 * **Approval rejection continuation**: A canonical user rejection now returns a
   failed tool result without entering the authorization gate or handler, then
   lets the provider complete the turn naturally. Only dispatcher paths that
