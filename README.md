@@ -189,7 +189,9 @@ its revision and provenance. `DeriveThreadTurn` is only a validated offline
 calculation from caller-supplied detail events and must not be stored as Agent
 lifecycle authority. Committed `runtime.Event` values carry both the compatible
 full projection and an ordinal-bound `ThreadTurnProjectionDelta`. Live hosts
-apply deltas with `ApplyThreadTurnProjectionDelta`; an identity or base-ordinal
+apply deltas with `ApplyThreadTurnProjectionDelta`. Running deltas require the
+exact preceding ordinal, while terminal deltas use base ordinal zero as
+self-contained recovery checkpoints. Any other identity or base-ordinal
 mismatch requires a canonical reload rather than a guessed merge. `Thread`
 exposes only capability issuers and identity; it
 does not expose direct read, mutation, execution, compaction, or SubAgent

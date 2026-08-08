@@ -10,8 +10,9 @@ import (
 	"github.com/floegence/floret/v3/identity"
 )
 
-// ThreadTurnProjectionDelta is one validated incremental replacement over a
-// previously observed turn projection.
+// ThreadTurnProjectionDelta is one validated replacement over a previously
+// observed turn projection. A zero base ordinal is a self-contained checkpoint
+// that may replace any prior local lineage.
 type ThreadTurnProjectionDelta struct {
 	ThreadID           identity.ThreadID                   `json:"thread_id"`
 	TurnID             identity.TurnID                     `json:"turn_id"`
@@ -77,6 +78,7 @@ func DiffThreadTurnProjections(previous *ThreadTurnProjection, current ThreadTur
 		return ThreadTurnProjectionDelta{}, fmt.Errorf("current turn projection: %w", err)
 	}
 	baseOrdinal := int64(0)
+	diffBase := previous
 	if previous != nil {
 		if err := previous.Validate(); err != nil {
 			return ThreadTurnProjectionDelta{}, fmt.Errorf("previous turn projection: %w", err)
@@ -84,7 +86,13 @@ func DiffThreadTurnProjections(previous *ThreadTurnProjection, current ThreadTur
 		if !threadTurnProjectionIdentityEqual(*previous, current) {
 			return ThreadTurnProjectionDelta{}, errors.New("turn projection delta identity mismatch")
 		}
-		baseOrdinal = previous.ThroughOrdinal
+		if current.Status.IsTerminal() {
+			// Terminal frames are recovery checkpoints. Hosts may have missed any
+			// number of live deltas before observing the final canonical state.
+			diffBase = nil
+		} else {
+			baseOrdinal = previous.ThroughOrdinal
+		}
 	}
 	delta := ThreadTurnProjectionDelta{
 		ThreadID: current.ThreadID, TurnID: current.TurnID, RunID: current.RunID, TraceID: current.TraceID,
@@ -92,7 +100,7 @@ func DiffThreadTurnProjections(previous *ThreadTurnProjection, current ThreadTur
 		Status: current.Status, SegmentCount: len(current.Segments), ProjectedAt: current.ProjectedAt,
 	}
 	for index, segment := range current.Segments {
-		if previous != nil && index < len(previous.Segments) && reflect.DeepEqual(previous.Segments[index], segment) {
+		if diffBase != nil && index < len(diffBase.Segments) && reflect.DeepEqual(diffBase.Segments[index], segment) {
 			continue
 		}
 		delta.Changes = append(delta.Changes, ThreadTurnProjectionSegmentChange{
@@ -105,16 +113,17 @@ func DiffThreadTurnProjections(previous *ThreadTurnProjection, current ThreadTur
 	return delta, nil
 }
 
-// ApplyThreadTurnProjectionDelta validates and applies one incremental
-// replacement. A nil previous projection accepts only an initial base ordinal.
+// ApplyThreadTurnProjectionDelta validates and applies one replacement. A zero
+// base ordinal resets any supplied previous projection from a self-contained
+// checkpoint; a nonzero base requires an exact prior ordinal.
 func ApplyThreadTurnProjectionDelta(previous *ThreadTurnProjection, delta ThreadTurnProjectionDelta) (ThreadTurnProjection, error) {
 	if err := delta.Validate(); err != nil {
 		return ThreadTurnProjection{}, err
 	}
-	if previous == nil {
-		if delta.BaseThroughOrdinal != 0 {
-			return ThreadTurnProjection{}, fmt.Errorf("initial turn projection delta base ordinal must be zero, got %d", delta.BaseThroughOrdinal)
-		}
+	if delta.BaseThroughOrdinal == 0 {
+		previous = nil
+	} else if previous == nil {
+		return ThreadTurnProjection{}, fmt.Errorf("turn projection delta base ordinal %d requires a previous projection", delta.BaseThroughOrdinal)
 	} else {
 		if err := previous.Validate(); err != nil {
 			return ThreadTurnProjection{}, fmt.Errorf("previous turn projection: %w", err)

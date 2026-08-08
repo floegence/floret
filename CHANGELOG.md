@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.2.30 - 2026-08-08
+
+- Make terminal `ThreadTurnProjectionDelta` values self-contained base-zero
+  checkpoints so hosts can converge after dropped live observation events.
+  Running deltas remain minimal and ordinal-bound.
+
 ## v3.2.29 - 2026-08-05
 
 - Add validated `ThreadTurnProjectionDelta` updates to committed runtime events.

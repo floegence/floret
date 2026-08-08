@@ -112,11 +112,14 @@ it must not be persisted as Floret lifecycle authority.
 
 Committed runtime events expose a compatible full `ThreadTurnProjection` and a
 validated `ThreadTurnProjectionDelta`. `DiffThreadTurnProjections` produces the
-minimal index replacements from one exact ordinal to the next, and
+minimal index replacements from one exact running ordinal to the next. A
+terminal projection produces a self-contained base-zero checkpoint so a host
+can converge after missing intermediate observation events.
 `ApplyThreadTurnProjectionDelta` rejects incomplete identity, stale bases,
 non-advancing ordinals, duplicate or unordered indexes, truncation drift, and
-invalid reconstructed projections. Delta streams are transient observation,
-not durable authority; any gap returns the consumer to the authoritative read.
+invalid reconstructed projections. A base-zero checkpoint replaces any local
+lineage; other gaps return the consumer to the authoritative read. Delta streams
+remain transient observation, not durable authority.
 
 `runtime.NewAgent` requires a valid `config.AgentConfig` and non-nil
 `provider.Gateway`. It snapshots profile, prompt policy, static tools, effect

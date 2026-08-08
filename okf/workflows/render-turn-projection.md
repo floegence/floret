@@ -20,9 +20,10 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
    each event and apply `ProjectionDelta` with
    `ApplyThreadTurnProjectionDelta` only to matching thread, turn, run, and
    trace identities.
-3. Require each delta's `BaseThroughOrdinal` to match the locally applied
-   `ThroughOrdinal`. The first delta uses base zero. Do not order by
-   `ProjectedAt` and do not guess across an ordinal gap.
+3. For a running delta, require `BaseThroughOrdinal` to match the locally
+   applied `ThroughOrdinal`. Base-zero deltas are self-contained initial or
+   terminal checkpoints and replace the local projection lineage. Do not order
+   by `ProjectedAt` and do not guess across any other ordinal gap.
 4. Give waiting approvals and user-input requests clear primary actions; show
    running, failed, cancelled, pending, and completed tool states distinctly.
    Preserve stable row geometry while text and progress change.

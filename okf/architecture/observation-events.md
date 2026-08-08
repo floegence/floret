@@ -102,10 +102,11 @@ or validation failures require a canonical reload rather than event replay.
   `ListThreadTurns` can synchronously read the same running turn, and before
   provider or assistant lifecycle events. `runtime.Event.Projection` carries
   the current hosted-turn display projection on those committed events, while
-  `ProjectionDelta` carries the minimal changed segments bound to the exact
-  preceding and current journal ordinals. The first delta uses base ordinal
-  zero. Later deltas must match thread, turn, run, trace, and base ordinal
-  exactly; a mismatch fails closed and requires an authoritative reload.
+  `ProjectionDelta` carries changed segments bound to the current journal
+  ordinal. The first delta and every terminal delta use base ordinal zero and
+  include a self-contained checkpoint. Running deltas are minimal and must
+  match thread, turn, run, trace, and the exact preceding ordinal; a mismatch
+  fails closed and requires an authoritative reload.
   `DiffThreadTurnProjections` and `ApplyThreadTurnProjectionDelta` validate this
   contract. The live recorder retains stable projected segments plus a bounded
   open event suffix, so it does not replay the complete turn journal for each

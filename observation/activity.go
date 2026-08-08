@@ -1467,7 +1467,14 @@ func validateActivityItemApprovalLifecycle(item ActivityItem) error {
 		default:
 			return fmt.Errorf("approved approval status is %q, want pending, running, or terminal tool status", item.Status)
 		}
-	case "rejected", "timed_out":
+	case "rejected":
+		// A user rejection is a normal terminal cancellation in the host UI,
+		// not a failed tool execution. Older persisted projections used this
+		// combination, so keep them readable across restart.
+		if item.Status != ActivityStatusError && item.Status != ActivityStatusCanceled {
+			return fmt.Errorf("%s approval status is %q, want %q or %q", item.ApprovalState, item.Status, ActivityStatusError, ActivityStatusCanceled)
+		}
+	case "timed_out":
 		if item.Status != ActivityStatusError {
 			return fmt.Errorf("%s approval status is %q, want %q", item.ApprovalState, item.Status, ActivityStatusError)
 		}

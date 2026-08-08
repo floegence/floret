@@ -30,9 +30,11 @@ func TestThreadTurnProjectionDeltaRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("diff projection: %v", err)
 	}
-	if delta.BaseThroughOrdinal != previous.ThroughOrdinal || delta.ThroughOrdinal != current.ThroughOrdinal || len(delta.Changes) != 2 {
+	if delta.BaseThroughOrdinal != 0 || delta.ThroughOrdinal != current.ThroughOrdinal || len(delta.Changes) != len(current.Segments) {
 		t.Fatalf("delta=%#v", delta)
 	}
+	// A terminal checkpoint replaces a stale local lineage without requiring
+	// every intermediate delta to have arrived.
 	applied, err := ApplyThreadTurnProjectionDelta(&previous, delta)
 	if err != nil {
 		t.Fatalf("apply projection delta: %v", err)
@@ -44,6 +46,35 @@ func TestThreadTurnProjectionDeltaRoundTrip(t *testing.T) {
 	delta.Changes[0].Segment.Text = "mutated"
 	if previous.Segments[1].Text != "working" || current.Segments[1].Text != "done" || applied.Segments[1].Text != "done" {
 		t.Fatal("projection delta aliases caller-owned segments")
+	}
+}
+
+func TestThreadTurnProjectionDeltaKeepsRunningFramesIncremental(t *testing.T) {
+	t.Parallel()
+	previous := ThreadTurnProjection{
+		ThreadID: "thread-running", TurnID: "turn-running", RunID: "run-running",
+		Status: TurnStatusRunning, ThroughOrdinal: 3, ProjectedAt: time.UnixMilli(3000).UTC(),
+		Segments: []ThreadTurnProjectionSegment{
+			{Kind: ThreadTurnProjectionSegmentAssistantText, Text: "stable"},
+			{Kind: ThreadTurnProjectionSegmentAssistantText, Text: "before"},
+		},
+	}
+	current := previous
+	current.ThroughOrdinal = 4
+	current.ProjectedAt = time.UnixMilli(4000).UTC()
+	current.Segments = append([]ThreadTurnProjectionSegment(nil), previous.Segments...)
+	current.Segments[1].Text = "after"
+
+	delta, err := DiffThreadTurnProjections(&previous, current)
+	if err != nil {
+		t.Fatalf("diff running projection: %v", err)
+	}
+	if delta.BaseThroughOrdinal != previous.ThroughOrdinal || len(delta.Changes) != 1 || delta.Changes[0].Index != 1 {
+		t.Fatalf("running delta=%#v, want one incremental replacement", delta)
+	}
+	applied, err := ApplyThreadTurnProjectionDelta(&previous, delta)
+	if err != nil || !reflect.DeepEqual(applied, current) {
+		t.Fatalf("running apply=(%#v, %v), want %#v", applied, err, current)
 	}
 }
 
