@@ -1465,6 +1465,10 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 	if len(p.Requests) != 2 || p.Requests[0].PreviousState == nil || p.Requests[0].PreviousState.ID != "turn-prev" {
 		t.Fatalf("RunTurn previous provider state missing from first request: %#v", p.Requests)
 	}
+	if p.Requests[0].AttemptID != "logical-turn:attempt:1" || p.Requests[0].AttemptEpoch != 1 ||
+		p.Requests[1].AttemptID != "logical-turn:attempt:2" || p.Requests[1].AttemptEpoch != 2 {
+		t.Fatalf("provider attempt identities are not monotonic: %#v", p.Requests)
+	}
 	if p.Requests[1].PreviousState == nil || p.Requests[1].PreviousState.ID != "turn-prev" {
 		t.Fatalf("RunTurn previous provider state should continue until provider replaces it: %#v", p.Requests[1].PreviousState)
 	}
@@ -1481,7 +1485,7 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 	}
 	delta := firstEvent(rec.Events, event.ProviderDelta)
 	deltaMeta, ok := delta.Metadata.(map[string]any)
-	if !ok || deltaMeta["attempt_id"] != "logical-turn:attempt:1" || deltaMeta["attempt_epoch"] != 1 {
+	if !ok || deltaMeta["attempt_id"] != "logical-turn:attempt:2" || deltaMeta["attempt_epoch"] != 2 {
 		t.Fatalf("provider delta attempt identity missing: %#v", delta.Metadata)
 	}
 	labels, ok := meta["labels"].(map[string]string)

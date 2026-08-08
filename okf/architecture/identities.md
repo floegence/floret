@@ -22,8 +22,9 @@ separate.
 * `PromptScopeID` identifies the reuse boundary for prompt-cache records and
   provider ledgers.
 * `TraceID` correlates events across a logical execution trace.
-* `LogicalRequestID` may identify retries or transport attempts, but it must not
-  replace `RunID`, `TurnID`, or `TraceID`.
+* `LogicalRequestID` identifies one user-visible lifecycle mutation across its
+  provider dispatch attempts. It must not replace `RunID`, `TurnID`, or
+  `TraceID`; each provider dispatch has its own monotonic attempt epoch.
 * `ArtifactID` identifies one durable artifact.
 
 # Maintenance Notes

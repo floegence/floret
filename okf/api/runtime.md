@@ -80,11 +80,14 @@ same recovery boundary. A restart recovers only the last checkpoint; transient
 token, draft, subscriber, and cursor state is intentionally not claimed as
 durable authority.
 
-Provider requests carry one `logical_request_id` plus an `attempt_id` and
-monotonic `attempt_epoch`. Stream observations expose those identities so a
-host can discard stale deltas. Canonical assistant, tool, and terminal commits
-remain keyed by durable entry/effect identity and replay to the existing result;
-assistant text comparison is never used for deduplication.
+Provider requests carry one stable `logical_request_id` plus an `attempt_id` and
+monotonic `attempt_epoch` for every dispatch in that run, including ordinary
+multi-step turns. The turn projection activates the newest attempt, clears its
+transient draft, and drops late older deltas before either live publication or
+canonical assistant commit. An epoch reused by a different attempt ID, or a
+different logical request, fails closed. Canonical assistant, tool, and terminal
+commits remain keyed by durable entry/effect identity and replay to the existing
+result; assistant text comparison is never used for deduplication.
 Provider execution is serialized per thread rather than by the host-wide
 mutation fence. It may wait for a canonical approval while
 `TurnExecutor.ResolveApproval` commits that exact decision; concurrent replay of

@@ -451,15 +451,16 @@ type ManualCompactionRequest struct {
 }
 
 type Engine struct {
-	provider  provider.Provider
-	tools     *tools.Registry
-	store     session.TranscriptStore
-	prompt    cache.Store
-	memory    *memory.Manager
-	sink      event.Sink
-	stopHook  StopHook
-	compactor CompactionManager
-	options   Options
+	provider     provider.Provider
+	tools        *tools.Registry
+	store        session.TranscriptStore
+	prompt       cache.Store
+	memory       *memory.Manager
+	sink         event.Sink
+	stopHook     StopHook
+	compactor    CompactionManager
+	options      Options
+	attemptEpoch int
 }
 
 type turnState struct {
@@ -827,6 +828,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			noProgress = 0
 			duplicateCount = 0
 		}
+		attemptMetadata := providerAttemptMetadata(req)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
@@ -862,14 +864,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				CreatedAt:          time.Now(),
 			})
 		}
-		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
+		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: attemptEventMetadata(req, providerUsageContextStatus(req, normalizedUsage, nativePressure))})
 		if !supplementalTurn && stepOutput.ResponseState != nil {
 			latestProviderState = provider.CloneState(stepOutput.ResponseState)
 			providerStateFresh = true
 		}
 		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, ProviderState: provider.CloneState(latestProviderState), ProviderStateFresh: providerStateFresh}
 		if stepOutput.FinishReason != "" {
-			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
+			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, Metadata: attemptMetadata})
 		}
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
@@ -910,7 +912,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(errors.New("provider returned empty output"), FailureOriginProvider), metrics, started, decision)
 			}
 			metrics.Retries++
-			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
+			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output", Metadata: attemptMetadata})
 			decision.ContinuationReason = ContinueRetryEmpty
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			continue
@@ -1016,7 +1018,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						ToolKind: "local",
 						Args:     start.RawArgs,
 						Activity: callActivities[start.CallID],
-						Metadata: callBatchMetadata[start.CallID],
+						Metadata: mergeAnyMetadata(attemptMetadata, callBatchMetadata[start.CallID]),
 					})
 				},
 				ActivityUpdated: func(update tools.ToolActivityUpdate) {
@@ -1033,7 +1035,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						ToolKind: "local",
 						Args:     update.RawArgs,
 						Activity: update.Activity,
-						Metadata: mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata),
+						Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata)),
 					})
 				},
 				EffectBatchPreflight: opts.EffectBatchPreflight,
@@ -1132,7 +1134,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if metadata == nil {
 				metadata = map[string]any{"batch_index": i, "batch_size": len(calls)}
 			}
-			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: metadata})
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 		}
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
@@ -1204,7 +1206,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					metadataBase = toolProjectionMetadata(result.Metadata, projection)
 				}
 				metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: failureActivity, Metadata: metadata})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: failureActivity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 				return err
 			}
 			if finalized.Handled {
@@ -1219,7 +1221,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			} else if projection.FullOutputPlan != nil {
 				err := errors.New("effect result finalizer is required to preserve truncated tool output")
 				metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(calls))
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: metadata})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 				return err
 			}
 			metadataBase := result.Metadata
@@ -1227,7 +1229,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				metadataBase = toolProjectionMetadata(result.Metadata, projection)
 			}
 			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
 			toolMessageSet[i] = true
 			return nil
 		}
@@ -2240,6 +2242,26 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 	}
 }
 
+func providerAttemptMetadata(req provider.Request) map[string]any {
+	return map[string]any{
+		"logical_request_id": req.LogicalRequestID,
+		"attempt_id":         req.AttemptID,
+		"attempt_epoch":      req.AttemptEpoch,
+		"attempt":            req.Attempt,
+	}
+}
+
+func attemptEventMetadata(req provider.Request, base any) map[string]any {
+	out := providerAttemptMetadata(req)
+	if values, ok := base.(map[string]any); ok {
+		return mergeAnyMetadata(out, values)
+	}
+	if base != nil {
+		out["details"] = base
+	}
+	return out
+}
+
 func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, bool, error) {
 	compacted := false
 	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
@@ -2316,10 +2338,11 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	req.OverflowRetried = overflowRetried
 	req.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
 	if req.LogicalRequestID == "" {
-		req.LogicalRequestID = fmt.Sprintf("%s:logical:%d", opts.RunID, step)
+		req.LogicalRequestID = fmt.Sprintf("%s:logical", opts.RunID)
 	}
-	req.AttemptEpoch = attempt
-	req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, attempt)
+	e.attemptEpoch++
+	req.AttemptEpoch = e.attemptEpoch
+	req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
 	req, err = e.prepareProviderRequest(ctx, req)
 	if err != nil {
 		return provider.Request{}, err

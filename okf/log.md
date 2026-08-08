@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-08
+* **Provider attempt fencing**: Provider dispatches now carry one stable logical
+  request identity and a monotonic per-run attempt epoch. The in-memory turn
+  projection activates the newest attempt, drops late older stream events, and
+  fails closed on identity conflicts before live publication or canonical
+  assistant commit.
+
 ## 2026-08-05
 * **Incremental live turn projection**: Committed runtime events now include a
   strict ordinal-bound projection delta while retaining the compatible full

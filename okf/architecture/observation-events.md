@@ -83,6 +83,9 @@ or validation failures require a canonical reload rather than event replay.
   Model tool-call stream facts identify the call through public
   `runtime.ToolCallStream` but do not expose argument text; local tool execution
   remains a separate activity timeline concern.
+  Provider request/finish/retry and tool outcome metadata retain the same attempt
+  identity, so a host can reset only its transient draft on a newer activation
+  while keeping Floret's canonical projection as the authority.
 * The public runtime event sink contains only finite `observation.EventType`
   values. Agent-harness lifecycle notifications such as thread resume, turn
   start, and entry append remain on the internal harness sink and are not

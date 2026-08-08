@@ -3924,6 +3924,7 @@ type turnProjection struct {
 	turnID           string
 	runID            string
 	downstream       event.Sink
+	emitMu           sync.Mutex
 	mu               sync.Mutex
 	text             string
 	reasoning        string
@@ -3932,7 +3933,22 @@ type turnProjection struct {
 	pendingBatchSize int
 	pendingCallsSent bool
 	lastCompaction   event.Event
+	activeAttempt    providerAttemptIdentity
 	err              error
+}
+
+type providerAttemptIdentity struct {
+	logicalRequestID string
+	attemptID        string
+	attemptEpoch     int
+}
+
+func (identity providerAttemptIdentity) empty() bool {
+	return identity.logicalRequestID == "" && identity.attemptID == "" && identity.attemptEpoch == 0
+}
+
+func (identity providerAttemptIdentity) valid() bool {
+	return identity.logicalRequestID != "" && identity.attemptID != "" && identity.attemptEpoch > 0
 }
 
 type pendingToolMessage struct {
@@ -3942,6 +3958,27 @@ type pendingToolMessage struct {
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
+	if p == nil {
+		return
+	}
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+	p.mu.Lock()
+	if p.err != nil {
+		p.mu.Unlock()
+		return
+	}
+	accepted, err := p.acceptProviderAttemptLocked(ev)
+	if err != nil {
+		p.err = err
+		p.mu.Unlock()
+		return
+	}
+	if !accepted {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
 	if p.downstream != nil {
 		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}
@@ -4055,6 +4092,84 @@ func (p *turnProjection) Emit(ev event.Event) {
 			}
 		}
 	}
+}
+
+func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, error) {
+	tracked := ev.Type == event.ProviderRequest || ev.Type == event.ProviderDelta ||
+		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderToolCallStart ||
+		ev.Type == event.ProviderToolCallDelta || ev.Type == event.ProviderToolCallEnd
+	if !tracked {
+		return true, nil
+	}
+	identity, present := providerAttemptFromMetadata(ev.Metadata)
+	if ev.Type == event.ProviderRequest {
+		if !present || !identity.valid() {
+			return false, errors.New("provider request requires complete attempt identity")
+		}
+		if p.activeAttempt.empty() {
+			p.activeAttempt = identity
+			return true, nil
+		}
+		if identity.logicalRequestID != p.activeAttempt.logicalRequestID {
+			return false, errors.New("provider attempt identity conflict: logical request changed")
+		}
+		switch {
+		case identity.attemptEpoch < p.activeAttempt.attemptEpoch:
+			return false, nil
+		case identity.attemptEpoch == p.activeAttempt.attemptEpoch && identity.attemptID != p.activeAttempt.attemptID:
+			return false, errors.New("provider attempt identity conflict: epoch reused by another attempt")
+		case identity.attemptEpoch > p.activeAttempt.attemptEpoch:
+			if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
+				return false, errors.New("provider attempt superseded with pending canonical tool batch")
+			}
+			p.text = ""
+			p.reasoning = ""
+			p.activeAttempt = identity
+		}
+		return true, nil
+	}
+	if !present {
+		return true, nil
+	}
+	if !identity.valid() {
+		return false, errors.New("provider event requires complete attempt identity")
+	}
+	if p.activeAttempt.empty() {
+		return false, errors.New("provider event arrived before attempt activation")
+	}
+	if identity.logicalRequestID != p.activeAttempt.logicalRequestID {
+		return false, errors.New("provider attempt identity conflict: logical request changed")
+	}
+	if identity.attemptEpoch < p.activeAttempt.attemptEpoch {
+		return false, nil
+	}
+	if identity.attemptEpoch == p.activeAttempt.attemptEpoch && identity.attemptID != p.activeAttempt.attemptID {
+		return false, errors.New("provider attempt identity conflict: epoch reused by another attempt")
+	}
+	if identity.attemptEpoch > p.activeAttempt.attemptEpoch {
+		return false, errors.New("provider event arrived for inactive future attempt")
+	}
+	return true, nil
+}
+
+func providerAttemptFromMetadata(metadata any) (providerAttemptIdentity, bool) {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return providerAttemptIdentity{}, false
+	}
+	logical, logicalOK := values["logical_request_id"]
+	attemptID, attemptOK := values["attempt_id"]
+	epoch, epochOK := values["attempt_epoch"]
+	if !logicalOK && !attemptOK && !epochOK {
+		return providerAttemptIdentity{}, false
+	}
+	logicalString, _ := logical.(string)
+	attemptString, _ := attemptID.(string)
+	return providerAttemptIdentity{
+		logicalRequestID: strings.TrimSpace(logicalString),
+		attemptID:        strings.TrimSpace(attemptString),
+		attemptEpoch:     intFromEventMetadata(epoch),
+	}, true
 }
 
 func (p *turnProjection) failCompactionFinalization(cause error) error {
