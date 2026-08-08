@@ -46,6 +46,17 @@ Semantic effect intent and terminal commit paths remain durable barriers. A
 failed checkpoint leaves the previous durable envelope intact and prevents
 startup from claiming uncheckpointed live state after restart.
 
+Between checkpoints, semantic mutations append compact, checksummed
+session-tree journal frames. Startup decodes the last checkpoint, replays a
+contiguous journal sequence, and rebuilds the in-process authority and indexes.
+Only a malformed final frame may be discarded as a torn write; a missing,
+out-of-order, or corrupt earlier frame fails closed. A checkpoint folds the
+journal into one domain state and starts a fresh sequence. Live drafts, token
+flow, subscriber cursors, and transport diagnostics are not journal data.
+Effect intent, approval decision/rejection, canonical assistant outcome, and
+terminal settlement remain semantic journal barriers, so memory-first admission
+is included when a later irreversible boundary is committed.
+
 The v2.2-to-v3 migration surface provides representability preflight, an
 immutable plan, preview, apply, semantic hashes, and a receipt. Only built-in
 v2.2 states named by the conversion table are supported. A legal extension

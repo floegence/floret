@@ -1,5 +1,14 @@
 # Floret OKF Update Log
 
+## 2026-08-09
+* **Memory actor recovery journal**: Runtime mutations now flow through
+  per-thread in-process mailboxes while provider I/O and approval waits remain
+  outside them. The storage kernel retains compact checksummed semantic journal
+  frames between checkpoints, replays them at startup, rejects corrupt middle
+  frames, and tolerates only a torn final frame. Attempt fencing now happens
+  before subscriber buffering; effect intent and approval rejection remain
+  exactly-once durable barriers across restart.
+
 ## 2026-08-08
 * **Provider attempt fencing**: Provider dispatches now carry one stable logical
   request identity and a monotonic per-run attempt epoch. The in-memory turn

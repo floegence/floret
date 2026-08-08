@@ -34,7 +34,7 @@ func NewBackendKernel(ctx context.Context, backend spi.Backend, policy sessiontr
 		return nil, err
 	}
 	kernel := &BackendKernel{BackendRepo: repo}
-	if err := repo.ViewDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
+	if err := repo.ViewDomainWithRecords(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
 		prompt, found, err := loadPromptState(tx)
 		if err != nil {
 			return err
@@ -49,7 +49,7 @@ func NewBackendKernel(ctx context.Context, backend spi.Backend, policy sessiontr
 	}
 	if kernel.prompt == nil {
 		kernel.prompt = cache.NewMemoryStore()
-		if err := repo.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+		if err := repo.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
 			return savePromptState(tx, kernel.prompt)
 		}); err != nil {
 			return nil, err
@@ -148,7 +148,7 @@ func (kernel *BackendKernel) Checkpoint(ctx context.Context) error {
 	if kernel.prompt == nil {
 		return errors.New("prompt state is missing")
 	}
-	return kernel.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+	return kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
 		return savePromptState(tx, kernel.prompt)
 	})
 }
@@ -307,7 +307,7 @@ func (kernel *BackendKernel) PrepareForkOperation(ctx context.Context, record Fo
 }
 
 func (kernel *BackendKernel) ForkOperation(ctx context.Context, operationID string) (result ForkOperationRecord, err error) {
-	err = kernel.ViewDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.ReadTx) error {
+	err = kernel.ViewDomainWithRecords(ctx, func(memory *sessiontree.MemoryRepo, tx spi.ReadTx) error {
 		var found bool
 		result, found, err = loadForkOperation(tx, operationID)
 		if err != nil {

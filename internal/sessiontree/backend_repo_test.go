@@ -28,7 +28,9 @@ func TestBackendRepoMethodSetTracksCanonicalMemoryRepo(t *testing.T) {
 		"UpdateDomain":           true,
 		"UpdateDomainAtRevision": true,
 		"ViewDomain":             true,
+		"ViewDomainWithRecords":  true,
 		"Checkpoint":             true,
+		"CheckpointDomain":       true,
 	}
 	memoryOnly := map[string]bool{
 		"CommitForkBatch": true, "EncodeMemoryState": true, "FailForkClaim": true,
@@ -184,7 +186,7 @@ func TestBackendRepoRollsBackDomainMutationOnErrorAndPanic(t *testing.T) {
 	}
 }
 
-func TestBackendRepoViewDomainCachesOnlyExactValidatedDurableState(t *testing.T) {
+func TestBackendRepoViewDomainKeepsLiveMemoryAuthorityUntilRestart(t *testing.T) {
 	ctx := context.Background()
 	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
 	if err != nil {
@@ -243,8 +245,8 @@ func TestBackendRepoViewDomainCachesOnlyExactValidatedDurableState(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ViewDomain(ctx, func(*MemoryRepo, spi.ReadTx) error { return nil }); err == nil {
-		t.Fatal("corrupt external durable domain was accepted")
+	if live := readPointer(); live != committed {
+		t.Fatal("external checkpoint drift replaced the live in-process authority")
 	}
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 		return tx.Put(testDomainNamespace, testStateKey, durable)
@@ -252,6 +254,6 @@ func TestBackendRepoViewDomainCachesOnlyExactValidatedDurableState(t *testing.T)
 		t.Fatal(err)
 	}
 	if restored := readPointer(); restored != committed {
-		t.Fatal("failed external decode polluted the last validated cache")
+		t.Fatal("restoring the checkpoint replaced the live in-process authority")
 	}
 }

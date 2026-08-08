@@ -148,11 +148,11 @@ func TestV3ThreadBootstrapReadsCanonicalDomainOnce(t *testing.T) {
 			if bootstrap.Thread.ID != created.ThreadID || bootstrap.Overview.LatestTurn == nil || len(bootstrap.Turns.Turns) != 1 {
 				t.Fatalf("bootstrap=%#v, want complete canonical thread and turn", bootstrap)
 			}
-			if calls := source.viewCalls.Load(); calls != 1 {
-				t.Fatalf("backend views=%d, want one exact bootstrap snapshot", calls)
+			if calls := source.viewCalls.Load(); calls != 0 {
+				t.Fatalf("backend views=%d, want memory-authority bootstrap without SQL", calls)
 			}
-			if reads := source.fullDomainReads.Load(); reads != 1 {
-				t.Fatalf("full session-tree domain reads=%d, want one exact bootstrap snapshot", reads)
+			if reads := source.fullDomainReads.Load(); reads != 0 {
+				t.Fatalf("full session-tree domain reads=%d, want memory-authority bootstrap without blob read", reads)
 			}
 		})
 	}
@@ -254,8 +254,8 @@ func testV3ListThreadsReadsCanonicalDomainOncePerPage(t *testing.T, backendSourc
 	if !reflect.DeepEqual(listedLatest, directLatest) {
 		t.Fatalf("listed latest turn = %+v, want exact latest turn %+v", listedLatest, directLatest)
 	}
-	if calls := source.viewCalls.Load(); calls != 1 {
-		t.Fatalf("canonical domain reads = %d, want 1 bounded page snapshot", calls)
+	if calls := source.viewCalls.Load(); calls != 0 {
+		t.Fatalf("backend views = %d, want memory-authority inventory without SQL", calls)
 	}
 	if reads := source.fullDomainReads.Load(); reads != 0 {
 		t.Fatalf("full session-tree domain reads = %d, want lightweight inventory record only", reads)

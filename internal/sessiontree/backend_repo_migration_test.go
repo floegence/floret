@@ -250,6 +250,9 @@ func seedLegacyV2SubAgentState(t *testing.T, ctx context.Context, backend spi.Ba
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := repo.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var current []byte
 	if err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
 		current, err = memory.EncodeMemoryState()
@@ -340,6 +343,9 @@ func seedLegacyV3StateWithoutInventory(t *testing.T, ctx context.Context, backen
 		ThreadID: "migration-root", CreateIntentID: "create-migration-root", ContractVersion: "3",
 		Meta: ThreadMeta{ID: "migration-root", CreatedAt: now, UpdatedAt: now},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Checkpoint(ctx); err != nil {
 		t.Fatal(err)
 	}
 	current := readMigrationState(t, ctx, backend)

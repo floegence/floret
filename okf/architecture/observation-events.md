@@ -80,6 +80,9 @@ or validation failures require a canonical reload rather than event replay.
   `logical_request_id`, `attempt_id`, and `attempt_epoch` of the provider
   attempt that produced it. Hosts may render only the current attempt and must
   route late or unknown attempts to diagnostics rather than the live draft.
+  Floret applies this fence in the exact-thread runtime mailbox before an event
+  enters its subscriber buffer. A stale event is neither an observer update nor
+  canonical input; transport consumers must not repeat that lifecycle authority.
   Model tool-call stream facts identify the call through public
   `runtime.ToolCallStream` but do not expose argument text; local tool execution
   remains a separate activity timeline concern.

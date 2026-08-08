@@ -64,12 +64,15 @@ type Options struct {
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
-	store              *runtimeStore
-	backend            spi.Backend
-	binders            hostBinders
-	idSource           IDSource
-	idMu               sync.Mutex
+	store    *runtimeStore
+	backend  spi.Backend
+	binders  hostBinders
+	idSource IDSource
+	idMu     sync.Mutex
+	// mutationMu protects inventory-wide and cross-thread mutations only.
+	// Exact-thread lifecycle transitions belong to threadActors.
 	mutationMu         sync.Mutex
+	threadActors       *threadActorRegistry
 	turnExecutions     keyedMutex
 	subscriptionMu     sync.Mutex
 	subscriptions      map[*Subscription]struct{}
@@ -233,7 +236,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	}
 	host := &Host{
 		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}),
-		subscriptions: make(map[*Subscription]struct{}), subscriptionBuffer: buffer,
+		threadActors: newThreadActorRegistry(), subscriptions: make(map[*Subscription]struct{}), subscriptionBuffer: buffer,
 	}
 	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
 		constructors := []func() error{
@@ -320,6 +323,16 @@ func (host *Host) available() error {
 		return ErrHostClosed
 	}
 	return nil
+}
+
+func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.ThreadID, mutate func() error) error {
+	if host == nil || host.threadActors == nil {
+		return errors.New("runtime thread actor registry is required")
+	}
+	if _, err := identity.ParseThreadID(threadID.String()); err != nil {
+		return err
+	}
+	return host.threadActors.actor(threadID.String()).apply(ctx, mutate)
 }
 
 // threadCreatorHandle is exact root-thread creation authority.

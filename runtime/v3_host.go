@@ -1073,34 +1073,35 @@ func (thread *Thread) setTitle(ctx context.Context, command SetThreadTitleComman
 	if err != nil {
 		return SetThreadTitleResult{}, err
 	}
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveBoundMutation(ctx, "set_thread_title", thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		return SetThreadTitleResult{}, err
-	}
-	if replayed && record.State == requestStateCommitted {
-		var out SetThreadTitleResult
-		if err := decodeLedgerResult(record, &out); err != nil {
-			return SetThreadTitleResult{}, err
+	var out SetThreadTitleResult
+	err = host.applyThreadMutation(ctx, thread.id, func() error {
+		record, replayed, reserveErr := host.reserveBoundMutation(ctx, "set_thread_title", thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		out.Receipt = receiptFromRecord(record, true)
-		return out, nil
-	}
-	editor, err := host.threadTitleEditor(ctx, thread.id)
-	if err != nil {
-		return SetThreadTitleResult{}, err
-	}
-	snapshot, err := editor.Set(ctx, command.Title)
-	if err != nil {
-		return SetThreadTitleResult{}, err
-	}
-	out := SetThreadTitleResult{Thread: snapshot}
-	if err := host.commitMutationResult(context.WithoutCancel(ctx), thread, &record, &out); err != nil {
-		return SetThreadTitleResult{}, err
-	}
-	out.Receipt = receiptFromRecord(record, replayed)
-	return out, nil
+		if replayed && record.State == requestStateCommitted {
+			if decodeErr := decodeLedgerResult(record, &out); decodeErr != nil {
+				return decodeErr
+			}
+			out.Receipt = receiptFromRecord(record, true)
+			return nil
+		}
+		editor, editorErr := host.threadTitleEditor(ctx, thread.id)
+		if editorErr != nil {
+			return editorErr
+		}
+		snapshot, setErr := editor.Set(ctx, command.Title)
+		if setErr != nil {
+			return setErr
+		}
+		out = SetThreadTitleResult{Thread: snapshot}
+		if commitErr := host.commitMutationResult(context.WithoutCancel(ctx), thread, &record, &out); commitErr != nil {
+			return commitErr
+		}
+		out.Receipt = receiptFromRecord(record, replayed)
+		return nil
+	})
+	return out, err
 }
 
 // PendingToolRecovery binds provider-free settlement authority for one exact
@@ -1921,33 +1922,38 @@ func (turns *turnExecutorView) StartTurn(ctx context.Context, command StartTurnC
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	host.mutationMu.Lock()
-	record, replayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
-	if err != nil {
-		host.mutationMu.Unlock()
-		return StartTurnResult{}, err
-	}
-	out := StartTurnResult{ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID}
-	if replayed {
-		committed, commitErr := host.completePreparedTurnRequest(ctx, &record)
-		if commitErr != nil {
-			host.mutationMu.Unlock()
-			return out, commitErr
+	var record requestLedgerRecord
+	var replayed bool
+	var out StartTurnResult
+	var runner *turnRunnerHandle
+	committed := false
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		var reserveErr error
+		record, replayed, reserveErr = host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		if committed {
-			out.Receipt = receiptFromRecord(record, true)
-			host.mutationMu.Unlock()
-			return out, nil
+		out = StartTurnResult{ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID}
+		if replayed {
+			var commitErr error
+			committed, commitErr = host.completePreparedTurnRequest(ctx, &record)
+			if commitErr != nil {
+				return commitErr
+			}
+			if committed {
+				out.Receipt = receiptFromRecord(record, true)
+				return nil
+			}
 		}
+		executionAgent := *turns.agent
+		executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+		var runnerErr error
+		runner, runnerErr = host.turnRunner(ctx, turns.thread.id, &executionAgent)
+		return runnerErr
+	})
+	if err != nil || committed {
+		return out, err
 	}
-	executionAgent := *turns.agent
-	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
-	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
-	if err != nil {
-		host.mutationMu.Unlock()
-		return StartTurnResult{}, err
-	}
-	host.mutationMu.Unlock()
 	result, runErr := runner.Run(ctx, turnExecutionRequest{
 		RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
 		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
@@ -1955,19 +1961,19 @@ func (turns *turnExecutorView) StartTurn(ctx context.Context, command StartTurnC
 		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
 	})
 	if result.TurnID != "" {
-		host.mutationMu.Lock()
-		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
-		if snapshotErr != nil {
-			host.mutationMu.Unlock()
-			return out, errors.Join(runErr, snapshotErr)
-		}
-		record.Revision = view.Revision
-		record.State = requestStateCommitted
-		if commitErr := host.commitRequest(context.WithoutCancel(ctx), record); commitErr != nil {
-			host.mutationMu.Unlock()
+		commitCtx := context.WithoutCancel(ctx)
+		commitErr := host.applyThreadMutation(commitCtx, turns.thread.id, func() error {
+			view, snapshotErr := turns.thread.snapshot(commitCtx)
+			if snapshotErr != nil {
+				return snapshotErr
+			}
+			record.Revision = view.Revision
+			record.State = requestStateCommitted
+			return host.commitRequest(commitCtx, record)
+		})
+		if commitErr != nil {
 			return out, errors.Join(runErr, commitErr)
 		}
-		host.mutationMu.Unlock()
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
 	return out, runErr
@@ -2001,44 +2007,48 @@ func (turns *turnExecutorView) AdmitTurn(ctx context.Context, command StartTurnC
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	record, requestReplayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
-	if err != nil {
-		return AdmitTurnResult{}, err
-	}
-	executionAgent := *turns.agent
-	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
-	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
-	if err != nil {
-		return AdmitTurnResult{}, err
-	}
-	admission, err := runner.Admit(ctx, turnExecutionRequest{
-		RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
-		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
-		Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
-		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
+	var out AdmitTurnResult
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		record, requestReplayed, reserveErr := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		executionAgent := *turns.agent
+		executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+		runner, runnerErr := host.turnRunner(ctx, turns.thread.id, &executionAgent)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		admission, admissionErr := runner.Admit(ctx, turnExecutionRequest{
+			RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
+			SupplementalContext: command.SupplementalContext, Labels: command.Labels,
+			Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
+			Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
+		})
+		if admissionErr != nil {
+			return admissionErr
+		}
+		revision, revisionErr := host.currentThreadRevision(ctx, record.ThreadID)
+		if revisionErr != nil {
+			return revisionErr
+		}
+		receipt := TurnAdmissionReceipt{
+			LogicalRequestID: record.LogicalRequestID, ThreadID: record.ThreadID,
+			TurnID: *record.TurnID, RunID: *record.RunID, UserEntryID: admission.UserEntryID,
+			Revision: revision, Replayed: requestReplayed || admission.Replayed,
+		}
+		out = AdmitTurnResult{
+			ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID,
+			UserEntryID: admission.UserEntryID, Receipt: receipt,
+		}
+		out.execution = &turnAdmissionExecution{
+			thread: turns.thread, agent: turns.agent,
+			context: ExecutionContext{SupplementalContext: command.SupplementalContext, SignalProjector: command.Signals.Project},
+			receipt: receipt,
+		}
+		return nil
 	})
-	if err != nil {
-		return AdmitTurnResult{}, err
-	}
-	revision, err := host.currentThreadRevision(ctx, record.ThreadID)
-	if err != nil {
-		return AdmitTurnResult{}, err
-	}
-	receipt := TurnAdmissionReceipt{
-		LogicalRequestID: record.LogicalRequestID, ThreadID: record.ThreadID,
-		TurnID: *record.TurnID, RunID: *record.RunID, UserEntryID: admission.UserEntryID,
-		Revision: revision, Replayed: requestReplayed || admission.Replayed,
-	}
-	out := AdmitTurnResult{
-		ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID,
-		UserEntryID: admission.UserEntryID, Receipt: receipt,
-	}
-	out.execution = &turnAdmissionExecution{
-		thread: turns.thread, agent: turns.agent,
-		context: ExecutionContext{SupplementalContext: command.SupplementalContext, SignalProjector: command.Signals.Project},
-		receipt: receipt,
-	}
-	return out, nil
+	return out, err
 }
 
 // Execute starts or replays provider execution for this admitted turn.
@@ -2071,21 +2081,24 @@ func (turns *turnExecutorView) ExecuteAdmission(ctx context.Context, receipt Tur
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	host.mutationMu.Lock()
-	record, found, err := host.loadRequest(ctx, "start_turn", turns.thread.id.String(), receipt.LogicalRequestID)
+	var record requestLedgerRecord
+	err := host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		loaded, found, loadErr := host.loadRequest(ctx, "start_turn", turns.thread.id.String(), receipt.LogicalRequestID)
+		if loadErr != nil {
+			return loadErr
+		}
+		if !found {
+			return ErrExecutionPlanUnavailable
+		}
+		if validationErr := validateAdmittedTurnRecord(loaded, receipt); validationErr != nil {
+			return validationErr
+		}
+		record = loaded
+		return nil
+	})
 	if err != nil {
-		host.mutationMu.Unlock()
 		return StartTurnResult{}, err
 	}
-	if !found {
-		host.mutationMu.Unlock()
-		return StartTurnResult{}, ErrExecutionPlanUnavailable
-	}
-	if err := validateAdmittedTurnRecord(record, receipt); err != nil {
-		host.mutationMu.Unlock()
-		return StartTurnResult{}, err
-	}
-	host.mutationMu.Unlock()
 	return turns.executeAdmissionRecord(ctx, record, receipt, executionContext, true)
 }
 
@@ -2141,19 +2154,19 @@ func (turns *turnExecutorView) executeAdmissionRecord(ctx context.Context, recor
 		ManualCompactions: turns.agent.manualCompactions,
 	})
 	if result.TurnID != "" {
-		host.mutationMu.Lock()
-		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
-		if snapshotErr != nil {
-			host.mutationMu.Unlock()
-			return out, errors.Join(runErr, snapshotErr)
-		}
-		record.Revision = view.Revision
-		record.State = requestStateCommitted
-		if commitErr := host.commitRequest(context.WithoutCancel(ctx), record); commitErr != nil {
-			host.mutationMu.Unlock()
+		commitCtx := context.WithoutCancel(ctx)
+		commitErr := host.applyThreadMutation(commitCtx, turns.thread.id, func() error {
+			view, snapshotErr := turns.thread.snapshot(commitCtx)
+			if snapshotErr != nil {
+				return snapshotErr
+			}
+			record.Revision = view.Revision
+			record.State = requestStateCommitted
+			return host.commitRequest(commitCtx, record)
+		})
+		if commitErr != nil {
 			return out, errors.Join(runErr, commitErr)
 		}
-		host.mutationMu.Unlock()
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
 	return out, runErr
@@ -2185,50 +2198,55 @@ func (turns *turnExecutorView) RetryTurn(ctx context.Context, command RetryTurnC
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	host.mutationMu.Lock()
-	record, replayed, err := host.reserveTurnMutation(ctx, "retry_turn", turns.thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		host.mutationMu.Unlock()
-		return RetryTurnResult{}, err
-	}
-	out := RetryTurnResult{ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID}
-	if replayed {
-		committed, commitErr := host.completePreparedTurnRequest(ctx, &record)
-		if commitErr != nil {
-			host.mutationMu.Unlock()
-			return out, commitErr
+	var record requestLedgerRecord
+	var replayed bool
+	var out RetryTurnResult
+	var runner *turnRunnerHandle
+	committed := false
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		var reserveErr error
+		record, replayed, reserveErr = host.reserveTurnMutation(ctx, "retry_turn", turns.thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		if committed {
-			out.Receipt = receiptFromRecord(record, true)
-			host.mutationMu.Unlock()
-			return out, nil
+		out = RetryTurnResult{ThreadID: record.ThreadID, TurnID: *record.TurnID, RunID: *record.RunID}
+		if replayed {
+			var commitErr error
+			committed, commitErr = host.completePreparedTurnRequest(ctx, &record)
+			if commitErr != nil {
+				return commitErr
+			}
+			if committed {
+				out.Receipt = receiptFromRecord(record, true)
+				return nil
+			}
 		}
+		executionAgent := *turns.agent
+		executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+		var runnerErr error
+		runner, runnerErr = host.turnRunner(ctx, turns.thread.id, &executionAgent)
+		return runnerErr
+	})
+	if err != nil || committed {
+		return out, err
 	}
-	executionAgent := *turns.agent
-	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
-	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
-	if err != nil {
-		host.mutationMu.Unlock()
-		return RetryTurnResult{}, err
-	}
-	host.mutationMu.Unlock()
 	result, retryErr := runner.Retry(ctx, boundRetryRequest{
 		TurnID: *record.TurnID, RunID: *record.RunID, Reason: command.Reason, Labels: command.Labels,
 	})
 	if result.TurnID != "" {
-		host.mutationMu.Lock()
-		view, snapshotErr := turns.thread.snapshot(context.WithoutCancel(ctx))
-		if snapshotErr != nil {
-			host.mutationMu.Unlock()
-			return out, errors.Join(retryErr, snapshotErr)
-		}
-		record.Revision = view.Revision
-		record.State = requestStateCommitted
-		if commitErr := host.commitRequest(context.WithoutCancel(ctx), record); commitErr != nil {
-			host.mutationMu.Unlock()
+		commitCtx := context.WithoutCancel(ctx)
+		commitErr := host.applyThreadMutation(commitCtx, turns.thread.id, func() error {
+			view, snapshotErr := turns.thread.snapshot(commitCtx)
+			if snapshotErr != nil {
+				return snapshotErr
+			}
+			record.Revision = view.Revision
+			record.State = requestStateCommitted
+			return host.commitRequest(commitCtx, record)
+		})
+		if commitErr != nil {
 			return out, errors.Join(retryErr, commitErr)
 		}
-		host.mutationMu.Unlock()
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
 	return out, retryErr
@@ -2265,30 +2283,37 @@ func (turns *turnExecutorView) ContinuePendingTool(ctx context.Context, command 
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	host.mutationMu.Lock()
-	record, replayed, err := host.reserveTurnMutation(ctx, "continue_pending_tool", turns.thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		host.mutationMu.Unlock()
-		return ContinuePendingToolResult{}, err
-	}
-	if replayed && record.State == requestStateCommitted {
-		var out ContinuePendingToolResult
-		if err := decodeLedgerResult(record, &out); err != nil {
-			host.mutationMu.Unlock()
-			return ContinuePendingToolResult{}, err
+	var record requestLedgerRecord
+	var replayed bool
+	var runner *turnRunnerHandle
+	var replayedOut *ContinuePendingToolResult
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		var reserveErr error
+		record, replayed, reserveErr = host.reserveTurnMutation(ctx, "continue_pending_tool", turns.thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		out.Receipt = receiptFromRecord(record, true)
-		host.mutationMu.Unlock()
-		return out, nil
-	}
-	executionAgent := *turns.agent
-	executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
-	runner, err := host.turnRunner(ctx, turns.thread.id, &executionAgent)
+		if replayed && record.State == requestStateCommitted {
+			var out ContinuePendingToolResult
+			if decodeErr := decodeLedgerResult(record, &out); decodeErr != nil {
+				return decodeErr
+			}
+			out.Receipt = receiptFromRecord(record, true)
+			replayedOut = &out
+			return nil
+		}
+		executionAgent := *turns.agent
+		executionAgent.eventSink = combineEventSinks(turns.agent.eventSink, hostSubscriptionEventSink{host: host})
+		var runnerErr error
+		runner, runnerErr = host.turnRunner(ctx, turns.thread.id, &executionAgent)
+		return runnerErr
+	})
 	if err != nil {
-		host.mutationMu.Unlock()
 		return ContinuePendingToolResult{}, err
 	}
-	host.mutationMu.Unlock()
+	if replayedOut != nil {
+		return *replayedOut, nil
+	}
 	completion, runErr := runner.CompletePendingTool(ctx, activePendingToolCompletion{
 		CompletionRequestID: command.LogicalRequestID.String(), Target: command.Target,
 		ContinuationTurnID: *record.TurnID, ContinuationRunID: *record.RunID,
@@ -2297,12 +2322,13 @@ func (turns *turnExecutorView) ContinuePendingTool(ctx context.Context, command 
 	})
 	out := ContinuePendingToolResult{Completion: completion}
 	if completion.ThreadID != "" {
-		host.mutationMu.Lock()
-		if err := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); err != nil {
-			host.mutationMu.Unlock()
-			return out, errors.Join(runErr, err)
+		commitCtx := context.WithoutCancel(ctx)
+		commitErr := host.applyThreadMutation(commitCtx, turns.thread.id, func() error {
+			return host.commitMutationResult(commitCtx, turns.thread, &record, &out)
+		})
+		if commitErr != nil {
+			return out, errors.Join(runErr, commitErr)
 		}
-		host.mutationMu.Unlock()
 	}
 	out.Receipt = receiptFromRecord(record, replayed)
 	return out, runErr
@@ -2325,34 +2351,35 @@ func (turns *turnExecutorView) RecordPendingToolOutcome(ctx context.Context, com
 	if err != nil {
 		return RecordPendingToolOutcomeResult{}, err
 	}
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveBoundMutation(ctx, "record_pending_tool_outcome", turns.thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		return RecordPendingToolOutcomeResult{}, err
-	}
-	if replayed && record.State == requestStateCommitted {
-		var out RecordPendingToolOutcomeResult
-		if err := decodeLedgerResult(record, &out); err != nil {
-			return RecordPendingToolOutcomeResult{}, err
+	var out RecordPendingToolOutcomeResult
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		record, replayed, reserveErr := host.reserveBoundMutation(ctx, "record_pending_tool_outcome", turns.thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		out.Receipt = receiptFromRecord(record, true)
-		return out, nil
-	}
-	runner, err := host.turnRunner(ctx, turns.thread.id, turns.agent)
-	if err != nil {
-		return RecordPendingToolOutcomeResult{}, err
-	}
-	outcome, err := runner.SettlePendingTool(ctx, activePendingToolSettlement{Target: command.Target, Status: command.Status, Summary: command.Summary, Output: command.Output, Activity: command.Activity})
-	if err != nil {
-		return RecordPendingToolOutcomeResult{}, err
-	}
-	out := RecordPendingToolOutcomeResult{Outcome: outcome}
-	if err := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); err != nil {
-		return RecordPendingToolOutcomeResult{}, err
-	}
-	out.Receipt = receiptFromRecord(record, replayed)
-	return out, nil
+		if replayed && record.State == requestStateCommitted {
+			if decodeErr := decodeLedgerResult(record, &out); decodeErr != nil {
+				return decodeErr
+			}
+			out.Receipt = receiptFromRecord(record, true)
+			return nil
+		}
+		runner, runnerErr := host.turnRunner(ctx, turns.thread.id, turns.agent)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		outcome, settleErr := runner.SettlePendingTool(ctx, activePendingToolSettlement{Target: command.Target, Status: command.Status, Summary: command.Summary, Output: command.Output, Activity: command.Activity})
+		if settleErr != nil {
+			return settleErr
+		}
+		out = RecordPendingToolOutcomeResult{Outcome: outcome}
+		if commitErr := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); commitErr != nil {
+			return commitErr
+		}
+		out.Receipt = receiptFromRecord(record, replayed)
+		return nil
+	})
+	return out, err
 }
 
 // ResolveApproval resolves one exact canonical approval authority snapshot.
@@ -2372,34 +2399,35 @@ func (turns *turnExecutorView) ResolveApproval(ctx context.Context, command Reso
 	if err != nil {
 		return ResolveApprovalCommandResult{}, err
 	}
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveBoundMutation(ctx, "resolve_approval", turns.thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		return ResolveApprovalCommandResult{}, err
-	}
-	if replayed && record.State == requestStateCommitted {
-		var out ResolveApprovalCommandResult
-		if err := decodeLedgerResult(record, &out); err != nil {
-			return ResolveApprovalCommandResult{}, err
+	var out ResolveApprovalCommandResult
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		record, replayed, reserveErr := host.reserveBoundMutation(ctx, "resolve_approval", turns.thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		out.Receipt = receiptFromRecord(record, true)
-		return out, nil
-	}
-	runner, err := host.turnRunner(ctx, turns.thread.id, turns.agent)
-	if err != nil {
-		return ResolveApprovalCommandResult{}, err
-	}
-	resolution, err := runner.ResolveApproval(ctx, approvalResolutionRequest{DecisionID: command.DecisionID, ExpectedGeneration: command.ExpectedGeneration, ExpectedRevision: command.ExpectedRevision, ExpectedCurrent: command.ExpectedCurrent, ExpectedApprovalRevision: command.ExpectedApprovalRevision, Decision: command.Decision})
-	if err != nil {
-		return ResolveApprovalCommandResult{}, err
-	}
-	out := ResolveApprovalCommandResult{Resolution: resolution}
-	if err := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); err != nil {
-		return ResolveApprovalCommandResult{}, err
-	}
-	out.Receipt = receiptFromRecord(record, replayed)
-	return out, nil
+		if replayed && record.State == requestStateCommitted {
+			if decodeErr := decodeLedgerResult(record, &out); decodeErr != nil {
+				return decodeErr
+			}
+			out.Receipt = receiptFromRecord(record, true)
+			return nil
+		}
+		runner, runnerErr := host.turnRunner(ctx, turns.thread.id, turns.agent)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		resolution, resolutionErr := runner.ResolveApproval(ctx, approvalResolutionRequest{DecisionID: command.DecisionID, ExpectedGeneration: command.ExpectedGeneration, ExpectedRevision: command.ExpectedRevision, ExpectedCurrent: command.ExpectedCurrent, ExpectedApprovalRevision: command.ExpectedApprovalRevision, Decision: command.Decision})
+		if resolutionErr != nil {
+			return resolutionErr
+		}
+		out = ResolveApprovalCommandResult{Resolution: resolution}
+		if commitErr := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); commitErr != nil {
+			return commitErr
+		}
+		out.Receipt = receiptFromRecord(record, replayed)
+		return nil
+	})
+	return out, err
 }
 
 // UpdateTodos atomically replaces the canonical typed todo state.
@@ -2418,52 +2446,53 @@ func (turns *turnExecutorView) UpdateTodos(ctx context.Context, command UpdateTo
 	if err != nil {
 		return UpdateTodosResult{}, err
 	}
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
-	record, replayed, err := host.reserveBoundMutation(ctx, "update_todos", turns.thread.id, command.LogicalRequestID, fingerprint)
-	if err != nil {
-		return UpdateTodosResult{}, err
-	}
-	if replayed && record.State == requestStateCommitted {
-		var out UpdateTodosResult
-		if err := decodeLedgerResult(record, &out); err != nil {
-			return UpdateTodosResult{}, err
+	var out UpdateTodosResult
+	err = host.applyThreadMutation(ctx, turns.thread.id, func() error {
+		record, replayed, reserveErr := host.reserveBoundMutation(ctx, "update_todos", turns.thread.id, command.LogicalRequestID, fingerprint)
+		if reserveErr != nil {
+			return reserveErr
 		}
-		out.Receipt = receiptFromRecord(record, true)
-		return out, nil
-	}
-	if replayed {
-		reader, err := host.threadReader(ctx, turns.thread.id)
-		if err != nil {
-			return UpdateTodosResult{}, err
-		}
-		state, err := reader.ReadAgentTodos(ctx)
-		if err != nil {
-			return UpdateTodosResult{}, err
-		}
-		if preparedTodoUpdateMatches(state, command) {
-			out := UpdateTodosResult{State: state}
-			if err := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); err != nil {
-				return UpdateTodosResult{}, err
+		if replayed && record.State == requestStateCommitted {
+			if decodeErr := decodeLedgerResult(record, &out); decodeErr != nil {
+				return decodeErr
 			}
 			out.Receipt = receiptFromRecord(record, true)
-			return out, nil
+			return nil
 		}
-	}
-	runner, err := host.turnRunner(ctx, turns.thread.id, turns.agent)
-	if err != nil {
-		return UpdateTodosResult{}, err
-	}
-	state, err := runner.UpdateAgentTodos(ctx, agentTodoUpdateRequest{ExpectedVersion: command.ExpectedVersion, Items: command.Items, TurnID: command.TurnID, RunID: command.RunID, ToolCallID: command.ToolCallID})
-	if err != nil {
-		return UpdateTodosResult{}, err
-	}
-	out := UpdateTodosResult{State: state}
-	if err := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); err != nil {
-		return UpdateTodosResult{}, err
-	}
-	out.Receipt = receiptFromRecord(record, replayed)
-	return out, nil
+		if replayed {
+			reader, readerErr := host.threadReader(ctx, turns.thread.id)
+			if readerErr != nil {
+				return readerErr
+			}
+			state, stateErr := reader.ReadAgentTodos(ctx)
+			if stateErr != nil {
+				return stateErr
+			}
+			if preparedTodoUpdateMatches(state, command) {
+				out = UpdateTodosResult{State: state}
+				if commitErr := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); commitErr != nil {
+					return commitErr
+				}
+				out.Receipt = receiptFromRecord(record, true)
+				return nil
+			}
+		}
+		runner, runnerErr := host.turnRunner(ctx, turns.thread.id, turns.agent)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		state, stateErr := runner.UpdateAgentTodos(ctx, agentTodoUpdateRequest{ExpectedVersion: command.ExpectedVersion, Items: command.Items, TurnID: command.TurnID, RunID: command.RunID, ToolCallID: command.ToolCallID})
+		if stateErr != nil {
+			return stateErr
+		}
+		out = UpdateTodosResult{State: state}
+		if commitErr := host.commitMutationResult(context.WithoutCancel(ctx), turns.thread, &record, &out); commitErr != nil {
+			return commitErr
+		}
+		out.Receipt = receiptFromRecord(record, replayed)
+		return nil
+	})
+	return out, err
 }
 
 func preparedTodoUpdateMatches(state ThreadAgentTodoState, command UpdateTodosCommand) bool {
@@ -2542,7 +2571,11 @@ func (host *Host) Shutdown(ctx context.Context) error {
 }
 
 func (host *Host) finishShutdown() {
-	err := errors.Join(host.store.Close(), host.backend.Close())
+	if host.threadActors != nil {
+		host.threadActors.close()
+	}
+	storeErr := host.store.Close()
+	err := errors.Join(storeErr, host.backend.Close())
 	host.subscriptionMu.Lock()
 	for subscription := range host.subscriptions {
 		subscription.mu.Lock()
@@ -2591,37 +2624,44 @@ func (host *Host) publishSubscriptionEvent(event Event) {
 	if event.ThreadID == "" {
 		return
 	}
-	if !transientRuntimeEvent(event.Type) {
+	if !transientRuntimeEvent(event.Type) && event.Stream == nil && event.Type != observation.EventTypeProviderRequest {
 		return
 	}
-	resyncRevision, err := host.currentThreadRevision(context.Background(), event.ThreadID)
-	if err != nil {
-		return
-	}
-	host.subscriptionMu.Lock()
-	defer host.subscriptionMu.Unlock()
-	for subscription := range host.subscriptions {
-		if subscription.thread.id != event.ThreadID {
-			continue
+	actor := host.threadActors.actor(event.ThreadID.String())
+	_ = actor.apply(context.Background(), func() error {
+		if !actor.acceptLiveEvent(event) || !transientRuntimeEvent(event.Type) {
+			return nil
 		}
-		subscription.mu.Lock()
-		if !subscription.closed && !subscription.stale && subscription.gap == nil {
-			if len(subscription.transient) == cap(subscription.transient) {
-				if resyncRevision > subscription.lastDelivered {
-					subscription.transient = subscription.transient[:0]
-					gap := SubscriptionGap{
-						LastDeliveredRevision: subscription.lastDelivered,
-						ResyncAtRevision:      resyncRevision,
-					}
-					subscription.gap = &gap
-				}
-			} else {
-				subscription.transient = append(subscription.transient, event)
+		resyncRevision, err := host.currentThreadRevision(context.Background(), event.ThreadID)
+		if err != nil {
+			return nil
+		}
+		host.subscriptionMu.Lock()
+		defer host.subscriptionMu.Unlock()
+		for subscription := range host.subscriptions {
+			if subscription.thread.id != event.ThreadID {
+				continue
 			}
-			subscription.signalLocked()
+			subscription.mu.Lock()
+			if !subscription.closed && !subscription.stale && subscription.gap == nil {
+				if len(subscription.transient) == cap(subscription.transient) {
+					if resyncRevision > subscription.lastDelivered {
+						subscription.transient = subscription.transient[:0]
+						gap := SubscriptionGap{
+							LastDeliveredRevision: subscription.lastDelivered,
+							ResyncAtRevision:      resyncRevision,
+						}
+						subscription.gap = &gap
+					}
+				} else {
+					subscription.transient = append(subscription.transient, event)
+				}
+				subscription.signalLocked()
+			}
+			subscription.mu.Unlock()
 		}
-		subscription.mu.Unlock()
-	}
+		return nil
+	})
 }
 
 func (subscription *Subscription) signalLocked() {

@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -801,7 +800,7 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	}
 }
 
-func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testing.T) {
+func TestSQLiteRootDeleteUsesSingleRuntimeAuthorityTree(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/floret.db"
 	store, err := openSQLiteStoreForTest(path)
@@ -809,11 +808,6 @@ func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testin
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	otherStore, err := openSQLiteStoreForTest(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = otherStore.Close() })
 	capabilities := mustTestCapabilities(t, store)
 	createRequest := testCreateThreadRequest("parent")
 	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.createIntentID)
@@ -823,16 +817,7 @@ func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testin
 	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
-	store.rootAuthority = &beforeDeleteRootAuthorityRepo{
-		RootAuthorityRepo: store.rootAuthority,
-		beforeDelete: func(ctx context.Context, rootThreadID string) error {
-			if rootThreadID != "parent" {
-				return fmt.Errorf("unexpected root delete %q", rootThreadID)
-			}
-			publishTestSubAgentFixture(t, ctx, otherStore, "publication-delete-race-child", "parent", "child", "")
-			return nil
-		},
-	}
+	publishTestSubAgentFixture(t, ctx, store, "publication-delete-child", "parent", "child", "")
 	deleteHost, err := capabilities.delete.NewHost(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
@@ -841,8 +826,8 @@ func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testin
 		t.Fatal(err)
 	}
 	for _, threadID := range []string{"parent", "child"} {
-		if _, err := otherStore.repo.Thread(ctx, threadID); !errors.Is(err, sessiontree.ErrThreadNotFound) {
-			t.Fatalf("Thread(%q) after cross-store delete err = %v", threadID, err)
+		if _, err := store.repo.Thread(ctx, threadID); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("Thread(%q) after authority-tree delete err = %v", threadID, err)
 		}
 	}
 }
@@ -851,20 +836,6 @@ type blockingRootAuthorityRepo struct {
 	sessiontree.RootAuthorityRepo
 	entered chan struct{}
 	release chan struct{}
-}
-
-type beforeDeleteRootAuthorityRepo struct {
-	sessiontree.RootAuthorityRepo
-	beforeDelete func(context.Context, string) error
-}
-
-func (r *beforeDeleteRootAuthorityRepo) DeleteRootTree(ctx context.Context, rootThreadID string) (sessiontree.DeleteRootTreeResult, error) {
-	if r.beforeDelete != nil {
-		if err := r.beforeDelete(ctx, rootThreadID); err != nil {
-			return sessiontree.DeleteRootTreeResult{}, err
-		}
-	}
-	return r.RootAuthorityRepo.DeleteRootTree(ctx, rootThreadID)
 }
 
 func (r *blockingRootAuthorityRepo) DeleteRootTree(ctx context.Context, rootThreadID string) (sessiontree.DeleteRootTreeResult, error) {

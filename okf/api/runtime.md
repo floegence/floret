@@ -80,6 +80,14 @@ same recovery boundary. A restart recovers only the last checkpoint; transient
 token, draft, subscriber, and cursor state is intentionally not claimed as
 durable authority.
 
+Each thread has one in-process mailbox owner for ordered lifecycle mutation and
+live projection state. It owns the active turn/run/logical-request identity,
+current provider attempt, and transient assistant/reasoning drafts. Provider
+network I/O and approval waits run outside that mailbox, so a waiting effect
+cannot block its exact approval resolution or unrelated threads. Shutdown first
+stops new mailbox submissions and drains accepted mutations before checkpointing
+and closing storage.
+
 Provider requests carry one stable `logical_request_id` plus an `attempt_id` and
 monotonic `attempt_epoch` for every dispatch in that run, including ordinary
 multi-step turns. The turn projection activates the newest attempt, clears its
