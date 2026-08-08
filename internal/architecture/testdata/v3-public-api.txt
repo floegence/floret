@@ -301,6 +301,9 @@ field Request.ThreadID github.com/floegence/floret/v3/identity.ThreadID tag="jso
 field Request.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id,omitempty\""
 field Request.TraceID github.com/floegence/floret/v3/identity.TraceID tag="json:\"trace_id,omitempty\""
 field Request.PromptScopeID github.com/floegence/floret/v3/identity.PromptScopeID tag="json:\"prompt_scope_id\""
+field Request.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id,omitempty\""
+field Request.AttemptID string tag="json:\"attempt_id,omitempty\""
+field Request.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
 field Request.Step int tag="json:\"step\""
 field Request.Messages []github.com/floegence/floret/v3/provider.Message tag="json:\"messages\""
 field Request.Tools []github.com/floegence/floret/v3/tools.ToolDefinition tag="json:\"tools,omitempty\""
@@ -309,6 +312,7 @@ field Request.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
 field Request.Reasoning github.com/floegence/floret/v3/config.ReasoningSelection tag="json:\"reasoning,omitempty\""
 field Request.PreviousState *github.com/floegence/floret/v3/provider.State tag="json:\"previous_state,omitempty\""
 field Request.Labels github.com/floegence/floret/v3/provider.Labels tag="json:\"labels,omitempty\""
+method Request.MarshalJSON func() ([]byte, error)
 method Request.Validate func() error
 type RequestPreparer interface interface{Prepare(context.Context, github.com/floegence/floret/v3/provider.Request) (github.com/floegence/floret/v3/provider.PreparedRequest, error)}
 const RoleAssistant github.com/floegence/floret/v3/provider.MessageRole = "assistant"
@@ -982,6 +986,9 @@ field StreamObservation.FinishReason github.com/floegence/floret/v3/observation.
 field StreamObservation.RawFinishReason string tag="json:\"raw_finish_reason,omitempty\""
 field StreamObservation.FinishInferred bool tag="json:\"finish_inferred,omitempty\""
 field StreamObservation.Attempt int tag="json:\"attempt,omitempty\""
+field StreamObservation.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id,omitempty\""
+field StreamObservation.AttemptID string tag="json:\"attempt_id,omitempty\""
+field StreamObservation.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
 field StreamObservation.Labels github.com/floegence/floret/v3/runtime.RunLabels tag="json:\"labels,omitempty\""
 method StreamObservation.Validate func() error
 const StreamObservationAssistantDelta github.com/floegence/floret/v3/runtime.StreamObservationType = "assistant_delta"

@@ -1050,6 +1050,9 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 			},
 		}
 	case sessiontree.EffectAttemptRejected:
+		if attempt.RejectionCode == sessiontree.ApprovalReasonUserRejected {
+			return tools.ErrorResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, tools.ErrRejected.Error())
+		}
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, ErrEffectUnauthorized)
 	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptDispatching:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, sessiontree.ErrEffectOutcomeUnknown)

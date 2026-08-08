@@ -1446,9 +1446,11 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 	e := newTestEngine(p, rec)
 	e.Tools = reg
 	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"base": "base-value"}}
+	e.Options.LogicalRequestID = "logical-turn"
 	result := e.RunTurn(context.Background(), engine.RunInput{
 		RunID:                 "turn",
 		ThreadID:              "thread",
+		TurnID:                "turn-id",
 		TraceID:               "trace",
 		PreviousProviderState: previous,
 		Labels: engine.RunLabels{
@@ -1473,6 +1475,14 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 	}
 	if meta["schema_version"] != "event.v1" {
 		t.Fatalf("schema version missing: %#v", meta)
+	}
+	if meta["logical_request_id"] != "logical-turn" || meta["attempt_id"] != "logical-turn:attempt:1" || meta["attempt_epoch"] != 1 {
+		t.Fatalf("provider request attempt identity missing: %#v", meta)
+	}
+	delta := firstEvent(rec.Events, event.ProviderDelta)
+	deltaMeta, ok := delta.Metadata.(map[string]any)
+	if !ok || deltaMeta["attempt_id"] != "logical-turn:attempt:1" || deltaMeta["attempt_epoch"] != 1 {
+		t.Fatalf("provider delta attempt identity missing: %#v", delta.Metadata)
 	}
 	labels, ok := meta["labels"].(map[string]string)
 	if !ok || labels["correlation.turn"] != "turn-value" || labels["host.surface"] != "desktop" || labels["correlation.base"] != "" {

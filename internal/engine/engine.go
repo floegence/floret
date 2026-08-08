@@ -159,6 +159,7 @@ type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest
 
 type Options struct {
 	RunID                    string
+	LogicalRequestID         string
 	ThreadID                 string
 	TurnID                   string
 	TraceID                  string
@@ -2209,6 +2210,8 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 	return map[string]any{
 		"request_id":             requestID(req.RunID, req.Step),
 		"logical_request_id":     req.LogicalRequestID,
+		"attempt_id":             req.AttemptID,
+		"attempt_epoch":          req.AttemptEpoch,
 		"attempt":                req.Attempt,
 		"request_estimate":       estimate,
 		"context_pressure":       pressure,
@@ -2311,7 +2314,12 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	}
 	req.Attempt = attempt
 	req.OverflowRetried = overflowRetried
-	req.LogicalRequestID = fmt.Sprintf("%s:logical:%d", opts.RunID, step)
+	req.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
+	if req.LogicalRequestID == "" {
+		req.LogicalRequestID = fmt.Sprintf("%s:logical:%d", opts.RunID, step)
+	}
+	req.AttemptEpoch = attempt
+	req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, attempt)
 	req, err = e.prepareProviderRequest(ctx, req)
 	if err != nil {
 		return provider.Request{}, err
@@ -2408,7 +2416,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	if err != nil {
 		return StepOutput{}, latency, false, withFailureOrigin(err, FailureOriginProvider)
 	}
-	out, err = e.consume(ctx, opts, step, stream)
+	out, err = e.consume(ctx, opts, step, stream, req)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return out, latency, true, err
@@ -2477,6 +2485,8 @@ func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot
 		TurnID:           req.TurnID,
 		Step:             req.Step,
 		LogicalRequestID: req.LogicalRequestID,
+		AttemptID:        req.AttemptID,
+		AttemptEpoch:     req.AttemptEpoch,
 		Attempt:          req.Attempt,
 		OverflowRetried:  req.OverflowRetried,
 		Provider:         req.Provider,
@@ -3267,7 +3277,7 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 	return renderer
 }
 
-func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent) (StepOutput, error) {
+func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request) (StepOutput, error) {
 	out := StepOutput{}
 	hostedTools := map[string]struct{}{}
 	for _, def := range opts.HostedToolDefinitions {
@@ -3278,6 +3288,12 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	}
 	validator := provider.StreamValidator{}
 	streamedToolCallEnds := map[string]struct{}{}
+	attemptMetadata := map[string]any{"logical_request_id": req.LogicalRequestID, "attempt_id": req.AttemptID, "attempt_epoch": req.AttemptEpoch, "attempt": req.Attempt}
+	emitAttemptEvent := func(ev event.Event) {
+		base, _ := ev.Metadata.(map[string]any)
+		ev.Metadata = mergeAnyMetadata(attemptMetadata, base)
+		e.emit(opts, ev)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -3312,16 +3328,16 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			switch ev.Type {
 			case provider.Delta:
 				out.Text += ev.Text
-				e.emit(opts, event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				emitAttemptEvent(event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
 				out.Reasoning += ev.Text
-				e.emit(opts, event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCallStart:
-				e.emit(opts, event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				emitAttemptEvent(event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
 			case provider.ToolCallDelta:
-				e.emit(opts, event.Event{Type: event.ProviderToolCallDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				emitAttemptEvent(event.Event{Type: event.ProviderToolCallDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
 			case provider.ToolCallEnd:
-				e.emit(opts, event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				emitAttemptEvent(event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
 				streamedToolCallEnds[ev.ToolCallStream.ID] = struct{}{}
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
@@ -3329,24 +3345,24 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					if _, ok := streamedToolCallEnds[call.ID]; ok {
 						continue
 					}
-					e.emit(opts, event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name})
+					emitAttemptEvent(event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name})
 					streamedToolCallEnds[call.ID] = struct{}{}
 				}
 			case provider.HostedToolCall:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(opts, event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
+				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(opts, event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
+				emitAttemptEvent(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
-				e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
+				emitAttemptEvent(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
 			case provider.SourcesEvent:
-				e.emit(opts, event.Event{Type: event.ProviderSources, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Sources: eventSourceRefs(ev.Sources)})
+				emitAttemptEvent(event.Event{Type: event.ProviderSources, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Sources: eventSourceRefs(ev.Sources)})
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)

@@ -566,7 +566,7 @@ func providerRequest(request modelRequest) provider.Request {
 	hosted := append([]provider.HostedToolDefinition(nil), request.HostedTools...)
 	return provider.Request{
 		RunID: identity.RunID(request.RunID), ThreadID: identity.ThreadID(request.ThreadID), TurnID: identity.TurnID(request.TurnID),
-		TraceID: identity.TraceID(request.TraceID), PromptScopeID: identity.PromptScopeID(request.PromptScopeID), Step: request.Step,
+		TraceID: identity.TraceID(request.TraceID), PromptScopeID: identity.PromptScopeID(request.PromptScopeID), LogicalRequestID: identity.LogicalRequestID(request.LogicalRequestID), AttemptID: request.AttemptID, AttemptEpoch: request.AttemptEpoch, Step: request.Step,
 		Messages: messages, Tools: definitions, HostedTools: hosted, MaxOutputTokens: request.MaxOutputTokens,
 		Reasoning: request.Reasoning, PreviousState: gatewayProviderState(request.PreviousState),
 		Labels: provider.Labels{Correlation: request.Labels.Correlation, Host: request.Labels.Host},

@@ -38,6 +38,14 @@ cache. Mutations continue to load an independent transactional state, so a
 failed update cannot contaminate the read cache. This optimization adds no
 persisted field, schema edge, compatibility reader, or host-visible authority.
 
+The backend kernel keeps the live canonical domain and prompt observation store
+in process memory while a turn is running. `AdmitTurn` changes that authority
+without encoding the complete session-tree blob; `Checkpoint` clones and writes
+the current authority atomically with the prompt cache and root inventory.
+Semantic effect intent and terminal commit paths remain durable barriers. A
+failed checkpoint leaves the previous durable envelope intact and prevents
+startup from claiming uncheckpointed live state after restart.
+
 The v2.2-to-v3 migration surface provides representability preflight, an
 immutable plan, preview, apply, semantic hashes, and a receipt. Only built-in
 v2.2 states named by the conversion table are supported. A legal extension

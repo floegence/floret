@@ -4,6 +4,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -100,19 +101,56 @@ func (capabilities Capabilities) Validate() error {
 
 // Request is one complete provider-visible model request.
 type Request struct {
-	RunID           identity.RunID            `json:"run_id"`
-	ThreadID        identity.ThreadID         `json:"thread_id,omitempty"`
-	TurnID          identity.TurnID           `json:"turn_id,omitempty"`
-	TraceID         identity.TraceID          `json:"trace_id,omitempty"`
-	PromptScopeID   identity.PromptScopeID    `json:"prompt_scope_id"`
-	Step            int                       `json:"step"`
-	Messages        []Message                 `json:"messages"`
-	Tools           []tools.ToolDefinition    `json:"tools,omitempty"`
-	HostedTools     []HostedToolDefinition    `json:"hosted_tools,omitempty"`
-	MaxOutputTokens int64                     `json:"max_output_tokens,omitempty"`
-	Reasoning       config.ReasoningSelection `json:"reasoning,omitempty"`
-	PreviousState   *State                    `json:"previous_state,omitempty"`
-	Labels          Labels                    `json:"labels,omitempty"`
+	RunID            identity.RunID            `json:"run_id"`
+	ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID           identity.TurnID           `json:"turn_id,omitempty"`
+	TraceID          identity.TraceID          `json:"trace_id,omitempty"`
+	PromptScopeID    identity.PromptScopeID    `json:"prompt_scope_id"`
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	AttemptID        string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch     int                       `json:"attempt_epoch,omitempty"`
+	Step             int                       `json:"step"`
+	Messages         []Message                 `json:"messages"`
+	Tools            []tools.ToolDefinition    `json:"tools,omitempty"`
+	HostedTools      []HostedToolDefinition    `json:"hosted_tools,omitempty"`
+	MaxOutputTokens  int64                     `json:"max_output_tokens,omitempty"`
+	Reasoning        config.ReasoningSelection `json:"reasoning,omitempty"`
+	PreviousState    *State                    `json:"previous_state,omitempty"`
+	Labels           Labels                    `json:"labels,omitempty"`
+}
+
+// MarshalJSON omits the optional logical request identity when a low-level
+// provider request is constructed before runtime admission has assigned one.
+// Non-empty identities still use identity.LogicalRequestID's validation.
+func (request Request) MarshalJSON() ([]byte, error) {
+	var logical any
+	if request.LogicalRequestID != "" {
+		logical = request.LogicalRequestID
+	}
+	return json.Marshal(struct {
+		RunID            identity.RunID            `json:"run_id"`
+		ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
+		TurnID           identity.TurnID           `json:"turn_id,omitempty"`
+		TraceID          identity.TraceID          `json:"trace_id,omitempty"`
+		PromptScopeID    identity.PromptScopeID    `json:"prompt_scope_id"`
+		LogicalRequestID any                       `json:"logical_request_id,omitempty"`
+		AttemptID        string                    `json:"attempt_id,omitempty"`
+		AttemptEpoch     int                       `json:"attempt_epoch,omitempty"`
+		Step             int                       `json:"step"`
+		Messages         []Message                 `json:"messages"`
+		Tools            []tools.ToolDefinition    `json:"tools,omitempty"`
+		HostedTools      []HostedToolDefinition    `json:"hosted_tools,omitempty"`
+		MaxOutputTokens  int64                     `json:"max_output_tokens,omitempty"`
+		Reasoning        config.ReasoningSelection `json:"reasoning,omitempty"`
+		PreviousState    *State                    `json:"previous_state,omitempty"`
+		Labels           Labels                    `json:"labels,omitempty"`
+	}{
+		RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID, TraceID: request.TraceID,
+		PromptScopeID: request.PromptScopeID, LogicalRequestID: logical, AttemptID: request.AttemptID,
+		AttemptEpoch: request.AttemptEpoch, Step: request.Step, Messages: request.Messages, Tools: request.Tools,
+		HostedTools: request.HostedTools, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
+		PreviousState: request.PreviousState, Labels: request.Labels,
+	})
 }
 
 // Validate verifies identities and provider-visible message structure.

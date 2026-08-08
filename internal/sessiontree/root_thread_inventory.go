@@ -45,6 +45,17 @@ type RootThreadInventoryItem struct {
 func (repo *BackendRepo) ListRootThreadInventory(ctx context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
+	if repo.domainDirty && repo.domainMemory != nil {
+		items, err := repo.domainMemory.rootThreadInventoryLocked()
+		if err != nil {
+			return nil, err
+		}
+		if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
+			return nil, err
+		}
+		repo.rootInventoryItems = cloneRootThreadInventoryItems(items)
+		return applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(items), opts), nil
+	}
 	var out []RootThreadInventoryItem
 	err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
 		encoded, err := tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)

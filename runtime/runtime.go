@@ -632,6 +632,7 @@ func (r MessageReference) Validate() error {
 }
 
 type runTurnRequest struct {
+	LogicalRequestID    identity.LogicalRequestID
 	RunID               identity.RunID
 	ThreadID            identity.ThreadID
 	TurnID              identity.TurnID
@@ -1929,15 +1930,18 @@ func (t StreamObservationType) Valid() bool {
 // StreamObservation is a provider-neutral, engine-confirmed streaming fact for
 // hosts that render live assistant output from Floret runtime events.
 type StreamObservation struct {
-	Type            StreamObservationType    `json:"type"`
-	Text            string                   `json:"text,omitempty"`
-	ToolCallStream  *ToolCallStream          `json:"tool_call_stream,omitempty"`
-	Reason          string                   `json:"reason,omitempty"`
-	FinishReason    observation.FinishReason `json:"finish_reason,omitempty"`
-	RawFinishReason string                   `json:"raw_finish_reason,omitempty"`
-	FinishInferred  bool                     `json:"finish_inferred,omitempty"`
-	Attempt         int                      `json:"attempt,omitempty"`
-	Labels          RunLabels                `json:"labels,omitempty"`
+	Type             StreamObservationType     `json:"type"`
+	Text             string                    `json:"text,omitempty"`
+	ToolCallStream   *ToolCallStream           `json:"tool_call_stream,omitempty"`
+	Reason           string                    `json:"reason,omitempty"`
+	FinishReason     observation.FinishReason  `json:"finish_reason,omitempty"`
+	RawFinishReason  string                    `json:"raw_finish_reason,omitempty"`
+	FinishInferred   bool                      `json:"finish_inferred,omitempty"`
+	Attempt          int                       `json:"attempt,omitempty"`
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	AttemptID        string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch     int                       `json:"attempt_epoch,omitempty"`
+	Labels           RunLabels                 `json:"labels,omitempty"`
 }
 
 func (s StreamObservation) Validate() error {
@@ -2142,6 +2146,7 @@ func newBackendRuntimeStore(ctx context.Context, backend spi.Backend) (*runtimeS
 		agentTodos: kernel, rootAuthority: kernel,
 		deleteCleanup: func(context.Context, []string) error { return nil },
 	}
+	store.close = backend.Close
 	store.self = store
 	store.initLifetime()
 	return store, nil
@@ -2182,11 +2187,15 @@ func (s *runtimeStore) Close() error {
 	s.closeInProgress = true
 	s.lifetimeMu.Unlock()
 
+	var checkpointErr error
+	if checkpoint, ok := s.repo.(interface{ Checkpoint(context.Context) error }); ok {
+		checkpointErr = checkpoint.Checkpoint(context.Background())
+	}
 	var closeErr error
 	if s.close != nil {
 		closeErr = s.close()
 	}
-	err := errors.Join(backgroundErr, closeErr)
+	err := errors.Join(backgroundErr, checkpointErr, closeErr)
 
 	s.lifetimeMu.Lock()
 	s.closeInProgress = false
@@ -3116,8 +3125,9 @@ func (h *providerHost) RunTurn(ctx context.Context, req runTurnRequest) (TurnRes
 	}
 	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
 	result, runErr := thread.Run(ctx, input.Text, agentharness.RunOptions{
-		RunID:  string(req.RunID),
-		TurnID: string(req.TurnID),
+		LogicalRequestID: string(req.LogicalRequestID),
+		RunID:            string(req.RunID),
+		TurnID:           string(req.TurnID),
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
@@ -3179,7 +3189,8 @@ func (h *providerHost) AdmitTurn(ctx context.Context, req runTurnRequest) (turnA
 		return turnAdmissionResult{}, runtimeHostError(err)
 	}
 	admission, err := thread.Admit(operationCtx, input.Text, agentharness.RunOptions{
-		RunID: string(req.RunID), TurnID: string(req.TurnID),
+		LogicalRequestID: string(req.LogicalRequestID),
+		RunID:            string(req.RunID), TurnID: string(req.TurnID),
 		SupplementalContext: agentHarnessSupplementalContext(req.SupplementalContext),
 		Attachments:         sessionMessageAttachments(input.Attachments),
 		References:          sessionMessageReferences(input.References),
@@ -3218,7 +3229,8 @@ func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAd
 		ThreadID: string(admission.ThreadID), TurnID: string(admission.TurnID), RunID: string(admission.RunID),
 		UserEntryID: admission.UserEntryID, BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
 	}, input.Text, agentharness.RunOptions{
-		RunID: string(req.RunID), TurnID: string(req.TurnID),
+		LogicalRequestID: string(req.LogicalRequestID),
+		RunID:            string(req.RunID), TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
@@ -5510,15 +5522,18 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 		return nil
 	}
 	out := &StreamObservation{
-		Type:            streamType,
-		Text:            text,
-		ToolCallStream:  toolCallStream,
-		Reason:          reason,
-		FinishReason:    observation.FinishReason(ev.FinishReason),
-		RawFinishReason: ev.RawFinishReason,
-		FinishInferred:  ev.FinishInferred,
-		Attempt:         streamAttemptFromMetadata(safeMetadata),
-		Labels:          streamLabelsFromMetadata(safeMetadata),
+		Type:             streamType,
+		Text:             text,
+		ToolCallStream:   toolCallStream,
+		Reason:           reason,
+		FinishReason:     observation.FinishReason(ev.FinishReason),
+		RawFinishReason:  ev.RawFinishReason,
+		FinishInferred:   ev.FinishInferred,
+		Attempt:          streamAttemptFromMetadata(safeMetadata),
+		LogicalRequestID: identity.LogicalRequestID(streamStringFromMetadata(safeMetadata, "logical_request_id")),
+		AttemptID:        streamStringFromMetadata(safeMetadata, "attempt_id"),
+		AttemptEpoch:     streamIntFromMetadata(safeMetadata, "attempt_epoch"),
+		Labels:           streamLabelsFromMetadata(safeMetadata),
 	}
 	if out.Reason == "" && ev.Err != "" {
 		out.Reason = ev.Err
@@ -5553,11 +5568,15 @@ func runtimeSourceRefs(in []event.SourceRef) []publicprovider.Source {
 }
 
 func streamAttemptFromMetadata(metadata any) int {
+	return streamIntFromMetadata(metadata, "attempt")
+}
+
+func streamIntFromMetadata(metadata any, key string) int {
 	values, ok := metadata.(map[string]any)
 	if !ok {
 		return 0
 	}
-	switch v := values["attempt"].(type) {
+	switch v := values[key].(type) {
 	case int:
 		return v
 	case int64:
@@ -5567,6 +5586,15 @@ func streamAttemptFromMetadata(metadata any) int {
 	default:
 		return 0
 	}
+}
+
+func streamStringFromMetadata(metadata any, key string) string {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func streamLabelsFromMetadata(metadata any) RunLabels {

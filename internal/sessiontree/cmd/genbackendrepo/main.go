@@ -31,7 +31,7 @@ var readMethods = map[string]bool{
 var handwritten = map[string]bool{
 	"AuthorityLeasePolicy": true, "CommitForkBatch": true, "FailForkClaim": true,
 	"EncodeMemoryState": true, "ReleaseThreadAuthorityClaim": true, "WaitApprovalDecision": true,
-	"ListRootThreadInventory": true,
+	"ListRootThreadInventory": true, "AdmitTurn": true,
 }
 
 func main() {

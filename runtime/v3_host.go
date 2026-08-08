@@ -2001,8 +2001,6 @@ func (turns *turnExecutorView) AdmitTurn(ctx context.Context, command StartTurnC
 	}
 	unlockExecution := host.turnExecutions.lock(turns.thread.id.String())
 	defer unlockExecution()
-	host.mutationMu.Lock()
-	defer host.mutationMu.Unlock()
 	record, requestReplayed, err := host.reserveStartTurn(ctx, turns.thread.id, command.LogicalRequestID, fingerprint, &plan)
 	if err != nil {
 		return AdmitTurnResult{}, err

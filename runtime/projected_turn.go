@@ -126,21 +126,61 @@ type modelGatewayIdentity struct {
 
 // modelRequest is the host-safe model request shape passed to modelGateway.
 type modelRequest struct {
-	RunID           identity.RunID
-	ThreadID        identity.ThreadID
-	TurnID          identity.TurnID
-	TraceID         identity.TraceID
-	PromptScopeID   identity.PromptScopeID
-	Step            int
-	Provider        string
-	Model           string
-	Messages        []modelMessage
-	Tools           []tools.ToolDefinition
-	HostedTools     []publicprovider.HostedToolDefinition
-	MaxOutputTokens int64
-	Reasoning       config.ReasoningSelection
-	PreviousState   *modelStateEnvelope
-	Labels          RunLabels
+	RunID            identity.RunID
+	ThreadID         identity.ThreadID
+	TurnID           identity.TurnID
+	TraceID          identity.TraceID
+	PromptScopeID    identity.PromptScopeID
+	LogicalRequestID identity.LogicalRequestID
+	AttemptID        string
+	AttemptEpoch     int
+	Step             int
+	Provider         string
+	Model            string
+	Messages         []modelMessage
+	Tools            []tools.ToolDefinition
+	HostedTools      []publicprovider.HostedToolDefinition
+	MaxOutputTokens  int64
+	Reasoning        config.ReasoningSelection
+	PreviousState    *modelStateEnvelope
+	Labels           RunLabels
+}
+
+func (request modelRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		RunID            identity.RunID
+		ThreadID         identity.ThreadID
+		TurnID           identity.TurnID
+		TraceID          identity.TraceID
+		PromptScopeID    identity.PromptScopeID
+		LogicalRequestID any
+		AttemptID        string
+		AttemptEpoch     int
+		Step             int
+		Provider         string
+		Model            string
+		Messages         []modelMessage
+		Tools            []tools.ToolDefinition
+		HostedTools      []publicprovider.HostedToolDefinition
+		MaxOutputTokens  int64
+		Reasoning        config.ReasoningSelection
+		PreviousState    *modelStateEnvelope
+		Labels           RunLabels
+	}{
+		RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID, TraceID: request.TraceID,
+		PromptScopeID: request.PromptScopeID, LogicalRequestID: optionalLogicalRequestID(request.LogicalRequestID),
+		AttemptID: request.AttemptID, AttemptEpoch: request.AttemptEpoch, Step: request.Step,
+		Provider: request.Provider, Model: request.Model, Messages: request.Messages, Tools: request.Tools,
+		HostedTools: request.HostedTools, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
+		PreviousState: request.PreviousState, Labels: request.Labels,
+	})
+}
+
+func optionalLogicalRequestID(value identity.LogicalRequestID) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 type modelMessageRole string
@@ -651,21 +691,24 @@ func (p modelGatewayProvider) modelRequest(req provider.Request) (modelRequest, 
 		return modelRequest{}, err
 	}
 	return modelRequest{
-		RunID:           identity.RunID(req.RunID),
-		ThreadID:        identity.ThreadID(req.ThreadID),
-		TurnID:          identity.TurnID(req.TurnID),
-		TraceID:         identity.TraceID(req.TraceID),
-		PromptScopeID:   identity.PromptScopeID(req.PromptScopeID),
-		Step:            req.Step,
-		Provider:        p.identity.Provider,
-		Model:           p.identity.Model,
-		Messages:        messages,
-		Tools:           normalizeToolDefinitions(req.Tools),
-		HostedTools:     runtimeHostedToolDefinitions(req.HostedTools),
-		MaxOutputTokens: req.MaxOutputTokens,
-		Reasoning:       configbridge.PublicReasoningSelection(req.Reasoning),
-		PreviousState:   modelState(req.PreviousState),
-		Labels:          providerRequestLabels(req.Labels),
+		RunID:            identity.RunID(req.RunID),
+		ThreadID:         identity.ThreadID(req.ThreadID),
+		TurnID:           identity.TurnID(req.TurnID),
+		TraceID:          identity.TraceID(req.TraceID),
+		PromptScopeID:    identity.PromptScopeID(req.PromptScopeID),
+		LogicalRequestID: identity.LogicalRequestID(req.LogicalRequestID),
+		AttemptID:        req.AttemptID,
+		AttemptEpoch:     req.AttemptEpoch,
+		Step:             req.Step,
+		Provider:         p.identity.Provider,
+		Model:            p.identity.Model,
+		Messages:         messages,
+		Tools:            normalizeToolDefinitions(req.Tools),
+		HostedTools:      runtimeHostedToolDefinitions(req.HostedTools),
+		MaxOutputTokens:  req.MaxOutputTokens,
+		Reasoning:        configbridge.PublicReasoningSelection(req.Reasoning),
+		PreviousState:    modelState(req.PreviousState),
+		Labels:           providerRequestLabels(req.Labels),
 	}, nil
 }
 

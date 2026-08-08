@@ -178,6 +178,8 @@ type ProviderRequestRecord struct {
 	TurnID               string                        `json:"turn_id,omitempty"`
 	Step                 int                           `json:"step"`
 	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
+	AttemptID            string                        `json:"attempt_id,omitempty"`
+	AttemptEpoch         int                           `json:"attempt_epoch,omitempty"`
 	Attempt              int                           `json:"attempt,omitempty"`
 	OverflowRetried      bool                          `json:"overflow_retried,omitempty"`
 	Provider             string                        `json:"provider"`
@@ -1130,6 +1132,8 @@ type ProviderRequestSnapshot struct {
 	TurnID           string
 	Step             int
 	LogicalRequestID string
+	AttemptID        string
+	AttemptEpoch     int
 	Attempt          int
 	OverflowRetried  bool
 	Provider         string
@@ -1154,6 +1158,8 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		TurnID:               ref.TurnID,
 		Step:                 req.Step,
 		LogicalRequestID:     req.LogicalRequestID,
+		AttemptID:            req.AttemptID,
+		AttemptEpoch:         req.AttemptEpoch,
 		Attempt:              req.Attempt,
 		OverflowRetried:      req.OverflowRetried,
 		Provider:             req.Provider,

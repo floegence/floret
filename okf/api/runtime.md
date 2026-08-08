@@ -68,6 +68,23 @@ that receipt, then call `TurnExecutor.ExecuteAdmission` with the receipt and an
 signal bindings. The host never persists or resubmits the canonical command.
 `AdmitTurnResult.Execute` is only a same-process convenience over the same
 receipt-first path. There is no command-bearing execution fallback.
+
+Admission is memory-first inside the single Floret process: the actor assigns
+stable thread, turn, and run identities and publishes the accepted/running
+receipt before prompt projection or provider dispatch. High-frequency prompt
+segments, toolsets, provider observations, and live drafts remain in process
+memory until a semantic checkpoint such as terminal turn commit, effect intent,
+explicit checkpoint, or shutdown. `runtimeStore.Close` checkpoints any backend
+authority before physical close, so hand-built or test storage paths have the
+same recovery boundary. A restart recovers only the last checkpoint; transient
+token, draft, subscriber, and cursor state is intentionally not claimed as
+durable authority.
+
+Provider requests carry one `logical_request_id` plus an `attempt_id` and
+monotonic `attempt_epoch`. Stream observations expose those identities so a
+host can discard stale deltas. Canonical assistant, tool, and terminal commits
+remain keyed by durable entry/effect identity and replay to the existing result;
+assistant text comparison is never used for deduplication.
 Provider execution is serialized per thread rather than by the host-wide
 mutation fence. It may wait for a canonical approval while
 `TurnExecutor.ResolveApproval` commits that exact decision; concurrent replay of

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/v3/internal/provider/cache"
@@ -22,6 +23,8 @@ var promptStateKey = storagecodec.Tuple(storagecodec.TupleString("prompt"), stor
 // BackendKernel is the single domain kernel shared by every public Backend.
 type BackendKernel struct {
 	*sessiontree.BackendRepo
+	promptMu sync.Mutex
+	prompt   *cache.MemoryStore
 }
 
 // NewBackendKernel opens all canonical Floret domain state.
@@ -31,17 +34,26 @@ func NewBackendKernel(ctx context.Context, backend spi.Backend, policy sessiontr
 		return nil, err
 	}
 	kernel := &BackendKernel{BackendRepo: repo}
-	if err := repo.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		_, found, err := loadPromptState(tx)
+	if err := repo.ViewDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
+		prompt, found, err := loadPromptState(tx)
 		if err != nil {
 			return err
 		}
 		if found {
+			kernel.prompt = prompt
 			return nil
 		}
-		return savePromptState(tx, cache.NewMemoryStore())
+		return nil
 	}); err != nil {
 		return nil, err
+	}
+	if kernel.prompt == nil {
+		kernel.prompt = cache.NewMemoryStore()
+		if err := repo.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+			return savePromptState(tx, kernel.prompt)
+		}); err != nil {
+			return nil, err
+		}
 	}
 	return kernel, nil
 }
@@ -75,31 +87,69 @@ func savePromptState(tx spi.WriteTx, state *cache.MemoryStore) error {
 }
 
 func (kernel *BackendKernel) updatePrompt(ctx context.Context, mutate func(*cache.MemoryStore) error) error {
-	return kernel.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		state, found, err := loadPromptState(tx)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return errors.New("prompt state is missing")
-		}
-		if err := mutate(state); err != nil {
-			return err
-		}
-		return savePromptState(tx, state)
-	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return errors.New("prompt state is missing")
+	}
+	return mutate(kernel.prompt)
 }
 
 func (kernel *BackendKernel) viewPrompt(ctx context.Context, read func(*cache.MemoryStore) error) error {
-	return kernel.ViewDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
-		state, found, err := loadPromptState(tx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return errors.New("prompt state is missing")
+	}
+	return read(kernel.prompt)
+}
+
+func clonePromptState(state *cache.MemoryStore) (*cache.MemoryStore, error) {
+	if state == nil {
+		return nil, errors.New("prompt state is missing")
+	}
+	payload, err := state.EncodeMemoryState()
+	if err != nil {
+		return nil, err
+	}
+	return cache.DecodeMemoryState(payload)
+}
+
+// FinishTurn commits the terminal semantic state and the accumulated prompt
+// observations in one checkpoint. Prompt segments and provider diagnostics are
+// memory-resident before this boundary so they never delay provider dispatch.
+func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return sessiontree.FinishTurnResult{}, errors.New("prompt state is missing")
+	}
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+		result, err = memory.FinishTurn(ctx, request)
 		if err != nil {
 			return err
 		}
-		if !found {
-			return errors.New("prompt state is missing")
-		}
-		return read(state)
+		return savePromptState(tx, kernel.prompt)
+	})
+	return result, err
+}
+
+// Checkpoint flushes both canonical domain state and memory-resident prompt
+// observations during graceful shutdown or an explicit recovery barrier.
+func (kernel *BackendKernel) Checkpoint(ctx context.Context) error {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return errors.New("prompt state is missing")
+	}
+	return kernel.UpdateDomain(ctx, func(_ *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+		return savePromptState(tx, kernel.prompt)
 	})
 }
 
@@ -164,23 +214,25 @@ func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopeIDs ..
 }
 
 func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, rootThreadID string) (result sessiontree.DeleteRootTreeResult, err error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	nextPrompt, err := clonePromptState(kernel.prompt)
+	if err != nil {
+		return sessiontree.DeleteRootTreeResult{}, err
+	}
 	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.DeleteRootTree(ctx, rootThreadID)
 		if err != nil {
 			return err
 		}
-		prompt, found, loadErr := loadPromptState(tx)
-		if loadErr != nil {
-			return loadErr
-		}
-		if !found {
-			return errors.New("prompt state is missing")
-		}
-		if err := prompt.DeletePromptScopes(ctx, result.ThreadIDs...); err != nil {
+		if err := nextPrompt.DeletePromptScopes(ctx, result.ThreadIDs...); err != nil {
 			return err
 		}
-		return savePromptState(tx, prompt)
+		return savePromptState(tx, nextPrompt)
 	})
+	if err == nil {
+		kernel.prompt = nextPrompt
+	}
 	return result, err
 }
 

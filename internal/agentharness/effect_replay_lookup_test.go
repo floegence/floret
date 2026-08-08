@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/v3/internal/sessiontree"
 	"github.com/floegence/floret/v3/internal/testing/harness"
 	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v3/tools"
 )
 
 func TestReplayEffectResultUsesExactEntryInLargeJournal(t *testing.T) {
@@ -32,6 +33,17 @@ func TestReplayEffectResultUsesExactEntryInLargeJournal(t *testing.T) {
 	}
 	if !finalized.Handled || !finalized.Replayed || finalized.CanonicalEntryID != attempt.ResultEntryID {
 		t.Fatalf("finalized result = %#v", finalized)
+	}
+}
+
+func TestReplayRejectedUserApprovalReturnsToolError(t *testing.T) {
+	thread, attempt, _, _ := newReplayEffectFixture(t, 1)
+	attempt.State = sessiontree.EffectAttemptRejected
+	attempt.RejectionCode = sessiontree.ApprovalReasonUserRejected
+
+	result := thread.replayEffectResult(context.Background(), attempt)
+	if result.DispatchErr != nil || !result.IsError || result.Text != tools.ErrRejected.Error() {
+		t.Fatalf("replayed user rejection = %#v, want ordinary rejected tool result", result)
 	}
 }
 

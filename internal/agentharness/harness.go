@@ -170,6 +170,7 @@ type ForkResult struct {
 }
 
 type RunOptions struct {
+	LogicalRequestID         string
 	RunID                    string
 	TurnID                   string
 	AdmittedInputID          string
@@ -2350,6 +2351,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
+	engineOptions.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
 	engineOptions.ThreadID = t.id
 	engineOptions.TurnID = turnID
 	engineOptions.TraceID = runID

@@ -56,16 +56,6 @@ func (repo *BackendRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAge
 	return result0, err
 }
 
-func (repo *BackendRepo) AdmitTurn(ctx context.Context, req AdmitTurnRequest) (AdmitTurnResult, error) {
-	var result0 AdmitTurnResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.AdmitTurn(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
 	var result0 Entry
 	err := repo.update(ctx, func(memory *MemoryRepo) error {

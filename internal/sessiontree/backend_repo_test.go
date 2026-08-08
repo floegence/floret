@@ -28,6 +28,7 @@ func TestBackendRepoMethodSetTracksCanonicalMemoryRepo(t *testing.T) {
 		"UpdateDomain":           true,
 		"UpdateDomainAtRevision": true,
 		"ViewDomain":             true,
+		"Checkpoint":             true,
 	}
 	memoryOnly := map[string]bool{
 		"CommitForkBatch": true, "EncodeMemoryState": true, "FailForkClaim": true,

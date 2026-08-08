@@ -25,6 +25,8 @@ type Request struct {
 	TraceID          string
 	Step             int
 	LogicalRequestID string
+	AttemptID        string
+	AttemptEpoch     int
 	Attempt          int
 	OverflowRetried  bool
 	Provider         string
