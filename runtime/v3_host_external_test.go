@@ -846,7 +846,7 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running.Status != runtime.TurnStatusRunning || running.UserEntryID != admitted.UserEntryID ||
+	if running.LogicalRequestID != startCommand.LogicalRequestID || running.Status != runtime.TurnStatusRunning || running.UserEntryID != admitted.UserEntryID ||
 		running.UserMessageOrigin != runtime.ThreadUserMessageOriginUser || running.UserInput != "hello" {
 		t.Fatalf("running turn after admission = %#v", running)
 	}
@@ -865,6 +865,9 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	if bootstrap.Thread.Status != runtime.ThreadStatusRunning || bootstrap.Thread.LatestTurnID != admitted.TurnID ||
 		bootstrap.Thread.LatestRunID != admitted.RunID || bootstrap.Thread.Recoverable {
 		t.Fatalf("thread bootstrap after admission = %#v, want running turn %q run %q", bootstrap.Thread, admitted.TurnID, admitted.RunID)
+	}
+	if len(bootstrap.Turns.Turns) != 1 || bootstrap.Turns.Turns[0].LogicalRequestID != startCommand.LogicalRequestID {
+		t.Fatalf("thread bootstrap turn identity = %#v, want logical request %q", bootstrap.Turns.Turns, startCommand.LogicalRequestID)
 	}
 	page, err := host.Threads().ListThreads(ctx, runtime.ListThreadsOptions{Limit: 10})
 	if err != nil {
@@ -897,6 +900,9 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	}
 	if restartedBootstrap.Thread.Status != runtime.ThreadStatusInterrupted || !restartedBootstrap.Thread.Recoverable {
 		t.Fatalf("restarted thread bootstrap = %#v, want recoverable interruption without in-memory admission proof", restartedBootstrap.Thread)
+	}
+	if len(restartedBootstrap.Turns.Turns) != 1 || restartedBootstrap.Turns.Turns[0].LogicalRequestID != startCommand.LogicalRequestID {
+		t.Fatalf("restarted bootstrap turn identity = %#v, want logical request %q", restartedBootstrap.Turns.Turns, startCommand.LogicalRequestID)
 	}
 	restartedGateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
@@ -952,6 +958,60 @@ func TestV3TurnAdmissionReceiptSeparatesExecution(t *testing.T) {
 	}
 	if requests := restartedGateway.Requests(); len(requests) != 1 {
 		t.Fatalf("provider was called during execution replay: %#v", requests)
+	}
+}
+
+func TestV3RepeatedPromptAdmissionsKeepDistinctLogicalIdentities(t *testing.T) {
+	ctx := context.Background()
+	ids := &deterministicIDs{
+		threads: []identity.ThreadID{"thread-repeat"},
+		turns:   []identity.TurnID{"turn-repeat-1", "turn-repeat-2"},
+		runs:    []identity.RunID{"run-repeat-1", "run-repeat-2"},
+	}
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory(), IDSource: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Shutdown(context.Background()) }()
+	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{LogicalRequestID: "create-repeat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.Thread(ctx, created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "model", StateCompatibilityKey: "test:model:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported, AttachmentPayload: provider.AttachmentDescriptors},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "one"}, {Type: provider.EventDone}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "two"}, {Type: provider.EventDone}}},
+	)
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "assistant", Name: "Assistant"}, SystemPrompt: "Be concise.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := thread.TurnExecutor(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, logical := range []string{"repeat-one", "repeat-two"} {
+		if _, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
+			LogicalRequestID: identity.LogicalRequestID(logical), UserMessage: runtime.TurnInput{Text: "same prompt"},
+		}); err != nil {
+			t.Fatalf("start %s: %v", logical, err)
+		}
+	}
+	reader := mustThreadReader(t, thread)
+	page, err := reader.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
+	if err != nil || len(page.Turns) != 2 {
+		t.Fatalf("repeated prompt page=%#v err=%v", page, err)
+	}
+	if page.Turns[0].LogicalRequestID != "repeat-one" || page.Turns[1].LogicalRequestID != "repeat-two" {
+		t.Fatalf("repeated prompt identities=%#v", page.Turns)
 	}
 }
 
@@ -1029,15 +1089,15 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 		t.Fatalf("start result = %#v", started)
 	}
 	overview, err := reader.ReadOverview(ctx)
-	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != started.TurnID {
+	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.TurnID != started.TurnID || overview.LatestTurn.LogicalRequestID != "turn-request" {
 		t.Fatalf("thread overview = %#v err=%v", overview, err)
 	}
 	page, err := reader.ListTurns(ctx, runtime.ThreadTurnsRequest{Tail: 10})
-	if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != started.TurnID {
+	if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != started.TurnID || page.Turns[0].LogicalRequestID != "turn-request" {
 		t.Fatalf("thread turns = %#v err=%v", page, err)
 	}
 	readTurn, err := reader.ReadTurn(ctx, started.TurnID)
-	if err != nil || readTurn.RunID != started.RunID {
+	if err != nil || readTurn.RunID != started.RunID || readTurn.LogicalRequestID != "turn-request" {
 		t.Fatalf("thread turn = %#v err=%v", readTurn, err)
 	}
 	if _, err := reader.ReadAgentTodos(ctx); err != nil {
@@ -1096,6 +1156,10 @@ func TestV3HostAllocatesAndReplaysCanonicalIdentities(t *testing.T) {
 	}
 	if retried.TurnID != "turn-retry" || retried.RunID != "run-retry" || retried.Receipt.Replayed {
 		t.Fatalf("retry result = %#v", retried)
+	}
+	retrySnapshot, err := reader.ReadTurn(ctx, retried.TurnID)
+	if err != nil || retrySnapshot.LogicalRequestID != "turn-request" {
+		t.Fatalf("retry snapshot = %#v err=%v, want source logical request identity", retrySnapshot, err)
 	}
 	replayedRetry, err := turns.RetryTurn(ctx, runtime.RetryTurnCommand{LogicalRequestID: "retry-request", Reason: "retry"})
 	if err != nil {

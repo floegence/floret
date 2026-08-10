@@ -1955,7 +1955,7 @@ func (turns *turnExecutorView) StartTurn(ctx context.Context, command StartTurnC
 		return out, err
 	}
 	result, runErr := runner.Run(ctx, turnExecutionRequest{
-		RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
+		LogicalRequestID: record.LogicalRequestID, RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
 		SupplementalContext: command.SupplementalContext, Labels: command.Labels,
 		Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
 		Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
@@ -2020,7 +2020,7 @@ func (turns *turnExecutorView) AdmitTurn(ctx context.Context, command StartTurnC
 			return runnerErr
 		}
 		admission, admissionErr := runner.Admit(ctx, turnExecutionRequest{
-			RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
+			LogicalRequestID: record.LogicalRequestID, RunID: *record.RunID, TurnID: *record.TurnID, Input: command.UserMessage,
 			SupplementalContext: command.SupplementalContext, Labels: command.Labels,
 			Completion: command.Completion, Signals: command.Signals, Limits: command.Limits,
 			Reasoning: command.Reasoning, ManualCompactions: turns.agent.manualCompactions,
@@ -2143,7 +2143,7 @@ func (turns *turnExecutorView) executeAdmissionRecord(ctx context.Context, recor
 			RunID: receipt.RunID, UserEntryID: receipt.UserEntryID,
 			Replayed: receipt.Replayed,
 		},
-		RunID: receipt.RunID, TurnID: receipt.TurnID, Input: plan.UserMessage,
+		LogicalRequestID: receipt.LogicalRequestID, RunID: receipt.RunID, TurnID: receipt.TurnID, Input: plan.UserMessage,
 		SupplementalContext: executionContext.SupplementalContext, Labels: plan.Labels,
 		Completion: plan.Completion,
 		Signals: TurnSignalSpec{

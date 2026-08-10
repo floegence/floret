@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.34 - 2026-08-10
+
+- Preserve the product-neutral `logical_request_id` from receipt-first turn
+  admission through canonical turn snapshots, pages, bootstrap, replay, and
+  restart. Retry projections inherit their source logical lifecycle identity,
+  while legacy turns without the metadata remain compatible.
+
 ## v3.2.30 - 2026-08-08
 
 - Make terminal `ThreadTurnProjectionDelta` values self-contained base-zero

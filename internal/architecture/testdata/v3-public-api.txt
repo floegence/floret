@@ -1372,6 +1372,7 @@ field ThreadTurnRetrySource.TurnID github.com/floegence/floret/v3/identity.TurnI
 type ThreadTurnSnapshot struct
 field ThreadTurnSnapshot.TurnID github.com/floegence/floret/v3/identity.TurnID tag="json:\"turn_id\""
 field ThreadTurnSnapshot.RunID github.com/floegence/floret/v3/identity.RunID tag="json:\"run_id\""
+field ThreadTurnSnapshot.LogicalRequestID github.com/floegence/floret/v3/identity.LogicalRequestID tag="json:\"logical_request_id,omitempty\""
 field ThreadTurnSnapshot.Ordinal int64 tag="json:\"ordinal\""
 field ThreadTurnSnapshot.StartedAt time.Time tag="json:\"started_at\""
 field ThreadTurnSnapshot.UpdatedAt time.Time tag="json:\"updated_at\""

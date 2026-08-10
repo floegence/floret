@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-08-10
+* **Canonical admission identity projection**: Receipt-first admissions persist
+  the product-neutral `logical_request_id` on the started marker and expose it
+  on `ThreadTurnSnapshot` through exact reads, pages, bootstrap, replay, and
+  restart. Retry turns inherit the source logical lifecycle identity; legacy
+  markers without the metadata remain compatible.
+
 ## 2026-08-09
 * **Memory actor recovery journal**: Runtime mutations now flow through
   per-thread in-process mailboxes while provider I/O and approval waits remain

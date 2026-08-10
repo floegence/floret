@@ -15,6 +15,7 @@ import (
 var ErrProviderStateNotFound = errors.New("provider state not found")
 
 const (
+	LogicalRequestIDMetadataKey   = "logical_request_id"
 	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
 	RetrySourceEntryIDMetadataKey = "retry_source_entry_id"
 )
@@ -43,6 +44,7 @@ type AdmitTurnRequest struct {
 	ThreadID           string
 	TurnID             string
 	RunID              string
+	LogicalRequestID   string
 	OwnerID            string
 	Input              session.Message
 	RetrySourceTurnID  string
@@ -174,11 +176,12 @@ func TurnAdmissionRequestFingerprint(req AdmitTurnRequest) (string, error) {
 		ThreadID           string          `json:"thread_id"`
 		TurnID             string          `json:"turn_id"`
 		RunID              string          `json:"run_id"`
+		LogicalRequestID   string          `json:"logical_request_id,omitempty"`
 		Input              session.Message `json:"input"`
 		RetrySourceTurnID  string          `json:"retry_source_turn_id,omitempty"`
 		RetrySourceEntryID string          `json:"retry_source_entry_id,omitempty"`
 	}{
-		ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
+		ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID), LogicalRequestID: strings.TrimSpace(req.LogicalRequestID),
 		Input: session.CloneMessage(req.Input), RetrySourceTurnID: strings.TrimSpace(req.RetrySourceTurnID),
 		RetrySourceEntryID: strings.TrimSpace(req.RetrySourceEntryID),
 	})
@@ -388,6 +391,7 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.TurnID = strings.TrimSpace(req.TurnID)
 	req.RunID = strings.TrimSpace(req.RunID)
+	req.LogicalRequestID = strings.TrimSpace(req.LogicalRequestID)
 	req.OwnerID = strings.TrimSpace(req.OwnerID)
 	req.RequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
 	req.RetrySourceTurnID = strings.TrimSpace(req.RetrySourceTurnID)
@@ -429,8 +433,10 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	seqBefore := r.seq
 	baseLeafID := meta.LeafID
 	admissionBaseLeafID := baseLeafID
+	var activePath []Entry
 	if req.RetrySourceEntryID != "" {
-		activePath, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
+		var err error
+		activePath, err = pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
 		if err != nil {
 			return AdmitTurnResult{}, err
 		}
@@ -453,7 +459,18 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		TurnID: strings.TrimSpace(req.TurnID), TurnStatus: TurnStarted, CreatedAt: now,
 		Metadata: map[string]string{"run_id": strings.TrimSpace(req.RunID)},
 	}
+	if req.RetrySourceEntryID == "" && req.LogicalRequestID != "" {
+		started.Metadata[LogicalRequestIDMetadataKey] = req.LogicalRequestID
+	}
 	if req.RetrySourceEntryID != "" {
+		for _, candidate := range activePath {
+			if candidate.Type == EntryTurnMarker && candidate.TurnID == req.RetrySourceTurnID && candidate.TurnStatus == TurnStarted {
+				if logical := strings.TrimSpace(candidate.Metadata[LogicalRequestIDMetadataKey]); logical != "" {
+					started.Metadata[LogicalRequestIDMetadataKey] = logical
+				}
+				break
+			}
+		}
 		started.Metadata[RetrySourceTurnIDMetadataKey] = req.RetrySourceTurnID
 		started.Metadata[RetrySourceEntryIDMetadataKey] = req.RetrySourceEntryID
 	}

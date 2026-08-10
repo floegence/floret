@@ -1300,7 +1300,7 @@ func (t *Thread) Admit(ctx context.Context, input string, opts RunOptions) (Turn
 	if !existingAdmission {
 		var err error
 		admission, err = t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-			ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"), Input: message,
+			ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: strings.TrimSpace(opts.LogicalRequestID), OwnerID: t.harness.nextID("lease"), Input: message,
 		})
 		if err != nil {
 			return TurnAdmission{}, err
@@ -1430,7 +1430,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
 	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
 	result, runErr := t.runLeased(runCtx, "", RunOptions{
-		RunID: runID, TurnID: turnID, Labels: opts.Labels,
+		LogicalRequestID: target.LogicalRequestID, RunID: runID, TurnID: turnID, Labels: opts.Labels,
 		AdmissionCommitted: true, AdmissionBaseLeafID: admission.BaseLeafID,
 	}, &target.Entry)
 	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
@@ -2249,7 +2249,7 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 		References:  append([]session.MessageReference(nil), opts.References...),
 	}
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"), Input: message,
+		ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: strings.TrimSpace(opts.LogicalRequestID), OwnerID: t.harness.nextID("lease"), Input: message,
 	})
 	if err != nil {
 		return TurnResult{}, err
@@ -3753,8 +3753,9 @@ func markerMetadata(runID string, result engine.Result) map[string]string {
 }
 
 type retryTargetResult struct {
-	Entry  sessiontree.Entry
-	Source string
+	Entry            sessiontree.Entry
+	Source           string
+	LogicalRequestID string
 }
 
 type durableCompactionManager struct {
@@ -3869,6 +3870,14 @@ func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {
 }
 
 func retryTarget(path []sessiontree.Entry) retryTargetResult {
+	logicalRequestIDForTurn := func(turnID string) string {
+		for _, entry := range path {
+			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == turnID && entry.TurnStatus == sessiontree.TurnStarted {
+				return strings.TrimSpace(entry.Metadata[sessiontree.LogicalRequestIDMetadataKey])
+			}
+		}
+		return ""
+	}
 	failedTurnID := ""
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i].Type == sessiontree.EntryRunFailure && path[i].TurnID != "" {
@@ -3882,7 +3891,7 @@ func retryTarget(path []sessiontree.Entry) retryTargetResult {
 				if i > 0 {
 					candidate := path[i-1]
 					if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, candidate.TurnID, candidate.ID); err == nil && eligible {
-						return retryTargetResult{Entry: candidate, Source: "save_point"}
+						return retryTargetResult{Entry: candidate, Source: "save_point", LogicalRequestID: logicalRequestIDForTurn(candidate.TurnID)}
 					}
 					return retryTargetResult{}
 				}
@@ -3894,7 +3903,7 @@ func retryTarget(path []sessiontree.Entry) retryTargetResult {
 			continue
 		}
 		if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, path[i].TurnID, path[i].ID); err == nil && eligible {
-			return retryTargetResult{Entry: path[i], Source: "user"}
+			return retryTargetResult{Entry: path[i], Source: "user", LogicalRequestID: logicalRequestIDForTurn(path[i].TurnID)}
 		}
 		return retryTargetResult{}
 	}

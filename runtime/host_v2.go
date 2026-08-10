@@ -373,6 +373,7 @@ func (reader *threadReaderHandle) ReadTurn(ctx context.Context, turnID identity.
 // turnExecutionRequest describes one provider execution after ThreadID is bound by a
 // turnRunnerHandle.
 type turnExecutionRequest struct {
+	LogicalRequestID    identity.LogicalRequestID
 	RunID               identity.RunID
 	TurnID              identity.TurnID
 	Input               TurnInput
@@ -388,6 +389,7 @@ type turnExecutionRequest struct {
 
 type admittedTurnExecutionRequest struct {
 	Admission           turnAdmissionResult
+	LogicalRequestID    identity.LogicalRequestID
 	RunID               identity.RunID
 	TurnID              identity.TurnID
 	Input               TurnInput
@@ -414,7 +416,7 @@ func (runner *turnRunnerHandle) Admit(ctx context.Context, request turnExecution
 		return turnAdmissionResult{}, errors.New("turn runner is required")
 	}
 	return runner.inner.AdmitTurn(ctx, runTurnRequest{
-		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
 		Limits: request.Limits, Reasoning: request.Reasoning,
@@ -428,7 +430,7 @@ func (runner *turnRunnerHandle) ExecuteAdmitted(ctx context.Context, request adm
 		return TurnResult{}, errors.New("turn runner is required")
 	}
 	return runner.inner.ExecuteAdmittedTurn(ctx, request.Admission, runTurnRequest{
-		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
 		Limits: request.Limits, Reasoning: request.Reasoning,
@@ -442,7 +444,7 @@ func (runner *turnRunnerHandle) Run(ctx context.Context, request turnExecutionRe
 		return TurnResult{}, errors.New("turn runner is required")
 	}
 	return runner.inner.RunTurn(ctx, runTurnRequest{
-		RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
+		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
 		Limits: request.Limits, Reasoning: request.Reasoning,

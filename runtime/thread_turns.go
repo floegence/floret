@@ -142,11 +142,12 @@ const (
 )
 
 type ThreadTurnSnapshot struct {
-	TurnID    identity.TurnID `json:"turn_id"`
-	RunID     identity.RunID  `json:"run_id"`
-	Ordinal   int64           `json:"ordinal"`
-	StartedAt time.Time       `json:"started_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	TurnID           identity.TurnID           `json:"turn_id"`
+	RunID            identity.RunID            `json:"run_id"`
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Ordinal          int64                     `json:"ordinal"`
+	StartedAt        time.Time                 `json:"started_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
 	// UserEntryID is the opaque identity of the admitted canonical user Entry.
 	// It is a presentation anchor, not authorization or a storage access handle.
 	UserEntryID       string                  `json:"user_entry_id,omitempty"`
@@ -176,6 +177,12 @@ func (s ThreadTurnSnapshot) Validate() error {
 	if strings.TrimSpace(string(s.TurnID)) == "" || string(s.TurnID) != strings.TrimSpace(string(s.TurnID)) ||
 		strings.TrimSpace(string(s.RunID)) == "" || string(s.RunID) != strings.TrimSpace(string(s.RunID)) {
 		return errors.New("thread turn snapshot identity is incomplete or not trim-stable")
+	}
+	if logical := strings.TrimSpace(string(s.LogicalRequestID)); logical != "" {
+		parsed, err := identity.ParseLogicalRequestID(logical)
+		if err != nil || parsed != s.LogicalRequestID {
+			return errors.New("thread turn snapshot logical request identity is invalid")
+		}
 	}
 	if s.Ordinal <= 0 || s.ThroughOrdinal < s.Ordinal {
 		return errors.New("thread turn snapshot ordinals are invalid")
@@ -756,6 +763,7 @@ func projectCanonicalThreadTurnSnapshot(threadID identity.ThreadID, detail agent
 	turn := ThreadTurnSnapshot{
 		TurnID:            turnID,
 		RunID:             runID,
+		LogicalRequestID:  threadTurnStartedLogicalRequestID(events),
 		Ordinal:           ordinal,
 		StartedAt:         startedAt.UTC(),
 		UpdatedAt:         events[len(events)-1].CreatedAt.UTC(),
@@ -847,6 +855,7 @@ func projectThreadTurnSnapshots(threadID identity.ThreadID, events []ThreadDetai
 		turn := ThreadTurnSnapshot{
 			TurnID:            turnID,
 			RunID:             runID,
+			LogicalRequestID:  threadTurnStartedLogicalRequestID(turnEvents),
 			Ordinal:           ordinal,
 			StartedAt:         startedAt.UTC(),
 			UpdatedAt:         turnEvents[len(turnEvents)-1].CreatedAt.UTC(),
@@ -932,6 +941,20 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (identity.RunID, int6
 		return identity.RunID(strings.TrimSpace(event.TurnMarker.Metadata["run_id"])), event.Ordinal, event.CreatedAt
 	}
 	return "", 0, time.Time{}
+}
+
+func threadTurnStartedLogicalRequestID(events []ThreadDetailEvent) identity.LogicalRequestID {
+	for _, event := range events {
+		if event.TurnMarker == nil || event.TurnMarker.Status != string(sessiontree.TurnStarted) {
+			continue
+		}
+		logical := strings.TrimSpace(event.TurnMarker.Metadata[sessiontree.LogicalRequestIDMetadataKey])
+		if logical == "" {
+			return ""
+		}
+		return identity.LogicalRequestID(logical)
+	}
+	return ""
 }
 
 func canonicalTurnUserInput(events []ThreadDetailEvent, turnID identity.TurnID) (string, ThreadUserMessageOrigin, string, []MessageAttachment, []MessageReference, error) {

@@ -69,6 +69,15 @@ signal bindings. The host never persists or resubmits the canonical command.
 `AdmitTurnResult.Execute` is only a same-process convenience over the same
 receipt-first path. There is no command-bearing execution fallback.
 
+Each canonical `ThreadTurnSnapshot` optionally carries the same
+`logical_request_id` as its admission receipt. The identity is a
+product-neutral association for reconciling one user-visible admission across
+bootstrap, exact reads, pages, replay, and restart; it is not a run, attempt,
+trace, storage locator, or authorization capability. Retry turns inherit the
+source turn's logical lifecycle identity and do not create a second canonical
+user admission. Legacy started markers without this metadata remain readable
+and project an empty optional field.
+
 Admission is memory-first inside the single Floret process: the actor assigns
 stable thread, turn, and run identities and publishes the accepted/running
 receipt before prompt projection or provider dispatch. High-frequency prompt
