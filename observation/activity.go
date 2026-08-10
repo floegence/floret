@@ -35,6 +35,7 @@ const (
 	ActivityStatusWaiting  ActivityStatus = "waiting"
 	ActivityStatusSuccess  ActivityStatus = "success"
 	ActivityStatusError    ActivityStatus = "error"
+	ActivityStatusDeclined ActivityStatus = "declined"
 	ActivityStatusCanceled ActivityStatus = "canceled"
 )
 
@@ -87,6 +88,7 @@ type ActivityCounts struct {
 	Waiting  int `json:"waiting,omitempty"`
 	Success  int `json:"success,omitempty"`
 	Error    int `json:"error,omitempty"`
+	Declined int `json:"declined,omitempty"`
 	Canceled int `json:"canceled,omitempty"`
 	Approval int `json:"approval,omitempty"`
 }
@@ -331,7 +333,13 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.StartedAtUnixMS = durationStart
 			}
 			resultStatus := activityMetadataValue(ev, "tool_result_status")
-			if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
+			if state.item.ApprovalState == "rejected" {
+				// A canonical user decision is terminal and must not be
+				// overwritten by a legacy/success-shaped tool result event.
+				state.item.Status = ActivityStatusDeclined
+				state.item.Severity = ActivitySeverityQuiet
+				state.item.RequiresApproval = false
+			} else if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityError
 			} else if activityMetadataBool(ev.Metadata, "pending_tool_result") {
@@ -412,8 +420,9 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.ApprovalState = "approved"
 				state.item.EndedAtUnixMS = 0
 			case EventTypeToolApprovalRejected:
-				state.item.Status = ActivityStatusError
-				state.item.Severity = ActivitySeverityError
+				state.item.Status = ActivityStatusDeclined
+				state.item.Severity = ActivitySeverityQuiet
+				state.item.RequiresApproval = false
 				state.item.ApprovalState = "rejected"
 				state.item.EndedAtUnixMS = observedAt
 			case EventTypeToolApprovalTimedOut:
@@ -647,7 +656,7 @@ func activityToolKind(ev Event) ActivityKind {
 
 func activityStatusIsTerminal(status ActivityStatus) bool {
 	switch status {
-	case ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
+	case ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled:
 		return true
 	default:
 		return false
@@ -1274,6 +1283,8 @@ func activityItemSummary(items []ActivityItem) ActivitySummary {
 			summary.Counts.Success++
 		case ActivityStatusError:
 			summary.Counts.Error++
+		case ActivityStatusDeclined:
+			summary.Counts.Declined++
 		case ActivityStatusCanceled:
 			summary.Counts.Canceled++
 		}
@@ -1294,6 +1305,8 @@ func activityItemSummary(items []ActivityItem) ActivitySummary {
 		summary.Status = ActivityStatusPending
 	case summary.Counts.Canceled > 0 && summary.Counts.Success == 0:
 		summary.Status = ActivityStatusCanceled
+	case summary.Counts.Declined > 0 && summary.Counts.Success == 0:
+		summary.Status = ActivityStatusDeclined
 	case summary.TotalItems > 0:
 		summary.Status = ActivityStatusSuccess
 	}
@@ -1398,7 +1411,7 @@ func firstNonEmptyActivityKind(left, right ActivityKind) ActivityKind {
 
 func validateActivityStatus(status ActivityStatus) error {
 	switch status {
-	case ActivityStatusPending, ActivityStatusRunning, ActivityStatusWaiting, ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
+	case ActivityStatusPending, ActivityStatusRunning, ActivityStatusWaiting, ActivityStatusSuccess, ActivityStatusError, ActivityStatusDeclined, ActivityStatusCanceled:
 		return nil
 	default:
 		return errors.New("unknown activity status")
@@ -1442,7 +1455,7 @@ func validateActivityApprovalState(state string) error {
 }
 
 func validateActivityItemApprovalLifecycle(item ActivityItem) error {
-	if !item.RequiresApproval {
+	if !item.RequiresApproval && item.ApprovalState != "rejected" {
 		return errors.New("approval_state requires requires_approval")
 	}
 	switch item.Kind {
@@ -1468,11 +1481,12 @@ func validateActivityItemApprovalLifecycle(item ActivityItem) error {
 			return fmt.Errorf("approved approval status is %q, want pending, running, or terminal tool status", item.Status)
 		}
 	case "rejected":
-		// A user rejection is a normal terminal cancellation in the host UI,
-		// not a failed tool execution. Older persisted projections used this
-		// combination, so keep them readable across restart.
-		if item.Status != ActivityStatusError && item.Status != ActivityStatusCanceled {
-			return fmt.Errorf("%s approval status is %q, want %q or %q", item.ApprovalState, item.Status, ActivityStatusError, ActivityStatusCanceled)
+		// Error/canceled are accepted only for older persisted projections.
+		if item.Status != ActivityStatusDeclined && item.Status != ActivityStatusError && item.Status != ActivityStatusCanceled {
+			return fmt.Errorf("%s approval status is %q, want %q", item.ApprovalState, item.Status, ActivityStatusDeclined)
+		}
+		if item.Status == ActivityStatusDeclined && (item.RequiresApproval || item.Severity != ActivitySeverityQuiet || item.NeedsAttention) {
+			return errors.New("declined approval must be quiet, terminal, and not require attention")
 		}
 	case "timed_out":
 		if item.Status != ActivityStatusError {

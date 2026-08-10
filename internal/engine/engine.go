@@ -1229,6 +1229,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				metadataBase = toolProjectionMetadata(result.Metadata, projection)
 			}
 			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
+			metadata["tool_result_status"] = resultStatus
 			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
 			toolMessageSet[i] = true
 			return nil
@@ -1391,6 +1392,9 @@ func stringFromAny(value any) string {
 }
 
 func toolResultStatus(result tools.Result) string {
+	if result.Structured != nil && result.Structured["outcome"] == tools.ResultOutcomeDeclined {
+		return string(observation.ActivityStatusDeclined)
+	}
 	if result.Pending != nil && !result.IsError {
 		return string(observation.ActivityStatusRunning)
 	}

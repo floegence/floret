@@ -660,7 +660,7 @@ func (r *MemoryRepo) CommitApprovalDispatch(ctx context.Context, req CommitAppro
 	if decision.Receipt.State == ApprovalApproved {
 		return r.commitApprovalDispatchReplayLocked(decision, req, true)
 	}
-	queue, record, effect, err := r.validateApprovalCurrentLocked(req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
+	queue, record, effect, err := r.validateApprovalTargetLocked(req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
 	if err != nil {
 		return CommitApprovalDispatchResult{}, err
 	}
@@ -761,7 +761,7 @@ func (r *MemoryRepo) FinalizeApproval(_ context.Context, req FinalizeApprovalReq
 		}
 		return result, nil
 	}
-	queue, record, effect, err := r.validateApprovalCurrentLocked(req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
+	queue, record, effect, err := r.validateApprovalTargetLocked(req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
 	if err != nil {
 		return FinalizeApprovalResult{}, err
 	}
@@ -1124,11 +1124,11 @@ func (r *MemoryRepo) approvalQueueLocked(rootID string, now time.Time) (Approval
 }
 
 func (r *MemoryRepo) validateApprovalDecisionCASLocked(rootID string, generation, revision int64, current ApprovalIdentity, approvalRevision int64) (approvalQueueLedger, ApprovalRecord, EffectAttempt, error) {
-	queue, record, effect, err := r.validateApprovalCurrentLocked(rootID, generation, current, approvalRevision)
+	queue, record, effect, err := r.validateApprovalTargetLocked(rootID, generation, current, approvalRevision)
 	if err != nil {
 		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, err
 	}
-	if queue.Revision != revision {
+	if revision <= 0 || revision > queue.Revision {
 		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrStaleAuthority
 	}
 	return queue, record, effect, nil
@@ -1176,6 +1176,46 @@ func (r *MemoryRepo) validateApprovalCurrentLocked(rootID string, generation int
 	}
 	if record.Revision != approvalRevision {
 		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrStaleAuthority
+	}
+	return queue, record, effect, nil
+}
+
+func (r *MemoryRepo) validateApprovalTargetLocked(rootID string, generation int64, current ApprovalIdentity, approvalRevision int64) (approvalQueueLedger, ApprovalRecord, EffectAttempt, error) {
+	rootID = strings.TrimSpace(rootID)
+	if _, err := memoryApprovalRootThreadID(r.threads, rootID); err != nil {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, err
+	}
+	queue := r.approvalQueues[rootID]
+	if _, err := r.approvalQueueLocked(rootID, r.now().UTC()); err != nil {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, err
+	}
+	if queue.Generation != generation {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrStaleAuthority
+	}
+	record, ok := r.approvals[strings.TrimSpace(current.ApprovalID)]
+	if !ok {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrApprovalNotFound
+	}
+	if err := ValidateApprovalRecord(record); err != nil {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, err
+	}
+	switch record.State {
+	case ApprovalRequested:
+		if record.Revision != 1 {
+			return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrAuthorityCorrupt
+		}
+	case ApprovalDecisionSubmitted:
+		decision, found := r.approvalDecisions[record.DecisionID]
+		if !found || decision.Receipt.ApprovalRevision != record.Revision {
+			return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrAuthorityCorrupt
+		}
+	}
+	if !approvalQueueVisible(record.State) || !sameApprovalIdentity(record.Identity(), current) || record.Revision != approvalRevision {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrStaleAuthority
+	}
+	effect, ok := r.effectAttempts[record.EffectAttemptID]
+	if !ok || !approvalRecordMatchesEffect(record, effect) {
+		return approvalQueueLedger{}, ApprovalRecord{}, EffectAttempt{}, ErrAuthorityCorrupt
 	}
 	return queue, record, effect, nil
 }
@@ -1409,7 +1449,7 @@ func ValidateResolveApprovalReplayAuthority(
 		}
 	}
 	if approvalQueueVisible(record.State) {
-		if visibleIndex != 0 || queue.CurrentApprovalID != record.ApprovalID {
+		if visibleIndex < 0 || strings.TrimSpace(queue.CurrentApprovalID) == "" {
 			return ErrAuthorityCorrupt
 		}
 	} else if visibleIndex >= 0 || queue.CurrentApprovalID == record.ApprovalID {
@@ -1421,7 +1461,7 @@ func ValidateResolveApprovalReplayAuthority(
 	switch record.State {
 	case ApprovalDecisionSubmitted:
 		if decision != ApprovalDecisionApprove || record.Revision != expectedApprovalRevision+1 ||
-			receipt.QueueRevision != expectedRevision+1 || !record.UpdatedAt.Equal(receipt.SubmittedAt) ||
+			receipt.QueueRevision < expectedRevision+1 || !record.UpdatedAt.Equal(receipt.SubmittedAt) ||
 			!receipt.ResolvedAt.IsZero() || effect.State != EffectAttemptPrepared {
 			return ErrAuthorityCorrupt
 		}
@@ -1865,8 +1905,8 @@ func ValidateFinalizeApprovalSourceAuthority(req FinalizeApprovalRequest, record
 	}
 	if record.RootThreadID != strings.TrimSpace(req.ExpectedRootThreadID) || !sameApprovalIdentity(record.Identity(), req.ExpectedCurrent) ||
 		record.Revision != req.ExpectedApprovalRevision || queue.RootThreadID != record.RootThreadID ||
-		queue.Generation != req.ExpectedGeneration || queue.Revision <= 0 || queue.CurrentApprovalID != record.ApprovalID ||
-		len(queue.Items) == 0 || !reflect.DeepEqual(queue.Items[0], record) || queue.GeneratedAt.IsZero() {
+		queue.Generation != req.ExpectedGeneration || queue.Revision <= 0 ||
+		!slices.ContainsFunc(queue.Items, func(item ApprovalRecord) bool { return reflect.DeepEqual(item, record) }) || queue.GeneratedAt.IsZero() {
 		return ErrAuthorityCorrupt
 	}
 	if record.State != ApprovalRequested && record.State != ApprovalDecisionSubmitted {

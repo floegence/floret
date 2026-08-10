@@ -76,6 +76,28 @@ func ErrorResult(callID, name, text string) Result {
 	return Result{CallID: callID, Name: name, Text: text, IsError: true}
 }
 
+const ResultOutcomeDeclined = "declined"
+
+// DeclinedResult reports a normal user decision that prevented execution. It
+// is provider-visible, but it is not a tool dispatch or execution failure.
+func DeclinedResult(callID, name string) Result {
+	return Result{
+		CallID: callID,
+		Name:   name,
+		Text:   "The user declined this tool call. The tool was not executed.",
+		Structured: map[string]any{
+			"outcome":         ResultOutcomeDeclined,
+			"decision_source": "user",
+			"executed":        false,
+		},
+		Metadata: map[string]any{
+			"outcome":         ResultOutcomeDeclined,
+			"decision_source": "user",
+			"executed":        false,
+		},
+	}
+}
+
 func (r Result) withCall(callID, name string) Result {
 	if r.CallID == "" {
 		r.CallID = callID

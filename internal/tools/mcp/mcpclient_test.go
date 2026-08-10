@@ -333,7 +333,7 @@ func TestPermissionDenyBlocksMCPToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "mcp__context7__search", Args: `{"query":"floret"}`}, denyAll)
-	if !result.IsError || result.Text != tools.ErrRejected.Error() {
+	if result.IsError || result.Text != tools.DeclinedResult("", "").Text || result.Structured["outcome"] != tools.ResultOutcomeDeclined {
 		t.Fatalf("result = %#v", result)
 	}
 }

@@ -657,7 +657,7 @@ func TestBuildActivityTimelineProjectsApprovalDenialAsSingleToolItem(t *testing.
 		wantStatus ActivityStatus
 		wantState  string
 	}{
-		{name: "rejected", eventType: EventTypeToolApprovalRejected, wantStatus: ActivityStatusError, wantState: "rejected"},
+		{name: "rejected", eventType: EventTypeToolApprovalRejected, wantStatus: ActivityStatusDeclined, wantState: "rejected"},
 		{name: "timed out", eventType: EventTypeToolApprovalTimedOut, wantStatus: ActivityStatusError, wantState: "timed_out"},
 		{name: "canceled", eventType: EventTypeToolApprovalCanceled, wantStatus: ActivityStatusCanceled, wantState: "canceled"},
 	}
@@ -679,9 +679,15 @@ func TestBuildActivityTimelineProjectsApprovalDenialAsSingleToolItem(t *testing.
 			if item.Kind != ActivityKindTool ||
 				item.Status != tt.wantStatus ||
 				item.ApprovalState != tt.wantState ||
-				!item.RequiresApproval ||
 				item.EndedAtUnixMS == 0 {
 				t.Fatalf("denied approval item mismatch: %#v", item)
+			}
+			if tt.eventType == EventTypeToolApprovalRejected {
+				if item.RequiresApproval || item.NeedsAttention || item.Severity != ActivitySeverityQuiet {
+					t.Fatalf("rejected approval should be quiet and terminal: %#v", item)
+				}
+			} else if !item.RequiresApproval {
+				t.Fatalf("unresolved denial should retain approval context: %#v", item)
 			}
 		})
 	}

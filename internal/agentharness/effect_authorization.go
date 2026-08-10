@@ -375,7 +375,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		}
 		switch receipt.State {
 		case sessiontree.ApprovalRejected:
-			return tools.ErrorResult(request.CallID, request.Name, tools.ErrRejected.Error())
+			return tools.DeclinedResult(request.CallID, request.Name)
 		case sessiontree.ApprovalDecisionSubmitted:
 		default:
 			return effectDispatchError(request.CallID, request.Name, sessiontree.ErrAuthorityCorrupt)
@@ -1051,7 +1051,7 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 		}
 	case sessiontree.EffectAttemptRejected:
 		if attempt.RejectionCode == sessiontree.ApprovalReasonUserRejected {
-			return tools.ErrorResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, tools.ErrRejected.Error())
+			return tools.DeclinedResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName)
 		}
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, ErrEffectUnauthorized)
 	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptDispatching:

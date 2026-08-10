@@ -1696,6 +1696,8 @@ func subAgentDetailToolResultActivityMetadata(result *SubAgentDetailToolResult) 
 		metadata["tool_result_status"] = string(observation.ActivityStatusError)
 	case string(observation.ActivityStatusCanceled):
 		metadata["tool_result_status"] = string(observation.ActivityStatusCanceled)
+	case string(observation.ActivityStatusDeclined):
+		metadata["tool_result_status"] = string(observation.ActivityStatusDeclined)
 	case string(observation.ActivityStatusSuccess):
 		metadata["tool_result_status"] = string(observation.ActivityStatusSuccess)
 	case string(observation.ActivityStatusRunning):

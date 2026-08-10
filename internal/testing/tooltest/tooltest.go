@@ -132,7 +132,7 @@ func Dispatcher(approver Approver) tools.EffectDispatcher {
 			if !decision.Allowed() {
 				reason := strings.TrimSpace(decision.RejectionReason())
 				if reason == "" {
-					reason = tools.ErrRejected.Error()
+					return tools.DeclinedResult(req.CallID, req.Name)
 				}
 				return tools.ErrorResult(req.CallID, req.Name, reason)
 			}

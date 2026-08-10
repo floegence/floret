@@ -440,7 +440,7 @@ func (s *Store) CommitApprovalDispatch(ctx context.Context, req sessiontree.Comm
 			result.Replayed = true
 			return err
 		}
-		queue, record, effect, err := loadSQLiteApprovalCurrent(ctx, tx, req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
+		queue, record, effect, err := loadSQLiteApprovalTarget(ctx, tx, req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
 		if err != nil {
 			return err
 		}
@@ -590,7 +590,7 @@ func (s *Store) FinalizeApproval(ctx context.Context, req sessiontree.FinalizeAp
 			}
 			return nil
 		}
-		queue, record, effect, err := loadSQLiteApprovalCurrent(ctx, tx, req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
+		queue, record, effect, err := loadSQLiteApprovalTarget(ctx, tx, req.ExpectedRootThreadID, req.ExpectedGeneration, req.ExpectedCurrent, req.ExpectedApprovalRevision)
 		if err != nil {
 			return err
 		}
@@ -1381,11 +1381,11 @@ func encodeSQLiteApprovalCollections(record sessiontree.ApprovalRecord) (string,
 }
 
 func loadSQLiteApprovalDecisionCAS(ctx context.Context, q sqlRunner, rootID string, generation, revision int64, current sessiontree.ApprovalIdentity, approvalRevision int64) (sqliteApprovalQueueLedger, sessiontree.ApprovalRecord, sessiontree.EffectAttempt, error) {
-	queue, record, effect, err := loadSQLiteApprovalCurrent(ctx, q, rootID, generation, current, approvalRevision)
+	queue, record, effect, err := loadSQLiteApprovalTarget(ctx, q, rootID, generation, current, approvalRevision)
 	if err != nil {
 		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
 	}
-	if queue.Revision != revision {
+	if revision <= 0 || revision > queue.Revision {
 		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrStaleAuthority
 	}
 	return queue, record, effect, nil
@@ -1445,6 +1445,56 @@ func loadSQLiteApprovalCurrent(ctx context.Context, q sqlRunner, rootID string, 
 	}
 	if record.Revision != approvalRevision {
 		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrStaleAuthority
+	}
+	return queue, record, effect, nil
+}
+
+func loadSQLiteApprovalTarget(ctx context.Context, q sqlRunner, rootID string, generation int64, current sessiontree.ApprovalIdentity, approvalRevision int64) (sqliteApprovalQueueLedger, sessiontree.ApprovalRecord, sessiontree.EffectAttempt, error) {
+	canonicalRootID, err := sqliteApprovalRootThreadID(ctx, q, strings.TrimSpace(rootID))
+	if err != nil {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+	}
+	queue, found, err := loadSQLiteApprovalQueueLedger(ctx, q, canonicalRootID)
+	if err != nil {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+	}
+	if !found || canonicalRootID != strings.TrimSpace(rootID) || queue.Generation != generation {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrStaleAuthority
+	}
+	record, found, err := loadSQLiteApproval(ctx, q, strings.TrimSpace(current.ApprovalID))
+	if err != nil {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+	}
+	if !found {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrApprovalNotFound
+	}
+	if err := sessiontree.ValidateApprovalRecord(record); err != nil {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+	}
+	switch record.State {
+	case sessiontree.ApprovalRequested:
+		if record.Revision != 1 {
+			return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrAuthorityCorrupt
+		}
+	case sessiontree.ApprovalDecisionSubmitted:
+		decision, found, err := loadSQLiteApprovalDecision(ctx, q, record.DecisionID)
+		if err != nil {
+			return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+		}
+		if !found || decision.Receipt.ApprovalRevision != record.Revision {
+			return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	if record.RootThreadID != canonicalRootID || !sessiontree.ApprovalQueueVisible(record.State) ||
+		!sessiontree.SameApprovalIdentity(record.Identity(), current) || record.Revision != approvalRevision {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrStaleAuthority
+	}
+	effect, found, err := loadEffectAttempt(ctx, q, record.EffectAttemptID)
+	if err != nil {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, err
+	}
+	if !found || !sqliteApprovalRecordMatchesEffect(record, effect) {
+		return sqliteApprovalQueueLedger{}, sessiontree.ApprovalRecord{}, sessiontree.EffectAttempt{}, sessiontree.ErrAuthorityCorrupt
 	}
 	return queue, record, effect, nil
 }

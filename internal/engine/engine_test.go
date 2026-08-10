@@ -2166,7 +2166,8 @@ func TestEffectDispatcherDenialReturnsToolErrorAndAllowsModelRecovery(t *testing
 	}
 	assertApprovalEvents(t, rec.Events)
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
-		return ev.Type == event.ToolResult && ev.Err == tools.ErrRejected.Error()
+		metadata, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ToolResult && ev.Err == "" && metadata["outcome"] == tools.ResultOutcomeDeclined
 	}) {
 		t.Fatalf("denial was not recorded as a structured tool result: %#v", rec.Events)
 	}

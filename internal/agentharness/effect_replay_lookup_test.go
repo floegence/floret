@@ -42,7 +42,7 @@ func TestReplayRejectedUserApprovalReturnsToolError(t *testing.T) {
 	attempt.RejectionCode = sessiontree.ApprovalReasonUserRejected
 
 	result := thread.replayEffectResult(context.Background(), attempt)
-	if result.DispatchErr != nil || !result.IsError || result.Text != tools.ErrRejected.Error() {
+	if result.DispatchErr != nil || result.IsError || result.Text != tools.DeclinedResult("", "").Text || result.Structured["outcome"] != tools.ResultOutcomeDeclined {
 		t.Fatalf("replayed user rejection = %#v, want ordinary rejected tool result", result)
 	}
 }

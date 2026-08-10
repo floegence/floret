@@ -1,6 +1,12 @@
 # Floret OKF Update Log
 
 ## 2026-08-10
+* **Tool rejection batch settlement**: Approval decisions target exact visible
+  call identities, allowing reverse and concurrent same-batch decisions. User
+  rejection is projected as a quiet `declined` result and waits for all ordered
+  provider result slots before continuation.
+
+## 2026-08-10
 * **Canonical admission identity projection**: Receipt-first admissions persist
   the product-neutral `logical_request_id` on the started marker and expose it
   on `ThreadTurnSnapshot` through exact reads, pages, bootstrap, replay, and

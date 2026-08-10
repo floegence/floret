@@ -50,9 +50,9 @@ Tool approval events are lifecycle updates on the tool activity item itself:
 `tool_call`, approval request/resolution, and `tool_result` for the same tool id
 collapse into one item instead of a separate approval row. A requested approval
 therefore keeps the tool item `waiting`, blocking, and attention-worthy; approval
-or denial then advances that same item. `requires_approval` records that the
-tool invocation passed through approval; it is not the current decision-needed
-flag. Only `approval_state=requested` with `status=waiting` means the item is
+or denial then advances that same item. User rejection projects as terminal
+`status=declined`, quiet severity, no attention, and `requires_approval=false`.
+Only `approval_state=requested` with `status=waiting` means the item is
 currently waiting for a decision. After approval, the item may be `pending`
 before dispatch starts, then `running` or terminal when later lifecycle facts
 arrive. Durable turn projection keeps an existing tool-authored presentation

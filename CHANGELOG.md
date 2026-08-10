@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.35 - 2026-08-10
+
+- Allow approval decisions for independent calls in the same provider batch to
+  arrive in source, reverse, or concurrent order while preserving exact target
+  identity, decision replay, effect authorization, and ordered provider
+  continuation results.
+- Represent user rejection as a structured provider-visible `declined` result
+  and quiet observation status instead of a dispatch error or failed tool.
+  Rejection never invokes the handler and does not cancel sibling approvals.
+
 ## v3.2.34 - 2026-08-10
 
 - Preserve the product-neutral `logical_request_id` from receipt-first turn

@@ -3,6 +3,7 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -313,7 +314,7 @@ func TestApprovalRejectionReturnsToolResultAndAllowsProviderContinuation(t *test
 			break
 		}
 	}
-	if rejectedResult == nil || rejectedResult.Content != "ERROR: "+tools.ErrRejected.Error() {
+	if rejectedResult == nil || rejectedResult.Content != tools.DeclinedResult("", "").Text {
 		t.Fatalf("provider rejection result=%#v", rejectedResult)
 	}
 	approval, err := repo.Approval(ctx, pending.ApprovalID)
@@ -332,9 +333,171 @@ func TestApprovalRejectionReturnsToolResultAndAllowsProviderContinuation(t *test
 			break
 		}
 	}
-	if canonicalResult == nil || canonicalResult.Status != string(observation.ActivityStatusError) ||
-		canonicalResult.Content != "ERROR: "+tools.ErrRejected.Error() {
+	if canonicalResult == nil || canonicalResult.Status != string(observation.ActivityStatusDeclined) ||
+		canonicalResult.Content != tools.DeclinedResult("", "").Text {
 		t.Fatalf("canonical rejection result=%#v", canonicalResult)
+	}
+}
+
+func TestApprovalBatchAllowsReverseRejectionAndPreservesProviderOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	provider := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("write-1", "write_file", `{"value":"first.md"}`),
+			harness.Tool("write-2", "write_file", `{"value":"second.md"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("understood"), harness.Done()),
+	)
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "write_file", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk}, Effects: []tools.Effect{tools.EffectWrite},
+		}, nil, nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			t.Fatal("rejected tool handler must not run")
+			return tools.Result{}, nil
+		},
+	))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := thread.Run(ctx, "write both", RunOptions{RunID: "run", TurnID: "turn"})
+		done <- outcome{result: result, err: err}
+	}()
+	queue := waitForApprovalQueueSize(t, ctx, h, "thread", 2)
+	first, second := queue.Approvals[0], queue.Approvals[1]
+	reject := func(decisionID string, pending ApprovalRecord, snapshot ApprovalQueueSnapshot) ResolveApprovalResult {
+		t.Helper()
+		resolved, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
+			DecisionID: decisionID, ExpectedRootThreadID: snapshot.RootThreadID, ExpectedGeneration: snapshot.Generation,
+			ExpectedRevision: snapshot.Revision, ExpectedCurrent: sessiontree.ApprovalIdentity{
+				ApprovalID: pending.ApprovalID, ThreadID: pending.ThreadID, TurnID: pending.TurnID, RunID: pending.RunID,
+				ToolCallID: pending.ToolCallID, EffectAttemptID: pending.EffectAttemptID,
+			}, ExpectedApprovalRevision: pending.Revision, Decision: sessiontree.ApprovalDecisionReject,
+		})
+		if err != nil {
+			t.Fatalf("reject %s: %v", pending.ToolCallID, err)
+		}
+		return resolved
+	}
+	secondResolved := reject("decision-2", second, queue)
+	if secondResolved.Approval.State != string(sessiontree.ApprovalRejected) || len(secondResolved.Queue.Approvals) != 1 ||
+		secondResolved.Queue.Approvals[0].ToolCallID != first.ToolCallID || secondResolved.Queue.Approvals[0].State != string(sessiontree.ApprovalRequested) {
+		t.Fatalf("queue after reverse rejection = %#v", secondResolved.Queue)
+	}
+	reject("decision-1", first, secondResolved.Queue)
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Status != engine.Completed || got.result.Output != "understood" {
+			t.Fatalf("result=%#v err=%v", got.result, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not continue after the batch settled")
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(provider.Requests))
+	}
+	var resultIDs []string
+	for _, message := range provider.Requests[1].Messages {
+		if message.Role == session.Tool {
+			resultIDs = append(resultIDs, message.ToolCallID)
+		}
+	}
+	if !slices.Equal(resultIDs, []string{"write-1", "write-2"}) {
+		t.Fatalf("provider tool result order=%v", resultIDs)
+	}
+}
+
+func TestApprovalBatchMixesReverseApprovalAndRejectionInProviderOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	provider := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("write-1", "write_file", `{"value":"first.md"}`),
+			harness.Tool("write-2", "write_file", `{"value":"second.md"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("completed"), harness.Done()),
+	)
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
+	var handled atomic.Int32
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "write_file", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk}, Effects: []tools.Effect{tools.EffectWrite},
+		}, nil, nil,
+		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			handled.Add(1)
+			return tools.Result{Text: "wrote " + inv.Args.Value}, nil
+		},
+	))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Run(ctx, "write both", RunOptions{RunID: "run", TurnID: "turn"})
+		done <- err
+	}()
+	queue := waitForApprovalQueueSize(t, ctx, h, "thread", 2)
+	first, second := queue.Approvals[0], queue.Approvals[1]
+	if _, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
+		DecisionID: "approve-second", ExpectedRootThreadID: queue.RootThreadID, ExpectedGeneration: queue.Generation,
+		ExpectedRevision: queue.Revision, ExpectedCurrent: sessiontree.ApprovalIdentity{
+			ApprovalID: second.ApprovalID, ThreadID: second.ThreadID, TurnID: second.TurnID, RunID: second.RunID,
+			ToolCallID: second.ToolCallID, EffectAttemptID: second.EffectAttemptID,
+		}, ExpectedApprovalRevision: second.Revision, Decision: sessiontree.ApprovalDecisionApprove,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for handled.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("approved non-head tool did not execute")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	queue, err = h.ReadApprovalQueue(ctx, ReadApprovalQueueOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
+		DecisionID: "reject-first", ExpectedRootThreadID: queue.RootThreadID, ExpectedGeneration: queue.Generation,
+		ExpectedRevision: queue.Revision, ExpectedCurrent: sessiontree.ApprovalIdentity{
+			ApprovalID: first.ApprovalID, ThreadID: first.ThreadID, TurnID: first.TurnID, RunID: first.RunID,
+			ToolCallID: first.ToolCallID, EffectAttemptID: first.EffectAttemptID,
+		}, ExpectedApprovalRevision: first.Revision, Decision: sessiontree.ApprovalDecisionReject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mixed batch did not continue")
+	}
+	var results []session.Message
+	for _, message := range provider.Requests[1].Messages {
+		if message.Role == session.Tool {
+			results = append(results, message)
+		}
+	}
+	if len(results) != 2 || results[0].ToolCallID != "write-1" || results[0].Content != tools.DeclinedResult("", "").Text ||
+		results[1].ToolCallID != "write-2" || results[1].Content != "wrote second.md" {
+		t.Fatalf("mixed provider results=%#v", results)
 	}
 }
 
@@ -440,6 +603,24 @@ func waitForApprovalQueue(t *testing.T, ctx context.Context, h *AgentHarness, th
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for approval")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForApprovalQueueSize(t *testing.T, ctx context.Context, h *AgentHarness, threadID string, size int) ApprovalQueueSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		queue, err := h.ReadApprovalQueue(ctx, ReadApprovalQueueOptions{ThreadID: threadID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Approvals) == size {
+			return queue
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d approvals; queue=%#v", size, queue)
 		}
 		time.Sleep(time.Millisecond)
 	}

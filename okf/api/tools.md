@@ -52,9 +52,11 @@ that exact result cannot be durably finalized. Cancellation and adapter return
 errors never authorize a second handler call.
 
 An effect dispatcher result requires durable effect-result finalization only if
-the dispatcher invoked the supplied handler callback. A pre-handler rejection
-returns an ordinary failed tool result to the provider and cannot be mistaken
-for a completed or failed handler effect.
+the dispatcher invoked the supplied handler callback. `tools.DeclinedResult`
+represents a user decision before execution with structured `outcome=declined`,
+`decision_source=user`, and `executed=false`; it is provider-visible but is not
+a dispatch or execution failure. It cannot be mistaken for a completed or
+failed handler effect.
 
 # Dispatch Observation
 
@@ -87,7 +89,10 @@ provider in original call order. A slow sibling therefore cannot consume a
 faster sibling's persistence deadline: each finalization context starts only
 when that sibling's finalizer is invoked, and every sibling finalizer is
 attempted even if an earlier finalizer fails. A dependent call belongs in a
-later model response after its prerequisite result is available.
+later model response after its prerequisite result is available. Approval
+decisions for different calls in the same batch may arrive in any order or
+concurrently; each call settles independently and continuation waits for every
+source-ordered result slot to become terminal.
 
 # Repeat And Progress Metadata
 

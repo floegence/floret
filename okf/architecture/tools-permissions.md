@@ -87,11 +87,13 @@ not skip later sibling finalizers.
 Floret owns the generic approval lifecycle and the aggregate root/descendant
 approval queue for local tool dispatch. Approval events update the durable
 thread detail audit trail, while `runtime.ThreadReader.ReadApprovalQueue` exposes queue
-generation, ordered items, and exactly one decisionable current item. The queue
+generation and ordered items. Each visible item is independently decisionable
+through its exact approval identity and revision; `CurrentApprovalID` remains
+the oldest visible item for deterministic presentation, not authorization. The queue
 carries product-neutral ids, canonical root/child and turn/run identity, tool
 names, effects, resources, labels, host context, state, timing, revision, batch
-index, and batch size metadata. `ResolveApproval` requires the exact current
-generation, revision, approval identity, and stable decision ID. Batch order
+index, and batch size metadata. `ResolveApproval` requires the exact generation,
+target identity and revision, a non-future queue revision, and stable decision ID. Batch order
 keeps presentation deterministic; it does not serialize unrelated handler
 execution after authorization.
 
@@ -107,9 +109,9 @@ tool invocation lifecycle. Floret still treats that presentation as opaque
 display data; tool-specific labels, renderers, and payload fields remain
 host-owned. Floret may validate that renderer payloads are safe public data, but
 it must not encode downstream UI layout or decide which payload fields should be
-primary in a product surface. `requires_approval` remains true after approval or
-denial because it is lifecycle history, not the current decision-needed state. A
-host should treat only `approval_state=requested` with `status=waiting` as an
+primary in a product surface. `requires_approval` remains true after approval,
+but a user-declined terminal item clears it. A host should treat only
+`approval_state=requested` with `status=waiting` as an
 active pending approval. `approval_state=approved` may briefly pair with
 `status=pending` between approval resolution and tool dispatch. Canonical turn
 projection also closes a historical requested approval when the durable turn
@@ -135,7 +137,9 @@ approval queue.
 
 A user rejection settles the canonical approval as `rejected` with reason
 `user_rejected`, never enters the host authorization gate or tool handler, and
-returns a failed tool result to the provider. The provider loop may then explain,
+returns a structured `declined` result to the provider. It records
+`decision_source=user` and `executed=false` without `DispatchErr` or a tool-error
+status. The provider loop may then explain,
 revise, or complete the turn naturally. This expected user decision is not a
 turn-level authorization failure. System policy, proof, authority, persistence,
 and unknown-outcome failures remain turn-level failures and fail closed. Effect

@@ -921,7 +921,7 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 		switch strings.TrimSpace(detail.ToolResult.Status) {
 		case string(observation.ActivityStatusRunning):
 			base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"pending_tool_result": true, "pending_state": string(observation.ActivityStatusRunning)})
-		case string(observation.ActivityStatusSuccess), string(observation.ActivityStatusError), string(observation.ActivityStatusCanceled):
+		case string(observation.ActivityStatusSuccess), string(observation.ActivityStatusError), string(observation.ActivityStatusDeclined), string(observation.ActivityStatusCanceled):
 			base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"tool_result_status": strings.TrimSpace(detail.ToolResult.Status)})
 		}
 		return base, true

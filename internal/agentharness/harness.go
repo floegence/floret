@@ -4546,6 +4546,9 @@ func emptyToolResultView(view *session.ToolResultView) bool {
 }
 
 func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
+	if metadataString(values, "outcome") == tools.ResultOutcomeDeclined || metadataString(values, "tool_result_status") == string(observation.ActivityStatusDeclined) {
+		return string(observation.ActivityStatusDeclined)
+	}
 	if metadataBool(values, "pending_tool_result") {
 		return string(observation.ActivityStatusRunning)
 	}

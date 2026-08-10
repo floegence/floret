@@ -1335,6 +1335,62 @@ func TestCancelApprovalBatchIgnoresCandidateForConcurrentlyRejectedApproval(t *t
 	}
 }
 
+func TestApprovalBatchSupportsReverseAndConcurrentIndependentRejections(t *testing.T) {
+	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
+	for name, makeRepo := range approvalAuthorityTestRepos() {
+		t.Run(name, func(t *testing.T) {
+			repo := makeRepo(t)
+			ctx := context.Background()
+			lease := seedApprovalTurn(t, repo, now, sessiontree.ThreadMeta{ID: "thread"}, "turn", "run")
+			request := approvalPrepare(lease, "call-1", 0, 2, now)
+			request.Items = append(request.Items, approvalPrepare(lease, "call-2", 1, 2, now).Items[0])
+			prepared, err := repo.PrepareApprovalBatch(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := make(chan struct{})
+			type decisionResult struct {
+				callID string
+				result sessiontree.ResolveApprovalResult
+				err    error
+			}
+			results := make(chan decisionResult, 2)
+			for index := len(prepared.Approvals) - 1; index >= 0; index-- {
+				record := prepared.Approvals[index]
+				go func() {
+					<-start
+					decisionID := "decision-" + record.ToolCallID
+					resolved, err := repo.ResolveApproval(ctx, sessiontree.ResolveApprovalRequest{
+						DecisionID: decisionID, ExpectedRootThreadID: prepared.Queue.RootThreadID,
+						ExpectedGeneration: prepared.Queue.Generation, ExpectedRevision: prepared.Queue.Revision,
+						ExpectedCurrent: record.Identity(), ExpectedApprovalRevision: record.Revision,
+						Decision:      sessiontree.ApprovalDecisionReject,
+						RejectedEntry: approvalRejectedTestEntry(decisionID, record.Identity()), Now: now,
+					})
+					results <- decisionResult{callID: record.ToolCallID, result: resolved, err: err}
+				}()
+			}
+			close(start)
+			for range prepared.Approvals {
+				resolved := <-results
+				if resolved.err != nil || resolved.result.Approval.State != sessiontree.ApprovalRejected {
+					t.Fatalf("reject %s: result=%#v err=%v", resolved.callID, resolved.result, resolved.err)
+				}
+			}
+			queue, err := repo.ReadApprovalQueue(ctx, "thread")
+			if err != nil || len(queue.Items) != 0 || queue.CurrentApprovalID != "" {
+				t.Fatalf("settled queue=%#v err=%v", queue, err)
+			}
+			for _, record := range prepared.Approvals {
+				stored, err := repo.Approval(ctx, record.ApprovalID)
+				if err != nil || stored.State != sessiontree.ApprovalRejected || stored.Reason != sessiontree.ApprovalReasonUserRejected {
+					t.Fatalf("stored %s=%#v err=%v", record.ToolCallID, stored, err)
+				}
+			}
+		})
+	}
+}
+
 func TestCancelApprovalBatchAndProofCommitHaveSingleWinner(t *testing.T) {
 	now := time.Date(2026, 7, 21, 8, 58, 0, 0, time.UTC)
 	for name, makeRepo := range approvalAuthorityTestRepos() {

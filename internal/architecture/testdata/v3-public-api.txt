@@ -1689,6 +1689,7 @@ field CompletionActivityPayload.Status string tag="json:\"status,omitempty\""
 field CompletionActivityPayload.Summary string tag="json:\"summary,omitempty\""
 const ControlAskUser untyped string = "ask_user"
 const ControlTaskComplete untyped string = "task_complete"
+func DeclinedResult func(callID string, name string) github.com/floegence/floret/v3/tools.Result
 const DefaultArtifactKind untyped string = "tool_output"
 const DefaultArtifactMIME untyped string = "text/plain; charset=utf-8"
 func DefaultOutputPolicy func() github.com/floegence/floret/v3/tools.OutputPolicy
@@ -1913,6 +1914,7 @@ field Result.IsError bool
 field Result.DispatchErr error
 method Result.RequiresEffectFinalization func() bool
 const ResultMetadataProgressToken untyped string = "progress_token"
+const ResultOutcomeDeclined untyped string = "declined"
 func StrictObject func(properties map[string]any, required []string) map[string]any
 func String func(description string) map[string]any
 type StructuredActivityPayload struct
@@ -2015,6 +2017,7 @@ field ActivityCounts.Running int tag="json:\"running,omitempty\""
 field ActivityCounts.Waiting int tag="json:\"waiting,omitempty\""
 field ActivityCounts.Success int tag="json:\"success,omitempty\""
 field ActivityCounts.Error int tag="json:\"error,omitempty\""
+field ActivityCounts.Declined int tag="json:\"declined,omitempty\""
 field ActivityCounts.Canceled int tag="json:\"canceled,omitempty\""
 field ActivityCounts.Approval int tag="json:\"approval,omitempty\""
 type ActivityItem struct
@@ -2050,6 +2053,7 @@ const ActivitySeverityQuiet github.com/floegence/floret/v3/observation.ActivityS
 const ActivitySeverityWarning github.com/floegence/floret/v3/observation.ActivitySeverity = "warning"
 type ActivityStatus string
 const ActivityStatusCanceled github.com/floegence/floret/v3/observation.ActivityStatus = "canceled"
+const ActivityStatusDeclined github.com/floegence/floret/v3/observation.ActivityStatus = "declined"
 const ActivityStatusError github.com/floegence/floret/v3/observation.ActivityStatus = "error"
 const ActivityStatusPending github.com/floegence/floret/v3/observation.ActivityStatus = "pending"
 const ActivityStatusRunning github.com/floegence/floret/v3/observation.ActivityStatus = "running"

@@ -283,7 +283,7 @@ methods:
     retryability: exact replay is safe; stale authority requires a fresh approval query
     commit: one decision and authorization outcome advance the same thread revision
     replay: same request permanently returns original decision receipt
-    concurrency: approval generation and ThreadRevision CAS both apply
+    concurrency: approval generation plus exact target identity and revision allow independent same-batch decisions; a non-future queue revision fences impossible snapshots
     cancellation: cancellation cannot erase a committed decision
     closing: rejected after closing begins
   - method: TurnExecutor.UpdateTodos
