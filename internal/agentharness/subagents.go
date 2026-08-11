@@ -1566,7 +1566,11 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		if detail.Message != nil && detail.Message.Kind == string(session.MessageKindControlSignal) {
 			base.Type = observation.EventTypeControlSignal
 			base.ToolKind = "control"
-			base.Metadata = map[string]any{"control_disposition": "terminal"}
+			if detail.ToolCall.ControlSignal != nil {
+				if disposition := strings.TrimSpace(detail.ToolCall.ControlSignal.Disposition); disposition != "" {
+					base.Metadata = map[string]any{"control_disposition": disposition}
+				}
+			}
 		} else {
 			base.Type = observation.EventTypeToolCall
 			base.ToolKind = "local"

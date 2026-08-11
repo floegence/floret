@@ -118,7 +118,11 @@ or validation failures require a canonical reload rather than event replay.
   match thread, turn, run, trace, and the exact preceding ordinal; a mismatch
   fails closed and requires an authoritative reload.
   `DiffThreadTurnProjections` and `ApplyThreadTurnProjectionDelta` validate this
-  contract. The live recorder retains stable projected segments plus a bounded
+  contract. The live recorder accepts committed entries only when their
+  canonical ordinal advances; a late or conflicting same-ordinal entry emits
+  no projection or delta, so a terminal approval decision cannot regress to
+  requested because callbacks arrived out of order. The live recorder retains
+  stable projected segments plus a bounded
   open event suffix, so it does not replay the complete turn journal for each
   committed event. Hosts can therefore render live display order without
   reading Floret storage internals or rebuilding activity from host audit
@@ -158,7 +162,10 @@ or validation failures require a canonical reload rather than event replay.
   do not regress before dispatch. Presentation is matched by exact thread, turn,
   run, and tool identity; approval-only history may still use its neutral
   single-event presentation as a fallback. The read model carries the same
-  Floret-owned row activity projection as subagent detail reads.
+  Floret-owned row activity projection as subagent detail reads. Control
+  activity metadata uses the verified canonical signal disposition: waiting
+  signals remain waiting, continuation signals remain continuing, and terminal
+  signals remain terminal.
   Effect dispatch and public host authorization requests carry a detached copy
   of the tool-authored presentation into each newly requested canonical
   approval entry. Presentation is not authorization evidence and is excluded

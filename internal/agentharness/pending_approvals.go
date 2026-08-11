@@ -86,21 +86,44 @@ func (h *AgentHarness) ResolveApproval(ctx context.Context, opts ResolveApproval
 			return ResolveApprovalResult{}, sessiontree.ErrAuthorityCorrupt
 		}
 		if !resolved.Replayed {
-			h.emitEntryCommitted(resolved.RejectedEntry, resolved.Approval.RunID)
-			h.emit(HarnessEvent{
-				Type: EventEntryAppended, RunID: resolved.Approval.RunID, ThreadID: resolved.Approval.ThreadID,
-				TurnID: resolved.Approval.TurnID, EntryID: resolved.RejectedEntry.ID, ParentID: resolved.RejectedEntry.ParentID,
-				Message: string(rejectedEvent.Type),
-			})
-			if h.options.Sink != nil {
-				h.options.Sink.Emit(event.SanitizeWithPolicy(rejectedEvent, h.options.SinkPolicy))
-			}
+			h.publishRejectedDecision(resolved, rejectedEvent)
 		}
 	}
 	return ResolveApprovalResult{
 		Receipt: resolved.Receipt, Queue: approvalQueueSnapshot(resolved.Queue),
 		Approval: approvalRecordFromCanonical(resolved.Approval), Replayed: resolved.Replayed,
 	}, nil
+}
+
+func (h *AgentHarness) publishRejectedDecision(resolved sessiontree.ResolveApprovalResult, rejectedEvent event.Event) {
+	publish := func() {
+		h.emitEntryCommitted(resolved.RejectedEntry, resolved.Approval.RunID)
+		h.emit(HarnessEvent{
+			Type: EventEntryAppended, RunID: resolved.Approval.RunID, ThreadID: resolved.Approval.ThreadID,
+			TurnID: resolved.Approval.TurnID, EntryID: resolved.RejectedEntry.ID, ParentID: resolved.RejectedEntry.ParentID,
+			Message: string(rejectedEvent.Type),
+		})
+		if h.options.Sink != nil {
+			h.options.Sink.Emit(event.SanitizeWithPolicy(rejectedEvent, h.options.SinkPolicy))
+		}
+	}
+	if h.options.BeginBackgroundExecution == nil {
+		publish()
+		return
+	}
+	ctx, finish, err := h.options.BeginBackgroundExecution()
+	if err != nil {
+		if h.options.ReportBackgroundError != nil {
+			h.options.ReportBackgroundError(err)
+		}
+		return
+	}
+	go func() {
+		defer finish()
+		if ctx.Err() == nil {
+			publish()
+		}
+	}()
 }
 
 func approvalEventFromRecord(now time.Time, typ event.Type, record sessiontree.ApprovalRecord, reason string) event.Event {

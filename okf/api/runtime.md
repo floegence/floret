@@ -109,7 +109,12 @@ Provider execution is serialized per thread rather than by the host-wide
 mutation fence. It may wait for a canonical approval while
 `TurnExecutor.ResolveApproval` commits that exact decision; concurrent replay of
 the same admission converges on the committed receipt without a second provider
-or tool invocation. Terminal turn commit and stale-renewal classification share
+or tool invocation. A rejected approval returns after the canonical decision,
+queue revision, and rejection entry commit; provider continuation and
+observation-sink publication run outside that receipt path. The runtime store
+tracks and drains that post-commit publication during shutdown, while restart
+rebuilds any unpublished display state from the same durable entry. Terminal
+turn commit and stale-renewal classification share
 a narrow settlement fence from durable commit through local lease cleanup, so
 completion cannot race into a committed result paired with a stale-authority
 error. Renewal I/O and detached thread-title work remain independent. Physical

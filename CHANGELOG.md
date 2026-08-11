@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.39 - 2026-08-11
+
+- Keep live turn projections monotonic by canonical journal ordinal. Late or
+  conflicting committed entries can no longer revive a requested approval
+  after its terminal decision, and control activities now preserve the
+  canonical waiting, continue, or terminal disposition.
+- Return a durable rejection receipt without waiting for provider continuation
+  or downstream observation sinks. Rejection observations remain ordered and
+  runtime-owned background work that is drained during shutdown.
+
 ## v3.2.38 - 2026-08-11
 
 - Preserve canonical approval lifecycle precedence while merging repeated tool

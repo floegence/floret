@@ -1,6 +1,13 @@
 # Floret OKF Update Log
 
 ## 2026-08-11
+* **Monotonic approval observation**: Live turn projection now rejects late or
+  conflicting canonical ordinals, preserves verified control-signal
+  disposition, and publishes rejection observations after the durable receipt
+  through runtime-owned background work. Approval HTTP callers no longer wait
+  for provider continuation or observation sinks.
+
+## 2026-08-11
 * **Approval projection merge closure**: Repeated activity segments now merge
   approval lifecycle fields by canonical progression instead of boolean union.
   Large rejection batches clear approval attention from every declined item,

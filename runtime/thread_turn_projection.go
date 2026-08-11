@@ -879,7 +879,11 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			base.Type = observation.EventTypeControlSignal
 			base.ToolKind = "control"
 			base.Message = threadTurnProjectionMessageText(detail.Message)
-			base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"control_disposition": "terminal"})
+			if detail.ToolCall.ControlSignal != nil {
+				if disposition := strings.TrimSpace(detail.ToolCall.ControlSignal.Disposition); disposition != "" {
+					base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"control_disposition": disposition})
+				}
+			}
 		}
 		return base, true
 	case ThreadDetailEventToolDispatch:

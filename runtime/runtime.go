@@ -5248,6 +5248,9 @@ func (r *runtimeLiveProjectionRecorder) projectWithDelta(ev Event) (*ThreadTurnP
 		state = newRuntimeLiveTurnProjectionState(threadID, turnID, runID)
 		r.statesByTurn[key] = state
 	}
+	if committed.Ordinal > 0 && committed.Ordinal <= state.throughOrdinal {
+		return nil, nil
+	}
 	previous := state.lastProjection
 	projection := state.append(committed)
 	delta, err := DiffThreadTurnProjections(previous, projection)
