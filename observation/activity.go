@@ -377,6 +377,12 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 					Metadata:         activityMetadata(ev),
 				}
 			})
+			if activityStatusIsTerminal(state.item.Status) {
+				// A late or replayed request must not reopen a canonical terminal
+				// tool result for the same stable tool identity.
+				state.lastSeen = observedAt
+				continue
+			}
 			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
 			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
 			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))

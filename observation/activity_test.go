@@ -288,6 +288,23 @@ func TestBuildActivityTimelineDoesNotReopenTerminalToolAfterResult(t *testing.T)
 	}
 }
 
+func TestBuildActivityTimelineIgnoresLateApprovalRequestAfterTerminalResult(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_750)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-late-approval"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-late-approval", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+		{Type: EventTypeToolResult, RunID: "run-late-approval", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, ObservedAt: start.Add(time.Second)},
+		{Type: EventTypeToolApprovalRequested, RunID: "run-late-approval", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(2 * time.Second)},
+	}, start.Add(3*time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("late approval request made terminal timeline invalid: %v; timeline=%#v", err, timeline)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusSuccess || item.RequiresApproval || item.ApprovalState != "" {
+		t.Fatalf("late approval request reopened terminal item: %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{
