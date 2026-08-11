@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.37 - 2026-08-11
+
+- Keep structured user-declined tool results as quiet terminal activity when a
+  live projection does not contain the matching approval-resolution event.
+  Accept `declined` in the sanitized tool-result status contract so requested
+  approvals cannot be projected as `success` with an unresolved approval state.
+
 ## v3.2.35 - 2026-08-10
 
 - Allow approval decisions for independent calls in the same provider batch to

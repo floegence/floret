@@ -305,6 +305,24 @@ func TestBuildActivityTimelineIgnoresLateApprovalRequestAfterTerminalResult(t *t
 	}
 }
 
+func TestBuildActivityTimelineProjectsDeclinedToolResultWithoutApprovalEvent(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_800)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-declined-result"}, []Event{
+		{Type: EventTypeToolApprovalRequested, RunID: "run-declined-result", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+		{Type: EventTypeToolResult, RunID: "run-declined-result", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{
+			"tool_result_status": string(ActivityStatusDeclined),
+		}, ObservedAt: start.Add(time.Second)},
+	}, start.Add(2*time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("declined result should produce a valid terminal timeline: %v; timeline=%#v", err, timeline)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusDeclined || item.Severity != ActivitySeverityQuiet || item.RequiresApproval || item.ApprovalState != "rejected" {
+		t.Fatalf("declined result did not settle approval item: %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{

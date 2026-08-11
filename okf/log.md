@@ -1,5 +1,13 @@
 # Floret OKF Update Log
 
+## 2026-08-11
+* **Declined activity projection closure**: Structured user-declined tool
+  results now settle the matching requested approval as quiet `declined` even
+  when a live projection receives the result before its approval-resolution
+  detail. The sanitized `tool_result_status` contract accepts `declined`, and
+  canonical projection validation no longer sees `success` with a requested
+  approval state.
+
 ## 2026-08-10
 * **Tool rejection batch settlement**: Approval decisions target exact visible
   call identities, allowing reverse and concurrent same-batch decisions. User

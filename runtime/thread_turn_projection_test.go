@@ -287,6 +287,58 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 	}
 }
 
+func TestProjectThreadTurnSettlesRequestedApprovalFromDeclinedToolResult(t *testing.T) {
+	now := time.UnixMilli(1_700_029_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-declined-result",
+		TurnID:   "turn-declined-result",
+		RunID:    "run-declined-result",
+		TraceID:  "run-declined-result",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "turn-started",
+				Ordinal:   1,
+				ThreadID:  "thread-declined-result",
+				TurnID:    "turn-declined-result",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now,
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "started",
+				},
+			},
+			{
+				ID:        "approval-requested",
+				Ordinal:   2,
+				ThreadID:  "thread-declined-result",
+				TurnID:    "turn-declined-result",
+				Kind:      ThreadDetailEventApproval,
+				Type:      string(observation.EventTypeToolApprovalRequested),
+				CreatedAt: now.Add(time.Second),
+				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
+			},
+			{
+				ID:        "declined-result",
+				Ordinal:   3,
+				ThreadID:  "thread-declined-result",
+				TurnID:    "turn-declined-result",
+				Kind:      ThreadDetailEventToolResult,
+				CreatedAt: now.Add(2 * time.Second),
+				ToolResult: &ThreadDetailToolResult{
+					CallID: "call-1", ToolName: "terminal.exec", Status: string(observation.ActivityStatusDeclined),
+				},
+			},
+		},
+	})
+
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("declined canonical projection should validate: %v; projection=%#v", err, projection)
+	}
+	item := runtimeProjectionToolItem(projection, "call-1")
+	if item.Status != observation.ActivityStatusDeclined || item.Severity != observation.ActivitySeverityQuiet || item.RequiresApproval || item.ApprovalState != "rejected" || item.NeedsAttention {
+		t.Fatalf("declined result did not settle requested approval: %#v", item)
+	}
+}
+
 func TestProjectThreadTurnUsesStartedMarkerWithoutRenderingIt(t *testing.T) {
 	now := time.UnixMilli(1_700_030_000_000)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{

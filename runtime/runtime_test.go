@@ -7208,6 +7208,97 @@ func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	}
 }
 
+func TestHostRejectionEmitsValidDeclinedLiveAndCanonicalProjections(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name: "write_note", InputSchema: runtimeEchoSchema(), Effects: []tools.Effect{tools.EffectWrite},
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			t.Fatalf("rejected tool handler ran for %#v", inv.Args)
+			return tools.Result{}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
+		if req.Step == 1 {
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- modelEvent{Type: modelEventDelta, Text: "continued without writing"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	rec := &runtimeEventRecorder{}
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("test"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: newMemoryStore(), Tools: registry,
+		Sink: rec, IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread-reject-projection"}); err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(ctx, runTurnRequest{
+			RunID: "run-reject-projection", ThreadID: "thread-reject-projection", TurnID: "turn-reject-projection",
+			Input: TurnInput{Text: "write a note"},
+		})
+		runDone <- err
+	}()
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread-reject-projection", 1)
+	resolveRuntimeApproval(t, ctx, host, queue, queue.Items[0], "decision-reject-call-1", ApprovalDecisionReject)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rejected turn continuation")
+	}
+
+	var declinedLive bool
+	for _, ev := range rec.snapshot() {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("invalid runtime event after rejection: %v; event=%#v", err, ev)
+		}
+		if ev.Projection == nil {
+			continue
+		}
+		item := runtimeProjectionToolItem(*ev.Projection, "call-1")
+		if item.Status == observation.ActivityStatusDeclined && item.ApprovalState == "rejected" && !item.RequiresApproval && !item.NeedsAttention {
+			declinedLive = true
+		}
+	}
+	if !declinedLive {
+		t.Fatalf("live events never projected a quiet declined tool: %#v", rec.snapshot())
+	}
+	projection, err := host.ReadTurnProjection(ctx, readTurnProjectionRequest{
+		ThreadID: "thread-reject-projection", TurnID: "turn-reject-projection", RunID: "run-reject-projection",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("canonical rejected projection is invalid: %v; projection=%#v", err, projection)
+	}
+	item := runtimeProjectionToolItem(projection, "call-1")
+	if item.Status != observation.ActivityStatusDeclined || item.ApprovalState != "rejected" || item.RequiresApproval || item.NeedsAttention {
+		t.Fatalf("canonical rejected projection = %#v", item)
+	}
+}
+
 func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()

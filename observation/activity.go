@@ -333,12 +333,15 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.StartedAtUnixMS = durationStart
 			}
 			resultStatus := activityMetadataValue(ev, "tool_result_status")
-			if state.item.ApprovalState == "rejected" {
+			if state.item.ApprovalState == "rejected" || resultStatus == string(ActivityStatusDeclined) {
 				// A canonical user decision is terminal and must not be
-				// overwritten by a legacy/success-shaped tool result event.
+				// overwritten by a legacy/success-shaped tool result event. A
+				// structured declined result is sufficient terminal evidence when
+				// the matching approval event is not present in this projection.
 				state.item.Status = ActivityStatusDeclined
 				state.item.Severity = ActivitySeverityQuiet
 				state.item.RequiresApproval = false
+				state.item.ApprovalState = "rejected"
 			} else if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityError
@@ -357,7 +360,11 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			if state.item.Status != ActivityStatusRunning {
 				state.item.Metadata = activityTerminalMetadata(state.item.Metadata)
-				state.item.Presentation = tools.ClearPendingActivity(state.item.Presentation)
+				if state.item.Status == ActivityStatusDeclined {
+					state.item.Presentation = tools.FinalizeActivityPresentation(state.item.Presentation, string(state.item.Status))
+				} else {
+					state.item.Presentation = tools.ClearPendingActivity(state.item.Presentation)
+				}
 			}
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
@@ -995,6 +1002,7 @@ func activityNormalizeMetadataValue(key string, value any) string {
 		return activityEnumMetadataValue(value, map[string]struct{}{
 			"success":  {},
 			"error":    {},
+			"declined": {},
 			"canceled": {},
 		})
 	default:
