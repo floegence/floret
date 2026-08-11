@@ -114,6 +114,11 @@ but a user-declined terminal item clears it. A host should treat only
 `approval_state=requested` with `status=waiting` as an
 active pending approval. `approval_state=approved` may briefly pair with
 `status=pending` between approval resolution and tool dispatch. Canonical turn
+projection merges repeated activity segments by lifecycle progression rather
+than boolean union: generic pending activity cannot regress a requested item
+from `waiting`, and a resolved rejection clears the earlier approval requirement
+and attention state. This remains true for large batches settled in rapid
+succession. Canonical turn
 projection also closes a historical requested approval when the durable turn
 is failed or aborted, including interrupted recovery records that contain a
 terminal tool result but predate the matching approval-resolution detail event.

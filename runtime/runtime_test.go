@@ -7299,6 +7299,115 @@ func TestHostRejectionEmitsValidDeclinedLiveAndCanonicalProjections(t *testing.T
 	}
 }
 
+func TestHostLargeRejectionBatchEmitsOnlyValidLiveProjections(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name: "write_note", InputSchema: runtimeEchoSchema(), Effects: []tools.Effect{tools.EffectWrite},
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			t.Fatalf("rejected tool handler ran for %#v", inv.Args)
+			return tools.Result{}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	const batchSize = 30
+	gateway := runtimeModelGateway(func(_ context.Context, req modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 2)
+		if req.Step == 1 {
+			calls := make([]tools.ToolCall, 0, batchSize)
+			for index := range batchSize {
+				calls = append(calls, tools.ToolCall{
+					ID: fmt.Sprintf("call-%02d", index), Name: "write_note", Args: fmt.Sprintf(`{"text":"note-%02d"}`, index),
+				})
+			}
+			events <- modelEvent{Type: modelEventToolCalls, ToolCalls: calls}
+			events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- modelEvent{Type: modelEventDelta, Text: "continued after all decisions"}
+			events <- modelEvent{Type: modelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	recorder := &runtimeEventRecorder{}
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("test"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: newMemoryStore(), Tools: registry,
+		Sink: recorder, IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread-large-reject-batch"}); err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(ctx, runTurnRequest{
+			RunID: "run-large-reject-batch", ThreadID: "thread-large-reject-batch", TurnID: "turn-large-reject-batch",
+			Input: TurnInput{Text: "write all notes"},
+		})
+		runDone <- err
+	}()
+
+	for remaining := batchSize; remaining > 0; remaining-- {
+		queue := waitRuntimeApprovalQueue(t, ctx, host, "thread-large-reject-batch", remaining)
+		resolveRuntimeApproval(t, ctx, host, queue, queue.Items[0], fmt.Sprintf("decision-reject-%02d", batchSize-remaining), ApprovalDecisionReject)
+		for _, event := range recorder.snapshot() {
+			if err := event.Validate(); err != nil {
+				var item observation.ActivityItem
+				if event.Projection != nil {
+					item = runtimeProjectionToolItem(*event.Projection, fmt.Sprintf("call-%02d", batchSize-remaining))
+				}
+				t.Fatalf("invalid live projection with %d approvals remaining: %v; rejected item=%#v; event=%#v", remaining-1, err, item, event)
+			}
+		}
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for large rejected batch continuation")
+	}
+	projection, err := host.ReadTurnProjection(ctx, readTurnProjectionRequest{
+		ThreadID: "thread-large-reject-batch", TurnID: "turn-large-reject-batch", RunID: "run-large-reject-batch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("invalid canonical large rejection projection: %v", err)
+	}
+	var activity *observation.ActivityTimeline
+	for _, segment := range projection.Segments {
+		if segment.ActivityTimeline != nil {
+			activity = segment.ActivityTimeline
+			break
+		}
+	}
+	if activity == nil {
+		t.Fatalf("canonical large rejection activity projection is missing: %#v", projection.Segments)
+	}
+	summary := activity.Summary
+	if summary.Status != observation.ActivityStatusDeclined || summary.Counts.Declined != batchSize || summary.NeedsAttention {
+		t.Fatalf("canonical large rejection summary = %#v", summary)
+	}
+	for index := range batchSize {
+		item := runtimeProjectionToolItem(projection, fmt.Sprintf("call-%02d", index))
+		if item.Status != observation.ActivityStatusDeclined || item.ApprovalState != "rejected" || item.RequiresApproval || item.NeedsAttention {
+			t.Fatalf("canonical rejected item %d = %#v", index, item)
+		}
+	}
+}
+
 func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()

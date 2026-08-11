@@ -530,12 +530,19 @@ func threadTurnProjectionMergeDuplicateActivityItem(item *observation.ActivityIt
 	if item == nil {
 		return
 	}
+	currentApprovalState := strings.TrimSpace(item.ApprovalState)
+	duplicateApprovalState := strings.TrimSpace(duplicate.ApprovalState)
+	preserveApprovalLifecycle :=
+		(currentApprovalState == "requested" && duplicateApprovalState == "") ||
+			((currentApprovalState == "rejected" || currentApprovalState == "timed_out" || currentApprovalState == "canceled") &&
+				(duplicateApprovalState == "" || duplicateApprovalState == "requested")) ||
+			(currentApprovalState != "" && currentApprovalState != "requested" && duplicateApprovalState == "requested")
 	preserveCanceledTerminal := item.Status == observation.ActivityStatusCanceled && duplicate.Status == observation.ActivityStatusError
 	threadTurnProjectionMergeActivityItem(item, duplicate)
-	if duplicate.Status != "" && !preserveCanceledTerminal {
+	if duplicate.Status != "" && !preserveCanceledTerminal && !preserveApprovalLifecycle {
 		item.Status = duplicate.Status
 	}
-	if duplicate.Severity != "" && !preserveCanceledTerminal {
+	if duplicate.Severity != "" && !preserveCanceledTerminal && !preserveApprovalLifecycle {
 		item.Severity = duplicate.Severity
 	}
 	if duplicate.Kind != "" {
@@ -547,11 +554,11 @@ func threadTurnProjectionMergeDuplicateActivityItem(item *observation.ActivityIt
 	if item.StartedAtUnixMS <= 0 || (duplicate.StartedAtUnixMS > 0 && duplicate.StartedAtUnixMS < item.StartedAtUnixMS) {
 		item.StartedAtUnixMS = duplicate.StartedAtUnixMS
 	}
-	if duplicate.RequiresApproval {
-		item.RequiresApproval = true
-	}
-	if strings.TrimSpace(duplicate.ApprovalState) != "" {
+	if duplicateApprovalState != "" && !preserveApprovalLifecycle {
+		item.RequiresApproval = duplicate.RequiresApproval
 		item.ApprovalState = duplicate.ApprovalState
+	} else if duplicate.RequiresApproval && !preserveApprovalLifecycle {
+		item.RequiresApproval = true
 	}
 	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
 	item.NeedsAttention = len(item.AttentionReasons) > 0
@@ -1129,6 +1136,8 @@ func threadTurnProjectionActivitySummary(items []observation.ActivityItem) obser
 			summary.Counts.Success++
 		case observation.ActivityStatusError:
 			summary.Counts.Error++
+		case observation.ActivityStatusDeclined:
+			summary.Counts.Declined++
 		case observation.ActivityStatusCanceled:
 			summary.Counts.Canceled++
 		}
@@ -1161,6 +1170,8 @@ func threadTurnProjectionActivitySummary(items []observation.ActivityItem) obser
 		summary.Status = observation.ActivityStatusError
 	case summary.Counts.Canceled > 0 && summary.Counts.Success == 0:
 		summary.Status = observation.ActivityStatusCanceled
+	case summary.Counts.Declined > 0 && summary.Counts.Success == 0:
+		summary.Status = observation.ActivityStatusDeclined
 	default:
 		summary.Status = observation.ActivityStatusSuccess
 	}

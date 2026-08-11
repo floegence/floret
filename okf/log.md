@@ -1,6 +1,13 @@
 # Floret OKF Update Log
 
 ## 2026-08-11
+* **Approval projection merge closure**: Repeated activity segments now merge
+  approval lifecycle fields by canonical progression instead of boolean union.
+  Large rejection batches clear approval attention from every declined item,
+  while generic pending duplicates cannot regress a requested item from its
+  blocking `waiting` state.
+
+## 2026-08-11
 * **Declined activity projection closure**: Structured user-declined tool
   results now settle the matching requested approval as quiet `declined` even
   when a live projection receives the result before its approval-resolution

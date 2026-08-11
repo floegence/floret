@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.2.38 - 2026-08-11
+
+- Preserve canonical approval lifecycle precedence while merging repeated tool
+  activity segments. Large or rapidly settled rejection batches no longer
+  retain `requires_approval` or attention on declined items, and later generic
+  pending activity cannot regress a requested item away from `waiting`.
+
 ## v3.2.37 - 2026-08-11
 
 - Keep structured user-declined tool results as quiet terminal activity when a
