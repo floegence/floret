@@ -99,6 +99,7 @@ type ThreadTurnProjectionSignal struct {
 	Name        string         `json:"name,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
 	Disposition string         `json:"disposition,omitempty"`
+	ErrorCode   string         `json:"error_code,omitempty"`
 	Text        string         `json:"text,omitempty"`
 	ArgsHash    string         `json:"args_hash,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
@@ -130,6 +131,9 @@ func (p ThreadTurnProjection) Validate() error {
 			}
 			if segment.Signal != nil && strings.TrimSpace(segment.Signal.Name) == "" {
 				return fmt.Errorf("turn projection segment %d has an unnamed control signal", index)
+			}
+			if segment.Signal != nil && segment.Signal.ErrorCode != "" && segment.Signal.ErrorCode != string(ThreadTurnFailureControlError) {
+				return fmt.Errorf("turn projection segment %d has unsupported control error code %q", index, segment.Signal.ErrorCode)
 			}
 		default:
 			return fmt.Errorf("unsupported turn projection segment kind %q", segment.Kind)
@@ -238,6 +242,7 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 					signal.Name = strings.TrimSpace(verified.Name)
 					signal.CallID = strings.TrimSpace(verified.CallID)
 					signal.Disposition = strings.TrimSpace(verified.Disposition)
+					signal.ErrorCode = strings.TrimSpace(verified.ErrorCode)
 					signal.Text = strings.TrimSpace(verified.Text)
 					signal.ArgsHash = strings.TrimSpace(verified.ArgsHash)
 					signal.Payload = cloneAnyMap(verified.Payload)
@@ -882,6 +887,10 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			if detail.ToolCall.ControlSignal != nil {
 				if disposition := strings.TrimSpace(detail.ToolCall.ControlSignal.Disposition); disposition != "" {
 					base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"control_disposition": disposition})
+				}
+				if code := strings.TrimSpace(detail.ToolCall.ControlSignal.ErrorCode); code != "" {
+					base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"control_error_code": code, "error_present": true})
+					base.Error = code
 				}
 			}
 		}

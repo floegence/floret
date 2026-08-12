@@ -244,6 +244,9 @@ func (s ThreadTurnSnapshot) Validate() error {
 			strings.TrimSpace(signal.ArgsHash) == "" || signal.ArgsHash != strings.TrimSpace(signal.ArgsHash) {
 			return fmt.Errorf("thread control signal %d has incomplete identity", index)
 		}
+		if signal.ErrorCode != "" && signal.ErrorCode != string(ThreadTurnFailureControlError) {
+			return fmt.Errorf("thread control signal %d has unsupported error code %q", index, signal.ErrorCode)
+		}
 		switch signal.Disposition {
 		case string(SignalContinue), string(SignalWaiting), string(SignalTerminal):
 		default:
@@ -351,6 +354,7 @@ type ThreadControlSignal struct {
 	Name        string         `json:"name"`
 	CallID      string         `json:"call_id"`
 	Disposition string         `json:"disposition,omitempty"`
+	ErrorCode   string         `json:"error_code,omitempty"`
 	Text        string         `json:"text,omitempty"`
 	ArgsHash    string         `json:"args_hash,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
@@ -1025,6 +1029,7 @@ func threadTurnControlSignals(events []ThreadDetailEvent) []ThreadControlSignal 
 			Name:        signal.Name,
 			CallID:      signal.CallID,
 			Disposition: signal.Disposition,
+			ErrorCode:   signal.ErrorCode,
 			Text:        signal.Text,
 			ArgsHash:    signal.ArgsHash,
 			Payload:     cloneAnyMap(signal.Payload),

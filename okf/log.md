@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-08-12
+* **Control failure contract**: Malformed control-signal projection now keeps
+  assistant output, control tool identity, and expected disposition while
+  publishing a typed `control_error` turn failure and terminal control activity
+  for host presentation and restart recovery.
+
 ## 2026-08-11
 * **Monotonic approval observation**: Live turn projection now rejects late or
   conflicting canonical ordinals, preserves verified control-signal

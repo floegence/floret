@@ -326,6 +326,7 @@ type SubAgentDetailControlSignal struct {
 	Name        string         `json:"name,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
 	Disposition string         `json:"disposition,omitempty"`
+	ErrorCode   string         `json:"error_code,omitempty"`
 	Text        string         `json:"text,omitempty"`
 	ArgsHash    string         `json:"args_hash,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
@@ -1570,6 +1571,14 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 				if disposition := strings.TrimSpace(detail.ToolCall.ControlSignal.Disposition); disposition != "" {
 					base.Metadata = map[string]any{"control_disposition": disposition}
 				}
+				if code := strings.TrimSpace(detail.ToolCall.ControlSignal.ErrorCode); code != "" {
+					if base.Metadata == nil {
+						base.Metadata = map[string]any{}
+					}
+					base.Metadata["control_error_code"] = code
+					base.Metadata["error_present"] = true
+					base.Error = code
+				}
 			}
 		} else {
 			base.Type = observation.EventTypeToolCall
@@ -1915,6 +1924,7 @@ func subAgentDetailToolCall(msg session.Message, includeRaw bool) *SubAgentDetai
 			Name:        signal.Name,
 			CallID:      signal.CallID,
 			Disposition: signal.Disposition,
+			ErrorCode:   signal.ErrorCode,
 			Text:        signal.OutputText,
 			ArgsHash:    signal.ArgsHash,
 			Payload:     signal.Payload,

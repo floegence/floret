@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v3/observation"
 )
 
 func TestThreadTurnSnapshotValidateUsesStoredAttachmentShape(t *testing.T) {
@@ -34,6 +36,36 @@ func TestThreadTurnSnapshotValidateUsesStoredAttachmentShape(t *testing.T) {
 	}
 }
 
+func TestMalformedControlProjectionKeepsTypedErrorAndWaitingDisposition(t *testing.T) {
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", TraceID: "trace",
+		Events: []ThreadDetailEvent{{
+			ID: "event-control", Kind: ThreadDetailEventToolCall, ThreadID: "thread", TurnID: "turn", RunID: "run", Ordinal: 1,
+			Message: &ThreadDetailMessage{Role: "assistant", Kind: "control_signal", Preview: "tool_call"},
+			ToolCall: &ThreadDetailToolCall{ID: "ask-invalid", Name: "ask_user", ControlSignal: &ThreadDetailControlSignal{
+				Name: "ask_user", CallID: "ask-invalid", Disposition: "waiting", ErrorCode: "control_error",
+			}},
+		}, {
+			ID: "event-terminal", Kind: ThreadDetailEventTurnMarker, ThreadID: "thread", TurnID: "turn", RunID: "run", Ordinal: 2,
+			TurnMarker: &ThreadDetailTurnMarker{Status: string(TurnStatusFailed)},
+		}},
+	})
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("projection should validate: %v", err)
+	}
+	if len(projection.Segments) != 2 || projection.Segments[0].Signal == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	signal := projection.Segments[0].Signal
+	if signal.Name != "ask_user" || signal.CallID != "ask-invalid" || signal.Disposition != "waiting" || signal.ErrorCode != "control_error" {
+		t.Fatalf("control signal = %#v", signal)
+	}
+	activity := projection.Segments[1].ActivityTimeline
+	if activity == nil || len(activity.Items) != 1 || activity.Items[0].Status != observation.ActivityStatusError {
+		t.Fatalf("control activity = %#v", activity)
+	}
+}
+
 func TestPublicThreadTurnValidatorsRejectContradictoryShapes(t *testing.T) {
 	now := time.Now().UTC()
 	turn := ThreadTurnSnapshot{
@@ -59,6 +91,11 @@ func TestPublicThreadTurnValidatorsRejectContradictoryShapes(t *testing.T) {
 	invalidSignal.ControlSignals = []ThreadControlSignal{{Name: "ask_user", CallID: "call", ArgsHash: "hash", Disposition: "unknown"}}
 	if err := invalidSignal.Validate(); err == nil {
 		t.Fatal("unknown control signal disposition passed validation")
+	}
+	invalidSignal.ControlSignals[0].Disposition = string(SignalWaiting)
+	invalidSignal.ControlSignals[0].ErrorCode = "mystery"
+	if err := invalidSignal.Validate(); err == nil {
+		t.Fatal("unknown control signal error code passed validation")
 	}
 
 	page := ThreadTurnsPage{ThreadID: "thread", Turns: []ThreadTurnSnapshot{turn}, ThroughOrdinal: 2, GeneratedAt: now}

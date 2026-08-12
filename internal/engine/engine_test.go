@@ -1814,8 +1814,44 @@ func TestCustomControlSpecRejectsNonJSONPayload(t *testing.T) {
 
 	got := e.Run(context.Background(), "continue")
 
-	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginContract || got.Err == nil || !strings.Contains(got.Err.Error(), `control signal "host_wait" payload is not valid JSON`) {
+	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginControl || got.Err == nil || !strings.Contains(got.Err.Error(), `control signal "host_wait" payload is not valid JSON`) {
 		t.Fatalf("result = %#v, want invalid JSON payload failure", got)
+	}
+}
+
+func TestMalformedControlPreservesAssistantTextAndUsesControlFailure(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Text("I need one more detail before continuing."),
+			harness.Tool("ask-invalid", "ask_user", `{"required_from_user":"city"}`),
+			harness.DoneReason("tool_calls"),
+		),
+	)
+	e := newTestEngine(p, rec)
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginControl || got.Err == nil {
+		t.Fatalf("result = %#v, want typed control failure", got)
+	}
+	if got.Output != "I need one more detail before continuing." {
+		t.Fatalf("assistant output = %q, want preserved text", got.Output)
+	}
+	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.Kind == session.MessageKindControlSignal && msg.ToolName == "ask_user" && msg.ToolCallID == "ask-invalid" &&
+			msg.ControlSignal != nil && msg.ControlSignal.Disposition == string(engine.ControlWaiting) &&
+			msg.ControlSignal.ErrorCode == session.ControlSignalErrorCodeControlError
+	}) {
+		t.Fatalf("malformed control identity missing from transcript: %#v", got.Messages)
+	}
+	if !slices.ContainsFunc(rec.Snapshot(), func(ev event.Event) bool {
+		metadata, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ControlSignal && ev.ToolName == "ask_user" && ev.ToolID == "ask-invalid" &&
+			ev.Err != "" && metadata["control_disposition"] == string(engine.ControlWaiting) &&
+			metadata["control_error_code"] == session.ControlSignalErrorCodeControlError
+	}) {
+		t.Fatalf("malformed control event missing typed identity and error: %#v", rec.Snapshot())
 	}
 }
 

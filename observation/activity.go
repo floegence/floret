@@ -824,15 +824,15 @@ func activityHasPendingMetadata(metadata map[string]string) bool {
 }
 
 func activityControlStatus(ev Event) ActivityStatus {
+	if activityEventHasError(ev) {
+		return ActivityStatusError
+	}
 	switch activityMetadataValue(ev, "control_disposition") {
 	case "waiting":
 		return ActivityStatusWaiting
 	case "terminal", "continue":
 		return ActivityStatusSuccess
 	default:
-		if activityEventHasError(ev) {
-			return ActivityStatusError
-		}
 		return ActivityStatusSuccess
 	}
 }
@@ -882,6 +882,7 @@ var activityMetadataKeys = []string{
 	"batch_size",
 	"content_sha256",
 	"control_disposition",
+	"control_error_code",
 	"destructive",
 	"duration_ms",
 	"effects",
@@ -987,6 +988,8 @@ func activityNormalizeMetadataValue(key string, value any) string {
 			"waiting":  {},
 			"terminal": {},
 		})
+	case "control_error_code":
+		return activityEnumMetadataValue(value, map[string]struct{}{"control_error": {}})
 	case "strategy":
 		return activityEnumMetadataValue(value, map[string]struct{}{
 			"head": {},

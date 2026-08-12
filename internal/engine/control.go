@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v3/internal/control"
 	"github.com/floegence/floret/v3/internal/event"
 	"github.com/floegence/floret/v3/internal/provider"
+	"github.com/floegence/floret/v3/internal/session"
 	"github.com/floegence/floret/v3/tools"
 )
 
@@ -25,6 +26,7 @@ type ControlSignal struct {
 	Disposition ControlDisposition
 	Name        string
 	CallID      string
+	ErrorCode   string
 	Payload     map[string]any
 	Activity    *tools.ActivityPresentation
 	// OutputText is the human-readable control result. For ControlContinue it is
@@ -32,6 +34,22 @@ type ControlSignal struct {
 	OutputText string
 	ArgsHash   string
 	Labels     map[string]string
+}
+
+func failedControlSignal(call provider.ToolCall) ControlSignal {
+	disposition := ControlContinue
+	if strings.TrimSpace(call.Name) == control.AskUserTool {
+		disposition = ControlWaiting
+	} else if strings.TrimSpace(call.Name) == control.TaskCompleteTool {
+		disposition = ControlTerminal
+	}
+	return ControlSignal{
+		Disposition: disposition,
+		Name:        strings.TrimSpace(call.Name),
+		CallID:      strings.TrimSpace(call.ID),
+		ArgsHash:    providerStableHash(call.Args),
+		ErrorCode:   session.ControlSignalErrorCodeControlError,
+	}
 }
 
 type ControlSpec struct {

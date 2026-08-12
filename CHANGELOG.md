@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Classify malformed or invalid control-signal projection as the public
+  `control_error` turn failure instead of an undifferentiated engine-contract
+  failure. Preserve assistant text, the original control tool-call identity,
+  and its expected disposition while projecting a terminal control activity
+  error so hosts can render the local failure without replacing the reply or
+  reopening a user-input wait.
+
 ## v3.2.39 - 2026-08-11
 
 - Keep live turn projections monotonic by canonical journal ordinal. Late or

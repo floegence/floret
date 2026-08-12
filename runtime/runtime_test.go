@@ -1316,6 +1316,91 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 	}
 }
 
+func TestHostPersistsMalformedControlErrorAcrossSQLiteRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := openSQLiteStoreForTest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(context.Context, modelRequest) (<-chan modelEvent, error) {
+		events := make(chan modelEvent, 3)
+		events <- modelEvent{Type: modelEventDelta, Text: "I need one more detail before continuing."}
+		events <- modelEvent{Type: modelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "ask-invalid", Name: "ask_user", Args: `{"required_from_user":"city"}`}}}
+		events <- modelEvent{Type: modelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("gateway system"), modelGateway: gateway,
+		modelGatewayIdentity: runtimeGatewayIdentity("fake-model"), store: store, IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, createThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, runErr := host.RunTurn(ctx, runTurnRequest{
+		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "continue"},
+		Signals: TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
+	})
+	if runErr == nil || result.Failure == nil || result.Failure.Code != ThreadTurnFailureControlError {
+		t.Fatalf("run result = %#v err=%v, want control error", result, runErr)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := openSQLiteStoreForTest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	maintenance, err := newTestMaintenanceHost(t, reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := maintenance.ListThreadTurns(ctx, listThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Turns) != 1 {
+		t.Fatalf("turn page = %#v", page)
+	}
+	turn := page.Turns[0]
+	if turn.Status != TurnStatusFailed || turn.Failure == nil || turn.Failure.Code != ThreadTurnFailureControlError ||
+		runtimeProjectionAssistantText(turn.Projection) != "I need one more detail before continuing." {
+		t.Fatalf("reopened turn = %#v", turn)
+	}
+	if len(turn.ControlSignals) != 1 || turn.ControlSignals[0].Name != "ask_user" || turn.ControlSignals[0].CallID != "ask-invalid" ||
+		turn.ControlSignals[0].Disposition != string(SignalWaiting) || turn.ControlSignals[0].ErrorCode != "control_error" {
+		t.Fatalf("reopened control signals = %#v", turn.ControlSignals)
+	}
+	var controlActivity *observation.ActivityItem
+	for _, segment := range turn.Projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		for index := range segment.ActivityTimeline.Items {
+			item := &segment.ActivityTimeline.Items[index]
+			if item.ToolID == "ask-invalid" {
+				controlActivity = item
+			}
+		}
+	}
+	if controlActivity == nil || controlActivity.Status != observation.ActivityStatusError || controlActivity.Metadata["control_error_code"] != "control_error" {
+		t.Fatalf("reopened control activity = %#v projection=%#v", controlActivity, turn.Projection)
+	}
+	thread, err := maintenance.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.Phase != ThreadPhaseIdle || thread.WaitingPrompt != "" {
+		t.Fatalf("malformed control must not create a pending user prompt: %#v", thread)
+	}
+}
+
 func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryStore()

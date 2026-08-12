@@ -1216,6 +1216,28 @@ func TestBuildActivityTimelineProjectsCustomControlSignal(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineProjectsMalformedWaitingControlAsError(t *testing.T) {
+	start := time.UnixMilli(7_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-control", ThreadID: "thread-control", TurnID: "turn-control"}, []Event{{
+		Type: EventTypeControlSignal, RunID: "run-control", ThreadID: "thread-control", TurnID: "turn-control",
+		ToolID: "ask-invalid", ToolName: "ask_user", ToolKind: "control",
+		Error:      "invalid ask_user control signal: interaction_shape_mismatch",
+		Metadata:   map[string]any{"control_disposition": "waiting", "control_error_code": "control_error"},
+		ObservedAt: start,
+	}}, start.UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items = %d, want 1: %#v", len(timeline.Items), timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.ToolID != "ask-invalid" || item.ToolName != "ask_user" || item.Status != ActivityStatusError ||
+		item.Severity != ActivitySeverityError || !item.NeedsAttention || item.Metadata["control_error_code"] != "control_error" {
+		t.Fatalf("malformed control activity = %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineDurationIgnoresNonActivityEvents(t *testing.T) {
 	start := time.UnixMilli(7_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-duration"}, []Event{

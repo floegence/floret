@@ -44,10 +44,13 @@ type ControlSignalView struct {
 	Name        string         `json:"name,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
 	Disposition string         `json:"disposition,omitempty"`
+	ErrorCode   string         `json:"error_code,omitempty"`
 	OutputText  string         `json:"output_text,omitempty"`
 	ArgsHash    string         `json:"args_hash,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
 }
+
+const ControlSignalErrorCodeControlError = "control_error"
 
 // MessageAttachment is one durable host-owned resource reference associated
 // with a user message. Floret persists and projects the opaque reference but
@@ -178,6 +181,7 @@ func CloneControlSignalView(in *ControlSignalView) *ControlSignalView {
 		Name:        in.Name,
 		CallID:      in.CallID,
 		Disposition: in.Disposition,
+		ErrorCode:   in.ErrorCode,
 		OutputText:  in.OutputText,
 		ArgsHash:    in.ArgsHash,
 		Payload:     cloneActivityPayload(in.Payload),

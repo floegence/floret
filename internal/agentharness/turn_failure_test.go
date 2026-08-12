@@ -31,6 +31,7 @@ func TestTurnFailureCodeIsDeterministic(t *testing.T) {
 		{name: "provider", status: engine.Failed, err: errors.New("provider failed"), origin: engine.FailureOriginProvider, want: sessiontree.TurnFailureProvider},
 		{name: "tool dispatch", status: engine.Failed, err: errors.New("dispatch failed"), origin: engine.FailureOriginToolDispatch, want: sessiontree.TurnFailureToolDispatch},
 		{name: "engine contract", status: engine.Failed, err: engine.ErrDuplicateToolCallID, origin: engine.FailureOriginContract, want: sessiontree.TurnFailureEngineContract},
+		{name: "malformed ask_user control signal", status: engine.Failed, err: errors.New("invalid ask_user control signal: interaction_shape_mismatch"), origin: engine.FailureOriginControl, want: sessiontree.TurnFailureControlError},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

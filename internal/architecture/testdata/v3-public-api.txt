@@ -1118,6 +1118,7 @@ type ThreadControlSignal struct
 field ThreadControlSignal.Name string tag="json:\"name\""
 field ThreadControlSignal.CallID string tag="json:\"call_id\""
 field ThreadControlSignal.Disposition string tag="json:\"disposition,omitempty\""
+field ThreadControlSignal.ErrorCode string tag="json:\"error_code,omitempty\""
 field ThreadControlSignal.Text string tag="json:\"text,omitempty\""
 field ThreadControlSignal.ArgsHash string tag="json:\"args_hash,omitempty\""
 field ThreadControlSignal.Payload map[string]any tag="json:\"payload,omitempty\""
@@ -1143,6 +1144,7 @@ type ThreadDetailControlSignal struct
 field ThreadDetailControlSignal.Name string tag="json:\"name,omitempty\""
 field ThreadDetailControlSignal.CallID string tag="json:\"call_id,omitempty\""
 field ThreadDetailControlSignal.Disposition string tag="json:\"disposition,omitempty\""
+field ThreadDetailControlSignal.ErrorCode string tag="json:\"error_code,omitempty\""
 field ThreadDetailControlSignal.Text string tag="json:\"text,omitempty\""
 field ThreadDetailControlSignal.ArgsHash string tag="json:\"args_hash,omitempty\""
 field ThreadDetailControlSignal.Payload map[string]any tag="json:\"payload,omitempty\""
@@ -1315,6 +1317,7 @@ const ThreadTurnFailureAuthorizationUnavailable github.com/floegence/floret/v3/r
 const ThreadTurnFailureCancelled github.com/floegence/floret/v3/runtime.ThreadTurnFailureCode = "cancelled"
 type ThreadTurnFailureCode string
 method ThreadTurnFailureCode.Valid func() bool
+const ThreadTurnFailureControlError github.com/floegence/floret/v3/runtime.ThreadTurnFailureCode = "control_error"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v3/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v3/runtime.ThreadTurnFailureCode = "engine_contract"
 const ThreadTurnFailureInterrupted github.com/floegence/floret/v3/runtime.ThreadTurnFailureCode = "interrupted"
@@ -1364,6 +1367,7 @@ type ThreadTurnProjectionSignal struct
 field ThreadTurnProjectionSignal.Name string tag="json:\"name,omitempty\""
 field ThreadTurnProjectionSignal.CallID string tag="json:\"call_id,omitempty\""
 field ThreadTurnProjectionSignal.Disposition string tag="json:\"disposition,omitempty\""
+field ThreadTurnProjectionSignal.ErrorCode string tag="json:\"error_code,omitempty\""
 field ThreadTurnProjectionSignal.Text string tag="json:\"text,omitempty\""
 field ThreadTurnProjectionSignal.ArgsHash string tag="json:\"args_hash,omitempty\""
 field ThreadTurnProjectionSignal.Payload map[string]any tag="json:\"payload,omitempty\""

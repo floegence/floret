@@ -122,10 +122,16 @@ backend transactions remain short and serialized across session-tree state,
 prompt state, and the logical-request ledger.
 
 Every failed engine result carries an explicit failure origin. Provider,
-tool-dispatch, storage, and cancellation errors keep their specific origin;
-otherwise an internal validation failure is classified as an engine contract
-failure. AgentHarness persists that original classified error and never replaces
-it with a secondary missing-classification failure.
+tool-dispatch, control-signal, storage, and cancellation errors keep their
+specific origin; otherwise an internal validation failure is classified as an
+engine contract failure. Malformed control calls retain the provider-authored
+assistant text and exact control tool identity while their canonical turn
+failure uses `control_error`. AgentHarness persists that original classified
+error and never replaces it with a secondary missing-classification failure.
+The canonical control signal keeps its expected disposition for protocol
+diagnostics, but the activity is terminal `error` and the thread does not expose
+a pending user prompt. Public turn pages and restart projections preserve the
+same `error_code`, call identity, and assistant text.
 
 Every thread has a monotonic `ThreadRevision`.
 `ThreadReader.Bootstrap` returns the thread, initial turn page, approval queue,

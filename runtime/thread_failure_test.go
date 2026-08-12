@@ -44,6 +44,13 @@ func TestTurnResultValidationRequiresTypedFailure(t *testing.T) {
 	}
 }
 
+func TestControlErrorFailureCodeIsPublicAndValid(t *testing.T) {
+	failure := ThreadTurnFailure{Code: ThreadTurnFailureControlError, Message: "invalid ask_user control signal: interaction_shape_mismatch"}
+	if err := validateThreadTurnFailureForStatus(TurnStatusFailed, &failure); err != nil {
+		t.Fatalf("control error failure rejected: %v", err)
+	}
+}
+
 func TestLegacyUnclassifiedFailureProjectsAsFailed(t *testing.T) {
 	if string(ThreadTurnFailureLegacyUnclassified) != sessiontree.TurnFailureLegacyUnclassified {
 		t.Fatalf("runtime/sessiontree legacy failure code mismatch: %q != %q", ThreadTurnFailureLegacyUnclassified, sessiontree.TurnFailureLegacyUnclassified)

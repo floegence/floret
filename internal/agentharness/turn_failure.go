@@ -77,6 +77,8 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 		return sessiontree.TurnFailureProvider, nil
 	case engine.FailureOriginToolDispatch:
 		return sessiontree.TurnFailureToolDispatch, nil
+	case engine.FailureOriginControl:
+		return sessiontree.TurnFailureControlError, nil
 	case engine.FailureOriginStorage:
 		return sessiontree.TurnFailureStorage, nil
 	case engine.FailureOriginContract:

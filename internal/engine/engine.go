@@ -255,13 +255,14 @@ const (
 	FailureOriginCancelled    FailureOrigin = "cancelled"
 	FailureOriginProvider     FailureOrigin = "provider"
 	FailureOriginToolDispatch FailureOrigin = "tool_dispatch"
+	FailureOriginControl      FailureOrigin = "control"
 	FailureOriginStorage      FailureOrigin = "storage"
 	FailureOriginContract     FailureOrigin = "contract"
 )
 
 func (o FailureOrigin) Valid() bool {
 	switch o {
-	case FailureOriginNone, FailureOriginCancelled, FailureOriginProvider, FailureOriginToolDispatch, FailureOriginStorage, FailureOriginContract:
+	case FailureOriginNone, FailureOriginCancelled, FailureOriginProvider, FailureOriginToolDispatch, FailureOriginControl, FailureOriginStorage, FailureOriginContract:
 		return true
 	default:
 		return false
@@ -1088,7 +1089,18 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if signal, ok, err := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{
 				StepText: stepText,
 			}); err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				if len(controlCalls) > 0 {
+					failed := failedControlSignal(controlCalls[0])
+					if !attachProjectedControlSignal(activeHistory, &failed) {
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginControl), metrics, started, decision)
+					}
+					if replaceErr := e.store.ReplaceTranscript(opts.RunID, activeHistory); replaceErr != nil {
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(replaceErr, FailureOriginStorage), metrics, started, decision)
+					}
+					state.activeMessages = session.CloneMessages(activeHistory)
+					e.emitControlSignalError(opts, step, &failed, err)
+				}
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginControl), metrics, started, decision)
 			} else if ok {
 				if len(signal.Labels) == 0 {
 					signal.Labels = observabilityLabels(opts.Labels)
@@ -3568,6 +3580,7 @@ func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (Co
 	if view := msg.ControlSignal; view != nil {
 		return ControlSignal{
 			Disposition: ControlDisposition(view.Disposition),
+			ErrorCode:   view.ErrorCode,
 			Name:        view.Name,
 			CallID:      view.CallID,
 			Payload:     cloneControlPayload(view.Payload),
@@ -3592,6 +3605,7 @@ func attachProjectedControlSignal(messages []session.Message, signal *ControlSig
 			Name:        strings.TrimSpace(signal.Name),
 			CallID:      strings.TrimSpace(signal.CallID),
 			Disposition: string(signal.Disposition),
+			ErrorCode:   strings.TrimSpace(signal.ErrorCode),
 			OutputText:  strings.TrimSpace(signal.OutputText),
 			ArgsHash:    strings.TrimSpace(signal.ArgsHash),
 			Payload:     cloneControlPayload(signal.Payload),
@@ -3996,10 +4010,22 @@ func eventMetadata(opts Options, base any) map[string]any {
 }
 
 func (e *Engine) emitControlSignal(opts Options, step int, signal *ControlSignal) {
+	e.emitControlSignalEvent(opts, step, signal, nil)
+}
+
+func (e *Engine) emitControlSignalError(opts Options, step int, signal *ControlSignal, err error) {
+	e.emitControlSignalEvent(opts, step, signal, err)
+}
+
+func (e *Engine) emitControlSignalEvent(opts Options, step int, signal *ControlSignal, signalErr error) {
 	if signal == nil {
 		return
 	}
-	e.emit(opts, event.Event{
+	metadata := map[string]any{"control_disposition": string(signal.Disposition)}
+	if code := strings.TrimSpace(signal.ErrorCode); code != "" {
+		metadata["control_error_code"] = code
+	}
+	ev := event.Event{
 		Type:     event.ControlSignal,
 		TraceID:  opts.TraceID,
 		RunID:    opts.RunID,
@@ -4013,10 +4039,12 @@ func (e *Engine) emitControlSignal(opts Options, step int, signal *ControlSignal
 		ToolKind: "control",
 		ArgsHash: strings.TrimSpace(signal.ArgsHash),
 		Activity: signal.Activity,
-		Metadata: map[string]any{
-			"control_disposition": string(signal.Disposition),
-		},
-	})
+		Metadata: metadata,
+	}
+	if signalErr != nil {
+		ev.Err = signalErr.Error()
+	}
+	e.emit(opts, ev)
 }
 
 func controlSignal(spec ControlSpec, calls []provider.ToolCall, ctx controlProjectionContext) (*ControlSignal, bool, error) {

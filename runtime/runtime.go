@@ -1403,6 +1403,7 @@ type ThreadDetailControlSignal struct {
 	Name        string         `json:"name,omitempty"`
 	CallID      string         `json:"call_id,omitempty"`
 	Disposition string         `json:"disposition,omitempty"`
+	ErrorCode   string         `json:"error_code,omitempty"`
 	Text        string         `json:"text,omitempty"`
 	ArgsHash    string         `json:"args_hash,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
@@ -2012,6 +2013,7 @@ const (
 	ThreadTurnFailureInterrupted              ThreadTurnFailureCode = "interrupted"
 	ThreadTurnFailureProvider                 ThreadTurnFailureCode = "provider"
 	ThreadTurnFailureToolDispatch             ThreadTurnFailureCode = "tool_dispatch"
+	ThreadTurnFailureControlError             ThreadTurnFailureCode = "control_error"
 	ThreadTurnFailureEffectOutcomeUnknown     ThreadTurnFailureCode = "effect_outcome_unknown"
 	ThreadTurnFailureAuthorizationUnavailable ThreadTurnFailureCode = "authorization_unavailable"
 	ThreadTurnFailureAuthorizationContract    ThreadTurnFailureCode = "authorization_contract"
@@ -2026,6 +2028,7 @@ func (c ThreadTurnFailureCode) Valid() bool {
 		ThreadTurnFailureInterrupted,
 		ThreadTurnFailureProvider,
 		ThreadTurnFailureToolDispatch,
+		ThreadTurnFailureControlError,
 		ThreadTurnFailureEffectOutcomeUnknown,
 		ThreadTurnFailureAuthorizationUnavailable,
 		ThreadTurnFailureAuthorizationContract,
@@ -4642,6 +4645,7 @@ func threadDetailToolCall(in *agentharness.SubAgentDetailToolCall) *ThreadDetail
 			Name:        in.ControlSignal.Name,
 			CallID:      in.ControlSignal.CallID,
 			Disposition: in.ControlSignal.Disposition,
+			ErrorCode:   in.ControlSignal.ErrorCode,
 			Text:        in.ControlSignal.Text,
 			ArgsHash:    in.ControlSignal.ArgsHash,
 			Payload:     cloneAnyMap(in.ControlSignal.Payload),

@@ -178,6 +178,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		e.Result = ""
 		e.Err = ""
 	case ControlSignal:
+		e.Metadata = withSanitizedMetadataBool(e.Metadata, sanitizedErrorPresentMetadataKey, strings.TrimSpace(e.Err) != "")
 		e.Result = ""
 		e.Err = ""
 	case ContextCompact:
@@ -813,7 +814,7 @@ func publicMetadataStringKey(key string) bool {
 		return true
 	}
 	switch key {
-	case "server_id", "skill_id", "tool_name", "remote_tool", "source_kind", "source_label", "status", "transport", "protocol_version", "failure_category", "next_action", "capability", "permission_mode", "content_hash", "prompt_sha256", "control_disposition":
+	case "server_id", "skill_id", "tool_name", "remote_tool", "source_kind", "source_label", "status", "transport", "protocol_version", "failure_category", "next_action", "capability", "permission_mode", "content_hash", "prompt_sha256", "control_disposition", "control_error_code":
 		return true
 	case "approval_id", "state", "kind", "effect", "effects":
 		return true
