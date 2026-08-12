@@ -21,6 +21,8 @@ type unifiedCommand struct {
 	RequestID identity.LogicalRequestID
 	Kind      unifiedCommandKind
 	Payload   []byte
+	TurnID    identity.TurnID
+	RunID     identity.RunID
 }
 
 type unifiedAccepted struct {
@@ -74,10 +76,18 @@ func (actor *unifiedCommandActor) apply(command unifiedCommand) (unifiedAccepted
 		if actor.state.ActiveTurn.ID != "" && !actor.state.Terminal {
 			return unifiedAccepted{}, errors.New("thread already has an active turn")
 		}
-		actor.nextTurn++
-		actor.nextRun++
-		turnID = identity.TurnID(fmt.Sprintf("turn-%d", actor.nextTurn))
-		runID = identity.RunID(fmt.Sprintf("run-%d", actor.nextRun))
+		if command.TurnID != "" {
+			turnID = command.TurnID
+		} else {
+			actor.nextTurn++
+			turnID = identity.TurnID(fmt.Sprintf("turn-%d", actor.nextTurn))
+		}
+		if command.RunID != "" {
+			runID = command.RunID
+		} else {
+			actor.nextRun++
+			runID = identity.RunID(fmt.Sprintf("run-%d", actor.nextRun))
+		}
 		actor.state.ActiveTurn = unifiedTurn{ID: turnID, ThreadID: actor.state.ThreadID, RunID: runID, Status: "running"}
 		actor.state.Terminal = false
 		if err := actor.appendEvent(unifiedCommandSend, turnID, runID); err != nil {
@@ -105,8 +115,12 @@ func (actor *unifiedCommandActor) apply(command unifiedCommand) (unifiedAccepted
 		if actor.state.ActiveTurn.ID == "" {
 			return unifiedAccepted{}, errors.New("no turn to retry")
 		}
-		actor.nextRun++
-		runID = identity.RunID(fmt.Sprintf("run-%d", actor.nextRun))
+		if command.RunID != "" {
+			runID = command.RunID
+		} else {
+			actor.nextRun++
+			runID = identity.RunID(fmt.Sprintf("run-%d", actor.nextRun))
+		}
 		actor.state.ActiveTurn.RunID = runID
 		actor.state.ActiveTurn.Status = "running"
 		actor.state.Terminal = false
@@ -119,6 +133,24 @@ func (actor *unifiedCommandActor) apply(command unifiedCommand) (unifiedAccepted
 		return unifiedAccepted{}, fmt.Errorf("unsupported unified command %q", command.Kind)
 	}
 	return actor.accepted(command.RequestID, turnID, runID)
+}
+
+func (actor *unifiedCommandActor) recordTerminal(status string) {
+	if actor == nil {
+		return
+	}
+	actor.mu.Lock()
+	defer actor.mu.Unlock()
+	if actor.state.ActiveTurn.ID == "" {
+		return
+	}
+	if status == "waiting_user" || status == "waiting_approval" || status == "running" {
+		actor.state.ActiveTurn.Status = status
+		return
+	}
+	actor.state.ActiveTurn.Status = status
+	actor.state.Terminal = true
+	actor.state.Interaction = nil
 }
 
 func (actor *unifiedCommandActor) appendEvent(kind unifiedCommandKind, turnID identity.TurnID, runID identity.RunID) error {

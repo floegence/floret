@@ -784,6 +784,20 @@ func (h *AgentHarness) cacheThread(id string) *Thread {
 	return thread
 }
 
+func (h *AgentHarness) unifiedActor(id string) *unifiedCommandActor {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.unifiedActors == nil {
+		h.unifiedActors = make(map[string]*unifiedCommandActor)
+	}
+	if actor := h.unifiedActors[id]; actor != nil {
+		return actor
+	}
+	actor := newUnifiedCommandActor(identity.ThreadID(id))
+	h.unifiedActors[id] = actor
+	return actor
+}
+
 func (h *AgentHarness) threadForResume(id string) *Thread {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1410,6 +1424,23 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	}
 	turnID := opts.TurnID.String()
 	runID := opts.RunID.String()
+	requestID := "retry:" + turnID + ":" + runID
+	actor := t.harness.unifiedActor(t.id)
+	if _, err := actor.apply(unifiedCommand{RequestID: identity.LogicalRequestID(requestID), Kind: unifiedCommandRetry, TurnID: identity.TurnID(turnID), RunID: identity.RunID(runID)}); err != nil {
+		return TurnResult{}, err
+	}
+	var result TurnResult
+	var runErr error
+	defer func() {
+		status := string(result.Status)
+		if runErr != nil && status == "" {
+			status = "failed"
+		}
+		if status == "" {
+			status = "completed"
+		}
+		actor.recordTerminal(status)
+	}()
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
 		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"),
 		RetrySourceTurnID: target.Entry.TurnID, RetrySourceEntryID: target.Entry.ID,
@@ -1438,7 +1469,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	t.harness.emitEntryCommitted(admission.TurnStarted, runID)
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
 	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
-	result, runErr := t.runLeased(runCtx, "", RunOptions{
+	result, runErr = t.runLeased(runCtx, "", RunOptions{
 		LogicalRequestID: target.LogicalRequestID, RunID: runID, TurnID: turnID, Labels: opts.Labels,
 		AdmissionCommitted: true, AdmissionBaseLeafID: admission.BaseLeafID,
 	}, &target.Entry)
@@ -2225,7 +2256,7 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retrySo
 	return t.runEntered(ctx, input, opts, retrySource)
 }
 
-func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
+func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (result TurnResult, runErr error) {
 	turnID := opts.TurnID
 	if turnID == "" {
 		turnID = t.harness.nextID("turn")
@@ -2234,6 +2265,26 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	if runID == "" {
 		runID = t.harness.nextID("run")
 	}
+	requestID := strings.TrimSpace(opts.LogicalRequestID)
+	if requestID == "" {
+		requestID = "run:" + turnID
+	}
+	actor := t.harness.unifiedActor(t.id)
+	if _, err := actor.apply(unifiedCommand{RequestID: identity.LogicalRequestID(requestID), Kind: unifiedCommandSend, TurnID: identity.TurnID(turnID), RunID: identity.RunID(runID)}); err != nil {
+		return TurnResult{}, err
+	}
+	defer func() {
+		// The actor owns the in-memory lifecycle projection; durable journal
+		// writes remain the storage boundary until the runtime migration lands.
+		status := string(result.Status)
+		if runErr != nil && status == "" {
+			status = "failed"
+		}
+		if status == "" {
+			status = "completed"
+		}
+		actor.recordTerminal(status)
+	}()
 	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
 	if !ok {
 		return TurnResult{}, errors.New("session tree repo does not support atomic turn admission")
@@ -2258,7 +2309,7 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 		References:  append([]session.MessageReference(nil), opts.References...),
 	}
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-		ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: strings.TrimSpace(opts.LogicalRequestID), OwnerID: t.harness.nextID("lease"), Input: message,
+		ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: requestID, OwnerID: t.harness.nextID("lease"), Input: message,
 	})
 	if err != nil {
 		return TurnResult{}, err
@@ -2299,7 +2350,7 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	opts.RunID = runID
 	opts.AdmissionCommitted = true
 	opts.AdmissionBaseLeafID = admission.BaseLeafID
-	result, runErr := t.runLeased(runCtx, input, opts, retrySource)
+	result, runErr = t.runLeased(runCtx, input, opts, retrySource)
 	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
 		runErr = renewalErr
 	}
