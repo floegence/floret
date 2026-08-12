@@ -9,6 +9,17 @@ timestamp: 2026-07-29T00:00:00Z
 
 # Runtime
 
+## Phase 1 migration boundary
+
+The runtime's target model is one Thread-owned ordered event stream with
+revision fencing and one pending interaction union for approval or input. New
+host integrations must converge through that model; receipt, handoff, barrier,
+and projection values are not additional lifecycle authority. Existing v3
+capability methods remain only where a caller has not yet migrated and must be
+converted at the boundary before entering the thread actor. The internal
+`agentharness` event log deduplicates event IDs, rejects revision gaps, and
+supports read-after-revision so a host can resync instead of guessing state.
+
 `runtime.Open` accepts `runtime.Options{Storage: storage.Source}` and returns a
 composition-root-only `*runtime.Host`. Its public method set is intentionally
 small: `Threads`, `Thread`, and `Shutdown`. `Threads.CreateThread`,

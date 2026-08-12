@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add the internal Phase 1 unified Thread/Turn/event primitives and contiguous
+  revision log. Duplicate event IDs are idempotent, revision gaps request a
+  canonical resync, and the model keeps pending approval/input as one
+  interaction boundary without changing the published v3 surface.
+
 - Classify malformed or invalid control-signal projection as the public
   `control_error` turn failure instead of an undifferentiated engine-contract
   failure. Preserve assistant text, the original control tool-call identity,
