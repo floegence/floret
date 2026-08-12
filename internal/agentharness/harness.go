@@ -151,6 +151,10 @@ type AgentHarness struct {
 	subagents                          map[string]*subagentController
 	subagentUpdates                    chan struct{}
 	rootThreadInventoryProjectionCache map[string]rootThreadInventoryProjectionCacheEntry
+	// unifiedActors is the Phase 1 in-memory command authority. Existing
+	// journal/projection readers remain migration boundaries while writes move
+	// through this per-thread actor.
+	unifiedActors map[string]*unifiedCommandActor
 }
 
 type ResumeOptions struct{}
@@ -471,6 +475,7 @@ func New(options Options) *AgentHarness {
 		subagents:                          map[string]*subagentController{},
 		subagentUpdates:                    make(chan struct{}),
 		rootThreadInventoryProjectionCache: make(map[string]rootThreadInventoryProjectionCacheEntry),
+		unifiedActors:                      make(map[string]*unifiedCommandActor),
 	}
 }
 
@@ -772,6 +777,10 @@ func (h *AgentHarness) cacheThread(id string) *Thread {
 	}
 	thread := &Thread{harness: h, id: id, phase: threadPhaseIdle}
 	h.threads[id] = thread
+	if h.unifiedActors == nil {
+		h.unifiedActors = make(map[string]*unifiedCommandActor)
+	}
+	h.unifiedActors[id] = newUnifiedCommandActor(identity.ThreadID(id))
 	return thread
 }
 
