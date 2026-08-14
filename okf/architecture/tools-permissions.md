@@ -84,18 +84,13 @@ not skip later sibling finalizers.
 
 # Tool Approval State
 
-Floret owns the generic approval lifecycle and the aggregate root/descendant
-approval queue for local tool dispatch. Approval events update the durable
-thread detail audit trail, while `runtime.ThreadReader.ReadApprovalQueue` exposes queue
-generation and ordered items. Each visible item is independently decisionable
-through its exact approval identity and revision; `CurrentApprovalID` remains
-the oldest visible item for deterministic presentation, not authorization. The queue
-carries product-neutral ids, canonical root/child and turn/run identity, tool
-names, effects, resources, labels, host context, state, timing, revision, batch
-index, and batch size metadata. `ResolveApproval` requires the exact generation,
-target identity and revision, a non-future queue revision, and stable decision ID. Batch order
-keeps presentation deterministic; it does not serialize unrelated handler
-execution after authorization.
+Floret owns the generic approval lifecycle inside the affected thread current
+view. Each pending interaction carries the tool identity, effects, resources,
+and presentation required for an independent decision. `ThreadService.Respond`
+uses the stable interaction and request identities; the resolution updates the
+original tool row and does not create a second approval queue authority. Batch
+presentation order does not serialize unrelated effect execution after
+authorization.
 
 Hosts own the product authorization policy and user-facing approval experience.
 They should translate the generic snapshot into product copy and controls

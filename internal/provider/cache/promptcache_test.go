@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
 )
 
 func TestBuildPlanReusesPersistedSegmentsAcrossStores(t *testing.T) {

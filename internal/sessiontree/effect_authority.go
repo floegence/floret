@@ -2,14 +2,21 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/artifact"
+)
+
+const (
+	PendingToolSettlementKindKey        = "authority_kind"
+	PendingToolSettlementKind           = "pending_tool_settlement"
+	PendingToolSettlementFingerprintKey = "authority_fingerprint"
+	PendingToolEffectAttemptIDKey       = "effect_attempt_id"
 )
 
 type EffectAttemptState string
@@ -25,90 +32,83 @@ const (
 )
 
 type EffectInvocationIdentity struct {
-	ThreadID     string
-	TurnID       string
-	RunID        string
-	ToolCallID   string
-	ToolName     string
-	ArgumentHash string
+	ThreadID              string `json:"thread_id"`
+	TurnID                string `json:"turn_id"`
+	RunID                 string `json:"run_id"`
+	ToolCallID            string `json:"tool_call_id"`
+	ToolName              string `json:"tool_name"`
+	ArgumentHash          string `json:"argument_hash"`
+	RetryKey              string `json:"retry_key,omitempty"`
+	SourceEffectAttemptID string `json:"source_effect_attempt_id,omitempty"`
 }
 
 type EffectAttempt struct {
-	EffectAttemptID     string
-	Invocation          EffectInvocationIdentity
-	RequestFingerprint  string
-	State               EffectAttemptState
-	RejectionCode       string
-	TerminalFingerprint string
-	ResultEntryID       string
-	OwnerID             string
-	Generation          int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	EffectAttemptID     string                   `json:"effect_attempt_id"`
+	Invocation          EffectInvocationIdentity `json:"invocation"`
+	RequestFingerprint  string                   `json:"request_fingerprint"`
+	State               EffectAttemptState       `json:"state"`
+	RejectionCode       string                   `json:"rejection_code,omitempty"`
+	TerminalFingerprint string                   `json:"terminal_fingerprint,omitempty"`
+	ResultEntryID       string                   `json:"result_entry_id,omitempty"`
+	CreatedAt           time.Time                `json:"created_at"`
+	UpdatedAt           time.Time                `json:"updated_at"`
+}
+
+type PendingToolSettlementTarget struct {
+	ThreadID        string
+	TurnID          string
+	RunID           string
+	ToolCallID      string
+	ToolName        string
+	Handle          string
+	EffectAttemptID string
 }
 
 type PrepareEffectAttemptRequest struct {
-	Lease              TurnLease
 	Invocation         EffectInvocationIdentity
 	RequestFingerprint string
 	Now                time.Time
 }
-
 type PrepareEffectAttemptResult struct {
 	Attempt  EffectAttempt
 	Replayed bool
 }
-
 type RejectEffectAttemptRequest struct {
-	Lease                TurnLease
-	EffectAttemptID      string
-	RequestFingerprint   string
-	RejectionCode        string
-	RejectionFingerprint string
-	Now                  time.Time
+	EffectAttemptID, RequestFingerprint, RejectionCode, RejectionFingerprint string
+	Now                                                                      time.Time
 }
-
 type BeginEffectDispatchRequest struct {
-	Lease                  TurnLease
-	EffectAttemptID        string
-	RequestFingerprint     string
-	ObservedHeartbeat      int64
-	AuthorizationProofHash string
-	Now                    time.Time
+	EffectAttemptID, RequestFingerprint, AuthorizationProofHash string
+	Now                                                         time.Time
 }
-
 type FinishEffectDispatchRequest struct {
-	Lease              TurnLease
-	EffectAttemptID    string
-	RequestFingerprint string
-	OutcomeFingerprint string
-	Failed             bool
-	Result             Entry
-	FullOutput         *artifact.FullOutput
-	Now                time.Time
+	EffectAttemptID, RequestFingerprint, OutcomeFingerprint string
+	Failed                                                  bool
+	Result                                                  Entry
+	FullOutput                                              *artifact.FullOutput
+	Now                                                     time.Time
 }
-
 type FinishEffectDispatchResult struct {
 	Attempt  EffectAttempt
 	Result   Entry
 	Artifact *artifact.Ref
 	Replayed bool
 }
-
 type MarkEffectUnknownRequest struct {
-	Lease              TurnLease
-	EffectAttemptID    string
-	RequestFingerprint string
-	OutcomeFingerprint string
-	Now                time.Time
+	EffectAttemptID, RequestFingerprint, OutcomeFingerprint string
+	Now                                                     time.Time
 }
 
-type EffectAttemptAuthorityRepo interface {
+type EffectAttemptRepo interface {
 	PrepareEffectAttempt(context.Context, PrepareEffectAttemptRequest) (PrepareEffectAttemptResult, error)
 	RejectEffectAttempt(context.Context, RejectEffectAttemptRequest) (EffectAttempt, error)
 	BeginEffectDispatch(context.Context, BeginEffectDispatchRequest) (EffectAttempt, error)
 	FinishEffectDispatch(context.Context, FinishEffectDispatchRequest) (FinishEffectDispatchResult, error)
 	MarkEffectUnknown(context.Context, MarkEffectUnknownRequest) (EffectAttempt, error)
+}
+
+type EffectAttemptReader interface {
+	EffectAttempt(context.Context, string, string) (EffectAttempt, error)
 }
 
 func validateEffectInvocation(inv EffectInvocationIdentity) error {
@@ -119,51 +119,128 @@ func validateEffectInvocation(inv EffectInvocationIdentity) error {
 	return nil
 }
 
-func validateEffectLease(lease TurnLease, threadID, turnID string) error {
-	if err := lease.Validate(); err != nil {
+func effectInvocationKey(inv EffectInvocationIdentity) string {
+	return strings.Join([]string{
+		strings.TrimSpace(inv.ThreadID), strings.TrimSpace(inv.TurnID), strings.TrimSpace(inv.RunID),
+		strings.TrimSpace(inv.ToolCallID), strings.TrimSpace(inv.RetryKey), strings.TrimSpace(inv.SourceEffectAttemptID),
+	}, "\x00")
+}
+
+func effectAttemptID(inv EffectInvocationIdentity) string {
+	return "effect-" + StableHash(effectInvocationKey(inv))[:24]
+}
+
+func CanonicalEffectAttemptID(inv EffectInvocationIdentity) string { return effectAttemptID(inv) }
+
+func effectAttemptEntryID(attemptID string, state EffectAttemptState) string {
+	return "effect-attempt:" + strings.TrimSpace(attemptID) + ":" + string(state)
+}
+
+func effectAttemptEntry(attempt EffectAttempt, parentID string) (Entry, error) {
+	payload, err := json.Marshal(attempt)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry := Entry{
+		ID: effectAttemptEntryID(attempt.EffectAttemptID, attempt.State), ThreadID: attempt.Invocation.ThreadID,
+		ParentID: parentID, TurnID: attempt.Invocation.TurnID, RunID: attempt.Invocation.RunID,
+		Type: EntryEffectAttempt, RequestKey: attempt.EffectAttemptID,
+		RequestFingerprint: attempt.RequestFingerprint, Payload: payload, CreatedAt: attempt.UpdatedAt,
+	}
+	entry.Raw, entry.RawHash = rawForEntry(entry), StableHash(rawForEntry(entry))
+	return entry, nil
+}
+
+func CanonicalEffectAttemptEntry(attempt EffectAttempt, parentID string) (Entry, error) {
+	return effectAttemptEntry(attempt, parentID)
+}
+
+func decodeEffectAttempt(entry Entry) (EffectAttempt, error) {
+	if entry.Type != EntryEffectAttempt {
+		return EffectAttempt{}, ErrEffectAttemptNotFound
+	}
+	var attempt EffectAttempt
+	if err := json.Unmarshal(entry.Payload, &attempt); err != nil {
+		return EffectAttempt{}, ErrAuthorityCorrupt
+	}
+	if attempt.EffectAttemptID == "" || attempt.Invocation.ThreadID != entry.ThreadID || attempt.Invocation.TurnID != entry.TurnID ||
+		attempt.Invocation.RunID != entry.RunID || attempt.RequestFingerprint != entry.RequestFingerprint || effectAttemptEntryID(attempt.EffectAttemptID, attempt.State) != entry.ID {
+		return EffectAttempt{}, ErrAuthorityCorrupt
+	}
+	return attempt, nil
+}
+
+func DecodeCanonicalEffectAttempt(entry Entry) (EffectAttempt, error) {
+	return decodeEffectAttempt(entry)
+}
+
+func latestEffectAttempt(entries []Entry, attemptID string) (EffectAttempt, bool, error) {
+	for index := len(entries) - 1; index >= 0; index-- {
+		entry := entries[index]
+		if entry.Type != EntryEffectAttempt || entry.RequestKey != strings.TrimSpace(attemptID) {
+			continue
+		}
+		attempt, err := decodeEffectAttempt(entry)
+		return attempt, true, err
+	}
+	return EffectAttempt{}, false, nil
+}
+
+func LatestCanonicalEffectAttempt(entries []Entry, attemptID string) (EffectAttempt, bool, error) {
+	return latestEffectAttempt(entries, attemptID)
+}
+
+func effectAttemptByInvocation(entries []Entry, invocation EffectInvocationIdentity) (EffectAttempt, bool, error) {
+	want := effectAttemptID(invocation)
+	attempt, found, err := latestEffectAttempt(entries, want)
+	if err != nil || !found {
+		return attempt, found, err
+	}
+	if effectInvocationKey(attempt.Invocation) != effectInvocationKey(invocation) {
+		return EffectAttempt{}, true, ErrRequestConflict
+	}
+	return attempt, true, nil
+}
+
+func (r *MemoryRepo) appendEffectAttemptLocked(meta *ThreadMeta, attempt EffectAttempt) error {
+	entry, err := effectAttemptEntry(attempt, meta.LeafID)
+	if err != nil {
 		return err
 	}
-	if lease.Purpose != TurnLeasePurposeTurn || lease.ThreadID != strings.TrimSpace(threadID) || lease.TurnID != strings.TrimSpace(turnID) {
-		return ErrInvalidThreadAuthority
+	if existing, found := findEntry(r.entries[meta.ID], entry.ID); found {
+		decoded, decodeErr := decodeEffectAttempt(existing)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if !reflect.DeepEqual(decoded, attempt) {
+			return ErrRequestConflict
+		}
+		return nil
 	}
+	r.appendIndexedEntriesLocked(meta.ID, entry)
+	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
+	r.threads[meta.ID] = *meta
 	return nil
 }
 
-// ValidateTurnLeaseSuccessor permits an authority operation to use a proof
-// captured before one or more durable heartbeat renewals. Ownership,
-// generation, acquisition identity, and monotonic lease time must remain exact.
-func ValidateTurnLeaseSuccessor(proof, current TurnLease) error {
-	if err := proof.Validate(); err != nil {
-		return ErrStaleAuthority
+func (r *MemoryRepo) EffectAttempt(_ context.Context, threadID, attemptID string) (EffectAttempt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[strings.TrimSpace(threadID)]; !ok {
+		return EffectAttempt{}, ErrThreadNotFound
 	}
-	if err := current.Validate(); err != nil {
-		return ErrStaleAuthority
+	attempt, found, err := latestEffectAttempt(r.entries[strings.TrimSpace(threadID)], attemptID)
+	if err != nil {
+		return EffectAttempt{}, err
 	}
-	if proof.Purpose != TurnLeasePurposeTurn || current.Purpose != proof.Purpose ||
-		current.ThreadID != proof.ThreadID || current.TurnID != proof.TurnID ||
-		current.MutationID != proof.MutationID || current.MutationKind != proof.MutationKind ||
-		current.OwnerID != proof.OwnerID || current.Generation != proof.Generation ||
-		!current.AcquiredAt.Equal(proof.AcquiredAt) || current.Heartbeat < proof.Heartbeat ||
-		current.RenewedAt.Before(proof.RenewedAt) || current.ExpiresAt.Before(proof.ExpiresAt) {
-		return ErrStaleAuthority
+	if !found {
+		return EffectAttempt{}, ErrEffectAttemptNotFound
 	}
-	if current.Heartbeat == proof.Heartbeat && !SameTurnLease(current, proof) {
-		return ErrStaleAuthority
-	}
-	return nil
+	return attempt, nil
 }
-
-func effectInvocationKey(inv EffectInvocationIdentity) string {
-	return strings.Join([]string{strings.TrimSpace(inv.ThreadID), strings.TrimSpace(inv.TurnID), strings.TrimSpace(inv.RunID), strings.TrimSpace(inv.ToolCallID)}, "\x00")
-}
-
-func cloneEffectAttempt(attempt EffectAttempt) EffectAttempt { return attempt }
 
 func (r *MemoryRepo) PrepareEffectAttempt(_ context.Context, req PrepareEffectAttemptRequest) (PrepareEffectAttemptResult, error) {
 	if err := validateEffectInvocation(req.Invocation); err != nil {
-		return PrepareEffectAttemptResult{}, err
-	}
-	if err := validateEffectLease(req.Lease, req.Invocation.ThreadID, req.Invocation.TurnID); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	}
 	if strings.TrimSpace(req.RequestFingerprint) == "" {
@@ -171,84 +248,100 @@ func (r *MemoryRepo) PrepareEffectAttempt(_ context.Context, req PrepareEffectAt
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.validateFreshEffectLeaseLocked(req.Lease); err != nil {
+	meta, ok := r.threads[req.Invocation.ThreadID]
+	if !ok {
+		return PrepareEffectAttemptResult{}, ErrThreadNotFound
+	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	}
-	key := effectInvocationKey(req.Invocation)
-	if attemptID := r.effectAttemptByInvocation[key]; attemptID != "" {
-		attempt, ok := r.effectAttempts[attemptID]
-		if !ok {
-			return PrepareEffectAttemptResult{}, ErrAuthorityCorrupt
-		}
-		if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) || attempt.Invocation.ToolName != strings.TrimSpace(req.Invocation.ToolName) ||
-			attempt.Invocation.ArgumentHash != strings.TrimSpace(req.Invocation.ArgumentHash) {
+	if existing, found, err := effectAttemptByInvocation(r.entries[meta.ID], req.Invocation); err != nil {
+		return PrepareEffectAttemptResult{}, err
+	} else if found {
+		if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) || existing.Invocation.ToolName != strings.TrimSpace(req.Invocation.ToolName) || existing.Invocation.ArgumentHash != strings.TrimSpace(req.Invocation.ArgumentHash) {
 			return PrepareEffectAttemptResult{}, ErrRequestConflict
 		}
-		return PrepareEffectAttemptResult{Attempt: cloneEffectAttempt(attempt), Replayed: true}, nil
+		return PrepareEffectAttemptResult{Attempt: existing, Replayed: true}, nil
 	}
-	r.effectAttemptSequence++
-	now := nonZeroAuthorityTime(req.Now, r.now)
-	attempt := EffectAttempt{
-		EffectAttemptID: fmt.Sprintf("effect-%d", r.effectAttemptSequence), Invocation: req.Invocation,
-		RequestFingerprint: strings.TrimSpace(req.RequestFingerprint), State: EffectAttemptPrepared,
-		OwnerID: req.Lease.OwnerID, Generation: req.Lease.Generation, CreatedAt: now, UpdatedAt: now,
+	now := canonicalTime(req.Now, r.now)
+	attempt := EffectAttempt{EffectAttemptID: effectAttemptID(req.Invocation), Invocation: req.Invocation, RequestFingerprint: strings.TrimSpace(req.RequestFingerprint), State: EffectAttemptPrepared, CreatedAt: now, UpdatedAt: now}
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return PrepareEffectAttemptResult{}, err
 	}
-	r.effectAttempts[attempt.EffectAttemptID] = attempt
-	r.effectAttemptByInvocation[key] = attempt.EffectAttemptID
-	return PrepareEffectAttemptResult{Attempt: cloneEffectAttempt(attempt)}, nil
+	return PrepareEffectAttemptResult{Attempt: attempt}, nil
 }
 
 func (r *MemoryRepo) RejectEffectAttempt(_ context.Context, req RejectEffectAttemptRequest) (EffectAttempt, error) {
-	if strings.TrimSpace(req.EffectAttemptID) == "" || strings.TrimSpace(req.RejectionCode) == "" || strings.TrimSpace(req.RejectionFingerprint) == "" {
-		return EffectAttempt{}, errors.New("effect rejection requires attempt, code, and rejection fingerprint")
+	if strings.TrimSpace(req.RejectionCode) == "" || strings.TrimSpace(req.RejectionFingerprint) == "" {
+		return EffectAttempt{}, errors.New("effect rejection requires code and fingerprint")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	attempt, err := r.effectAttemptForLeaseLocked(req.Lease, req.EffectAttemptID, req.RequestFingerprint)
-	if err != nil {
-		return EffectAttempt{}, err
+	attempt, found, err := latestEffectAttempt(r.entriesByEffectAttempt(req.EffectAttemptID), req.EffectAttemptID)
+	if err != nil || !found {
+		if err != nil {
+			return EffectAttempt{}, err
+		}
+		return EffectAttempt{}, ErrEffectAttemptNotFound
+	}
+	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+		return EffectAttempt{}, ErrRequestConflict
 	}
 	if attempt.State == EffectAttemptRejected {
 		if attempt.RejectionCode != strings.TrimSpace(req.RejectionCode) || attempt.TerminalFingerprint != strings.TrimSpace(req.RejectionFingerprint) {
 			return EffectAttempt{}, ErrRequestConflict
 		}
-		return cloneEffectAttempt(attempt), nil
+		return attempt, nil
 	}
 	if attempt.State != EffectAttemptPrepared {
 		return EffectAttempt{}, ErrRequestConflict
 	}
-	attempt.State = EffectAttemptRejected
-	attempt.RejectionCode = strings.TrimSpace(req.RejectionCode)
-	attempt.TerminalFingerprint = strings.TrimSpace(req.RejectionFingerprint)
-	attempt.UpdatedAt = nonZeroAuthorityTime(req.Now, r.now)
-	r.effectAttempts[attempt.EffectAttemptID] = attempt
-	return cloneEffectAttempt(attempt), nil
+	meta := r.threads[attempt.Invocation.ThreadID]
+	attempt.State, attempt.RejectionCode, attempt.TerminalFingerprint = EffectAttemptRejected, strings.TrimSpace(req.RejectionCode), strings.TrimSpace(req.RejectionFingerprint)
+	attempt.UpdatedAt = canonicalTime(req.Now, r.now)
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return EffectAttempt{}, err
+	}
+	return attempt, nil
+}
+
+func (r *MemoryRepo) entriesByEffectAttempt(attemptID string) []Entry {
+	for threadID, entries := range r.entries {
+		if _, found, _ := latestEffectAttempt(entries, attemptID); found {
+			return r.entries[threadID]
+		}
+	}
+	return nil
 }
 
 func (r *MemoryRepo) BeginEffectDispatch(_ context.Context, req BeginEffectDispatchRequest) (EffectAttempt, error) {
-	if strings.TrimSpace(req.AuthorizationProofHash) == "" || req.ObservedHeartbeat < 0 {
-		return EffectAttempt{}, errors.New("effect dispatch requires authorization proof and observed heartbeat")
+	if strings.TrimSpace(req.AuthorizationProofHash) == "" {
+		return EffectAttempt{}, errors.New("effect dispatch requires authorization proof")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	attempt, err := r.effectAttemptForLeaseLocked(req.Lease, req.EffectAttemptID, req.RequestFingerprint)
-	if err != nil {
-		return EffectAttempt{}, err
+	attempt, found, err := latestEffectAttempt(r.entriesByEffectAttempt(req.EffectAttemptID), req.EffectAttemptID)
+	if err != nil || !found {
+		if err != nil {
+			return EffectAttempt{}, err
+		}
+		return EffectAttempt{}, ErrEffectAttemptNotFound
 	}
-	active := r.leases[req.Lease.ThreadID]
-	if active.Heartbeat < req.ObservedHeartbeat {
-		return EffectAttempt{}, ErrStaleAuthority
+	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+		return EffectAttempt{}, ErrRequestConflict
 	}
 	if attempt.State != EffectAttemptPrepared {
 		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
 			return EffectAttempt{}, ErrEffectOutcomeUnknown
 		}
-		return cloneEffectAttempt(attempt), ErrRequestConflict
+		return attempt, ErrRequestConflict
 	}
-	attempt.State = EffectAttemptDispatching
-	attempt.UpdatedAt = nonZeroAuthorityTime(req.Now, r.now)
-	r.effectAttempts[attempt.EffectAttemptID] = attempt
-	return cloneEffectAttempt(attempt), nil
+	meta := r.threads[attempt.Invocation.ThreadID]
+	attempt.State, attempt.UpdatedAt = EffectAttemptDispatching, canonicalTime(req.Now, r.now)
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return EffectAttempt{}, err
+	}
+	return attempt, nil
 }
 
 func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDispatchRequest) (FinishEffectDispatchResult, error) {
@@ -257,9 +350,15 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	attempt, err := r.effectAttemptForLeaseLocked(req.Lease, req.EffectAttemptID, req.RequestFingerprint)
-	if err != nil {
-		return FinishEffectDispatchResult{}, err
+	attempt, found, err := latestEffectAttempt(r.entriesByEffectAttempt(req.EffectAttemptID), req.EffectAttemptID)
+	if err != nil || !found {
+		if err != nil {
+			return FinishEffectDispatchResult{}, err
+		}
+		return FinishEffectDispatchResult{}, ErrEffectAttemptNotFound
+	}
+	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+		return FinishEffectDispatchResult{}, ErrRequestConflict
 	}
 	wantState := EffectAttemptCompleted
 	if req.Failed {
@@ -274,24 +373,22 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 			return FinishEffectDispatchResult{}, ErrAuthorityCorrupt
 		}
 		ref, err := r.validateEffectArtifactReplayLocked(attempt, entry, req)
-		if err != nil {
-			return FinishEffectDispatchResult{}, err
-		}
-		return FinishEffectDispatchResult{Attempt: cloneEffectAttempt(attempt), Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(ref), Replayed: true}, nil
+		return FinishEffectDispatchResult{Attempt: attempt, Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(ref), Replayed: true}, err
 	}
 	if attempt.State != EffectAttemptDispatching {
 		return FinishEffectDispatchResult{}, ErrRequestConflict
 	}
-	if req.Result.Type != EntryToolResult || req.Result.ThreadID != attempt.Invocation.ThreadID || req.Result.TurnID != attempt.Invocation.TurnID ||
-		req.Result.Message.ToolCallID != attempt.Invocation.ToolCallID || req.Result.Message.ToolName != attempt.Invocation.ToolName {
+	if req.Result.Type != EntryToolResult || req.Result.ThreadID != attempt.Invocation.ThreadID || req.Result.TurnID != attempt.Invocation.TurnID || req.Result.Message.ToolCallID != attempt.Invocation.ToolCallID || req.Result.Message.ToolName != attempt.Invocation.ToolName || req.Result.Message.ToolResult == nil || req.Result.Message.ToolResult.FullOutput != nil {
 		return FinishEffectDispatchResult{}, ErrInvalidThreadAuthority
 	}
-	if req.Result.Message.ToolResult == nil || req.Result.Message.ToolResult.FullOutput != nil {
-		return FinishEffectDispatchResult{}, ErrRequestConflict
-	}
 	meta := r.threads[attempt.Invocation.ThreadID]
-	var pendingRef *artifact.Ref
-	var pendingFull artifact.FullOutput
+	entry := cloneEntry(req.Result)
+	if entry.Metadata == nil {
+		entry.Metadata = map[string]string{}
+	}
+	entry.Metadata[PendingToolEffectAttemptIDKey] = attempt.EffectAttemptID
+	entry.ID, entry.ParentID, entry.CreatedAt = r.nextEntryID(meta.ID), meta.LeafID, canonicalTime(req.Now, r.now)
+	var committedRef *artifact.Ref
 	if req.FullOutput != nil {
 		ref, err := artifact.RefForEffect(attempt.EffectAttemptID, attempt.Invocation.ToolName, *req.FullOutput)
 		if err != nil {
@@ -300,39 +397,52 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		if _, collision := r.artifacts[artifactRecordKey(meta.ID, ref.ID)]; collision {
 			return FinishEffectDispatchResult{}, ErrAuthorityCorrupt
 		}
-		pendingRef = &ref
-		pendingFull = artifact.NormalizeFullOutput(*req.FullOutput)
+		entry.Message.ToolResult.FullOutput, committedRef = &ref, &ref
+		full := artifact.NormalizeFullOutput(*req.FullOutput)
+		r.artifacts[artifactRecordKey(meta.ID, ref.ID)] = artifact.Record{ThreadID: meta.ID, Ref: ref, Text: full.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt}
 	}
-	entry := cloneEntry(req.Result)
-	if entry.Metadata == nil {
-		entry.Metadata = map[string]string{}
-	}
-	entry.Metadata[PendingToolEffectAttemptIDKey] = attempt.EffectAttemptID
-	entry.ID = r.nextEntryID(meta.ID)
-	entry.ParentID = meta.LeafID
-	entry.CreatedAt = nonZeroAuthorityTime(req.Now, r.now)
-	entry.Raw = rawForEntry(entry)
-	entry.RawHash = stableHash(entry.Raw)
-	var committedRef *artifact.Ref
-	if pendingRef != nil {
-		entry.Message.ToolResult.FullOutput = artifact.CloneRefPtr(pendingRef)
-		entry.Raw = rawForEntry(entry)
-		entry.RawHash = stableHash(entry.Raw)
-		r.artifacts[artifactRecordKey(meta.ID, pendingRef.ID)] = artifact.Record{
-			ThreadID: meta.ID, Ref: *pendingRef, Text: pendingFull.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt,
-		}
-		committedRef = pendingRef
-	}
+	entry.Raw, entry.RawHash = rawForEntry(entry), StableHash(rawForEntry(entry))
 	r.appendIndexedEntriesLocked(meta.ID, entry)
-	meta.LeafID = entry.ID
-	meta.UpdatedAt = entry.CreatedAt
+	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
 	r.threads[meta.ID] = meta
-	attempt.State = wantState
-	attempt.TerminalFingerprint = strings.TrimSpace(req.OutcomeFingerprint)
-	attempt.ResultEntryID = entry.ID
-	attempt.UpdatedAt = entry.CreatedAt
-	r.effectAttempts[attempt.EffectAttemptID] = attempt
-	return FinishEffectDispatchResult{Attempt: cloneEffectAttempt(attempt), Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(committedRef)}, nil
+	attempt.State, attempt.TerminalFingerprint, attempt.ResultEntryID, attempt.UpdatedAt = wantState, strings.TrimSpace(req.OutcomeFingerprint), entry.ID, entry.CreatedAt
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return FinishEffectDispatchResult{}, err
+	}
+	return FinishEffectDispatchResult{Attempt: attempt, Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(committedRef)}, nil
+}
+
+func (r *MemoryRepo) MarkEffectUnknown(_ context.Context, req MarkEffectUnknownRequest) (EffectAttempt, error) {
+	if strings.TrimSpace(req.OutcomeFingerprint) == "" {
+		return EffectAttempt{}, errors.New("effect unknown outcome fingerprint is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	attempt, found, err := latestEffectAttempt(r.entriesByEffectAttempt(req.EffectAttemptID), req.EffectAttemptID)
+	if err != nil || !found {
+		if err != nil {
+			return EffectAttempt{}, err
+		}
+		return EffectAttempt{}, ErrEffectAttemptNotFound
+	}
+	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+		return EffectAttempt{}, ErrRequestConflict
+	}
+	if attempt.State == EffectAttemptUnknown {
+		if attempt.TerminalFingerprint != strings.TrimSpace(req.OutcomeFingerprint) {
+			return EffectAttempt{}, ErrRequestConflict
+		}
+		return attempt, nil
+	}
+	if attempt.State != EffectAttemptDispatching {
+		return EffectAttempt{}, ErrRequestConflict
+	}
+	meta := r.threads[attempt.Invocation.ThreadID]
+	attempt.State, attempt.TerminalFingerprint, attempt.UpdatedAt = EffectAttemptUnknown, strings.TrimSpace(req.OutcomeFingerprint), canonicalTime(req.Now, r.now)
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return EffectAttempt{}, err
+	}
+	return attempt, nil
 }
 
 func (r *MemoryRepo) validateEffectArtifactReplayLocked(attempt EffectAttempt, entry Entry, req FinishEffectDispatchRequest) (*artifact.Ref, error) {
@@ -364,16 +474,11 @@ func (r *MemoryRepo) validateEffectArtifactReplayLocked(attempt EffectAttempt, e
 	if record.Text != full.Text || !reflect.DeepEqual(record.Ref, expected) || record.CanonicalEntryID != entry.ID {
 		return nil, ErrRequestConflict
 	}
-	if err := r.validateArtifactRecordLocked(record); err != nil {
-		return nil, err
-	}
-	return &expected, nil
+	return &expected, r.validateArtifactRecordLocked(record)
 }
 
 func EffectResultRequestMatches(committed, requested Entry, effectAttemptID string) bool {
-	if committed.Type != EntryToolResult || requested.Type != EntryToolResult || committed.ThreadID != requested.ThreadID ||
-		committed.TurnID != requested.TurnID || !reflect.DeepEqual(effectRequestMessage(committed.Message), effectRequestMessage(requested.Message)) ||
-		committed.Error != requested.Error {
+	if committed.Type != EntryToolResult || requested.Type != EntryToolResult || committed.ThreadID != requested.ThreadID || committed.TurnID != requested.TurnID || !reflect.DeepEqual(effectRequestMessage(committed.Message), effectRequestMessage(requested.Message)) || committed.Error != requested.Error {
 		return false
 	}
 	wantMetadata := cloneStringMap(requested.Metadata)
@@ -392,70 +497,6 @@ func effectRequestMessage(message session.Message) session.Message {
 	return message
 }
 
-func (r *MemoryRepo) MarkEffectUnknown(_ context.Context, req MarkEffectUnknownRequest) (EffectAttempt, error) {
-	if strings.TrimSpace(req.OutcomeFingerprint) == "" {
-		return EffectAttempt{}, errors.New("effect unknown outcome fingerprint is required")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	attempt, err := r.effectAttemptForLeaseLocked(req.Lease, req.EffectAttemptID, req.RequestFingerprint)
-	if err != nil {
-		return EffectAttempt{}, err
-	}
-	if attempt.State == EffectAttemptUnknown {
-		if attempt.TerminalFingerprint != strings.TrimSpace(req.OutcomeFingerprint) {
-			return EffectAttempt{}, ErrRequestConflict
-		}
-		return cloneEffectAttempt(attempt), nil
-	}
-	if attempt.State != EffectAttemptDispatching {
-		return EffectAttempt{}, ErrRequestConflict
-	}
-	attempt.State = EffectAttemptUnknown
-	attempt.TerminalFingerprint = strings.TrimSpace(req.OutcomeFingerprint)
-	attempt.UpdatedAt = nonZeroAuthorityTime(req.Now, r.now)
-	r.effectAttempts[attempt.EffectAttemptID] = attempt
-	return cloneEffectAttempt(attempt), nil
-}
-
-func (r *MemoryRepo) validateFreshEffectLeaseLocked(lease TurnLease) error {
-	active, ok := r.leases[lease.ThreadID]
-	if !ok || ValidateTurnLeaseSuccessor(lease, active) != nil || !active.Fresh(r.now().UTC()) {
-		return ErrStaleAuthority
-	}
-	meta, ok := r.threads[lease.ThreadID]
-	if !ok {
-		return ErrThreadNotFound
-	}
-	if err := lifecycleRejectsWrite(meta); err != nil {
-		return err
-	}
-	if r.threadAuthorityClaimedLocked(lease.ThreadID) {
-		return ErrAuthorityCorrupt
-	}
-	return nil
-}
-
-func (r *MemoryRepo) effectAttemptForLeaseLocked(lease TurnLease, attemptID, fingerprint string) (EffectAttempt, error) {
-	attempt, ok := r.effectAttempts[strings.TrimSpace(attemptID)]
-	if !ok {
-		return EffectAttempt{}, ErrEffectAttemptNotFound
-	}
-	if attempt.RequestFingerprint != strings.TrimSpace(fingerprint) {
-		return EffectAttempt{}, ErrRequestConflict
-	}
-	if err := validateEffectLease(lease, attempt.Invocation.ThreadID, attempt.Invocation.TurnID); err != nil {
-		return EffectAttempt{}, err
-	}
-	if lease.OwnerID != attempt.OwnerID || lease.Generation != attempt.Generation {
-		return EffectAttempt{}, ErrStaleAuthority
-	}
-	if err := r.validateFreshEffectLeaseLocked(lease); err != nil {
-		return EffectAttempt{}, err
-	}
-	return attempt, nil
-}
-
 func effectAttemptTerminalSafe(state EffectAttemptState) bool {
 	switch state {
 	case EffectAttemptCompleted, EffectAttemptFailed, EffectAttemptRejected, EffectAttemptCancelled, EffectAttemptUnknown:
@@ -463,4 +504,23 @@ func effectAttemptTerminalSafe(state EffectAttemptState) bool {
 	default:
 		return false
 	}
+}
+
+func canonicalEffectAttemptsForTurn(entries []Entry, turnID string) []EffectAttempt {
+	latest := make(map[string]EffectAttempt)
+	for _, entry := range entries {
+		if entry.Type != EntryEffectAttempt || entry.TurnID != strings.TrimSpace(turnID) {
+			continue
+		}
+		attempt, err := decodeEffectAttempt(entry)
+		if err != nil {
+			continue
+		}
+		latest[attempt.EffectAttemptID] = attempt
+	}
+	out := make([]EffectAttempt, 0, len(latest))
+	for _, attempt := range latest {
+		out = append(out, attempt)
+	}
+	return out
 }

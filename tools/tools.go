@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v4/identity"
 )
 
 var ErrRejected = errors.New("tool call rejected")

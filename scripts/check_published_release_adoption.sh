@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly module_path="github.com/floegence/floret/v3"
+readonly module_path="github.com/floegence/floret/v4"
 readonly repository_root=$(git rev-parse --show-toplevel)
 
 if [[ $# -ne 1 || $1 != v3.* ]]; then

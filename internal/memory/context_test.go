@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v4/internal/session"
 )
 
 func TestAssembleAddsSystemPromptWithoutMessageCountTrimming(t *testing.T) {

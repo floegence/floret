@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/identity"
 )
 
 const (

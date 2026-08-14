@@ -2,18 +2,16 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session/artifact"
-	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/sessiontree"
 )
 
 const ForkOperationPlanVersion = 5
@@ -74,180 +72,6 @@ type ForkOperationRecord struct {
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	FinishedAt         time.Time
-}
-
-type ForkOperationStore interface {
-	PrepareForkOperation(context.Context, ForkOperationRecord) (ForkOperationRecord, bool, error)
-	ForkOperation(context.Context, string) (ForkOperationRecord, error)
-	CommitForkOperation(context.Context, ForkOperationCommitRequest) (ForkOperationRecord, bool, error)
-	FailForkOperation(context.Context, ForkOperationFailureRequest) (ForkOperationRecord, bool, error)
-}
-
-type ForkOperationCommitRequest struct {
-	OperationID        string
-	RequestFingerprint string
-	Plan               json.RawMessage
-	Nodes              []sessiontree.ForkOptions
-	Result             json.RawMessage
-	FinishedAt         time.Time
-}
-
-type ForkOperationFailureRequest struct {
-	OperationID        string
-	RequestFingerprint string
-	ErrorCode          string
-	ErrorMessage       string
-	FinishedAt         time.Time
-}
-
-type MemoryForkOperationStore struct {
-	mu        sync.Mutex
-	records   map[string]ForkOperationRecord
-	authority *sessiontree.MemoryRepo
-}
-
-func NewMemoryForkOperationStore(authority *sessiontree.MemoryRepo) *MemoryForkOperationStore {
-	return &MemoryForkOperationStore{records: map[string]ForkOperationRecord{}, authority: authority}
-}
-
-func (s *MemoryForkOperationStore) PrepareForkOperation(ctx context.Context, rec ForkOperationRecord) (ForkOperationRecord, bool, error) {
-	if err := ValidatePreparedForkOperation(rec); err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing, ok := s.records[rec.OperationID]; ok {
-		return cloneForkOperationRecord(existing), false, nil
-	}
-	if s.authority == nil {
-		return ForkOperationRecord{}, false, errors.New("fork operation authority repo is required")
-	}
-	plan, err := DecodeForkOperationPlan(rec.Plan)
-	if err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	if err := validateForkOperationPlanRecord(rec, plan); err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	if err := s.authority.PrepareForkClaim(ctx, rec.OperationID, plan.Root.SourceThreadID, ForkOperationPlanNodes(plan)); err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	s.records[rec.OperationID] = cloneForkOperationRecord(rec)
-	return cloneForkOperationRecord(rec), true, nil
-}
-
-func (s *MemoryForkOperationStore) ForkOperation(_ context.Context, operationID string) (ForkOperationRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, ok := s.records[strings.TrimSpace(operationID)]
-	if !ok {
-		return ForkOperationRecord{}, ErrForkOperationNotFound
-	}
-	if rec.State == ForkOperationCompleted {
-		plan, err := DecodeForkOperationPlan(rec.Plan)
-		if err != nil {
-			return ForkOperationRecord{}, err
-		}
-		if err := s.validateCompletedArtifactClosures(plan); err != nil {
-			return ForkOperationRecord{}, err
-		}
-	}
-	return cloneForkOperationRecord(rec), nil
-}
-
-func (s *MemoryForkOperationStore) CommitForkOperation(ctx context.Context, req ForkOperationCommitRequest) (ForkOperationRecord, bool, error) {
-	if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" || len(req.Plan) == 0 || !json.Valid(req.Plan) || len(req.Nodes) == 0 ||
-		len(req.Result) == 0 || !json.Valid(req.Result) || req.FinishedAt.IsZero() {
-		return ForkOperationRecord{}, false, errors.New("fork commit requires operation, fingerprint, complete nodes, result, and finish time")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.records[strings.TrimSpace(req.OperationID)]
-	if !ok {
-		return ForkOperationRecord{}, false, ErrForkOperationNotFound
-	}
-	if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
-		return ForkOperationRecord{}, false, ErrForkOperationConflict
-	}
-	if !jsonEqual(existing.Plan, req.Plan) {
-		return ForkOperationRecord{}, false, ErrForkOperationConflict
-	}
-	plan, err := DecodeForkOperationPlan(existing.Plan)
-	if err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	if err := ValidateForkOperationCommitNodes(plan, req.Nodes); err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	if existing.State == ForkOperationCompleted {
-		if !jsonEqual(existing.Result, req.Result) {
-			return ForkOperationRecord{}, false, ErrForkOperationConflict
-		}
-		if err := s.validateCompletedArtifactClosures(plan); err != nil {
-			return ForkOperationRecord{}, false, err
-		}
-		return cloneForkOperationRecord(existing), true, nil
-	}
-	if existing.State != ForkOperationPrepared {
-		return ForkOperationRecord{}, false, ErrForkOperationConflict
-	}
-	if s.authority == nil {
-		return ForkOperationRecord{}, false, errors.New("fork operation authority repo is required")
-	}
-	terminal := cloneForkOperationRecord(existing)
-	terminal.State = ForkOperationCompleted
-	terminal.Result = append(json.RawMessage(nil), req.Result...)
-	terminal.UpdatedAt = req.FinishedAt
-	terminal.FinishedAt = req.FinishedAt
-	_, err = s.authority.CommitForkBatch(ctx, existing.OperationID, req.Nodes, func() error {
-		s.records[existing.OperationID] = cloneForkOperationRecord(terminal)
-		return nil
-	})
-	if err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	return terminal, false, nil
-}
-
-func (s *MemoryForkOperationStore) FailForkOperation(ctx context.Context, req ForkOperationFailureRequest) (ForkOperationRecord, bool, error) {
-	if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" ||
-		strings.TrimSpace(req.ErrorCode) == "" || strings.TrimSpace(req.ErrorMessage) == "" || req.FinishedAt.IsZero() {
-		return ForkOperationRecord{}, false, errors.New("fork failure requires operation, fingerprint, typed error, and finish time")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.records[strings.TrimSpace(req.OperationID)]
-	if !ok {
-		return ForkOperationRecord{}, false, ErrForkOperationNotFound
-	}
-	if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
-		return ForkOperationRecord{}, false, ErrForkOperationConflict
-	}
-	if existing.State == ForkOperationFailed {
-		if existing.ErrorCode != strings.TrimSpace(req.ErrorCode) || existing.ErrorMessage != strings.TrimSpace(req.ErrorMessage) {
-			return ForkOperationRecord{}, false, ErrForkOperationConflict
-		}
-		return cloneForkOperationRecord(existing), true, nil
-	}
-	if existing.State != ForkOperationPrepared {
-		return ForkOperationRecord{}, false, ErrForkOperationConflict
-	}
-	terminal := cloneForkOperationRecord(existing)
-	terminal.State = ForkOperationFailed
-	terminal.ErrorCode = strings.TrimSpace(req.ErrorCode)
-	terminal.ErrorMessage = strings.TrimSpace(req.ErrorMessage)
-	terminal.UpdatedAt = req.FinishedAt
-	terminal.FinishedAt = req.FinishedAt
-	if s.authority == nil {
-		return ForkOperationRecord{}, false, errors.New("fork operation authority repo is required")
-	}
-	if err := s.authority.FailForkClaim(existing.OperationID, existing.SourceThreadIDs, existing.AuthorityThreadIDs, func() error {
-		s.records[existing.OperationID] = cloneForkOperationRecord(terminal)
-		return nil
-	}); err != nil {
-		return ForkOperationRecord{}, false, err
-	}
-	return terminal, false, nil
 }
 
 func ValidatePreparedForkOperation(rec ForkOperationRecord) error {
@@ -349,11 +173,13 @@ func ForkOperationPlanNodes(plan ForkOperationPlan) []sessiontree.ForkOptions {
 	planNodes := append([]ForkOperationPlanNode{plan.Root}, plan.TerminalChildren...)
 	nodes := make([]sessiontree.ForkOptions, 0, len(planNodes))
 	for _, node := range planNodes {
+		originKey := strings.Join([]string{"legacy-fork", plan.OperationID, node.NodeID}, ":")
 		nodes = append(nodes, sessiontree.ForkOptions{
 			SourceThreadID: node.SourceThreadID, EntryID: node.SourceEntryID, EntryIDPinned: true,
 			ExpectedSourceLeafID: node.SourceLeafEntryID, Position: sessiontree.ForkAt,
-			NewThreadID: node.DestinationThreadID, OperationID: plan.OperationID, OperationNodeID: node.NodeID,
-			Now: plan.PreparedAt, TurnIDMap: node.TurnIDMap, RunIDMap: node.RunIDMap, DestinationMeta: node.DestinationMeta,
+			NewThreadID: node.DestinationThreadID, OriginRequestKey: originKey,
+			OriginFingerprint: sessiontree.StableHash(originKey + "\x00" + plan.RequestFingerprint),
+			Now:               plan.PreparedAt, TurnIDMap: node.TurnIDMap, RunIDMap: node.RunIDMap, DestinationMeta: node.DestinationMeta,
 			ArtifactClosure: artifact.CloneClosure(node.ArtifactClosure),
 		})
 	}
@@ -369,22 +195,10 @@ func ValidateForkOperationCommitNodes(plan ForkOperationPlan, nodes []sessiontre
 		left, right := expected[index], nodes[index]
 		if left.SourceThreadID != right.SourceThreadID || left.EntryID != right.EntryID || left.EntryIDPinned != right.EntryIDPinned ||
 			left.ExpectedSourceLeafID != right.ExpectedSourceLeafID || left.Position != right.Position || left.NewThreadID != right.NewThreadID ||
-			left.OperationID != right.OperationID || left.OperationNodeID != right.OperationNodeID || !left.Now.Equal(right.Now) ||
+			left.OriginRequestKey != right.OriginRequestKey || left.OriginFingerprint != right.OriginFingerprint || !left.Now.Equal(right.Now) ||
 			!reflect.DeepEqual(left.TurnIDMap, right.TurnIDMap) || !reflect.DeepEqual(left.RunIDMap, right.RunIDMap) ||
 			!reflect.DeepEqual(left.DestinationMeta, right.DestinationMeta) || !artifact.EqualClosure(left.ArtifactClosure, right.ArtifactClosure) {
 			return ErrForkOperationConflict
-		}
-	}
-	return nil
-}
-
-func (s *MemoryForkOperationStore) validateCompletedArtifactClosures(plan ForkOperationPlan) error {
-	if s.authority == nil {
-		return errors.New("fork operation authority repo is required")
-	}
-	for _, node := range append([]ForkOperationPlanNode{plan.Root}, plan.TerminalChildren...) {
-		if err := s.authority.ValidateArtifactForkDestination(context.Background(), node.ArtifactClosure); err != nil {
-			return err
 		}
 	}
 	return nil

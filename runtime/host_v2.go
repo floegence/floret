@@ -8,20 +8,24 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/internal/storagebridge"
-	"github.com/floegence/floret/v3/provider"
-	publicstorage "github.com/floegence/floret/v3/storage"
-	"github.com/floegence/floret/v3/storage/spi"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/agentharness"
+	"github.com/floegence/floret/v4/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/storagebridge"
+	"github.com/floegence/floret/v4/provider"
+	publicstorage "github.com/floegence/floret/v4/storage"
+	"github.com/floegence/floret/v4/storage/spi"
+	"github.com/floegence/floret/v4/tools"
 )
 
 const (
-	logicalSchemaNamespace   = "floret.system"
-	logicalSchemaKey         = "logical-schema"
-	logicalSchemaVersion     = "3"
-	logicalSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
+	logicalSchemaNamespace           = "floret.system"
+	logicalSchemaKey                 = "logical-schema"
+	logicalSchemaVersion             = "5"
+	logicalSchemaFingerprint         = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
+	previousLogicalSchemaVersion     = "3"
+	previousLogicalSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 )
 
 var (
@@ -57,8 +61,7 @@ type Options struct {
 	// IDSource exists only for v3 source compatibility.
 	// Deprecated: production hosts must leave this nil; tests should use
 	// florettest.NewIDSource.
-	IDSource           IDSource
-	SubscriptionBuffer int
+	IDSource IDSource
 }
 
 // Host is the composition-root owner of Floret storage and narrow capability
@@ -66,22 +69,17 @@ type Options struct {
 type Host struct {
 	store    *runtimeStore
 	backend  spi.Backend
-	binders  hostBinders
 	idSource IDSource
 	idMu     sync.Mutex
 	// mutationMu protects inventory-wide and cross-thread mutations only.
-	// Exact-thread lifecycle transitions belong to threadActors.
-	mutationMu         sync.Mutex
-	threadActors       *threadActorRegistry
-	turnExecutions     keyedMutex
-	subscriptionMu     sync.Mutex
-	subscriptions      map[*Subscription]struct{}
-	subscriptionBuffer int
-	closeMu            sync.Mutex
-	closing            bool
-	closed             bool
-	closeErr           error
-	closeDone          chan struct{}
+	mutationMu      sync.Mutex
+	threadRuntimeMu sync.Mutex
+	threadRuntime   *threadRuntimeService
+	closeMu         sync.Mutex
+	closing         bool
+	closed          bool
+	closeErr        error
+	closeDone       chan struct{}
 }
 
 type keyedMutex struct {
@@ -175,21 +173,6 @@ func (mutex *keyedMutex) lock(key string) func() {
 	}
 }
 
-type hostBinders struct {
-	create       *threadCreateBinder
-	inventory    *threadInventoryCapability
-	read         *threadReadBinder
-	title        *threadTitleBinder
-	fork         *threadForkBinder
-	delete       *threadDeleteBinder
-	turn         *turnExecutionBinder
-	compact      *threadCompactionBinder
-	subAgent     *subAgentBinder
-	subAgentRead *subAgentReadBinder
-	pending      *pendingToolRecoveryBinder
-	interrupted  *interruptedTurnRecoveryBinder
-}
-
 type logicalSchemaEnvelope struct {
 	Version     string `json:"version"`
 	Fingerprint string `json:"fingerprint"`
@@ -211,7 +194,8 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	if backend == nil {
 		return nil, errors.New("runtime storage source returned a nil backend")
 	}
-	if err := ensureLogicalSchema(ctx, backend); err != nil {
+	logicalState, err := inspectLogicalSchema(ctx, backend)
+	if err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
@@ -221,78 +205,18 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		_ = coordinatedBackend.Close()
 		return nil, err
 	}
+	if err := commitLogicalSchema(ctx, coordinatedBackend, logicalState); err != nil {
+		_ = coordinatedBackend.Close()
+		return nil, err
+	}
 	idSource := options.IDSource
 	if idSource == nil {
 		idSource = randomIDSource{}
 	}
-	buffer := options.SubscriptionBuffer
-	if buffer < 0 || buffer > 65_536 {
-		_ = store.Close()
-		_ = coordinatedBackend.Close()
-		return nil, errors.New("runtime subscription buffer must be between 1 and 65536")
-	}
-	if buffer == 0 {
-		buffer = 256
-	}
 	host := &Host{
 		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}),
-		threadActors: newThreadActorRegistry(), subscriptions: make(map[*Subscription]struct{}), subscriptionBuffer: buffer,
-	}
-	if err := configureHostCapabilities(store, func(bootstrap *hostBootstrap) error {
-		constructors := []func() error{
-			func() (err error) { host.binders.create, err = newThreadCreateBinder(bootstrap); return err },
-			func() (err error) { host.binders.inventory, err = newThreadInventoryCapability(bootstrap); return err },
-			func() (err error) { host.binders.read, err = newThreadReadBinder(bootstrap); return err },
-			func() (err error) { host.binders.title, err = newThreadTitleBinder(bootstrap); return err },
-			func() (err error) { host.binders.fork, err = newThreadForkBinder(bootstrap); return err },
-			func() (err error) { host.binders.delete, err = newThreadDeleteBinder(bootstrap); return err },
-			func() (err error) { host.binders.turn, err = newTurnExecutionBinder(bootstrap); return err },
-			func() (err error) { host.binders.compact, err = newThreadCompactionBinder(bootstrap); return err },
-			func() (err error) { host.binders.subAgent, err = newSubAgentBinder(bootstrap); return err },
-			func() (err error) { host.binders.subAgentRead, err = newSubAgentReadBinder(bootstrap); return err },
-			func() (err error) {
-				host.binders.pending, err = newPendingToolRecoveryBinder(bootstrap)
-				return err
-			},
-			func() (err error) {
-				host.binders.interrupted, err = newInterruptedTurnRecoveryBinder(bootstrap)
-				return err
-			},
-		}
-		for _, construct := range constructors {
-			if err := construct(); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		_ = store.Close()
-		_ = backend.Close()
-		return nil, err
 	}
 	return host, nil
-}
-
-func (host *Host) threadCreator(threadID identity.ThreadID, createIntentID createIntentID) (*threadCreatorHandle, error) {
-	if err := host.available(); err != nil {
-		return nil, err
-	}
-	inner, err := host.binders.create.Bind(threadID, createIntentID)
-	if err != nil {
-		return nil, err
-	}
-	return &threadCreatorHandle{inner: inner}, nil
-}
-
-func (host *Host) threadReader(ctx context.Context, threadID identity.ThreadID) (*threadReaderHandle, error) {
-	if err := host.available(); err != nil {
-		return nil, err
-	}
-	inner, err := host.binders.read.NewHost(ctx, threadID)
-	if err != nil {
-		return nil, err
-	}
-	return &threadReaderHandle{inner: inner, threadID: threadID}, nil
 }
 
 func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, agent *Agent) (*turnRunnerHandle, error) {
@@ -302,15 +226,24 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 	if agent == nil {
 		return nil, errors.New("turn runner requires an Agent")
 	}
-	factory, err := host.binders.turn.Bind(threadID)
+	if _, err := host.store.repo.Thread(ctx, threadID.String()); err != nil {
+		return nil, runtimeHostError(err)
+	}
+	opts := agent.turnExecutionOptions()
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+	provider, err := newProviderHost(providerHostOptions{
+		Config: opts.config, modelGateway: opts.modelGateway, modelGatewayIdentity: opts.modelGatewayIdentity,
+		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
+		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
+		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
+		LoopLimits: opts.loopLimits, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
+	})
 	if err != nil {
 		return nil, err
 	}
-	inner, err := factory.NewHost(ctx, agent.turnExecutionOptions())
-	if err != nil {
-		return nil, err
-	}
-	return &turnRunnerHandle{inner: inner, threadID: threadID}, nil
+	return &turnRunnerHandle{inner: &turnExecutionCapability{threadID: threadID, host: provider}, threadID: threadID}, nil
 }
 
 func (host *Host) available() error {
@@ -325,142 +258,177 @@ func (host *Host) available() error {
 	return nil
 }
 
+// Shutdown stops in-memory executions and closes the owned canonical store.
+func (host *Host) Shutdown(ctx context.Context) error {
+	if host == nil {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("runtime shutdown context is required")
+	}
+	host.closeMu.Lock()
+	if host.closed {
+		err := host.closeErr
+		host.closeMu.Unlock()
+		return err
+	}
+	if host.closing {
+		done := host.closeDone
+		host.closeMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+		}
+		host.closeMu.Lock()
+		err := host.closeErr
+		host.closeMu.Unlock()
+		return err
+	}
+	host.closing = true
+	host.closeMu.Unlock()
+	if host.threadRuntime != nil {
+		host.threadRuntime.close()
+	}
+	err := host.store.Close()
+	host.closeMu.Lock()
+	host.closeErr, host.closed, host.closing = err, true, false
+	close(host.closeDone)
+	host.closeMu.Unlock()
+	return err
+}
+
 func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.ThreadID, mutate func() error) error {
-	if host == nil || host.threadActors == nil {
-		return errors.New("runtime thread actor registry is required")
+	if host == nil {
+		return errors.New("runtime Host is required")
 	}
 	if _, err := identity.ParseThreadID(threadID.String()); err != nil {
 		return err
 	}
-	return host.threadActors.actor(threadID.String()).apply(ctx, mutate)
-}
-
-// threadCreatorHandle is exact root-thread creation authority.
-type threadCreatorHandle struct {
-	inner *threadCreateCapability
-}
-
-// Create creates or replays the bound root thread.
-func (creator *threadCreatorHandle) Create(ctx context.Context) (ThreadSummary, error) {
-	if creator == nil || creator.inner == nil {
-		return ThreadSummary{}, errors.New("thread creator is required")
+	if ctx == nil {
+		return errors.New("thread mutation context is required")
 	}
-	return creator.inner.CreateThread(ctx, createThreadRequest{})
-}
-
-// threadReaderHandle is read authority for one exact root thread.
-type threadReaderHandle struct {
-	inner    *threadReadCapability
-	threadID identity.ThreadID
-}
-
-// Read returns the current canonical thread snapshot.
-func (reader *threadReaderHandle) Read(ctx context.Context) (ThreadSnapshot, error) {
-	if reader == nil || reader.inner == nil {
-		return ThreadSnapshot{}, errors.New("thread reader is required")
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return reader.inner.ReadThread(ctx, reader.threadID)
-}
-
-// ReadTurn returns one canonical turn from the bound thread.
-func (reader *threadReaderHandle) ReadTurn(ctx context.Context, turnID identity.TurnID) (ThreadTurnSnapshot, error) {
-	if reader == nil || reader.inner == nil {
-		return ThreadTurnSnapshot{}, errors.New("thread reader is required")
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return reader.inner.ReadThreadTurn(ctx, readThreadTurnRequest{ThreadID: reader.threadID, TurnID: turnID})
+	return mutate()
 }
 
 // turnExecutionRequest describes one provider execution after ThreadID is bound by a
 // turnRunnerHandle.
 type turnExecutionRequest struct {
-	LogicalRequestID    identity.LogicalRequestID
-	RunID               identity.RunID
-	TurnID              identity.TurnID
-	Input               TurnInput
-	SupplementalContext []TurnSupplementalContextItem
-	Labels              RunLabels
-	Completion          TurnCompletionPolicy
-	Signals             TurnSignalSpec
-	Limits              TurnLimits
-	Reasoning           config.ReasoningSelection
-	ManualCompactions   ManualCompactionSource
-	ToolSurfaceProvider ToolSurfaceProvider
+	LogicalRequestID            identity.LogicalRequestID
+	RunID                       identity.RunID
+	TurnID                      identity.TurnID
+	Input                       TurnInput
+	SupplementalContext         []TurnSupplementalContextItem
+	Labels                      RunLabels
+	Completion                  TurnCompletionPolicy
+	Signals                     TurnSignalSpec
+	Limits                      TurnLimits
+	Reasoning                   config.ReasoningSelection
+	ManualCompactions           ManualCompactionSource
+	ToolSurfaceProvider         ToolSurfaceProvider
+	PromotedQueueID             string
+	PromotionRequestKey         string
+	PromotionRequestFingerprint string
+	InputFingerprint            string
+	RetrySourceTurnID           identity.TurnID
+	RetrySourceEntryID          string
 }
 
-type admittedTurnExecutionRequest struct {
-	Admission           turnAdmissionResult
-	LogicalRequestID    identity.LogicalRequestID
-	RunID               identity.RunID
-	TurnID              identity.TurnID
-	Input               TurnInput
-	SupplementalContext []TurnSupplementalContextItem
-	Labels              RunLabels
-	Completion          TurnCompletionPolicy
-	Signals             TurnSignalSpec
-	Limits              TurnLimits
-	Reasoning           config.ReasoningSelection
-	ManualCompactions   ManualCompactionSource
-	ToolSurfaceProvider ToolSurfaceProvider
+// ResumeInputRequest continues an existing waiting turn without admitting a
+// second canonical user message.
+type resumeInputRequest struct {
+	TurnID       identity.TurnID
+	RunID        identity.RunID
+	WaitingRunID identity.RunID
+	Answer       string
+	Options      turnExecutionRequest
 }
 
-// turnRunnerHandle owns provider-backed execution for one exact root thread.
+type acceptedTurnExecutionRequest struct {
+	Accepted                    acceptedTurn
+	LogicalRequestID            identity.LogicalRequestID
+	RunID                       identity.RunID
+	TurnID                      identity.TurnID
+	Input                       TurnInput
+	SupplementalContext         []TurnSupplementalContextItem
+	Labels                      RunLabels
+	Completion                  TurnCompletionPolicy
+	Signals                     TurnSignalSpec
+	Limits                      TurnLimits
+	Reasoning                   config.ReasoningSelection
+	ManualCompactions           ManualCompactionSource
+	ToolSurfaceProvider         ToolSurfaceProvider
+	PromotedQueueID             string
+	PromotionRequestKey         string
+	PromotionRequestFingerprint string
+	InputFingerprint            string
+}
+
+// turnRunnerHandle is the engine effect adapter bound to one thread runtime.
 type turnRunnerHandle struct {
 	inner    *turnExecutionCapability
 	threadID identity.ThreadID
 }
 
-// Admit records one canonical user message on the bound thread before provider
-// execution starts.
-func (runner *turnRunnerHandle) Admit(ctx context.Context, request turnExecutionRequest) (turnAdmissionResult, error) {
-	if runner == nil || runner.inner == nil {
-		return turnAdmissionResult{}, errors.New("turn runner is required")
-	}
-	return runner.inner.AdmitTurn(ctx, runTurnRequest{
-		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
-		Input: request.Input, SupplementalContext: request.SupplementalContext,
-		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
-		Limits: request.Limits, Reasoning: request.Reasoning,
-		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
-	})
-}
-
-// ExecuteAdmitted runs provider execution for an already admitted turn.
-func (runner *turnRunnerHandle) ExecuteAdmitted(ctx context.Context, request admittedTurnExecutionRequest) (TurnResult, error) {
+// ExecuteAccepted runs provider execution after canonical acceptance.
+func (runner *turnRunnerHandle) ExecuteAccepted(ctx context.Context, request acceptedTurnExecutionRequest) (TurnResult, error) {
 	if runner == nil || runner.inner == nil {
 		return TurnResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.ExecuteAdmittedTurn(ctx, request.Admission, runTurnRequest{
+	return runner.inner.ExecuteAcceptedTurn(ctx, request.Accepted, runTurnRequest{
 		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
 		Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
+		PromotedQueueID:             request.PromotedQueueID,
+		PromotionRequestKey:         request.PromotionRequestKey,
+		PromotionRequestFingerprint: request.PromotionRequestFingerprint,
+		InputFingerprint:            request.InputFingerprint,
 	})
 }
 
-// Run admits and executes one turn on the bound thread.
-func (runner *turnRunnerHandle) Run(ctx context.Context, request turnExecutionRequest) (TurnResult, error) {
+func (runner *turnRunnerHandle) ResumeInput(ctx context.Context, request resumeInputRequest) (TurnResult, error) {
 	if runner == nil || runner.inner == nil {
 		return TurnResult{}, errors.New("turn runner is required")
 	}
-	return runner.inner.RunTurn(ctx, runTurnRequest{
-		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
-		Input: request.Input, SupplementalContext: request.SupplementalContext,
-		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
-		Limits: request.Limits, Reasoning: request.Reasoning,
-		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
-	})
+	return runner.inner.ResumeInput(ctx, request)
 }
 
-func ensureLogicalSchema(ctx context.Context, backend spi.Backend) error {
-	return backend.Update(ctx, func(tx spi.WriteTx) error {
+func (runner *turnRunnerHandle) RetryUnknownEffect(ctx context.Context, sourceAttemptID, requestKey string) (sessiontree.Entry, error) {
+	if runner == nil || runner.inner == nil || runner.inner.host == nil || runner.inner.host.harness == nil {
+		return sessiontree.Entry{}, errors.New("turn runner is required")
+	}
+	thread, err := runner.inner.host.harness.ResumeThread(ctx, runner.threadID.String(), agentharness.ResumeOptions{})
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	return thread.RetryUnknownEffect(ctx, sourceAttemptID, requestKey)
+}
+
+type logicalSchemaState string
+
+const (
+	logicalSchemaMissing logicalSchemaState = "missing"
+	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV4      logicalSchemaState = "v4"
+)
+
+func inspectLogicalSchema(ctx context.Context, backend spi.Backend) (logicalSchemaState, error) {
+	var state logicalSchemaState
+	err := backend.View(ctx, func(tx spi.ReadTx) error {
 		encoded, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey))
 		if errors.Is(err, spi.ErrNotFound) {
-			envelope, marshalErr := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
-			if marshalErr != nil {
-				return marshalErr
-			}
-			return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
+			state = logicalSchemaMissing
+			return nil
 		}
 		if err != nil {
 			return err
@@ -477,10 +445,32 @@ func ensureLogicalSchema(ctx context.Context, backend spi.Backend) error {
 		if envelope.Version == "16" {
 			return &MigrationRequiredError{Version: envelope.Version}
 		}
+		if envelope.Version == previousLogicalSchemaVersion {
+			if envelope.Fingerprint != previousLogicalSchemaFingerprint {
+				return fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+			}
+			state = logicalSchemaV4
+			return nil
+		}
 		if envelope.Version != logicalSchemaVersion || envelope.Fingerprint != logicalSchemaFingerprint {
 			return fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
 		}
+		state = logicalSchemaCurrent
 		return nil
+	})
+	return state, err
+}
+
+func commitLogicalSchema(ctx context.Context, backend spi.Backend, observed logicalSchemaState) error {
+	if observed == logicalSchemaCurrent {
+		return nil
+	}
+	return backend.Update(ctx, func(tx spi.WriteTx) error {
+		envelope, err := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
+		if err != nil {
+			return err
+		}
+		return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
 	})
 }
 

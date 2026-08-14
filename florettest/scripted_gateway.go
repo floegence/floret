@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/floegence/floret/v3/provider"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/provider"
+	"github.com/floegence/floret/v4/tools"
 )
 
 // ErrGatewayScriptExhausted reports a request without a remaining Step.

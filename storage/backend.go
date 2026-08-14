@@ -4,8 +4,8 @@
 package storage
 
 import (
-	"github.com/floegence/floret/v3/internal/storagebridge"
-	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v4/internal/storagebridge"
+	"github.com/floegence/floret/v4/storage/spi"
 )
 
 // Source is an opaque storage configuration consumed exclusively by

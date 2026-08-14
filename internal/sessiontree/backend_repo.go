@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/storagecodec"
-	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v4/internal/storagecodec"
+	"github.com/floegence/floret/v4/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -18,12 +18,9 @@ var backendStateKey = storagecodec.Tuple(storagecodec.TupleString("sessiontree")
 // BackendRepo executes the canonical session-tree semantics inside Backend
 // snapshot and serializable transactions.
 type BackendRepo struct {
-	backend  spi.Backend
-	now      func() time.Time
-	policy   LeasePolicy
-	mu       sync.Mutex
-	changeMu sync.Mutex
-	change   chan struct{}
+	backend spi.Backend
+	now     func() time.Time
+	mu      sync.Mutex
 	// rootInventoryEncoded is compared with the durable record before serving
 	// the decoded projection. Root inventory reads are frequent and the record
 	// can contain large activity payloads, so decoding it on every poll causes
@@ -45,14 +42,11 @@ type BackendRepo struct {
 }
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
-func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy, now func() time.Time) (*BackendRepo, error) {
+func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Time) (*BackendRepo, error) {
 	if backend == nil || now == nil {
 		return nil, errors.New("backend repo requires backend and clock")
 	}
-	if err := policy.Validate(); err != nil {
-		return nil, err
-	}
-	repo := &BackendRepo{backend: backend, now: now, policy: policy, change: make(chan struct{})}
+	repo := &BackendRepo{backend: backend, now: now}
 	var committedInventory []RootThreadInventoryItem
 	var committedInventoryEncoded []byte
 	var committedMemory *MemoryRepo
@@ -63,10 +57,7 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			return err
 		}
 		if !found {
-			memory, err = NewMemoryRepoWithLeasePolicy(policy, now)
-			if err != nil {
-				return err
-			}
+			memory = newMemoryRepo(now)
 			committedInventoryEncoded, err = repo.save(tx, memory)
 			if err != nil {
 				return err
@@ -81,7 +72,6 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, policy LeasePolicy
 			committedMemory = memory
 			return nil
 		}
-		repo.policy = memory.AuthorityLeasePolicy()
 		if migrated {
 			if records, scanErr := scanBackendDomainJournal(ctx, tx); scanErr != nil {
 				return scanErr
@@ -354,54 +344,25 @@ func (repo *BackendRepo) update(ctx context.Context, mutate func(*MemoryRepo) er
 	return repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error { return mutate(memory) })
 }
 
-// updateMemory applies a mutation to the live in-process authority without
-// encoding the complete session-tree state. Callers must use a durable
-// request ledger or a later semantic checkpoint when recovery requires the
-// mutation to survive a process crash.
-func (repo *BackendRepo) updateMemory(ctx context.Context, mutate func(*MemoryRepo) error) error {
-	if repo == nil || mutate == nil {
-		return errors.New("backend memory mutation requires repository and callback")
-	}
-	if ctx == nil {
-		return errors.New("backend memory mutation context is required")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
-	if repo.domainMemory == nil {
-		return errors.New("session-tree state is missing")
-	}
-	before := repo.domainMemory.revisionFacts()
-	if err := mutate(repo.domainMemory); err != nil {
-		return err
-	}
-	changed := repo.domainMemory.advanceThreadRevisions(before)
-	items, err := repo.domainMemory.rootThreadInventoryLocked()
-	if err != nil {
-		return err
-	}
-	if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
-		return err
-	}
-	repo.rootInventoryItems = cloneRootThreadInventoryItems(items)
-	repo.domainDirty = true
-	if changed {
-		repo.signalChange()
-	}
-	return nil
-}
-
-// AdmitTurn is intentionally memory-first. The runtime request ledger owns
-// the stable logical identity and recovery replay; the full domain checkpoint
-// is deferred until a semantic barrier such as effect intent or turn finish.
-func (repo *BackendRepo) AdmitTurn(ctx context.Context, request AdmitTurnRequest) (result AdmitTurnResult, err error) {
-	err = repo.updateMemory(ctx, func(memory *MemoryRepo) error {
-		result, err = memory.AdmitTurn(ctx, request)
+// AcceptTurn commits the canonical user/queue boundary before provider
+// dispatch. It is a normal domain transaction, not a memory-only receipt.
+func (repo *BackendRepo) AcceptTurn(ctx context.Context, request AcceptTurnRequest) (result AcceptTurnResult, err error) {
+	err = repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
+		result, err = memory.AcceptTurn(ctx, request)
 		return err
 	})
 	return result, err
+}
+
+func (repo *BackendRepo) ReadAcceptedTurn(ctx context.Context, threadID, turnID, runID string) (AcceptTurnResult, bool, error) {
+	var result AcceptTurnResult
+	var found bool
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var readErr error
+		result, found, readErr = memory.ReadAcceptedTurn(ctx, threadID, turnID, runID)
+		return readErr
+	})
+	return result, found, err
 }
 
 // UpdateDomain executes one session-tree mutation and related domain writes in
@@ -437,11 +398,9 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if decodeErr != nil {
 			return decodeErr
 		}
-		before := memory.revisionFacts()
 		if err := mutate(memory, tx); err != nil {
 			return err
 		}
-		changed = memory.advanceThreadRevisions(before)
 		afterEncoded, encodeErr := memory.EncodeMemoryState()
 		if encodeErr != nil {
 			return encodeErr
@@ -455,6 +414,7 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 			return frameErr
 		}
 		if domainChanged {
+			changed = true
 			encodedFrame, marshalErr := encodeBackendDomainJournalFrame(frame)
 			if marshalErr != nil {
 				return marshalErr
@@ -495,54 +455,6 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		}
 		repo.domainMemory = committedMemory
 	}
-	if err == nil && changed {
-		repo.signalChange()
-	}
+	_ = changed
 	return err
-}
-
-// AuthorityLeasePolicy returns the immutable persisted lease policy.
-func (repo *BackendRepo) AuthorityLeasePolicy() LeasePolicy {
-	return repo.policy
-}
-
-func (repo *BackendRepo) signalChange() {
-	repo.changeMu.Lock()
-	close(repo.change)
-	repo.change = make(chan struct{})
-	repo.changeMu.Unlock()
-}
-
-func (repo *BackendRepo) changes() <-chan struct{} {
-	repo.changeMu.Lock()
-	defer repo.changeMu.Unlock()
-	return repo.change
-}
-
-var errApprovalPending = errors.New("approval decision is pending")
-
-// WaitApprovalDecision waits without holding a backend transaction open.
-func (repo *BackendRepo) WaitApprovalDecision(ctx context.Context, approvalID string) (result WaitApprovalDecisionResult, err error) {
-	for {
-		changed := repo.changes()
-		err = repo.view(ctx, func(memory *MemoryRepo) error {
-			record, readErr := memory.Approval(ctx, approvalID)
-			if readErr != nil {
-				return readErr
-			}
-			if record.State == ApprovalRequested {
-				return errApprovalPending
-			}
-			result, readErr = memory.WaitApprovalDecision(ctx, approvalID)
-			return readErr
-		})
-		if !errors.Is(err, errApprovalPending) {
-			return result, err
-		}
-		select {
-		case <-ctx.Done():
-			return WaitApprovalDecisionResult{}, ctx.Err()
-		case <-changed:
-		}
-	}
 }

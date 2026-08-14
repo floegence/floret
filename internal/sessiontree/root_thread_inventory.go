@@ -8,12 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/storagecodec"
-	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v4/internal/storagecodec"
+	"github.com/floegence/floret/v4/storage/spi"
 )
 
 const rootThreadInventoryVersion = 1
@@ -27,16 +26,12 @@ type persistedRootThreadInventory struct {
 	Items   []RootThreadInventoryItem `json:"items"`
 }
 
-// RootThreadInventoryItem is one exact root-thread projection read from the
-// same canonical domain snapshot as the surrounding page.
+// RootThreadInventoryItem is one canonical root thread and its active path.
 type RootThreadInventoryItem struct {
-	Meta      ThreadMeta
-	Path      []Entry
-	Authority ThreadAuthoritySnapshot
-	Revision  ThreadRevision
-	// ProjectionFingerprint identifies the validated source facts used by
-	// host-facing runtime projections. It is intentionally process-local and
-	// never part of the persisted inventory contract.
+	Meta ThreadMeta
+	Path []Entry
+	// ProjectionFingerprint validates the cached inventory payload; it is not a
+	// lifecycle revision or host replay cursor.
 	ProjectionFingerprint [32]byte `json:"-"`
 }
 
@@ -118,16 +113,7 @@ func (r *MemoryRepo) rootThreadInventoryLocked() ([]RootThreadInventoryItem, err
 		if err != nil {
 			return nil, err
 		}
-		authority := ThreadAuthoritySnapshot{
-			Thread: meta, ClaimOperationID: r.authorityClaims[meta.ID], LeaseGeneration: r.leaseGeneration[meta.ID],
-		}
-		if lease, active := r.leases[meta.ID]; active {
-			copy := lease
-			authority.Lease = &copy
-		}
-		items = append(items, RootThreadInventoryItem{
-			Meta: meta, Path: path, Authority: authority, Revision: r.threadRevisions[meta.ID],
-		})
+		items = append(items, RootThreadInventoryItem{Meta: meta, Path: path})
 	}
 	return items, nil
 }
@@ -184,19 +170,13 @@ func validateRootThreadInventory(items []RootThreadInventoryItem) error {
 	seen := make(map[string]struct{}, len(items))
 	for index, item := range items {
 		threadID := strings.TrimSpace(item.Meta.ID)
-		if threadID == "" || item.Meta.ParentThreadID != "" || item.Revision < 0 ||
-			!reflect.DeepEqual(item.Authority.Thread, item.Meta) {
+		if threadID == "" || item.Meta.ParentThreadID != "" {
 			return fmt.Errorf("root thread inventory item %d has invalid identity", index)
 		}
 		if _, duplicate := seen[threadID]; duplicate {
 			return fmt.Errorf("root thread inventory contains duplicate thread %q", threadID)
 		}
 		seen[threadID] = struct{}{}
-		if err := ValidateThreadAuthoritySnapshot(
-			item.Meta, item.Path, item.Authority.Lease, item.Authority.ClaimOperationID, item.Authority.LeaseGeneration,
-		); err != nil {
-			return err
-		}
 		for entryIndex, entry := range item.Path {
 			if entry.ThreadID != threadID || ValidateEntryIntegrity(entry) != nil ||
 				(entryIndex == 0 && entry.ParentID != "") ||
@@ -244,10 +224,6 @@ func cloneRootThreadInventoryItems(items []RootThreadInventoryItem) []RootThread
 	out := make([]RootThreadInventoryItem, len(items))
 	for index, item := range items {
 		item.Path = cloneEntries(item.Path)
-		if item.Authority.Lease != nil {
-			lease := *item.Authority.Lease
-			item.Authority.Lease = &lease
-		}
 		out[index] = item
 	}
 	return out
@@ -256,32 +232,11 @@ func cloneRootThreadInventoryItems(items []RootThreadInventoryItem) []RootThread
 func (r *MemoryRepo) ListRootThreadInventory(_ context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	metas := make([]ThreadMeta, 0, len(r.threads))
-	for _, meta := range r.threads {
-		if err := ValidateThreadMetaAuthority(meta); err != nil {
-			return nil, err
-		}
-		metas = append(metas, meta)
+	out, err := r.rootThreadInventoryLocked()
+	if err != nil {
+		return nil, err
 	}
-	metas = ApplyThreadListOptions(metas, opts)
-	out := make([]RootThreadInventoryItem, 0, len(metas))
-	for _, meta := range metas {
-		path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
-		if err != nil {
-			return nil, err
-		}
-		authority, err := r.inspectThreadAuthorityLocked(meta.ID)
-		if err != nil {
-			return nil, err
-		}
-		revision, found := r.threadRevisions[meta.ID]
-		if !found {
-			revision = 0
-		}
-		out = append(out, RootThreadInventoryItem{
-			Meta: meta, Path: path, Authority: authority, Revision: revision,
-		})
-	}
+	out = applyRootThreadInventoryOptions(out, opts)
 	if err := attachRootThreadInventoryProjectionFingerprints(out); err != nil {
 		return nil, err
 	}

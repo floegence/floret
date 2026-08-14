@@ -340,9 +340,6 @@ func (r *MemoryRepo) mutateThreadTitle(ctx context.Context, threadID string, mut
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
-	if r.threadAuthorityClaimedLocked(threadID) {
-		return ThreadTitleMutationResult{}, ErrThreadAuthorityBusy
-	}
 	if err := ValidateThreadTitleState(meta); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}

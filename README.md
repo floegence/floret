@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v3@v3.2.8
+go get github.com/floegence/floret/v4@v3.2.8
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -36,10 +36,10 @@ import (
     "context"
     "os"
 
-    "github.com/floegence/floret/v3/config"
-    "github.com/floegence/floret/v3/provider"
-    "github.com/floegence/floret/v3/runtime"
-    "github.com/floegence/floret/v3/storage"
+    "github.com/floegence/floret/v4/config"
+    "github.com/floegence/floret/v4/provider"
+    "github.com/floegence/floret/v4/runtime"
+    "github.com/floegence/floret/v4/storage"
 )
 
 func main() {
@@ -135,48 +135,20 @@ data, not an alternate input-response or durable message authority.
 
 ## Runtime Boundary
 
-`runtime.Host` belongs in the composition root. Its public entry points are
-`Open`, `Host.Threads`, `Host.Thread`, and `Host.Shutdown(ctx)`. A `Thread`
-binds one exact `identity.ThreadID`. The composition root grants
-`Thread.Reader`, `Thread.Lifecycle`, `Thread.TurnExecutor`, `Thread.Compactor`,
-or `Thread.SubAgentManager`; application services accept only the narrow
-interface they need.
+`runtime.Host` belongs in the composition root. `Host.ThreadService` returns the
+single typed lifecycle boundary. Its `Create`, `Fork`, `Delete`, `SetTitle`,
+`List`, `View`, `History`, `Send`, `Respond`, `Cancel`, `Retry`, `RetryEffect`,
+queue, import, and `Subscribe` methods all operate on stable thread and request
+identities. Child agents are ordinary child threads with explicit parent
+identity, so they use the same current-view and command contracts.
 
-`ThreadReader.Child` binds direct-child read authority for canonical detail and
-pending tool targets. `ThreadReader.Descendant` binds one validated descendant
-at any depth for turn pages, exact turn reads, and artifacts. Neither handle
-accepts another thread identity after binding, and unrelated, deleted, or
-corrupt ancestry fails closed.
-
-Root canonical reads are issued through `ThreadReader`: bootstrap, overview,
-exact turn, turn pages, todos, context, approval queue, authoritative
-projections, pending-tool targets, and direct-child inventory. `Child` provides
-the corresponding exact turn and turn-page authority for one direct child.
-Title updates use `ThreadLifecycle.SetTitle`. Interrupted-turn and
-provider-free pending-tool recovery use `ThreadLifecycle` to issue one-time
-handles bound to the exact current proof or target.
-
-Commands use stable logical request identities and explicit names:
-`CreateThread`, `StartTurn`, `AdmitTurn`, `ExecuteAdmission`, `RetryTurn`,
-`Fork`, `Delete`,
-`Compact`, `ContinuePendingTool`, `RecordPendingToolOutcome`,
-`ResolveApproval`, `UpdateTodos`, `SpawnSubAgent`, `SendSubAgentMessage`,
-`InterruptSubAgent`, `WaitSubAgents`, and `CloseSubAgent`. Floret allocates all
-lifecycle identities. Replaying the same logical request under the same
-operation and bound authority returns the original identities; changing durable
-input returns a typed request conflict.
-Turn execution begins through `TurnExecutor.StartTurn` or the receipt-first
-`TurnExecutor.AdmitTurn`/`TurnExecutor.ExecuteAdmission` pair.
-
-Hosts that must bind product coordination after canonical admission can use
-`TurnExecutor.AdmitTurn` to persist the user message and immutable execution
-plan, then receive a `TurnAdmissionReceipt` before any provider request is sent.
-They then call `TurnExecutor.ExecuteAdmission` with that receipt and an
-`ExecutionContext` containing only current-turn supplemental context or an
-executable signal binding, or
-use `AdmitTurnResult.Execute` as a same-process convenience. The receipt is
-the durable handoff point; hosts do not maintain a second queryable turn
-lifecycle or persist a duplicate `StartTurnCommand`.
+Each thread has one in-memory runtime owner. `Send` publishes the user item and
+active current view before provider dispatch, while the canonical journal is the
+only durable fact source. Provider and tool I/O execute outside the thread lock.
+`Cancel` is idempotent for every known thread and fences late provider output.
+`Respond` resolves the matching approval or input interaction in place. An
+uncertain effect is never replayed automatically; `RetryEffect` requires an
+explicit risk acknowledgement and remains attached to the original tool row.
 
 `runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
 Gateway, tools, capabilities, reasoning policy, and execution policy. The
@@ -184,43 +156,18 @@ effective snapshot and continuation state used by each run are Floret-owned
 durable facts. Provider credentials and editable profile sources remain in the
 host.
 
-`ThreadReader.ReadAuthoritativeProjection` returns a canonical projection with
-its revision and provenance. `DeriveThreadTurn` is only a validated offline
-calculation from caller-supplied detail events and must not be stored as Agent
-lifecycle authority. Committed `runtime.Event` values carry both the compatible
-full projection and an ordinal-bound `ThreadTurnProjectionDelta`. Live hosts
-apply deltas with `ApplyThreadTurnProjectionDelta`. Running deltas require the
-exact preceding ordinal, while terminal deltas use base ordinal zero as
-self-contained recovery checkpoints. Any other identity or base-ordinal
-mismatch requires a canonical reload rather than a guessed merge. `Thread`
-exposes only capability issuers and identity; it
-does not expose direct read, mutation, execution, compaction, or SubAgent
-methods. Production hosts leave `runtime.Options.IDSource` nil; deterministic
-identity injection belongs to `florettest.NewIDSource`.
+Current views contain directly renderable items, pending interactions, and the
+accepted queue. Their `ViewVersion` is process-local notification ordering, not
+a durable replay cursor. Production hosts leave `runtime.Options.IDSource` nil;
+deterministic identity injection belongs to `florettest.NewIDSource`.
 
 ## Consistent Reads
 
-Every exact thread has one monotonic `runtime.ThreadRevision`. A reconnecting
-consumer uses one fixed handshake through the read-only capability:
-
-1. Call `ThreadReader.Bootstrap` to atomically load thread, initial turn page,
-   approvals, todos, context, pending work, and direct SubAgents at revision R.
-2. Render that complete read model and retain its page cursors.
-3. Call `ThreadReader.Subscribe` with `AfterRevision=R`.
-
-Page cursors bind thread, revision, direction, and position. Page limits are
-1 through 200. If a revision is no longer readable, Floret returns
-`ErrRevisionUnavailable`; the consumer obtains a new snapshot instead of
-silently switching to current state.
-
-`ThreadReader.Subscribe` observes only the exact bound thread. It is a linearized
-pull protocol through `Subscription.Next(ctx)`, not a callback or bare channel.
-Durable revision events tell consumers which canonical domain to query.
-Provider, token, and tool progress is transient. On queue overflow the
-subscription yields one Gap with its last delivered and resync revisions, then
-returns `ErrSubscriptionStale` until the consumer repeats the snapshot/query/
-subscribe handshake. Parent streams contain child publication and close facts,
-not child execution events.
+`ThreadService.View` returns one complete replaceable current view.
+`ThreadService.Subscribe` publishes workspace summary and current-view updates;
+reconnecting clients refresh summaries and the currently visible view. There is
+no durable cursor, replay ledger, materialized projection, or second lifecycle
+authority.
 
 ## Storage
 

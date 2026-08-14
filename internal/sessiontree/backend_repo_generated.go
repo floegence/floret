@@ -5,56 +5,8 @@ package sessiontree
 import (
 	"context"
 
-	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session/artifact"
 )
-
-func (repo *BackendRepo) AcquireThreadAuthorityClaim(ctx context.Context, operationID string, requiredSourceThreadIDs, authorityThreadIDs []string) error {
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		return memory.AcquireThreadAuthorityClaim(ctx, operationID, requiredSourceThreadIDs, authorityThreadIDs)
-	})
-	return err
-}
-
-func (repo *BackendRepo) AcquireTurnLease(ctx context.Context, request TurnLease) (TurnLease, error) {
-	var result0 TurnLease
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.AcquireTurnLease(ctx, request)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ActiveTurnLease(ctx context.Context, threadID string) (TurnLease, bool, error) {
-	var result0 TurnLease
-	var result1 bool
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.ActiveTurnLease(ctx, threadID)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) AdmitPendingToolCompletion(ctx context.Context, req AdmitPendingToolCompletionRequest) (AdmitPendingToolCompletionResult, error) {
-	var result0 AdmitPendingToolCompletionResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.AdmitPendingToolCompletion(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentInputRequest) (AdmitSubAgentInputResult, error) {
-	var result0 AdmitSubAgentInputResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.AdmitSubAgentInput(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
 
 func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
 	var result0 Entry
@@ -66,11 +18,11 @@ func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOpt
 	return result0, err
 }
 
-func (repo *BackendRepo) Approval(ctx context.Context, approvalID string) (ApprovalRecord, error) {
-	var result0 ApprovalRecord
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
+func (repo *BackendRepo) AppendRuntimeFacts(ctx context.Context, threadID string, entries []Entry) ([]Entry, error) {
+	var result0 []Entry
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
-		result0, callErr = memory.Approval(ctx, approvalID)
+		result0, callErr = memory.AppendRuntimeFacts(ctx, threadID, entries)
 		return callErr
 	})
 	return result0, err
@@ -96,31 +48,11 @@ func (repo *BackendRepo) BeginAutomaticThreadTitle(ctx context.Context, req Begi
 	return result0, err
 }
 
-func (repo *BackendRepo) BeginCompaction(ctx context.Context, req BeginCompactionRequest) (BeginCompactionResult, error) {
-	var result0 BeginCompactionResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.BeginCompaction(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) BeginEffectDispatch(ctx context.Context, req BeginEffectDispatchRequest) (EffectAttempt, error) {
 	var result0 EffectAttempt
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.BeginEffectDispatch(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) CancelApprovalBatch(ctx context.Context, req CancelApprovalBatchRequest) (CancelApprovalBatchResult, error) {
-	var result0 CancelApprovalBatchResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.CancelApprovalBatch(ctx, req)
 		return callErr
 	})
 	return result0, err
@@ -135,16 +67,6 @@ func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, tur
 		return callErr
 	})
 	return result0, result1, err
-}
-
-func (repo *BackendRepo) CommitApprovalDispatch(ctx context.Context, req CommitApprovalDispatchRequest) (CommitApprovalDispatchResult, error) {
-	var result0 CommitApprovalDispatchResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.CommitApprovalDispatch(ctx, req)
-		return callErr
-	})
-	return result0, err
 }
 
 func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
@@ -162,16 +84,6 @@ func (repo *BackendRepo) CompleteAutomaticThreadTitle(ctx context.Context, req C
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.CompleteAutomaticThreadTitle(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) CreateRoot(ctx context.Context, req CreateRootRequest) (CreateRootResult, error) {
-	var result0 CreateRootResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.CreateRoot(ctx, req)
 		return callErr
 	})
 	return result0, err
@@ -215,6 +127,26 @@ func (repo *BackendRepo) DeleteRootTree(ctx context.Context, rootThreadID string
 	return result0, err
 }
 
+func (repo *BackendRepo) DeleteRootTreeWithRequest(ctx context.Context, rootThreadID, requestKey, fingerprint string) (DeleteRootTreeResult, error) {
+	var result0 DeleteRootTreeResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.DeleteRootTreeWithRequest(ctx, rootThreadID, requestKey, fingerprint)
+		return callErr
+	})
+	return result0, err
+}
+
+func (repo *BackendRepo) EffectAttempt(ctx context.Context, threadID, attemptID string) (EffectAttempt, error) {
+	var result0 EffectAttempt
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.EffectAttempt(ctx, threadID, attemptID)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) Entries(ctx context.Context, threadID string) ([]Entry, error) {
 	var result0 []Entry
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
@@ -245,41 +177,11 @@ func (repo *BackendRepo) FailAutomaticThreadTitle(ctx context.Context, req FailA
 	return result0, err
 }
 
-func (repo *BackendRepo) FinalizeApproval(ctx context.Context, req FinalizeApprovalRequest) (FinalizeApprovalResult, error) {
-	var result0 FinalizeApprovalResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.FinalizeApproval(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) FinishCompaction(ctx context.Context, req FinishCompactionRequest) (FinishCompactionResult, error) {
-	var result0 FinishCompactionResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.FinishCompaction(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEffectDispatchRequest) (FinishEffectDispatchResult, error) {
 	var result0 FinishEffectDispatchResult
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.FinishEffectDispatch(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) FinishSubAgentClose(ctx context.Context, req FinishSubAgentCloseRequest) (FinishSubAgentCloseResult, error) {
-	var result0 FinishSubAgentCloseResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.FinishSubAgentClose(ctx, req)
 		return callErr
 	})
 	return result0, err
@@ -316,51 +218,11 @@ func (repo *BackendRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOpti
 	return result0, result1, err
 }
 
-func (repo *BackendRepo) InspectSubAgentThreadAuthority(ctx context.Context, parentThreadID, childThreadID string) (SubAgentThreadAuthoritySnapshot, error) {
-	var result0 SubAgentThreadAuthoritySnapshot
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.InspectSubAgentThreadAuthority(ctx, parentThreadID, childThreadID)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) InspectThreadAuthority(ctx context.Context, threadID string) (ThreadAuthoritySnapshot, error) {
-	var result0 ThreadAuthoritySnapshot
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.InspectThreadAuthority(ctx, threadID)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) ListCanonicalTurns(ctx context.Context, opts ListCanonicalTurnsOptions) (CanonicalTurnsPage, error) {
 	var result0 CanonicalTurnsPage
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.ListCanonicalTurns(ctx, opts)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ListInterruptedTurnRecoveryCandidates(ctx context.Context) ([]InterruptedTurnRecoveryCandidate, error) {
-	var result0 []InterruptedTurnRecoveryCandidate
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.ListInterruptedTurnRecoveryCandidates(ctx)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ListSubAgentInputs(ctx context.Context, childThreadID string, state SubAgentInputState) ([]SubAgentInputRecord, error) {
-	var result0 []SubAgentInputRecord
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.ListSubAgentInputs(ctx, childThreadID, state)
 		return callErr
 	})
 	return result0, err
@@ -423,16 +285,6 @@ func (repo *BackendRepo) PendingAutomaticThreadTitles(ctx context.Context) ([]Th
 	return result0, err
 }
 
-func (repo *BackendRepo) PrepareApprovalBatch(ctx context.Context, req PrepareApprovalBatchRequest) (PrepareApprovalBatchResult, error) {
-	var result0 PrepareApprovalBatchResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.PrepareApprovalBatch(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) PrepareEffectAttempt(ctx context.Context, req PrepareEffectAttemptRequest) (PrepareEffectAttemptResult, error) {
 	var result0 PrepareEffectAttemptResult
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
@@ -443,59 +295,11 @@ func (repo *BackendRepo) PrepareEffectAttempt(ctx context.Context, req PrepareEf
 	return result0, err
 }
 
-func (repo *BackendRepo) PrepareForkClaim(ctx context.Context, operationID, rootThreadID string, nodes []ForkOptions) error {
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		return memory.PrepareForkClaim(ctx, operationID, rootThreadID, nodes)
-	})
-	return err
-}
-
-func (repo *BackendRepo) PrepareSubAgentClose(ctx context.Context, req PrepareSubAgentCloseRequest) (PrepareSubAgentCloseResult, error) {
-	var result0 PrepareSubAgentCloseResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.PrepareSubAgentClose(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) ProviderState(ctx context.Context, threadID string) (ProviderStateRecord, error) {
 	var result0 ProviderStateRecord
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.ProviderState(ctx, threadID)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) PublishSubAgent(ctx context.Context, req PublishSubAgentRequest) (PublishSubAgentResult, error) {
-	var result0 PublishSubAgentResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.PublishSubAgent(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) PublishSubAgentInput(ctx context.Context, req PublishSubAgentInputRequest) (SubAgentInputRecord, bool, error) {
-	var result0 SubAgentInputRecord
-	var result1 bool
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.PublishSubAgentInput(ctx, req)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) PublishSubAgentPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (PublishSubAgentPendingToolCompletionResult, error) {
-	var result0 PublishSubAgentPendingToolCompletionResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.PublishSubAgentPendingToolCompletion(ctx, req)
 		return callErr
 	})
 	return result0, err
@@ -513,16 +317,6 @@ func (repo *BackendRepo) ReadAgentTodoState(ctx context.Context, threadID string
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.ReadAgentTodoState(ctx, threadID)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ReadApprovalQueue(ctx context.Context, threadID string) (ApprovalQueue, error) {
-	var result0 ApprovalQueue
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.ReadApprovalQueue(ctx, threadID)
 		return callErr
 	})
 	return result0, err
@@ -548,92 +342,11 @@ func (repo *BackendRepo) ReadCanonicalTurn(ctx context.Context, threadID, turnID
 	return result0, err
 }
 
-func (repo *BackendRepo) ReadCompaction(ctx context.Context, threadID, requestID string) (CompactionOperation, bool, error) {
-	var result0 CompactionOperation
-	var result1 bool
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.ReadCompaction(ctx, threadID, requestID)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) ReadPendingToolCompletion(ctx context.Context, req AdmitPendingToolCompletionRequest) (AdmitPendingToolCompletionResult, bool, error) {
-	var result0 AdmitPendingToolCompletionResult
-	var result1 bool
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.ReadPendingToolCompletion(ctx, req)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) ReadSubAgentInput(ctx context.Context, inputID string) (SubAgentInputRecord, bool, error) {
-	var result0 SubAgentInputRecord
-	var result1 bool
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.ReadSubAgentInput(ctx, inputID)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) ReadTurnAdmission(ctx context.Context, threadID, turnID, runID string) (AdmitTurnResult, bool, error) {
-	var result0 AdmitTurnResult
-	var result1 bool
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, result1, callErr = memory.ReadTurnAdmission(ctx, threadID, turnID, runID)
-		return callErr
-	})
-	return result0, result1, err
-}
-
-func (repo *BackendRepo) RecoverInterruptedTurn(ctx context.Context, req RecoverInterruptedTurnRequest) (RecoverInterruptedTurnResult, error) {
-	var result0 RecoverInterruptedTurnResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.RecoverInterruptedTurn(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) RejectEffectAttempt(ctx context.Context, req RejectEffectAttemptRequest) (EffectAttempt, error) {
 	var result0 EffectAttempt
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.RejectEffectAttempt(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ReleaseTurnLease(ctx context.Context, proof TurnLease) error {
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		return memory.ReleaseTurnLease(ctx, proof)
-	})
-	return err
-}
-
-func (repo *BackendRepo) RenewTurnLease(ctx context.Context, proof TurnLease) (TurnLease, error) {
-	var result0 TurnLease
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.RenewTurnLease(ctx, proof)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
-	var result0 ResolveApprovalResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.ResolveApproval(ctx, req)
 		return callErr
 	})
 	return result0, err
@@ -649,31 +362,21 @@ func (repo *BackendRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleR
 	return result0, err
 }
 
-func (repo *BackendRepo) SettlePendingToolRecovery(ctx context.Context, req SettlePendingToolRecoveryRequest) (SettlePendingToolRecoveryResult, error) {
-	var result0 SettlePendingToolRecoveryResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.SettlePendingToolRecovery(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) TakeOverCompaction(ctx context.Context, req TakeOverCompactionRequest) (BeginCompactionResult, error) {
-	var result0 BeginCompactionResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.TakeOverCompaction(ctx, req)
-		return callErr
-	})
-	return result0, err
-}
-
 func (repo *BackendRepo) Thread(ctx context.Context, threadID string) (ThreadMeta, error) {
 	var result0 ThreadMeta
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.Thread(ctx, threadID)
+		return callErr
+	})
+	return result0, err
+}
+
+func (repo *BackendRepo) ThreadOrigin(ctx context.Context, requestKey string) (ThreadOrigin, error) {
+	var result0 ThreadOrigin
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ThreadOrigin(ctx, requestKey)
 		return callErr
 	})
 	return result0, err
@@ -699,13 +402,6 @@ func (repo *BackendRepo) UpdateThread(ctx context.Context, meta ThreadMeta) erro
 func (repo *BackendRepo) ValidateArtifactForkDestination(ctx context.Context, closure artifact.Closure) error {
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		return memory.ValidateArtifactForkDestination(ctx, closure)
-	})
-	return err
-}
-
-func (repo *BackendRepo) ValidateInterruptedTurnResolution(ctx context.Context, req RecoverInterruptedTurnRequest) error {
-	err := repo.view(ctx, func(memory *MemoryRepo) error {
-		return memory.ValidateInterruptedTurnResolution(ctx, req)
 	})
 	return err
 }

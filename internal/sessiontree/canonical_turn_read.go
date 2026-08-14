@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v4/internal/session"
 )
 
 var ErrCanonicalTurnNotFound = errors.New("session tree canonical turn not found")
@@ -23,62 +23,7 @@ type CanonicalTurnReadRepo interface {
 	ReadCanonicalTurn(context.Context, string, string) (CanonicalTurnRead, error)
 }
 
-// CanonicalTurnAdmissionFact validates persisted execution authority when it
-// exists for a normal turn and whenever a retry turn omits a user entry.
-type CanonicalTurnAdmissionFact struct {
-	ThreadID      string
-	TurnID        string
-	RunID         string
-	TurnStartedID string
-	UserMessageID string
-	BaseLeafID    string
-}
-
-func ValidateCanonicalTurnReadAuthority(turn CanonicalTurn, admission CanonicalTurnAdmissionFact) error {
-	threadID := strings.TrimSpace(admission.ThreadID)
-	turnID := strings.TrimSpace(turn.TurnID)
-	runID := strings.TrimSpace(turn.RunID)
-	if threadID == "" || turnID == "" || runID == "" ||
-		strings.TrimSpace(admission.TurnID) != turnID || strings.TrimSpace(admission.RunID) != runID ||
-		strings.TrimSpace(admission.TurnStartedID) != strings.TrimSpace(turn.StartedEntryID) {
-		return ErrAuthorityCorrupt
-	}
-	if err := ValidateCanonicalTurnReadStructure(turn, threadID); err != nil {
-		return err
-	}
-	entries := make([]Entry, 0, len(turn.Entries))
-	for _, item := range turn.Entries {
-		entries = append(entries, item.Entry)
-	}
-	retrySource, err := CanonicalTurnRetrySourceForStartedEntry(entries[0])
-	if err != nil {
-		return err
-	}
-	userEntryID := ""
-	userCount := 0
-	for _, entry := range entries {
-		if entry.Type == EntryUserMessage {
-			userCount++
-			userEntryID = entry.ID
-		}
-	}
-	if retrySource != nil {
-		if userCount != 0 || strings.TrimSpace(admission.UserMessageID) != "" ||
-			strings.TrimSpace(admission.BaseLeafID) != retrySource.EntryID ||
-			strings.TrimSpace(entries[0].ParentID) == "" {
-			return ErrAuthorityCorrupt
-		}
-		return nil
-	}
-	if userCount != 1 || strings.TrimSpace(admission.UserMessageID) != userEntryID ||
-		strings.TrimSpace(admission.BaseLeafID) != strings.TrimSpace(entries[0].ParentID) {
-		return ErrAuthorityCorrupt
-	}
-	return nil
-}
-
-// ValidateCanonicalTurnReadStructure validates journal shape independently of
-// optional execution-admission authority.
+// ValidateCanonicalTurnReadStructure validates the canonical journal shape.
 func ValidateCanonicalTurnReadStructure(turn CanonicalTurn, threadID string) error {
 	threadID = strings.TrimSpace(threadID)
 	turnID := strings.TrimSpace(turn.TurnID)
@@ -158,12 +103,8 @@ func (r *MemoryRepo) ReadCanonicalTurn(_ context.Context, threadID, turnID strin
 }
 
 func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (CanonicalTurn, error) {
-	admission, hasAdmission := r.turnAdmissions[turnAdmissionKey(threadID, turnID)]
 	ordinals := r.turnEntryOrdinals[threadID][turnID]
 	if len(ordinals) == 0 {
-		if hasAdmission {
-			return CanonicalTurn{}, ErrAuthorityCorrupt
-		}
 		return CanonicalTurn{}, ErrCanonicalTurnNotFound
 	}
 	if r.turnEntryCounts[threadID][turnID] != len(ordinals) {
@@ -221,14 +162,12 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 	if err != nil {
 		return CanonicalTurn{}, err
 	}
-	if !hasAdmission {
-		userCount := canonicalTurnUserEntryCount(pathEntries)
-		if retrySource == nil && userCount == 0 {
-			return CanonicalTurn{}, ErrCanonicalTurnNotFound
-		}
-		if retrySource != nil || userCount != 1 {
-			return CanonicalTurn{}, ErrAuthorityCorrupt
-		}
+	userCount := canonicalTurnUserEntryCount(pathEntries)
+	if retrySource == nil && userCount == 0 {
+		return CanonicalTurn{}, ErrCanonicalTurnNotFound
+	}
+	if retrySource == nil && userCount != 1 || retrySource != nil && userCount != 0 {
+		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	turn := CanonicalTurn{
 		TurnID: turnID, RunID: strings.TrimSpace(started.Metadata["run_id"]),
@@ -237,14 +176,6 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 	}
 	if err := ValidateCanonicalTurnReadStructure(turn, threadID); err != nil {
 		return CanonicalTurn{}, err
-	}
-	if hasAdmission {
-		if err := ValidateCanonicalTurnReadAuthority(turn, CanonicalTurnAdmissionFact{
-			ThreadID: admission.ThreadID, TurnID: admission.TurnID, RunID: admission.RunID,
-			TurnStartedID: admission.TurnStartedID, UserMessageID: admission.UserMessageID, BaseLeafID: admission.BaseLeafID,
-		}); err != nil {
-			return CanonicalTurn{}, err
-		}
 	}
 	if retrySource != nil {
 		eligible, err := r.retrySourceHasRetryEligibleDurableInputLocked(

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly module_path="github.com/floegence/floret/v3"
+readonly module_path="github.com/floegence/floret/v4"
 readonly baseline_tag="v3.0.0"
 readonly apidiff_version="v0.0.0-20260727155853-b88d891fe743"
 readonly apidiff_package="golang.org/x/exp/cmd/apidiff@${apidiff_version}"

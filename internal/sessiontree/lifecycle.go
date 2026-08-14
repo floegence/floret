@@ -87,24 +87,16 @@ type ThreadTombstone struct {
 	ThreadID            string
 	RootThreadID        string
 	ParentThreadID      string
-	CreateIntentID      string
-	ForkOperationID     string
-	ForkOperationNodeID string
+	OriginRequestKey    string
+	OriginFingerprint   string
+	DeleteRequestKey    string
+	DeleteFingerprint   string
 	ForkedFromThreadID  string
 	ForkedFromEntryID   string
+	LegacyCreateIntent  string `json:"create_intent_id,omitempty"`
+	LegacyForkRequestID string `json:"fork_operation_id,omitempty"`
+	LegacyForkNodeID    string `json:"fork_operation_node_id,omitempty"`
 	DeletedAt           time.Time
-}
-
-type CreateRootRequest struct {
-	ThreadID        string
-	CreateIntentID  string
-	ContractVersion string
-	Meta            ThreadMeta
-}
-
-type CreateRootResult struct {
-	Thread   ThreadMeta
-	Replayed bool
 }
 
 type DeleteRootTreeResult struct {
@@ -116,140 +108,21 @@ type ThreadTombstoneRepo interface {
 	ThreadTombstone(context.Context, string) (ThreadTombstone, error)
 }
 
-type RootAuthorityRepo interface {
-	ThreadTombstoneRepo
-	CreateRoot(context.Context, CreateRootRequest) (CreateRootResult, error)
-	DeleteRootTree(context.Context, string) (DeleteRootTreeResult, error)
+type ThreadOrigin struct {
+	Thread    *ThreadMeta
+	Tombstone *ThreadTombstone
 }
 
-type ThreadAuthoritySnapshot struct {
-	Thread           ThreadMeta
-	Lease            *TurnLease
-	ClaimOperationID string
-	LeaseGeneration  int64
+// ThreadOriginRepo resolves canonical create/fork identity without a receipt
+// ledger. A tombstone match prevents a deleted thread from being recreated.
+type ThreadOriginRepo interface {
+	ThreadOrigin(context.Context, string) (ThreadOrigin, error)
 }
 
-type ThreadAuthorityInspectionRepo interface {
-	InspectThreadAuthority(context.Context, string) (ThreadAuthoritySnapshot, error)
-}
-
-type SubAgentThreadAuthoritySnapshot struct {
-	Parent ThreadMeta
-	Child  ThreadAuthoritySnapshot
-}
-
-type SubAgentThreadAuthorityInspectionRepo interface {
-	InspectSubAgentThreadAuthority(context.Context, string, string) (SubAgentThreadAuthoritySnapshot, error)
-}
-
-type rootCreateLedger struct {
-	ThreadID        string
-	CreateIntentID  string
-	Fingerprint     string
-	ContractVersion string
-}
-
-func validateCreateRootRequest(req CreateRootRequest) error {
-	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.CreateIntentID) == "" {
-		return errors.New("root create requires thread and create intent identities")
-	}
-	if strings.TrimSpace(req.ContractVersion) == "" {
-		return errors.New("root create contract version is required")
-	}
-	if strings.TrimSpace(req.Meta.ID) != strings.TrimSpace(req.ThreadID) {
-		return fmt.Errorf("root create thread identity mismatch")
-	}
-	if strings.TrimSpace(req.Meta.ParentThreadID) != "" || strings.TrimSpace(req.Meta.ParentTurnID) != "" ||
-		strings.TrimSpace(req.Meta.ForkedFromThreadID) != "" || strings.TrimSpace(req.Meta.ForkedFromEntryID) != "" ||
-		strings.TrimSpace(req.Meta.ForkOperationID) != "" || strings.TrimSpace(req.Meta.ForkOperationNodeID) != "" {
-		return fmt.Errorf("root create requires an independent root thread")
-	}
-	return ValidateThreadMetaAuthority(req.Meta)
-}
-
-// ValidateCreateRootRequest validates the exact root-create contract.
-func ValidateCreateRootRequest(req CreateRootRequest) error {
-	return validateCreateRootRequest(req)
-}
-
-func createRootFingerprint(req CreateRootRequest) string {
-	return StableHash(strings.Join([]string{
-		strings.TrimSpace(req.ThreadID), strings.TrimSpace(req.CreateIntentID), strings.TrimSpace(req.ContractVersion),
-	}, "\x00"))
-}
-
-// CreateRootFingerprint is the stable identity used by root-create replay.
-func CreateRootFingerprint(req CreateRootRequest) string {
-	return createRootFingerprint(req)
-}
-
-func (r *MemoryRepo) CreateRoot(_ context.Context, req CreateRootRequest) (CreateRootResult, error) {
-	if err := validateCreateRootRequest(req); err != nil {
-		return CreateRootResult{}, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	fingerprint := createRootFingerprint(req)
-	intentID := strings.TrimSpace(req.CreateIntentID)
-	threadID := strings.TrimSpace(req.ThreadID)
-	if existing, ok := r.rootCreateIntents[intentID]; ok {
-		if existing.ThreadID != threadID || existing.Fingerprint != fingerprint {
-			return CreateRootResult{}, ErrRequestConflict
-		}
-		if meta, ok := r.threads[threadID]; ok {
-			if !createRootReplayMatches(meta, threadID) {
-				return CreateRootResult{}, ErrRequestConflict
-			}
-			return CreateRootResult{Thread: meta, Replayed: true}, nil
-		}
-		if _, ok := r.tombstones[threadID]; ok {
-			return CreateRootResult{}, ErrThreadDeleted
-		}
-		return CreateRootResult{}, ErrAuthorityCorrupt
-	}
-	if _, ok := r.tombstones[threadID]; ok {
-		return CreateRootResult{}, ErrThreadDeleted
-	}
-	for _, existing := range r.rootCreateIntents {
-		if existing.ThreadID == threadID {
-			return CreateRootResult{}, ErrRequestConflict
-		}
-	}
-	if _, exists := r.threads[threadID]; exists {
-		return CreateRootResult{}, ErrRequestConflict
-	}
-	meta := req.Meta
-	meta.ID = threadID
-	meta.Lifecycle = ThreadLifecycleOpen
-	created, err := r.createThreadLocked(meta)
-	if err != nil {
-		return CreateRootResult{}, err
-	}
-	r.rootCreateIntents[intentID] = rootCreateLedger{
-		ThreadID: threadID, CreateIntentID: intentID, Fingerprint: fingerprint,
-		ContractVersion: strings.TrimSpace(req.ContractVersion),
-	}
-	return CreateRootResult{Thread: created}, nil
-}
-
-func createRootReplayMatches(meta ThreadMeta, threadID string) bool {
-	if strings.TrimSpace(meta.ID) != strings.TrimSpace(threadID) ||
-		strings.TrimSpace(meta.ParentThreadID) != "" || strings.TrimSpace(meta.ParentTurnID) != "" ||
-		strings.TrimSpace(meta.ForkedFromThreadID) != "" || strings.TrimSpace(meta.ForkedFromEntryID) != "" ||
-		strings.TrimSpace(meta.ForkOperationID) != "" || strings.TrimSpace(meta.ForkOperationNodeID) != "" {
-		return false
-	}
-	lifecycle, err := canonicalThreadLifecycle(meta)
-	if err != nil || lifecycle != ThreadLifecycleOpen {
-		return false
-	}
-	return ValidateThreadMetaAuthority(meta) == nil
-}
-
-// CreateRootReplayMatches reports whether a live row is the exact canonical
-// root shape eligible for root-create replay.
-func CreateRootReplayMatches(meta ThreadMeta, threadID string) bool {
-	return createRootReplayMatches(meta, threadID)
+// ThreadDeleteRepo is the v4 canonical tombstone boundary. The request key is
+// stored on the tombstone itself rather than in a separate receipt ledger.
+type ThreadDeleteRepo interface {
+	DeleteRootTreeWithRequest(context.Context, string, string, string) (DeleteRootTreeResult, error)
 }
 
 func (r *MemoryRepo) ThreadTombstone(_ context.Context, threadID string) (ThreadTombstone, error) {
@@ -262,75 +135,54 @@ func (r *MemoryRepo) ThreadTombstone(_ context.Context, threadID string) (Thread
 	return tombstone, nil
 }
 
-func (r *MemoryRepo) InspectThreadAuthority(_ context.Context, threadID string) (ThreadAuthoritySnapshot, error) {
+func (r *MemoryRepo) ThreadOrigin(_ context.Context, requestKey string) (ThreadOrigin, error) {
+	requestKey = strings.TrimSpace(requestKey)
+	if requestKey == "" {
+		return ThreadOrigin{}, errors.New("thread origin request key is required")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inspectThreadAuthorityLocked(threadID)
-}
-
-func (r *MemoryRepo) inspectThreadAuthorityLocked(threadID string) (ThreadAuthoritySnapshot, error) {
-	threadID = strings.TrimSpace(threadID)
-	meta, ok := r.threads[threadID]
-	if !ok {
-		if _, deleted := r.tombstones[threadID]; deleted {
-			return ThreadAuthoritySnapshot{}, ErrThreadDeleted
+	var result ThreadOrigin
+	for _, meta := range r.threads {
+		if meta.OriginRequestKey != requestKey {
+			continue
 		}
-		return ThreadAuthoritySnapshot{}, ErrThreadNotFound
-	}
-	snapshot := ThreadAuthoritySnapshot{
-		Thread: meta, ClaimOperationID: r.authorityClaims[threadID], LeaseGeneration: r.leaseGeneration[threadID],
-	}
-	if lease, active := r.leases[threadID]; active {
-		copy := lease
-		snapshot.Lease = &copy
-	}
-	path, err := pathLocked(r.threads, r.entries, threadID, meta.LeafID)
-	if err != nil {
-		return ThreadAuthoritySnapshot{}, err
-	}
-	if err := ValidateThreadAuthoritySnapshot(snapshot.Thread, path, snapshot.Lease, snapshot.ClaimOperationID, snapshot.LeaseGeneration); err != nil {
-		return ThreadAuthoritySnapshot{}, err
-	}
-	return snapshot, nil
-}
-
-func (r *MemoryRepo) InspectSubAgentThreadAuthority(_ context.Context, parentThreadID, childThreadID string) (SubAgentThreadAuthoritySnapshot, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	parentThreadID = strings.TrimSpace(parentThreadID)
-	childThreadID = strings.TrimSpace(childThreadID)
-	parent, ok := r.threads[parentThreadID]
-	if !ok {
-		if _, deleted := r.tombstones[parentThreadID]; deleted {
-			return SubAgentThreadAuthoritySnapshot{}, ErrThreadDeleted
+		if result.Thread != nil || result.Tombstone != nil {
+			return ThreadOrigin{}, ErrAuthorityCorrupt
 		}
-		return SubAgentThreadAuthoritySnapshot{}, ErrThreadNotFound
+		copy := meta
+		result.Thread = &copy
 	}
-	if err := ValidateThreadMetaAuthority(parent); err != nil {
-		return SubAgentThreadAuthoritySnapshot{}, ErrAuthorityCorrupt
+	for _, tombstone := range r.tombstones {
+		if tombstone.OriginRequestKey != requestKey {
+			continue
+		}
+		if result.Thread != nil || result.Tombstone != nil {
+			return ThreadOrigin{}, ErrAuthorityCorrupt
+		}
+		copy := tombstone
+		result.Tombstone = &copy
 	}
-	child, ok := r.threads[childThreadID]
-	if !ok || strings.TrimSpace(child.ParentThreadID) != parentThreadID {
-		return SubAgentThreadAuthoritySnapshot{}, ErrSubAgentNotFound
+	if result.Thread == nil && result.Tombstone == nil {
+		return ThreadOrigin{}, ErrThreadNotFound
 	}
-	snapshot := ThreadAuthoritySnapshot{
-		Thread: child, ClaimOperationID: r.authorityClaims[childThreadID], LeaseGeneration: r.leaseGeneration[childThreadID],
-	}
-	if lease, active := r.leases[childThreadID]; active {
-		copy := lease
-		snapshot.Lease = &copy
-	}
-	path, err := pathLocked(r.threads, r.entries, childThreadID, child.LeafID)
-	if err != nil {
-		return SubAgentThreadAuthoritySnapshot{}, err
-	}
-	if err := ValidateThreadAuthoritySnapshot(snapshot.Thread, path, snapshot.Lease, snapshot.ClaimOperationID, snapshot.LeaseGeneration); err != nil {
-		return SubAgentThreadAuthoritySnapshot{}, err
-	}
-	return SubAgentThreadAuthoritySnapshot{Parent: parent, Child: snapshot}, nil
+	return result, nil
 }
 
 func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (DeleteRootTreeResult, error) {
+	return r.deleteRootTree(rootThreadID, "", "")
+}
+
+func (r *MemoryRepo) DeleteRootTreeWithRequest(_ context.Context, rootThreadID, requestKey, fingerprint string) (DeleteRootTreeResult, error) {
+	requestKey = strings.TrimSpace(requestKey)
+	fingerprint = strings.TrimSpace(fingerprint)
+	if requestKey == "" || fingerprint == "" {
+		return DeleteRootTreeResult{}, errors.New("delete request key and fingerprint are required")
+	}
+	return r.deleteRootTree(rootThreadID, requestKey, fingerprint)
+}
+
+func (r *MemoryRepo) deleteRootTree(rootThreadID, requestKey, fingerprint string) (DeleteRootTreeResult, error) {
 	rootThreadID = strings.TrimSpace(rootThreadID)
 	if rootThreadID == "" {
 		return DeleteRootTreeResult{}, errors.New("root thread id is required")
@@ -338,6 +190,9 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if tombstone, ok := r.tombstones[rootThreadID]; ok && tombstone.ThreadID == rootThreadID && tombstone.RootThreadID == rootThreadID {
+		if requestKey != "" && (tombstone.DeleteRequestKey != requestKey || tombstone.DeleteFingerprint != fingerprint) {
+			return DeleteRootTreeResult{}, ErrRequestConflict
+		}
 		threadIDs := make([]string, 0)
 		for threadID, candidate := range r.tombstones {
 			if candidate.RootThreadID == rootThreadID {
@@ -350,23 +205,13 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 	if _, ok := r.threads[rootThreadID]; !ok {
 		return DeleteRootTreeResult{}, ErrThreadNotFound
 	}
-	threadIDs, err := threadAuthorityTreeIDsLocked(r.threads, rootThreadID)
+	threadIDs, err := threadTreeIDsLocked(r.threads, rootThreadID)
 	if err != nil {
 		return DeleteRootTreeResult{}, err
 	}
 	for _, threadID := range threadIDs {
-		lifecycle, err := canonicalThreadLifecycle(r.threads[threadID])
-		if err != nil {
-			return DeleteRootTreeResult{}, err
-		}
-		if lifecycle == ThreadLifecycleClosing {
-			return DeleteRootTreeResult{}, ErrSubAgentClosing
-		}
-		if _, active := r.leases[threadID]; active {
-			return DeleteRootTreeResult{}, ErrThreadAuthorityBusy
-		}
-		if r.threadAuthorityClaimedLocked(threadID) {
-			return DeleteRootTreeResult{}, ErrThreadAuthorityBusy
+		if _, ok := r.threads[threadID]; !ok {
+			return DeleteRootTreeResult{}, ErrThreadNotFound
 		}
 	}
 	now := r.now().UTC()
@@ -377,17 +222,10 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 	for _, threadID := range threadIDs {
 		meta := r.threads[threadID]
 		rootID := rootThreadID
-		createIntentID := ""
-		for intentID, intent := range r.rootCreateIntents {
-			if intent.ThreadID == threadID {
-				createIntentID = intentID
-				break
-			}
-		}
 		r.tombstones[threadID] = ThreadTombstone{
 			ThreadID: threadID, RootThreadID: rootID, ParentThreadID: meta.ParentThreadID,
-			CreateIntentID:  createIntentID,
-			ForkOperationID: meta.ForkOperationID, ForkOperationNodeID: meta.ForkOperationNodeID,
+			OriginRequestKey: meta.OriginRequestKey, OriginFingerprint: meta.OriginFingerprint,
+			DeleteRequestKey: requestKey, DeleteFingerprint: fingerprint,
 			ForkedFromThreadID: meta.ForkedFromThreadID, ForkedFromEntryID: meta.ForkedFromEntryID,
 			DeletedAt: now,
 		}
@@ -395,24 +233,9 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 		r.deleteIndexedEntriesLocked(threadID)
 		delete(r.todos, threadID)
 		delete(r.providerStates, threadID)
-		delete(r.leases, threadID)
-		delete(r.authorityClaims, threadID)
-		delete(r.subAgentInputs, threadID)
-		delete(r.subAgentInputSequence, threadID)
-		delete(r.leaseGeneration, threadID)
 		for key, record := range r.artifacts {
 			if record.ThreadID == threadID {
 				delete(r.artifacts, key)
-			}
-		}
-		for key, admission := range r.turnAdmissions {
-			if admission.ThreadID == threadID {
-				delete(r.turnAdmissions, key)
-			}
-		}
-		for key, finish := range r.turnFinishes {
-			if finish.ThreadID == threadID {
-				delete(r.turnFinishes, key)
 			}
 		}
 	}
@@ -422,28 +245,10 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 			delete(r.effectAttempts, attemptID)
 		}
 	}
-	r.deleteApprovalAuthorityForThreadsLocked(deletedSet)
-	for requestID, completion := range r.pendingToolCompletions {
-		if _, deleted := deletedSet[completion.ThreadID]; deleted {
-			delete(r.pendingToolCompletions, requestID)
-		}
-	}
-	for requestID, compaction := range r.compactionOperations {
-		if _, deleted := deletedSet[compaction.ThreadID]; deleted {
-			delete(r.compactionOperations, requestID)
-		}
-	}
-	for operationID, closeOperation := range r.subAgentCloseOperations {
-		_, parentDeleted := deletedSet[closeOperation.ParentThreadID]
-		_, targetDeleted := deletedSet[closeOperation.TargetThreadID]
-		if parentDeleted || targetDeleted {
-			delete(r.subAgentCloseOperations, operationID)
-		}
-	}
 	return DeleteRootTreeResult{ThreadIDs: append([]string(nil), threadIDs...)}, nil
 }
 
-func threadAuthorityTreeIDsLocked(threads map[string]ThreadMeta, rootThreadID string) ([]string, error) {
+func threadTreeIDsLocked(threads map[string]ThreadMeta, rootThreadID string) ([]string, error) {
 	list := make([]ThreadMeta, 0, len(threads))
 	for _, meta := range threads {
 		list = append(list, meta)

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/sessiontree"
 )
 
 const (
@@ -87,13 +87,6 @@ func (t *Thread) startAutomaticTitle(ctx context.Context, turnID, runID, userEnt
 	if !ok {
 		return nil, errors.New("session tree repo does not support automatic thread title authority")
 	}
-	t.authorityMu.RLock()
-	authorityTransferred := false
-	defer func() {
-		if !authorityTransferred {
-			t.authorityMu.RUnlock()
-		}
-	}()
 	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
 	if err != nil {
 		return nil, err
@@ -134,12 +127,10 @@ func (t *Thread) startAutomaticTitle(ctx context.Context, turnID, runID, userEnt
 	execution := &automaticTitleExecution{cancel: cancel, done: done}
 	go func() {
 		defer close(done)
-		defer t.authorityMu.RUnlock()
 		defer finish()
 		defer cancel()
 		t.runAutomaticTitle(workerCtx, authority, begun.Thread, turnID, runID, automaticTitleMessages(input))
 	}()
-	authorityTransferred = true
 	return execution, nil
 }
 
@@ -316,19 +307,15 @@ func (t *Thread) validateAutomaticTitleProviderRequest(ctx context.Context) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	inspector, ok := t.harness.options.Repo.(sessiontree.ThreadAuthorityInspectionRepo)
-	if !ok {
-		return errors.New("session tree repo does not support provider authority inspection")
-	}
-	snapshot, err := inspector.InspectThreadAuthority(ctx, t.id)
+	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
 	if err != nil {
 		return err
 	}
-	lifecycle, err := snapshot.Thread.CanonicalLifecycle()
+	lifecycle, err := meta.CanonicalLifecycle()
 	if err != nil {
 		return err
 	}
-	if lifecycle != sessiontree.ThreadLifecycleOpen || snapshot.ClaimOperationID != "" {
+	if lifecycle != sessiontree.ThreadLifecycleOpen {
 		return sessiontree.ErrThreadAuthorityBusy
 	}
 	return nil

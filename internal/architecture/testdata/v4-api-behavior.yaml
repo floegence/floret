@@ -1,0 +1,171 @@
+version: 1
+scope: github.com/floegence/floret/v4/runtime
+defaults:
+  unknown_error: propagate
+  identity_allocation: floret
+  durable_request_key: thread_id+request_key
+  active_state_owner: one ThreadRuntime mutex per thread
+  durable_fact_source: canonical journal
+methods:
+  - method: Open
+    errors_is: [context.Canceled, context.DeadlineExceeded, storage/spi.ErrMigrationRequired]
+    errors_as: [MigrationRequiredError, UnsupportedLegacyContentError]
+    retryability: retry only after the classified storage cause is corrected
+    commit: returns a Host only after contiguous schema migration and canonical journal validation
+    replay: reopening the same source hydrates accepted inputs, queue items, and unresolved interactions
+    concurrency: one Host owns the storage source
+    cancellation: cancellation releases partial resources without publishing a Host
+    closing: not applicable before a Host is returned
+  - method: Host.ThreadService
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: never after Host closes
+    commit: binds one AgentFactory to the Host-owned runtime service
+    replay: repeated calls return the same service
+    concurrency: safe across callers
+    cancellation: no context is accepted
+    closing: rejects after closing starts
+  - method: ThreadService.Create
+    errors_is: [ErrHostClosed, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe; changed input under the same key is permanent
+    commit: appends one canonical thread origin and returns its current view
+    replay: the same request key returns the same thread
+    concurrency: same-key requests linearize to one canonical thread
+    cancellation: a committed canonical origin is never rolled back by caller cancellation
+    closing: rejects after closing starts
+  - method: ThreadService.Fork
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: appends one child Thread origin at a canonical source boundary
+    replay: the same request key returns the same child Thread
+    concurrency: source and destination identity validation is atomic
+    cancellation: never exposes a partial child
+    closing: rejects after closing starts
+  - method: ThreadService.Delete
+    errors_is: [ErrHostClosed, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: appends one durable tombstone and cancels process-local execution
+    replay: repeated deletion remains successful
+    concurrency: tombstone wins over late provider output
+    cancellation: a committed tombstone remains committed
+    closing: rejects new work after closing starts
+  - method: ThreadService.List
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: retry transient storage errors
+    commit: read-only summaries derived from canonical journal plus current in-memory activity
+    replay: unchanged state returns equivalent summaries
+    concurrency: background threads are independent of the selected viewer
+    cancellation: returns ctx.Err without partial output
+    closing: rejects after Host closes
+  - method: ThreadService.View
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted]
+    errors_as: []
+    retryability: retry not-found only after an independently observed create
+    commit: read-only complete replacement view
+    replay: unchanged state returns equivalent content; view_version is process-local ordering only
+    concurrency: one per-thread mutex snapshots active state
+    cancellation: returns ctx.Err without a partial view
+    closing: rejects after Host closes
+  - method: ThreadService.History
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted]
+    errors_as: []
+    retryability: resume from the returned canonical boundary
+    commit: read-only bounded canonical journal page
+    replay: the same canonical boundary returns the same page
+    concurrency: paging never owns active thread lifecycle
+    cancellation: returns ctx.Err without a partial page
+    closing: rejects after Host closes
+  - method: ThreadService.Send
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe and never duplicates the user item
+    commit: updates the in-memory view immediately and asynchronously appends canonical acceptance
+    replay: one request key produces one canonical user item whether active or queued
+    concurrency: thread-local serialization chooses active dispatch or durable queue exactly once
+    cancellation: caller cancellation cannot erase accepted input
+    closing: rejects after Host closes
+  - method: ThreadService.Respond
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: resolves the named interaction in memory and appends one canonical resolution
+    replay: a resolved interaction never returns to pending
+    concurrency: batch approval or input resolution is linearized per thread
+    cancellation: caller cancellation cannot erase a committed resolution
+    closing: rejects after Host closes
+  - method: ThreadService.Cancel
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact or new cancellation requests are idempotent
+    commit: marks cancellation immediately, clears pending interactions, and emits one terminal outcome
+    replay: cancel is successful in preparing, active, waiting, terminal, and handler-absent states
+    concurrency: late provider output is discarded by the process-local execution token
+    cancellation: command acceptance is independent of provider cancellation latency
+    closing: Host shutdown uses the same cancellation boundary
+  - method: ThreadService.Retry
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrNoRetryTarget, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: creates one successor turn linked to the canonical source turn
+    replay: retry never duplicates the source user item
+    concurrency: one retry lineage is accepted per request key
+    cancellation: caller cancellation cannot erase accepted retry intent
+    closing: rejects after Host closes
+  - method: ThreadService.RetryEffect
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrEffectOutcomeUnknown, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: unknown irreversible effects require explicit risk acknowledgement
+    commit: dispatches through the one-shot effect fence and updates the original tool item
+    replay: the same request key cannot execute an effect twice
+    concurrency: authorization and dispatch consumption are atomic
+    cancellation: unknown outcomes remain visible and are not replayed automatically
+    closing: rejects after Host closes
+  - method: ThreadService.ReorderQueue
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: appends one canonical queue order
+    replay: the same request key preserves the same order
+    concurrency: order applies to one thread-local queue snapshot
+    cancellation: committed order remains committed
+    closing: rejects after Host closes
+  - method: ThreadService.DeleteQueued
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: repeated deletion is idempotent
+    commit: appends one canonical queue removal
+    replay: removed input cannot be promoted or dispatched
+    concurrency: removal linearizes with promotion
+    cancellation: committed removal remains committed
+    closing: rejects after Host closes
+  - method: ThreadService.PromoteQueued
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact request replay is safe
+    commit: removes one queued item and dispatches it without duplicating canonical input
+    replay: the same request key returns the promoted current view
+    concurrency: promotion linearizes with queue mutation
+    cancellation: accepted promotion survives caller cancellation
+    closing: rejects after Host closes
+  - method: ThreadService.ImportPendingInputs
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: exact legacy request keys are idempotent
+    commit: one-time migration imports each product queue item into the canonical queue
+    replay: imported request keys never duplicate canonical input
+    concurrency: import serializes with ordinary Send
+    cancellation: committed imports remain committed
+    closing: rejects after Host closes
+  - method: ThreadService.Subscribe
+    errors_is: [ErrHostClosed]
+    errors_as: []
+    retryability: create a new subscription after transport loss
+    commit: registers one workspace current-view subscription
+    replay: no durable event replay contract exists; consumers refresh List and selected View after reconnect
+    concurrency: every active thread may publish independent replacement views
+    cancellation: Next returns ctx.Err; Close is idempotent
+    closing: Host closure terminates the subscription

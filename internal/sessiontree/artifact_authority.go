@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session/artifact"
 )
 
 var (

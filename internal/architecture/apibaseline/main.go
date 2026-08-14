@@ -16,15 +16,15 @@ import (
 )
 
 var publicPackages = []string{
-	"github.com/floegence/floret/v3/identity",
-	"github.com/floegence/floret/v3/config",
-	"github.com/floegence/floret/v3/provider",
-	"github.com/floegence/floret/v3/runtime",
-	"github.com/floegence/floret/v3/storage",
-	"github.com/floegence/floret/v3/storage/spi",
-	"github.com/floegence/floret/v3/tools",
-	"github.com/floegence/floret/v3/observation",
-	"github.com/floegence/floret/v3/florettest",
+	"github.com/floegence/floret/v4/identity",
+	"github.com/floegence/floret/v4/config",
+	"github.com/floegence/floret/v4/provider",
+	"github.com/floegence/floret/v4/runtime",
+	"github.com/floegence/floret/v4/storage",
+	"github.com/floegence/floret/v4/storage/spi",
+	"github.com/floegence/floret/v4/tools",
+	"github.com/floegence/floret/v4/observation",
+	"github.com/floegence/floret/v4/florettest",
 }
 
 type listedPackage struct {
@@ -85,8 +85,8 @@ func generate(root string) (string, error) {
 		return os.Open(export)
 	})
 	var output strings.Builder
-	output.WriteString("# Floret v3 public API baseline\n")
-	output.WriteString("# Design authority: internal/architecture/testdata/v3-public-api.txt\n\n")
+	output.WriteString("# Floret v4 public API baseline\n")
+	output.WriteString("# Design authority: internal/architecture/testdata/v4-public-api.txt\n\n")
 	for index, path := range publicPackages {
 		pkg, err := compiled.Import(path)
 		if err != nil {

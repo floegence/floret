@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/tools"
 )
 
 const (
@@ -149,21 +149,50 @@ func AskUser(calls []provider.ToolCall) (Signal, bool) {
 }
 
 func askUserInputSchema() map[string]any {
+	choiceItem := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"choice_id":   map[string]any{"type": "string", "minLength": 1, "maxLength": 64},
+			"label":       map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
+			"description": map[string]any{"type": "string", "maxLength": 240},
+			"kind":        map[string]any{"type": "string", "enum": []string{"select"}},
+		},
+		"required":             []string{"choice_id", "label", "kind"},
+		"additionalProperties": false,
+	}
 	questionItem := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"question": tools.String("Question text."),
+			"id":                 map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
+			"header":             map[string]any{"type": "string", "minLength": 1, "maxLength": 120},
+			"question":           map[string]any{"type": "string", "minLength": 1, "maxLength": 400},
+			"is_secret":          map[string]any{"type": "boolean"},
+			"response_mode":      map[string]any{"type": "string", "enum": []string{"select", "write", "select_or_write"}},
+			"choices_exhaustive": map[string]any{"type": "boolean"},
+			"write_label":        map[string]any{"type": "string", "maxLength": 200},
+			"write_placeholder":  map[string]any{"type": "string", "maxLength": 160},
+			"choices": map[string]any{
+				"type": "array", "maxItems": 4, "items": choiceItem,
+			},
 		},
-		"required":             []string{"question"},
-		"additionalProperties": true,
+		"required":             []string{"id", "header", "question", "is_secret", "response_mode"},
+		"additionalProperties": false,
 	}
 	return tools.StrictObject(map[string]any{
-		"question":           tools.String("The concise question to ask the user."),
-		"questions":          tools.Array(questionItem, "Structured user-input questions."),
-		"reason_code":        tools.String("Product-neutral reason code for why input is needed."),
-		"required_from_user": tools.Array(tools.String("Required user input."), "Concrete user inputs or decisions needed to proceed."),
-		"evidence_refs":      tools.Array(tools.String("Evidence reference."), "Relevant evidence references."),
-	}, []string{})
+		"questions": map[string]any{
+			"type": "array", "minItems": 1, "maxItems": 5, "items": questionItem,
+		},
+		"reason_code": map[string]any{
+			"type": "string",
+			"enum": []string{"user_decision_required", "permission_blocked", "missing_external_input", "conflicting_constraints", "safety_confirmation"},
+		},
+		"required_from_user": map[string]any{
+			"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 200},
+		},
+		"evidence_refs": map[string]any{
+			"type": "array", "maxItems": 12, "items": map[string]any{"type": "string", "maxLength": 120},
+		},
+	}, []string{"questions", "reason_code", "required_from_user", "evidence_refs"})
 }
 
 func taskCompleteInputSchema() map[string]any {

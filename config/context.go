@@ -1,6 +1,6 @@
 package config
 
-import "github.com/floegence/floret/v3/internal/session/contextpolicy"
+import "github.com/floegence/floret/v4/internal/session/contextpolicy"
 
 const (
 	MinSupportedContextWindowTokens     int64 = 256000

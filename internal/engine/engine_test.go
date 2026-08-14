@@ -17,19 +17,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/internal/engine"
-	"github.com/floegence/floret/v3/internal/event"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/artifact"
-	"github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
-	"github.com/floegence/floret/v3/internal/testing/harness"
-	"github.com/floegence/floret/v3/internal/testing/tooltest"
-	"github.com/floegence/floret/v3/observation"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/engine"
+	"github.com/floegence/floret/v4/internal/event"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/testing/harness"
+	"github.com/floegence/floret/v4/internal/testing/tooltest"
+	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v4/tools"
 )
 
 func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
@@ -1085,7 +1085,7 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 	store := session.NewMemoryStore()
 	root := t.TempDir()
 	promptStore := cache.NewFileStore(root)
-	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"more?"}`), harness.DoneReason("tool_calls")))
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"reason_code":"missing_external_input","required_from_user":["answer"],"evidence_refs":[],"questions":[{"id":"answer","header":"Answer","question":"more?","response_mode":"write","is_secret":false}]}`), harness.DoneReason("tool_calls")))
 	first := newTestEngine(firstProvider, &event.Recorder{})
 	first.Store = store
 	first.Prompt = promptStore
@@ -1684,7 +1684,7 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: `{"question":"Which file?"}`}}},
+			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[],"questions":[{"id":"file","header":"File","question":"Which file?","response_mode":"write","is_secret":false}]}`}}},
 			{Type: provider.Done},
 		},
 	)
@@ -2074,12 +2074,12 @@ func TestMixedControlAndOrdinaryToolsDefersWaitingSignal(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
 			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "ask", Name: "ask_user", Args: `{"question":"Which file?"}`},
+				{ID: "ask", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[],"questions":[{"id":"file","header":"File","question":"Which file?","response_mode":"write","is_secret":false}]}`},
 				{ID: "read", Name: "read", Args: `{"value":"x"}`},
 			}},
 			{Type: provider.Done, Reason: "tool_calls"},
 		},
-		harness.Step(harness.Tool("ask-next", "ask_user", `{"question":"Which file?"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("ask-next", "ask_user", `{"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[],"questions":[{"id":"file","header":"File","question":"Which file?","response_mode":"write","is_secret":false}]}`), harness.DoneReason("tool_calls")),
 	)
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, stringTool("read", "Read", false, tools.PermissionSpec{}, func(context.Context, string) (string, error) { return "ok", nil }))
@@ -2127,7 +2127,7 @@ func TestMixedControlAndOrdinaryToolsDefersWaitingSignal(t *testing.T) {
 
 func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	store := session.NewMemoryStore()
-	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"Which file?"}`), harness.DoneReason("tool_calls")))
+	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[],"questions":[{"id":"file","header":"File","question":"Which file?","response_mode":"write","is_secret":false}]}`), harness.DoneReason("tool_calls")))
 	e1 := newTestEngine(p1, &event.Recorder{})
 	e1.Store = store
 	got := e1.Run(context.Background(), "continue")
@@ -3635,12 +3635,12 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	e := newTestEngine(p, rec)
 	e.Store = store
 	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
-	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 900, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1400, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
 
 	got := e.Run(context.Background(), "")
 
 	if got.Status != engine.Completed {
-		t.Fatalf("result = %#v", got)
+		t.Fatalf("result status=%s origin=%s err=%v", got.Status, got.FailureOrigin, got.Err)
 	}
 	if store.replaceCalls != 0 {
 		t.Fatalf("engine compaction must not install with Store.Replace, calls=%d", store.replaceCalls)

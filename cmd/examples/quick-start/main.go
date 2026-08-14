@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/provider"
-	"github.com/floegence/floret/v3/runtime"
-	"github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/provider"
+	"github.com/floegence/floret/v4/runtime"
+	"github.com/floegence/floret/v4/storage"
 )
 
 type gateway struct{}
@@ -40,7 +40,7 @@ func main() {
 func run(ctx context.Context, path string) error {
 	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
 	if err != nil {
-		return err
+		return fmt.Errorf("open runtime: %w", err)
 	}
 	defer func() {
 		if err := host.Shutdown(context.Background()); err != nil {
@@ -53,29 +53,20 @@ func run(ctx context.Context, path string) error {
 		Context:      config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
 	}, gateway{})
 	if err != nil {
-		return err
+		return fmt.Errorf("create agent: %w", err)
 	}
-	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
-		LogicalRequestID: "example-create",
-	})
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil }))
 	if err != nil {
-		return err
+		return fmt.Errorf("open thread service: %w", err)
 	}
-	thread, err := host.Thread(ctx, created.ThreadID)
+	created, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "example-create"})
 	if err != nil {
-		return err
+		return fmt.Errorf("create thread: %w", err)
 	}
-	turns, err := thread.TurnExecutor(agent)
+	started, err := service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "example-message", Input: runtime.UserInput{Text: "Hello"}})
 	if err != nil {
-		return err
+		return fmt.Errorf("send: %w", err)
 	}
-	started, err := turns.StartTurn(ctx, runtime.StartTurnCommand{
-		LogicalRequestID: "example-message",
-		UserMessage:      runtime.TurnInput{Text: "Hello"},
-	})
-	if err != nil {
-		return err
-	}
-	fmt.Println(started.ThreadID, started.TurnID, started.RunID)
+	fmt.Println(started.ThreadID, started.TurnID)
 	return nil
 }

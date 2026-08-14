@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/tools"
 )
 
 func TestCloneActivityTimelinePreservesNilAndEmptySliceShape(t *testing.T) {

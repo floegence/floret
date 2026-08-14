@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/provider"
-	"github.com/floegence/floret/v3/runtime"
-	"github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/provider"
+	"github.com/floegence/floret/v4/runtime"
+	"github.com/floegence/floret/v4/storage"
 )
 
 func main() {
@@ -51,38 +51,17 @@ func main() {
 		}
 	}()
 
-	created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
-		LogicalRequestID: "quickstart-create-thread",
-	})
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil }))
 	if err != nil {
 		panic(err)
 	}
-	thread, err := host.Thread(ctx, created.ThreadID)
+	created, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "quickstart-create-thread"})
 	if err != nil {
 		panic(err)
 	}
-	executor, err := thread.TurnExecutor(agent)
+	started, err := service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "quickstart-first-message", Input: runtime.UserInput{Text: "Explain why durable agent state matters."}})
 	if err != nil {
 		panic(err)
 	}
-	started, err := executor.StartTurn(ctx, runtime.StartTurnCommand{
-		LogicalRequestID: "quickstart-first-message",
-		UserMessage:      runtime.TurnInput{Text: "Explain why durable agent state matters."},
-	})
-	if err != nil {
-		panic(err)
-	}
-	reader, err := thread.Reader()
-	if err != nil {
-		panic(err)
-	}
-	projection, err := reader.ReadAuthoritativeProjection(ctx, started.TurnID, started.RunID)
-	if err != nil {
-		panic(err)
-	}
-	for _, segment := range projection.Projection.Segments {
-		if segment.Kind == runtime.ThreadTurnProjectionSegmentAssistantText {
-			fmt.Print(segment.Text)
-		}
-	}
+	fmt.Println(started.ThreadID, started.TurnID)
 }

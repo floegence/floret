@@ -10,13 +10,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/v3/internal/engine"
-	"github.com/floegence/floret/v3/internal/event"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/engine"
+	"github.com/floegence/floret/v4/internal/event"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
 )
 
 func TestPreparedProviderRequestLifecycle(t *testing.T) {

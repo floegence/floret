@@ -5,10 +5,10 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/session"
-	sessioncompaction "github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/session"
+	sessioncompaction "github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
 )
 
 const (

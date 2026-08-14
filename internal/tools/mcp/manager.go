@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/tools"
 )
 
 type Manager struct {

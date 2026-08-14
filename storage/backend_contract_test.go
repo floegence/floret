@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/v3/florettest"
+	"github.com/floegence/floret/v4/florettest"
 )
 
 func TestOfficialBackendsSatisfySPIContract(t *testing.T) {

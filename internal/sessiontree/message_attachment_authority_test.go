@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v4/internal/session"
 )
 
 func TestMemoryAppendRejectsAttachmentOutsideNewAdmissionLimits(t *testing.T) {

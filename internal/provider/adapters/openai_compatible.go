@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/provider/catalog"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/provider/catalog"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/tools"
 )
 
 type OpenAICompatibleProvider struct {

@@ -6,31 +6,29 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/internal/agentharness"
-	"github.com/floegence/floret/v3/internal/configbridge"
-	"github.com/floegence/floret/v3/internal/engine"
-	"github.com/floegence/floret/v3/internal/event"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/provider/catalog"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
-	"github.com/floegence/floret/v3/internal/sessiontree"
-	"github.com/floegence/floret/v3/internal/storage"
-	"github.com/floegence/floret/v3/internal/tools/skills"
-	"github.com/floegence/floret/v3/observation"
-	publicprovider "github.com/floegence/floret/v3/provider"
-	"github.com/floegence/floret/v3/storage/spi"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/agentharness"
+	"github.com/floegence/floret/v4/internal/configbridge"
+	"github.com/floegence/floret/v4/internal/engine"
+	"github.com/floegence/floret/v4/internal/event"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/provider/catalog"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/storage"
+	"github.com/floegence/floret/v4/internal/tools/skills"
+	"github.com/floegence/floret/v4/observation"
+	publicprovider "github.com/floegence/floret/v4/provider"
+	"github.com/floegence/floret/v4/storage/spi"
+	"github.com/floegence/floret/v4/tools"
 )
 
 type forkOperationID string
@@ -81,16 +79,6 @@ var (
 	ErrRequestConflict = errors.New("floret request conflicts with persisted authority")
 	// ErrAuthorityCorrupt reports an impossible durable authority shape.
 	ErrAuthorityCorrupt = errors.New("floret authority state is corrupt")
-	// ErrExecutionPlanUnavailable means an uncommitted admitted turn predates
-	// durable execution plans and must first be replayed through the deprecated
-	// command-bearing execution API with its exact v3.0 command.
-	ErrExecutionPlanUnavailable = errors.New("floret admitted turn execution plan is unavailable")
-	// ErrExecutionPlanMismatch means the current Agent cannot execute the
-	// immutable plan bound at admission.
-	ErrExecutionPlanMismatch = errors.New("floret admitted turn execution plan does not match the Agent")
-	// ErrExecutionContextIncomplete means a durable plan requires a process-
-	// local implementation, such as a signal projector, that was not supplied.
-	ErrExecutionContextIncomplete = errors.New("floret admitted turn execution context is incomplete")
 	// ErrUnsupportedStoreCapability reports a backend that lacks required atomicity.
 	ErrUnsupportedStoreCapability = errors.New("floret store capability is unsupported")
 	// ErrEffectUnauthorized reports a current host-policy denial before handler entry.
@@ -349,76 +337,6 @@ type CapabilityOptions struct {
 	SkillPromptBudgetBytes int
 }
 
-type createThreadRequest struct {
-	ThreadID       identity.ThreadID
-	createIntentID createIntentID
-}
-
-// Validate checks the explicit identities required for a durable root create.
-func (r createThreadRequest) Validate() error {
-	if strings.TrimSpace(string(r.ThreadID)) == "" {
-		return errors.New("thread id is required")
-	}
-	if strings.TrimSpace(string(r.createIntentID)) == "" {
-		return errors.New("create intent id is required")
-	}
-	return nil
-}
-
-type setThreadTitleRequest struct {
-	ThreadID identity.ThreadID `json:"thread_id"`
-	Title    string            `json:"title"`
-}
-
-type forkThreadRequest struct {
-	OperationID         forkOperationID
-	SourceThreadID      identity.ThreadID
-	DestinationThreadID identity.ThreadID
-}
-
-type forkThreadResult struct {
-	OperationID forkOperationID `json:"operation_id"`
-	Thread      ThreadSummary   `json:"thread"`
-}
-
-// Validate checks one public fork result.
-func (r forkThreadResult) Validate() error {
-	if !trimStableNonEmpty(string(r.OperationID)) {
-		return errors.New("fork result requires an operation identity")
-	}
-	if err := r.Thread.Validate(); err != nil {
-		return fmt.Errorf("fork result thread: %w", err)
-	}
-	return nil
-}
-
-type RecoverInterruptedTurnResult struct {
-	ThreadID identity.ThreadID  `json:"thread_id"`
-	TurnID   identity.TurnID    `json:"turn_id"`
-	RunID    identity.RunID     `json:"run_id"`
-	Status   TurnStatus         `json:"status"`
-	Failure  *ThreadTurnFailure `json:"failure,omitempty"`
-	Replayed bool               `json:"replayed"`
-}
-
-// Validate checks one public interrupted-turn recovery result.
-func (r RecoverInterruptedTurnResult) Validate() error {
-	if !trimStableNonEmpty(string(r.ThreadID)) || !trimStableNonEmpty(string(r.TurnID)) || !trimStableNonEmpty(string(r.RunID)) {
-		return errors.New("interrupted recovery result requires thread, turn, and run identities")
-	}
-	if !r.Status.Valid() || !r.Status.IsTerminal() {
-		return fmt.Errorf("interrupted recovery result requires a terminal status, got %q", r.Status)
-	}
-	if err := validateThreadTurnFailureForStatus(r.Status, r.Failure); err != nil {
-		return fmt.Errorf("interrupted recovery result failure: %w", err)
-	}
-	return nil
-}
-
-// TurnSupplementalContextItem is host-provided context that is visible only to
-// the current model turn. It does not change the user's input text, durable
-// thread history, working directory, permissions, or provider continuation
-// state.
 type TurnSupplementalContextItem struct {
 	Kind      string
 	Title     string
@@ -495,6 +413,7 @@ type EffectAuthorizationRequest struct {
 	RunID              identity.RunID    `json:"run_id"`
 	ToolCallID         string            `json:"tool_call_id"`
 	ToolName           string            `json:"tool_name"`
+	Arguments          string            `json:"arguments,omitempty"`
 	ArgumentHash       string            `json:"argument_hash"`
 	Step               int               `json:"step"`
 	BatchIndex         int               `json:"batch_index"`
@@ -502,16 +421,13 @@ type EffectAuthorizationRequest struct {
 	Labels             map[string]string `json:"labels,omitempty"`
 	HostContext        map[string]string `json:"host_context,omitempty"`
 	// Activity is detached tool-authored display data. It is never authority.
-	Activity          *tools.ActivityPresentation `json:"activity,omitempty"`
-	Resources         []tools.ResourceRef         `json:"resources,omitempty"`
-	Effects           []tools.Effect              `json:"effects,omitempty"`
-	Permission        tools.PermissionSpec        `json:"permission"`
-	ReadOnly          bool                        `json:"read_only"`
-	Destructive       bool                        `json:"destructive"`
-	OpenWorld         bool                        `json:"open_world"`
-	LeaseOwnerID      string                      `json:"lease_owner_id"`
-	LeaseGeneration   int64                       `json:"lease_generation"`
-	ObservedHeartbeat int64                       `json:"observed_heartbeat"`
+	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
+	Resources   []tools.ResourceRef         `json:"resources,omitempty"`
+	Effects     []tools.Effect              `json:"effects,omitempty"`
+	Permission  tools.PermissionSpec        `json:"permission"`
+	ReadOnly    bool                        `json:"read_only"`
+	Destructive bool                        `json:"destructive"`
+	OpenWorld   bool                        `json:"open_world"`
 }
 
 type EffectAuthorizationProof struct {
@@ -521,8 +437,6 @@ type EffectAuthorizationProof struct {
 	TurnID             identity.TurnID   `json:"turn_id"`
 	RunID              identity.RunID    `json:"run_id"`
 	ToolCallID         string            `json:"tool_call_id"`
-	LeaseOwnerID       string            `json:"lease_owner_id"`
-	LeaseGeneration    int64             `json:"lease_generation"`
 	PolicyRevision     string            `json:"policy_revision"`
 	ApprovalID         string            `json:"approval_id,omitempty"`
 	AuditReference     string            `json:"audit_reference"`
@@ -556,18 +470,16 @@ func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.E
 		result, err := gate.Dispatch(ctx, EffectAuthorizationRequest{
 			EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
 			ThreadID: identity.ThreadID(req.ThreadID), TurnID: identity.TurnID(req.TurnID), RunID: identity.RunID(req.RunID),
-			ToolCallID: req.ToolCallID, ToolName: req.ToolName, ArgumentHash: req.ArgumentHash,
+			ToolCallID: req.ToolCallID, ToolName: req.ToolName, Arguments: req.Arguments, ArgumentHash: req.ArgumentHash,
 			Step: req.Step, BatchIndex: req.BatchIndex, BatchSize: req.BatchSize,
 			Labels: cloneStringMap(req.Labels), HostContext: cloneStringMap(req.HostContext),
 			Activity:  tools.CloneActivityPresentation(req.Activity),
 			Resources: append([]tools.ResourceRef(nil), req.Resources...), Effects: append([]tools.Effect(nil), req.Effects...),
 			Permission: req.Permission, ReadOnly: req.ReadOnly, Destructive: req.Destructive, OpenWorld: req.OpenWorld,
-			LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration, ObservedHeartbeat: req.ObservedHeartbeat,
 		}, func(dispatchCtx context.Context, proof EffectAuthorizationProof) (EffectDispatchResult, error) {
 			internalResult, err := effect(dispatchCtx, agentharness.EffectAuthorizationProof{
 				EffectAttemptID: proof.EffectAttemptID, RequestFingerprint: proof.RequestFingerprint,
 				ThreadID: string(proof.ThreadID), TurnID: string(proof.TurnID), RunID: string(proof.RunID), ToolCallID: proof.ToolCallID,
-				LeaseOwnerID: proof.LeaseOwnerID, LeaseGeneration: proof.LeaseGeneration,
 				PolicyRevision: proof.PolicyRevision, ApprovalID: proof.ApprovalID,
 				AuditReference: proof.AuditReference, AuditHash: proof.AuditHash, AuthorizedAt: proof.AuthorizedAt,
 			})
@@ -632,19 +544,23 @@ func (r MessageReference) Validate() error {
 }
 
 type runTurnRequest struct {
-	LogicalRequestID    identity.LogicalRequestID
-	RunID               identity.RunID
-	ThreadID            identity.ThreadID
-	TurnID              identity.TurnID
-	Input               TurnInput
-	SupplementalContext []TurnSupplementalContextItem
-	Labels              RunLabels
-	Completion          TurnCompletionPolicy
-	Signals             TurnSignalSpec
-	Limits              TurnLimits
-	Reasoning           config.ReasoningSelection
-	ManualCompactions   ManualCompactionSource
-	ToolSurfaceProvider ToolSurfaceProvider
+	LogicalRequestID            identity.LogicalRequestID
+	RunID                       identity.RunID
+	ThreadID                    identity.ThreadID
+	TurnID                      identity.TurnID
+	Input                       TurnInput
+	SupplementalContext         []TurnSupplementalContextItem
+	Labels                      RunLabels
+	Completion                  TurnCompletionPolicy
+	Signals                     TurnSignalSpec
+	Limits                      TurnLimits
+	Reasoning                   config.ReasoningSelection
+	ManualCompactions           ManualCompactionSource
+	ToolSurfaceProvider         ToolSurfaceProvider
+	PromotedQueueID             string
+	PromotionRequestKey         string
+	PromotionRequestFingerprint string
+	InputFingerprint            string
 }
 
 // Validate checks the provider-independent request contract before admission.
@@ -655,947 +571,28 @@ func (r runTurnRequest) Validate() error {
 	return err
 }
 
-type retryTurnRequest struct {
-	ThreadID identity.ThreadID
-	TurnID   identity.TurnID
-	RunID    identity.RunID
-	Reason   string
-	Labels   RunLabels
-}
-
-type compactThreadRequest struct {
-	ThreadID  identity.ThreadID
-	RequestID string
-	Source    string
-	Labels    RunLabels
-	Limits    TurnLimits
-	Reasoning config.ReasoningSelection
-}
-
-// readTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
-// RunID is required and must match the execution identity recorded for the turn.
-type readTurnProjectionRequest struct {
-	ThreadID identity.ThreadID
-	TurnID   identity.TurnID
-	RunID    identity.RunID
-}
-
-type AgentTodoStatus string
-
-// MaxAgentTodos is the canonical upper bound for one Agent todo state.
-const MaxAgentTodos = 40
-
-const (
-	AgentTodoPending    AgentTodoStatus = "pending"
-	AgentTodoInProgress AgentTodoStatus = "in_progress"
-	AgentTodoCompleted  AgentTodoStatus = "completed"
-)
-
-func (s AgentTodoStatus) Valid() bool {
-	switch s {
-	case AgentTodoPending, AgentTodoInProgress, AgentTodoCompleted:
-		return true
-	default:
-		return false
-	}
-}
-
-type AgentTodo struct {
-	ID      string          `json:"id"`
-	Content string          `json:"content"`
-	Status  AgentTodoStatus `json:"status"`
-}
-
-// ValidateAgentTodos checks the canonical Agent todo collection invariants.
-func ValidateAgentTodos(items []AgentTodo) error {
-	if len(items) > MaxAgentTodos {
-		return fmt.Errorf("agent todo state has %d items, maximum is %d", len(items), MaxAgentTodos)
-	}
-	seen := make(map[string]struct{}, len(items))
-	inProgress := 0
-	for index, item := range items {
-		id := strings.TrimSpace(item.ID)
-		content := strings.TrimSpace(item.Content)
-		if id == "" || content == "" || !item.Status.Valid() {
-			return fmt.Errorf("agent todo item %d is invalid", index)
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return fmt.Errorf("agent todo state repeats item %q", id)
-		}
-		seen[id] = struct{}{}
-		if item.Status == AgentTodoInProgress {
-			inProgress++
-			if inProgress > 1 {
-				return errors.New("agent todo state has more than one in-progress item")
-			}
-		}
-	}
-	return nil
-}
-
-type ThreadAgentTodoState struct {
-	ThreadID          identity.ThreadID `json:"thread_id"`
-	Version           int64             `json:"version"`
-	Items             []AgentTodo       `json:"items"`
-	UpdatedAt         time.Time         `json:"updated_at,omitempty"`
-	UpdatedByTurnID   identity.TurnID   `json:"updated_by_turn_id,omitempty"`
-	UpdatedByRunID    identity.RunID    `json:"updated_by_run_id,omitempty"`
-	UpdatedByToolCall string            `json:"updated_by_tool_call_id,omitempty"`
-}
-
-type updateThreadAgentTodosRequest struct {
-	ThreadID        identity.ThreadID
-	ExpectedVersion int64
-	Items           []AgentTodo
-	TurnID          identity.TurnID
-	RunID           identity.RunID
-	ToolCallID      string
-}
-
-// PendingToolCompletionStatus describes the observed outcome of host-owned work
-// that was previously exposed to the agent as a pending tool result.
-type PendingToolCompletionStatus string
-
-const (
-	PendingToolCompletionCompleted PendingToolCompletionStatus = "completed"
-	PendingToolCompletionFailed    PendingToolCompletionStatus = "failed"
-	PendingToolCompletionCanceled  PendingToolCompletionStatus = "canceled"
-)
-
-// pendingToolCompletionRequest asks Floret to append a host-authored follow-up
-// turn for work whose lifecycle was owned outside Floret.
-type pendingToolCompletionRequest struct {
-	CompletionRequestID string
-	Target              PendingToolSettlementTarget
-	ContinuationTurnID  identity.TurnID
-	ContinuationRunID   identity.RunID
-	Status              PendingToolCompletionStatus
-	Summary             string
-	Output              string
-	Input               TurnInput
-	Labels              RunLabels
-}
-
-// PendingToolCompletionResult reports the one durable continuation admission.
-// Turn is present only once that continuation has reached a terminal state.
-type PendingToolCompletionResult struct {
-	CompletionRequestID string            `json:"completion_request_id"`
-	ThreadID            identity.ThreadID `json:"thread_id"`
-	TurnID              identity.TurnID   `json:"turn_id"`
-	RunID               identity.RunID    `json:"run_id"`
-	Status              TurnStatus        `json:"status"`
-	Replayed            bool              `json:"replayed,omitempty"`
-	Turn                *TurnResult       `json:"turn,omitempty"`
-}
-
-func (r PendingToolCompletionResult) Validate() error {
-	if strings.TrimSpace(r.CompletionRequestID) == "" || strings.TrimSpace(string(r.ThreadID)) == "" ||
-		strings.TrimSpace(string(r.TurnID)) == "" || strings.TrimSpace(string(r.RunID)) == "" {
-		return errors.New("pending tool completion result requires completion request, thread, turn, and run identities")
-	}
-	if !r.Status.Valid() {
-		return fmt.Errorf("invalid pending tool completion status %q", r.Status)
-	}
-	if r.Status == TurnStatusRunning {
-		if r.Turn != nil {
-			return errors.New("running pending tool completion cannot include a terminal turn")
-		}
-		return nil
-	}
-	if r.Turn == nil {
-		return errors.New("terminal pending tool completion requires a turn result")
-	}
-	if err := r.Turn.Validate(); err != nil {
-		return err
-	}
-	if r.Turn.ThreadID != r.ThreadID || r.Turn.TurnID != r.TurnID || r.Turn.RunID != r.RunID || r.Turn.Status != r.Status {
-		return errors.New("pending tool completion turn identity mismatch")
-	}
-	return nil
-}
-
-// PendingToolSettlementStatus describes a host-owned pending tool outcome that
-// should update Floret activity without adding provider-visible context.
-type PendingToolSettlementStatus string
-
-const (
-	PendingToolSettlementCompleted PendingToolSettlementStatus = "completed"
-	PendingToolSettlementFailed    PendingToolSettlementStatus = "failed"
-	PendingToolSettlementCanceled  PendingToolSettlementStatus = "canceled"
-)
-
-// PendingToolSettlementTarget identifies the exact pending tool result that a
-// host owns and intends to settle.
-type PendingToolSettlementTarget struct {
-	ThreadID        identity.ThreadID `json:"thread_id"`
-	TurnID          identity.TurnID   `json:"turn_id"`
-	RunID           identity.RunID    `json:"run_id"`
-	ToolCallID      string            `json:"tool_call_id"`
-	ToolName        string            `json:"tool_name"`
-	Handle          string            `json:"handle"`
-	EffectAttemptID string            `json:"effect_attempt_id,omitempty"`
-}
-
-// Validate checks the exact identity required to settle one pending tool.
-func (t PendingToolSettlementTarget) Validate() error {
-	if !trimStableNonEmpty(string(t.ThreadID)) || !trimStableNonEmpty(string(t.TurnID)) || !trimStableNonEmpty(string(t.RunID)) {
-		return errors.New("pending tool target requires trim-stable thread, turn, and run identities")
-	}
-	for name, value := range map[string]string{
-		"tool call id": t.ToolCallID, "tool name": t.ToolName, "handle": t.Handle,
-	} {
-		if !trimStableNonEmpty(value) {
-			return fmt.Errorf("pending tool target requires a trim-stable %s", name)
-		}
-	}
-	if t.EffectAttemptID != strings.TrimSpace(t.EffectAttemptID) {
-		return errors.New("pending tool target effect attempt id must be trim-stable")
-	}
-	return nil
-}
-
-// listSubAgentPendingToolSettlementTargetsRequest identifies one direct child
-// whose canonical pending tool targets should be read.
-type listSubAgentPendingToolSettlementTargetsRequest struct {
-	ParentThreadID identity.ThreadID `json:"parent_thread_id"`
-	ChildThreadID  identity.ThreadID `json:"child_thread_id"`
-}
-
-// pendingToolSettlementRequest records a host-owned pending tool outcome as a
-// detail/activity event only. It does not resume the provider loop.
-type pendingToolSettlementRequest struct {
-	Target   PendingToolSettlementTarget
-	Status   PendingToolSettlementStatus
-	Summary  string
-	Output   string
-	Activity *tools.ActivityPresentation
-}
-
-type SubAgentStatus string
-
-const (
-	SubAgentStatusIdle        SubAgentStatus = "idle"
-	SubAgentStatusRunning     SubAgentStatus = "running"
-	SubAgentStatusWaiting     SubAgentStatus = "waiting"
-	SubAgentStatusCompleted   SubAgentStatus = "completed"
-	SubAgentStatusFailed      SubAgentStatus = "failed"
-	SubAgentStatusCancelled   SubAgentStatus = "cancelled"
-	SubAgentStatusInterrupted SubAgentStatus = "interrupted"
-	SubAgentStatusClosing     SubAgentStatus = "closing"
-	SubAgentStatusClosed      SubAgentStatus = "closed"
-)
-
-type SubAgentForkMode string
-
-const (
-	SubAgentForkNone     SubAgentForkMode = "none"
-	SubAgentForkFullPath SubAgentForkMode = "full_path"
-)
-
-type spawnSubAgentRequest struct {
-	PublicationID   string
-	ParentThreadID  identity.ThreadID
-	ParentTurnID    identity.TurnID
-	ThreadID        identity.ThreadID
-	TaskName        string
-	TaskDescription string
-	Message         string
-	Attachments     []MessageAttachment
-	References      []MessageReference
-	HostProfileRef  string
-	ForkMode        SubAgentForkMode
-	Labels          RunLabels
-}
-
-type sendSubAgentInputRequest struct {
-	InputRequestID string
-	ParentThreadID identity.ThreadID
-	ChildThreadID  identity.ThreadID
-	Message        string
-	Attachments    []MessageAttachment
-	References     []MessageReference
-	Interrupt      bool
-	Labels         RunLabels
-}
-
-type publishSubAgentPendingToolCompletionRequest struct {
-	InputRequestID string
-	ParentThreadID identity.ThreadID
-	ChildThreadID  identity.ThreadID
-	Target         PendingToolSettlementTarget
-	Status         PendingToolCompletionStatus
-	Summary        string
-	Output         string
-	Input          TurnInput
-	Labels         RunLabels
-}
-
-type waitSubAgentsRequest struct {
-	ParentThreadID identity.ThreadID
-	ChildThreadIDs []identity.ThreadID
-	Timeout        time.Duration
-}
-
-type closeSubAgentRequest struct {
-	CloseOperationID string
-	ParentThreadID   identity.ThreadID
-	ChildThreadID    identity.ThreadID
-	Reason           string
-}
-
-type readSubAgentDetailRequest struct {
-	ParentThreadID identity.ThreadID
-	ChildThreadID  identity.ThreadID
-	AfterOrdinal   int64
-	Limit          int
-	IncludeRaw     bool
-}
-
-type listSubAgentActivityTimelineRequest struct {
-	ParentThreadID identity.ThreadID
-	Meta           observation.ActivityRunMeta
-}
-
-type listThreadDetailEventsRequest struct {
-	ThreadID     identity.ThreadID
-	AfterOrdinal int64
-	Limit        int
-	IncludeRaw   bool
-}
-
-type readApprovalQueueRequest struct {
-	ThreadID identity.ThreadID
-}
-
-type ApprovalDecision string
-
-const (
-	ApprovalDecisionApprove ApprovalDecision = "approve"
-	ApprovalDecisionReject  ApprovalDecision = "reject"
-)
-
-type ApprovalIdentity struct {
-	ApprovalID      string            `json:"approval_id"`
-	ThreadID        identity.ThreadID `json:"thread_id"`
-	TurnID          identity.TurnID   `json:"turn_id"`
-	RunID           identity.RunID    `json:"run_id"`
-	ToolCallID      string            `json:"tool_call_id"`
-	EffectAttemptID string            `json:"effect_attempt_id"`
-}
-
-func (i ApprovalIdentity) Validate() error {
-	if strings.TrimSpace(i.ApprovalID) == "" || strings.TrimSpace(string(i.ThreadID)) == "" ||
-		strings.TrimSpace(string(i.TurnID)) == "" || strings.TrimSpace(string(i.RunID)) == "" ||
-		strings.TrimSpace(i.ToolCallID) == "" || strings.TrimSpace(i.EffectAttemptID) == "" {
-		return errors.New("approval identity is incomplete")
-	}
-	return nil
-}
-
-type resolveApprovalRequest struct {
-	DecisionID               string            `json:"decision_id"`
-	ExpectedRootThreadID     identity.ThreadID `json:"expected_root_thread_id"`
-	ExpectedGeneration       int64             `json:"expected_generation"`
-	ExpectedRevision         int64             `json:"expected_revision"`
-	ExpectedCurrent          ApprovalIdentity  `json:"expected_current"`
-	ExpectedApprovalRevision int64             `json:"expected_approval_revision"`
-	Decision                 ApprovalDecision  `json:"decision"`
-}
-
-func (r resolveApprovalRequest) Validate() error {
-	if strings.TrimSpace(r.DecisionID) == "" || strings.TrimSpace(string(r.ExpectedRootThreadID)) == "" {
-		return errors.New("approval decision requires decision and root thread identities")
-	}
-	if r.ExpectedGeneration <= 0 || r.ExpectedRevision <= 0 || r.ExpectedApprovalRevision <= 0 {
-		return errors.New("approval decision authority versions must be positive")
-	}
-	if err := r.ExpectedCurrent.Validate(); err != nil {
-		return err
-	}
-	if r.ExpectedCurrent.ThreadID == "" || (r.Decision != ApprovalDecisionApprove && r.Decision != ApprovalDecisionReject) {
-		return errors.New("approval decision is invalid")
-	}
-	return nil
-}
-
-type SubAgentSnapshot struct {
-	ThreadID        identity.ThreadID `json:"thread_id"`
-	Path            string            `json:"path"`
-	TaskName        string            `json:"task_name"`
-	TaskDescription string            `json:"task_description,omitempty"`
-	ParentThreadID  identity.ThreadID `json:"parent_thread_id"`
-	ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
-	HostProfileRef  string            `json:"host_profile_ref,omitempty"`
-	ForkMode        SubAgentForkMode  `json:"fork_mode,omitempty"`
-	Status          SubAgentStatus    `json:"status"`
-	LatestTurnID    identity.TurnID   `json:"latest_turn_id,omitempty"`
-	LastMessage     string            `json:"last_message,omitempty"`
-	WaitingPrompt   string            `json:"waiting_prompt,omitempty"`
-	QueuedInputs    int               `json:"queued_inputs,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	Closed          bool              `json:"closed,omitempty"`
-	CanSendInput    bool              `json:"can_send_input"`
-	CanInterrupt    bool              `json:"can_interrupt"`
-	CanClose        bool              `json:"can_close"`
-}
-
-type waitSubAgentsCommandResult struct {
-	Snapshots []SubAgentSnapshot `json:"snapshots"`
-	TimedOut  bool               `json:"timed_out,omitempty"`
-}
-
-type SubAgentDetail struct {
-	Snapshot         SubAgentSnapshot             `json:"snapshot"`
-	Events           []ThreadDetailEvent          `json:"events"`
-	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Context          ThreadContextSnapshot        `json:"context,omitempty"`
-	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
-	HasMore          bool                         `json:"has_more,omitempty"`
-	RetainedFrom     int64                        `json:"retained_from,omitempty"`
-	GeneratedAt      time.Time                    `json:"generated_at"`
-}
-
-type ThreadContextSnapshot struct {
-	ThreadID    identity.ThreadID             `json:"thread_id"`
-	Provider    string                        `json:"provider,omitempty"`
-	Model       string                        `json:"model,omitempty"`
-	Policy      config.ContextPolicy          `json:"policy,omitempty"`
-	Usage       *observation.ContextStatus    `json:"usage,omitempty"`
-	Compactions []observation.CompactionEvent `json:"compactions,omitempty"`
-	UpdatedAt   time.Time                     `json:"updated_at,omitempty"`
-}
-
-func (s ThreadContextSnapshot) Validate() error {
-	if strings.TrimSpace(string(s.ThreadID)) == "" {
-		return errors.New("thread context snapshot requires thread id")
-	}
-	hasContext := strings.TrimSpace(s.Provider) != "" || strings.TrimSpace(s.Model) != "" || s.Policy.ContextWindowTokens > 0 || s.Usage != nil || len(s.Compactions) > 0
-	if hasContext && (strings.TrimSpace(s.Provider) == "" || strings.TrimSpace(s.Model) == "" || s.Policy.ContextWindowTokens <= 0 || s.UpdatedAt.IsZero()) {
-		return errors.New("thread context snapshot requires model and policy")
-	}
-	if s.Usage != nil {
-		if err := s.Usage.Validate(); err != nil {
-			return err
-		}
-		if strings.TrimSpace(s.Usage.RunID.String()) == "" || strings.TrimSpace(s.Usage.TurnID.String()) == "" || s.Usage.ThreadID.String() != string(s.ThreadID) {
-			return errors.New("thread context usage identity mismatch")
-		}
-		if s.Usage.Provider != s.Provider || s.Usage.Model != s.Model {
-			return errors.New("thread context usage model identity mismatch")
-		}
-	}
-	for _, compact := range s.Compactions {
-		if err := compact.Validate(); err != nil {
-			return err
-		}
-		if compact.ThreadID.String() != string(s.ThreadID) || strings.TrimSpace(compact.RunID.String()) == "" || strings.TrimSpace(compact.OperationID) == "" || strings.TrimSpace(compact.RequestID) == "" {
-			return errors.New("thread context compaction identity mismatch")
-		}
-	}
-	return nil
-}
-
-type subAgentActivityTimelineResult struct {
-	Timeline    observation.ActivityTimeline `json:"activity_timeline"`
-	GeneratedAt time.Time                    `json:"generated_at"`
-}
-
-type ThreadDetailEvents struct {
-	Events       []ThreadDetailEvent `json:"events"`
-	NextOrdinal  int64               `json:"next_ordinal,omitempty"`
-	HasMore      bool                `json:"has_more,omitempty"`
-	RetainedFrom int64               `json:"retained_from,omitempty"`
-	GeneratedAt  time.Time           `json:"generated_at"`
-}
-
-type ApprovalQueue struct {
-	RootThreadID      identity.ThreadID `json:"root_thread_id"`
-	Generation        int64             `json:"generation"`
-	Revision          int64             `json:"revision"`
-	CurrentApprovalID string            `json:"current_approval_id,omitempty"`
-	Items             []ApprovalRecord  `json:"items"`
-	GeneratedAt       time.Time         `json:"generated_at"`
-}
-
-func (q ApprovalQueue) Validate() error {
-	if strings.TrimSpace(string(q.RootThreadID)) == "" || q.Generation < 0 || q.Revision < 0 {
-		return errors.New("approval queue authority is invalid")
-	}
-	if q.GeneratedAt.IsZero() {
-		return errors.New("approval queue requires generated time")
-	}
-	for index, approval := range q.Items {
-		if err := approval.Validate(); err != nil {
-			return fmt.Errorf("approval queue item %d: %w", index, err)
-		}
-		if approval.RootThreadID != q.RootThreadID {
-			return fmt.Errorf("approval queue item %d root identity mismatch", index)
-		}
-		if approval.State != string(sessiontree.ApprovalRequested) && approval.State != string(sessiontree.ApprovalDecisionSubmitted) {
-			return fmt.Errorf("approval queue item %d is not queue-visible", index)
-		}
-	}
-	if len(q.Items) == 0 && q.CurrentApprovalID != "" {
-		return errors.New("empty approval queue has a current approval")
-	}
-	if len(q.Items) > 0 && q.CurrentApprovalID != q.Items[0].ApprovalID {
-		return errors.New("approval queue current item is not first")
-	}
-	return nil
-}
-
-type ApprovalDecisionReceipt struct {
-	DecisionID             string            `json:"decision_id"`
-	ApprovalID             string            `json:"approval_id"`
-	RootThreadID           identity.ThreadID `json:"root_thread_id"`
-	Decision               ApprovalDecision  `json:"decision"`
-	State                  string            `json:"state"`
-	Reason                 string            `json:"reason,omitempty"`
-	AuthorizationProofHash string            `json:"authorization_proof_hash,omitempty"`
-	QueueGeneration        int64             `json:"queue_generation"`
-	QueueRevision          int64             `json:"queue_revision"`
-	ApprovalRevision       int64             `json:"approval_revision"`
-	SubmittedAt            time.Time         `json:"submitted_at"`
-	ResolvedAt             time.Time         `json:"resolved_at,omitempty"`
-}
-
-func (r ApprovalDecisionReceipt) Validate() error {
-	if strings.TrimSpace(r.DecisionID) == "" || strings.TrimSpace(r.ApprovalID) == "" || strings.TrimSpace(string(r.RootThreadID)) == "" {
-		return errors.New("approval decision receipt identity is incomplete")
-	}
-	if r.Decision != ApprovalDecisionApprove && r.Decision != ApprovalDecisionReject {
-		return errors.New("approval decision receipt decision is invalid")
-	}
-	if r.QueueGeneration <= 0 || r.QueueRevision <= 0 || r.ApprovalRevision <= 0 || r.SubmittedAt.IsZero() {
-		return errors.New("approval decision receipt authority is invalid")
-	}
-	terminal := !r.ResolvedAt.IsZero()
-	switch r.State {
-	case string(sessiontree.ApprovalDecisionSubmitted):
-		if r.Decision != ApprovalDecisionApprove || terminal || r.Reason != "" || r.AuthorizationProofHash != "" {
-			return errors.New("submitted approval receipt is invalid")
-		}
-	case string(sessiontree.ApprovalApproved):
-		if r.Decision != ApprovalDecisionApprove || !terminal || strings.TrimSpace(r.AuthorizationProofHash) == "" || r.Reason != "" {
-			return errors.New("approved approval receipt is invalid")
-		}
-	case string(sessiontree.ApprovalRejected):
-		if !terminal || strings.TrimSpace(r.Reason) == "" || r.AuthorizationProofHash != "" ||
-			(r.Decision == ApprovalDecisionReject && r.Reason != sessiontree.ApprovalReasonUserRejected) ||
-			(r.Decision == ApprovalDecisionApprove && r.Reason == sessiontree.ApprovalReasonUserRejected) {
-			return errors.New("rejected approval receipt is invalid")
-		}
-	case string(sessiontree.ApprovalFailed), string(sessiontree.ApprovalTimedOut), string(sessiontree.ApprovalCancelled):
-		if r.Decision != ApprovalDecisionApprove || !terminal || strings.TrimSpace(r.Reason) == "" || r.AuthorizationProofHash != "" {
-			return errors.New("terminal approval receipt is invalid")
-		}
-	default:
-		return fmt.Errorf("unsupported approval receipt state %q", r.State)
-	}
-	return nil
-}
-
-type ResolveApprovalResult struct {
-	Receipt  ApprovalDecisionReceipt `json:"receipt"`
-	Queue    ApprovalQueue           `json:"queue"`
-	Approval ApprovalRecord          `json:"approval"`
-	Replayed bool                    `json:"replayed,omitempty"`
-}
-
-func (r ResolveApprovalResult) Validate() error {
-	if err := r.Receipt.Validate(); err != nil {
-		return fmt.Errorf("approval decision receipt: %w", err)
-	}
-	if err := r.Queue.Validate(); err != nil {
-		return fmt.Errorf("approval queue: %w", err)
-	}
-	if err := r.Approval.Validate(); err != nil {
-		return fmt.Errorf("approval record: %w", err)
-	}
-	if r.Approval.ApprovalID != r.Receipt.ApprovalID || r.Approval.RootThreadID != r.Receipt.RootThreadID ||
-		r.Approval.DecisionID != r.Receipt.DecisionID || r.Approval.State != r.Receipt.State ||
-		r.Approval.Reason != r.Receipt.Reason || r.Approval.AuthorizationProofHash != r.Receipt.AuthorizationProofHash ||
-		r.Approval.Revision != r.Receipt.ApprovalRevision || !r.Approval.ResolvedAt.Equal(r.Receipt.ResolvedAt) {
-		return errors.New("approval result record and receipt disagree")
-	}
-	if r.Queue.RootThreadID != r.Approval.RootThreadID || r.Queue.Generation < r.Receipt.QueueGeneration || r.Queue.Revision < r.Receipt.QueueRevision {
-		return errors.New("approval result queue authority regressed")
-	}
-	return nil
-}
-
-type PendingToolSettlementResult struct {
-	Target                 PendingToolSettlementTarget `json:"target"`
-	Event                  ThreadDetailEvent           `json:"event"`
-	ProjectionAvailability TurnProjectionAvailability  `json:"projection_availability"`
-	Projection             *ThreadTurnProjection       `json:"projection,omitempty"`
-	ProjectionError        string                      `json:"projection_error,omitempty"`
-}
-
-type ApprovalResource struct {
-	Kind  string `json:"kind,omitempty"`
-	Value string `json:"value,omitempty"`
-}
-
-func (r ApprovalResource) Validate() error {
-	if strings.TrimSpace(r.Kind) == "" || strings.TrimSpace(r.Value) == "" {
-		return errors.New("approval resource requires kind and value")
-	}
-	return nil
-}
-
-type ApprovalRecord struct {
-	ApprovalID             string             `json:"approval_id,omitempty"`
-	RootThreadID           identity.ThreadID  `json:"root_thread_id,omitempty"`
-	ParentThreadID         identity.ThreadID  `json:"parent_thread_id,omitempty"`
-	ToolCallID             string             `json:"tool_call_id,omitempty"`
-	EffectAttemptID        string             `json:"effect_attempt_id,omitempty"`
-	ToolName               string             `json:"tool_name,omitempty"`
-	ToolKind               string             `json:"tool_kind,omitempty"`
-	RunID                  identity.RunID     `json:"run_id,omitempty"`
-	ThreadID               identity.ThreadID  `json:"thread_id,omitempty"`
-	TurnID                 identity.TurnID    `json:"turn_id,omitempty"`
-	Step                   int                `json:"step,omitempty"`
-	BatchIndex             int                `json:"batch_index"`
-	BatchSize              int                `json:"batch_size"`
-	State                  string             `json:"state,omitempty"`
-	Revision               int64              `json:"revision,omitempty"`
-	QueueSequence          int64              `json:"queue_sequence,omitempty"`
-	DecisionID             string             `json:"decision_id,omitempty"`
-	RequestedAt            time.Time          `json:"requested_at,omitempty"`
-	UpdatedAt              time.Time          `json:"updated_at,omitempty"`
-	ResolvedAt             time.Time          `json:"resolved_at,omitempty"`
-	ArgsHash               string             `json:"args_hash,omitempty"`
-	RequestFingerprint     string             `json:"request_fingerprint,omitempty"`
-	AuthorizationProofHash string             `json:"authorization_proof_hash,omitempty"`
-	Resources              []ApprovalResource `json:"resources,omitempty"`
-	Effects                []string           `json:"effects,omitempty"`
-	Labels                 map[string]string  `json:"labels,omitempty"`
-	HostContext            map[string]string  `json:"host_context,omitempty"`
-	ReadOnly               bool               `json:"read_only,omitempty"`
-	Destructive            bool               `json:"destructive,omitempty"`
-	OpenWorld              bool               `json:"open_world,omitempty"`
-	Reason                 string             `json:"reason,omitempty"`
-}
-
-func (p ApprovalRecord) Validate() error {
-	if strings.TrimSpace(p.ApprovalID) == "" || strings.TrimSpace(p.EffectAttemptID) == "" || strings.TrimSpace(p.ToolCallID) == "" ||
-		strings.TrimSpace(string(p.RootThreadID)) == "" {
-		return errors.New("approval record requires approval and tool call identities")
-	}
-	if strings.TrimSpace(p.ToolName) == "" || strings.TrimSpace(p.ToolKind) == "" {
-		return errors.New("approval record requires tool name and kind")
-	}
-	if strings.TrimSpace(string(p.RunID)) == "" || strings.TrimSpace(string(p.ThreadID)) == "" || strings.TrimSpace(string(p.TurnID)) == "" {
-		return errors.New("approval record requires run, thread, and turn identities")
-	}
-	if p.Step <= 0 {
-		return errors.New("approval record step must be positive")
-	}
-	if p.BatchSize <= 0 || p.BatchIndex < 0 || p.BatchIndex >= p.BatchSize {
-		return errors.New("approval record batch position is invalid")
-	}
-	if p.Revision <= 0 || p.QueueSequence <= 0 {
-		return errors.New("approval record counters are invalid")
-	}
-	if p.RequestedAt.IsZero() || p.UpdatedAt.IsZero() || p.UpdatedAt.Before(p.RequestedAt) {
-		return errors.New("approval record timestamps are invalid")
-	}
-	switch p.State {
-	case string(sessiontree.ApprovalRequested):
-		if p.DecisionID != "" || p.Reason != "" || p.AuthorizationProofHash != "" || !p.ResolvedAt.IsZero() {
-			return errors.New("requested approval authority is invalid")
-		}
-	case string(sessiontree.ApprovalDecisionSubmitted):
-		if strings.TrimSpace(p.DecisionID) == "" || p.Reason != "" || p.AuthorizationProofHash != "" || !p.ResolvedAt.IsZero() {
-			return errors.New("submitted approval authority is invalid")
-		}
-	case string(sessiontree.ApprovalApproved):
-		if strings.TrimSpace(p.DecisionID) == "" || strings.TrimSpace(p.AuthorizationProofHash) == "" || p.Reason != "" || p.ResolvedAt.IsZero() {
-			return errors.New("approved approval authority is invalid")
-		}
-	case string(sessiontree.ApprovalRejected), string(sessiontree.ApprovalFailed), string(sessiontree.ApprovalTimedOut), string(sessiontree.ApprovalCancelled):
-		if strings.TrimSpace(p.DecisionID) == "" || strings.TrimSpace(p.Reason) == "" || p.AuthorizationProofHash != "" || p.ResolvedAt.IsZero() {
-			return errors.New("terminal approval authority is invalid")
-		}
-	default:
-		return fmt.Errorf("unsupported approval record state %q", p.State)
-	}
-	if strings.TrimSpace(p.ArgsHash) == "" || strings.TrimSpace(p.RequestFingerprint) == "" {
-		return errors.New("approval record requires argument and request fingerprints")
-	}
-	for index, resource := range p.Resources {
-		if err := resource.Validate(); err != nil {
-			return fmt.Errorf("approval resource %d: %w", index, err)
-		}
-	}
-	for index, effect := range p.Effects {
-		if strings.TrimSpace(effect) == "" {
-			return fmt.Errorf("approval effect %d is empty", index)
-		}
-	}
-	return nil
-}
-
-type ThreadDetailEventKind string
-
-const (
-	ThreadDetailEventUserMessage      ThreadDetailEventKind = "user_message"
-	ThreadDetailEventAssistantMessage ThreadDetailEventKind = "assistant_message"
-	ThreadDetailEventToolCall         ThreadDetailEventKind = "tool_call"
-	ThreadDetailEventToolDispatch     ThreadDetailEventKind = "tool_dispatch"
-	ThreadDetailEventToolActivity     ThreadDetailEventKind = "tool_activity"
-	ThreadDetailEventToolResult       ThreadDetailEventKind = "tool_result"
-	ThreadDetailEventTurnMarker       ThreadDetailEventKind = "turn_marker"
-	ThreadDetailEventCompaction       ThreadDetailEventKind = "compaction"
-	ThreadDetailEventError            ThreadDetailEventKind = "error"
-	ThreadDetailEventApproval         ThreadDetailEventKind = "approval"
-	ThreadDetailEventInput            ThreadDetailEventKind = "input"
-	ThreadDetailEventCustom           ThreadDetailEventKind = "custom"
-)
-
-type ThreadDetailEvent struct {
-	ID        string                `json:"id"`
-	Ordinal   int64                 `json:"ordinal"`
-	ParentID  string                `json:"parent_id,omitempty"`
-	ThreadID  identity.ThreadID     `json:"thread_id"`
-	TurnID    identity.TurnID       `json:"turn_id,omitempty"`
-	RunID     identity.RunID        `json:"run_id,omitempty"`
-	Step      int                   `json:"step,omitempty"`
-	Kind      ThreadDetailEventKind `json:"kind"`
-	Type      string                `json:"type,omitempty"`
-	CreatedAt time.Time             `json:"created_at"`
-
-	Message    *ThreadDetailMessage    `json:"message,omitempty"`
-	ToolCall   *ThreadDetailToolCall   `json:"tool_call,omitempty"`
-	ToolResult *ThreadDetailToolResult `json:"tool_result,omitempty"`
-	Approval   *ThreadDetailApproval   `json:"approval,omitempty"`
-	TurnMarker *ThreadDetailTurnMarker `json:"turn_marker,omitempty"`
-	Compaction *ThreadDetailCompaction `json:"compaction,omitempty"`
-	Error      string                  `json:"error,omitempty"`
-	Metadata   map[string]string       `json:"metadata,omitempty"`
-
-	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
-}
-
-type ThreadDetailMessage struct {
-	Role        string                      `json:"role,omitempty"`
-	Kind        string                      `json:"kind,omitempty"`
-	Preview     string                      `json:"preview,omitempty"`
-	Content     string                      `json:"content,omitempty"`
-	Attachments []MessageAttachment         `json:"attachments,omitempty"`
-	References  []MessageReference          `json:"references,omitempty"`
-	Reasoning   string                      `json:"reasoning,omitempty"`
-	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
-}
-
-type ThreadDetailToolCall struct {
-	ID            string                     `json:"id,omitempty"`
-	Name          string                     `json:"name,omitempty"`
-	ArgsPreview   string                     `json:"args_preview,omitempty"`
-	ArgsJSON      string                     `json:"args_json,omitempty"`
-	ArgsHash      string                     `json:"args_hash,omitempty"`
-	ControlSignal *ThreadDetailControlSignal `json:"control_signal,omitempty"`
-}
-
-type ThreadDetailControlSignal struct {
-	Name        string         `json:"name,omitempty"`
-	CallID      string         `json:"call_id,omitempty"`
-	Disposition string         `json:"disposition,omitempty"`
-	ErrorCode   string         `json:"error_code,omitempty"`
-	Text        string         `json:"text,omitempty"`
-	ArgsHash    string         `json:"args_hash,omitempty"`
-	Payload     map[string]any `json:"payload,omitempty"`
-}
-
-type ThreadDetailToolResult struct {
-	CallID          string       `json:"call_id,omitempty"`
-	ToolName        string       `json:"tool_name,omitempty"`
-	EffectAttemptID string       `json:"effect_attempt_id,omitempty"`
-	Status          string       `json:"status,omitempty"`
-	Preview         string       `json:"preview,omitempty"`
-	Content         string       `json:"content,omitempty"`
-	Truncated       bool         `json:"truncated,omitempty"`
-	OriginalBytes   int          `json:"original_bytes,omitempty"`
-	VisibleBytes    int          `json:"visible_bytes,omitempty"`
-	OriginalLines   int          `json:"original_lines,omitempty"`
-	VisibleLines    int          `json:"visible_lines,omitempty"`
-	Strategy        string       `json:"strategy,omitempty"`
-	ContentSHA256   string       `json:"content_sha256,omitempty"`
-	FullOutput      *ArtifactRef `json:"full_output,omitempty"`
-}
-
-type ThreadDetailApproval struct {
-	State    string            `json:"state,omitempty"`
-	ToolID   string            `json:"tool_id,omitempty"`
-	ToolName string            `json:"tool_name,omitempty"`
-	ToolKind string            `json:"tool_kind,omitempty"`
-	ArgsHash string            `json:"args_hash,omitempty"`
-	Reason   string            `json:"reason,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-type ThreadDetailTurnMarker struct {
-	Status   string            `json:"status,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-type ThreadDetailCompaction struct {
-	OperationID         string            `json:"operation_id,omitempty"`
-	RequestID           string            `json:"request_id,omitempty"`
-	Source              string            `json:"source,omitempty"`
-	Trigger             string            `json:"trigger,omitempty"`
-	Reason              string            `json:"reason,omitempty"`
-	Phase               string            `json:"phase,omitempty"`
-	TokensBefore        int64             `json:"tokens_before,omitempty"`
-	TokensAfterEstimate int64             `json:"tokens_after_estimate,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
-}
-
-type ArtifactRef struct {
-	ID        identity.ArtifactID `json:"id,omitempty"`
-	SafeLabel string              `json:"safe_label,omitempty"`
-	Kind      string              `json:"kind,omitempty"`
-	MIME      string              `json:"mime,omitempty"`
-	SizeBytes int64               `json:"size_bytes,omitempty"`
-	SHA256    string              `json:"sha256,omitempty"`
-}
-
-// Validate checks one public artifact reference.
-func (r ArtifactRef) Validate() error {
-	if !trimStableNonEmpty(string(r.ID)) || !trimStableNonEmpty(r.Kind) || !trimStableNonEmpty(r.SafeLabel) {
-		return errors.New("artifact reference requires trim-stable identity, kind, and safe label")
-	}
-	if r.SizeBytes < 0 {
-		return errors.New("artifact reference size must not be negative")
-	}
-	if r.MIME != strings.TrimSpace(r.MIME) || r.SHA256 != strings.TrimSpace(r.SHA256) {
-		return errors.New("artifact reference metadata must be trim-stable")
-	}
-	return nil
-}
-
-type readArtifactRequest struct {
-	ThreadID   identity.ThreadID   `json:"thread_id"`
-	ArtifactID identity.ArtifactID `json:"artifact_id"`
-}
-
-type ArtifactContent struct {
-	Ref  ArtifactRef `json:"ref"`
-	Text string      `json:"text"`
-}
-
-// Validate checks one public artifact content result.
-func (c ArtifactContent) Validate() error {
-	if err := c.Ref.Validate(); err != nil {
-		return fmt.Errorf("artifact content reference: %w", err)
-	}
-	return nil
-}
-
 type RunLabels struct {
-	Correlation map[string]string
-	Host        map[string]string
-}
-
-type ThreadSnapshot struct {
-	ID               identity.ThreadID `json:"id"`
-	Title            string            `json:"title,omitempty"`
-	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
-	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time         `json:"title_updated_at,omitempty"`
-	TitleError       string            `json:"title_error,omitempty"`
-	TitleGeneration  int64             `json:"title_generation,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-	Phase            ThreadPhase       `json:"phase"`
-	Status           ThreadStatus      `json:"status"`
-	LatestTurnID     identity.TurnID   `json:"latest_turn_id,omitempty"`
-	LatestRunID      identity.RunID    `json:"latest_run_id,omitempty"`
-	ThroughOrdinal   int64             `json:"through_ordinal"`
-	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
-	Recoverable      bool              `json:"recoverable"`
-	CanAppendMessage bool              `json:"can_append_message"`
-	CanRetry         bool              `json:"can_retry"`
-}
-
-type ThreadSummary struct {
-	ID               identity.ThreadID `json:"id"`
-	Title            string            `json:"title,omitempty"`
-	TitleStatus      ThreadTitleStatus `json:"title_status,omitempty"`
-	TitleSource      ThreadTitleSource `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time         `json:"title_updated_at,omitempty"`
-	TitleError       string            `json:"title_error,omitempty"`
-	TitleGeneration  int64             `json:"title_generation,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-	Phase            ThreadPhase       `json:"phase"`
-	Status           ThreadStatus      `json:"status"`
-	LatestTurnID     identity.TurnID   `json:"latest_turn_id,omitempty"`
-	WaitingPrompt    string            `json:"waiting_prompt,omitempty"`
-	Recoverable      bool              `json:"recoverable"`
-	CanAppendMessage bool              `json:"can_append_message"`
-	CanRetry         bool              `json:"can_retry"`
+	Correlation map[string]string `json:"correlation,omitempty"`
+	Host        map[string]string `json:"host,omitempty"`
 }
 
 type TurnResult struct {
-	ThreadID               identity.ThreadID              `json:"thread_id"`
-	TurnID                 identity.TurnID                `json:"turn_id"`
-	RunID                  identity.RunID                 `json:"run_id"`
-	Status                 TurnStatus                     `json:"status"`
-	Output                 string                         `json:"output,omitempty"`
-	Failure                *ThreadTurnFailure             `json:"failure,omitempty"`
-	Diagnostics            map[string]string              `json:"diagnostics,omitempty"`
-	Metrics                RunMetrics                     `json:"metrics"`
-	CompletionReason       observation.CompletionReason   `json:"completion_reason,omitempty"`
-	ContinuationReason     observation.ContinuationReason `json:"continuation_reason,omitempty"`
-	FinishReason           observation.FinishReason       `json:"finish_reason,omitempty"`
-	RawFinishReason        string                         `json:"raw_finish_reason,omitempty"`
-	FinishInferred         bool                           `json:"finish_inferred,omitempty"`
-	Signal                 *TurnSignal                    `json:"signal,omitempty"`
-	ActivityTimeline       observation.ActivityTimeline   `json:"activity_timeline"`
-	ProjectionAvailability TurnProjectionAvailability     `json:"projection_availability"`
-	Projection             *ThreadTurnProjection          `json:"projection,omitempty"`
-	ProjectionError        string                         `json:"projection_error,omitempty"`
-	Replayed               bool                           `json:"replayed,omitempty"`
-}
-
-type TurnProjectionAvailability string
-
-const (
-	TurnProjectionAvailabilityReady       TurnProjectionAvailability = "ready"
-	TurnProjectionAvailabilityUnavailable TurnProjectionAvailability = "unavailable"
-)
-
-func (a TurnProjectionAvailability) Valid() bool {
-	return a == TurnProjectionAvailabilityReady || a == TurnProjectionAvailabilityUnavailable
-}
-
-func validateTurnProjectionOutcome(availability TurnProjectionAvailability, projection *ThreadTurnProjection, projectionError string) error {
-	if !availability.Valid() {
-		return fmt.Errorf("unsupported turn projection availability %q", availability)
-	}
-	switch availability {
-	case TurnProjectionAvailabilityReady:
-		if projection == nil {
-			return errors.New("ready turn projection is required")
-		}
-		if strings.TrimSpace(projectionError) != "" {
-			return errors.New("ready turn projection must not include an error")
-		}
-		if err := projection.Validate(); err != nil {
-			return fmt.Errorf("invalid ready turn projection: %w", err)
-		}
-	case TurnProjectionAvailabilityUnavailable:
-		if projection != nil {
-			return errors.New("unavailable turn projection must not include a projection")
-		}
-		if strings.TrimSpace(projectionError) == "" {
-			return errors.New("unavailable turn projection requires an error")
-		}
-	}
-	return nil
+	ThreadID           identity.ThreadID              `json:"thread_id"`
+	TurnID             identity.TurnID                `json:"turn_id"`
+	RunID              identity.RunID                 `json:"-"`
+	Status             TurnStatus                     `json:"status"`
+	Output             string                         `json:"output,omitempty"`
+	Failure            *ThreadTurnFailure             `json:"failure,omitempty"`
+	Diagnostics        map[string]string              `json:"diagnostics,omitempty"`
+	Metrics            RunMetrics                     `json:"metrics"`
+	CompletionReason   observation.CompletionReason   `json:"completion_reason,omitempty"`
+	ContinuationReason observation.ContinuationReason `json:"continuation_reason,omitempty"`
+	FinishReason       observation.FinishReason       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                         `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                           `json:"finish_inferred,omitempty"`
+	Signal             *TurnSignal                    `json:"signal,omitempty"`
+	ActivityTimeline   observation.ActivityTimeline   `json:"activity_timeline"`
+	Replayed           bool                           `json:"replayed,omitempty"`
 }
 
 func (r TurnResult) Validate() error {
@@ -1626,93 +623,10 @@ func (r TurnResult) Validate() error {
 	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
 		return fmt.Errorf("invalid turn result activity timeline: %w", err)
 	}
-	if r.ActivityTimeline.ThreadID.String() != string(r.ThreadID) || r.ActivityTimeline.TurnID.String() != string(r.TurnID) || r.ActivityTimeline.RunID.String() != string(r.RunID) || r.ActivityTimeline.TraceID.String() != string(r.RunID) {
+	if r.ActivityTimeline.ThreadID.String() != string(r.ThreadID) || r.ActivityTimeline.TurnID.String() != string(r.TurnID) || r.ActivityTimeline.RunID.String() != string(r.RunID) {
 		return errors.New("turn result activity timeline identity mismatch")
 	}
-	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
-		return err
-	}
-	if r.Projection == nil {
-		return nil
-	}
-	if r.Projection.ThreadID != r.ThreadID || r.Projection.TurnID != r.TurnID || r.Projection.RunID != r.RunID {
-		return errors.New("turn result projection identity mismatch")
-	}
-	if r.Projection.Status != r.Status {
-		return fmt.Errorf("turn result projection status %q does not match result status %q", r.Projection.Status, r.Status)
-	}
 	return nil
-}
-
-func (r PendingToolSettlementResult) Validate() error {
-	if err := r.Target.Validate(); err != nil {
-		return fmt.Errorf("invalid pending tool settlement target: %w", err)
-	}
-	if r.Event.ThreadID != r.Target.ThreadID || r.Event.TurnID != r.Target.TurnID {
-		return errors.New("pending tool settlement event thread identity mismatch")
-	}
-	if r.Event.Kind != ThreadDetailEventToolResult || r.Event.Type != threadTurnProjectionPendingToolSettlementType || r.Event.ToolResult == nil {
-		return errors.New("pending tool settlement result requires a settlement tool result event")
-	}
-	if strings.TrimSpace(r.Event.ToolResult.CallID) != strings.TrimSpace(r.Target.ToolCallID) ||
-		strings.TrimSpace(r.Event.ToolResult.ToolName) != strings.TrimSpace(r.Target.ToolName) ||
-		strings.TrimSpace(r.Event.Metadata["run_id"]) != strings.TrimSpace(string(r.Target.RunID)) ||
-		strings.TrimSpace(r.Event.Metadata["handle"]) != strings.TrimSpace(r.Target.Handle) {
-		return errors.New("pending tool settlement event target mismatch")
-	}
-	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
-		return err
-	}
-	if r.Projection == nil {
-		return nil
-	}
-	if r.Projection.ThreadID != r.Target.ThreadID || r.Projection.TurnID != r.Target.TurnID || r.Projection.RunID != r.Target.RunID {
-		return errors.New("pending tool settlement projection identity mismatch")
-	}
-	return nil
-}
-
-type compactThreadResult struct {
-	ThreadID         identity.ThreadID            `json:"thread_id"`
-	RunID            identity.RunID               `json:"run_id"`
-	RequestID        string                       `json:"request_id"`
-	Compaction       observation.CompactionEvent  `json:"compaction"`
-	Metrics          RunMetrics                   `json:"metrics"`
-	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Replayed         bool                         `json:"replayed,omitempty"`
-}
-
-func (r compactThreadResult) Validate() error {
-	if strings.TrimSpace(string(r.ThreadID)) == "" || strings.TrimSpace(string(r.RunID)) == "" || strings.TrimSpace(r.RequestID) == "" {
-		return errors.New("compact thread result requires thread, run, and request identities")
-	}
-	if err := r.Compaction.Validate(); err != nil {
-		return fmt.Errorf("invalid compact thread result: %w", err)
-	}
-	if strings.TrimSpace(r.Compaction.ThreadID.String()) != string(r.ThreadID) || strings.TrimSpace(r.Compaction.RunID.String()) != string(r.RunID) || strings.TrimSpace(r.Compaction.RequestID) != strings.TrimSpace(r.RequestID) {
-		return errors.New("compact thread result identity mismatch")
-	}
-	if r.Compaction.TurnID != "" {
-		return fmt.Errorf("standalone thread compaction must not include turn id %q", r.Compaction.TurnID)
-	}
-	if r.Compaction.Status == observation.CompactionStatusRunning {
-		return errors.New("compact thread result requires terminal compaction status")
-	}
-	if strings.TrimSpace(r.Compaction.OperationID) == "" || strings.TrimSpace(r.Compaction.Source) == "" {
-		return errors.New("compact thread result requires operation and source identities")
-	}
-	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
-		return fmt.Errorf("invalid compact thread result activity timeline: %w", err)
-	}
-	if r.ActivityTimeline.ThreadID.String() != string(r.ThreadID) || r.ActivityTimeline.TurnID != "" || r.ActivityTimeline.RunID.String() != string(r.RunID) || r.ActivityTimeline.TraceID.String() != string(r.RunID) {
-		return errors.New("compact thread result activity timeline identity mismatch")
-	}
-	return nil
-}
-
-// Validate checks one public standalone compaction result.
-func (r CompactThreadResult) Validate() error {
-	return compactThreadResult(r).Validate()
 }
 
 type EventSink interface {
@@ -1743,16 +657,14 @@ type Event struct {
 	ContinuationReason observation.ContinuationReason    `json:"continuation_reason,omitempty"`
 	Activity           *tools.ActivityPresentation       `json:"activity,omitempty"`
 	ActivityTimeline   *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
-	Projection         *ThreadTurnProjection             `json:"projection,omitempty"`
-	ProjectionDelta    *ThreadTurnProjectionDelta        `json:"projection_delta,omitempty"`
 	Stream             *StreamObservation                `json:"stream,omitempty"`
-	Committed          *ThreadDetailEvent                `json:"committed,omitempty"`
 	ContextStatus      *observation.ContextStatus        `json:"context_status,omitempty"`
 	Compaction         *observation.CompactionEvent      `json:"compaction,omitempty"`
 	CompactionDebug    *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
 	Sources            []publicprovider.Source           `json:"sources,omitempty"`
 	Metadata           map[string]any                    `json:"metadata,omitempty"`
 	Timestamp          time.Time                         `json:"timestamp,omitempty"`
+	committed          *agentharness.ThreadDetailEvent
 }
 
 func (e Event) Validate() error {
@@ -1810,84 +722,6 @@ func (e Event) Validate() error {
 		if e.ActivityTimeline.RunID.String() != string(e.RunID) || e.ActivityTimeline.ThreadID.String() != string(e.ThreadID) || e.ActivityTimeline.TurnID.String() != string(e.TurnID) {
 			return errors.New("runtime event activity timeline identity mismatch")
 		}
-	}
-	if e.Projection != nil {
-		if err := e.Projection.Validate(); err != nil {
-			return fmt.Errorf("invalid event turn projection: %w", err)
-		}
-		if e.ThreadID != e.Projection.ThreadID || e.TurnID != e.Projection.TurnID || e.RunID != e.Projection.RunID {
-			return errors.New("runtime event projection identity mismatch")
-		}
-	}
-	if e.ProjectionDelta != nil {
-		if err := e.ProjectionDelta.Validate(); err != nil {
-			return fmt.Errorf("invalid event turn projection delta: %w", err)
-		}
-		if e.ThreadID != e.ProjectionDelta.ThreadID || e.TurnID != e.ProjectionDelta.TurnID || e.RunID != e.ProjectionDelta.RunID {
-			return errors.New("runtime event projection delta identity mismatch")
-		}
-		if e.Projection == nil {
-			return errors.New("runtime event projection delta requires full projection")
-		}
-		if !runtimeEventProjectionDeltaMatchesProjection(*e.ProjectionDelta, *e.Projection) {
-			return errors.New("runtime event projection delta does not match full projection")
-		}
-	}
-	if e.Type == observation.EventTypeThreadEntryCommitted && e.Committed == nil {
-		return errors.New("runtime thread entry committed event requires committed detail")
-	}
-	if e.Type != observation.EventTypeThreadEntryCommitted && e.Committed != nil {
-		return errors.New("runtime committed detail requires thread entry committed event type")
-	}
-	if e.Committed != nil {
-		if e.Committed.ThreadID != e.ThreadID || e.Committed.TurnID != e.TurnID || e.Committed.RunID != e.RunID || e.Committed.Step != e.Step {
-			return errors.New("runtime event committed detail identity mismatch")
-		}
-		if err := validateCommittedUserMessage(*e.Committed); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func runtimeEventProjectionDeltaMatchesProjection(delta ThreadTurnProjectionDelta, projection ThreadTurnProjection) bool {
-	if delta.ThreadID != projection.ThreadID || delta.TurnID != projection.TurnID || delta.RunID != projection.RunID || delta.TraceID != projection.TraceID ||
-		delta.ThroughOrdinal != projection.ThroughOrdinal || delta.Status != projection.Status || delta.SegmentCount != len(projection.Segments) ||
-		!delta.ProjectedAt.Equal(projection.ProjectedAt) {
-		return false
-	}
-	for _, change := range delta.Changes {
-		if change.Index < 0 || change.Index >= len(projection.Segments) || !reflect.DeepEqual(change.Segment, projection.Segments[change.Index]) {
-			return false
-		}
-	}
-	return true
-}
-
-func validateCommittedUserMessage(committed ThreadDetailEvent) error {
-	if committed.Kind != ThreadDetailEventUserMessage {
-		return nil
-	}
-	if strings.TrimSpace(committed.ID) == "" || strings.TrimSpace(string(committed.ThreadID)) == "" ||
-		strings.TrimSpace(string(committed.TurnID)) == "" || strings.TrimSpace(string(committed.RunID)) == "" {
-		return errors.New("runtime committed user message requires entry, thread, turn, and run identities")
-	}
-	if committed.CreatedAt.IsZero() {
-		return errors.New("runtime committed user message requires creation time")
-	}
-	if committed.Message == nil || strings.TrimSpace(committed.Message.Role) != string(session.User) {
-		return errors.New("runtime committed user message requires user payload")
-	}
-	if strings.TrimSpace(committed.Message.Content) == "" && strings.TrimSpace(committed.Message.Preview) == "" && len(committed.Message.Attachments) == 0 && len(committed.Message.References) == 0 {
-		return errors.New("runtime committed user message requires preview, content, attachments, or references")
-	}
-	for index, attachment := range committed.Message.Attachments {
-		if err := attachment.Validate(); err != nil {
-			return fmt.Errorf("runtime committed user message attachment %d: %w", index, err)
-		}
-	}
-	if err := validateMessageReferences(committed.Message.References); err != nil {
-		return fmt.Errorf("runtime committed user message references: %w", err)
 	}
 	return nil
 }
@@ -2086,14 +920,9 @@ type runtimeStore struct {
 	self              *runtimeStore
 	repo              sessiontree.Repo
 	prompt            cache.Store
-	forkOperations    storage.ForkOperationStore
 	agentTodos        sessiontree.AgentTodoStateRepo
-	rootAuthority     sessiontree.RootAuthorityRepo
+	rootAuthority     rootTreeDeleter
 	deleteCleanup     func(context.Context, []string) error
-	threadAuthorityMu sync.Mutex
-	turnExecutionMu   sync.Mutex
-	turnExecutions    map[string]sessiontree.TurnLease
-	turnAdmissions    map[string]map[string]int
 	bootstrapMu       sync.Mutex
 	bootstrapIssued   bool
 	titleRecoveryMu   sync.Mutex
@@ -2109,6 +938,10 @@ type runtimeStore struct {
 	lifetimeCancel    context.CancelFunc
 }
 
+type rootTreeDeleter interface {
+	DeleteRootTree(context.Context, string) (sessiontree.DeleteRootTreeResult, error)
+}
+
 type storeLifetimeState string
 
 const (
@@ -2120,13 +953,11 @@ const (
 func newMemoryStore() *runtimeStore {
 	repo := sessiontree.NewMemoryRepo()
 	prompt := cache.NewMemoryStore()
-	forkOperations := storage.NewMemoryForkOperationStore(repo)
 	store := &runtimeStore{
-		repo:           repo,
-		prompt:         prompt,
-		forkOperations: forkOperations,
-		agentTodos:     repo,
-		rootAuthority:  repo,
+		repo:          repo,
+		prompt:        prompt,
+		agentTodos:    repo,
+		rootAuthority: repo,
 		deleteCleanup: func(ctx context.Context, threadIDs []string) error {
 			if err := prompt.DeletePromptScopes(ctx, threadIDs...); err != nil {
 				return err
@@ -2140,12 +971,12 @@ func newMemoryStore() *runtimeStore {
 }
 
 func newBackendRuntimeStore(ctx context.Context, backend spi.Backend) (*runtimeStore, error) {
-	kernel, err := storage.NewBackendKernel(ctx, backend, sessiontree.DefaultLeasePolicy, time.Now)
+	kernel, err := storage.NewBackendKernel(ctx, backend, time.Now)
 	if err != nil {
 		return nil, err
 	}
 	store := &runtimeStore{
-		repo: kernel, prompt: kernel, forkOperations: kernel,
+		repo: kernel, prompt: kernel,
 		agentTodos: kernel, rootAuthority: kernel,
 		deleteCleanup: func(context.Context, []string) error { return nil },
 	}
@@ -2229,7 +1060,7 @@ func (s *runtimeStore) validate() error {
 	if err := s.validateOpen(); err != nil {
 		return err
 	}
-	if s.repo == nil || s.prompt == nil || s.forkOperations == nil || s.agentTodos == nil || s.rootAuthority == nil || s.deleteCleanup == nil {
+	if s.repo == nil || s.prompt == nil || s.agentTodos == nil || s.rootAuthority == nil || s.deleteCleanup == nil {
 		return errors.New("runtime store must be created with runtime.newMemoryStore or runtime.openSQLiteStore")
 	}
 	if _, ok := s.repo.(sessiontree.ProviderStateStore); !ok {
@@ -2334,101 +1165,6 @@ func (s *runtimeStore) recoverPendingAutomaticThreadTitles(harness *agentharness
 	}
 	s.titleRecoveryDone = true
 	return nil
-}
-
-func (s *runtimeStore) registerTurnExecution(lease sessiontree.TurnLease) error {
-	if err := lease.Validate(); err != nil || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		return sessiontree.ErrStaleAuthority
-	}
-	s.turnExecutionMu.Lock()
-	defer s.turnExecutionMu.Unlock()
-	if s.turnExecutions == nil {
-		s.turnExecutions = make(map[string]sessiontree.TurnLease)
-	}
-	if current, ok := s.turnExecutions[lease.ThreadID]; ok && !sessiontree.SameTurnLease(current, lease) {
-		return sessiontree.ErrThreadAuthorityBusy
-	}
-	s.turnExecutions[lease.ThreadID] = lease
-	return nil
-}
-
-func (s *runtimeStore) renewTurnExecution(previous, renewed sessiontree.TurnLease) error {
-	s.turnExecutionMu.Lock()
-	defer s.turnExecutionMu.Unlock()
-	current, ok := s.turnExecutions[previous.ThreadID]
-	if !ok || !sessiontree.SameTurnLease(current, previous) ||
-		previous.ThreadID != renewed.ThreadID || previous.OwnerID != renewed.OwnerID ||
-		previous.Generation != renewed.Generation || renewed.Heartbeat <= previous.Heartbeat {
-		return sessiontree.ErrStaleAuthority
-	}
-	s.turnExecutions[renewed.ThreadID] = renewed
-	return nil
-}
-
-func (s *runtimeStore) unregisterTurnExecution(lease sessiontree.TurnLease) {
-	s.turnExecutionMu.Lock()
-	if current, ok := s.turnExecutions[lease.ThreadID]; ok && sessiontree.SameTurnLease(current, lease) {
-		delete(s.turnExecutions, lease.ThreadID)
-	}
-	s.turnExecutionMu.Unlock()
-}
-
-func (s *runtimeStore) activeTurnExecution(threadID string) (sessiontree.TurnLease, bool) {
-	s.turnExecutionMu.Lock()
-	defer s.turnExecutionMu.Unlock()
-	lease, ok := s.turnExecutions[strings.TrimSpace(threadID)]
-	return lease, ok
-}
-
-func (s *runtimeStore) beginTurnAdmission(threadID, turnID string) {
-	threadID = strings.TrimSpace(threadID)
-	turnID = strings.TrimSpace(turnID)
-	if threadID == "" || turnID == "" {
-		return
-	}
-	s.turnExecutionMu.Lock()
-	if s.turnAdmissions == nil {
-		s.turnAdmissions = make(map[string]map[string]int)
-	}
-	if s.turnAdmissions[threadID] == nil {
-		s.turnAdmissions[threadID] = make(map[string]int)
-	}
-	s.turnAdmissions[threadID][turnID]++
-	s.turnExecutionMu.Unlock()
-}
-
-func (s *runtimeStore) endTurnAdmission(threadID, turnID string) {
-	threadID = strings.TrimSpace(threadID)
-	turnID = strings.TrimSpace(turnID)
-	s.turnExecutionMu.Lock()
-	admissions := s.turnAdmissions[threadID]
-	if count := admissions[turnID]; count > 1 {
-		admissions[turnID] = count - 1
-	} else {
-		delete(admissions, turnID)
-		if len(admissions) == 0 {
-			delete(s.turnAdmissions, threadID)
-		}
-	}
-	s.turnExecutionMu.Unlock()
-}
-
-func (s *runtimeStore) turnExecutionSnapshot(threadID, turnID string) (sessiontree.TurnLease, bool, bool) {
-	threadID = strings.TrimSpace(threadID)
-	turnID = strings.TrimSpace(turnID)
-	s.turnExecutionMu.Lock()
-	defer s.turnExecutionMu.Unlock()
-	lease, active := s.turnExecutions[threadID]
-	return lease, active, s.turnAdmissions[threadID][turnID] > 0
-}
-
-func (s *runtimeStore) turnExecutionRegistry() *agentharness.TurnExecutionRegistry {
-	return &agentharness.TurnExecutionRegistry{
-		Register: s.registerTurnExecution, Renew: s.renewTurnExecution,
-		Unregister: s.unregisterTurnExecution, Active: s.activeTurnExecution,
-		BeginAdmission: s.beginTurnAdmission, EndAdmission: s.endTurnAdmission,
-		Snapshot: s.turnExecutionSnapshot,
-	}
 }
 
 func (s *runtimeStore) beginLifetimeOperationContext() (context.Context, func(), error) {
@@ -2552,14 +1288,12 @@ func runtimeHostError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, agentharness.ErrActiveTurn), errors.Is(err, sessiontree.ErrActiveTurn):
+	case errors.Is(err, sessiontree.ErrActiveTurn):
 		return &AuthorityBusyError{Kind: AuthorityBusyTurn, Err: err}
 	case errors.Is(err, sessiontree.ErrThreadAuthorityBusy):
 		return &AuthorityBusyError{Kind: AuthorityBusyAuthority, Err: err}
 	case errors.Is(err, sessiontree.ErrThreadDeleted):
 		return fmt.Errorf("%w: %w", ErrThreadDeleted, err)
-	case errors.Is(err, sessiontree.ErrRevisionUnavailable):
-		return fmt.Errorf("%w: %w", ErrRevisionUnavailable, err)
 	case errors.Is(err, sessiontree.ErrSubAgentClosing):
 		return fmt.Errorf("%w: %w", ErrSubAgentClosing, err)
 	case errors.Is(err, sessiontree.ErrStaleAuthority):
@@ -2584,26 +1318,8 @@ func runtimeHostError(err error) error {
 		return fmt.Errorf("%w: %w", ErrEffectDispatchConsumed, err)
 	case errors.Is(err, agentharness.ErrAuthorizationContract):
 		return fmt.Errorf("%w: %w", ErrAuthorizationContract, err)
-	case errors.Is(err, agentharness.ErrNoRetryTarget):
-		return fmt.Errorf("%w: %w", ErrNoRetryTarget, err)
-	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetTurnNotFound):
-		return fmt.Errorf("%w: %w", ErrTurnNotFound, err)
-	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetRunNotFound):
-		return fmt.Errorf("%w: %w", ErrRunNotFound, err)
-	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetToolNotFound):
-		return fmt.Errorf("%w: %w", ErrPendingToolNotFound, err)
-	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetNotActive):
-		return fmt.Errorf("%w: %w", ErrPendingToolNotActive, err)
-	case errors.Is(err, agentharness.ErrPendingToolSettlementConflict):
-		return fmt.Errorf("%w: %w", ErrPendingToolSettlementConflict, err)
-	case errors.Is(err, agentharness.ErrSubAgentNotFound):
-		return fmt.Errorf("%w: %w", ErrSubAgentNotFound, err)
-	case errors.Is(err, agentharness.ErrSubAgentClosed):
-		return fmt.Errorf("%w: %w", ErrSubAgentClosed, err)
 	case errors.Is(err, sessiontree.ErrThreadClosed):
 		return fmt.Errorf("%w: %w", ErrSubAgentClosed, err)
-	case errors.Is(err, agentharness.ErrForkOperationConflict):
-		return fmt.Errorf("%w: %w", ErrForkOperationConflict, err)
 	case errors.Is(err, sessiontree.ErrForkDestinationConflict):
 		return fmt.Errorf("%w: %w", ErrForkDestinationConflict, err)
 	case errors.Is(err, sessiontree.ErrAgentTodoVersionConflict):
@@ -2629,542 +1345,68 @@ func runtimeHostError(err error) error {
 	}
 }
 
-func (h *threadCreateCapability) CreateThread(ctx context.Context, req createThreadRequest) (ThreadSummary, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadSummary{}, err
-	}
-	defer done()
-	requestedThreadID := identity.ThreadID(strings.TrimSpace(string(req.ThreadID)))
-	if requestedThreadID != "" && requestedThreadID != h.threadID {
-		return ThreadSummary{}, fmt.Errorf("thread create host is bound to thread %q, got %q", h.threadID, requestedThreadID)
-	}
-	requestedIntentID := createIntentID(strings.TrimSpace(string(req.createIntentID)))
-	if requestedIntentID != "" && requestedIntentID != h.createIntentID {
-		return ThreadSummary{}, fmt.Errorf("thread create host is bound to create intent %q, got %q", h.createIntentID, requestedIntentID)
-	}
-	req.ThreadID = h.threadID
-	req.createIntentID = h.createIntentID
-	if err := req.Validate(); err != nil {
-		return ThreadSummary{}, err
-	}
-	h.store.threadAuthorityMu.Lock()
-	defer h.store.threadAuthorityMu.Unlock()
-	created, err := h.store.rootAuthority.CreateRoot(ctx, sessiontree.CreateRootRequest{
-		ThreadID:        string(req.ThreadID),
-		CreateIntentID:  string(req.createIntentID),
-		ContractVersion: "1",
-		Meta:            sessiontree.ThreadMeta{ID: string(req.ThreadID)},
-	})
-	if err != nil {
-		return ThreadSummary{}, requestConflictError(runtimeHostError(err), "root_create", string(req.createIntentID))
-	}
-	thread, err := h.harness.BindCreatedRoot(created.Thread, created.Replayed)
-	if err != nil {
-		return ThreadSummary{}, runtimeHostError(err)
-	}
-	if !created.Replayed {
-		return validateThreadSummaryResult(ThreadSummary{
-			ID: identity.ThreadID(created.Thread.ID), Title: created.Thread.Title,
-			TitleStatus: ThreadTitleStatus(created.Thread.TitleStatus), TitleSource: ThreadTitleSource(created.Thread.TitleSource),
-			TitleUpdatedAt: created.Thread.TitleUpdatedAt, TitleError: created.Thread.TitleError,
-			CreatedAt: created.Thread.CreatedAt, UpdatedAt: created.Thread.UpdatedAt,
-			Phase: ThreadPhaseIdle, Status: ThreadStatusIdle, CanAppendMessage: true,
-		})
-	}
-	summary, err := thread.Summary(ctx)
-	if err != nil {
-		return ThreadSummary{}, runtimeHostError(err)
-	}
-	return validateThreadSummaryResult(threadSummary(summary))
-}
-
-func (h *threadTitleCapability) SetThreadTitle(ctx context.Context, req setThreadTitleRequest) (ThreadSnapshot, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread title host"); err != nil {
-		return ThreadSnapshot{}, err
-	}
-	return setThreadTitle(ctx, h.harness, req)
-}
-
-func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req setThreadTitleRequest) (ThreadSnapshot, error) {
-	snapshot, err := harness.SetThreadTitle(ctx, string(req.ThreadID), req.Title)
-	if err != nil {
-		return ThreadSnapshot{}, runtimeHostError(err)
-	}
-	return validateThreadSnapshotResult(threadSnapshot(snapshot))
-}
-
-func (h *threadForkCapability) ForkThread(ctx context.Context, req forkThreadRequest) (forkThreadResult, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return forkThreadResult{}, err
-	}
-	defer done()
-	h.store.threadAuthorityMu.Lock()
-	defer h.store.threadAuthorityMu.Unlock()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.SourceThreadID, "thread fork host"); err != nil {
-		return forkThreadResult{}, err
-	}
-	result, err := forkThread(ctx, h.harness, req)
-	if err == nil {
-		if validationErr := result.Validate(); validationErr != nil {
-			return forkThreadResult{}, invalidPublicResult("fork result", validationErr)
-		}
-	}
-	return result, requestConflictError(err, "fork", string(req.OperationID))
-}
-
-func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req forkThreadRequest) (forkThreadResult, error) {
-	if strings.TrimSpace(string(req.OperationID)) == "" {
-		return forkThreadResult{}, errors.New("fork operation id is required")
-	}
-	if strings.TrimSpace(string(req.SourceThreadID)) == "" {
-		return forkThreadResult{}, errors.New("source thread id is required")
-	}
-	if strings.TrimSpace(string(req.DestinationThreadID)) == "" {
-		return forkThreadResult{}, errors.New("destination thread id is required")
-	}
-	if strings.TrimSpace(string(req.SourceThreadID)) == strings.TrimSpace(string(req.DestinationThreadID)) {
-		return forkThreadResult{}, errors.New("fork destination must differ from source")
-	}
-	result, err := harness.ForkThreadWithResult(ctx, agentharness.ForkOptions{
-		OperationID:    string(req.OperationID),
-		SourceThreadID: string(req.SourceThreadID),
-		NewThreadID:    string(req.DestinationThreadID),
-	})
-	if err != nil {
-		return forkThreadResult{}, runtimeHostError(err)
-	}
-	out := runtimeForkThreadResult(result)
-	if _, err := validateThreadSummaryResult(out.Thread); err != nil {
-		return forkThreadResult{}, err
-	}
-	return out, nil
-}
-
-func (h *providerHost) ReadThread(ctx context.Context, threadID identity.ThreadID) (ThreadSnapshot, error) {
-	return readThreadByID(ctx, h.harness, threadID)
-}
-
-func (h *threadReadCapability) ReadThread(ctx context.Context, threadID identity.ThreadID) (ThreadSnapshot, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
-		return ThreadSnapshot{}, err
-	}
-	return readThreadByID(ctx, h.harness, threadID)
-}
-
-func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadSnapshot, error) {
-	snapshot, err := harness.ReadThread(ctx, string(threadID))
-	if err != nil {
-		return ThreadSnapshot{}, runtimeHostError(err)
-	}
-	return validateThreadSnapshotResult(threadSnapshot(snapshot))
-}
-
-func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
-	return listThreadDetailEvents(ctx, h.harness, req)
-}
-
-func (h *threadReadCapability) ListThreadDetailEvents(ctx context.Context, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadDetailEvents{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
-		return ThreadDetailEvents{}, err
-	}
-	return listThreadDetailEvents(ctx, h.harness, req)
-}
-
-// ListPendingToolSettlementTargets returns all canonical active pending tool
-// targets for the bound root thread. The result is complete and unpaginated.
-func (h *threadReadCapability) ListPendingToolSettlementTargets(ctx context.Context, threadID identity.ThreadID) ([]PendingToolSettlementTarget, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return nil, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
-		return nil, err
-	}
-	return listPendingToolSettlementTargets(ctx, h.harness, threadID)
-}
-
-func listPendingToolSettlementTargets(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) ([]PendingToolSettlementTarget, error) {
-	targets, err := harness.ListPendingToolSettlementTargets(ctx, string(threadID))
-	if err != nil {
-		return nil, runtimeHostError(err)
-	}
-	return pendingToolSettlementTargets(targets), nil
-}
-
-func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req listThreadDetailEventsRequest) (ThreadDetailEvents, error) {
-	detail, err := harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
-		ThreadID:     string(req.ThreadID),
-		AfterOrdinal: req.AfterOrdinal,
-		Limit:        req.Limit,
-		IncludeRaw:   req.IncludeRaw,
-	})
-	if err != nil {
-		return ThreadDetailEvents{}, runtimeHostError(err)
-	}
-	out := ThreadDetailEvents{
-		Events:       publicThreadDetailEvents(detail.Events),
-		NextOrdinal:  detail.NextOrdinal,
-		HasMore:      detail.HasMore,
-		RetainedFrom: detail.RetainedFrom,
-		GeneratedAt:  detail.GeneratedAt.UTC(),
-	}
-	if err := out.Validate(); err != nil {
-		return ThreadDetailEvents{}, invalidPublicResult("thread detail page", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ReadThreadContext(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
-	return readThreadContext(ctx, h.harness, threadID)
-}
-
-func (h *threadReadCapability) ReadThreadContext(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadContextSnapshot{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
-		return ThreadContextSnapshot{}, err
-	}
-	return readThreadContext(ctx, h.harness, threadID)
-}
-
-func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
-	contextSnapshot, err := harness.ReadThreadContext(ctx, string(threadID))
-	if err != nil {
-		return ThreadContextSnapshot{}, runtimeHostError(err)
-	}
-	out := subAgentDetailContext(string(threadID), contextSnapshot)
-	if err := out.Validate(); err != nil {
-		return ThreadContextSnapshot{}, invalidPublicResult("thread context snapshot", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
-	return readThreadAgentTodos(ctx, h.store, threadID)
-}
-
-func (h *threadReadCapability) ReadThreadAgentTodos(ctx context.Context, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadAgentTodoState{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
-		return ThreadAgentTodoState{}, err
-	}
-	return readThreadAgentTodos(ctx, h.store, threadID)
-}
-
-func readThreadAgentTodos(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
+func beginHostOperationContext(store *runtimeStore, ctx context.Context) (context.Context, func(), error) {
 	if store == nil {
-		return ThreadAgentTodoState{}, errors.New("runtime store is required")
+		return nil, nil, errors.New("runtime store is required")
 	}
-	return readThreadAgentTodosFromRepo(ctx, store.agentTodos, threadID)
+	return store.beginOperationContext(ctx)
 }
 
-func readThreadAgentTodosFromRepo(ctx context.Context, repo sessiontree.AgentTodoStateRepo, threadID identity.ThreadID) (ThreadAgentTodoState, error) {
-	if strings.TrimSpace(string(threadID)) == "" {
-		return ThreadAgentTodoState{}, errors.New("thread id is required")
-	}
-	if repo == nil {
-		return ThreadAgentTodoState{}, errors.New("agent todo state repo is required")
-	}
-	state, err := repo.ReadAgentTodoState(ctx, string(threadID))
-	if err != nil {
-		return ThreadAgentTodoState{}, runtimeHostError(err)
-	}
-	out := threadAgentTodoState(state)
-	if err := out.Validate(); err != nil {
-		return ThreadAgentTodoState{}, invalidPublicResult("agent todo state", err)
-	}
-	return out, nil
+func invalidPublicResult(name string, err error) error {
+	return &ContractError{Contract: strings.TrimSpace(name), Err: err}
 }
 
-func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req updateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
-	return updateThreadAgentTodos(ctx, h.store, req)
-}
-
-func updateThreadAgentTodos(ctx context.Context, store *runtimeStore, req updateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return ThreadAgentTodoState{}, errors.New("thread id is required")
+func cloneMessageAttachments(attachments []MessageAttachment) []MessageAttachment {
+	if attachments == nil {
+		return nil
 	}
-	if req.ExpectedVersion < 0 {
-		return ThreadAgentTodoState{}, errors.New("expected todo version must be non-negative")
-	}
-	if strings.TrimSpace(string(req.TurnID)) == "" || strings.TrimSpace(string(req.RunID)) == "" || strings.TrimSpace(req.ToolCallID) == "" {
-		return ThreadAgentTodoState{}, errors.New("todo update requires turn, run, and tool call identities")
-	}
-	if err := validateAgentTodoUpdateIdentity(ctx, store.repo, req); err != nil {
-		return ThreadAgentTodoState{}, err
-	}
-	if err := ValidateAgentTodos(req.Items); err != nil {
-		return ThreadAgentTodoState{}, err
-	}
-	items := make([]sessiontree.AgentTodoItem, 0, len(req.Items))
-	for _, item := range req.Items {
-		id := strings.TrimSpace(item.ID)
-		content := strings.TrimSpace(item.Content)
-		items = append(items, sessiontree.AgentTodoItem{ID: id, Content: content, Status: sessiontree.AgentTodoStatus(item.Status)})
-	}
-	state, err := store.agentTodos.CompareAndSwapAgentTodoState(ctx, sessiontree.AgentTodoState{
-		ThreadID:          string(req.ThreadID),
-		Items:             items,
-		UpdatedAt:         time.Now().UTC(),
-		UpdatedByTurnID:   string(req.TurnID),
-		UpdatedByRunID:    string(req.RunID),
-		UpdatedByToolCall: strings.TrimSpace(req.ToolCallID),
-	}, req.ExpectedVersion)
-	if err != nil {
-		return ThreadAgentTodoState{}, runtimeHostError(err)
-	}
-	out := threadAgentTodoState(state)
-	if err := out.Validate(); err != nil {
-		return ThreadAgentTodoState{}, invalidPublicResult("agent todo state", err)
-	}
-	return out, nil
-}
-
-func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.JournalRepo, req updateThreadAgentTodosRequest) error {
-	meta, err := repo.Thread(ctx, string(req.ThreadID))
-	if err != nil {
-		return runtimeHostError(err)
-	}
-	path, err := repo.Path(ctx, string(req.ThreadID), meta.LeafID)
-	if err != nil {
-		return runtimeHostError(err)
-	}
-	runFound := false
-	toolFound := false
-	for _, entry := range path {
-		if entry.TurnID != string(req.TurnID) {
-			continue
+	result := make([]MessageAttachment, len(attachments))
+	for index, attachment := range attachments {
+		if attachment.TextStats != nil {
+			stats := *attachment.TextStats
+			attachment.TextStats = &stats
 		}
-		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted && strings.TrimSpace(entry.Metadata["run_id"]) == string(req.RunID) {
-			runFound = true
-		}
-		if entry.Type == sessiontree.EntryToolCall && strings.TrimSpace(entry.Message.ToolCallID) == strings.TrimSpace(req.ToolCallID) {
-			toolFound = true
-		}
+		result[index] = attachment
 	}
-	if !runFound {
-		return fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
-	}
-	if !toolFound {
-		return fmt.Errorf("todo update tool call %q was not found in turn %q", req.ToolCallID, req.TurnID)
-	}
-	return nil
+	return result
 }
 
-func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
-	out := ThreadAgentTodoState{
-		ThreadID:          identity.ThreadID(in.ThreadID),
-		Version:           in.Version,
-		Items:             make([]AgentTodo, 0, len(in.Items)),
-		UpdatedAt:         in.UpdatedAt,
-		UpdatedByTurnID:   identity.TurnID(in.UpdatedByTurnID),
-		UpdatedByRunID:    identity.RunID(in.UpdatedByRunID),
-		UpdatedByToolCall: in.UpdatedByToolCall,
+func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.ThreadID, req resumeInputRequest) (TurnResult, error) {
+	if h == nil || h.harness == nil {
+		return TurnResult{}, errors.New("provider host is required")
 	}
-	for _, item := range in.Items {
-		out.Items = append(out.Items, AgentTodo{ID: item.ID, Content: item.Content, Status: AgentTodoStatus(item.Status)})
+	if strings.TrimSpace(string(threadID)) == "" || strings.TrimSpace(string(req.TurnID)) == "" || strings.TrimSpace(string(req.RunID)) == "" || strings.TrimSpace(req.Answer) == "" {
+		return TurnResult{}, errors.New("waiting turn resume request is incomplete")
 	}
-	return out
-}
-
-func (h *providerHost) ReadApprovalQueue(ctx context.Context, req readApprovalQueueRequest) (ApprovalQueue, error) {
-	return readApprovalQueue(ctx, h.harness, req)
-}
-
-func (h *threadReadCapability) ReadApprovalQueue(ctx context.Context, req readApprovalQueueRequest) (ApprovalQueue, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ApprovalQueue{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
-		return ApprovalQueue{}, err
-	}
-	return readApprovalQueue(ctx, h.harness, req)
-}
-
-func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, req readApprovalQueueRequest) (ApprovalQueue, error) {
-	result, err := harness.ReadApprovalQueue(ctx, agentharness.ReadApprovalQueueOptions{ThreadID: string(req.ThreadID)})
-	if err != nil {
-		return ApprovalQueue{}, runtimeHostError(err)
-	}
-	out := approvalQueue(result)
-	if err := out.Validate(); err != nil {
-		return ApprovalQueue{}, invalidPublicResult("approval queue", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ResolveApproval(ctx context.Context, req resolveApprovalRequest) (ResolveApprovalResult, error) {
-	if err := req.Validate(); err != nil {
-		return ResolveApprovalResult{}, err
-	}
-	result, err := h.harness.ResolveApproval(ctx, agentharness.ResolveApprovalOptions{
-		DecisionID: req.DecisionID, ExpectedRootThreadID: string(req.ExpectedRootThreadID),
-		ExpectedGeneration: req.ExpectedGeneration, ExpectedRevision: req.ExpectedRevision,
-		ExpectedCurrent: sessiontree.ApprovalIdentity{
-			ApprovalID: req.ExpectedCurrent.ApprovalID, ThreadID: string(req.ExpectedCurrent.ThreadID),
-			TurnID: string(req.ExpectedCurrent.TurnID), RunID: string(req.ExpectedCurrent.RunID),
-			ToolCallID: req.ExpectedCurrent.ToolCallID, EffectAttemptID: req.ExpectedCurrent.EffectAttemptID,
-		},
-		ExpectedApprovalRevision: req.ExpectedApprovalRevision,
-		Decision:                 sessiontree.ApprovalDecision(req.Decision),
-	})
-	if err != nil {
-		return ResolveApprovalResult{}, runtimeHostError(err)
-	}
-	out := ResolveApprovalResult{
-		Receipt: approvalDecisionReceipt(result.Receipt), Queue: approvalQueue(result.Queue),
-		Approval: approvalRecord(result.Approval), Replayed: result.Replayed,
-	}
-	if err := out.Validate(); err != nil {
-		return ResolveApprovalResult{}, invalidPublicResult("approval result", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ReadTurnProjection(ctx context.Context, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
-	return readTurnProjection(ctx, h.harness, req)
-}
-
-func (h *threadReadCapability) ReadTurnProjection(ctx context.Context, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return ThreadTurnProjection{}, err
-	}
-	defer done()
-	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
-		return ThreadTurnProjection{}, err
-	}
-	return readTurnProjection(ctx, h.harness, req)
-}
-
-func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness, req readTurnProjectionRequest) (ThreadTurnProjection, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return ThreadTurnProjection{}, errors.New("thread id is required")
-	}
-	if strings.TrimSpace(string(req.TurnID)) == "" {
-		return ThreadTurnProjection{}, errors.New("turn id is required")
-	}
-	if strings.TrimSpace(string(req.RunID)) == "" {
-		return ThreadTurnProjection{}, errors.New("run id is required")
-	}
-	detail, found, err := harness.ReadTurnDetailEvents(ctx, string(req.ThreadID), string(req.TurnID), string(req.RunID), true)
-	if err != nil {
-		if errors.Is(err, sessiontree.ErrRequestConflict) {
-			return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
-		}
-		return ThreadTurnProjection{}, runtimeHostError(err)
-	}
-	if !found {
-		return ThreadTurnProjection{}, ErrTurnNotFound
-	}
-	events := threadDetailEvents(detail.Events)
-	if !threadDetailEventsTurnStartedRunIDMatches(events, req.RunID) {
-		return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
-	}
-	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: req.ThreadID,
-		TurnID:   req.TurnID,
-		RunID:    req.RunID,
-		TraceID:  identity.TraceID(req.RunID),
-		Events:   events,
-	})
-	failure := canonicalTurnFailure(events)
-	projection.Status = canonicalTurnStatus(projection.Status, failure)
-	if err := validateThreadTurnFailureForStatus(projection.Status, failure); err != nil {
-		return ThreadTurnProjection{}, fmt.Errorf("%w: canonical turn failure state is invalid: %v", ErrAuthorityCorrupt, err)
-	}
-	if err := projection.Validate(); err != nil {
-		return ThreadTurnProjection{}, fmt.Errorf("%w: canonical turn projection is invalid: %v", ErrAuthorityCorrupt, err)
-	}
-	return projection, nil
-}
-
-func (h *providerHost) RunTurn(ctx context.Context, req runTurnRequest) (TurnResult, error) {
-	validated, err := validateRunTurnRequest(req)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	input := validated.input
-	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
-	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
-		return TurnResult{}, errors.New("opaque message attachments require a modelGateway host")
-	}
-	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	defer done()
-	ctx = operationCtx
-	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	thread, err := h.harness.ResumeWaitingThread(ctx, string(threadID))
 	if err != nil {
 		return TurnResult{}, runtimeHostError(err)
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
-	result, runErr := thread.Run(ctx, input.Text, agentharness.RunOptions{
-		LogicalRequestID: string(req.LogicalRequestID),
-		RunID:            string(req.RunID),
-		TurnID:           string(req.TurnID),
-		Labels: engine.RunLabels{
-			Correlation: cloneStringMap(req.Labels.Correlation),
-			Host:        cloneStringMap(req.Labels.Host),
-		},
-		CompletionPolicy:         validated.completionPolicy,
-		ControlSpec:              validated.signalSpec,
-		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
-		MaxInputTokens:           req.Limits.MaxInputTokens,
-		MaxTotalTokens:           req.Limits.MaxTotalTokens,
-		MaxCostUSD:               req.Limits.MaxCostUSD,
-		MaxToolCalls:             req.Limits.MaxToolCalls,
-		MaxLengthContinuations:   req.Limits.MaxLengthContinuations,
-		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
-		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
-		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
-		SupplementalContext:      supplementalContext,
-		Attachments:              sessionMessageAttachments(input.Attachments),
-		References:               sessionMessageReferences(input.References),
-		Sink:                     activityRecorder,
-	})
-	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
-	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
-	defer cancelProjection()
-	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
-	if err := out.Validate(); err != nil {
-		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
-			return out, runtimeHostError(runErr)
-		}
-		return TurnResult{}, invalidPublicResult("turn result", err)
+	completion, err := engineTurnCompletionPolicy(req.Options.Completion)
+	if err != nil {
+		return TurnResult{}, err
 	}
-	return out, runtimeHostError(runErr)
+	signals, err := engineTurnSignalSpec(req.Options.Signals, completion)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	result, runErr := thread.ResumeInput(ctx, string(req.TurnID), string(req.WaitingRunID), req.Answer, agentharness.RunOptions{
+		LogicalRequestID: string(req.Options.LogicalRequestID),
+		RunID:            string(req.RunID), TurnID: string(req.TurnID),
+		CompletionPolicy: completion,
+		ControlSpec:      signals,
+		Reasoning:        projectedReasoningSelection(req.Options.Reasoning, h.cfg.Reasoning),
+		MaxInputTokens:   req.Options.Limits.MaxInputTokens, MaxTotalTokens: req.Options.Limits.MaxTotalTokens,
+		MaxCostUSD: req.Options.Limits.MaxCostUSD, MaxToolCalls: req.Options.Limits.MaxToolCalls,
+		MaxLengthContinuations: req.Options.Limits.MaxLengthContinuations, MaxStopHookContinuations: req.Options.Limits.MaxStopHookContinuations,
+		ManualCompactions:   projectedManualCompactionSource(req.Options.ManualCompactions),
+		ToolSurfaceProvider: runtimeToolSurfaceProvider(req.Options.ToolSurfaceProvider),
+		SupplementalContext: agentHarnessSupplementalContext(req.Options.SupplementalContext),
+	})
+	return turnResult(result, string(threadID), nil, time.Now().UnixMilli()), runtimeHostError(runErr)
 }
 
-type turnAdmissionResult struct {
+type acceptedTurn struct {
 	ThreadID    identity.ThreadID
 	TurnID      identity.TurnID
 	RunID       identity.RunID
@@ -3173,42 +1415,7 @@ type turnAdmissionResult struct {
 	Replayed    bool
 }
 
-func (h *providerHost) AdmitTurn(ctx context.Context, req runTurnRequest) (turnAdmissionResult, error) {
-	validated, err := validateRunTurnRequest(req)
-	if err != nil {
-		return turnAdmissionResult{}, err
-	}
-	input := validated.input
-	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
-		return turnAdmissionResult{}, errors.New("opaque message attachments require a modelGateway host")
-	}
-	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
-	if err != nil {
-		return turnAdmissionResult{}, err
-	}
-	defer done()
-	thread, err := h.harness.ResumeThread(operationCtx, string(req.ThreadID), agentharness.ResumeOptions{})
-	if err != nil {
-		return turnAdmissionResult{}, runtimeHostError(err)
-	}
-	admission, err := thread.Admit(operationCtx, input.Text, agentharness.RunOptions{
-		LogicalRequestID: string(req.LogicalRequestID),
-		RunID:            string(req.RunID), TurnID: string(req.TurnID),
-		SupplementalContext: agentHarnessSupplementalContext(req.SupplementalContext),
-		Attachments:         sessionMessageAttachments(input.Attachments),
-		References:          sessionMessageReferences(input.References),
-	})
-	if err != nil {
-		return turnAdmissionResult{}, runtimeHostError(err)
-	}
-	return turnAdmissionResult{
-		ThreadID: identity.ThreadID(admission.ThreadID), TurnID: identity.TurnID(admission.TurnID),
-		RunID: identity.RunID(admission.RunID), UserEntryID: admission.UserEntryID,
-		BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
-	}, nil
-}
-
-func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAdmissionResult, req runTurnRequest) (TurnResult, error) {
+func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted acceptedTurn, req runTurnRequest) (TurnResult, error) {
 	validated, err := validateRunTurnRequest(req)
 	if err != nil {
 		return TurnResult{}, err
@@ -3228,9 +1435,9 @@ func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAd
 		return TurnResult{}, runtimeHostError(err)
 	}
 	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
-	result, runErr := thread.ExecuteAdmitted(operationCtx, agentharness.TurnAdmission{
-		ThreadID: string(admission.ThreadID), TurnID: string(admission.TurnID), RunID: string(admission.RunID),
-		UserEntryID: admission.UserEntryID, BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
+	result, runErr := thread.ExecuteAccepted(operationCtx, agentharness.AcceptedTurn{
+		ThreadID: string(accepted.ThreadID), TurnID: string(accepted.TurnID), RunID: string(accepted.RunID),
+		UserEntryID: accepted.UserEntryID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed,
 	}, input.Text, agentharness.RunOptions{
 		LogicalRequestID: string(req.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
@@ -3255,9 +1462,6 @@ func (h *providerHost) ExecuteAdmittedTurn(ctx context.Context, admission turnAd
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
-	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(operationCtx)
-	defer cancelProjection()
-	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	if err := out.Validate(); err != nil {
 		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
 			return out, runtimeHostError(runErr)
@@ -3338,6 +1542,41 @@ func sessionMessageAttachment(attachment MessageAttachment) session.MessageAttac
 	}
 }
 
+func runtimeMessageAttachments(in []session.MessageAttachment) []MessageAttachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]MessageAttachment, 0, len(in))
+	for _, attachment := range in {
+		var textStats *MessageAttachmentTextStats
+		if attachment.TextStats != nil {
+			textStats = &MessageAttachmentTextStats{
+				UnicodeCodePointCount: attachment.TextStats.UnicodeCodePointCount,
+				LogicalLineCount:      attachment.TextStats.LogicalLineCount,
+			}
+		}
+		out = append(out, MessageAttachment{
+			ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType,
+			SizeBytes: attachment.SizeBytes, TextStats: textStats,
+		})
+	}
+	return out
+}
+
+func runtimeMessageReferences(in []session.MessageReference) []MessageReference {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]MessageReference, 0, len(in))
+	for _, reference := range in {
+		out = append(out, MessageReference{
+			ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label,
+			Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated,
+		})
+	}
+	return out
+}
+
 func sessionMessageReferences(in []MessageReference) []session.MessageReference {
 	if len(in) == 0 {
 		return nil
@@ -3352,809 +1591,6 @@ func sessionMessageReferences(in []MessageReference) []session.MessageReference 
 			ResourceRef: reference.ResourceRef,
 			Truncated:   reference.Truncated,
 		})
-	}
-	return out
-}
-
-func (h *providerHost) RetryTurn(ctx context.Context, req retryTurnRequest) (TurnResult, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return TurnResult{}, errors.New("thread id is required")
-	}
-	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
-	if err != nil {
-		return TurnResult{}, runtimeHostError(err)
-	}
-	result, runErr := thread.Retry(ctx, agentharness.RetryOptions{
-		TurnID: req.TurnID,
-		RunID:  req.RunID,
-		Reason: req.Reason,
-		Labels: engine.RunLabels{
-			Correlation: cloneStringMap(req.Labels.Correlation),
-			Host:        cloneStringMap(req.Labels.Host),
-		},
-	})
-	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
-	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
-	defer cancelProjection()
-	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
-	if err := out.Validate(); err != nil {
-		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
-			return out, runtimeHostError(runErr)
-		}
-		return TurnResult{}, invalidPublicResult("retry turn result", err)
-	}
-	return out, runtimeHostError(runErr)
-}
-
-func (h *providerHost) CompactThread(ctx context.Context, req compactThreadRequest) (compactThreadResult, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return compactThreadResult{}, errors.New("thread id is required")
-	}
-	if strings.TrimSpace(req.RequestID) == "" {
-		return compactThreadResult{}, errors.New("manual compaction request id is required")
-	}
-	if strings.TrimSpace(req.Source) == "" {
-		return compactThreadResult{}, errors.New("manual compaction source is required")
-	}
-	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
-	if err != nil {
-		return compactThreadResult{}, runtimeHostError(err)
-	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: h.sink}
-	result, compactErr := thread.Compact(ctx, agentharness.CompactOptions{
-		RequestID:              req.RequestID,
-		Source:                 req.Source,
-		Labels:                 engineLabels(req.Labels),
-		Reasoning:              projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
-		MaxInputTokens:         req.Limits.MaxInputTokens,
-		MaxTotalTokens:         req.Limits.MaxTotalTokens,
-		MaxCostUSD:             req.Limits.MaxCostUSD,
-		MaxToolCalls:           req.Limits.MaxToolCalls,
-		MaxLengthContinuations: req.Limits.MaxLengthContinuations,
-		Sink:                   activityRecorder,
-	})
-	events := activityRecorder.Snapshot()
-	compactions := observation.CompactionEventsFromEvents(events)
-	terminalCompactions := make([]observation.CompactionEvent, 0, 1)
-	for _, compact := range compactions {
-		if compact.Status != observation.CompactionStatusRunning {
-			terminalCompactions = append(terminalCompactions, compact)
-		}
-	}
-	if len(terminalCompactions) == 0 {
-		if result.Replayed || result.OperationID != "" {
-			status := observation.CompactionStatusCompacted
-			phase := observation.CompactionPhaseComplete
-			if compactErr != nil {
-				status = observation.CompactionStatusFailed
-				phase = observation.CompactionPhaseFailed
-			}
-			errorText := ""
-			if compactErr != nil {
-				errorText = compactErr.Error()
-			}
-			terminalCompactions = append(terminalCompactions, observation.CompactionEvent{
-				RunID: identity.RunID(result.RunID), ThreadID: identity.ThreadID(req.ThreadID), OperationID: result.OperationID,
-				RequestID: result.RequestID, Source: result.Source, Trigger: string(compaction.TriggerManual),
-				Reason: string(compaction.ReasonManual), Phase: phase, Status: status,
-				Error: errorText, ObservedAt: time.Now(),
-			})
-		} else if compactErr != nil {
-			return compactThreadResult{}, runtimeHostError(compactErr)
-		} else {
-			return compactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
-		}
-	}
-	out := compactThreadResult{
-		ThreadID:   req.ThreadID,
-		RunID:      identity.RunID(result.RunID),
-		RequestID:  strings.TrimSpace(req.RequestID),
-		Compaction: terminalCompactions[len(terminalCompactions)-1],
-		Metrics:    runtimeMetrics(result.Metrics),
-		Replayed:   result.Replayed,
-		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    identity.RunID(result.RunID),
-			ThreadID: identity.ThreadID(req.ThreadID),
-			TurnID:   "",
-			TraceID:  identity.TraceID(result.RunID),
-		}, events, time.Now().UnixMilli()),
-	}
-	if err := out.Validate(); err != nil {
-		return compactThreadResult{}, invalidPublicResult("compact thread result", err)
-	}
-	return out, runtimeHostError(compactErr)
-}
-
-func (h *providerHost) CompletePendingTool(ctx context.Context, req pendingToolCompletionRequest) (PendingToolCompletionResult, error) {
-	requestID := strings.TrimSpace(req.CompletionRequestID)
-	if requestID == "" {
-		return PendingToolCompletionResult{}, errors.New("completion request id is required")
-	}
-	if err := validatePendingToolSettlementTarget(req.Target); err != nil {
-		return PendingToolCompletionResult{}, err
-	}
-	if strings.TrimSpace(string(req.ContinuationTurnID)) == "" {
-		return PendingToolCompletionResult{}, errors.New("continuation turn id is required")
-	}
-	if strings.TrimSpace(string(req.ContinuationRunID)) == "" {
-		return PendingToolCompletionResult{}, errors.New("continuation run id is required")
-	}
-	input, err := normalizeTurnInput(req.Input)
-	if err != nil {
-		return PendingToolCompletionResult{}, err
-	}
-	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "pending tool completion"); err != nil {
-		return PendingToolCompletionResult{}, err
-	}
-	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
-		return PendingToolCompletionResult{}, errors.New("opaque message attachments require a modelGateway host")
-	}
-	thread, err := h.harness.ResumeThread(ctx, string(req.Target.ThreadID), agentharness.ResumeOptions{})
-	if err != nil {
-		return PendingToolCompletionResult{}, runtimeHostError(err)
-	}
-	result, runErr := thread.CompletePendingTool(ctx, agentharness.PendingToolCompletion{
-		CompletionRequestID: requestID,
-		Target: sessiontree.PendingToolSettlementTarget{
-			ThreadID: string(req.Target.ThreadID), TurnID: string(req.Target.TurnID), RunID: string(req.Target.RunID),
-			ToolCallID: req.Target.ToolCallID, ToolName: req.Target.ToolName, Handle: req.Target.Handle,
-			EffectAttemptID: req.Target.EffectAttemptID,
-		},
-		ContinuationTurnID: string(req.ContinuationTurnID), ContinuationRunID: string(req.ContinuationRunID),
-		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
-		Input: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References)},
-		Labels: engine.RunLabels{
-			Correlation: cloneStringMap(req.Labels.Correlation),
-			Host:        cloneStringMap(req.Labels.Host),
-		},
-	})
-	out := PendingToolCompletionResult{
-		CompletionRequestID: requestID, ThreadID: req.Target.ThreadID,
-		TurnID: req.ContinuationTurnID, RunID: req.ContinuationRunID, Replayed: result.Replayed,
-	}
-	if result.AdmissionRunning {
-		out.Status = TurnStatusRunning
-		if err := out.Validate(); err != nil {
-			if out.Status == "" && runErr != nil {
-				return out, runtimeHostError(runErr)
-			}
-			return PendingToolCompletionResult{}, invalidPublicResult("pending tool completion result", err)
-		}
-		return out, runtimeHostError(runErr)
-	}
-	turn := turnResult(result, string(req.Target.ThreadID), nil, time.Now().UnixMilli())
-	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
-	defer cancelProjection()
-	_ = h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn, result.CanonicalEvents)
-	out.Status = turn.Status
-	out.Turn = &turn
-	if err := out.Validate(); err != nil {
-		if out.Status == "" && runErr != nil {
-			return out, runtimeHostError(runErr)
-		}
-		return PendingToolCompletionResult{}, invalidPublicResult("pending tool completion result", err)
-	}
-	return out, runtimeHostError(runErr)
-}
-
-func (h *pendingToolRecoveryCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	ctx, done, err := beginHostOperationContext(h.store, ctx)
-	if err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	defer done()
-	if h == nil || h.harness == nil {
-		return PendingToolSettlementResult{}, errors.New("pending tool recovery host is invalid")
-	}
-	if err := validatePendingToolSettlementRequest(req); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	if (h.threadID == "") == (h.parentThreadID == "") {
-		return PendingToolSettlementResult{}, errors.New("pending tool recovery host authority is invalid")
-	}
-	if h.threadID != "" {
-		if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "pending tool recovery host"); err != nil {
-			return PendingToolSettlementResult{}, err
-		}
-		if err := validateRootThreadAuthority(ctx, h.store, req.Target.ThreadID); err != nil {
-			return PendingToolSettlementResult{}, err
-		}
-	} else {
-		if err := validateSubAgentSettlementAuthority(ctx, h.harness, h.parentThreadID, req.Target.ThreadID); err != nil {
-			return PendingToolSettlementResult{}, err
-		}
-	}
-	result, err := settlePendingToolRecovery(ctx, h.harness, req)
-	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
-}
-
-func (h *turnExecutionCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
-	if err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	defer done()
-	if h == nil || h.host == nil || h.host.harness == nil {
-		return PendingToolSettlementResult{}, errors.New("turn execution host is invalid")
-	}
-	if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "turn execution host"); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	if err := validateRootThreadAuthority(ctx, h.host.store, req.Target.ThreadID); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	result, err := settlePendingToolActive(ctx, h.host.harness, req)
-	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
-}
-
-func (h *subAgentCapability) SettlePendingTool(ctx context.Context, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
-	if err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	defer done()
-	if h == nil || h.host == nil || h.host.harness == nil {
-		return PendingToolSettlementResult{}, errors.New("subagent host is invalid")
-	}
-	if err := validateSubAgentSettlementAuthority(ctx, h.host.harness, h.parentThreadID, req.Target.ThreadID); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	result, err := settlePendingToolActive(ctx, h.host.harness, req)
-	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
-}
-
-func validateSubAgentSettlementAuthority(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID, childThreadID identity.ThreadID) error {
-	if err := harness.ValidateSubAgentAuthority(ctx, string(parentThreadID), string(childThreadID)); err != nil {
-		return runtimeHostError(err)
-	}
-	return nil
-}
-
-func settlePendingToolRecovery(ctx context.Context, harness *agentharness.AgentHarness, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	if err := validatePendingToolSettlementRequest(req); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	thread, err := harness.ResumeThread(ctx, string(req.Target.ThreadID), agentharness.ResumeOptions{})
-	if err != nil {
-		return PendingToolSettlementResult{}, runtimeHostError(err)
-	}
-	return settlePendingToolOnThread(ctx, harness, thread, req, sessiontree.TurnLease{})
-}
-
-func settlePendingToolActive(ctx context.Context, harness *agentharness.AgentHarness, req pendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	if err := validatePendingToolSettlementRequest(req); err != nil {
-		return PendingToolSettlementResult{}, err
-	}
-	thread, lease, active, err := harness.OwnedActiveThread(ctx, string(req.Target.ThreadID), string(req.Target.TurnID))
-	if err != nil {
-		return PendingToolSettlementResult{}, runtimeHostError(err)
-	}
-	if !active {
-		return PendingToolSettlementResult{}, ErrThreadNotActive
-	}
-	return settlePendingToolOnThread(ctx, harness, thread, req, lease)
-}
-
-func validatePendingToolSettlementRequest(req pendingToolSettlementRequest) error {
-	return validatePendingToolSettlementTarget(req.Target)
-}
-
-func validatePendingToolSettlementTarget(target PendingToolSettlementTarget) error {
-	if strings.TrimSpace(string(target.ThreadID)) == "" {
-		return errors.New("thread id is required")
-	}
-	if strings.TrimSpace(string(target.TurnID)) == "" {
-		return errors.New("turn id is required")
-	}
-	if strings.TrimSpace(string(target.RunID)) == "" {
-		return errors.New("run id is required")
-	}
-	if strings.TrimSpace(target.ToolCallID) == "" {
-		return errors.New("tool call id is required")
-	}
-	if strings.TrimSpace(target.ToolName) == "" {
-		return errors.New("tool name is required")
-	}
-	if strings.TrimSpace(target.Handle) == "" {
-		return errors.New("handle is required")
-	}
-	return nil
-}
-
-func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req pendingToolSettlementRequest, activeLease sessiontree.TurnLease) (PendingToolSettlementResult, error) {
-	settlement := agentharness.PendingToolSettlement{
-		TurnID:          string(req.Target.TurnID),
-		RunID:           string(req.Target.RunID),
-		ToolCallID:      req.Target.ToolCallID,
-		ToolName:        req.Target.ToolName,
-		Handle:          req.Target.Handle,
-		EffectAttemptID: req.Target.EffectAttemptID,
-		Status:          pendingToolSettlementStatus(req.Status),
-		Summary:         req.Summary,
-		Output:          req.Output,
-		Activity:        observation.CloneActivityPresentation(req.Activity),
-	}
-	var event agentharness.SubAgentDetailEvent
-	var err error
-	if strings.TrimSpace(activeLease.OwnerID) == "" {
-		event, err = thread.SettlePendingTool(ctx, settlement)
-	} else {
-		event, err = thread.SettlePendingToolActive(ctx, settlement, activeLease)
-	}
-	if err != nil {
-		return PendingToolSettlementResult{}, runtimeHostError(err)
-	}
-	out := PendingToolSettlementResult{
-		Target: req.Target,
-		Event:  threadDetailEvent(event),
-	}
-	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
-	defer cancelProjection()
-	detail, found, err := harness.ReadTurnDetailEvents(projectionCtx, string(req.Target.ThreadID), string(req.Target.TurnID), string(req.Target.RunID), true)
-	if err != nil {
-		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-		out.ProjectionError = runtimeHostError(err).Error()
-		if validationErr := out.Validate(); validationErr != nil {
-			return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
-		}
-		return out, nil
-	}
-	if !found {
-		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-		out.ProjectionError = runtimeHostError(sessiontree.ErrAuthorityCorrupt).Error()
-		if validationErr := out.Validate(); validationErr != nil {
-			return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
-		}
-		return out, nil
-	}
-	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: req.Target.ThreadID,
-		TurnID:   req.Target.TurnID,
-		RunID:    req.Target.RunID,
-		TraceID:  identity.TraceID(req.Target.RunID),
-		Events:   threadDetailEvents(detail.Events),
-	})
-	out.ProjectionAvailability = TurnProjectionAvailabilityReady
-	out.Projection = &projection
-	if validationErr := out.Validate(); validationErr != nil {
-		return PendingToolSettlementResult{}, invalidPublicResult("pending tool settlement result", validationErr)
-	}
-	return out, nil
-}
-
-func (h *providerHost) spawnSubAgentCommand(ctx context.Context, req spawnSubAgentRequest) (SubAgentSnapshot, error) {
-	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
-	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent spawn"); err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
-		PublicationID:   req.PublicationID,
-		ParentThreadID:  string(req.ParentThreadID),
-		ParentTurnID:    string(req.ParentTurnID),
-		ThreadID:        string(req.ThreadID),
-		TaskName:        req.TaskName,
-		TaskDescription: req.TaskDescription,
-		Message:         input.Text,
-		Attachments:     sessionMessageAttachments(input.Attachments),
-		References:      sessionMessageReferences(input.References),
-		HostProfileRef:  req.HostProfileRef,
-		ForkMode:        agentharness.SubAgentForkMode(req.ForkMode),
-		Labels:          engineLabels(req.Labels),
-	})
-	if err != nil {
-		return SubAgentSnapshot{}, runtimeHostError(err)
-	}
-	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
-}
-
-func (h *providerHost) sendSubAgentInputCommand(ctx context.Context, req sendSubAgentInputRequest) (SubAgentSnapshot, error) {
-	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
-	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent input"); err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
-		InputRequestID: req.InputRequestID,
-		ParentThreadID: string(req.ParentThreadID),
-		ChildThreadID:  string(req.ChildThreadID),
-		Message:        input.Text,
-		Attachments:    sessionMessageAttachments(input.Attachments),
-		References:     sessionMessageReferences(input.References),
-		Interrupt:      req.Interrupt,
-		Labels:         engineLabels(req.Labels),
-	})
-	if err != nil {
-		return SubAgentSnapshot{}, runtimeHostError(err)
-	}
-	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
-}
-
-func (h *providerHost) activateSubAgent(ctx context.Context, parentThreadID, childThreadID identity.ThreadID) error {
-	if err := h.harness.ActivateSubAgent(ctx, parentThreadID.String(), childThreadID.String()); err != nil {
-		return runtimeHostError(err)
-	}
-	return nil
-}
-
-func (h *providerHost) publishSubAgentPendingToolCompletionCommand(ctx context.Context, req publishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
-	if strings.TrimSpace(req.InputRequestID) == "" {
-		return SubAgentSnapshot{}, errors.New("subagent pending tool completion input request id is required")
-	}
-	if strings.TrimSpace(string(req.ParentThreadID)) == "" || strings.TrimSpace(string(req.ChildThreadID)) == "" {
-		return SubAgentSnapshot{}, errors.New("subagent pending tool completion requires parent and child thread identities")
-	}
-	if err := validatePendingToolSettlementTarget(req.Target); err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if req.Target.ThreadID != req.ChildThreadID {
-		return SubAgentSnapshot{}, errors.New("subagent pending tool completion target thread identity mismatch")
-	}
-	input, err := normalizeTurnInput(req.Input)
-	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent pending tool completion"); err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	snapshot, err := h.harness.PublishSubAgentPendingToolCompletion(ctx, agentharness.PublishSubAgentPendingToolCompletionOptions{
-		InputRequestID: req.InputRequestID, ParentThreadID: string(req.ParentThreadID), ChildThreadID: string(req.ChildThreadID),
-		Target: sessiontree.PendingToolSettlementTarget{
-			ThreadID: string(req.Target.ThreadID), TurnID: string(req.Target.TurnID), RunID: string(req.Target.RunID),
-			ToolCallID: req.Target.ToolCallID, ToolName: req.Target.ToolName, Handle: req.Target.Handle,
-			EffectAttemptID: req.Target.EffectAttemptID,
-		},
-		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
-		Message: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References), Labels: engineLabels(req.Labels),
-	})
-	if err != nil {
-		return SubAgentSnapshot{}, runtimeHostError(err)
-	}
-	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
-}
-
-func rejectReferenceOnlyInputWithoutSupplemental(input TurnInput, operation string) error {
-	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 && len(input.References) > 0 {
-		return fmt.Errorf("%s does not support reference-only input", operation)
-	}
-	return nil
-}
-
-func (h *providerHost) waitSubAgentsCommand(ctx context.Context, req waitSubAgentsRequest) (waitSubAgentsCommandResult, error) {
-	result, err := h.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		ChildThreadIDs: threadIDStrings(req.ChildThreadIDs),
-		Timeout:        req.Timeout,
-	})
-	if err != nil {
-		return waitSubAgentsCommandResult{}, runtimeHostError(err)
-	}
-	out := waitSubAgentsResult(result)
-	if err := out.Validate(); err != nil {
-		return waitSubAgentsCommandResult{}, invalidPublicResult("subagent wait result", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
-	return listSubAgents(ctx, h.harness, parentThreadID)
-}
-
-func (h *subAgentReadCapability) ListSubAgents(ctx context.Context, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return nil, err
-	}
-	defer done()
-	if err := validateBoundThreadID(h.parentThreadID, parentThreadID, "subagent read host parent"); err != nil {
-		return nil, err
-	}
-	return listSubAgents(ctx, h.harness, parentThreadID)
-}
-
-func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID identity.ThreadID) ([]SubAgentSnapshot, error) {
-	snapshots, err := harness.ListSubAgents(ctx, string(parentThreadID))
-	if err != nil {
-		return nil, runtimeHostError(err)
-	}
-	out := make([]SubAgentSnapshot, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		out = append(out, subAgentSnapshot(snapshot))
-	}
-	return validateSubAgentSnapshotsResult(out)
-}
-
-func (h *providerHost) closeSubAgentCommand(ctx context.Context, req closeSubAgentRequest) (SubAgentSnapshot, error) {
-	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
-		CloseOperationID: req.CloseOperationID,
-		ParentThreadID:   string(req.ParentThreadID),
-		ChildThreadID:    string(req.ChildThreadID),
-		Reason:           req.Reason,
-	})
-	if err != nil {
-		return SubAgentSnapshot{}, runtimeHostError(err)
-	}
-	return validateSubAgentSnapshotResult(subAgentSnapshot(snapshot))
-}
-
-func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
-	return listSubAgentActivityTimeline(ctx, h.harness, req)
-}
-
-func (h *subAgentReadCapability) ListSubAgentActivityTimeline(ctx context.Context, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return subAgentActivityTimelineResult{}, err
-	}
-	defer done()
-	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
-		return subAgentActivityTimelineResult{}, err
-	}
-	return listSubAgentActivityTimeline(ctx, h.harness, req)
-}
-
-func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.AgentHarness, req listSubAgentActivityTimelineRequest) (subAgentActivityTimelineResult, error) {
-	snapshots, err := harness.ListSubAgents(ctx, string(req.ParentThreadID))
-	if err != nil {
-		return subAgentActivityTimelineResult{}, runtimeHostError(err)
-	}
-	generatedAt := time.Now().UTC()
-	out := subAgentActivityTimelineResult{
-		Timeline:    subAgentActivityTimeline(req.Meta, snapshots, generatedAt),
-		GeneratedAt: generatedAt,
-	}
-	if err := out.Validate(); err != nil {
-		return subAgentActivityTimelineResult{}, invalidPublicResult("subagent activity timeline", err)
-	}
-	return out, nil
-}
-
-func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req readSubAgentDetailRequest) (SubAgentDetail, error) {
-	return readSubAgentDetail(ctx, h.harness, req)
-}
-
-func (h *subAgentReadCapability) ReadSubAgentDetail(ctx context.Context, req readSubAgentDetailRequest) (SubAgentDetail, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return SubAgentDetail{}, err
-	}
-	defer done()
-	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
-		return SubAgentDetail{}, err
-	}
-	return readSubAgentDetail(ctx, h.harness, req)
-}
-
-// ListPendingToolSettlementTargets returns all canonical active pending tool
-// targets for one direct child under the bound parent. The result is complete
-// and unpaginated.
-func (h *subAgentReadCapability) ListPendingToolSettlementTargets(ctx context.Context, req listSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return nil, err
-	}
-	defer done()
-	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
-		return nil, err
-	}
-	targets, err := h.harness.ListSubAgentPendingToolSettlementTargets(ctx, string(req.ParentThreadID), string(req.ChildThreadID))
-	if err != nil {
-		return nil, runtimeHostError(err)
-	}
-	return pendingToolSettlementTargets(targets), nil
-}
-
-func pendingToolSettlementTargets(in []sessiontree.PendingToolSettlementTarget) []PendingToolSettlementTarget {
-	out := make([]PendingToolSettlementTarget, 0, len(in))
-	for _, target := range in {
-		out = append(out, PendingToolSettlementTarget{
-			ThreadID:        identity.ThreadID(target.ThreadID),
-			TurnID:          identity.TurnID(target.TurnID),
-			RunID:           identity.RunID(target.RunID),
-			ToolCallID:      target.ToolCallID,
-			ToolName:        target.ToolName,
-			Handle:          target.Handle,
-			EffectAttemptID: target.EffectAttemptID,
-		})
-	}
-	return out
-}
-
-func validateRootThreadAuthority(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
-	if strings.TrimSpace(string(threadID)) == "" {
-		return errors.New("thread id is required")
-	}
-	snapshot, err := inspectThreadAuthority(ctx, store, threadID)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(snapshot.Thread.ParentThreadID) != "" {
-		return fmt.Errorf("%w: %s", ErrSubAgentParentRequired, threadID)
-	}
-	return validateLiveThreadLifecycle(snapshot.Thread)
-}
-
-func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req readSubAgentDetailRequest) (SubAgentDetail, error) {
-	detail, err := harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		ChildThreadID:  string(req.ChildThreadID),
-		AfterOrdinal:   req.AfterOrdinal,
-		Limit:          req.Limit,
-		IncludeRaw:     req.IncludeRaw,
-	})
-	if err != nil {
-		return SubAgentDetail{}, runtimeHostError(err)
-	}
-	out := subAgentDetail(detail)
-	if err := out.Validate(); err != nil {
-		return SubAgentDetail{}, invalidPublicResult("subagent detail", err)
-	}
-	return out, nil
-}
-
-func (h *threadDeleteCapability) DeleteThread(ctx context.Context, threadID identity.ThreadID) error {
-	done, err := beginHostOperation(h.store)
-	if err != nil {
-		return err
-	}
-	defer done()
-	h.store.threadAuthorityMu.Lock()
-	defer h.store.threadAuthorityMu.Unlock()
-	if err := validateBoundThreadID(h.threadID, threadID, "thread delete host"); err != nil {
-		return err
-	}
-	return deleteThread(ctx, h.store, threadID)
-}
-
-func deleteThread(ctx context.Context, store *runtimeStore, threadID identity.ThreadID) error {
-	id := strings.TrimSpace(string(threadID))
-	if id == "" {
-		return errors.New("thread id is required")
-	}
-	return runtimeHostError(store.deleteThreadData(ctx, id))
-}
-
-func pendingToolCompletionStatus(status PendingToolCompletionStatus) agentharness.PendingToolCompletionStatus {
-	switch status {
-	case PendingToolCompletionCompleted:
-		return agentharness.PendingToolCompleted
-	case PendingToolCompletionFailed:
-		return agentharness.PendingToolFailed
-	case PendingToolCompletionCanceled:
-		return agentharness.PendingToolCanceled
-	default:
-		return agentharness.PendingToolCompletionStatus(status)
-	}
-}
-
-func pendingToolSettlementStatus(status PendingToolSettlementStatus) agentharness.PendingToolSettlementStatus {
-	switch status {
-	case PendingToolSettlementCompleted:
-		return agentharness.PendingToolSettledCompleted
-	case PendingToolSettlementFailed:
-		return agentharness.PendingToolSettledFailed
-	case PendingToolSettlementCanceled:
-		return agentharness.PendingToolSettledCanceled
-	default:
-		return agentharness.PendingToolSettlementStatus(status)
-	}
-}
-
-func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
-	out := ThreadSnapshot{
-		ID:               identity.ThreadID(in.ID),
-		Title:            in.Title,
-		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
-		TitleSource:      ThreadTitleSource(in.TitleSource),
-		TitleUpdatedAt:   in.TitleUpdatedAt,
-		TitleError:       in.TitleError,
-		TitleGeneration:  in.TitleGeneration,
-		CreatedAt:        in.CreatedAt,
-		UpdatedAt:        in.UpdatedAt,
-		Phase:            ThreadPhase(in.Phase),
-		Status:           ThreadStatus(in.Status),
-		LatestTurnID:     identity.TurnID(in.LatestTurnID),
-		LatestRunID:      identity.RunID(in.LatestRunID),
-		ThroughOrdinal:   in.ThroughOrdinal,
-		WaitingPrompt:    in.WaitingPrompt,
-		Recoverable:      in.Recoverable,
-		CanAppendMessage: in.CanAppendMessage,
-		CanRetry:         in.CanRetry,
-	}
-	return out
-}
-
-func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
-	return ThreadSummary{
-		ID:               identity.ThreadID(in.ID),
-		Title:            in.Title,
-		TitleStatus:      ThreadTitleStatus(in.TitleStatus),
-		TitleSource:      ThreadTitleSource(in.TitleSource),
-		TitleUpdatedAt:   in.TitleUpdatedAt,
-		TitleError:       in.TitleError,
-		TitleGeneration:  in.TitleGeneration,
-		CreatedAt:        in.CreatedAt,
-		UpdatedAt:        in.UpdatedAt,
-		Phase:            ThreadPhase(in.Phase),
-		Status:           ThreadStatus(in.Status),
-		LatestTurnID:     identity.TurnID(in.LatestTurnID),
-		WaitingPrompt:    in.WaitingPrompt,
-		Recoverable:      in.Recoverable,
-		CanAppendMessage: in.CanAppendMessage,
-		CanRetry:         in.CanRetry,
-	}
-}
-
-func runtimeForkThreadResult(in agentharness.ForkResult) forkThreadResult {
-	return forkThreadResult{
-		OperationID: forkOperationID(in.OperationID),
-		Thread:      threadSummary(in.Summary),
-	}
-}
-
-func approvalQueue(in agentharness.ApprovalQueueSnapshot) ApprovalQueue {
-	return ApprovalQueue{
-		RootThreadID: identity.ThreadID(in.RootThreadID), Generation: in.Generation, Revision: in.Revision,
-		CurrentApprovalID: in.CurrentApprovalID, Items: approvalRecordList(in.Approvals), GeneratedAt: in.GeneratedAt,
-	}
-}
-
-func approvalDecisionReceipt(in sessiontree.ApprovalDecisionReceipt) ApprovalDecisionReceipt {
-	return ApprovalDecisionReceipt{
-		DecisionID: in.DecisionID, ApprovalID: in.ApprovalID, RootThreadID: identity.ThreadID(in.RootThreadID),
-		Decision: ApprovalDecision(in.Decision), State: string(in.State), Reason: in.Reason,
-		AuthorizationProofHash: in.AuthorizationProofHash, QueueGeneration: in.QueueGeneration,
-		QueueRevision: in.QueueRevision, ApprovalRevision: in.ApprovalRevision,
-		SubmittedAt: in.SubmittedAt, ResolvedAt: in.ResolvedAt,
-	}
-}
-
-func approvalRecordList(in []agentharness.ApprovalRecord) []ApprovalRecord {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]ApprovalRecord, 0, len(in))
-	for _, approval := range in {
-		out = append(out, approvalRecord(approval))
-	}
-	return out
-}
-
-func approvalRecord(in agentharness.ApprovalRecord) ApprovalRecord {
-	return ApprovalRecord{
-		ApprovalID: in.ApprovalID, RootThreadID: identity.ThreadID(in.RootThreadID), ParentThreadID: identity.ThreadID(in.ParentThreadID),
-		ToolCallID: in.ToolCallID, EffectAttemptID: in.EffectAttemptID, ToolName: in.ToolName, ToolKind: in.ToolKind,
-		RunID: identity.RunID(in.RunID), ThreadID: identity.ThreadID(in.ThreadID), TurnID: identity.TurnID(in.TurnID),
-		Step: in.Step, BatchIndex: in.BatchIndex, BatchSize: in.BatchSize,
-		State: in.State, Revision: in.Revision, QueueSequence: in.QueueSequence, DecisionID: in.DecisionID,
-		RequestedAt:            in.RequestedAt,
-		UpdatedAt:              in.UpdatedAt,
-		ResolvedAt:             in.ResolvedAt,
-		ArgsHash:               in.ArgsHash,
-		RequestFingerprint:     in.RequestFingerprint,
-		AuthorizationProofHash: in.AuthorizationProofHash,
-		Resources:              approvalResources(in.Resources),
-		Effects:                append([]string(nil), in.Effects...),
-		Labels:                 cloneStringMap(in.Labels),
-		HostContext:            cloneStringMap(in.HostContext),
-		ReadOnly:               in.ReadOnly,
-		Destructive:            in.Destructive,
-		OpenWorld:              in.OpenWorld,
-		Reason:                 in.Reason,
-	}
-}
-
-func approvalResources(in []agentharness.ApprovalResource) []ApprovalResource {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]ApprovalResource, 0, len(in))
-	for _, resource := range in {
-		out = append(out, ApprovalResource{Kind: resource.Kind, Value: resource.Value})
 	}
 	return out
 }
@@ -4191,701 +1627,6 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 			Code:    ThreadTurnFailureCode(strings.TrimSpace(in.FailureCode)),
 			Message: in.Err.Error(),
 		}
-	}
-	return out
-}
-
-func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult, canonicalEvents []agentharness.SubAgentDetailEvent) error {
-	if result == nil {
-		return errors.New("turn result is required")
-	}
-	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.TurnID)) == "" {
-		return markTurnProjectionUnavailable(result, errors.New("turn projection identity is incomplete"))
-	}
-	var events []ThreadDetailEvent
-	if len(canonicalEvents) > 0 {
-		events = threadDetailEvents(canonicalEvents)
-	} else {
-		detail, found, err := h.harness.ReadTurnDetailEvents(ctx, threadID, string(result.TurnID), string(result.RunID), true)
-		if err != nil {
-			return markTurnProjectionUnavailable(result, runtimeHostError(err))
-		}
-		if !found {
-			return markTurnProjectionUnavailable(result, runtimeHostError(sessiontree.ErrAuthorityCorrupt))
-		}
-		events = threadDetailEvents(detail.Events)
-	}
-	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: identity.ThreadID(threadID),
-		TurnID:   result.TurnID,
-		RunID:    result.RunID,
-		TraceID:  identity.TraceID(result.RunID),
-		Events:   events,
-	})
-	failure := canonicalTurnFailure(events)
-	status := canonicalTurnStatus(projection.Status, failure)
-	if err := validateThreadTurnFailureForStatus(status, failure); err != nil {
-		return markTurnProjectionUnavailable(result, fmt.Errorf("%w: canonical turn failure state is invalid: %v", ErrAuthorityCorrupt, err))
-	}
-	projection.Status = status
-	if err := projection.Validate(); err != nil {
-		return markTurnProjectionUnavailable(result, fmt.Errorf("%w: canonical turn projection is invalid: %v", ErrAuthorityCorrupt, err))
-	}
-	result.ProjectionAvailability = TurnProjectionAvailabilityReady
-	result.Projection = &projection
-	result.ProjectionError = ""
-	result.Failure = failure
-	result.Status = status
-	return nil
-}
-
-func markTurnProjectionUnavailable(result *TurnResult, err error) error {
-	if err == nil {
-		err = errors.New("turn projection is unavailable")
-	}
-	result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-	result.Projection = nil
-	result.ProjectionError = err.Error()
-	result.Failure = nil
-	return err
-}
-
-func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-}
-
-func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID identity.RunID) bool {
-	want := strings.TrimSpace(string(runID))
-	if want == "" {
-		return false
-	}
-	for _, ev := range events {
-		if ev.TurnMarker == nil {
-			continue
-		}
-		if strings.TrimSpace(ev.TurnMarker.Status) != string(sessiontree.TurnStarted) {
-			continue
-		}
-		if strings.TrimSpace(ev.TurnMarker.Metadata["run_id"]) == want {
-			return true
-		}
-	}
-	return false
-}
-
-func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) waitSubAgentsCommandResult {
-	out := waitSubAgentsCommandResult{TimedOut: in.TimedOut, Snapshots: make([]SubAgentSnapshot, 0, len(in.Snapshots))}
-	for _, snapshot := range in.Snapshots {
-		out.Snapshots = append(out.Snapshots, subAgentSnapshot(snapshot))
-	}
-	return out
-}
-
-func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
-	return SubAgentSnapshot{
-		ThreadID:        identity.ThreadID(in.ThreadID),
-		Path:            in.Path,
-		TaskName:        in.TaskName,
-		TaskDescription: in.TaskDescription,
-		ParentThreadID:  identity.ThreadID(in.ParentThreadID),
-		ParentTurnID:    identity.TurnID(in.ParentTurnID),
-		HostProfileRef:  in.HostProfileRef,
-		ForkMode:        SubAgentForkMode(in.ForkMode),
-		Status:          SubAgentStatus(in.Status),
-		LatestTurnID:    identity.TurnID(in.LatestTurnID),
-		LastMessage:     in.LastMessage,
-		WaitingPrompt:   in.WaitingPrompt,
-		QueuedInputs:    in.QueuedInputs,
-		CreatedAt:       in.CreatedAt,
-		UpdatedAt:       in.UpdatedAt,
-		Closed:          in.Closed,
-		CanSendInput:    in.CanSendInput,
-		CanInterrupt:    in.CanInterrupt,
-		CanClose:        in.CanClose,
-	}
-}
-
-func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot, generatedAt time.Time) observation.ActivityTimeline {
-	timeline := observation.ActivityTimeline{
-		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         identity.RunID(strings.TrimSpace(meta.RunID.String())),
-		ThreadID:      identity.ThreadID(strings.TrimSpace(meta.ThreadID.String())),
-		TurnID:        identity.TurnID(strings.TrimSpace(meta.TurnID.String())),
-		TraceID:       identity.TraceID(strings.TrimSpace(meta.TraceID.String())),
-		Summary: observation.ActivitySummary{
-			Status:   observation.ActivityStatusSuccess,
-			Severity: observation.ActivitySeverityQuiet,
-		},
-		Items: []observation.ActivityItem{},
-	}
-	if timeline.ThreadID == "" {
-		timeline.ThreadID = identity.ThreadID(strings.TrimSpace(string(metaThreadID(meta, snapshots))))
-	}
-	items := make([]agentharness.SubAgentSnapshot, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if strings.TrimSpace(snapshot.ThreadID) == "" {
-			continue
-		}
-		items = append(items, snapshot)
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		leftTerminal := subAgentActivityTerminal(items[i].Status)
-		rightTerminal := subAgentActivityTerminal(items[j].Status)
-		if leftTerminal != rightTerminal {
-			return !leftTerminal
-		}
-		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
-			return items[i].UpdatedAt.After(items[j].UpdatedAt)
-		}
-		return strings.TrimSpace(items[i].ThreadID) < strings.TrimSpace(items[j].ThreadID)
-	})
-	counts := observation.ActivityCounts{}
-	nowMS := generatedAt.UnixMilli()
-	for _, snapshot := range items {
-		status, severity, attention := subAgentActivityState(snapshot.Status)
-		noteSubAgentActivityCount(&counts, status)
-		startedAt := activityTimeUnixMS(snapshot.CreatedAt, nowMS)
-		endedAt := int64(0)
-		if subAgentActivityTerminal(snapshot.Status) {
-			endedAt = activityTimeUnixMS(snapshot.UpdatedAt, nowMS)
-			if endedAt < startedAt {
-				endedAt = startedAt
-			}
-		}
-		title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID), "Subagent")
-		description := strings.TrimSpace(snapshot.TaskDescription)
-		timeline.Items = append(timeline.Items, observation.ActivityItem{
-			ItemID:           "subagent:" + stableSubAgentActivityHash(snapshot.ThreadID),
-			ToolID:           "subagents",
-			ToolName:         "subagents",
-			Kind:             observation.ActivityKindControl,
-			Status:           status,
-			Severity:         severity,
-			NeedsAttention:   len(attention) > 0,
-			AttentionReasons: attention,
-			RequiresApproval: false,
-			StartedAtUnixMS:  startedAt,
-			EndedAtUnixMS:    endedAt,
-			Presentation: &tools.ActivityPresentation{
-				Label:       title,
-				Description: description,
-				Renderer:    tools.ActivityRendererSubAgent,
-				Payload:     subAgentActivityPayload(snapshot),
-			},
-		})
-	}
-	timeline.Summary.TotalItems = len(timeline.Items)
-	timeline.Summary.Counts = counts
-	timeline.Summary.Status, timeline.Summary.Severity, timeline.Summary.NeedsAttention, timeline.Summary.AttentionReasons = subAgentActivitySummaryState(counts)
-	return timeline
-}
-
-func metaThreadID(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot) identity.ThreadID {
-	if strings.TrimSpace(meta.ThreadID.String()) != "" {
-		return identity.ThreadID(meta.ThreadID)
-	}
-	for _, snapshot := range snapshots {
-		if strings.TrimSpace(snapshot.ParentThreadID) != "" {
-			return identity.ThreadID(snapshot.ParentThreadID)
-		}
-	}
-	return ""
-}
-
-func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) tools.SubAgentActivityPayload {
-	title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID))
-	return tools.SubAgentActivityPayload{
-		ThreadID:        identity.ThreadID(strings.TrimSpace(snapshot.ThreadID)),
-		Path:            strings.TrimSpace(snapshot.Path),
-		TaskName:        strings.TrimSpace(snapshot.TaskName),
-		TaskDescription: strings.TrimSpace(snapshot.TaskDescription),
-		Title:           title,
-		HostProfileRef:  strings.TrimSpace(snapshot.HostProfileRef),
-		ForkMode:        strings.TrimSpace(string(snapshot.ForkMode)),
-		Status:          strings.TrimSpace(string(snapshot.Status)),
-		LastMessage:     strings.TrimSpace(snapshot.LastMessage),
-		WaitingPrompt:   strings.TrimSpace(snapshot.WaitingPrompt),
-		QueuedInputs:    snapshot.QueuedInputs,
-		ParentThreadID:  identity.ThreadID(strings.TrimSpace(snapshot.ParentThreadID)),
-		ParentTurnID:    identity.TurnID(strings.TrimSpace(snapshot.ParentTurnID)),
-		LatestTurnID:    identity.TurnID(strings.TrimSpace(snapshot.LatestTurnID)),
-		CreatedAtUnixMS: activityTimeUnixMS(snapshot.CreatedAt, 0),
-		UpdatedAtUnixMS: activityTimeUnixMS(snapshot.UpdatedAt, 0),
-		Closed:          snapshot.Closed,
-		CanSendInput:    snapshot.CanSendInput,
-		CanInterrupt:    snapshot.CanInterrupt,
-		CanClose:        snapshot.CanClose,
-	}
-}
-
-func subAgentActivityState(status agentharness.SubAgentStatus) (observation.ActivityStatus, observation.ActivitySeverity, []observation.ActivityAttentionReason) {
-	switch status {
-	case agentharness.SubAgentStatusIdle:
-		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, nil
-	case agentharness.SubAgentStatusRunning:
-		return observation.ActivityStatusRunning, observation.ActivitySeverityNormal, []observation.ActivityAttentionReason{observation.ActivityAttentionRunning}
-	case agentharness.SubAgentStatusWaiting, agentharness.SubAgentStatusInterrupted:
-		return observation.ActivityStatusWaiting, observation.ActivitySeverityBlocking, []observation.ActivityAttentionReason{observation.ActivityAttentionWaiting}
-	case agentharness.SubAgentStatusCompleted:
-		return observation.ActivityStatusSuccess, observation.ActivitySeverityNormal, nil
-	case agentharness.SubAgentStatusFailed:
-		return observation.ActivityStatusError, observation.ActivitySeverityError, []observation.ActivityAttentionReason{observation.ActivityAttentionError}
-	case agentharness.SubAgentStatusCancelled, agentharness.SubAgentStatusClosed:
-		return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, nil
-	default:
-		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, nil
-	}
-}
-
-func noteSubAgentActivityCount(counts *observation.ActivityCounts, status observation.ActivityStatus) {
-	if counts == nil {
-		return
-	}
-	switch status {
-	case observation.ActivityStatusPending:
-		counts.Pending++
-	case observation.ActivityStatusRunning:
-		counts.Running++
-	case observation.ActivityStatusWaiting:
-		counts.Waiting++
-	case observation.ActivityStatusSuccess:
-		counts.Success++
-	case observation.ActivityStatusError:
-		counts.Error++
-	case observation.ActivityStatusCanceled:
-		counts.Canceled++
-	}
-}
-
-func subAgentActivitySummaryState(counts observation.ActivityCounts) (observation.ActivityStatus, observation.ActivitySeverity, bool, []observation.ActivityAttentionReason) {
-	if counts.Error > 0 {
-		return observation.ActivityStatusError, observation.ActivitySeverityError, true, []observation.ActivityAttentionReason{observation.ActivityAttentionError}
-	}
-	if counts.Waiting > 0 {
-		return observation.ActivityStatusWaiting, observation.ActivitySeverityBlocking, true, []observation.ActivityAttentionReason{observation.ActivityAttentionWaiting}
-	}
-	if counts.Running > 0 {
-		return observation.ActivityStatusRunning, observation.ActivitySeverityNormal, true, []observation.ActivityAttentionReason{observation.ActivityAttentionRunning}
-	}
-	if counts.Pending > 0 {
-		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, false, nil
-	}
-	if counts.Canceled > 0 && counts.Success == 0 {
-		return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, false, nil
-	}
-	return observation.ActivityStatusSuccess, observation.ActivitySeverityNormal, false, nil
-}
-
-func subAgentActivityTerminal(status agentharness.SubAgentStatus) bool {
-	switch status {
-	case agentharness.SubAgentStatusCompleted, agentharness.SubAgentStatusFailed, agentharness.SubAgentStatusCancelled, agentharness.SubAgentStatusClosed:
-		return true
-	default:
-		return false
-	}
-}
-
-func activityTimeUnixMS(value time.Time, fallback int64) int64 {
-	if value.IsZero() {
-		return fallback
-	}
-	return value.UnixMilli()
-}
-
-func stableSubAgentActivityHash(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:16]
-}
-
-func firstRuntimeNonEmpty(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
-	activityTimeline := cloneRuntimeActivityTimeline(in.ActivityTimeline)
-	activityTimeline.ThreadID = identity.ThreadID(in.Snapshot.ThreadID)
-	return SubAgentDetail{
-		Snapshot:         subAgentSnapshot(in.Snapshot),
-		Events:           subAgentThreadDetailEvents(in.Events),
-		ActivityTimeline: activityTimeline,
-		Context:          subAgentDetailContext(in.Snapshot.ThreadID, in.Context),
-		NextOrdinal:      in.NextOrdinal,
-		HasMore:          in.HasMore,
-		RetainedFrom:     in.RetainedFrom,
-		GeneratedAt:      in.GeneratedAt.UTC(),
-	}
-}
-
-func subAgentDetailContext(threadID string, in agentharness.ThreadContextSnapshot) ThreadContextSnapshot {
-	return ThreadContextSnapshot{
-		ThreadID: identity.ThreadID(threadID),
-		Provider: in.Model.Provider,
-		Model:    in.Model.Model,
-		Policy: config.ContextPolicy{
-			ContextWindowTokens:  in.Policy.ContextWindowTokens,
-			MaxOutputTokens:      in.Policy.MaxOutputTokens,
-			ReservedOutputTokens: in.Policy.ReservedOutputTokens,
-		},
-		Usage:       cloneContextStatus(in.Usage),
-		Compactions: subAgentDetailContextCompactions(in.Compactions),
-		UpdatedAt:   in.UpdatedAt,
-	}
-}
-
-func subAgentDetailContextCompactions(in []agentharness.ThreadContextCompaction) []observation.CompactionEvent {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]observation.CompactionEvent, 0, len(in))
-	for _, compact := range in {
-		out = append(out, observation.CompactionEvent{
-			RunID:               identity.RunID(compact.RunID),
-			ThreadID:            identity.ThreadID(compact.ThreadID),
-			TurnID:              identity.TurnID(compact.TurnID),
-			Step:                compact.Step,
-			OperationID:         compact.OperationID,
-			RequestID:           compact.RequestID,
-			Phase:               observation.CompactionPhase(compact.Phase),
-			Status:              observation.CompactionStatus(compact.Status),
-			Trigger:             compact.Trigger,
-			Reason:              compact.Reason,
-			Source:              compact.Source,
-			TokensBefore:        compact.TokensBefore,
-			TokensAfterEstimate: compact.TokensAfterEstimate,
-			Error:               compact.Error,
-			ObservedAt:          compact.ObservedAt,
-		})
-	}
-	return out
-}
-
-func cloneContextStatus(in *observation.ContextStatus) *observation.ContextStatus {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func threadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
-	out := make([]ThreadDetailEvent, 0, len(in))
-	for _, ev := range in {
-		out = append(out, threadDetailEvent(ev))
-	}
-	return out
-}
-
-func subAgentThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
-	out := publicThreadDetailEvents(in)
-	for index := range out {
-		out[index].ActivityTimeline = nil
-	}
-	return out
-}
-
-func threadDetailEvent(in agentharness.SubAgentDetailEvent) ThreadDetailEvent {
-	return ThreadDetailEvent{
-		ID:         in.ID,
-		Ordinal:    in.Ordinal,
-		ParentID:   in.ParentID,
-		ThreadID:   identity.ThreadID(in.ThreadID),
-		TurnID:     identity.TurnID(in.TurnID),
-		Kind:       ThreadDetailEventKind(in.Kind),
-		Type:       in.Type,
-		CreatedAt:  in.CreatedAt,
-		Message:    threadDetailMessage(in.Message),
-		ToolCall:   threadDetailToolCall(in.ToolCall),
-		ToolResult: threadDetailToolResult(in.ToolResult),
-		Approval:   threadDetailApproval(in.Approval),
-		TurnMarker: threadDetailTurnMarker(in.TurnMarker),
-		Compaction: threadDetailCompaction(in.Compaction),
-		Error:      in.Error,
-		Metadata:   cloneStringMap(in.Metadata),
-
-		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
-	}
-}
-
-func threadDetailMessage(in *agentharness.SubAgentDetailMessage) *ThreadDetailMessage {
-	if in == nil {
-		return nil
-	}
-	return &ThreadDetailMessage{
-		Role:        in.Role,
-		Kind:        in.Kind,
-		Preview:     in.Preview,
-		Content:     in.Content,
-		Attachments: runtimeMessageAttachments(in.Attachments),
-		References:  runtimeMessageReferences(in.References),
-		Reasoning:   in.Reasoning,
-		Activity:    cloneActivityPresentation(in.Activity),
-	}
-}
-
-func threadDetailToolCall(in *agentharness.SubAgentDetailToolCall) *ThreadDetailToolCall {
-	if in == nil {
-		return nil
-	}
-	out := &ThreadDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
-	if in.ControlSignal != nil {
-		out.ControlSignal = &ThreadDetailControlSignal{
-			Name:        in.ControlSignal.Name,
-			CallID:      in.ControlSignal.CallID,
-			Disposition: in.ControlSignal.Disposition,
-			ErrorCode:   in.ControlSignal.ErrorCode,
-			Text:        in.ControlSignal.Text,
-			ArgsHash:    in.ControlSignal.ArgsHash,
-			Payload:     cloneAnyMap(in.ControlSignal.Payload),
-		}
-	}
-	return out
-}
-
-func threadDetailToolResult(in *agentharness.SubAgentDetailToolResult) *ThreadDetailToolResult {
-	if in == nil {
-		return nil
-	}
-	out := &ThreadDetailToolResult{
-		CallID:          in.CallID,
-		ToolName:        in.ToolName,
-		EffectAttemptID: in.EffectAttemptID,
-		Status:          in.Status,
-		Preview:         in.Preview,
-		Content:         in.Content,
-		Truncated:       in.Truncated,
-		OriginalBytes:   in.OriginalBytes,
-		VisibleBytes:    in.VisibleBytes,
-		OriginalLines:   in.OriginalLines,
-		VisibleLines:    in.VisibleLines,
-		Strategy:        in.Strategy,
-		ContentSHA256:   in.ContentSHA256,
-	}
-	if in.FullOutput != nil {
-		out.FullOutput = &ArtifactRef{
-			ID:        identity.ArtifactID(in.FullOutput.ID),
-			SafeLabel: in.FullOutput.SafeLabel,
-			Kind:      in.FullOutput.Kind,
-			MIME:      in.FullOutput.MIME,
-			SizeBytes: in.FullOutput.SizeBytes,
-			SHA256:    in.FullOutput.SHA256,
-		}
-	}
-	return out
-}
-
-func threadDetailApproval(in *agentharness.SubAgentDetailApproval) *ThreadDetailApproval {
-	if in == nil {
-		return nil
-	}
-	return &ThreadDetailApproval{
-		State:    in.State,
-		ToolID:   in.ToolID,
-		ToolName: in.ToolName,
-		ToolKind: in.ToolKind,
-		ArgsHash: in.ArgsHash,
-		Reason:   in.Reason,
-		Metadata: cloneStringMap(in.Metadata),
-	}
-}
-
-func threadDetailTurnMarker(in *agentharness.SubAgentDetailTurnMarker) *ThreadDetailTurnMarker {
-	if in == nil {
-		return nil
-	}
-	return &ThreadDetailTurnMarker{Status: in.Status, Metadata: cloneStringMap(in.Metadata)}
-}
-
-func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDetailCompaction {
-	if in == nil {
-		return nil
-	}
-	return &ThreadDetailCompaction{
-		OperationID:         in.OperationID,
-		RequestID:           in.RequestID,
-		Source:              in.Source,
-		Trigger:             in.Trigger,
-		Reason:              in.Reason,
-		Phase:               in.Phase,
-		TokensBefore:        in.TokensBefore,
-		TokensAfterEstimate: in.TokensAfterEstimate,
-		Metadata:            safeStringMetadata(in.Metadata),
-	}
-}
-
-func publicThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
-	out := threadDetailEvents(in)
-	for index := range out {
-		delete(out[index].Metadata, sessiontree.SubAgentInputIDMetadataKey)
-		delete(out[index].Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
-		if len(out[index].Metadata) == 0 {
-			out[index].Metadata = nil
-		}
-		if out[index].Compaction != nil {
-			out[index].Metadata = safeStringMetadata(out[index].Metadata)
-		}
-		if out[index].TurnMarker == nil {
-			continue
-		}
-		delete(out[index].TurnMarker.Metadata, sessiontree.RetrySourceTurnIDMetadataKey)
-		delete(out[index].TurnMarker.Metadata, sessiontree.RetrySourceEntryIDMetadataKey)
-		if len(out[index].TurnMarker.Metadata) == 0 {
-			out[index].TurnMarker.Metadata = nil
-		}
-	}
-	return out
-}
-
-func cloneThreadDetailEvents(in []ThreadDetailEvent) []ThreadDetailEvent {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]ThreadDetailEvent, 0, len(in))
-	for _, ev := range in {
-		out = append(out, cloneThreadDetailEvent(ev))
-	}
-	return out
-}
-
-func cloneThreadDetailEvent(in ThreadDetailEvent) ThreadDetailEvent {
-	return ThreadDetailEvent{
-		ID:               in.ID,
-		Ordinal:          in.Ordinal,
-		ParentID:         in.ParentID,
-		ThreadID:         in.ThreadID,
-		TurnID:           in.TurnID,
-		Kind:             in.Kind,
-		Type:             in.Type,
-		CreatedAt:        in.CreatedAt,
-		Message:          cloneThreadDetailMessage(in.Message),
-		ToolCall:         cloneThreadDetailToolCall(in.ToolCall),
-		ToolResult:       cloneThreadDetailToolResult(in.ToolResult),
-		Approval:         cloneThreadDetailApproval(in.Approval),
-		TurnMarker:       cloneThreadDetailTurnMarker(in.TurnMarker),
-		Compaction:       cloneThreadDetailCompaction(in.Compaction),
-		Error:            in.Error,
-		Metadata:         cloneStringMap(in.Metadata),
-		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
-	}
-}
-
-func cloneThreadDetailMessage(in *ThreadDetailMessage) *ThreadDetailMessage {
-	if in == nil {
-		return nil
-	}
-	return &ThreadDetailMessage{
-		Role:        in.Role,
-		Kind:        in.Kind,
-		Preview:     in.Preview,
-		Content:     in.Content,
-		Attachments: cloneMessageAttachments(in.Attachments),
-		References:  append([]MessageReference(nil), in.References...),
-		Reasoning:   in.Reasoning,
-		Activity:    cloneActivityPresentation(in.Activity),
-	}
-}
-
-func cloneThreadDetailToolCall(in *ThreadDetailToolCall) *ThreadDetailToolCall {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	if in.ControlSignal != nil {
-		signal := *in.ControlSignal
-		signal.Payload = cloneAnyMap(in.ControlSignal.Payload)
-		out.ControlSignal = &signal
-	}
-	return &out
-}
-
-func cloneThreadDetailToolResult(in *ThreadDetailToolResult) *ThreadDetailToolResult {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.FullOutput = cloneArtifactRef(in.FullOutput)
-	return &out
-}
-
-func cloneThreadDetailApproval(in *ThreadDetailApproval) *ThreadDetailApproval {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Metadata = cloneStringMap(in.Metadata)
-	return &out
-}
-
-func cloneThreadDetailTurnMarker(in *ThreadDetailTurnMarker) *ThreadDetailTurnMarker {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Metadata = cloneStringMap(in.Metadata)
-	return &out
-}
-
-func cloneThreadDetailCompaction(in *ThreadDetailCompaction) *ThreadDetailCompaction {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Metadata = cloneStringMap(in.Metadata)
-	return &out
-}
-
-func cloneArtifactRef(in *ArtifactRef) *ArtifactRef {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneThreadTurnProjectionPtr(in *ThreadTurnProjection) *ThreadTurnProjection {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	if len(in.Segments) == 0 {
-		out.Segments = nil
-		return &out
-	}
-	out.Segments = make([]ThreadTurnProjectionSegment, 0, len(in.Segments))
-	for _, segment := range in.Segments {
-		out.Segments = append(out.Segments, cloneThreadTurnProjectionSegment(segment))
-	}
-	return &out
-}
-
-func cloneThreadTurnProjectionSegment(in ThreadTurnProjectionSegment) ThreadTurnProjectionSegment {
-	out := in
-	out.ActivityTimeline = observation.CloneActivityTimeline(in.ActivityTimeline)
-	if in.Signal != nil {
-		signal := *in.Signal
-		signal.Payload = cloneAnyMap(in.Signal.Payload)
-		out.Signal = &signal
-	}
-	out.EventIDs = append([]string(nil), in.EventIDs...)
-	return out
-}
-
-func threadIDStrings(ids []identity.ThreadID) []string {
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, string(id))
 	}
 	return out
 }
@@ -4969,7 +1710,6 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 		Tools:                    registry,
 		PromptStore:              store.prompt,
 		Repo:                     store.repo,
-		ForkOperations:           store.forkOperations,
 		StateCompatibilityKey:    opts.StateCompatibilityKey,
 		Sink:                     opts.Sink,
 		SinkPolicy:               opts.SinkPolicy,
@@ -4983,7 +1723,6 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
 		BeginBackgroundExecution: store.beginLifetimeOperationContext,
 		ReportBackgroundError:    store.reportBackgroundError,
-		TurnExecutions:           store.turnExecutionRegistry(),
 		NewID:                    opts.NewID,
 	})
 	if err := store.recoverPendingAutomaticThreadTitles(harness); err != nil {
@@ -5097,9 +1836,8 @@ func emitSkillEvent(sink event.Sink, typ event.Type, metadata map[string]any) {
 }
 
 type runtimeEventSink struct {
-	mu         *sync.Mutex
-	sink       EventSink
-	projection *runtimeLiveProjectionRecorder
+	mu   *sync.Mutex
+	sink EventSink
 }
 
 func newRuntimeEventSink(sink EventSink) runtimeEventSink {
@@ -5107,9 +1845,8 @@ func newRuntimeEventSink(sink EventSink) runtimeEventSink {
 		return runtimeEventSink{}
 	}
 	return runtimeEventSink{
-		mu:         &sync.Mutex{},
-		sink:       sink,
-		projection: &runtimeLiveProjectionRecorder{},
+		mu:   &sync.Mutex{},
+		sink: sink,
 	}
 }
 
@@ -5127,16 +1864,13 @@ func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *obs
 	}
 	out := runtimeEvent(ev)
 	out.ActivityTimeline = observation.CloneActivityTimeline(timeline)
-	if s.projection != nil {
-		out.Projection, out.ProjectionDelta = s.projection.projectWithDelta(out)
-	}
 	s.sink.EmitEvent(out)
 }
 
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
 	sanitized := event.Sanitize(ev)
-	committed := runtimeCommittedEvent(ev, sanitized)
+	committed := runtimeCommittedEvent(ev)
 	compactionEvent := runtimeCompactionEventWithError(ev, sanitized, sanitized.Err)
 	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err)
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
@@ -5165,107 +1899,25 @@ func runtimeEvent(ev event.Event) Event {
 		ContinuationReason: observation.ContinuationReason(ev.ContinuationReason),
 		Activity:           cloneActivityPresentation(ev.Activity),
 		Stream:             stream,
-		Committed:          committed,
 		ContextStatus:      contextStatus,
 		Compaction:         compactionEvent,
 		CompactionDebug:    compactionDebugEvent,
 		Sources:            runtimeSourceRefs(ev.Sources),
 		Metadata:           safeMetadata(ev.Metadata),
 		Timestamp:          ev.Timestamp,
+		committed:          committed,
 	}
 }
 
-func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
-	if sanitized.Type != event.ThreadEntryCommitted {
+func runtimeCommittedEvent(raw event.Event) *agentharness.ThreadDetailEvent {
+	if raw.Type != event.ThreadEntryCommitted {
 		return nil
 	}
-	meta, _ := raw.Metadata.(map[string]any)
-	detail, ok := raw.Payload.(agentharness.SubAgentDetailEvent)
+	detail, ok := raw.Payload.(agentharness.ThreadDetailEvent)
 	if !ok {
 		return nil
 	}
-	out := threadDetailEvent(detail)
-	out.RunID = identity.RunID(sanitized.RunID)
-	out.Step = sanitized.Step
-	if out.Ordinal == 0 {
-		out.Ordinal = int64FromMetadata(meta, "ordinal")
-	}
-	if out.CreatedAt.IsZero() {
-		out.CreatedAt = sanitized.Timestamp
-	}
-	return &out
-}
-
-type runtimeLiveProjectionRecorder struct {
-	statesByTurn            map[string]*runtimeLiveTurnProjectionState
-	toolPresentationsByTurn map[string]map[string]*tools.ActivityPresentation
-}
-
-func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection {
-	projection, _ := r.projectWithDelta(ev)
-	return projection
-}
-
-func (r *runtimeLiveProjectionRecorder) projectWithDelta(ev Event) (*ThreadTurnProjection, *ThreadTurnProjectionDelta) {
-	if r == nil {
-		return nil, nil
-	}
-	threadID := strings.TrimSpace(string(ev.ThreadID))
-	turnID := strings.TrimSpace(string(ev.TurnID))
-	runID := strings.TrimSpace(string(ev.RunID))
-	if threadID == "" || turnID == "" || runID == "" {
-		return nil, nil
-	}
-	key := runtimeLiveProjectionTurnKey(threadID, turnID, runID)
-	toolID := strings.TrimSpace(ev.ToolID)
-	if (ev.Type == observation.EventTypeToolCall || ev.Type == observation.EventTypeHostedToolCall) && toolID != "" && ev.Activity != nil {
-		if r.toolPresentationsByTurn == nil {
-			r.toolPresentationsByTurn = map[string]map[string]*tools.ActivityPresentation{}
-		}
-		if r.toolPresentationsByTurn[key] == nil {
-			r.toolPresentationsByTurn[key] = map[string]*tools.ActivityPresentation{}
-		}
-		r.toolPresentationsByTurn[key][toolID] = cloneActivityPresentation(ev.Activity)
-	}
-	if ev.Committed == nil {
-		return nil, nil
-	}
-	committed := cloneThreadDetailEvent(*ev.Committed)
-	if committed.Kind == ThreadDetailEventApproval && committed.Approval != nil {
-		approvalToolID := strings.TrimSpace(committed.Approval.ToolID)
-		if presentation := r.toolPresentationsByTurn[key][approvalToolID]; presentation != nil {
-			if committed.ActivityTimeline != nil {
-				for index := range committed.ActivityTimeline.Items {
-					item := &committed.ActivityTimeline.Items[index]
-					if strings.TrimSpace(item.ToolID) == approvalToolID {
-						item.Presentation = cloneActivityPresentation(presentation)
-					}
-				}
-			}
-		}
-	}
-	if r.statesByTurn == nil {
-		r.statesByTurn = map[string]*runtimeLiveTurnProjectionState{}
-	}
-	state := r.statesByTurn[key]
-	if state == nil {
-		state = newRuntimeLiveTurnProjectionState(threadID, turnID, runID)
-		r.statesByTurn[key] = state
-	}
-	if committed.Ordinal > 0 && committed.Ordinal <= state.throughOrdinal {
-		return nil, nil
-	}
-	previous := state.lastProjection
-	projection := state.append(committed)
-	delta, err := DiffThreadTurnProjections(previous, projection)
-	if err != nil {
-		return cloneThreadTurnProjectionPtr(&projection), nil
-	}
-	return cloneThreadTurnProjectionPtr(&projection), &delta
-}
-
-func runtimeLiveProjectionTurnKey(threadID string, turnID string, runID string) string {
-	return threadID + "\x00" + turnID + "\x00" + runID
+	return &detail
 }
 
 func runtimeContextStatus(ev event.Event) *observation.ContextStatus {

@@ -38,12 +38,11 @@ observations settle unresolved items: cancelled runs produce `canceled`
 unresolved items, failed runs produce `error` unresolved items, and successful
 runs settle only work that is not host-owned pending work or unresolved
 approval. Waiting, started, queued, checkpoint, or otherwise non-terminal
-lifecycle observations do not imply tool completion. `runtime.ProjectThreadTurn`
-applies failed and cancelled terminal markers across all activity timeline
-segments for the turn. Successful turns keep host-owned pending work running
-until the host reports the observed outcome through the runtime
-`TurnExecutor.RecordPendingToolOutcome` API, which updates the original activity item instead of
-creating a separate UI row. Durable turn projection also treats
+lifecycle observations do not imply tool completion. The typed thread runtime
+applies failed and cancelled terminal markers to the affected turn items.
+Successful turns keep host-owned pending work running until its canonical
+outcome updates the original activity item instead of creating a separate UI
+row. Canonical detail also treats
 `tool_result_batch` save points as segment boundaries, not activity items, and
 keeps repeated facts for the same tool invocation merged into one item.
 Tool approval events are lifecycle updates on the tool activity item itself:

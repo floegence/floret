@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v3/storage/spi"
+	"github.com/floegence/floret/v4/storage/spi"
 	_ "modernc.org/sqlite"
 )
 
@@ -112,11 +112,6 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 			return err
 		}
 		if tableCount != 2 || exactTables != 2 {
-			if exactV16, err := sqliteHasExactV16Identity(ctx, tx); err != nil {
-				return err
-			} else if exactV16 {
-				return fmt.Errorf("%w: Floret schema 16", spi.ErrMigrationRequired)
-			}
 			return fmt.Errorf("%w: database is not a Floret backend", spi.ErrInvalidArgument)
 		}
 		var physicalSchema []byte
@@ -130,24 +125,6 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
-}
-
-func sqliteHasExactV16Identity(ctx context.Context, tx *sql.Tx) (bool, error) {
-	var schemaMeta int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'`).Scan(&schemaMeta); err != nil {
-		return false, err
-	}
-	if schemaMeta != 1 {
-		return false, nil
-	}
-	var version, fingerprint string
-	if err := tx.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
-		return false, nil
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'schema_fingerprint'`).Scan(&fingerprint); err != nil {
-		return false, nil
-	}
-	return version == "16" && fingerprint == "e9eb8db040f98a3d41d2a87109814d5cf005d58573c8750ac5b218bd6537f82e", nil
 }
 
 func (backend *sqliteBackend) View(ctx context.Context, callback func(spi.ReadTx) error) error {

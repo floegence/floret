@@ -3,8 +3,8 @@ package sessionlifecycle
 import (
 	"testing"
 
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/sessiontree"
 )
 
 func TestDeriveLifecycleTable(t *testing.T) {
@@ -65,7 +65,7 @@ func TestDeriveLifecycleTable(t *testing.T) {
 		{
 			name:          "waiting ask user prompt",
 			phase:         PhaseIdle,
-			path:          entries(marker("turn-1", sessiontree.TurnStarted, nil), toolCall("turn-1", "ask_user", `{"question":"Which file?"}`), marker("turn-1", sessiontree.TurnWaiting, nil)),
+			path:          entries(marker("turn-1", sessiontree.TurnStarted, nil), toolCall("turn-1", "ask_user", `{"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[],"questions":[{"id":"file","header":"File","question":"Which file?","response_mode":"write","is_secret":false}]}`), marker("turn-1", sessiontree.TurnWaiting, nil)),
 			status:        "waiting",
 			latestTurnID:  "turn-1",
 			appendable:    true,

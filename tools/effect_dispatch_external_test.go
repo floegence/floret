@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/tools"
 )
 
 type effectDispatchArgs struct {

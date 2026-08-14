@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/floegence/floret/v3/internal/storagebridge"
-	"github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v4/internal/storagebridge"
+	"github.com/floegence/floret/v4/storage"
 )
 
 func TestSQLiteBackendContract(t *testing.T) {

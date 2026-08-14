@@ -13,42 +13,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/internal/activityview"
-	"github.com/floegence/floret/v3/internal/configbridge"
-	"github.com/floegence/floret/v3/internal/engine"
-	enginecompaction "github.com/floegence/floret/v3/internal/engine/compaction"
-	"github.com/floegence/floret/v3/internal/event"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/artifact"
-	"github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
-	"github.com/floegence/floret/v3/internal/sessionlifecycle"
-	"github.com/floegence/floret/v3/internal/sessiontree"
-	"github.com/floegence/floret/v3/internal/storage"
-	"github.com/floegence/floret/v3/observation"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/activityview"
+	"github.com/floegence/floret/v4/internal/configbridge"
+	"github.com/floegence/floret/v4/internal/engine"
+	enginecompaction "github.com/floegence/floret/v4/internal/engine/compaction"
+	"github.com/floegence/floret/v4/internal/event"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/internal/sessionlifecycle"
+	"github.com/floegence/floret/v4/internal/sessiontree"
+	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v4/tools"
 )
 
-var (
-	ErrActiveTurn                              = errors.New("thread already has an active turn")
-	ErrNoRetryTarget                           = errors.New("thread has no retryable turn")
-	ErrPendingToolSettlementTargetTurnNotFound = errors.New("pending tool settlement target turn was not found")
-	ErrPendingToolSettlementTargetRunNotFound  = errors.New("pending tool settlement target run was not found")
-	ErrPendingToolSettlementTargetToolNotFound = errors.New("pending tool settlement target tool call was not found")
-	ErrPendingToolSettlementTargetNotActive    = errors.New("pending tool settlement target is not an active pending tool result")
-	ErrPendingToolSettlementConflict           = errors.New("pending tool settlement conflicts with existing settlement")
-	ErrForkOperationConflict                   = errors.New("fork operation conflicts with existing request")
-	ErrJournalInvariant                        = errors.New("thread journal invariant violated")
-)
-
-const (
-	threadPhaseIdle       = sessionlifecycle.PhaseIdle
-	threadPhaseTurn       = sessionlifecycle.PhaseTurn
-	staleTurnLeaseTimeout = 24 * time.Hour
-)
+var ErrJournalInvariant = errors.New("thread journal invariant violated")
 
 type HarnessEventType string
 
@@ -95,7 +78,6 @@ type Options struct {
 	Tools                    *tools.Registry
 	PromptStore              cache.Store
 	Repo                     sessiontree.JournalRepo
-	ForkOperations           storage.ForkOperationStore
 	StateCompatibilityKey    string
 	Sink                     event.Sink
 	SinkPolicy               event.SinkPolicy
@@ -114,7 +96,6 @@ type Options struct {
 	AutomaticTitleTimeout    time.Duration
 	BeginBackgroundExecution func() (context.Context, func(), error)
 	ReportBackgroundError    func(error)
-	TurnExecutions           *TurnExecutionRegistry
 	NewID                    func(string) string
 	Now                      func() time.Time
 }
@@ -141,66 +122,49 @@ type LoopLimits struct {
 }
 
 type AgentHarness struct {
-	mu                                 sync.Mutex
-	subagentSpawnMu                    sync.Mutex
-	options                            Options
-	effectFinalizationTimeout          time.Duration
-	effectOutcomeFingerprinter         func(tools.Result, session.Message, *artifact.FullOutput) (string, error)
-	effectFinalizerRegistration        func(error)
-	threads                            map[string]*Thread
-	subagents                          map[string]*subagentController
-	subagentUpdates                    chan struct{}
-	rootThreadInventoryProjectionCache map[string]rootThreadInventoryProjectionCacheEntry
-	// unifiedActors is the Phase 1 in-memory command authority. Existing
-	// journal/projection readers remain migration boundaries while writes move
-	// through this per-thread actor.
-	unifiedActors map[string]*unifiedCommandActor
+	mu                          sync.Mutex
+	options                     Options
+	effectFinalizationTimeout   time.Duration
+	effectOutcomeFingerprinter  func(tools.Result, session.Message, *artifact.FullOutput) (string, error)
+	effectFinalizerRegistration func(error)
+	threads                     map[string]*Thread
 }
 
 type ResumeOptions struct{}
 
-type ForkOptions struct {
-	SourceThreadID string
-	EntryID        string
-	Position       sessiontree.ForkPosition
-	NewThreadID    string
-	OperationID    string
-}
-
-type ForkResult struct {
-	OperationID string
-	Thread      *Thread
-	Summary     ThreadSummary
-}
-
 type RunOptions struct {
-	LogicalRequestID         string
-	RunID                    string
-	TurnID                   string
-	AdmittedInputID          string
-	AdmissionCommitted       bool
-	AdmissionBaseLeafID      string
-	Labels                   engine.RunLabels
-	TerminalMetadata         map[string]string
-	DeadlineMetadata         map[string]string
-	CompletionPolicy         engine.CompletionPolicy
-	ControlSpec              engine.ControlSpec
-	Reasoning                provider.ReasoningSelection
-	MaxInputTokens           int64
-	MaxTotalTokens           int64
-	MaxCostUSD               float64
-	MaxToolCalls             int
-	MaxLengthContinuations   int
-	MaxStopHookContinuations int
-	ManualCompactions        engine.ManualCompactionSource
-	ToolSurfaceProvider      engine.ToolSurfaceProvider
-	SupplementalContext      []engine.TurnSupplementalContextItem
-	Attachments              []session.MessageAttachment
-	References               []session.MessageReference
-	Sink                     event.Sink
+	LogicalRequestID            string
+	RunID                       string
+	TurnID                      string
+	AdmittedInputID             string
+	AdmissionCommitted          bool
+	AdmissionBaseLeafID         string
+	PromotedQueueID             string
+	PromotionRequestKey         string
+	PromotionRequestFingerprint string
+	InputRequestFingerprint     string
+	Labels                      engine.RunLabels
+	TerminalMetadata            map[string]string
+	DeadlineMetadata            map[string]string
+	CompletionPolicy            engine.CompletionPolicy
+	ControlSpec                 engine.ControlSpec
+	Reasoning                   provider.ReasoningSelection
+	MaxInputTokens              int64
+	MaxTotalTokens              int64
+	MaxCostUSD                  float64
+	MaxToolCalls                int
+	MaxLengthContinuations      int
+	MaxStopHookContinuations    int
+	ManualCompactions           engine.ManualCompactionSource
+	ToolSurfaceProvider         engine.ToolSurfaceProvider
+	SupplementalContext         []engine.TurnSupplementalContextItem
+	Attachments                 []session.MessageAttachment
+	References                  []session.MessageReference
+	Sink                        event.Sink
+	SkipContextPolicyEvent      bool
 }
 
-type TurnAdmission struct {
+type AcceptedTurn struct {
 	ThreadID    string
 	TurnID      string
 	RunID       string
@@ -209,128 +173,11 @@ type TurnAdmission struct {
 	Replayed    bool
 }
 
-type CompactOptions struct {
-	RequestID              string
-	Source                 string
-	Labels                 engine.RunLabels
-	Reasoning              provider.ReasoningSelection
-	MaxInputTokens         int64
-	MaxTotalTokens         int64
-	MaxCostUSD             float64
-	MaxToolCalls           int
-	MaxLengthContinuations int
-	Sink                   event.Sink
-}
-
-type RetryOptions struct {
-	TurnID identity.TurnID
-	RunID  identity.RunID
-	Reason string
-	Labels engine.RunLabels
-}
-
-type PendingToolCompletionStatus string
-
-const (
-	PendingToolCompleted PendingToolCompletionStatus = "completed"
-	PendingToolFailed    PendingToolCompletionStatus = "failed"
-	PendingToolCanceled  PendingToolCompletionStatus = "canceled"
-)
-
-type PendingToolCompletion struct {
-	CompletionRequestID string
-	Target              sessiontree.PendingToolSettlementTarget
-	ContinuationTurnID  string
-	ContinuationRunID   string
-	Status              PendingToolCompletionStatus
-	Summary             string
-	Output              string
-	Input               session.Message
-	Labels              engine.RunLabels
-}
-
-type PendingToolSettlementStatus string
-
-const (
-	PendingToolSettledCompleted PendingToolSettlementStatus = "completed"
-	PendingToolSettledFailed    PendingToolSettlementStatus = "failed"
-	PendingToolSettledCanceled  PendingToolSettlementStatus = "canceled"
-)
-
-type PendingToolSettlement struct {
-	TurnID          string
-	RunID           string
-	ToolCallID      string
-	ToolName        string
-	Handle          string
-	EffectAttemptID string
-	Status          PendingToolSettlementStatus
-	Summary         string
-	Output          string
-	Activity        *tools.ActivityPresentation
-}
-
-type ThreadSnapshot struct {
-	ID               string          `json:"id"`
-	Title            string          `json:"title,omitempty"`
-	TitleStatus      string          `json:"title_status,omitempty"`
-	TitleSource      string          `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time       `json:"title_updated_at,omitempty"`
-	TitleError       string          `json:"title_error,omitempty"`
-	TitleGeneration  int64           `json:"title_generation,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	Phase            string          `json:"phase"`
-	Status           string          `json:"status"`
-	LatestTurnID     string          `json:"latest_turn_id,omitempty"`
-	LatestRunID      string          `json:"latest_run_id,omitempty"`
-	ThroughOrdinal   int64           `json:"through_ordinal"`
-	WaitingPrompt    string          `json:"waiting_prompt,omitempty"`
-	Recoverable      bool            `json:"recoverable"`
-	CanAppendMessage bool            `json:"can_append_message"`
-	CanRetry         bool            `json:"can_retry"`
-	Messages         []ThreadMessage `json:"messages"`
-}
-
-type ThreadSummary struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title,omitempty"`
-	TitleStatus      string    `json:"title_status,omitempty"`
-	TitleSource      string    `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time `json:"title_updated_at,omitempty"`
-	TitleError       string    `json:"title_error,omitempty"`
-	TitleGeneration  int64     `json:"title_generation,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Phase            string    `json:"phase"`
-	Status           string    `json:"status"`
-	LatestTurnID     string    `json:"latest_turn_id,omitempty"`
-	WaitingPrompt    string    `json:"waiting_prompt,omitempty"`
-	Recoverable      bool      `json:"recoverable"`
-	CanAppendMessage bool      `json:"can_append_message"`
-	CanRetry         bool      `json:"can_retry"`
-}
-
-type ThreadOverview struct {
-	Thread     ThreadSnapshot
-	LatestTurn ThreadDetailEvents
-}
-
-type ThreadMessage struct {
-	Role        session.Role                `json:"role"`
-	Content     string                      `json:"content"`
-	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
-	References  []session.MessageReference  `json:"references,omitempty"`
-	TurnID      string                      `json:"turn_id,omitempty"`
-	CreatedAt   time.Time                   `json:"created_at"`
-}
-
 type ThreadJournalSnapshot struct {
 	Meta    sessiontree.ThreadMeta `json:"meta"`
 	Path    []sessiontree.Entry    `json:"path"`
 	Entries []sessiontree.Entry    `json:"entries"`
 	Context []session.Message      `json:"context"`
-	Phase   string                 `json:"phase"`
 }
 
 type TurnResult struct {
@@ -348,22 +195,8 @@ type TurnResult struct {
 	RawFinishReason    string
 	FinishInferred     bool
 	ControlSignal      *engine.ControlSignal
-	CanonicalEvents    []SubAgentDetailEvent
 	Replayed           bool
 	AdmissionRunning   bool
-}
-
-type CompactResult struct {
-	RunID       string
-	OperationID string
-	RequestID   string
-	Source      string
-	Status      engine.Status
-	Err         error
-	Diagnostics map[string]string
-	Metrics     engine.RunMetrics
-	Entry       *sessiontree.Entry
-	Replayed    bool
 }
 
 func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID string) (*provider.State, error) {
@@ -390,69 +223,32 @@ func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID 
 	return provider.CloneState(&record.State), nil
 }
 
-type ReadApprovalQueueOptions struct {
-	ThreadID string
-}
-
-type ApprovalQueueSnapshot struct {
-	RootThreadID      string           `json:"root_thread_id"`
-	Generation        int64            `json:"generation"`
-	Revision          int64            `json:"revision"`
-	CurrentApprovalID string           `json:"current_approval_id,omitempty"`
-	Approvals         []ApprovalRecord `json:"approvals"`
-	GeneratedAt       time.Time        `json:"generated_at"`
-}
-
-type ApprovalResource struct {
-	Kind  string `json:"kind,omitempty"`
-	Value string `json:"value,omitempty"`
-}
-
-type ApprovalRecord struct {
-	ApprovalID             string             `json:"approval_id,omitempty"`
-	RootThreadID           string             `json:"root_thread_id,omitempty"`
-	ParentThreadID         string             `json:"parent_thread_id,omitempty"`
-	ToolCallID             string             `json:"tool_call_id,omitempty"`
-	EffectAttemptID        string             `json:"effect_attempt_id,omitempty"`
-	ToolName               string             `json:"tool_name,omitempty"`
-	ToolKind               string             `json:"tool_kind,omitempty"`
-	RunID                  string             `json:"run_id,omitempty"`
-	ThreadID               string             `json:"thread_id,omitempty"`
-	TurnID                 string             `json:"turn_id,omitempty"`
-	Step                   int                `json:"step,omitempty"`
-	BatchIndex             int                `json:"batch_index"`
-	BatchSize              int                `json:"batch_size"`
-	State                  string             `json:"state,omitempty"`
-	Revision               int64              `json:"revision,omitempty"`
-	QueueSequence          int64              `json:"queue_sequence,omitempty"`
-	DecisionID             string             `json:"decision_id,omitempty"`
-	RequestedAt            time.Time          `json:"requested_at,omitempty"`
-	UpdatedAt              time.Time          `json:"updated_at,omitempty"`
-	ResolvedAt             time.Time          `json:"resolved_at,omitempty"`
-	ArgsHash               string             `json:"args_hash,omitempty"`
-	RequestFingerprint     string             `json:"request_fingerprint,omitempty"`
-	AuthorizationProofHash string             `json:"authorization_proof_hash,omitempty"`
-	Resources              []ApprovalResource `json:"resources,omitempty"`
-	Effects                []string           `json:"effects,omitempty"`
-	Labels                 map[string]string  `json:"labels,omitempty"`
-	HostContext            map[string]string  `json:"host_context,omitempty"`
-	ReadOnly               bool               `json:"read_only,omitempty"`
-	Destructive            bool               `json:"destructive,omitempty"`
-	OpenWorld              bool               `json:"open_world,omitempty"`
-	Reason                 string             `json:"reason,omitempty"`
-}
-
 type Thread struct {
-	harness           *AgentHarness
-	id                string
-	mu                sync.Mutex
-	authorityMu       sync.RWMutex
-	leaseSettlementMu sync.Mutex
-	effectFinalizeMu  sync.Mutex
-	effectFinalizers  map[string]func(context.Context, engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error)
-	active            bool
-	activeLease       sessiontree.TurnLease
-	phase             string
+	harness          *AgentHarness
+	id               string
+	effectFinalizeMu sync.Mutex
+	effectFinalizers map[string]func(context.Context, engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error)
+}
+
+type PendingToolSettlementStatus string
+
+const (
+	PendingToolSettledCompleted PendingToolSettlementStatus = "completed"
+	PendingToolSettledFailed    PendingToolSettlementStatus = "failed"
+	PendingToolSettledCanceled  PendingToolSettlementStatus = "canceled"
+)
+
+type PendingToolSettlement struct {
+	TurnID          string
+	RunID           string
+	ToolCallID      string
+	ToolName        string
+	Handle          string
+	EffectAttemptID string
+	Status          PendingToolSettlementStatus
+	Summary         string
+	Output          string
+	Activity        *tools.ActivityPresentation
 }
 
 func New(options Options) *AgentHarness {
@@ -469,22 +265,24 @@ func New(options Options) *AgentHarness {
 		options.Now = time.Now
 	}
 	return &AgentHarness{
-		options:                            options,
-		effectOutcomeFingerprinter:         effectOutcomeFingerprint,
-		threads:                            map[string]*Thread{},
-		subagents:                          map[string]*subagentController{},
-		subagentUpdates:                    make(chan struct{}),
-		rootThreadInventoryProjectionCache: make(map[string]rootThreadInventoryProjectionCacheEntry),
-		unifiedActors:                      make(map[string]*unifiedCommandActor),
+		options:                    options,
+		effectOutcomeFingerprinter: effectOutcomeFingerprint,
+		threads:                    map[string]*Thread{},
 	}
 }
 
 func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOptions) (*Thread, error) {
-	if inspector, ok := h.options.Repo.(sessiontree.ThreadAuthorityInspectionRepo); ok {
-		if _, err := inspector.InspectThreadAuthority(ctx, id); err != nil {
-			return nil, err
-		}
+	meta, err := h.options.Repo.Thread(ctx, id)
+	if err != nil {
+		return nil, err
 	}
+	return h.threadForResume(meta.ID), nil
+}
+
+// ResumeWaitingThread binds a waiting turn for continuation. Its authority is
+// validated by ResumeWaitingTurn, so the general whole-thread inspector is
+// intentionally skipped while the successor lease is being established.
+func (h *AgentHarness) ResumeWaitingThread(ctx context.Context, id string) (*Thread, error) {
 	meta, err := h.options.Repo.Thread(ctx, id)
 	if err != nil {
 		return nil, err
@@ -506,90 +304,6 @@ func (h *AgentHarness) BindCreatedRoot(meta sessiontree.ThreadMeta, replayed boo
 		h.emit(HarnessEvent{Type: EventThreadStarted, ThreadID: meta.ID})
 	}
 	return thread, nil
-}
-
-// OwnedActiveThread returns a cached thread only when its in-process owner and
-// the durable turn lease are the same exact authority generation.
-func (h *AgentHarness) OwnedActiveThread(ctx context.Context, id, turnID string) (*Thread, sessiontree.TurnLease, bool, error) {
-	if h == nil {
-		return nil, sessiontree.TurnLease{}, false, nil
-	}
-	id = strings.TrimSpace(id)
-	turnID = strings.TrimSpace(turnID)
-	if id == "" || turnID == "" {
-		return nil, sessiontree.TurnLease{}, false, nil
-	}
-	h.mu.Lock()
-	thread := h.threads[id]
-	h.mu.Unlock()
-	if thread == nil {
-		return nil, sessiontree.TurnLease{}, false, nil
-	}
-	localLease, ok := thread.ownedActiveTurnLease(turnID)
-	if !ok {
-		return nil, sessiontree.TurnLease{}, false, nil
-	}
-	durableLease, active, err := h.activeTurnLease(ctx, id)
-	if err != nil {
-		return nil, sessiontree.TurnLease{}, false, err
-	}
-	if !active || !sameTurnLease(localLease, durableLease) {
-		return nil, sessiontree.TurnLease{}, false, nil
-	}
-	return thread, localLease, true, nil
-}
-
-type RecoverInterruptedTurnOptions struct {
-	ThreadID       string
-	ParentThreadID string
-	ExpectedLease  sessiontree.TurnLease
-}
-
-type RecoverInterruptedTurnResult struct {
-	ThreadID string
-	TurnID   string
-	RunID    string
-	Status   sessiontree.TurnMarkerStatus
-	Replayed bool
-	Terminal sessiontree.Entry
-}
-
-func (h *AgentHarness) RecoverInterruptedTurn(ctx context.Context, opts RecoverInterruptedTurnOptions) (RecoverInterruptedTurnResult, error) {
-	if h == nil || h.options.Repo == nil {
-		return RecoverInterruptedTurnResult{}, errors.New("agent harness is not configured")
-	}
-	threadID := strings.TrimSpace(opts.ThreadID)
-	if threadID == "" || opts.ExpectedLease.ThreadID != threadID || opts.ExpectedLease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		return RecoverInterruptedTurnResult{}, sessiontree.ErrInvalidThreadAuthority
-	}
-	repo, ok := h.options.Repo.(sessiontree.InterruptedTurnRecoveryRepo)
-	if !ok {
-		return RecoverInterruptedTurnResult{}, errors.New("session tree repo does not support atomic interrupted turn recovery")
-	}
-	result, err := repo.RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{
-		ExpectedLease: opts.ExpectedLease, ParentThreadID: strings.TrimSpace(opts.ParentThreadID),
-		Now: h.now(),
-	})
-	if err != nil {
-		return RecoverInterruptedTurnResult{}, err
-	}
-	if !result.Replayed {
-		for _, entry := range result.ToolResults {
-			h.emitEntryCommitted(entry, result.RunID)
-		}
-		if result.Failure != nil {
-			h.emitEntryCommitted(*result.Failure, result.RunID)
-		}
-		h.emitEntryCommitted(result.Terminal, result.RunID)
-		h.emit(HarnessEvent{
-			Type: EventTurnAborted, RunID: result.RunID, ThreadID: threadID, TurnID: opts.ExpectedLease.TurnID,
-			Status: string(result.Status), Message: sessiontree.InterruptedTurnFailureMessage,
-		})
-	}
-	return RecoverInterruptedTurnResult{
-		ThreadID: threadID, TurnID: opts.ExpectedLease.TurnID, RunID: result.RunID,
-		Status: result.Status, Replayed: result.Replayed, Terminal: result.Terminal,
-	}, nil
 }
 
 func unfinishedTurns(path []sessiontree.Entry) []string {
@@ -682,120 +396,15 @@ func interruptedTurnClosureToolResult(call session.Message) session.Message {
 	return result
 }
 
-func (h *AgentHarness) ForkThread(ctx context.Context, opts ForkOptions) (*Thread, error) {
-	result, err := h.ForkThreadWithResult(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	return result.Thread, nil
-}
-
-func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOptions) (ForkResult, error) {
-	if strings.TrimSpace(opts.OperationID) == "" {
-		return ForkResult{}, errors.New("fork operation id is required")
-	}
-	return h.forkThreadReplayable(ctx, opts)
-}
-
-func rewriteForkContextEntry(entry sessiontree.Entry, forkIdentity sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
-	if entry.Type != sessiontree.EntryCustom {
-		return entry, nil
-	}
-	switch entry.Metadata[subAgentDetailKindKey] {
-	case subAgentContextStatusEntryKind:
-		status, err := subAgentDetailContextStatus(entry.Metadata)
-		if err != nil {
-			return sessiontree.Entry{}, err
-		}
-		status.ThreadID = identity.ThreadID(forkIdentity.DestinationThreadID)
-		status.TurnID = identity.TurnID(rewriteForkContextID(status.TurnID.String(), forkIdentity.TurnIDMap))
-		status.RunID = identity.RunID(rewriteForkContextID(status.RunID.String(), forkIdentity.RunIDMap))
-		entry.Metadata[subAgentContextStatusKey] = mustSubAgentMetadataJSON(status)
-	case subAgentContextCompactionEntryKind:
-		compact, err := subAgentDetailContextCompaction(entry.Metadata)
-		if err != nil {
-			return sessiontree.Entry{}, err
-		}
-		compact.ThreadID = forkIdentity.DestinationThreadID
-		compact.TurnID = rewriteForkContextID(compact.TurnID, forkIdentity.TurnIDMap)
-		compact.RunID = rewriteForkContextID(compact.RunID, forkIdentity.RunIDMap)
-		entry.Metadata[subAgentContextCompactionKey] = mustSubAgentMetadataJSON(compact)
-	}
-	return entry, nil
-}
-
-func rewriteForkContextID(value string, rewrites map[string]string) string {
-	value = strings.TrimSpace(value)
-	if next := strings.TrimSpace(rewrites[value]); next != "" {
-		return next
-	}
-	return value
-}
-
-func (h *AgentHarness) forkSourcePath(ctx context.Context, opts ForkOptions) ([]sessiontree.Entry, error) {
-	if h == nil || h.options.Repo == nil {
-		return nil, errors.New("agent harness repo is required")
-	}
-	position := opts.Position
-	if position == "" {
-		position = sessiontree.ForkAt
-	}
-	sourceMeta, err := h.options.Repo.Thread(ctx, opts.SourceThreadID)
-	if err != nil {
-		return nil, err
-	}
-	targetID := strings.TrimSpace(opts.EntryID)
-	if targetID == "" {
-		targetID = sourceMeta.LeafID
-	}
-	if position == sessiontree.ForkBefore {
-		entry, err := h.options.Repo.Entry(ctx, opts.SourceThreadID, targetID)
-		if err != nil {
-			return nil, err
-		}
-		targetID = entry.ParentID
-	}
-	return h.options.Repo.Path(ctx, opts.SourceThreadID, targetID)
-}
-
-func forkMappedID(value string, ids map[string]string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || len(ids) == 0 {
-		return value
-	}
-	if next := strings.TrimSpace(ids[value]); next != "" {
-		return next
-	}
-	return value
-}
-
 func (h *AgentHarness) cacheThread(id string) *Thread {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if thread, ok := h.threads[id]; ok {
 		return thread
 	}
-	thread := &Thread{harness: h, id: id, phase: threadPhaseIdle}
+	thread := &Thread{harness: h, id: id}
 	h.threads[id] = thread
-	if h.unifiedActors == nil {
-		h.unifiedActors = make(map[string]*unifiedCommandActor)
-	}
-	h.unifiedActors[id] = newUnifiedCommandActor(identity.ThreadID(id))
 	return thread
-}
-
-func (h *AgentHarness) unifiedActor(id string) *unifiedCommandActor {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.unifiedActors == nil {
-		h.unifiedActors = make(map[string]*unifiedCommandActor)
-	}
-	if actor := h.unifiedActors[id]; actor != nil {
-		return actor
-	}
-	actor := newUnifiedCommandActor(identity.ThreadID(id))
-	h.unifiedActors[id] = actor
-	return actor
 }
 
 func (h *AgentHarness) threadForResume(id string) *Thread {
@@ -804,16 +413,7 @@ func (h *AgentHarness) threadForResume(id string) *Thread {
 	if thread, ok := h.threads[id]; ok {
 		return thread
 	}
-	return &Thread{harness: h, id: id, phase: threadPhaseIdle}
-}
-
-func (h *AgentHarness) cacheThreadAfterCommit(thread *Thread) {
-	if h == nil || thread == nil {
-		return
-	}
-	h.mu.Lock()
-	h.threads[thread.id] = thread
-	h.mu.Unlock()
+	return &Thread{harness: h, id: id}
 }
 
 func (h *AgentHarness) nextID(prefix string) string {
@@ -872,15 +472,15 @@ func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string)
 		runID = strings.TrimSpace(entry.Metadata["run_id"])
 	}
 	ordinal := h.threadEntryOrdinal(entry)
-	detail, ok := h.subAgentDetailEvent(entry, ordinal, false, subAgentDetailActivityContext{})
+	detail, ok := h.threadDetailEvent(entry, ordinal, false, threadDetailActivityContext{})
 	if !ok {
 		return
 	}
-	if detail.Kind == SubAgentDetailEventAssistantMessage && detail.Message != nil {
+	if detail.Kind == ThreadDetailEventAssistantMessage && detail.Message != nil {
 		detail.Message.Content = entry.Message.Content
 		detail.Message.Reasoning = entry.Message.Reasoning
 		if detail.Metadata != nil {
-			delete(detail.Metadata, subAgentDetailRawOmitted)
+			delete(detail.Metadata, threadDetailRawOmitted)
 		}
 	}
 	metadata := map[string]any{
@@ -926,259 +526,8 @@ func (h *AgentHarness) threadEntryOrdinal(entry sessiontree.Entry) int64 {
 	return stored.PathDepth
 }
 
-func (h *AgentHarness) activeTurnLease(ctx context.Context, threadID string) (sessiontree.TurnLease, bool, error) {
-	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
-	if !ok {
-		return sessiontree.TurnLease{}, false, nil
-	}
-	return repo.ActiveTurnLease(ctx, threadID)
-}
-
-func (h *AgentHarness) admitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error) {
-	repo, ok := h.options.Repo.(sessiontree.TurnAuthorityRepo)
-	if !ok {
-		return sessiontree.AdmitTurnResult{}, errors.New("session tree repo does not support atomic turn admission")
-	}
-	fingerprint, err := sessiontree.TurnAdmissionRequestFingerprint(req)
-	if err != nil {
-		return sessiontree.AdmitTurnResult{}, err
-	}
-	req.RequestFingerprint = fingerprint
-	req.Now = h.now()
-	result, err := repo.AdmitTurn(ctx, req)
-	if errors.Is(err, sessiontree.ErrActiveTurn) || errors.Is(err, sessiontree.ErrThreadAuthorityBusy) {
-		return sessiontree.AdmitTurnResult{}, ErrActiveTurn
-	}
-	if errors.Is(err, sessiontree.ErrThreadClosed) || errors.Is(err, sessiontree.ErrSubAgentClosing) {
-		return sessiontree.AdmitTurnResult{}, ErrSubAgentClosed
-	}
-	return result, err
-}
-
-func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.TurnLease) (context.Context, func() error, error) {
-	repo, ok := t.harness.options.Repo.(sessiontree.TurnLeaseRepo)
-	if !ok {
-		return nil, nil, errors.New("session tree repo does not support authority lease renewal")
-	}
-	policyRepo, ok := t.harness.options.Repo.(sessiontree.LeasePolicyRepo)
-	if !ok {
-		return nil, nil, errors.New("session tree repo does not expose its authority lease policy")
-	}
-	policy := policyRepo.AuthorityLeasePolicy()
-	if err := policy.Validate(); err != nil {
-		return nil, nil, err
-	}
-	runCtx, cancelRun := context.WithCancel(ctx)
-	renewalCtx, cancelRenewal := context.WithCancel(context.WithoutCancel(ctx))
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	var renewalMu sync.Mutex
-	var renewalErr error
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(policy.RenewInterval)
-		defer ticker.Stop()
-		proof := initial
-		for {
-			select {
-			case <-stop:
-				return
-			case <-renewalCtx.Done():
-				return
-			case <-ticker.C:
-				t.authorityMu.RLock()
-				if !t.hasActiveLease(proof) {
-					t.authorityMu.RUnlock()
-					return
-				}
-				renewed, err := repo.RenewTurnLease(renewalCtx, proof)
-				if err == nil {
-					err = sessiontree.UpdateTurnLeaseContext(runCtx, proof, renewed)
-				}
-				if err == nil {
-					err = t.replaceActiveLease(proof, renewed)
-				}
-				if err != nil {
-					if isContextCancellationError(err) && renewalCtx.Err() != nil {
-						t.authorityMu.RUnlock()
-						return
-					}
-					if errors.Is(err, sessiontree.ErrStaleAuthority) {
-						t.leaseSettlementMu.Lock()
-						terminalSettled := !t.hasActiveLease(proof)
-						t.leaseSettlementMu.Unlock()
-						if terminalSettled {
-							t.authorityMu.RUnlock()
-							return
-						}
-					}
-					t.authorityMu.RUnlock()
-					renewalMu.Lock()
-					renewalErr = err
-					renewalMu.Unlock()
-					cancelRun()
-					return
-				}
-				proof = renewed
-				t.authorityMu.RUnlock()
-			}
-		}
-	}()
-	var stopOnce sync.Once
-	stopRenewal := func() error {
-		stopOnce.Do(func() {
-			close(stop)
-			cancelRenewal()
-		})
-		<-done
-		cancelRun()
-		renewalMu.Lock()
-		defer renewalMu.Unlock()
-		return renewalErr
-	}
-	return runCtx, stopRenewal, nil
-}
-
 func (t *Thread) ID() string {
 	return t.id
-}
-
-func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
-	journal, err := t.Journal(ctx)
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	return threadSnapshotFromJournal(journal), nil
-}
-
-func threadSnapshotFromJournal(journal ThreadJournalSnapshot) ThreadSnapshot {
-	lifecycle := sessionlifecycle.Derive(journal.Path, journal.Phase)
-	return ThreadSnapshot{
-		ID:               journal.Meta.ID,
-		Title:            journal.Meta.Title,
-		TitleStatus:      string(journal.Meta.TitleStatus),
-		TitleSource:      string(journal.Meta.TitleSource),
-		TitleUpdatedAt:   journal.Meta.TitleUpdatedAt,
-		TitleError:       journal.Meta.TitleError,
-		TitleGeneration:  journal.Meta.TitleGeneration,
-		CreatedAt:        journal.Meta.CreatedAt,
-		UpdatedAt:        journal.Meta.UpdatedAt,
-		Phase:            lifecycle.Phase(),
-		Status:           lifecycle.Status(),
-		LatestTurnID:     lifecycle.LatestTurnID(),
-		LatestRunID:      latestThreadRunID(journal.Path),
-		ThroughOrdinal:   int64(len(journal.Path)),
-		WaitingPrompt:    lifecycle.WaitingPrompt(),
-		Recoverable:      lifecycle.Recoverable(),
-		CanAppendMessage: lifecycle.CanAppendMessage(),
-		CanRetry:         retryTarget(journal.Path).Entry.ID != "",
-		Messages:         threadMessages(journal.Path),
-	}
-}
-
-func (h *AgentHarness) ReadThread(ctx context.Context, id string) (ThreadSnapshot, error) {
-	if h == nil {
-		return ThreadSnapshot{}, errors.New("agent harness is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ThreadSnapshot{}, errors.New("thread id is required")
-	}
-	return h.cacheThread(id).Read(ctx)
-}
-
-func (h *AgentHarness) SetThreadTitle(ctx context.Context, id, rawTitle string) (ThreadSnapshot, error) {
-	if h == nil {
-		return ThreadSnapshot{}, errors.New("agent harness is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ThreadSnapshot{}, errors.New("thread id is required")
-	}
-	title, err := normalizeHostThreadTitle(rawTitle)
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	authority, ok := h.options.Repo.(sessiontree.ThreadTitleAuthorityRepo)
-	if !ok {
-		return ThreadSnapshot{}, errors.New("session tree repo does not support atomic thread title mutation")
-	}
-	result, err := authority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-		ThreadID: id, Title: title, Now: h.now(),
-	})
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	if result.Changed {
-		h.emit(HarnessEvent{Type: EventTitleUpdated, ThreadID: id, Message: title, Metadata: map[string]string{"source": string(sessiontree.ThreadTitleSourceHost)}})
-	}
-	return h.ReadThread(ctx, id)
-}
-
-func (h *AgentHarness) ReadThreadOverview(ctx context.Context, id string) (ThreadOverview, error) {
-	if h == nil {
-		return ThreadOverview{}, errors.New("agent harness is nil")
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ThreadOverview{}, errors.New("thread id is required")
-	}
-	journal, err := h.cacheThread(id).Journal(ctx)
-	if err != nil {
-		return ThreadOverview{}, err
-	}
-	latest, err := h.latestThreadDetailEventsFromPath(ctx, journal.Path, true)
-	if err != nil {
-		return ThreadOverview{}, err
-	}
-	return ThreadOverview{Thread: threadSnapshotFromJournal(journal), LatestTurn: latest}, nil
-}
-
-func latestThreadRunID(path []sessiontree.Entry) string {
-	for index := len(path) - 1; index >= 0; index-- {
-		entry := path[index]
-		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
-			return strings.TrimSpace(entry.Metadata["run_id"])
-		}
-	}
-	return ""
-}
-
-func (t *Thread) Summary(ctx context.Context) (ThreadSummary, error) {
-	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
-	if err != nil {
-		return ThreadSummary{}, err
-	}
-	path, err := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
-	if err != nil {
-		return ThreadSummary{}, err
-	}
-	t.mu.Lock()
-	phase := t.phase
-	t.mu.Unlock()
-	phase, err = t.canonicalThreadPhase(ctx, phase)
-	if err != nil {
-		return ThreadSummary{}, err
-	}
-	lifecycle := sessionlifecycle.Derive(path, phase)
-	return ThreadSummary{
-		ID:               meta.ID,
-		Title:            meta.Title,
-		TitleStatus:      string(meta.TitleStatus),
-		TitleSource:      string(meta.TitleSource),
-		TitleUpdatedAt:   meta.TitleUpdatedAt,
-		TitleError:       meta.TitleError,
-		TitleGeneration:  meta.TitleGeneration,
-		CreatedAt:        meta.CreatedAt,
-		UpdatedAt:        meta.UpdatedAt,
-		Phase:            lifecycle.Phase(),
-		Status:           lifecycle.Status(),
-		LatestTurnID:     lifecycle.LatestTurnID(),
-		WaitingPrompt:    lifecycle.WaitingPrompt(),
-		Recoverable:      lifecycle.Recoverable(),
-		CanAppendMessage: lifecycle.CanAppendMessage(),
-		CanRetry:         retryTarget(path).Entry.ID != "",
-	}, nil
 }
 
 func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
@@ -1194,13 +543,6 @@ func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
 	if err != nil {
 		return ThreadJournalSnapshot{}, err
 	}
-	t.mu.Lock()
-	phase := t.phase
-	t.mu.Unlock()
-	phase, err = t.canonicalThreadPhase(ctx, phase)
-	if err != nil {
-		return ThreadJournalSnapshot{}, err
-	}
 	contextMessages, err := sessiontree.BuildContextChecked(path, sessiontree.ContextOptions{})
 	if err != nil {
 		return ThreadJournalSnapshot{}, err
@@ -1210,426 +552,79 @@ func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
 		Path:    path,
 		Entries: entries,
 		Context: contextMessages,
-		Phase:   phase,
 	}, nil
 }
 
-func (t *Thread) canonicalThreadPhase(ctx context.Context, localPhase string) (string, error) {
-	registry := t.harness.options.TurnExecutions
-	if registry == nil || !registry.validate() {
-		return localPhase, nil
+// ResumeInput continues a canonically resolved input interaction. ThreadRuntime
+// owns the active attempt; AgentHarness only performs provider I/O against the
+// accepted turn and never acquires a durable execution lease.
+func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer string, opts RunOptions) (TurnResult, error) {
+	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
+		return TurnResult{}, errors.New("thread is not initialized")
 	}
-	inspector, ok := t.harness.options.Repo.(sessiontree.ThreadAuthorityInspectionRepo)
-	if !ok {
-		return localPhase, nil
-	}
-	snapshot, err := inspector.InspectThreadAuthority(ctx, t.id)
-	if err != nil {
-		return "", err
-	}
-	return t.canonicalThreadPhaseFromAuthority(localPhase, snapshot), nil
-}
-
-func (t *Thread) canonicalThreadPhaseFromAuthority(localPhase string, snapshot sessiontree.ThreadAuthoritySnapshot) string {
-	registry := t.harness.options.TurnExecutions
-	if registry == nil || !registry.validate() {
-		return localPhase
-	}
-	if snapshot.Lease != nil && snapshot.Lease.Purpose == sessiontree.TurnLeasePurposeTurn &&
-		snapshot.Lease.Fresh(t.harness.now().UTC()) && snapshot.ClaimOperationID == "" {
-		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok {
-			if sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) == nil {
-				return threadPhaseTurn
-			}
-			return threadPhaseIdle
-		}
-		if active, ok, admitting := registry.snapshot(t.id, snapshot.Lease.TurnID); ok {
-			if sessiontree.ValidateTurnLeaseSuccessor(active, *snapshot.Lease) == nil {
-				return threadPhaseTurn
-			}
-			return threadPhaseIdle
-		} else if admitting {
-			return threadPhaseTurn
-		}
-	}
-	if localPhase == threadPhaseTurn {
-		return threadPhaseIdle
-	}
-	return localPhase
-}
-
-func threadMessages(path []sessiontree.Entry) []ThreadMessage {
-	out := make([]ThreadMessage, 0)
-	for _, entry := range path {
-		switch entry.Type {
-		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage:
-			if entry.Message.Content == "" && len(entry.Message.Attachments) == 0 && len(entry.Message.References) == 0 {
-				continue
-			}
-			out = append(out, ThreadMessage{
-				Role:        entry.Message.Role,
-				Content:     entry.Message.Content,
-				Attachments: session.CloneMessageAttachments(entry.Message.Attachments),
-				References:  append([]session.MessageReference(nil), entry.Message.References...),
-				TurnID:      entry.TurnID,
-				CreatedAt:   entry.CreatedAt,
-			})
-		}
-	}
-	return out
-}
-
-func (t *Thread) Run(ctx context.Context, input string, opts RunOptions) (TurnResult, error) {
-	return t.run(ctx, input, opts, nil)
-}
-
-func (t *Thread) Admit(ctx context.Context, input string, opts RunOptions) (TurnAdmission, error) {
-	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 {
-		return TurnAdmission{}, errors.New("input is required")
-	}
-	turnID := strings.TrimSpace(opts.TurnID)
-	if turnID == "" {
-		return TurnAdmission{}, errors.New("turn id is required")
-	}
+	turnID = strings.TrimSpace(turnID)
+	waitingRunID = strings.TrimSpace(waitingRunID)
 	runID := strings.TrimSpace(opts.RunID)
-	if runID == "" {
-		return TurnAdmission{}, errors.New("run id is required")
+	answer = strings.TrimSpace(answer)
+	if turnID == "" || waitingRunID == "" || runID == "" || answer == "" {
+		return TurnResult{}, errors.New("waiting turn resume requires turn, run, and answer")
 	}
-	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
-	if !ok {
-		return TurnAdmission{}, errors.New("session tree repo does not support atomic turn admission")
+	if opts.SupplementalContext == nil {
+		opts.SupplementalContext = []engine.TurnSupplementalContextItem{{
+			Kind: "user_answer", Title: "User response to the pending question", Text: answer,
+		}}
 	}
-	finishAdmission := t.harness.options.TurnExecutions.beginAdmission(t.id, turnID)
-	defer finishAdmission()
-	existing, existingAdmission, err := authority.ReadTurnAdmission(ctx, t.id, turnID, runID)
-	if err != nil {
-		return TurnAdmission{}, err
-	}
-	if !existingAdmission {
-		normalized, err := engine.NormalizeAndValidateTurnSupplementalContext(opts.SupplementalContext)
-		if err != nil {
-			return TurnAdmission{}, err
-		}
-		if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) > 0 && len(normalized) == 0 {
-			return TurnAdmission{}, errors.New("reference-only turn input requires renderable supplemental context")
-		}
-	}
-	message := session.Message{
-		Role: session.User, Content: input,
-		Attachments: session.CloneMessageAttachments(opts.Attachments),
-		References:  append([]session.MessageReference(nil), opts.References...),
-	}
-	admission := existing
-	if !existingAdmission {
-		var err error
-		admission, err = t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-			ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: strings.TrimSpace(opts.LogicalRequestID), OwnerID: t.harness.nextID("lease"), Input: message,
-		})
-		if err != nil {
-			return TurnAdmission{}, err
-		}
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	if admission.Terminal == nil {
-		if err := t.beginActiveTurnLease(admission.Lease); err != nil {
-			return TurnAdmission{}, err
-		}
-	}
-	if !admission.Replayed {
-		t.harness.emitEntryCommitted(admission.TurnStarted, runID)
-		t.harness.emitEntryCommitted(admission.UserMessage, runID)
-		t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: admission.UserMessage.ID, ParentID: admission.UserMessage.ParentID})
-	}
-	return TurnAdmission{
-		ThreadID: t.id, TurnID: turnID, RunID: runID, UserEntryID: admission.UserMessage.ID,
-		BaseLeafID: admission.BaseLeafID, Replayed: admission.Replayed,
-	}, nil
+	opts.TurnID = turnID
+	opts.RunID = runID
+	opts.AdmissionCommitted = true
+	opts.AdmissionBaseLeafID = ""
+	opts.SkipContextPolicyEvent = true
+	return t.runAccepted(ctx, "", opts, nil)
 }
 
-func (t *Thread) ExecuteAdmitted(ctx context.Context, admission TurnAdmission, input string, opts RunOptions) (TurnResult, error) {
-	if admission.ThreadID != t.id || strings.TrimSpace(admission.TurnID) == "" || strings.TrimSpace(admission.RunID) == "" {
+func (t *Thread) ExecuteAccepted(ctx context.Context, accepted AcceptedTurn, input string, opts RunOptions) (TurnResult, error) {
+	if accepted.ThreadID != t.id || strings.TrimSpace(accepted.TurnID) == "" || strings.TrimSpace(accepted.RunID) == "" {
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
 	}
-	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+	journal, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
-		return TurnResult{}, errors.New("session tree repo does not support atomic turn admission")
+		return TurnResult{}, errors.New("session tree repo does not support canonical turn execution")
 	}
-	admitted, found, err := authority.ReadTurnAdmission(ctx, t.id, admission.TurnID, admission.RunID)
+	canonical, found, err := journal.ReadAcceptedTurn(ctx, t.id, accepted.TurnID, accepted.RunID)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	if !found {
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
 	}
-	if admitted.Terminal != nil {
-		return t.turnAdmissionReplayResult(ctx, admitted, admission.TurnID, admission.RunID)
+	if canonical.Terminal != nil {
+		return t.acceptedTurnReplayResult(ctx, canonical, accepted.TurnID, accepted.RunID)
 	}
-	lease := admitted.Lease
-	if err := t.beginActiveTurnLease(lease); err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, admission.TurnID, admission.RunID, "local_owner_bind_error", err)
-	}
-	defer t.leaveTurn()
-	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-	runCtx, stopRenewal, err := t.startLeaseRenewal(leaseCtx, lease)
-	if err != nil {
-		return t.finalizeTurnStartupFailure(leaseCtx, lease, admission.TurnID, admission.RunID, "lease_renewal_start_error", err)
-	}
-	defer func() {
-		if current, ok := sessiontree.TurnLeaseFromContext(leaseCtx); ok {
-			t.clearActiveLease(current)
+	opts.TurnID = accepted.TurnID
+	opts.RunID = accepted.RunID
+	opts.AdmissionCommitted = true
+	opts.AdmissionBaseLeafID = canonical.BaseLeafID
+	if sourceEntryID := strings.TrimSpace(canonical.TurnStarted.Metadata[sessiontree.RetrySourceEntryIDMetadataKey]); sourceEntryID != "" {
+		source, sourceErr := t.harness.options.Repo.Entry(ctx, t.id, sourceEntryID)
+		if sourceErr != nil {
+			return TurnResult{}, sourceErr
 		}
-	}()
-	message := admitted.UserMessage.Message
-	automaticTitleExecution, titleErr := t.startAutomaticTitle(runCtx, admission.TurnID, admission.RunID, admitted.UserMessage.ID, message)
+		return t.runAccepted(ctx, "", opts, &source)
+	}
+	message := canonical.UserMessage.Message
+	automaticTitleExecution, titleErr := t.startAutomaticTitle(ctx, accepted.TurnID, accepted.RunID, canonical.UserMessage.ID, message)
 	if titleErr != nil {
-		persistCtx, cancelPersist := turnFinalizationContext(runCtx)
-		result, runErr := t.finalizeFailedTurn(persistCtx, admission.TurnID, admission.RunID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		result, runErr := t.finalizeFailedTurn(persistCtx, accepted.TurnID, accepted.RunID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
 		cancelPersist()
-		if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-			return result, renewalErr
-		}
 		return result, runErr
 	}
-	opts.TurnID = admission.TurnID
-	opts.RunID = admission.RunID
-	opts.AdmissionCommitted = true
-	opts.AdmissionBaseLeafID = admitted.BaseLeafID
-	result, runErr := t.runLeased(runCtx, input, opts, nil)
-	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-		runErr = renewalErr
-	}
+	result, runErr := t.runAccepted(ctx, input, opts, nil)
 	automaticTitleExecution.FinishMain(automaticTitleWorkerMustJoin(result, runErr))
 	return result, runErr
 }
 
-func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, error) {
-	if _, err := identity.ParseTurnID(opts.TurnID.String()); err != nil {
-		return TurnResult{}, err
-	}
-	if _, err := identity.ParseRunID(opts.RunID.String()); err != nil {
-		return TurnResult{}, err
-	}
-	if err := t.enterTurn(); err != nil {
-		return TurnResult{}, err
-	}
-	defer t.leaveTurn()
-	snap, err := t.Journal(ctx)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	target := retryTarget(snap.Path)
-	if target.Entry.ID == "" {
-		return TurnResult{}, ErrNoRetryTarget
-	}
-	turnID := opts.TurnID.String()
-	runID := opts.RunID.String()
-	requestID := "retry:" + turnID + ":" + runID
-	actor := t.harness.unifiedActor(t.id)
-	if _, err := actor.apply(unifiedCommand{RequestID: identity.LogicalRequestID(requestID), Kind: unifiedCommandRetry, TurnID: identity.TurnID(turnID), RunID: identity.RunID(runID)}); err != nil {
-		return TurnResult{}, err
-	}
-	var result TurnResult
-	var runErr error
-	defer func() {
-		status := string(result.Status)
-		if runErr != nil && status == "" {
-			status = "failed"
-		}
-		if status == "" {
-			status = "completed"
-		}
-		actor.recordTerminal(status)
-	}()
-	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"),
-		RetrySourceTurnID: target.Entry.TurnID, RetrySourceEntryID: target.Entry.ID,
-	})
-	if err != nil {
-		return TurnResult{}, err
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	lease := admission.Lease
-	if err := t.bindActiveLease(lease); err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "local_owner_bind_error", err)
-	}
-	ctx = sessiontree.ContextWithTurnLease(ctx, lease)
-	runCtx, stopRenewal, err := t.startLeaseRenewal(ctx, lease)
-	if err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "lease_renewal_start_error", err)
-	}
-	defer func() {
-		if current, ok := sessiontree.TurnLeaseFromContext(ctx); ok {
-			t.clearActiveLease(current)
-		}
-	}()
-	if admission.BoundaryTerminal.ID != "" {
-		t.harness.emitEntryCommitted(admission.BoundaryTerminal, runID)
-	}
-	t.harness.emitEntryCommitted(admission.TurnStarted, runID)
-	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
-	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
-	result, runErr = t.runLeased(runCtx, "", RunOptions{
-		LogicalRequestID: target.LogicalRequestID, RunID: runID, TurnID: turnID, Labels: opts.Labels,
-		AdmissionCommitted: true, AdmissionBaseLeafID: admission.BaseLeafID,
-	}, &target.Entry)
-	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-		return result, renewalErr
-	}
-	return result, runErr
-}
-
-func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingToolCompletion) (TurnResult, error) {
-	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
-		return TurnResult{}, errors.New("thread is not initialized")
-	}
-	completion.CompletionRequestID = strings.TrimSpace(completion.CompletionRequestID)
-	completion.ContinuationTurnID = strings.TrimSpace(completion.ContinuationTurnID)
-	completion.ContinuationRunID = strings.TrimSpace(completion.ContinuationRunID)
-	if completion.CompletionRequestID == "" || completion.ContinuationTurnID == "" || completion.ContinuationRunID == "" {
-		return TurnResult{}, errors.New("pending tool completion requires completion request, continuation turn, and continuation run identities")
-	}
-	if strings.TrimSpace(completion.Target.ThreadID) != t.id {
-		return TurnResult{}, errors.New("pending tool completion target thread identity mismatch")
-	}
-	if completion.Input.Role != session.User || (strings.TrimSpace(completion.Input.Content) == "" && len(completion.Input.Attachments) == 0) {
-		return TurnResult{}, errors.New("pending tool completion requires structured user continuation input")
-	}
-	settlement, err := normalizePendingToolSettlement(PendingToolSettlement{
-		TurnID: completion.Target.TurnID, RunID: completion.Target.RunID,
-		ToolCallID: completion.Target.ToolCallID, ToolName: completion.Target.ToolName, Handle: completion.Target.Handle,
-		EffectAttemptID: completion.Target.EffectAttemptID,
-		Status:          pendingToolSettlementStatusFromCompletion(completion.Status), Summary: completion.Summary, Output: completion.Output,
-	})
-	if err != nil {
-		return TurnResult{}, err
-	}
-	settlementEntry, settlementFingerprint, err := pendingToolSettlementAuthorityEntry(t.id, settlement)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	fingerprintPayload, err := json.Marshal(struct {
-		CompletionRequestID string                                  `json:"completion_request_id"`
-		Target              sessiontree.PendingToolSettlementTarget `json:"target"`
-		ContinuationTurnID  string                                  `json:"continuation_turn_id"`
-		ContinuationRunID   string                                  `json:"continuation_run_id"`
-		Status              PendingToolCompletionStatus             `json:"status"`
-		Summary             string                                  `json:"summary"`
-		Output              string                                  `json:"output"`
-		Input               session.Message                         `json:"input"`
-		Labels              engine.RunLabels                        `json:"labels"`
-	}{
-		CompletionRequestID: completion.CompletionRequestID, Target: completion.Target,
-		ContinuationTurnID: completion.ContinuationTurnID, ContinuationRunID: completion.ContinuationRunID,
-		Status: completion.Status, Summary: settlement.Summary, Output: settlement.Output,
-		Input: session.CloneMessage(completion.Input), Labels: completion.Labels,
-	})
-	if err != nil {
-		return TurnResult{}, err
-	}
-	repo, ok := t.harness.options.Repo.(sessiontree.PendingToolCompletionAuthorityRepo)
-	if !ok {
-		return TurnResult{}, errors.New("session tree repo does not support atomic pending tool completion")
-	}
-	request := sessiontree.AdmitPendingToolCompletionRequest{
-		CompletionRequestID: completion.CompletionRequestID,
-		RequestFingerprint:  sessiontree.StableHash(string(fingerprintPayload)), SettlementFingerprint: settlementFingerprint,
-		Target: completion.Target, Settlement: settlementEntry,
-		ContinuationTurnID: completion.ContinuationTurnID, ContinuationRunID: completion.ContinuationRunID,
-		OwnerID: t.harness.nextID("lease"), Input: session.CloneMessage(completion.Input), Now: t.harness.now(),
-	}
-
-	if err := t.enterTurn(); err != nil {
-		replayed, found, readErr := repo.ReadPendingToolCompletion(ctx, request)
-		if readErr != nil {
-			return TurnResult{}, t.pendingToolCompletionError(readErr)
-		}
-		if !found {
-			return TurnResult{}, err
-		}
-		if !replayed.Replayed {
-			return TurnResult{}, sessiontree.ErrAuthorityCorrupt
-		}
-		return t.turnAdmissionReplayResult(ctx, replayed.Admission, completion.ContinuationTurnID, completion.ContinuationRunID)
-	}
-	defer t.leaveTurn()
-	admitted, err := repo.AdmitPendingToolCompletion(ctx, request)
-	if err != nil {
-		return TurnResult{}, t.pendingToolCompletionError(err)
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	if admitted.Replayed {
-		return t.turnAdmissionReplayResult(ctx, admitted.Admission, completion.ContinuationTurnID, completion.ContinuationRunID)
-	}
-	lease := admitted.Admission.Lease
-	if err := t.bindActiveLease(lease); err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, completion.ContinuationTurnID, completion.ContinuationRunID, "local_owner_bind_error", err)
-	}
-	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-	runCtx, stopRenewal, err := t.startLeaseRenewal(leaseCtx, lease)
-	if err != nil {
-		return t.finalizeTurnStartupFailure(leaseCtx, lease, completion.ContinuationTurnID, completion.ContinuationRunID, "lease_renewal_start_error", err)
-	}
-	defer func() {
-		if current, ok := sessiontree.TurnLeaseFromContext(leaseCtx); ok {
-			t.clearActiveLease(current)
-		}
-	}()
-	if !admitted.SettlementReplayed {
-		t.harness.emitEntryCommitted(admitted.Settlement, completion.Target.RunID)
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: completion.Target.RunID, ThreadID: t.id,
-			TurnID: completion.Target.TurnID, EntryID: admitted.Settlement.ID, ParentID: admitted.Settlement.ParentID, Message: pendingToolSettlementEntryKind})
-	}
-	t.harness.emitEntryCommitted(admitted.Admission.TurnStarted, completion.ContinuationRunID)
-	t.harness.emitEntryCommitted(admitted.Admission.UserMessage, completion.ContinuationRunID)
-	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: completion.ContinuationRunID, ThreadID: t.id, TurnID: completion.ContinuationTurnID})
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: completion.ContinuationRunID, ThreadID: t.id,
-		TurnID: completion.ContinuationTurnID, EntryID: admitted.Admission.UserMessage.ID, ParentID: admitted.Admission.UserMessage.ParentID})
-	result, runErr := t.runLeased(runCtx, completion.Input.Content, RunOptions{
-		RunID: completion.ContinuationRunID, TurnID: completion.ContinuationTurnID, Labels: completion.Labels,
-		Attachments:        session.CloneMessageAttachments(completion.Input.Attachments),
-		References:         append([]session.MessageReference(nil), completion.Input.References...),
-		AdmissionCommitted: true, AdmissionBaseLeafID: admitted.Admission.BaseLeafID,
-	}, nil)
-	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-		return result, renewalErr
-	}
-	return result, runErr
-}
-
-func pendingToolSettlementStatusFromCompletion(status PendingToolCompletionStatus) PendingToolSettlementStatus {
-	switch status {
-	case PendingToolCompleted:
-		return PendingToolSettledCompleted
-	case PendingToolFailed:
-		return PendingToolSettledFailed
-	case PendingToolCanceled:
-		return PendingToolSettledCanceled
-	default:
-		return PendingToolSettlementStatus(status)
-	}
-}
-
-func (t *Thread) pendingToolCompletionError(err error) error {
-	switch {
-	case errors.Is(err, sessiontree.ErrThreadAuthorityBusy), errors.Is(err, sessiontree.ErrActiveTurn):
-		return ErrActiveTurn
-	case errors.Is(err, sessiontree.ErrPendingToolTurnNotFound):
-		return ErrPendingToolSettlementTargetTurnNotFound
-	case errors.Is(err, sessiontree.ErrPendingToolRunNotFound):
-		return ErrPendingToolSettlementTargetRunNotFound
-	case errors.Is(err, sessiontree.ErrPendingToolNotFound):
-		return ErrPendingToolSettlementTargetToolNotFound
-	case errors.Is(err, sessiontree.ErrPendingToolNotPending):
-		return ErrPendingToolSettlementTargetNotActive
-	case errors.Is(err, sessiontree.ErrRequestConflict):
-		return ErrPendingToolSettlementConflict
-	default:
-		return err
-	}
-}
-
-func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessiontree.AdmitTurnResult, turnID, runID string) (TurnResult, error) {
+func (t *Thread) acceptedTurnReplayResult(ctx context.Context, admission sessiontree.AcceptTurnResult, turnID, runID string) (TurnResult, error) {
 	result := TurnResult{ID: turnID, RunID: runID, Replayed: true, AdmissionRunning: admission.Terminal == nil}
 	if admission.Terminal == nil {
 		return result, nil
@@ -1647,10 +642,6 @@ func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessio
 	}
 	if !found {
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
-	}
-	result.CanonicalEvents, err = t.harness.detailEventsForCanonicalEntries(ctx, entries, true)
-	if err != nil {
-		return TurnResult{}, err
 	}
 	var output strings.Builder
 	for _, entry := range entries {
@@ -1681,688 +672,11 @@ func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessio
 	return result, result.Err
 }
 
-func (t *Thread) SettlePendingTool(ctx context.Context, settlement PendingToolSettlement) (SubAgentDetailEvent, error) {
-	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
-		return SubAgentDetailEvent{}, errors.New("thread is not initialized")
-	}
-	normalized, err := normalizePendingToolSettlement(settlement)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	return t.settlePendingToolRecovery(ctx, normalized)
-}
-
-func (t *Thread) settlePendingToolRecovery(ctx context.Context, settlement PendingToolSettlement) (SubAgentDetailEvent, error) {
-	repo, ok := t.harness.options.Repo.(sessiontree.PendingToolRecoveryRepo)
-	if !ok {
-		return SubAgentDetailEvent{}, errors.New("session tree repo does not support atomic pending tool recovery")
-	}
-	entry, fingerprint, err := pendingToolSettlementAuthorityEntry(t.id, settlement)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	result, err := repo.SettlePendingToolRecovery(ctx, sessiontree.SettlePendingToolRecoveryRequest{
-		Target: sessiontree.PendingToolSettlementTarget{
-			ThreadID: t.id, TurnID: settlement.TurnID, RunID: settlement.RunID,
-			ToolCallID: settlement.ToolCallID, ToolName: settlement.ToolName, Handle: settlement.Handle,
-			EffectAttemptID: settlement.EffectAttemptID,
-		},
-		RequestFingerprint: fingerprint, Settlement: entry, Now: t.harness.now(),
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, sessiontree.ErrThreadAuthorityBusy), errors.Is(err, sessiontree.ErrActiveTurn):
-			return SubAgentDetailEvent{}, ErrActiveTurn
-		case errors.Is(err, sessiontree.ErrPendingToolTurnNotFound):
-			return SubAgentDetailEvent{}, ErrPendingToolSettlementTargetTurnNotFound
-		case errors.Is(err, sessiontree.ErrPendingToolRunNotFound):
-			return SubAgentDetailEvent{}, ErrPendingToolSettlementTargetRunNotFound
-		case errors.Is(err, sessiontree.ErrPendingToolNotFound):
-			return SubAgentDetailEvent{}, ErrPendingToolSettlementTargetToolNotFound
-		case errors.Is(err, sessiontree.ErrPendingToolNotPending):
-			return SubAgentDetailEvent{}, ErrPendingToolSettlementTargetNotActive
-		case errors.Is(err, sessiontree.ErrRequestConflict):
-			return SubAgentDetailEvent{}, ErrPendingToolSettlementConflict
-		default:
-			return SubAgentDetailEvent{}, err
-		}
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	if !result.Replayed {
-		t.harness.emitEntryCommitted(result.Entry, settlement.RunID)
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: settlement.RunID, ThreadID: t.id, TurnID: settlement.TurnID, EntryID: result.Entry.ID, ParentID: result.Entry.ParentID, Message: pendingToolSettlementEntryKind})
-	}
-	journal, err := t.Journal(ctx)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(journal.Path)}
-	event, ok := t.harness.subAgentDetailEvent(result.Entry, t.harness.threadEntryOrdinal(result.Entry), true, activityContext)
-	if !ok {
-		return SubAgentDetailEvent{}, errors.New("pending tool settlement did not project")
-	}
-	return event, nil
-}
-
-func (t *Thread) SettlePendingToolActive(ctx context.Context, settlement PendingToolSettlement, lease sessiontree.TurnLease) (SubAgentDetailEvent, error) {
-	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
-		return SubAgentDetailEvent{}, errors.New("thread is not initialized")
-	}
-	normalized, err := normalizePendingToolSettlement(settlement)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	if lease.ThreadID != t.id || lease.TurnID != normalized.TurnID || strings.TrimSpace(lease.OwnerID) == "" {
-		return SubAgentDetailEvent{}, ErrActiveTurn
-	}
-	localLease, ok := t.ownedActiveTurnLease(normalized.TurnID)
-	if !ok || !sameTurnLease(localLease, lease) {
-		return SubAgentDetailEvent{}, ErrActiveTurn
-	}
-	return t.settlePendingTool(sessiontree.ContextWithTurnLease(ctx, lease), normalized)
-}
-
-func (t *Thread) settlePendingTool(ctx context.Context, normalized PendingToolSettlement) (SubAgentDetailEvent, error) {
-	journal, err := t.Journal(ctx)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	if existing, ok, err := pendingToolSettlementTarget(journal.Path, normalized); err != nil {
-		return SubAgentDetailEvent{}, err
-	} else if ok {
-		activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(journal.Path)}
-		event, ok := t.harness.subAgentDetailEvent(existing, t.harness.threadEntryOrdinal(existing), true, activityContext)
-		if !ok {
-			return SubAgentDetailEvent{}, errors.New("pending tool settlement did not project")
-		}
-		return event, nil
-	}
-	entry, err := t.appendPendingToolSettlement(ctx, normalized)
-	if err != nil {
-		return SubAgentDetailEvent{}, err
-	}
-	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(append(journal.Path, entry))}
-	event, ok := t.harness.subAgentDetailEvent(entry, t.harness.threadEntryOrdinal(entry), true, activityContext)
-	if !ok {
-		return SubAgentDetailEvent{}, errors.New("pending tool settlement did not project")
-	}
-	return event, nil
-}
-
-func pendingToolCompletionPublicToken(value string) bool {
-	text := strings.TrimSpace(value)
-	if text == "" || len(text) > 240 {
-		return false
-	}
-	for _, r := range text {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			continue
-		}
-		switch r {
-		case '_', '-', '.', ':', '/', '@':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func normalizePendingToolSettlement(settlement PendingToolSettlement) (PendingToolSettlement, error) {
-	settlement.TurnID = strings.TrimSpace(settlement.TurnID)
-	if settlement.TurnID == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires turn id")
-	}
-	settlement.RunID = strings.TrimSpace(settlement.RunID)
-	if settlement.RunID == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires run id")
-	}
-	settlement.ToolCallID = strings.TrimSpace(settlement.ToolCallID)
-	if settlement.ToolCallID == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires tool call id")
-	}
-	settlement.ToolName = strings.TrimSpace(settlement.ToolName)
-	if settlement.ToolName == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires tool name")
-	}
-	settlement.Handle = strings.TrimSpace(settlement.Handle)
-	if settlement.Handle == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires handle")
-	}
-	if !pendingToolCompletionPublicToken(settlement.Handle) {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires token-safe handle")
-	}
-	settlement.EffectAttemptID = strings.TrimSpace(settlement.EffectAttemptID)
-	switch settlement.Status {
-	case PendingToolSettledCompleted, PendingToolSettledFailed, PendingToolSettledCanceled:
-	default:
-		return PendingToolSettlement{}, fmt.Errorf("pending tool settlement returned invalid status %q", settlement.Status)
-	}
-	settlement.Summary = strings.TrimSpace(settlement.Summary)
-	if settlement.Summary == "" {
-		return PendingToolSettlement{}, errors.New("pending tool settlement requires summary")
-	}
-	return settlement, nil
-}
-
-func pendingToolSettlementTarget(path []sessiontree.Entry, settlement PendingToolSettlement) (sessiontree.Entry, bool, error) {
-	turnFound := false
-	runFound := false
-	callFound := false
-	pendingFound := false
-	activeHandleFound := false
-	ordinaryResultFound := false
-	for index := range path {
-		entry := path[index]
-		if strings.TrimSpace(entry.TurnID) != settlement.TurnID {
-			continue
-		}
-		turnFound = true
-		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
-			runID := strings.TrimSpace(entry.Metadata["run_id"])
-			if runID != "" && runID == settlement.RunID {
-				runFound = true
-			}
-			continue
-		}
-		if entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == pendingToolSettlementEntryKind {
-			if pendingToolSettlementEntryMatches(entry, settlement) {
-				if strings.TrimSpace(entry.Metadata[pendingToolSettlementStateKey]) != string(settlement.Status) {
-					return sessiontree.Entry{}, false, ErrPendingToolSettlementConflict
-				}
-				return entry, true, nil
-			}
-			continue
-		}
-		if !pendingToolSettlementEntryNamesTool(entry, settlement) {
-			continue
-		}
-		callFound = true
-		if entry.Type != sessiontree.EntryToolResult {
-			continue
-		}
-		if entry.Message.ToolResult == nil ||
-			strings.TrimSpace(entry.Message.ToolResult.Status) != string(observation.ActivityStatusRunning) {
-			ordinaryResultFound = true
-			continue
-		}
-		pendingFound = true
-		if pendingHandleFromSessionActivity(entry.Message.Activity) == settlement.Handle &&
-			strings.TrimSpace(entry.Metadata[sessiontree.PendingToolEffectAttemptIDKey]) == settlement.EffectAttemptID {
-			activeHandleFound = true
-		}
-	}
-	if !turnFound {
-		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetTurnNotFound
-	}
-	if !runFound {
-		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetRunNotFound
-	}
-	if !callFound {
-		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetToolNotFound
-	}
-	if pendingFound && !activeHandleFound {
-		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetNotActive
-	}
-	if ordinaryResultFound && !pendingFound {
-		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetNotActive
-	}
-	return sessiontree.Entry{}, false, nil
-}
-
-func pendingToolSettlementEntryNamesTool(entry sessiontree.Entry, settlement PendingToolSettlement) bool {
-	switch entry.Type {
-	case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
-	default:
-		return false
-	}
-	return strings.TrimSpace(entry.Message.ToolCallID) == settlement.ToolCallID &&
-		strings.TrimSpace(entry.Message.ToolName) == settlement.ToolName
-}
-
-func pendingToolSettlementEntryMatches(entry sessiontree.Entry, settlement PendingToolSettlement) bool {
-	return strings.TrimSpace(entry.Metadata[pendingToolSettlementRunIDKey]) == settlement.RunID &&
-		strings.TrimSpace(entry.Metadata[pendingToolSettlementToolIDKey]) == settlement.ToolCallID &&
-		strings.TrimSpace(entry.Metadata[pendingToolSettlementNameKey]) == settlement.ToolName &&
-		strings.TrimSpace(entry.Metadata[pendingToolSettlementHandleKey]) == settlement.Handle &&
-		strings.TrimSpace(entry.Metadata[sessiontree.PendingToolEffectAttemptIDKey]) == settlement.EffectAttemptID
-}
-
-func pendingHandleFromSessionActivity(activity *session.ActivityPresentation) string {
-	return activityview.PendingHandle(activity)
-}
-
-func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResult, error) {
-	requestID := strings.TrimSpace(opts.RequestID)
-	if requestID == "" {
-		return CompactResult{}, errors.New("manual compaction request id is required")
-	}
-	if strings.TrimSpace(opts.Source) == "" {
-		return CompactResult{}, errors.New("manual compaction source is required")
-	}
-	if err := t.enterTurn(); err != nil {
-		return CompactResult{}, err
-	}
-	defer t.leaveTurn()
-	runID := manualCompactionRunID(t.id, requestID)
-	snap, err := t.Journal(ctx)
-	if err != nil {
-		return CompactResult{Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "snapshot_error"}}, err
-	}
-	if strings.TrimSpace(snap.Meta.LeafID) == "" {
-		return CompactResult{}, errors.New("manual compaction requires a non-empty canonical path")
-	}
-	promptIdentity, err := t.harness.compactionPromptIdentity()
-	if err != nil {
-		return CompactResult{}, err
-	}
-	requestPayload, err := json.Marshal(struct {
-		ThreadID               string                      `json:"thread_id"`
-		RequestID              string                      `json:"request_id"`
-		Source                 string                      `json:"source"`
-		RunID                  string                      `json:"run_id"`
-		Labels                 engine.RunLabels            `json:"labels"`
-		Reasoning              provider.ReasoningSelection `json:"reasoning"`
-		MaxInputTokens         int64                       `json:"max_input_tokens"`
-		MaxTotalTokens         int64                       `json:"max_total_tokens"`
-		MaxCostUSD             float64                     `json:"max_cost_usd"`
-		MaxToolCalls           int                         `json:"max_tool_calls"`
-		MaxLengthContinuations int                         `json:"max_length_continuations"`
-	}{
-		ThreadID: t.id, RequestID: requestID, Source: strings.TrimSpace(opts.Source), RunID: runID,
-		Labels: opts.Labels, Reasoning: opts.Reasoning, MaxInputTokens: opts.MaxInputTokens,
-		MaxTotalTokens: opts.MaxTotalTokens, MaxCostUSD: opts.MaxCostUSD, MaxToolCalls: opts.MaxToolCalls,
-		MaxLengthContinuations: opts.MaxLengthContinuations,
-	})
-	if err != nil {
-		return CompactResult{}, err
-	}
-	requestPayloadHash := sessiontree.StableHash(string(requestPayload))
-	authority, ok := t.harness.options.Repo.(sessiontree.CompactionAuthorityRepo)
-	if !ok {
-		return CompactResult{}, errors.New("session tree repo does not support atomic compaction authority")
-	}
-	sourceLeafID := snap.Meta.LeafID
-	activePathHash := sessiontree.ActivePathHash(snap.Path)
-	requestFingerprint := ""
-	if existing, found, err := authority.ReadCompaction(ctx, t.id, requestID); err != nil {
-		return CompactResult{}, err
-	} else if found {
-		if existing.Source != strings.TrimSpace(opts.Source) || existing.SummarySchemaVersion != compaction.SummarySchemaVersion ||
-			existing.PromptIdentity != promptIdentity || existing.RequestPayloadHash != requestPayloadHash {
-			return CompactResult{}, sessiontree.ErrRequestConflict
-		}
-		sourceLeafID = existing.SourceLeafID
-		activePathHash = existing.ActivePathHash
-		requestFingerprint = existing.RequestFingerprint
-	}
-	beginPayload, err := json.Marshal(struct {
-		ThreadID, RequestID, Source, SourceLeafID, ActivePathHash, SummarySchemaVersion, PromptIdentity, RequestPayloadHash string
-	}{
-		ThreadID: t.id, RequestID: requestID, Source: strings.TrimSpace(opts.Source), SourceLeafID: sourceLeafID,
-		ActivePathHash: activePathHash, SummarySchemaVersion: compaction.SummarySchemaVersion,
-		PromptIdentity: promptIdentity, RequestPayloadHash: requestPayloadHash,
-	})
-	if err != nil {
-		return CompactResult{}, err
-	}
-	computedRequestFingerprint := sessiontree.StableHash(string(beginPayload))
-	if requestFingerprint == "" {
-		requestFingerprint = computedRequestFingerprint
-	} else if requestFingerprint != computedRequestFingerprint {
-		return CompactResult{}, sessiontree.ErrAuthorityCorrupt
-	}
-	begin, err := authority.BeginCompaction(ctx, sessiontree.BeginCompactionRequest{
-		ThreadID: t.id, RequestID: requestID, RequestFingerprint: requestFingerprint,
-		Source: strings.TrimSpace(opts.Source), SourceLeafID: sourceLeafID, ActivePathHash: activePathHash,
-		SummarySchemaVersion: compaction.SummarySchemaVersion, PromptIdentity: promptIdentity, RequestPayloadHash: requestPayloadHash,
-		OwnerID: t.harness.nextID("compaction-owner"), Now: t.harness.now(),
-	})
-	if err != nil {
-		if errors.Is(err, sessiontree.ErrThreadAuthorityBusy) || errors.Is(err, sessiontree.ErrActiveTurn) {
-			return CompactResult{}, ErrActiveTurn
-		}
-		return CompactResult{}, err
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	if begin.Operation.State != sessiontree.CompactionOperationPrepared {
-		return t.replayCompactionResult(ctx, runID, begin.Operation)
-	}
-	if !begin.Owner {
-		if !begin.TakeoverEligible {
-			return CompactResult{}, ErrActiveTurn
-		}
-		begin, err = authority.TakeOverCompaction(ctx, sessiontree.TakeOverCompactionRequest{
-			ThreadID: t.id, RequestID: requestID, RequestFingerprint: requestFingerprint,
-			ExpectedLease: begin.Operation.Lease, OwnerID: t.harness.nextID("compaction-owner"), Now: t.harness.now(),
-		})
-		if err != nil {
-			if errors.Is(err, sessiontree.ErrThreadAuthorityBusy) {
-				return CompactResult{}, ErrActiveTurn
-			}
-			return CompactResult{}, err
-		}
-		if begin.Operation.State != sessiontree.CompactionOperationPrepared {
-			return t.replayCompactionResult(ctx, runID, begin.Operation)
-		}
-	}
-	lease := begin.Operation.Lease
-	if err := t.bindActiveLease(lease); err != nil {
-		return CompactResult{}, err
-	}
-	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-	renewedCtx, stopRenewal, err := t.startLeaseRenewal(leaseCtx, lease)
-	if err != nil {
-		return CompactResult{}, err
-	}
-	ctx = renewedCtx
-	previousProviderState, err := t.harness.providerState(ctx, t.id, snap.Meta.LeafID)
-	if err != nil {
-		_ = stopRenewal()
-		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "provider_state_load_error", err, engine.Failed, engine.RunMetrics{})
-	}
-	history, err := sessiontree.BuildContextChecked(snap.Path, sessiontree.ContextOptions{})
-	if err != nil {
-		_ = stopRenewal()
-		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "context_projection_error", err, engine.Failed, engine.RunMetrics{})
-	}
-	engineOptions := t.harness.engineOptions()
-	engineOptions.RunID = runID
-	engineOptions.ThreadID = t.id
-	engineOptions.TurnID = ""
-	engineOptions.TraceID = runID
-	engineOptions.PromptScopeID = t.id
-	engineOptions.ProviderName = t.harness.options.ProviderName
-	engineOptions.Model = t.harness.options.Model
-	engineOptions.Labels = opts.Labels
-	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
-	applyCompactOptions(&engineOptions, opts)
-	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
-	manager := &durableCompactionManager{thread: t, manual: true}
-	eng, err := engine.New(engine.Config{
-		Provider:     t.harness.options.Provider,
-		Tools:        t.harness.options.Tools,
-		Prompt:       t.harness.options.PromptStore,
-		SystemPrompt: t.harness.options.SystemPrompt,
-		StopHook:     t.harness.options.StopHook,
-		Compactor:    manager,
-		Options:      engineOptions,
-	})
-	if err != nil {
-		_ = stopRenewal()
-		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "engine_config_error", err, engine.Failed, engine.RunMetrics{})
-	}
-	downstream := t.harness.options.Sink
-	if opts.Sink != nil {
-		downstream = opts.Sink
-	}
-	eng.SetSink(downstream)
-	result := eng.CompactContext(ctx, engine.RunInput{
-		RunID:                 runID,
-		ThreadID:              t.id,
-		TraceID:               runID,
-		PromptScopeID:         t.id,
-		Labels:                opts.Labels,
-		PreviousProviderState: provider.CloneState(previousProviderState),
-		History:               history,
-	}, engine.ManualCompactionRequest{RequestID: requestID, Source: strings.TrimSpace(opts.Source)})
-	if renewalErr := stopRenewal(); renewalErr != nil && result.Err == nil {
-		result.Status, result.Err = engine.Failed, renewalErr
-	}
-	if result.Err != nil || result.Status != engine.Completed || manager.result == nil {
-		cause := result.Err
-		code := "provider_failed"
-		if cause == nil {
-			cause = engine.ErrCompactionNoop
-			code = "no_canonical_result"
-		}
-		if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
-			code = "cancelled"
-		}
-		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, code, cause, result.Status, result.Metrics)
-	}
-	entry, err := sessiontree.CompactionEntry(t.id, "", *manager.result)
-	if err != nil {
-		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "invalid_result", err, engine.Failed, result.Metrics)
-	}
-	outcomePayload, err := json.Marshal(struct {
-		Status engine.Status     `json:"status"`
-		Entry  sessiontree.Entry `json:"entry"`
-	}{Status: result.Status, Entry: entry})
-	if err != nil {
-		return CompactResult{}, err
-	}
-	current, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok {
-		return CompactResult{}, sessiontree.ErrStaleAuthority
-	}
-	persistCtx, cancelPersist := turnFinalizationContext(ctx)
-	defer cancelPersist()
-	finished, err := authority.FinishCompaction(persistCtx, sessiontree.FinishCompactionRequest{
-		Lease: current, RequestID: requestID, RequestFingerprint: requestFingerprint,
-		OutcomeFingerprint: sessiontree.StableHash(string(outcomePayload)), Result: &entry, Now: t.harness.now(),
-	})
-	if err != nil {
-		return CompactResult{}, err
-	}
-	t.clearActiveLease(current)
-	if finished.Entry == nil {
-		return CompactResult{}, sessiontree.ErrAuthorityCorrupt
-	}
-	if !finished.Replayed {
-		t.harness.emitEntryCommitted(*finished.Entry, runID)
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, EntryID: finished.Entry.ID, ParentID: finished.Entry.ParentID, Message: "compaction"})
-	}
-	return CompactResult{RunID: runID, OperationID: finished.Entry.CompactionOperationID, RequestID: requestID,
-		Source: strings.TrimSpace(opts.Source), Status: result.Status, Metrics: result.Metrics, Entry: finished.Entry, Replayed: finished.Replayed}, nil
-}
-
-func manualCompactionRunID(threadID, requestID string) string {
-	hash := sessiontree.StableHash(strings.TrimSpace(threadID) + "\x00" + strings.TrimSpace(requestID))
-	return "compact-" + hash[:24]
-}
-
-func (h *AgentHarness) compactionPromptIdentity() (string, error) {
-	if h.options.CompactionGenerator != nil {
-		identity := strings.TrimSpace(h.options.CompactionPromptIdentity)
-		if identity != "" {
-			return identity, nil
-		}
-		if generator, ok := h.options.CompactionGenerator.(compaction.ExtractiveSummaryGenerator); ok {
-			payload, err := json.Marshal(struct {
-				Kind   string
-				Prompt compaction.PromptOptions
-			}{Kind: "extractive_v1", Prompt: generator.PromptOptions})
-			if err != nil {
-				return "", err
-			}
-			return sessiontree.StableHash(string(payload)), nil
-		}
-		return "", errors.New("custom compaction generator requires prompt identity")
-	}
-	payload, err := json.Marshal(struct {
-		Provider, Model, StateCompatibilityKey, SystemPrompt string
-		Prompt                                               compaction.PromptOptions
-	}{
-		Provider: h.options.ProviderName, Model: h.options.Model, StateCompatibilityKey: h.options.StateCompatibilityKey,
-		SystemPrompt: h.options.SystemPrompt, Prompt: h.options.CompactionPrompt,
-	})
-	if err != nil {
-		return "", err
-	}
-	return sessiontree.StableHash(string(payload)), nil
-}
-
-func (t *Thread) replayCompactionResult(ctx context.Context, runID string, operation sessiontree.CompactionOperation) (CompactResult, error) {
-	result := CompactResult{RunID: runID, OperationID: engine.CompactionOperationID(runID, 1, compaction.TriggerManual, compaction.ReasonManual, operation.RequestID),
-		RequestID: operation.RequestID, Source: operation.Source, Replayed: true}
-	switch operation.State {
-	case sessiontree.CompactionOperationCompleted:
-		entry, err := t.harness.options.Repo.Entry(ctx, t.id, operation.ResultEntryID)
-		if err != nil {
-			return CompactResult{}, err
-		}
-		result.Status = engine.Completed
-		result.Entry = &entry
-		return result, nil
-	case sessiontree.CompactionOperationFailed:
-		result.Status = engine.Failed
-		result.Err = errors.New(operation.ErrorMessage)
-		result.Diagnostics = map[string]string{"diagnostic": operation.ErrorCode}
-		return result, result.Err
-	default:
-		return CompactResult{}, sessiontree.ErrAuthorityCorrupt
-	}
-}
-
-func (t *Thread) finishFailedCompaction(ctx context.Context, authority sessiontree.CompactionAuthorityRepo,
-	operation sessiontree.CompactionOperation, requestFingerprint, runID, code string, cause error, status engine.Status, metrics engine.RunMetrics,
-) (CompactResult, error) {
-	if cause == nil {
-		cause = errors.New("compaction failed without a cause")
-	}
-	current, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok {
-		current = operation.Lease
-	}
-	outcome := sessiontree.StableHash(strings.Join([]string{operation.RequestID, code, cause.Error(), string(status)}, "\x00"))
-	persistCtx, cancel := turnFinalizationContext(ctx)
-	defer cancel()
-	_, finishErr := authority.FinishCompaction(persistCtx, sessiontree.FinishCompactionRequest{
-		Lease: current, RequestID: operation.RequestID, RequestFingerprint: requestFingerprint,
-		OutcomeFingerprint: outcome, ErrorCode: code, ErrorMessage: cause.Error(), Now: t.harness.now(),
-	})
-	if finishErr != nil {
-		return CompactResult{}, finishErr
-	}
-	t.clearActiveLease(current)
-	if status == "" || status == engine.Completed {
-		status = engine.Failed
-	}
-	return CompactResult{RunID: runID,
-		OperationID: engine.CompactionOperationID(runID, 1, compaction.TriggerManual, compaction.ReasonManual, operation.RequestID),
-		RequestID:   operation.RequestID, Source: operation.Source,
-		Status: status, Err: cause, Metrics: metrics, Diagnostics: map[string]string{"diagnostic": code}}, cause
-}
-
-func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
-	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 && retrySource == nil {
-		return TurnResult{}, errors.New("input is required")
-	}
-	if err := t.enterTurn(); err != nil {
-		return TurnResult{}, err
-	}
-	defer t.leaveTurn()
-	return t.runEntered(ctx, input, opts, retrySource)
-}
-
-func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (result TurnResult, runErr error) {
-	turnID := opts.TurnID
-	if turnID == "" {
-		turnID = t.harness.nextID("turn")
-	}
-	runID := strings.TrimSpace(opts.RunID)
-	if runID == "" {
-		runID = t.harness.nextID("run")
-	}
-	requestID := strings.TrimSpace(opts.LogicalRequestID)
-	if requestID == "" {
-		requestID = "run:" + turnID
-	}
-	actor := t.harness.unifiedActor(t.id)
-	if _, err := actor.apply(unifiedCommand{RequestID: identity.LogicalRequestID(requestID), Kind: unifiedCommandSend, TurnID: identity.TurnID(turnID), RunID: identity.RunID(runID)}); err != nil {
-		return TurnResult{}, err
-	}
-	defer func() {
-		// The actor owns the in-memory lifecycle projection; durable journal
-		// writes remain the storage boundary until the runtime migration lands.
-		status := string(result.Status)
-		if runErr != nil && status == "" {
-			status = "failed"
-		}
-		if status == "" {
-			status = "completed"
-		}
-		actor.recordTerminal(status)
-	}()
-	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
-	if !ok {
-		return TurnResult{}, errors.New("session tree repo does not support atomic turn admission")
-	}
-	_, existingAdmission, err := authority.ReadTurnAdmission(ctx, t.id, turnID, runID)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	if !existingAdmission {
-		normalized, err := engine.NormalizeAndValidateTurnSupplementalContext(opts.SupplementalContext)
-		if err != nil {
-			return TurnResult{}, err
-		}
-		opts.SupplementalContext = normalized
-		if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) > 0 && len(normalized) == 0 {
-			return TurnResult{}, errors.New("reference-only turn input requires renderable supplemental context")
-		}
-	}
-	message := session.Message{
-		Role: session.User, Content: input,
-		Attachments: session.CloneMessageAttachments(opts.Attachments),
-		References:  append([]session.MessageReference(nil), opts.References...),
-	}
-	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
-		ThreadID: t.id, TurnID: turnID, RunID: runID, LogicalRequestID: requestID, OwnerID: t.harness.nextID("lease"), Input: message,
-	})
-	if err != nil {
-		return TurnResult{}, err
-	}
-	if admission.Replayed {
-		return t.turnAdmissionReplayResult(ctx, admission, turnID, runID)
-	}
-	t.harness.cacheThreadAfterCommit(t)
-	lease := admission.Lease
-	if err := t.bindActiveLease(lease); err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "local_owner_bind_error", err)
-	}
-	ctx = sessiontree.ContextWithTurnLease(ctx, lease)
-	runCtx, stopRenewal, err := t.startLeaseRenewal(ctx, lease)
-	if err != nil {
-		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "lease_renewal_start_error", err)
-	}
-	defer func() {
-		if current, ok := sessiontree.TurnLeaseFromContext(ctx); ok {
-			t.clearActiveLease(current)
-		}
-	}()
-	t.harness.emitEntryCommitted(admission.TurnStarted, runID)
-	t.harness.emitEntryCommitted(admission.UserMessage, runID)
-	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: admission.UserMessage.ID, ParentID: admission.UserMessage.ParentID})
-	automaticTitleExecution, titleErr := t.startAutomaticTitle(runCtx, turnID, runID, admission.UserMessage.ID, message)
-	if titleErr != nil {
-		persistCtx, cancelPersist := turnFinalizationContext(runCtx)
-		result, runErr := t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
-		cancelPersist()
-		if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-			return result, renewalErr
-		}
-		return result, runErr
-	}
-	opts.TurnID = turnID
-	opts.RunID = runID
-	opts.AdmissionCommitted = true
-	opts.AdmissionBaseLeafID = admission.BaseLeafID
-	result, runErr = t.runLeased(runCtx, input, opts, retrySource)
-	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-		runErr = renewalErr
-	}
-	automaticTitleExecution.FinishMain(automaticTitleWorkerMustJoin(result, runErr))
-	return result, runErr
-}
-
 func automaticTitleWorkerMustJoin(result TurnResult, runErr error) bool {
 	return runErr != nil || result.Status == engine.Cancelled || result.Status == engine.Failed
 }
 
-func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
+func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
 	runID := strings.TrimSpace(opts.RunID)
 	if runID == "" {
@@ -2370,10 +684,6 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	if !opts.AdmissionCommitted {
 		return TurnResult{}, errors.New("provider execution requires committed turn admission")
-	}
-	lease, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok || lease.ThreadID != t.id || lease.TurnID != turnID || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		return TurnResult{}, sessiontree.ErrStaleAuthority
 	}
 	_, err := t.harness.options.Repo.Thread(ctx, t.id)
 	if err != nil {
@@ -2421,15 +731,19 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
-	engineOptions.EffectBatchPreflight = t.preflightEffectBatch
+	// ThreadRuntime owns approval interactions in v4. Effect dispatch retains
+	// only the narrow prepared/dispatching/result safety boundary.
+	engineOptions.EffectBatchPreflight = nil
 	engineOptions.EffectDispatcher = t.effectDispatcher()
 	engineOptions.EffectResultFinalizer = t.finalizeEffectResult
-	engineOptions.ProviderRequestGate = t.enterProviderRequest
+	engineOptions.ProviderRequestGate = nil
 	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
-	if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
-		persistCtx, cancelPersist := turnFinalizationContext(ctx)
-		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error", engine.FailureOriginStorage)
+	if !opts.SkipContextPolicyEvent {
+		if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
+			persistCtx, cancelPersist := turnFinalizationContext(ctx)
+			defer cancelPersist()
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error", engine.FailureOriginStorage)
+		}
 	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
@@ -2461,12 +775,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		History:             history,
 		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
 	})
-	if result.Status == engine.Cancelled {
-		if cancellation := contextCancellationError(ctx); cancellation != nil {
-			result.Err = cancellation
-			result.FailureOrigin = engine.FailureOriginCancelled
-		}
-	}
+	result = normalizeCancelledEngineResult(ctx, result)
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
 	resultFailureCode := ""
@@ -2521,7 +830,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if result.Err != nil {
 		failureMessage = result.Err.Error()
 	}
-	if _, err := t.finishTurn(persistCtx, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave); err != nil {
+	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error", engine.FailureOriginStorage)
 	}
 	eventType := EventTurnCompleted
@@ -2537,29 +846,31 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	return turn, result.Err
 }
 
-func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State) (sessiontree.FinishTurnResult, error) {
-	t.authorityMu.RLock()
-	defer t.authorityMu.RUnlock()
-	lease, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok || lease.ThreadID != t.id || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		return sessiontree.FinishTurnResult{}, sessiontree.ErrStaleAuthority
+func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) engine.Result {
+	if cancellation := contextCancellationError(ctx); cancellation != nil {
+		result.Status = engine.Cancelled
+		result.Err = cancellation
+		result.FailureOrigin = engine.FailureOriginCancelled
 	}
-	repo, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+	return result
+}
+
+func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State) (sessiontree.FinishTurnResult, error) {
+	repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
-		return sessiontree.FinishTurnResult{}, errors.New("session tree repo does not support atomic turn finish")
+		return sessiontree.FinishTurnResult{}, errors.New("session tree repo does not support canonical turn finish")
 	}
 	payload, err := json.Marshal(struct {
 		ThreadID        string                       `json:"thread_id"`
 		TurnID          string                       `json:"turn_id"`
 		RunID           string                       `json:"run_id"`
-		Generation      int64                        `json:"generation"`
 		TerminalEntryID string                       `json:"terminal_entry_id"`
 		Status          sessiontree.TurnMarkerStatus `json:"status"`
 		Metadata        map[string]string            `json:"metadata,omitempty"`
 		FailureMessage  string                       `json:"failure_message,omitempty"`
 		ProviderState   *provider.State              `json:"provider_state,omitempty"`
 	}{
-		ThreadID: lease.ThreadID, TurnID: lease.TurnID, RunID: strings.TrimSpace(runID), Generation: lease.Generation,
+		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID),
 		TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status, Metadata: cloneStringMap(metadata),
 		FailureMessage: strings.TrimSpace(failureMessage),
 		ProviderState:  provider.CloneState(providerState),
@@ -2568,7 +879,7 @@ func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, 
 		return sessiontree.FinishTurnResult{}, err
 	}
 	request := sessiontree.FinishTurnRequest{
-		Lease: lease, RunID: strings.TrimSpace(runID), TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status,
+		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID), TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status,
 		Metadata: cloneStringMap(metadata), FailureMessage: strings.TrimSpace(failureMessage),
 		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: t.harness.now(),
 		ClearProviderState: providerState == nil && strings.TrimSpace(t.harness.options.StateCompatibilityKey) != "",
@@ -2579,15 +890,10 @@ func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, 
 		}
 		request.ProviderState = &sessiontree.ProviderStateRecord{
 			ThreadID: t.id, LeafEntryID: strings.TrimSpace(terminalEntryID), CompatibilityKey: strings.TrimSpace(t.harness.options.StateCompatibilityKey),
-			State: *provider.CloneState(providerState), CreatedByRunID: strings.TrimSpace(runID), CreatedByTurnID: lease.TurnID, UpdatedAt: t.harness.now(),
+			State: *provider.CloneState(providerState), CreatedByRunID: strings.TrimSpace(runID), CreatedByTurnID: strings.TrimSpace(turnID), UpdatedAt: t.harness.now(),
 		}
 	}
-	t.leaseSettlementMu.Lock()
 	result, err := repo.FinishTurn(ctx, request)
-	if err == nil {
-		t.clearActiveLeaseLineage(lease)
-	}
-	t.leaseSettlementMu.Unlock()
 	if err != nil {
 		return sessiontree.FinishTurnResult{}, err
 	}
@@ -2650,7 +956,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if err != nil {
 		failureMessage = err.Error()
 	}
-	if _, finishErr := t.finishTurn(ctx, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, nil); finishErr != nil {
+	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, nil); finishErr != nil {
 		return TurnResult{}, finishErr
 	}
 	eventType := EventTurnFailed
@@ -2661,20 +967,6 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	turn := t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic})
 	turn.FailureCode = strings.TrimSpace(metadata[sessiontree.TurnFailureCodeMetadataKey])
 	return turn, err
-}
-
-func (t *Thread) finalizeTurnStartupFailure(ctx context.Context, lease sessiontree.TurnLease, turnID, runID, diagnostic string, cause error) (TurnResult, error) {
-	if cause == nil {
-		cause = errors.New("turn execution startup failed")
-	}
-	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-	persistCtx, cancelPersist := turnFinalizationContext(leaseCtx)
-	defer cancelPersist()
-	result, err := t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, cause, diagnostic, engine.FailureOriginContract)
-	if err != nil && result.Status == "" {
-		return result, errors.Join(cause, err)
-	}
-	return result, err
 }
 
 func statusForError(err error) engine.Status {
@@ -2785,30 +1077,6 @@ func applyRunOptions(dst *engine.Options, opts RunOptions) {
 	}
 }
 
-func applyCompactOptions(dst *engine.Options, opts CompactOptions) {
-	if dst == nil {
-		return
-	}
-	if !opts.Reasoning.IsZero() {
-		dst.Reasoning = opts.Reasoning
-	}
-	if opts.MaxInputTokens > 0 {
-		dst.MaxInputTokens = opts.MaxInputTokens
-	}
-	if opts.MaxTotalTokens > 0 {
-		dst.MaxTotalTokens = opts.MaxTotalTokens
-	}
-	if opts.MaxCostUSD > 0 {
-		dst.MaxCostUSD = opts.MaxCostUSD
-	}
-	if opts.MaxToolCalls > 0 {
-		dst.MaxToolCalls = opts.MaxToolCalls
-	}
-	if opts.MaxLengthContinuations > 0 {
-		dst.MaxLengthContinuations = opts.MaxLengthContinuations
-	}
-}
-
 func turnResultFromEngine(turnID string, runID string, result engine.Result, diagnostics map[string]string) TurnResult {
 	return TurnResult{
 		ID:                 turnID,
@@ -2888,266 +1156,6 @@ func (h *AgentHarness) effectFinalizationContext(ctx context.Context) (context.C
 		timeout = h.effectFinalizationTimeout
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
-}
-
-func (t *Thread) enterTurn() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.active {
-		return ErrActiveTurn
-	}
-	t.active = true
-	t.phase = threadPhaseTurn
-	return nil
-}
-
-func (t *Thread) checkIdle(ctx context.Context) error {
-	t.mu.Lock()
-	active := t.active
-	t.mu.Unlock()
-	if active {
-		return ErrActiveTurn
-	}
-	if lease, ok, err := t.harness.activeTurnLease(ctx, t.id); err != nil {
-		return err
-	} else if ok && lease.TurnID != "" {
-		return ErrActiveTurn
-	}
-	return nil
-}
-
-func (t *Thread) leaveTurn() {
-	t.mu.Lock()
-	lease := t.activeLease
-	t.active = false
-	t.activeLease = sessiontree.TurnLease{}
-	t.phase = threadPhaseIdle
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn && strings.TrimSpace(lease.OwnerID) != "" {
-		registry.Unregister(lease)
-	}
-}
-
-func (t *Thread) bindActiveLease(lease sessiontree.TurnLease) error {
-	if strings.TrimSpace(lease.OwnerID) == "" {
-		return nil
-	}
-	purpose, err := lease.Purpose.Normalize()
-	if err != nil {
-		return err
-	}
-	lease.Purpose = purpose
-	if lease.ThreadID != t.id {
-		return ErrActiveTurn
-	}
-	switch purpose {
-	case sessiontree.TurnLeasePurposeTurn:
-		if strings.TrimSpace(lease.TurnID) == "" {
-			return ErrActiveTurn
-		}
-	case sessiontree.TurnLeasePurposeMutation:
-		if strings.TrimSpace(lease.MutationID) == "" || strings.TrimSpace(lease.MutationKind) == "" {
-			return ErrActiveTurn
-		}
-	default:
-		return ErrActiveTurn
-	}
-	t.mu.Lock()
-	if !t.active || strings.TrimSpace(t.activeLease.OwnerID) != "" {
-		t.mu.Unlock()
-		return ErrActiveTurn
-	}
-	t.activeLease = lease
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn {
-		if err := registry.Register(lease); err != nil {
-			t.mu.Lock()
-			if sameTurnLease(t.activeLease, lease) {
-				t.activeLease = sessiontree.TurnLease{}
-			}
-			t.mu.Unlock()
-			return err
-		}
-	}
-	return nil
-}
-
-func (t *Thread) beginActiveTurnLease(lease sessiontree.TurnLease) error {
-	if strings.TrimSpace(lease.OwnerID) == "" {
-		return nil
-	}
-	purpose, err := lease.Purpose.Normalize()
-	if err != nil {
-		return err
-	}
-	lease.Purpose = purpose
-	if lease.ThreadID != t.id || purpose != sessiontree.TurnLeasePurposeTurn || strings.TrimSpace(lease.TurnID) == "" {
-		return ErrActiveTurn
-	}
-	t.mu.Lock()
-	if t.active {
-		if sameTurnLease(t.activeLease, lease) {
-			t.mu.Unlock()
-			return nil
-		}
-		t.mu.Unlock()
-		return ErrActiveTurn
-	}
-	t.active = true
-	t.phase = threadPhaseTurn
-	t.activeLease = lease
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() {
-		if err := registry.Register(lease); err != nil {
-			t.mu.Lock()
-			if sameTurnLease(t.activeLease, lease) {
-				t.active = false
-				t.activeLease = sessiontree.TurnLease{}
-				t.phase = threadPhaseIdle
-			}
-			t.mu.Unlock()
-			return err
-		}
-	}
-	return nil
-}
-
-func (t *Thread) clearActiveLease(lease sessiontree.TurnLease) {
-	if strings.TrimSpace(lease.OwnerID) == "" {
-		return
-	}
-	t.mu.Lock()
-	matched := sameTurnLease(t.activeLease, lease)
-	if sameTurnLease(t.activeLease, lease) {
-		t.activeLease = sessiontree.TurnLease{}
-	}
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; matched && registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn {
-		registry.Unregister(lease)
-	}
-}
-
-func (t *Thread) clearActiveLeaseLineage(lease sessiontree.TurnLease) {
-	if strings.TrimSpace(lease.OwnerID) == "" {
-		return
-	}
-	t.mu.Lock()
-	active := t.activeLease
-	matched := t.active && (sessiontree.ValidateTurnLeaseSuccessor(lease, active) == nil ||
-		sessiontree.ValidateTurnLeaseSuccessor(active, lease) == nil)
-	if matched {
-		t.activeLease = sessiontree.TurnLease{}
-	}
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; matched && registry != nil && registry.validate() && active.Purpose == sessiontree.TurnLeasePurposeTurn {
-		registry.Unregister(active)
-	}
-}
-
-func (t *Thread) replaceActiveLease(previous, renewed sessiontree.TurnLease) error {
-	t.mu.Lock()
-	if !t.active || !sameTurnLease(t.activeLease, previous) {
-		t.mu.Unlock()
-		return sessiontree.ErrStaleAuthority
-	}
-	if previous.ThreadID != renewed.ThreadID || previous.Purpose != renewed.Purpose ||
-		previous.OwnerID != renewed.OwnerID || previous.Generation != renewed.Generation ||
-		renewed.Heartbeat <= previous.Heartbeat {
-		t.mu.Unlock()
-		return sessiontree.ErrStaleAuthority
-	}
-	t.activeLease = renewed
-	t.mu.Unlock()
-	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && previous.Purpose == sessiontree.TurnLeasePurposeTurn {
-		if err := registry.Renew(previous, renewed); err != nil {
-			t.mu.Lock()
-			if sameTurnLease(t.activeLease, renewed) {
-				t.activeLease = previous
-			}
-			t.mu.Unlock()
-			return err
-		}
-	}
-	return nil
-}
-
-func (t *Thread) hasActiveLease(proof sessiontree.TurnLease) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.active && sameTurnLease(t.activeLease, proof)
-}
-
-func (t *Thread) activeLeaseSnapshot() sessiontree.TurnLease {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.activeLease
-}
-
-func (t *Thread) ownedActiveTurnLease(turnID string) (sessiontree.TurnLease, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	lease := t.activeLease
-	purpose, err := lease.Purpose.Normalize()
-	if err != nil {
-		return sessiontree.TurnLease{}, false
-	}
-	lease.Purpose = purpose
-	if !t.active || purpose != sessiontree.TurnLeasePurposeTurn || lease.ThreadID != t.id || lease.TurnID != turnID || strings.TrimSpace(lease.OwnerID) == "" {
-		return sessiontree.TurnLease{}, false
-	}
-	return lease, true
-}
-
-func (t *Thread) enterProviderRequest(ctx context.Context) (func(), error) {
-	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
-		return nil, errors.New("provider request requires an authority-bound thread")
-	}
-	t.authorityMu.RLock()
-	release := func() { t.authorityMu.RUnlock() }
-	lease, ok := sessiontree.TurnLeaseFromContext(ctx)
-	if !ok || lease.ThreadID != t.id || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		release()
-		return nil, sessiontree.ErrStaleAuthority
-	}
-	local, ok := t.ownedActiveTurnLease(lease.TurnID)
-	if !ok {
-		release()
-		return nil, sessiontree.ErrStaleAuthority
-	}
-	inspector, ok := t.harness.options.Repo.(sessiontree.ThreadAuthorityInspectionRepo)
-	if !ok {
-		release()
-		return nil, errors.New("session tree repo does not support provider authority inspection")
-	}
-	snapshot, err := inspector.InspectThreadAuthority(ctx, t.id)
-	if err != nil {
-		release()
-		return nil, err
-	}
-	lifecycle, err := snapshot.Thread.CanonicalLifecycle()
-	if err != nil {
-		release()
-		return nil, err
-	}
-	if lifecycle != sessiontree.ThreadLifecycleOpen {
-		release()
-		if lifecycle == sessiontree.ThreadLifecycleClosing {
-			return nil, sessiontree.ErrSubAgentClosing
-		}
-		return nil, sessiontree.ErrThreadClosed
-	}
-	if snapshot.Lease == nil ||
-		sessiontree.ValidateTurnLeaseSuccessor(lease, *snapshot.Lease) != nil ||
-		sessiontree.ValidateTurnLeaseSuccessor(local, *snapshot.Lease) != nil ||
-		!snapshot.Lease.Fresh(t.harness.now().UTC()) || snapshot.ClaimOperationID != "" {
-		release()
-		return nil, sessiontree.ErrStaleAuthority
-	}
-	return release, nil
-}
-
-func sameTurnLease(first, second sessiontree.TurnLease) bool {
-	return sessiontree.SameTurnLease(first, second)
 }
 
 func (t *Thread) appendDelta(ctx context.Context, turnID string, runID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
@@ -3310,8 +1318,8 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 
 func approvalEventEntry(threadID, turnID string, ev event.Event) sessiontree.Entry {
 	metadata := map[string]string{
-		subAgentDetailKindKey:     subAgentApprovalEntryKind,
-		subAgentDetailTypeKey:     string(ev.Type),
+		threadDetailKindKey:       subAgentApprovalEntryKind,
+		threadDetailTypeKey:       string(ev.Type),
 		subAgentApprovalStateKey:  approvalStateForEvent(ev.Type),
 		subAgentApprovalToolIDKey: strings.TrimSpace(ev.ToolID),
 		subAgentApprovalNameKey:   strings.TrimSpace(ev.ToolName),
@@ -3347,8 +1355,8 @@ func (t *Thread) emitCommittedApprovalEvent(entry sessiontree.Entry, runID strin
 
 func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
 	metadata := map[string]string{
-		subAgentDetailKindKey: toolDispatchEntryKind,
-		subAgentDetailTypeKey: string(event.ToolDispatchStarted),
+		threadDetailKindKey:   toolDispatchEntryKind,
+		threadDetailTypeKey:   string(event.ToolDispatchStarted),
 		toolDispatchToolIDKey: strings.TrimSpace(ev.ToolID),
 		toolDispatchNameKey:   strings.TrimSpace(ev.ToolName),
 		toolDispatchKindKey:   strings.TrimSpace(ev.ToolKind),
@@ -3385,8 +1393,8 @@ func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, run
 
 func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
 	metadata := map[string]string{
-		subAgentDetailKindKey: toolActivityEntryKind,
-		subAgentDetailTypeKey: string(event.ToolActivityUpdated),
+		threadDetailKindKey:   toolActivityEntryKind,
+		threadDetailTypeKey:   string(event.ToolActivityUpdated),
 		toolActivityToolIDKey: strings.TrimSpace(ev.ToolID),
 		toolActivityNameKey:   strings.TrimSpace(ev.ToolName),
 		toolActivityKindKey:   strings.TrimSpace(ev.ToolKind),
@@ -3418,81 +1426,6 @@ func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, run
 	return nil
 }
 
-func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement PendingToolSettlement) (sessiontree.Entry, error) {
-	entry, _, err := pendingToolSettlementAuthorityEntry(t.id, settlement)
-	if err != nil {
-		return sessiontree.Entry{}, err
-	}
-	entry, err = t.harness.options.Repo.Append(ctx, entry, sessiontree.AppendOptions{})
-	if err != nil {
-		return sessiontree.Entry{}, err
-	}
-	t.harness.emitEntryCommitted(entry, settlement.RunID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: settlement.RunID, ThreadID: t.id, TurnID: settlement.TurnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: pendingToolSettlementEntryKind})
-	return entry, nil
-}
-
-func pendingToolSettlementAuthorityEntry(threadID string, settlement PendingToolSettlement) (sessiontree.Entry, string, error) {
-	status := pendingToolSettlementActivityStatus(settlement.Status)
-	metadata := map[string]string{
-		subAgentDetailKindKey:                     pendingToolSettlementEntryKind,
-		subAgentDetailTypeKey:                     pendingToolSettlementEntryKind,
-		pendingToolSettlementStateKey:             string(settlement.Status),
-		pendingToolSettlementToolIDKey:            settlement.ToolCallID,
-		pendingToolSettlementNameKey:              settlement.ToolName,
-		pendingToolSettlementHandleKey:            settlement.Handle,
-		pendingToolSettlementRunIDKey:             settlement.RunID,
-		pendingToolSettlementSummaryKey:           settlement.Summary,
-		sessiontree.PendingToolEffectAttemptIDKey: settlement.EffectAttemptID,
-	}
-	if status == string(observation.ActivityStatusCanceled) {
-		metadata["tool_result_status"] = string(observation.ActivityStatusCanceled)
-	}
-	activity := settlement.Activity
-	if activity == nil {
-		activity = &tools.ActivityPresentation{Label: settlement.Summary}
-	}
-	sanitizedActivity := sanitizeActivityPresentation(activity)
-	payload, err := json.Marshal(struct {
-		ThreadID        string                      `json:"thread_id"`
-		TurnID          string                      `json:"turn_id"`
-		RunID           string                      `json:"run_id"`
-		ToolCallID      string                      `json:"tool_call_id"`
-		ToolName        string                      `json:"tool_name"`
-		Handle          string                      `json:"handle"`
-		EffectAttemptID string                      `json:"effect_attempt_id,omitempty"`
-		Status          PendingToolSettlementStatus `json:"status"`
-		Summary         string                      `json:"summary"`
-		Output          string                      `json:"output"`
-		Activity        *tools.ActivityPresentation `json:"activity,omitempty"`
-	}{
-		ThreadID: strings.TrimSpace(threadID), TurnID: settlement.TurnID, RunID: settlement.RunID,
-		ToolCallID: settlement.ToolCallID, ToolName: settlement.ToolName, Handle: settlement.Handle,
-		EffectAttemptID: settlement.EffectAttemptID,
-		Status:          settlement.Status, Summary: settlement.Summary, Output: settlement.Output, Activity: sanitizedActivity,
-	})
-	if err != nil {
-		return sessiontree.Entry{}, "", err
-	}
-	fingerprint := sessiontree.StableHash(string(payload))
-	metadata[sessiontree.PendingToolSettlementKindKey] = sessiontree.PendingToolSettlementKind
-	metadata[sessiontree.PendingToolSettlementFingerprintKey] = fingerprint
-	entry := sessiontree.Entry{
-		ThreadID: strings.TrimSpace(threadID),
-		TurnID:   settlement.TurnID,
-		Type:     sessiontree.EntryCustom,
-		Message: session.Message{
-			Content:    settlement.Output,
-			ToolCallID: settlement.ToolCallID,
-			ToolName:   settlement.ToolName,
-			ToolResult: &session.ToolResultView{Status: status},
-			Activity:   sessionActivityPresentation(sanitizedActivity),
-		},
-		Metadata: metadata,
-	}
-	return entry, fingerprint, nil
-}
-
 func (t *Thread) appendContextPolicyEvent(ctx context.Context, turnID string, runID string, providerName string, modelName string, policy contextpolicy.Policy) error {
 	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
 		ThreadID: t.id,
@@ -3514,8 +1447,8 @@ func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, ru
 		return nil
 	}
 	metadata := map[string]string{
-		subAgentDetailKindKey:    subAgentContextStatusEntryKind,
-		subAgentDetailTypeKey:    subAgentContextStatusEntryKind,
+		threadDetailKindKey:      subAgentContextStatusEntryKind,
+		threadDetailTypeKey:      subAgentContextStatusEntryKind,
 		subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
 	}
 	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
@@ -3541,8 +1474,8 @@ func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string
 		return nil
 	}
 	metadata := map[string]string{
-		subAgentDetailKindKey:        subAgentContextCompactionEntryKind,
-		subAgentDetailTypeKey:        subAgentContextCompactionEntryKind,
+		threadDetailKindKey:          subAgentContextCompactionEntryKind,
+		threadDetailTypeKey:          subAgentContextCompactionEntryKind,
 		subAgentContextCompactionKey: mustSubAgentMetadataJSON(compact),
 	}
 	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
@@ -3698,19 +1631,6 @@ func int64FromEventMetadata(value any) int64 {
 		return int64(v)
 	default:
 		return 0
-	}
-}
-
-func pendingToolSettlementActivityStatus(status PendingToolSettlementStatus) string {
-	switch status {
-	case PendingToolSettledCompleted:
-		return string(observation.ActivityStatusSuccess)
-	case PendingToolSettledFailed:
-		return string(observation.ActivityStatusError)
-	case PendingToolSettledCanceled:
-		return string(observation.ActivityStatusCanceled)
-	default:
-		return string(status)
 	}
 }
 

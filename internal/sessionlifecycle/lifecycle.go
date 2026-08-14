@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/control"
-	"github.com/floegence/floret/v3/internal/engine"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/sessiontree"
+	"github.com/floegence/floret/v4/internal/control"
+	"github.com/floegence/floret/v4/internal/engine"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/sessiontree"
 )
 
 type status string

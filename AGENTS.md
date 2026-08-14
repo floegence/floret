@@ -147,11 +147,11 @@ Rules:
   - `fix(provider): disable reasoning for title summaries`
   - `docs(repo): document commit message format`
 
-### v2 Semantic Versioning
+### v4 Semantic Versioning
 
-- `v2.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
+- `v4.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
   `storage`, `tools`, `observation`, and the test-only `florettest` package.
-- Within v2, do not delete or rename exported symbols, narrow previously
+- Within v4, do not delete or rename exported symbols, narrow previously
   accepted valid inputs, change established JSON field names or values, or
   change documented `errors.Is` / `errors.As` classifications.
 - Deprecations must remain available for at least one complete minor release
@@ -162,17 +162,18 @@ Rules:
 - Security emergency changes must document their compatibility and migration
   impact explicitly. Do not preserve or replace unsafe behavior through a
   silent fallback, substitute path, or unsupported transitional shape.
-- Run the v2 `go/types` baseline test and published-release adoption gate for
-  every public API change. After `v2.0.0` is published, compatibility checks
-  compare the exact published module with `HEAD`; v1 remains only in its Git
-  tag and must not be reintroduced through aliases or deprecated facades.
+- Run the v4 `go/types` baseline test and published-release adoption gate for
+  every public API change. After `v4.0.0` is published, compatibility checks
+  compare the exact published module with `HEAD`; removed v3 lifecycle APIs
+  remain only in their Git tag and must not return through aliases or facades.
 
 ### Domain Schema Migration Contract
 
-- The Floret v3 backend session-tree domain schema is a permanent migration
-  lineage. Version 4 is the current schema. The exact version 2 to version 3
-  SubAgent admission migration and version 3 to version 4 transactional root
-  inventory migration are the first required automatic edges. Future changes
+- The Floret backend session-tree domain schema is a permanent migration
+  lineage. Version 5 is the current schema. The exact version 2 to version 3
+  SubAgent admission migration, version 3 to version 4 transactional root
+  inventory migration, and version 4 to version 5 typed runtime migration are
+  required automatic edges. Future changes
   must append every contiguous `n -> n+1` edge; they must not reset the lineage,
   raise the minimum version, or remove an already released migration.
 - `runtime.Open` and `NewBackendRepo` must migrate Floret-owned domain state
@@ -218,6 +219,63 @@ Rules:
 - Prefer small contracts over framework-style extension layers.
 - Keep provider, context, tool runtime, session storage, and host UI concerns separated.
 - Important intent and policy decisions must be observable through events or testable state.
+
+## Refactoring Simplicity Principle
+
+- Do not optimize for the smallest patch when a local fix would preserve
+  duplicated ownership, confusing control flow, or parallel lifecycle paths.
+- Prefer a coherent refactor that leaves fewer concepts, one obvious execution
+  path, and sharper ownership boundaries, even when it deletes or replaces a
+  larger amount of code.
+- Introduce an abstraction only when it removes more branching, state, or
+  duplication than it adds. A facade around two active implementations is not
+  simplification.
+- Prefer deleting or merging obsolete receipts, projections, ledgers,
+  capabilities, recovery identities, caches, and compatibility paths over
+  wrapping them in another coordinator.
+- Floret is a single-process engine. Prefer bounded in-memory state for active
+  execution, streaming drafts, subscribers, pending interactions, attempt
+  tokens, and short-lived deduplication. Persist only facts that must survive a
+  restart or affect future agent context.
+- Do not apply distributed-system coordination patterns to in-process state.
+  WAL barriers, leases, authority handoffs, generation graphs, durable replay,
+  and recovery proofs require a concrete failure invariant that cannot be
+  satisfied by one owner, stable identifiers, a uniqueness constraint, or a
+  current-state snapshot.
+
+## First-Principles And Occam Review
+
+- Start every diagnosis and design from observable behavior, source contracts,
+  and reproducible evidence. Separate facts, assumptions, and decisions before
+  editing; a plausible narrative is not a substitute for a traced call path or
+  failing behavior test.
+- Reduce the problem to its necessary inputs, invariants, single owner, and
+  user-visible outcome. Implement the smallest complete model that satisfies
+  those invariants; reject speculative recovery, compatibility, and extension
+  requirements.
+- Prefer one authoritative state, one ownership boundary, and one obvious
+  execution path over parallel projections, fallback implementations,
+  compatibility layers, or multiple independently advancing revisions.
+- Active runtime state belongs to one in-process owner. Canonical storage is the
+  only durable fact source. Live updates are observation, not a second durable
+  lifecycle or replay protocol.
+- Provider calls may be repeated at failure boundaries when stable identities
+  and canonical uniqueness prevent duplicate user-visible results. Do not
+  delay normal execution merely to guarantee exactly-once provider dispatch.
+- Tool side effects are different from provider calls: persist the minimum
+  intent required before an irreversible effect, never replay an uncertain
+  effect automatically, and do not generalize that safety barrier into the
+  rest of the runtime.
+- Compatibility exists only for an identified consumer. Every compatibility
+  path must name that consumer, its removal condition, and its removal release;
+  otherwise remove it instead of maintaining a silent fallback.
+- When evidence contradicts an assumption, update the model and tests first.
+  Do not hide uncertainty behind retries, polling, broader persistence, or a
+  second state machine.
+- Every architecture review must answer: what is the simplest explanation
+  supported by evidence, who is the single owner, which state must truly be
+  durable, and which proposed code can be deleted? A design that cannot answer
+  these questions is not ready to implement.
 
 ## OKF Project Knowledge Bundle
 

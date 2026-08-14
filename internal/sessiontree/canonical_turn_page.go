@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/session"
+	"github.com/floegence/floret/v4/internal/session"
 )
 
 type CanonicalTurnBeforeCursor struct {
@@ -532,11 +532,6 @@ func (r *MemoryRepo) retrySourceHasRetryEligibleDurableInputLocked(threadID, ret
 		if err := ValidateRetryStartedEntry(retryStarted, threadID, retryTurnID, retryRunID, retryStartedEntryID, source); err != nil {
 			return false, err
 		}
-		admission, ok := r.turnAdmissions[turnAdmissionKey(threadID, retryTurnID)]
-		if !ok || admission.ThreadID != threadID || admission.TurnID != retryTurnID || admission.RunID != retryRunID ||
-			admission.TurnStartedID != retryStartedEntryID || admission.UserMessageID != "" || admission.BaseLeafID != entryID {
-			return false, ErrAuthorityCorrupt
-		}
 		ordinals := r.turnEntryOrdinals[threadID][turnID]
 		if len(ordinals) == 0 || r.turnEntryCounts[threadID][turnID] != len(ordinals) {
 			return false, ErrAuthorityCorrupt
@@ -682,130 +677,6 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		return false, nil, "", "", ErrAuthorityCorrupt
 	}
 	return false, retrySource, started.ID, runID, nil
-}
-
-type forkRetryIndexedEntry struct {
-	entry Entry
-	index int
-}
-
-// ValidateForkRetryAuthorityPath validates the complete staged destination path
-// before a fork publishes entries or retry admission facts.
-func ValidateForkRetryAuthorityPath(path []Entry, threadID string) error {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return ErrAuthorityCorrupt
-	}
-	byID := make(map[string]forkRetryIndexedEntry, len(path))
-	byTurn := make(map[string][]Entry)
-	for index, entry := range path {
-		if entry.ThreadID != threadID || strings.TrimSpace(entry.ID) == "" {
-			return ErrAuthorityCorrupt
-		}
-		if _, duplicate := byID[entry.ID]; duplicate {
-			return ErrAuthorityCorrupt
-		}
-		if err := ValidateEntryIntegrity(entry); err != nil {
-			return err
-		}
-		if index == 0 {
-			if entry.ParentID != "" {
-				return ErrAuthorityCorrupt
-			}
-		} else if entry.ParentID != path[index-1].ID {
-			return ErrAuthorityCorrupt
-		}
-		byID[entry.ID] = forkRetryIndexedEntry{entry: entry, index: index}
-		if turnID := strings.TrimSpace(entry.TurnID); turnID != "" {
-			byTurn[turnID] = append(byTurn[turnID], entry)
-		}
-	}
-	for index, entry := range path {
-		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
-			continue
-		}
-		source, err := CanonicalTurnRetrySourceForStartedEntry(entry)
-		if err != nil {
-			return err
-		}
-		if source == nil {
-			continue
-		}
-		if err := validateForkRetryAuthorityChain(byID, byTurn, entry, index, *source); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateForkRetryAuthorityChain(byID map[string]forkRetryIndexedEntry, byTurn map[string][]Entry, retryStarted Entry, retryStartedIndex int, source CanonicalTurnRetrySource) error {
-	visited := make(map[string]struct{})
-	for {
-		turnID := strings.TrimSpace(source.TurnID)
-		entryID := strings.TrimSpace(source.EntryID)
-		key := turnID + "\x00" + entryID
-		if turnID == "" || entryID == "" {
-			return ErrAuthorityCorrupt
-		}
-		if _, duplicate := visited[key]; duplicate {
-			return ErrAuthorityCorrupt
-		}
-		visited[key] = struct{}{}
-		if err := ValidateRetryStartedEntry(
-			retryStarted, retryStarted.ThreadID, retryStarted.TurnID, strings.TrimSpace(retryStarted.Metadata["run_id"]), retryStarted.ID, source,
-		); err != nil {
-			return err
-		}
-		target, ok := byID[entryID]
-		if !ok || target.index >= retryStartedIndex {
-			return ErrAuthorityCorrupt
-		}
-		entries := CanonicalTurnEntriesForRead(byTurn[turnID])
-		eligible, next, sourceStartedID, sourceRunID, err := ValidateCanonicalRetrySourceTurn(entries, retryStarted.ThreadID, source)
-		if err != nil {
-			return err
-		}
-		if next == nil {
-			if !eligible {
-				return ErrAuthorityCorrupt
-			}
-			return nil
-		}
-		sourceStarted, ok := byID[sourceStartedID]
-		if !ok || sourceStarted.index >= retryStartedIndex || strings.TrimSpace(sourceRunID) == "" {
-			return ErrAuthorityCorrupt
-		}
-		retryStarted = sourceStarted.entry
-		retryStartedIndex = sourceStarted.index
-		source = *next
-	}
-}
-
-func (r *MemoryRepo) rebuildRetryAdmissionFactsLocked(threadID string, entries []Entry) error {
-	// FileRepo has no atomic turn-admission capability. On reopen it derives the
-	// read-only retry facts needed by canonical page and fork validation from its
-	// durable journal. MemoryRepo and SQLite runtime forks validate their stored
-	// admission ledgers before constructing destination authority.
-	for _, entry := range entries {
-		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
-			continue
-		}
-		retrySource, err := CanonicalTurnRetrySourceForStartedEntry(entry)
-		if err != nil {
-			return err
-		}
-		if retrySource == nil {
-			continue
-		}
-		runID := strings.TrimSpace(entry.Metadata["run_id"])
-		if runID == "" {
-			return ErrAuthorityCorrupt
-		}
-		r.turnAdmissions[turnAdmissionKey(threadID, entry.TurnID)] = turnAdmissionLedger{
-			ThreadID: threadID, TurnID: entry.TurnID, RunID: runID, TurnStartedID: entry.ID, BaseLeafID: retrySource.EntryID,
-		}
-	}
-	return nil
 }
 
 func cloneCanonicalTurnRetrySource(source *CanonicalTurnRetrySource) *CanonicalTurnRetrySource {

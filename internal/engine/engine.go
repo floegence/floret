@@ -12,19 +12,19 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/internal/activityview"
-	"github.com/floegence/floret/v3/internal/control"
-	"github.com/floegence/floret/v3/internal/event"
-	"github.com/floegence/floret/v3/internal/memory"
-	"github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/cache"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/internal/session/artifact"
-	"github.com/floegence/floret/v3/internal/session/compaction"
-	"github.com/floegence/floret/v3/internal/session/contextpolicy"
-	"github.com/floegence/floret/v3/observation"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/activityview"
+	"github.com/floegence/floret/v4/internal/control"
+	"github.com/floegence/floret/v4/internal/event"
+	"github.com/floegence/floret/v4/internal/memory"
+	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/cache"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v4/internal/session/compaction"
+	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v4/tools"
 )
 
 var (
@@ -1841,10 +1841,25 @@ func providerRequestProjection(opts Options, history []session.Message) ([]sessi
 	if strings.TrimSpace(opts.supplementalAnchorEntryID) == "" || insertAt < 0 {
 		return nil, nil, errors.New("supplemental context has no canonical user anchor")
 	}
+	if supplementalContextFollowsHistory(opts.SupplementalContext) {
+		insertAt = len(projected)
+	}
 	return projected, &provider.EphemeralUserMessage{
 		Message:         session.Message{Role: session.User, Content: content},
 		HistoryInsertAt: insertAt,
 	}, nil
+}
+
+func supplementalContextFollowsHistory(items []TurnSupplementalContextItem) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.Kind != "user_answer" {
+			return false
+		}
+	}
+	return true
 }
 
 func renderTurnSupplementalContext(items []TurnSupplementalContextItem) string {

@@ -1,0 +1,18 @@
+symbol	decision	v4 boundary	reason
+runtime.Command	remove	ThreadService typed methods	generic commands create a second protocol
+runtime.AcceptedReceipt	remove	ThreadView	command return values are complete current views
+runtime.TurnAdmissionReceipt	remove	ThreadView	canonical acceptance is internal to Send
+runtime.ExecutionContext	remove	process-local execution token	run ownership is not a public durable entity
+runtime.ThreadTurnProjection	remove	ThreadView	current view replaces materialized projections
+runtime.ProjectionDelta	remove	ThreadView	workspace subscription publishes replacement views
+runtime.RecoveryHandle	remove	Open hydration	restart recovery is owned by ThreadRuntime
+runtime.Events	remove	Subscribe	v4 has no public replay/cursor protocol
+runtime.ThreadService	keep	ThreadService	one typed lifecycle boundary
+runtime.ThreadView	keep	ThreadView	complete replaceable per-thread presentation
+runtime.ThreadSummary	keep	ThreadSummary	workspace catalog presentation only
+runtime.SendInput	keep	ThreadService.Send	stable request-key command input
+runtime.RespondInput	keep	ThreadService.Respond	approval and user input share one interaction resolution
+runtime.CancelInput	keep	ThreadService.Cancel	idempotent cancellation in every known state
+runtime.RetryInput	keep	ThreadService.Retry	canonical retry lineage without duplicate user input
+runtime.RetryEffectInput	keep	ThreadService.RetryEffect	explicit retry for unknown effect outcomes
+runtime.WorkspaceSubscription	keep	ThreadService.Subscribe	one workspace current-view stream without replay metadata

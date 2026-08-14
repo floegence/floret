@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.0.0 - 2026-08-14
+
+- Replace the parallel v3 lifecycle paths with the typed ThreadService runtime.
+  Each thread now owns one in-memory runtime while the canonical journal remains
+  the durable source for accepted input, interactions, queue intent, and terminal
+  outcomes.
+- Make Send, Respond, Cancel, Retry, and effect retry idempotent and immediate;
+  normal stop and user rejection remain quiet local outcomes instead of product
+  failures. Runtime restart hydrates active input, approval, and queued work.
+- Remove the v3 admission, authority, recovery-handle, projection-delta, and
+  duplicate lifecycle APIs from the v4 module surface.
+
 ## Unreleased
 
 - Add the internal Phase 1 unified Thread/Turn/event primitives and contiguous
@@ -380,7 +392,7 @@
 
 ## v3.0.0 - 2026-07-30
 
-- **Breaking:** Move the module to `github.com/floegence/floret/v3` and remove
+- **Breaking:** Move the module to `github.com/floegence/floret/v4` and remove
   the v2 capability-handle graph, caller-assigned lifecycle identities, and all
   compatibility facades and runtime legacy decoders.
 - Make `identity` the sole owner of thread, turn, run, prompt-scope, trace,

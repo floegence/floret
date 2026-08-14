@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/floegence/floret/v3/internal/configbridge"
-	internalprovider "github.com/floegence/floret/v3/internal/provider"
-	"github.com/floegence/floret/v3/internal/provider/adapters"
-	"github.com/floegence/floret/v3/internal/provider/catalog"
-	"github.com/floegence/floret/v3/internal/session"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/internal/configbridge"
+	internalprovider "github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v4/internal/provider/adapters"
+	"github.com/floegence/floret/v4/internal/provider/catalog"
+	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/tools"
 )
 
 // OpenAICompatibleOptions configures an explicit OpenAI chat-completions

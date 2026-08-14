@@ -6,105 +6,44 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/observation"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/observation"
 )
 
-// threadActor owns the ordered, short-lived runtime mutations for one thread.
-// Provider I/O and approval waits must never run inside the mailbox.
-type threadActor struct {
+// threadRuntimeState is the only in-memory lifecycle owner for one thread.
+// Provider and tool I/O must never run while its mutex is held.
+type threadRuntimeState struct {
 	threadID string
-	mailbox  chan threadActorMessage
-	stop     chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
-	submitMu sync.Mutex
-	closing  bool
-	inFlight int
-	submitWG sync.WaitGroup
-	state    threadActorState
+	mu       sync.Mutex
+	closed   bool
+	state    threadRuntimeData
 }
 
-type threadActorState struct {
-	turnID           identity.TurnID
-	runID            identity.RunID
-	logicalRequestID identity.LogicalRequestID
-	attemptID        string
-	attemptEpoch     int
-	assistantDraft   string
-	thinkingDraft    string
-	liveProjection   *ThreadTurnProjection
+type threadRuntimeData struct {
+	turnID              identity.TurnID
+	runID               identity.RunID
+	logicalRequestID    identity.LogicalRequestID
+	attemptID           string
+	attemptEpoch        int
+	assistantDraft      string
+	thinkingDraft       string
+	view                ThreadView
+	cancel              context.CancelFunc
+	cancelOwner         string
+	executionDone       <-chan struct{}
+	requestKeys         map[string]threadRuntimeRequest
+	agent               *Agent
+	pendingInteractions map[string]*pendingThreadInteraction
+	hydrationStarted    bool
 }
 
-type threadActorMessage struct {
-	ctx    context.Context
-	mutate func() error
-	done   chan error
+type pendingThreadInteraction struct {
+	resolution chan InteractionResolution
 }
 
-type threadActorRegistry struct {
-	mu     sync.Mutex
-	actors map[string]*threadActor
-	closed bool
-}
-
-func newThreadActorRegistry() *threadActorRegistry {
-	return &threadActorRegistry{actors: make(map[string]*threadActor)}
-}
-
-func (registry *threadActorRegistry) actor(threadID string) *threadActor {
-	threadID = strings.TrimSpace(threadID)
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if actor := registry.actors[threadID]; actor != nil {
-		return actor
-	}
-	actor := &threadActor{
-		threadID: threadID,
-		mailbox:  make(chan threadActorMessage),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-	}
-	if registry.closed {
-		close(actor.stop)
-		close(actor.done)
-		return actor
-	}
-	registry.actors[threadID] = actor
-	go actor.run()
-	return actor
-}
-
-func (registry *threadActorRegistry) close() {
-	if registry == nil {
-		return
-	}
-	registry.mu.Lock()
-	if registry.closed {
-		registry.mu.Unlock()
-		return
-	}
-	registry.closed = true
-	actors := make([]*threadActor, 0, len(registry.actors))
-	for _, actor := range registry.actors {
-		actors = append(actors, actor)
-	}
-	registry.mu.Unlock()
-	for _, actor := range actors {
-		actor.beginClose()
-	}
-	for _, actor := range actors {
-		actor.submitWG.Wait()
-		actor.stopOnce.Do(func() { close(actor.stop) })
-	}
-	for _, actor := range actors {
-		<-actor.done
-	}
-}
-
-func (actor *threadActor) apply(ctx context.Context, mutate func() error) error {
-	if actor == nil || mutate == nil {
-		return errors.New("thread actor and mutation are required")
+func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() error) error {
+	if runtime == nil || mutate == nil {
+		return errors.New("thread runtime and mutation are required")
 	}
 	if ctx == nil {
 		return errors.New("thread actor context is required")
@@ -112,97 +51,51 @@ func (actor *threadActor) apply(ctx context.Context, mutate func() error) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	actor.submitMu.Lock()
-	if actor.closing {
-		actor.submitMu.Unlock()
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
 		return ErrHostClosed
 	}
-	actor.inFlight++
-	actor.submitWG.Add(1)
-	actor.submitMu.Unlock()
-	defer func() {
-		actor.submitMu.Lock()
-		actor.inFlight--
-		actor.submitMu.Unlock()
-		actor.submitWG.Done()
-	}()
-	message := threadActorMessage{ctx: ctx, mutate: mutate, done: make(chan error, 1)}
-	select {
-	case <-actor.stop:
-		return ErrHostClosed
-	case <-ctx.Done():
-		return ctx.Err()
-	case actor.mailbox <- message:
-	}
-	return <-message.done
-}
-
-func (actor *threadActor) beginClose() {
-	if actor == nil {
-		return
-	}
-	actor.submitMu.Lock()
-	actor.closing = true
-	actor.submitMu.Unlock()
-}
-
-func (actor *threadActor) run() {
-	defer close(actor.done)
-	for {
-		select {
-		case <-actor.stop:
-			return
-		case message := <-actor.mailbox:
-			if err := message.ctx.Err(); err != nil {
-				message.done <- err
-				continue
-			}
-			message.done <- message.mutate()
-		}
-	}
+	return mutate()
 }
 
 // acceptLiveEvent applies the current provider-attempt fence and records the
 // latest memory-only projection. It is called only from the actor mailbox.
-func (actor *threadActor) acceptLiveEvent(event Event) bool {
-	if actor == nil {
+func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
+	if runtime == nil {
 		return false
 	}
-	if event.TurnID != "" && actor.state.turnID != "" && event.TurnID != actor.state.turnID {
-		actor.state = threadActorState{}
+	if event.TurnID != "" && runtime.state.turnID != "" && event.TurnID != runtime.state.turnID {
+		return false
 	}
 	if event.TurnID != "" {
-		actor.state.turnID = event.TurnID
+		runtime.state.turnID = event.TurnID
 	}
 	if event.RunID != "" {
-		actor.state.runID = event.RunID
+		runtime.state.runID = event.RunID
 	}
 	logicalRequestID, attemptID, attemptEpoch, hasAttempt := liveEventAttemptIdentity(event)
 	if hasAttempt {
 		switch {
-		case attemptEpoch < actor.state.attemptEpoch:
+		case attemptEpoch < runtime.state.attemptEpoch:
 			return false
-		case attemptEpoch == actor.state.attemptEpoch && actor.state.attemptID != "" && attemptID != actor.state.attemptID:
+		case attemptEpoch == runtime.state.attemptEpoch && runtime.state.attemptID != "" && attemptID != runtime.state.attemptID:
 			return false
-		case attemptEpoch > actor.state.attemptEpoch:
-			actor.state.assistantDraft = ""
-			actor.state.thinkingDraft = ""
-			actor.state.liveProjection = nil
+		case attemptEpoch > runtime.state.attemptEpoch:
+			runtime.state.assistantDraft = ""
+			runtime.state.thinkingDraft = ""
 		}
-		actor.state.logicalRequestID = logicalRequestID
-		actor.state.attemptID = attemptID
-		actor.state.attemptEpoch = attemptEpoch
+		runtime.state.logicalRequestID = logicalRequestID
+		runtime.state.attemptID = attemptID
+		runtime.state.attemptEpoch = attemptEpoch
 	}
 	if event.Stream != nil {
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:
-			actor.state.assistantDraft += event.Stream.Text
+			runtime.state.assistantDraft += event.Stream.Text
 		case StreamObservationReasoningDelta:
-			actor.state.thinkingDraft += event.Stream.Text
+			runtime.state.thinkingDraft += event.Stream.Text
 		}
-	}
-	if event.Projection != nil {
-		actor.state.liveProjection = cloneThreadTurnProjectionPtr(event.Projection)
 	}
 	return true
 }

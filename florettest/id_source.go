@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/floegence/floret/v3/identity"
+	"github.com/floegence/floret/v4/identity"
 )
 
 // IDSourceOptions configures exact deterministic lifecycle identity sequences.

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v3/observation"
-	"github.com/floegence/floret/v3/tools"
+	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v4/tools"
 )
 
 type Type = observation.EventType

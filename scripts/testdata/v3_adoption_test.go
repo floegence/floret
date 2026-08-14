@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v3/config"
-	"github.com/floegence/floret/v3/florettest"
-	"github.com/floegence/floret/v3/identity"
-	"github.com/floegence/floret/v3/provider"
-	"github.com/floegence/floret/v3/runtime"
-	"github.com/floegence/floret/v3/storage"
+	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v4/florettest"
+	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/provider"
+	"github.com/floegence/floret/v4/runtime"
+	"github.com/floegence/floret/v4/storage"
 )
 
 func TestPublishedMemoryHostAndSubAgent(t *testing.T) {
