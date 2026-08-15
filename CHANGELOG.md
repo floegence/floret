@@ -31,6 +31,13 @@
 - Remove the v3 admission, authority, recovery-handle, projection-delta, and
   duplicate lifecycle APIs from the v4 module surface.
 
+## v4.0.5 - 2026-08-15
+
+- Preserve the public dynamic tool surface distinction between omitted and
+  explicitly empty tool definitions. Omitted local or hosted definitions now
+  inherit their configured registry/defaults, while explicit empty slices
+  continue to clear provider-visible definitions.
+
 ## Unreleased
 
 - Add the internal Phase 1 unified Thread/Turn/event primitives and contiguous

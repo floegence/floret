@@ -50,6 +50,13 @@ host context, and audit metadata. Floret refreshes that surface before provider
 requests and again before local tool dispatch, so provider-visible capabilities
 and executable local capabilities converge at safe points.
 
+An omitted (`nil`) local definition list derives provider definitions from the
+returned registry; an explicit empty list clears them. Hosted definitions use
+the same omitted-versus-explicit-empty contract against their configured
+defaults. Runtime adapters preserve this distinction through the engine
+boundary so registry inheritance cannot silently become an empty provider
+toolset.
+
 Product permission modes stay in the host. Floret only sees the projected
 registry, tool definitions, hosted tools, and prompt/context text. A stale model
 tool call cannot bypass a newer host policy because dispatch uses the refreshed

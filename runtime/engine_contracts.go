@@ -438,6 +438,9 @@ func runtimeTurnSignal(signal *engine.ControlSignal) *TurnSignal {
 }
 
 func normalizeToolDefinitions(definitions []tools.ToolDefinition) []tools.ToolDefinition {
+	if definitions == nil {
+		return nil
+	}
 	result := make([]tools.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
 		if strings.TrimSpace(definition.Name) == "" {
@@ -455,6 +458,9 @@ func normalizeToolDefinitions(definitions []tools.ToolDefinition) []tools.ToolDe
 }
 
 func providerHostedToolDefinitions(definitions []publicprovider.HostedToolDefinition) []provider.HostedToolDefinition {
+	if definitions == nil {
+		return nil
+	}
 	result := make([]provider.HostedToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
 		if strings.TrimSpace(definition.Type) == "" {

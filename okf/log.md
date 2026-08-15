@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-15
+* **Dynamic tool surface inheritance**: Runtime adapters now preserve `nil`
+  local and hosted definition lists so the engine can inherit registry or
+  configured defaults, while explicit empty slices continue to clear provider
+  definitions.
 * **Fallback title authority**: The first accepted canonical user message now
   installs a durable fallback title in the same transaction. Automatic title
   pending/failure preserves it, provider success replaces it, host rename wins,
