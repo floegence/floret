@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.0.2 - 2026-08-15
+
+- Keep schema-invalid local tool calls inside the provider correction loop.
+  Validation failures still return an ordered tool result to the model, but no
+  public tool activity is emitted and no handler is dispatched.
+
 ## v4.0.0 - 2026-08-14
 
 - Replace the parallel v3 lifecycle paths with the typed ThreadService runtime.

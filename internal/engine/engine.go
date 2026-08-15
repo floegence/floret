@@ -978,6 +978,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*tools.ActivityPresentation{}
+		internalValidationCorrections := map[string]bool{}
 		callBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
@@ -1043,8 +1044,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
 			for i, call := range calls {
-				activity, _ := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
-				callActivities[call.ID] = sanitizeActivityPresentation(activity)
+				activity, validationErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
+				if validationErr != nil {
+					internalValidationCorrections[call.ID] = true
+				} else {
+					callActivities[call.ID] = sanitizeActivityPresentation(activity)
+				}
 				callBatchMetadata[call.ID] = map[string]any{"batch_index": i, "batch_size": len(calls)}
 			}
 		}
@@ -1141,6 +1146,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for i, call := range calls {
+			if internalValidationCorrections[call.ID] {
+				continue
+			}
 			activity := callActivities[call.ID]
 			metadata := callBatchMetadata[call.ID]
 			if metadata == nil {
@@ -1196,7 +1204,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			dispatchedMu.Lock()
 			wasDispatched := dispatchedCalls[result.CallID]
 			dispatchedMu.Unlock()
-			result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
+			internalValidationCorrection := internalValidationCorrections[result.CallID]
+			if internalValidationCorrection {
+				result.Activity = nil
+			} else {
+				result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
+			}
 			resultView := (*session.ToolResultView)(nil)
 			if result.Pending == nil {
 				resultView = toolResultView(projection)
@@ -1242,7 +1255,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
 			metadata["tool_result_status"] = resultStatus
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
+			if !internalValidationCorrection {
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
+			}
 			toolMessageSet[i] = true
 			return nil
 		}

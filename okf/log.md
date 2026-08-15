@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-08-15
+* **Internal schema correction**: Schema-invalid local calls and their ordered
+  validation results remain in provider correction history but no longer emit
+  public tool activity or create canonical timeline rows. Validation still
+  prevents permission, effect, and handler dispatch.
+
 ## 2026-08-12
 * **Control failure contract**: Malformed control-signal projection now keeps
   assistant output, control tool identity, and expected disposition while

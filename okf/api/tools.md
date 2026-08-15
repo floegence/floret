@@ -26,10 +26,11 @@ strict provider-visible schemas and typed handlers.
 
 `tools.Definition.InvalidActivity` is an optional presentation-only callback
 for a parseable JSON object rejected by the declared input schema or typed
-decoder. It lets a host retain safe fields such as a command label on the
-terminal error activity. Floret still returns the original validation error,
-does not resolve resources or permissions, and never dispatches the handler.
-Malformed JSON and callback failure or panic produce no presentation fallback.
+decoder. It lets engine internals derive safe correction context without
+granting resource, permission, effect, or handler authority. Floret returns the
+original validation error to the provider as an ordered tool result, but emits
+no public tool activity for the invalid call. Malformed JSON and callback
+failure or panic produce no presentation fallback.
 
 # Permission Model
 

@@ -2369,28 +2369,28 @@ func TestSchemaErrorReturnsToolResultAndAllowsModelRecovery(t *testing.T) {
 	}
 }
 
-func TestSchemaErrorPreservesHostInvalidCallActivity(t *testing.T) {
+func TestSchemaErrorRemainsInternalWhileModelRecovers(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("exec-1", "terminal", `{"command":"sleep 30","yield_ms":60000}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("read-1", "terminal.read", `{"process_id":"proc-1","after_seq":0}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("recovered"), harness.Done()),
 	)
 	reg := tools.NewRegistry()
 	called := false
 	mustRegister(t, reg, tools.Define[stringArgs](
 		tools.Definition{
-			Name: "terminal",
+			Name: "terminal.read",
 			InputSchema: tools.StrictObject(map[string]any{
-				"command":  tools.String("command"),
-				"yield_ms": map[string]any{"type": "integer", "maximum": 30_000},
-			}, []string{"command"}),
+				"process_id":  tools.String("process id"),
+				"description": tools.String("description"),
+				"after_seq":   map[string]any{"type": "integer", "minimum": 0},
+			}, []string{"process_id", "description", "after_seq"}),
 			ReadOnly:   true,
 			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
 			InvalidActivity: func(inv tools.Invocation[map[string]any]) (*tools.ActivityPresentation, error) {
 				return &tools.ActivityPresentation{
-					Label:    inv.Args["command"].(string),
-					Renderer: tools.ActivityRendererTerminal,
-					Payload:  tools.TerminalActivityPayload{Command: inv.Args["command"].(string)},
+					Label:    "Read terminal output",
+					Renderer: tools.ActivityRendererStructured,
 				}, nil
 			},
 		},
@@ -2412,13 +2412,14 @@ func TestSchemaErrorPreservesHostInvalidCallActivity(t *testing.T) {
 	if called {
 		t.Fatal("handler ran for schema-invalid args")
 	}
-	result := firstToolResultEvent(t, rec.Events, "exec-1")
-	if result.Activity == nil || result.Activity.Label != "sleep 30" || result.Activity.Renderer != tools.ActivityRendererTerminal {
-		t.Fatalf("tool result activity = %#v", result.Activity)
-	}
-	payload, ok := result.Activity.Payload.(tools.TerminalActivityPayload)
-	if !ok || payload.Command != "sleep 30" || payload.Error == nil || !strings.Contains(payload.Error.Message, "invalid arguments") {
-		t.Fatalf("tool result payload = %#v", result.Activity.Payload)
+	for _, ev := range rec.Events {
+		if ev.ToolID != "read-1" {
+			continue
+		}
+		switch ev.Type {
+		case event.ToolCall, event.ToolDispatchStarted, event.ToolResult:
+			t.Fatalf("schema-invalid correction leaked as public activity: %#v", ev)
+		}
 	}
 }
 

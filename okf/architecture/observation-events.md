@@ -63,12 +63,12 @@ or validation failures require a canonical reload rather than event replay.
   observed. A running local tool can later emit `tool_activity_updated` to merge
   public presentation payload changes into the same activity item, for example
   a host-owned read handle or latest output summary. This observation is not a
-  result and cannot reopen a terminal item. Local pre-dispatch framework errors
-  carry a neutral public activity payload with `status=error` and
-  `error.message` when no host result activity already provided one, so
-  framework-layer failures still project a readable activity reason without
-  moving downstream presentation policy into Floret or treating arbitrary tool
-  output as public display copy.
+  result and cannot reopen a terminal item. Schema-invalid calls remain internal
+  provider correction history and emit no public tool activity. Other local
+  pre-dispatch framework errors carry a neutral public activity payload with
+  `status=error` and `error.message` when no host result activity already
+  provided one, so runtime failures still project a readable reason without
+  turning model correction into a user-facing failure row.
   Hosts that update product-neutral timeline items use
   `observation.RebuildActivitySummary` to recompute counts, approval totals,
   status, severity, and attention through the same rules as Floret. The reducer
