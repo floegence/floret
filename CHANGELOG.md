@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.4 - 2026-08-15
+
+- Install a canonical fallback thread title atomically with the first accepted
+  user message. Automatic title generation now preserves that title while
+  pending or failed and replaces it only after provider success; startup also
+  repairs historical empty titles from canonical user input.
+
 ## v4.0.3 - 2026-08-15
 
 - Exclude provider-only schema correction messages from the engine result used

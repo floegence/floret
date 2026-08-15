@@ -123,6 +123,11 @@ func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, er
 		artifacts: state.Artifacts, seq: state.Sequence,
 	}
 	repo.ensurePersistentMaps()
+	repairedTitles, err := repairLegacyFallbackThreadTitles(repo)
+	if err != nil {
+		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	migrated = migrated || repairedTitles
 	if err := ValidateThreadAuthorityGraph(values(repo.threads)); err != nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 	}

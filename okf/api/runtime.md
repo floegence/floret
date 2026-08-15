@@ -62,6 +62,17 @@ reads. `ThreadLifecycle.SetTitle` is a durable logical mutation.
 `ThreadLifecycle.InterruptedTurnRecovery` binds one exact current interrupted
 lease proof before either operation can mutate lifecycle state.
 
+The first canonical user message installs a non-empty fallback title in the
+same session-tree transaction as turn acceptance. Text is whitespace-normalized
+and bounded by the canonical title limit; attachment- or reference-only input
+uses its first display name. Provider-owned automatic title generation keeps
+that fallback visible while pending and after failure, and replaces it only on
+successful completion. A host `SetTitle` remains final authority over an
+in-flight automatic request. Startup repairs historical empty titles from the
+first canonical user entry before summaries are projected. Automatic title
+provider work is tool-free background execution bounded by runtime lifetime and
+timeout; it does not share the main turn's effect-permission admission.
+
 Mutation commands carry a host-supplied `identity.LogicalRequestID`. Floret
 allocates every `ThreadID`, `TurnID`, `RunID`, and child identity. The durable
 request key combines operation kind, bound authority, and logical request ID;

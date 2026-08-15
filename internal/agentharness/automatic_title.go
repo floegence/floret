@@ -95,8 +95,12 @@ func (t *Thread) startAutomaticTitle(ctx context.Context, turnID, runID, userEnt
 		return nil, err
 	}
 	switch meta.TitleStatus {
-	case sessiontree.ThreadTitlePending, sessiontree.ThreadTitleReady:
+	case sessiontree.ThreadTitlePending:
 		return nil, nil
+	case sessiontree.ThreadTitleReady:
+		if meta.TitleSource != sessiontree.ThreadTitleSourceFallback {
+			return nil, nil
+		}
 	}
 	token := automaticTitleToken(t.id, turnID, userEntryID)
 	begun, err := authority.BeginAutomaticThreadTitle(ctx, sessiontree.BeginAutomaticThreadTitleRequest{
@@ -180,10 +184,6 @@ func (t *Thread) runAutomaticTitle(
 ) {
 	if len(messages) == 0 {
 		t.settleAutomaticTitleFailure(ctx, authority, claim, turnID, runID, errors.New("automatic title input is empty"))
-		return
-	}
-	if err := t.validateAutomaticTitleProviderRequest(ctx); err != nil {
-		t.settleAutomaticTitleFailure(ctx, authority, claim, turnID, runID, err)
 		return
 	}
 	result, err := t.harness.options.TitleGenerator.GenerateTitle(ctx, TitleRequest{
@@ -298,25 +298,4 @@ func automaticTitleFailureMessage(cause error) string {
 		return automaticTitleInterrupted
 	}
 	return message
-}
-
-func (t *Thread) validateAutomaticTitleProviderRequest(ctx context.Context) error {
-	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
-		return errors.New("automatic title provider request requires an authority-bound thread")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
-	if err != nil {
-		return err
-	}
-	lifecycle, err := meta.CanonicalLifecycle()
-	if err != nil {
-		return err
-	}
-	if lifecycle != sessiontree.ThreadLifecycleOpen {
-		return sessiontree.ErrThreadAuthorityBusy
-	}
-	return nil
 }

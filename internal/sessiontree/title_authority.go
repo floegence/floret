@@ -123,19 +123,25 @@ func ValidateThreadTitleProjection(projection ThreadTitleProjection) error {
 			return errors.New("unset thread title has conflicting state")
 		}
 	case ThreadTitlePending:
-		if projection.Title != "" || projection.Source != "" || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
+		if projection.Title == "" || projection.Source != ThreadTitleSourceFallback || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
 			return errors.New("pending thread title state is incomplete")
 		}
+		if err := ValidateCanonicalThreadTitle(projection.Title); err != nil {
+			return err
+		}
 	case ThreadTitleReady:
-		if projection.Title == "" || (projection.Source != ThreadTitleSourceHost && projection.Source != ThreadTitleSourceProvider) || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
+		if projection.Title == "" || (projection.Source != ThreadTitleSourceFallback && projection.Source != ThreadTitleSourceHost && projection.Source != ThreadTitleSourceProvider) || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
 			return errors.New("ready thread title state is incomplete")
 		}
 		if err := ValidateCanonicalThreadTitle(projection.Title); err != nil {
 			return err
 		}
 	case ThreadTitleFailed:
-		if projection.Title != "" || projection.Source != "" || projection.UpdatedAt.IsZero() || projection.Error == "" || projection.Generation <= 0 {
+		if projection.Title == "" || projection.Source != ThreadTitleSourceFallback || projection.UpdatedAt.IsZero() || projection.Error == "" || projection.Generation <= 0 {
 			return errors.New("failed thread title state is incomplete")
+		}
+		if err := ValidateCanonicalThreadTitle(projection.Title); err != nil {
+			return err
 		}
 	default:
 		return errors.New("unsupported thread title status")
@@ -165,7 +171,7 @@ func ValidateThreadTitleState(meta ThreadMeta) error {
 		}
 	case ThreadTitleReady:
 		switch meta.TitleSource {
-		case ThreadTitleSourceHost:
+		case ThreadTitleSourceFallback, ThreadTitleSourceHost:
 			if token != "" {
 				return ErrAuthorityCorrupt
 			}
@@ -219,6 +225,9 @@ func (r *MemoryRepo) BeginAutomaticThreadTitle(ctx context.Context, req BeginAut
 	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		switch meta.TitleStatus {
 		case ThreadTitleReady:
+			if meta.TitleSource == ThreadTitleSourceFallback {
+				break
+			}
 			return meta, false, nil
 		case ThreadTitlePending:
 			if meta.TitleToken == token {
@@ -233,9 +242,7 @@ func (r *MemoryRepo) BeginAutomaticThreadTitle(ctx context.Context, req BeginAut
 		if meta.TitleGeneration == math.MaxInt64 {
 			return meta, false, ErrAuthorityCorrupt
 		}
-		meta.Title = ""
 		meta.TitleStatus = ThreadTitlePending
-		meta.TitleSource = ""
 		meta.TitleUpdatedAt = req.Now.UTC()
 		meta.TitleError = ""
 		meta.TitleGeneration++
@@ -294,9 +301,7 @@ func (r *MemoryRepo) FailAutomaticThreadTitle(ctx context.Context, req FailAutom
 		case ThreadTitleReady:
 			return meta, false, ErrRequestConflict
 		case ThreadTitlePending:
-			meta.Title = ""
 			meta.TitleStatus = ThreadTitleFailed
-			meta.TitleSource = ""
 			meta.TitleUpdatedAt = req.Now.UTC()
 			meta.TitleError = titleError
 			return meta, true, nil

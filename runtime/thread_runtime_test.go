@@ -28,6 +28,39 @@ type blockingThreadGateway struct {
 	requests atomic.Int32
 }
 
+type automaticTitleGateway struct {
+	failTitle bool
+	requests  atomic.Int32
+	titles    atomic.Int32
+}
+
+func (*automaticTitleGateway) Identity() provider.Identity {
+	return provider.Identity{Provider: "test", Model: "automatic-title", StateCompatibilityKey: "test:automatic-title:v1"}
+}
+
+func (*automaticTitleGateway) Capabilities() provider.Capabilities {
+	return provider.Capabilities{Reasoning: provider.ReasoningUnsupported}
+}
+
+func (gateway *automaticTitleGateway) Stream(_ context.Context, request provider.Request) (<-chan provider.Event, error) {
+	gateway.requests.Add(1)
+	events := make(chan provider.Event, 2)
+	if request.LogicalRequestID == "thread_title" {
+		gateway.titles.Add(1)
+		if gateway.failTitle {
+			events <- provider.Event{Type: provider.EventError, Err: errors.New("title unavailable")}
+		} else {
+			events <- provider.Event{Type: provider.EventDelta, Text: "Provider title"}
+			events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
+		}
+	} else {
+		events <- provider.Event{Type: provider.EventDelta, Text: "assistant response"}
+		events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
+	}
+	close(events)
+	return events, nil
+}
+
 func newBlockingThreadGateway() *blockingThreadGateway {
 	return &blockingThreadGateway{started: make(chan struct{}), release: make(chan struct{})}
 }
@@ -128,6 +161,58 @@ func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	replayed, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-again"})
 	if err != nil || replayed.Activity != ThreadActivityIdle {
 		t.Fatalf("idempotent cancel=%#v prior=%#v err=%v", replayed, cancelled, err)
+	}
+}
+
+func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		failTitle bool
+		wantTitle string
+		wantState ThreadTitleStatus
+	}{
+		{name: "success", wantTitle: "Provider title", wantState: ThreadTitleStatusReady},
+		{name: "failure", failTitle: true, wantTitle: "fallback title", wantState: ThreadTitleStatusFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gateway := &automaticTitleGateway{failTitle: test.failTitle}
+			agent, err := testAgent(gateway, WithAgentThreadTitleMode(ThreadTitleModeProvider))
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: RequestKey("create-title-" + test.name)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "fallback title"}, RequestKey: RequestKey("send-title-" + test.name)}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				summaries, listErr := service.List(t.Context(), ThreadScope{})
+				if listErr != nil {
+					t.Fatal(listErr)
+				}
+				if len(summaries) == 1 && summaries[0].Title == test.wantTitle && summaries[0].TitleStatus == test.wantState {
+					if gateway.titles.Load() != 1 {
+						t.Fatalf("automatic title requests = %d, want 1", gateway.titles.Load())
+					}
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			summaries, _ := service.List(t.Context(), ThreadScope{})
+			t.Fatalf("automatic title did not settle: summaries=%#v requests=%d titles=%d", summaries, gateway.requests.Load(), gateway.titles.Load())
+		})
 	}
 }
 
@@ -694,6 +779,13 @@ func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 	if _, err := firstHost.store.repo.(sessiontree.RuntimeTurnRepo).AcceptTurn(t.Context(), acceptRequest); err != nil {
 		t.Fatal(err)
 	}
+	firstSummaries, err := firstService.List(t.Context(), ThreadScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstSummaries) != 1 || firstSummaries[0].Title != "resume me" || firstSummaries[0].TitleStatus != ThreadTitleStatusReady {
+		t.Fatalf("accepted thread summary = %#v", firstSummaries)
+	}
 	queued := QueuedInput{ID: "queue:queue-restart", RequestKey: "queue-restart", Input: UserInput{Text: "queued"}, CreatedAt: time.Now().UTC()}
 	queueFingerprint, _ := stableFingerprint(queued.Input)
 	if err := firstService.appendQueueFact(t.Context(), created.ThreadID, sessiontree.EntryQueueAdded, queued.ID, queued.RequestKey, queueFingerprint, queued); err != nil {
@@ -725,6 +817,13 @@ func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 	hydrated, err := secondService.View(t.Context(), created.ThreadID)
 	if err != nil || hydrated.Activity != ThreadActivityActive || len(hydrated.Queue) != 1 {
 		t.Fatalf("hydrated=%#v err=%v", hydrated, err)
+	}
+	restartedSummaries, err := secondService.List(t.Context(), ThreadScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restartedSummaries) != 1 || restartedSummaries[0].Title != "resume me" || restartedSummaries[0].TitleStatus != ThreadTitleStatusReady {
+		t.Fatalf("restarted thread summary = %#v", restartedSummaries)
 	}
 	completed := waitThreadView(t, secondService, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && len(view.Queue) == 0 && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted

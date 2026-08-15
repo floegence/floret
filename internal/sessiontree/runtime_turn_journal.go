@@ -96,6 +96,11 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 		user.RawHash = stableHash(user.Raw)
 		r.appendIndexedEntriesLocked(meta.ID, user)
 		meta.LeafID = user.ID
+		var err error
+		meta, _, err = installFallbackThreadTitle(meta, user.Message, now)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
 	}
 	meta.UpdatedAt = now
 	r.threads[meta.ID] = meta

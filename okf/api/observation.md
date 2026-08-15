@@ -31,6 +31,9 @@ compaction debug stage/status expose `Valid`; their containing DTOs expose
 contract errors rather than normal presentation states.
 `thread_title_updated` and `thread_title_failed` expose canonical title lifecycle
 changes without requiring hosts to poll or maintain a separate retry ledger.
+Once a thread has accepted user input, pending and failed title events retain
+the canonical fallback title, so host summaries never need an untitled
+presentation state while provider title generation settles.
 
 `BuildActivityTimeline` owns the product-neutral terminal semantics for activity
 items within one sanitized observation group. Only explicit terminal `run_end`

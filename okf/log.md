@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-15
+* **Fallback title authority**: The first accepted canonical user message now
+  installs a durable fallback title in the same transaction. Automatic title
+  pending/failure preserves it, provider success replaces it, host rename wins,
+  and startup repairs historical empty titles before projection.
 * **Internal schema correction**: Schema-invalid local calls and their ordered
   validation results remain in provider correction history but no longer emit
   public tool activity or create canonical timeline rows. Validation still

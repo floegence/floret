@@ -128,6 +128,7 @@ const (
 type ThreadTitleSource string
 
 const (
+	ThreadTitleSourceFallback ThreadTitleSource = "fallback"
 	ThreadTitleSourceProvider ThreadTitleSource = "provider"
 	ThreadTitleSourceHost     ThreadTitleSource = "host"
 )
@@ -2035,9 +2036,6 @@ func (r *FileRepo) load(ctx context.Context) error {
 		if meta.ID == "" {
 			return fmt.Errorf("%w: thread metadata %s has empty id", ErrInvalidThreadAuthority, path)
 		}
-		if err := ValidateThreadMetaAuthority(meta); err != nil {
-			return fmt.Errorf("validate thread metadata %s: %w", path, err)
-		}
 		dir := filepath.Dir(path)
 		journalPath := filepath.Join(dir, "entries.jsonl")
 		entries, err := readEntries(journalPath)
@@ -2056,6 +2054,16 @@ func (r *FileRepo) load(ctx context.Context) error {
 			return fmt.Errorf("thread metadata %s references leaf %q without journal entries", path, meta.LeafID)
 		}
 		repairedMeta := reconcileFileThreadLeaf(meta, entries)
+		legacyMemory := NewMemoryRepo()
+		legacyMemory.threads[meta.ID] = repairedMeta
+		legacyMemory.entries[meta.ID] = entries
+		if _, err := repairLegacyFallbackThreadTitles(legacyMemory); err != nil {
+			return fmt.Errorf("repair thread title %s: %w", path, err)
+		}
+		repairedMeta = legacyMemory.threads[meta.ID]
+		if err := ValidateThreadMetaAuthority(repairedMeta); err != nil {
+			return fmt.Errorf("validate thread metadata %s: %w", path, err)
+		}
 		if repairedMeta != meta {
 			meta = repairedMeta
 			if err := r.saveThread(meta); err != nil {
