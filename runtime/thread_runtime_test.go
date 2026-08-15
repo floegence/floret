@@ -224,6 +224,66 @@ func TestThreadServiceApprovalRejectAndAcceptStayOnInteraction(t *testing.T) {
 	_, _ = service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-approval"})
 }
 
+func TestThreadServiceApprovalPresentsTerminalCommand(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	_, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-approval"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "run curl"}, RequestKey: "send-terminal-approval"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := service.runtime(created.ThreadID)
+	var runID identity.RunID
+	_ = actor.apply(t.Context(), func() error { runID = actor.state.runID; return nil })
+
+	gate := threadRuntimeEffectGate{service: service}
+	done := make(chan error, 1)
+	go func() {
+		_, dispatchErr := gate.Dispatch(context.Background(), EffectAuthorizationRequest{
+			EffectAttemptID: "effect-terminal-command", ThreadID: created.ThreadID, TurnID: started.TurnID, RunID: runID,
+			ToolCallID: "call-terminal-command", ToolName: "terminal.exec",
+			Arguments: `{"command":"curl -s https://example.test","yield_ms":10000}`,
+			Activity: &tools.ActivityPresentation{
+				Label: "  Fetch example  ", Description: "  Download the example response.  ",
+				Renderer: tools.ActivityRendererTerminal,
+				Payload:  tools.TerminalActivityPayload{Command: "curl -s https://example.test"},
+			},
+			Effects: []tools.Effect{tools.EffectShell}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		}, func(context.Context, EffectAuthorizationProof) (EffectDispatchResult, error) {
+			return EffectDispatchResult{}, nil
+		})
+		done <- dispatchErr
+	}()
+
+	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 1 && view.Interactions[0].Kind == ThreadInteractionApproval && !view.Interactions[0].Resolved
+	})
+	approval := waiting.Interactions[0].Approval
+	if approval == nil {
+		t.Fatal("pending interaction has no approval presentation")
+	}
+	if approval.Label != "Fetch example" || approval.Description != "Download the example response." {
+		t.Fatalf("approval activity copy=(%q, %q)", approval.Label, approval.Description)
+	}
+	if approval.Command != "curl -s https://example.test" || strings.Contains(approval.Command, `{"command"`) {
+		t.Fatalf("approval command=%q", approval.Command)
+	}
+	rejected := false
+	if _, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID,
+		Answers: []InteractionAnswer{{Approved: &rejected}}, RequestKey: "reject-terminal-approval",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if dispatchErr := <-done; !errors.Is(dispatchErr, ErrEffectUnauthorized) {
+		t.Fatalf("dispatch error=%v", dispatchErr)
+	}
+}
+
 func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
@@ -304,7 +364,8 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 			Effects: []tools.Effect{tools.EffectShell}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
 			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 8, Strategy: tools.OutputTail, PreserveFull: true, PreserveFullSet: true},
 			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
-				return &tools.ActivityPresentation{Label: "Shell command", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: inv.RawArgs}}, nil
+				args, _ := inv.Args.(map[string]string)
+				return &tools.ActivityPresentation{Label: "Shell command", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: args["command"]}}, nil
 			},
 		},
 		nil, nil,

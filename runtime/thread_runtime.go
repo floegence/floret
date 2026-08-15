@@ -1757,10 +1757,7 @@ func (gate threadRuntimeEffectGate) Dispatch(ctx context.Context, request Effect
 	threadInteraction := ThreadInteraction{
 		ID: "approval:" + request.EffectAttemptID, TurnID: request.TurnID, runID: request.RunID,
 		Kind: ThreadInteractionApproval, ToolCallID: request.ToolCallID,
-		Approval: &ApprovalPresentation{
-			Label: request.ToolName, Command: request.Arguments, Effects: effectNames(request.Effects),
-			Targets: effectTargets(request.Resources), ToolName: request.ToolName, ToolCallID: request.ToolCallID,
-		},
+		Approval: approvalPresentation(request),
 	}
 	actor := gate.service.runtime(request.ThreadID)
 	waiter, err := gate.service.requestInteraction(ctx, actor, request.ThreadID, threadInteraction)
@@ -1779,6 +1776,28 @@ func (gate threadRuntimeEffectGate) Dispatch(ctx context.Context, request Effect
 		return EffectDispatchResult{}, ErrAuthorizationUnavailable
 	}
 	return gate.downstream.Dispatch(ctx, request, effect)
+}
+
+func approvalPresentation(request EffectAuthorizationRequest) *ApprovalPresentation {
+	label := strings.TrimSpace(request.ToolName)
+	description := ""
+	command := ""
+	if activity := request.Activity; activity != nil {
+		if activityLabel := strings.TrimSpace(activity.Label); activityLabel != "" {
+			label = activityLabel
+		}
+		description = strings.TrimSpace(activity.Description)
+		if activity.Renderer == tools.ActivityRendererTerminal {
+			if payload, ok := activity.Payload.(tools.TerminalActivityPayload); ok {
+				command = strings.TrimSpace(payload.Command)
+			}
+		}
+	}
+	return &ApprovalPresentation{
+		Label: label, Description: description, Command: command,
+		Effects: effectNames(request.Effects), Targets: effectTargets(request.Resources),
+		ToolName: request.ToolName, ToolCallID: request.ToolCallID,
+	}
 }
 
 func effectNames(effects []tools.Effect) []string {
