@@ -2412,6 +2412,11 @@ func TestSchemaErrorRemainsInternalWhileModelRecovers(t *testing.T) {
 	if called {
 		t.Fatal("handler ran for schema-invalid args")
 	}
+	for _, message := range got.Messages {
+		if message.ToolCallID == "read-1" {
+			t.Fatalf("internal validation correction leaked into canonical result messages: %#v", message)
+		}
+	}
 	for _, ev := range rec.Events {
 		if ev.ToolID != "read-1" {
 			continue

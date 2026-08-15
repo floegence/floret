@@ -465,7 +465,8 @@ type Engine struct {
 }
 
 type turnState struct {
-	activeMessages []session.Message
+	activeMessages                []session.Message
+	internalValidationCorrections map[string]bool
 }
 
 type Config struct {
@@ -728,7 +729,7 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 }
 
 func (e *Engine) run(ctx context.Context, userText string) Result {
-	state := &turnState{}
+	state := &turnState{internalValidationCorrections: map[string]bool{}}
 	opts := normalizeOptions(e.options)
 	if opts.WallTime > 0 {
 		var cancel context.CancelFunc
@@ -978,7 +979,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*tools.ActivityPresentation{}
-		internalValidationCorrections := map[string]bool{}
+		internalValidationCorrections := state.internalValidationCorrections
 		callBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
@@ -3962,6 +3963,16 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 		messages = append([]session.Message(nil), state.activeMessages...)
 	} else if e.store != nil {
 		messages, _ = e.store.Transcript(opts.RunID)
+	}
+	if len(state.internalValidationCorrections) > 0 {
+		visible := messages[:0]
+		for _, message := range messages {
+			if state.internalValidationCorrections[message.ToolCallID] {
+				continue
+			}
+			visible = append(visible, message)
+		}
+		messages = visible
 	}
 	return Result{Status: status, FailureOrigin: failureOrigin(status, err), Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState), ProviderStateFresh: decision.ProviderStateFresh}
 }

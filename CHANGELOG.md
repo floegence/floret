@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.0.3 - 2026-08-15
+
+- Exclude provider-only schema correction messages from the engine result used
+  to append canonical thread history, so invalid calls cannot create runtime
+  current-view tool rows after the model recovers.
+
 ## v4.0.2 - 2026-08-15
 
 - Keep schema-invalid local tool calls inside the provider correction loop.
