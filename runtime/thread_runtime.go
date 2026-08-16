@@ -1478,7 +1478,13 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	}
 	executionCtx, cancel := context.WithCancel(context.Background())
 	executionDone := make(chan struct{})
+	request := turnExecutionRequest{
+		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
+		InputFingerprint: fingerprint,
+		Signals:          TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
+	}
 	var result ThreadView
+	var accepted acceptedTurn
 	var queued, replayed bool
 	var previousExecution <-chan struct{}
 	err = actor.apply(ctx, func() error {
@@ -1501,6 +1507,13 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 			actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: fingerprint}
 			queued = true
 			return nil
+		}
+		acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelAccept()
+		var acceptErr error
+		accepted, acceptErr = service.acceptCanonicalTurn(acceptCtx, threadID, request)
+		if acceptErr != nil {
+			return acceptErr
 		}
 		_ = canonical
 		actor.state.turnID, actor.state.runID = turnID, runID
@@ -1539,15 +1552,10 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		go service.persistQueuedInput(actor, threadID, queuedInput, requestKey, fingerprint)
 		return result, nil
 	}
-	request := turnExecutionRequest{
-		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
-		InputFingerprint: fingerprint,
-		Signals:          TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
-	}
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
 		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
 	})
-	go service.acceptAndExecutePreparedSend(executionCtx, actor, prepared, threadID, request, previousExecution, executionDone, requestKey, false)
+	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
 }
 

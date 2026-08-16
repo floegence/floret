@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.10 - 2026-08-16
+
+- Make typed `ThreadService.Send` complete canonical turn acceptance before it
+  returns or publishes the user segment. Acceptance failure now returns to the
+  caller with the thread view unchanged, while provider execution remains
+  asynchronous after the accepted receipt.
+
 ## v4.0.9 - 2026-08-16
 
 - Settle ordered input and tool presentation against canonical terminal facts.

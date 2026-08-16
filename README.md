@@ -142,9 +142,10 @@ queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent
 identity, so they use the same current-view and command contracts.
 
-Each thread has one in-memory runtime owner. `Send` publishes the user item and
-active current view before provider dispatch, while the canonical journal is the
-only durable fact source. Provider and tool I/O execute outside the thread lock.
+Each thread has one in-memory runtime owner. `Send` first commits canonical turn
+acceptance, then publishes and returns the user item and active current view
+before provider dispatch. The canonical journal is the only durable fact
+source. Provider and tool I/O execute outside the thread lock.
 `Cancel` is idempotent for every known thread and fences late provider output.
 `Respond` resolves the matching approval or input interaction in place. An
 uncertain effect is never replayed automatically; `RetryEffect` requires an

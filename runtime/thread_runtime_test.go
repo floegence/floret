@@ -45,6 +45,24 @@ type automaticTitleGateway struct {
 	titles    atomic.Int32
 }
 
+type rejectingRuntimeTurnRepo struct {
+	sessiontree.Repo
+	turns sessiontree.RuntimeTurnRepo
+	err   error
+}
+
+func (repo rejectingRuntimeTurnRepo) AcceptTurn(context.Context, sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
+	return sessiontree.AcceptTurnResult{}, repo.err
+}
+
+func (repo rejectingRuntimeTurnRepo) ReadAcceptedTurn(ctx context.Context, threadID, turnID, runID string) (sessiontree.AcceptTurnResult, bool, error) {
+	return repo.turns.ReadAcceptedTurn(ctx, threadID, turnID, runID)
+}
+
+func (repo rejectingRuntimeTurnRepo) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	return repo.turns.FinishTurn(ctx, request)
+}
+
 type orderedPresentationEventGate struct {
 	mu                     sync.Mutex
 	reasoningEvents        int
@@ -257,6 +275,32 @@ func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	replayed, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-again"})
 	if err != nil || replayed.Activity != ThreadActivityIdle {
 		t.Fatalf("idempotent cancel=%#v prior=%#v err=%v", replayed, cancelled, err)
+	}
+}
+
+func TestThreadServiceSendFailsBeforePublishingWhenCanonicalAcceptanceFails(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-rejected-send"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := host.store.repo
+	turns := original.(sessiontree.RuntimeTurnRepo)
+	host.store.repo = rejectingRuntimeTurnRepo{Repo: original, turns: turns, err: errors.New("injected canonical acceptance failure")}
+	t.Cleanup(func() { host.store.repo = original })
+
+	if _, err := service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "must stay canonical"}, RequestKey: "rejected-send",
+	}); err == nil || !strings.Contains(err.Error(), "injected canonical acceptance failure") {
+		t.Fatalf("Send error=%v, want synchronous canonical acceptance failure", err)
+	}
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Activity != ThreadActivityIdle || len(view.Items) != 0 {
+		t.Fatalf("failed send view=%#v, want unchanged idle thread", view)
 	}
 }
 

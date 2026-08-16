@@ -213,6 +213,13 @@ host ordering store exists. The deprecated `AssistantDraft` and
 `ThinkingDraft` fields are derived compatibility views of the active item and
 must not be used as a second sequence.
 
+`ThreadService.Send` completes low-frequency canonical turn acceptance before
+it publishes or returns the user segment. A storage or validation failure
+therefore returns an error with the actor view unchanged; a segment in an
+accepted receipt cannot disappear because background admission later failed.
+Provider preparation and execution remain asynchronous after that receipt and
+do not block the command boundary.
+
 Input waits are represented by one interaction segment; resolving the input
 updates that segment in place, while the resumed provider output receives a new
 assistant segment. A continuation atomically claims the exact waiting run so
