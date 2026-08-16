@@ -202,6 +202,17 @@ from the canonical journal and merges compaction lifecycle checkpoints by
 operation identity, so restart restores one latest terminal record rather than
 leaving a prior `start` checkpoint as an independent operation.
 
+`ThreadService.View`, `Subscribe`, and `History` expose one ordered
+presentation through `ThreadView.Items`. User, thinking, assistant, tool, and
+independent input-interaction segments receive stable IDs and thread-global
+ordinals on first appearance. Live text grows only its open segment; approval,
+dispatch, result, and failure update the original tool segment without changing
+its ID, ordinal, or position. Canonical journal facts deterministically rebuild
+the same sequence for reload and process restart, so no presentation ledger or
+host ordering store exists. The deprecated `AssistantDraft` and
+`ThinkingDraft` fields are derived compatibility views of the active item and
+must not be used as a second sequence.
+
 Runtime owns admitted conversation, turn/run lifecycle, projections, approval,
 Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache
 facts. Hosts read these through handles and do not persist a second Agent

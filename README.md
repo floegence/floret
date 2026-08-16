@@ -156,10 +156,16 @@ effective snapshot and continuation state used by each run are Floret-owned
 durable facts. Provider credentials and editable profile sources remain in the
 host.
 
-Current views contain directly renderable items, pending interactions, and the
-accepted queue. Their `ViewVersion` is process-local notification ordering, not
-a durable replay cursor. Production hosts leave `runtime.Options.IDSource` nil;
-deterministic identity injection belongs to `florettest.NewIDSource`.
+Current views contain one Floret-ordered sequence of directly renderable user,
+thinking, assistant, tool, and interaction items, plus pending interactions and
+the accepted queue. Each item has a stable ID and ordinal; live deltas grow the
+same item in place, and tool approval, dispatch, and result state update the
+original tool item. Canonical reload derives the same sequence without a
+presentation ledger. `AssistantDraft` and `ThinkingDraft` remain deprecated v4
+wire fields derived from the active item and are not a second ordering source.
+`ViewVersion` is process-local notification ordering, not a durable replay
+cursor. Production hosts leave `runtime.Options.IDSource` nil; deterministic
+identity injection belongs to `florettest.NewIDSource`.
 
 ## Consistent Reads
 

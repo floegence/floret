@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.8 - 2026-08-16
+
+- Expose thinking and all other typed current-view items as one stable ordered
+  presentation sequence. Live text grows in place, tool approval and results
+  retain the original segment identity, and canonical History/reopen rebuilds
+  the same IDs and ordinals without a second presentation ledger.
+
 ## v4.0.6 - 2026-08-16
 
 - Expose canonical thread context and compaction snapshots through the narrow

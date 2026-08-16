@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,7 +211,9 @@ type AttentionSummary struct {
 type ThreadItemKind string
 
 const (
-	ThreadItemUser        ThreadItemKind = "user"
+	ThreadItemUser ThreadItemKind = "user"
+	// ThreadItemThinking is one ordered reasoning segment in a thread view.
+	ThreadItemThinking    ThreadItemKind = "thinking"
 	ThreadItemAssistant   ThreadItemKind = "assistant"
 	ThreadItemTool        ThreadItemKind = "tool"
 	ThreadItemInteraction ThreadItemKind = "interaction"
@@ -218,10 +221,14 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
-	ID          string                    `json:"id"`
-	TurnID      identity.TurnID           `json:"turn_id,omitempty"`
-	Kind        ThreadItemKind            `json:"kind"`
-	Text        string                    `json:"text,omitempty"`
+	ID     string          `json:"id"`
+	TurnID identity.TurnID `json:"turn_id,omitempty"`
+	// Ordinal is the stable one-based position in the thread presentation.
+	Ordinal uint64         `json:"ordinal"`
+	Kind    ThreadItemKind `json:"kind"`
+	Text    string         `json:"text,omitempty"`
+	// Live reports that this segment may still grow in place.
+	Live        bool                      `json:"live,omitempty"`
 	CreatedAt   time.Time                 `json:"created_at,omitempty"`
 	Attachments []MessageAttachment       `json:"attachments,omitempty"`
 	References  []MessageReference        `json:"references,omitempty"`
@@ -310,18 +317,22 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
-	ThreadID       identity.ThreadID   `json:"thread_id"`
-	ViewVersion    uint64              `json:"view_version"`
-	Activity       ThreadActivity      `json:"activity"`
-	Attention      AttentionSummary    `json:"attention"`
-	LastOutcome    *TurnOutcome        `json:"last_outcome,omitempty"`
-	Error          string              `json:"error,omitempty"`
-	TurnID         identity.TurnID     `json:"turn_id,omitempty"`
-	Items          []ThreadItem        `json:"items,omitempty"`
-	Queue          []QueuedInput       `json:"queue,omitempty"`
-	Interactions   []ThreadInteraction `json:"interactions,omitempty"`
-	AssistantDraft string              `json:"assistant_draft,omitempty"`
-	ThinkingDraft  string              `json:"thinking_draft,omitempty"`
+	ThreadID     identity.ThreadID   `json:"thread_id"`
+	ViewVersion  uint64              `json:"view_version"`
+	Activity     ThreadActivity      `json:"activity"`
+	Attention    AttentionSummary    `json:"attention"`
+	LastOutcome  *TurnOutcome        `json:"last_outcome,omitempty"`
+	Error        string              `json:"error,omitempty"`
+	TurnID       identity.TurnID     `json:"turn_id,omitempty"`
+	Items        []ThreadItem        `json:"items,omitempty"`
+	Queue        []QueuedInput       `json:"queue,omitempty"`
+	Interactions []ThreadInteraction `json:"interactions,omitempty"`
+	// Deprecated: derive active assistant content from Items. This field is
+	// retained for v4 wire compatibility and has no independent lifecycle.
+	AssistantDraft string `json:"assistant_draft,omitempty"`
+	// Deprecated: derive active thinking content from Items. This field is
+	// retained for v4 wire compatibility and has no independent lifecycle.
+	ThinkingDraft string `json:"thinking_draft,omitempty"`
 }
 
 // ThreadContextSnapshot is the canonical context and compaction projection for
@@ -722,19 +733,31 @@ func (service *threadRuntimeService) History(ctx context.Context, threadID ident
 	if err != nil {
 		return HistoryPage{}, runtimeHostError(err)
 	}
-	page, err := service.host.store.repo.PathPage(ctx, threadID.String(), meta.LeafID, strings.TrimSpace(before), limit*4)
+	entries, err := service.host.store.repo.Path(ctx, threadID.String(), meta.LeafID)
 	if err != nil {
 		return HistoryPage{}, runtimeHostError(err)
 	}
-	entries := chronologicalEntries(page.Entries)
 	items, _, err := threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return HistoryPage{}, err
 	}
-	if len(items) > limit {
-		items = items[len(items)-limit:]
+	end := len(items)
+	cursor := strings.TrimSpace(before)
+	if cursor != "" {
+		end = threadItemIndexByID(items, cursor)
+		if end < 0 {
+			return HistoryPage{}, runtimeHostError(sessiontree.ErrEntryNotFound)
+		}
 	}
-	return HistoryPage{Items: cloneThreadItems(items), Before: page.NextEntryID, HasMore: page.HasMore}, nil
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	result := HistoryPage{Items: cloneThreadItems(items[start:end]), HasMore: start > 0}
+	if result.HasMore {
+		result.Before = items[start].ID
+	}
+	return result, nil
 }
 
 func (service *threadRuntimeService) Context(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
@@ -1491,7 +1514,9 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Error = ""
-		actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
+		actor.state.openTextSegmentID = ""
+		actor.state.openTextKind = ""
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
 		result = cloneThreadRuntimeView(actor.state.view)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -1741,10 +1766,9 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.cancelOwner = ""
 		}
 		actor.state.view.ViewVersion++
+		actor.finishLiveTextSegment()
 		actor.state.view.AssistantDraft = ""
 		actor.state.view.ThinkingDraft = ""
-		actor.state.assistantDraft = ""
-		actor.state.thinkingDraft = ""
 		actor.state.view.Activity = ThreadActivityIdle
 		outcome := TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
@@ -1767,8 +1791,8 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		if completed.Status != TurnStatusWaiting {
 			actor.state.view.LastOutcome = &outcome
 		}
-		if output := strings.TrimSpace(completed.Output); output != "" && !threadItemsContainID(actor.state.view.Items, "assistant:"+string(turnID)) {
-			actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "assistant:" + string(turnID), TurnID: turnID, Kind: ThreadItemAssistant, Text: output, CreatedAt: time.Now().UTC()})
+		if output := strings.TrimSpace(completed.Output); output != "" && latestThreadTextItem(actor.state.view.Items, turnID, ThreadItemAssistant) < 0 {
+			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: nextThreadTextSegmentID(actor.state.view.Items, turnID, ThreadItemAssistant), TurnID: turnID, Kind: ThreadItemAssistant, Text: output, CreatedAt: time.Now().UTC()})
 		}
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -1778,13 +1802,30 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	}
 }
 
-func threadItemsContainID(items []ThreadItem, id string) bool {
-	for _, item := range items {
-		if item.ID == id {
-			return true
+func latestThreadTextItem(items []ThreadItem, turnID identity.TurnID, kind ThreadItemKind) int {
+	for index := len(items) - 1; index >= 0; index-- {
+		if items[index].TurnID == turnID && items[index].Kind == kind {
+			return index
 		}
 	}
-	return false
+	return -1
+}
+
+func threadItemIndexByID(items []ThreadItem, id string) int {
+	if id == "" {
+		return -1
+	}
+	for index := range items {
+		if items[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func appendThreadItem(items []ThreadItem, item ThreadItem) []ThreadItem {
+	item.Ordinal = uint64(len(items) + 1)
+	return append(items, item)
 }
 
 type threadRuntimeEventSink struct {
@@ -1919,8 +1960,14 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 			return nil, runtimeHostError(err)
 		}
 	}
+	canonicalItems, _, canonicalErr := hydrateThreadRuntimeItems(ctx, service.host.store.repo, threadID)
 	waiter := &pendingThreadInteraction{resolution: make(chan InteractionResolution, 1)}
 	err = actor.apply(ctx, func() error {
+		if canonicalErr == nil {
+			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems); ok {
+				actor.state.view.Items = reconciled
+			}
+		}
 		if actor.state.pendingInteractions == nil {
 			actor.state.pendingInteractions = make(map[string]*pendingThreadInteraction)
 		}
@@ -1936,7 +1983,17 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 		}
 		actor.state.view.Interactions = append(actor.state.view.Interactions, interaction)
 		copy := interaction
-		actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+		if interaction.Kind == ThreadInteractionApproval {
+			for itemIndex := range actor.state.view.Items {
+				item := &actor.state.view.Items[itemIndex]
+				if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == interaction.ToolCallID {
+					item.Interaction = &copy
+					break
+				}
+			}
+		} else {
+			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+		}
 		actor.state.view.ViewVersion++
 		return nil
 	})
@@ -1960,8 +2017,6 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		}
 		if event.Stream != nil {
 			actor.state.view.ViewVersion++
-			actor.state.view.AssistantDraft = actor.state.assistantDraft
-			actor.state.view.ThinkingDraft = actor.state.thinkingDraft
 			current = cloneThreadRuntimeView(actor.state.view)
 			changed = true
 		}
@@ -1989,7 +2044,6 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		return
 	}
 	actor := service.runtime(threadID)
-	baseVersion := service.currentView(actor).ViewVersion
 	items, interactions, err := hydrateThreadRuntimeItems(context.Background(), service.host.store.repo, threadID)
 	if err != nil {
 		return
@@ -1997,17 +2051,18 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	var current ThreadView
 	changed := false
 	_ = actor.apply(context.Background(), func() error {
-		if actor.state.view.ViewVersion != baseVersion {
-			return nil
-		}
 		if turnID != "" && actor.state.turnID != "" && actor.state.turnID != turnID {
 			return nil
 		}
 		if actor.state.view.LastOutcome != nil && *actor.state.view.LastOutcome == TurnOutcomeCancelled && actor.state.view.Activity == ThreadActivityIdle {
 			return nil
 		}
+		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items)
+		if !ok {
+			return nil
+		}
 		actor.state.view.ViewVersion++
-		actor.state.view.Items = items
+		actor.state.view.Items = reconciled
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, interactions)
 		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		current = cloneThreadRuntimeView(actor.state.view)
@@ -2017,6 +2072,52 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	if changed {
 		service.publish(current)
 	}
+}
+
+func reconcileCanonicalThreadItems(current, canonical []ThreadItem) ([]ThreadItem, bool) {
+	if len(current) == 0 {
+		return cloneThreadItems(canonical), true
+	}
+	byOrdinal := make(map[uint64]ThreadItem, len(canonical))
+	for _, item := range canonical {
+		if item.Ordinal == 0 {
+			return nil, false
+		}
+		byOrdinal[item.Ordinal] = item
+	}
+	maxOrdinal := uint64(len(canonical))
+	for _, item := range current {
+		if item.Ordinal == 0 {
+			return nil, false
+		}
+		if item.Ordinal > maxOrdinal {
+			maxOrdinal = item.Ordinal
+		}
+		if committed, exists := byOrdinal[item.Ordinal]; exists {
+			if committed.ID != item.ID {
+				return nil, false
+			}
+			canonicalTerminalTool := committed.Kind == ThreadItemTool && committed.Activity != nil && committed.Activity.Status != observation.ActivityStatusRunning
+			if item.Live && !canonicalTerminalTool {
+				committed.Live = true
+				if item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant {
+					committed.Text = item.Text
+				}
+			}
+			byOrdinal[item.Ordinal] = committed
+			continue
+		}
+		byOrdinal[item.Ordinal] = item
+	}
+	result := make([]ThreadItem, 0, maxOrdinal)
+	for ordinal := uint64(1); ordinal <= maxOrdinal; ordinal++ {
+		item, exists := byOrdinal[ordinal]
+		if !exists {
+			return nil, false
+		}
+		result = append(result, item)
+	}
+	return cloneThreadItems(result), true
 }
 
 func mergeThreadInteractions(current, canonical []ThreadInteraction) []ThreadInteraction {
@@ -2042,14 +2143,25 @@ func mergeThreadInteractions(current, canonical []ThreadInteraction) []ThreadInt
 
 func applyThreadInteractionsToItems(items []ThreadItem, interactions []ThreadInteraction) {
 	byID := make(map[string]ThreadInteraction, len(interactions))
+	byTool := make(map[string]ThreadInteraction, len(interactions))
 	for _, interaction := range interactions {
 		byID[interaction.ID] = interaction
+		if interaction.ToolCallID != "" && (interaction.Kind == ThreadInteractionApproval || interaction.Kind == ThreadInteractionEffectRetry) {
+			byTool[interaction.TurnID.String()+":"+interaction.ToolCallID] = interaction
+		}
 	}
 	for index := range items {
-		if items[index].Interaction == nil {
+		if items[index].Interaction != nil {
+			if interaction, found := byID[items[index].Interaction.ID]; found {
+				copy := interaction
+				items[index].Interaction = &copy
+			}
 			continue
 		}
-		if interaction, found := byID[items[index].Interaction.ID]; found {
+		if items[index].Kind != ThreadItemTool || items[index].Activity == nil {
+			continue
+		}
+		if interaction, found := byTool[items[index].TurnID.String()+":"+items[index].Activity.ToolID]; found {
 			copy := interaction
 			items[index].Interaction = &copy
 		}
@@ -2488,6 +2600,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Error = ""
+		actor.finishLiveTextSegment()
 		actor.state.view.AssistantDraft = ""
 		actor.state.view.ThinkingDraft = ""
 		if actor.state.requestKeys == nil {
@@ -2690,7 +2803,9 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 				}
 			}
 		}
-		actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
+		actor.state.openTextSegmentID = ""
+		actor.state.openTextKind = ""
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -2753,6 +2868,8 @@ func (service *threadRuntimeService) rollbackPromotedSend(actor *threadRuntimeSt
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
+	view.AssistantDraft = liveThreadText(view.Items, ThreadItemAssistant)
+	view.ThinkingDraft = liveThreadText(view.Items, ThreadItemThinking)
 	view.Attention = AttentionSummary{}
 	for _, interaction := range view.Interactions {
 		if interaction.Resolved {
@@ -2769,6 +2886,15 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	view.Queue = append([]QueuedInput(nil), view.Queue...)
 	view.Interactions = cloneThreadInteractions(view.Interactions)
 	return view
+}
+
+func liveThreadText(items []ThreadItem, kind ThreadItemKind) string {
+	for index := len(items) - 1; index >= 0; index-- {
+		if items[index].Kind == kind && items[index].Live {
+			return items[index].Text
+		}
+	}
+	return ""
 }
 
 func cloneThreadItems(items []ThreadItem) []ThreadItem {
@@ -2862,11 +2988,11 @@ func hydrateThreadRuntimeItems(ctx context.Context, repo sessiontree.JournalRepo
 	if err != nil {
 		return nil, nil, runtimeHostError(err)
 	}
-	page, err := repo.PathPage(ctx, threadID.String(), meta.LeafID, "", 500)
+	entries, err := repo.Path(ctx, threadID.String(), meta.LeafID)
 	if err != nil {
 		return nil, nil, runtimeHostError(err)
 	}
-	return threadRuntimeItemsFromEntries(chronologicalEntries(page.Entries))
+	return threadRuntimeItemsFromEntries(entries)
 }
 
 func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID identity.ThreadID) (sessiontree.ThreadMeta, error) {
@@ -2883,27 +3009,36 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 	return meta, nil
 }
 
-func chronologicalEntries(newestFirst []sessiontree.Entry) []sessiontree.Entry {
-	entries := make([]sessiontree.Entry, len(newestFirst))
-	for index := range newestFirst {
-		entries[len(newestFirst)-1-index] = newestFirst[index]
-	}
-	return entries
-}
-
 func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, []ThreadInteraction, error) {
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
 	interactionIndex := make(map[string]int)
 	itemIndex := make(map[string]int)
 	toolItemIndex := make(map[string]int)
+	thinkingCounts := make(map[identity.TurnID]int)
+	assistantCounts := make(map[identity.TurnID]int)
+	reasoningOpen := make(map[identity.TurnID]bool)
+	lastReasoning := make(map[identity.TurnID]string)
+	appendReasoning := func(turnID identity.TurnID, text string, createdAt time.Time) {
+		if text == "" || reasoningOpen[turnID] && lastReasoning[turnID] == text {
+			return
+		}
+		thinkingCounts[turnID]++
+		items = appendThreadItem(items, ThreadItem{
+			ID:     "thinking:" + turnID.String() + ":" + strconv.Itoa(thinkingCounts[turnID]),
+			TurnID: turnID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt,
+		})
+		reasoningOpen[turnID] = true
+		lastReasoning[turnID] = text
+	}
 	for _, entry := range entries {
 		turnID := identity.TurnID(entry.TurnID)
 		switch entry.Type {
 		case sessiontree.EntryUserMessage:
-			items = append(items, ThreadItem{ID: entry.ID, TurnID: turnID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: entry.CreatedAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References)})
+			items = appendThreadItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: entry.CreatedAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References)})
 		case sessiontree.EntryAssistantMessage:
 			if entry.Message.Kind != "control_signal" {
+				appendReasoning(turnID, entry.Message.Reasoning, entry.CreatedAt)
 				if len(items) > 0 {
 					previous := &items[len(items)-1]
 					if previous.Kind == ThreadItemAssistant && previous.TurnID == turnID {
@@ -2911,7 +3046,8 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 						continue
 					}
 				}
-				items = append(items, ThreadItem{ID: "assistant:" + turnID.String(), TurnID: turnID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: entry.CreatedAt})
+				assistantCounts[turnID]++
+				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: entry.CreatedAt})
 			}
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
 			if entry.Message.Kind == "control_signal" && entry.Message.ControlSignal != nil {
@@ -2922,17 +3058,23 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 					interactions = append(interactions, interaction)
 					copy := interaction
 					itemIndex[interaction.ID] = len(items)
-					items = append(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, Kind: ThreadItemInteraction, Interaction: &copy})
+					items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, Kind: ThreadItemInteraction, Interaction: &copy})
 				}
 				continue
 			}
+			if entry.Type == sessiontree.EntryToolCall {
+				appendReasoning(turnID, entry.Message.Reasoning, entry.CreatedAt)
+			}
 			activity := activityItemFromCanonicalEntry(entry)
-			if previous, found := toolItemIndex[entry.Message.ToolCallID]; found && entry.Type == sessiontree.EntryToolResult {
-				items[previous] = ThreadItem{ID: entry.ID, TurnID: turnID, Kind: ThreadItemTool, Activity: &activity}
+			toolKey := turnID.String() + ":" + entry.Message.ToolCallID
+			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
+				items[previous].Activity = &activity
+				items[previous].Live = false
+				reasoningOpen[turnID] = false
 				continue
 			}
-			toolItemIndex[entry.Message.ToolCallID] = len(items)
-			items = append(items, ThreadItem{ID: entry.ID, TurnID: turnID, Kind: ThreadItemTool, Activity: &activity})
+			toolItemIndex[toolKey] = len(items)
+			items = appendThreadItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, Kind: ThreadItemTool, Activity: &activity})
 		case sessiontree.EntryEffectAttempt:
 			attempt, decodeErr := sessiontree.DecodeCanonicalEffectAttempt(entry)
 			if decodeErr != nil {
@@ -2962,8 +3104,10 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			interactionIndex[interaction.ID] = len(interactions)
 			interactions = append(interactions, interaction)
 			copy := interaction
-			itemIndex[interaction.ID] = len(items)
-			items = append(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+			if toolIndex, exists := toolItemIndex[interaction.TurnID.String()+":"+interaction.ToolCallID]; exists {
+				itemIndex[interaction.ID] = toolIndex
+				items[toolIndex].Interaction = &copy
+			}
 		case sessiontree.EntryInteractionAsked:
 			var interaction ThreadInteraction
 			if err := json.Unmarshal(entry.Payload, &interaction); err != nil {
@@ -2984,8 +3128,15 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			interactionIndex[interaction.ID] = len(interactions)
 			interactions = append(interactions, interaction)
 			copy := interaction
+			if interaction.Kind == ThreadInteractionApproval {
+				if toolIndex, exists := toolItemIndex[interaction.TurnID.String()+":"+interaction.ToolCallID]; exists {
+					itemIndex[interaction.ID] = toolIndex
+					items[toolIndex].Interaction = &copy
+				}
+				continue
+			}
 			itemIndex[interaction.ID] = len(items)
-			items = append(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+			items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
 		case sessiontree.EntryInteractionDone:
 			interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
 			index, ok := interactionIndex[interactionID]
@@ -3007,6 +3158,16 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				copy := interactions[interactionIndex[interactionID]]
 				items[index].Interaction = &copy
 			}
+		}
+	}
+	for interactionPosition := range interactions {
+		interaction := interactions[interactionPosition]
+		if interaction.Kind != ThreadInteractionApproval && interaction.Kind != ThreadInteractionEffectRetry {
+			continue
+		}
+		if toolIndex, exists := toolItemIndex[interaction.TurnID.String()+":"+interaction.ToolCallID]; exists {
+			copy := interaction
+			items[toolIndex].Interaction = &copy
 		}
 	}
 	return items, interactions, nil
@@ -3033,6 +3194,10 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.Activit
 		}
 	}
 	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: tools.CloneActivityPresentation(entry.Message.Activity)}
+}
+
+func threadToolSegmentID(turnID identity.TurnID, toolCallID string) string {
+	return "tool:" + turnID.String() + ":" + strings.TrimSpace(toolCallID)
 }
 
 func inputPresentationFromControlSignal(text string, payload map[string]any) *InputPresentation {

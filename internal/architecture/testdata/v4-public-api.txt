@@ -805,8 +805,10 @@ type ThreadInteractionKind string
 type ThreadItem struct
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v4/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadItem.Ordinal uint64 tag="json:\"ordinal\""
 field ThreadItem.Kind github.com/floegence/floret/v4/runtime.ThreadItemKind tag="json:\"kind\""
 field ThreadItem.Text string tag="json:\"text,omitempty\""
+field ThreadItem.Live bool tag="json:\"live,omitempty\""
 field ThreadItem.CreatedAt time.Time tag="json:\"created_at,omitempty\""
 field ThreadItem.Attachments []github.com/floegence/floret/v4/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
 field ThreadItem.References []github.com/floegence/floret/v4/runtime.MessageReference tag="json:\"references,omitempty\""
@@ -815,6 +817,7 @@ field ThreadItem.Interaction *github.com/floegence/floret/v4/runtime.ThreadInter
 const ThreadItemAssistant github.com/floegence/floret/v4/runtime.ThreadItemKind = "assistant"
 const ThreadItemInteraction github.com/floegence/floret/v4/runtime.ThreadItemKind = "interaction"
 type ThreadItemKind string
+const ThreadItemThinking github.com/floegence/floret/v4/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v4/runtime.ThreadItemKind = "tool"
 const ThreadItemUser github.com/floegence/floret/v4/runtime.ThreadItemKind = "user"
 type ThreadPhase string

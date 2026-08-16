@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,8 +26,8 @@ type threadRuntimeData struct {
 	logicalRequestID    identity.LogicalRequestID
 	attemptID           string
 	attemptEpoch        int
-	assistantDraft      string
-	thinkingDraft       string
+	openTextSegmentID   string
+	openTextKind        ThreadItemKind
 	view                ThreadView
 	cancel              context.CancelFunc
 	cancelOwner         string
@@ -82,8 +83,7 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		case attemptEpoch == runtime.state.attemptEpoch && runtime.state.attemptID != "" && attemptID != runtime.state.attemptID:
 			return false
 		case attemptEpoch > runtime.state.attemptEpoch:
-			runtime.state.assistantDraft = ""
-			runtime.state.thinkingDraft = ""
+			runtime.finishLiveTextSegment()
 		}
 		runtime.state.logicalRequestID = logicalRequestID
 		runtime.state.attemptID = attemptID
@@ -92,12 +92,82 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if event.Stream != nil {
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:
-			runtime.state.assistantDraft += event.Stream.Text
+			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text)
 		case StreamObservationReasoningDelta:
-			runtime.state.thinkingDraft += event.Stream.Text
+			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text)
+		case StreamObservationToolCallStart, StreamObservationToolCallDelta:
+			runtime.finishLiveTextSegment()
+		case StreamObservationToolCallEnd:
+			runtime.finishLiveTextSegment()
+			runtime.appendLiveToolSegment(event.Stream.ToolCallStream)
+		case StreamObservationModelRetry:
+			runtime.finishLiveTextSegment()
 		}
 	}
 	return true
+}
+
+func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream) {
+	if runtime == nil || stream == nil || strings.TrimSpace(stream.ID) == "" {
+		return
+	}
+	name := strings.TrimSpace(stream.Name)
+	if name == CoreControlAskUser || name == CoreControlTaskComplete {
+		return
+	}
+	id := threadToolSegmentID(runtime.state.turnID, stream.ID)
+	if threadItemIndexByID(runtime.state.view.Items, id) >= 0 {
+		return
+	}
+	activity := observation.ActivityItem{
+		ItemID: id, ToolID: strings.TrimSpace(stream.ID), ToolName: name,
+		Kind: observation.ActivityKindTool, Status: observation.ActivityStatusRunning,
+	}
+	runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
+		ID: id, TurnID: runtime.state.turnID, Kind: ThreadItemTool, Live: true, Activity: &activity,
+	})
+}
+
+func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string) {
+	if runtime == nil || text == "" {
+		return
+	}
+	if runtime.state.openTextSegmentID != "" && runtime.state.openTextKind != kind {
+		runtime.finishLiveTextSegment()
+	}
+	if runtime.state.openTextSegmentID == "" {
+		runtime.state.openTextSegmentID = nextThreadTextSegmentID(runtime.state.view.Items, runtime.state.turnID, kind)
+		runtime.state.openTextKind = kind
+		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
+			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, Kind: kind, Live: true,
+		})
+	}
+	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {
+		runtime.state.view.Items[index].Text += text
+		runtime.state.view.Items[index].Live = true
+	}
+}
+
+func (runtime *threadRuntimeState) finishLiveTextSegment() {
+	if runtime == nil {
+		return
+	}
+	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {
+		runtime.state.view.Items[index].Live = false
+	}
+	runtime.state.openTextSegmentID = ""
+	runtime.state.openTextKind = ""
+}
+
+func nextThreadTextSegmentID(items []ThreadItem, turnID identity.TurnID, kind ThreadItemKind) string {
+	prefix := string(kind) + ":" + turnID.String() + ":"
+	next := 1
+	for _, item := range items {
+		if item.TurnID == turnID && item.Kind == kind && strings.HasPrefix(item.ID, prefix) {
+			next++
+		}
+	}
+	return prefix + strconv.Itoa(next)
 }
 
 func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, int, bool) {

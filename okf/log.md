@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-16
+* **Ordered thread presentation**: Typed current views now expose stable
+  user/thinking/assistant/tool/interaction segment IDs and ordinals. Live text
+  and tool lifecycle changes update in place, while canonical reload derives
+  the same order without a durable presentation ledger or host-side sorting.
 * **Canonical thread context read**: The typed runtime service now implements a
   narrow `ThreadContextReader` that derives context and merged compaction
   lifecycle from the canonical journal, including after restart.

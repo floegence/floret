@@ -14,6 +14,13 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 
 # Steps
 
+For the typed v4 `ThreadService`, render `ThreadView.Items` exactly in supplied
+ordinal order. Use `ThreadItem.ID` as the row key, update matching items in
+place, and treat `ThreadItemThinking` like any other ordered segment. Do not
+append deprecated `AssistantDraft` or `ThinkingDraft` after the item list, and
+do not sort by timestamp, kind, tool identity, or arrival time. `View`,
+`Subscribe`, `History`, and reopen all derive the same order from Floret.
+
 1. Call `ThreadReader.Bootstrap`, retain its revision and page cursor, then
    render canonical `ThreadTurnProjection` segments in their supplied order.
 2. Treat `runtime.Event` and `observation.Event` as transient hints. Validate

@@ -66,6 +66,10 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 			t.Fatal(viewErr)
 		}
 		if view.Activity == runtime.ThreadActivityIdle && view.LastOutcome != nil {
+			if len(view.Items) != 2 || view.Items[0].Ordinal != 1 || view.Items[1].Ordinal != 2 || view.Items[1].Kind != runtime.ThreadItemAssistant {
+				t.Fatalf("published ordered presentation=%#v", view.Items)
+			}
+			_ = runtime.ThreadItem{ID: "adoption-thinking", Ordinal: 1, Kind: runtime.ThreadItemThinking, Live: true}
 			break
 		}
 		if time.Now().After(deadline) {

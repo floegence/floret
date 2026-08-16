@@ -45,6 +45,91 @@ type automaticTitleGateway struct {
 	titles    atomic.Int32
 }
 
+type orderedPresentationEventGate struct {
+	mu                     sync.Mutex
+	reasoningEvents        int
+	toolStartEvents        int
+	modelDoneEvents        int
+	firstToolStart         chan struct{}
+	releaseFirstToolStart  chan struct{}
+	secondReasoning        chan struct{}
+	releaseSecondReasoning chan struct{}
+	secondToolStart        chan struct{}
+	releaseSecondToolStart chan struct{}
+	finalDelta             chan struct{}
+	releaseFinalDelta      chan struct{}
+	finalDone              chan struct{}
+	releaseFinalDone       chan struct{}
+}
+
+func newOrderedPresentationEventGate() *orderedPresentationEventGate {
+	return &orderedPresentationEventGate{
+		firstToolStart: make(chan struct{}, 1), releaseFirstToolStart: make(chan struct{}, 1),
+		secondReasoning: make(chan struct{}, 1), releaseSecondReasoning: make(chan struct{}, 1),
+		secondToolStart: make(chan struct{}, 1), releaseSecondToolStart: make(chan struct{}, 1),
+		finalDelta: make(chan struct{}, 1), releaseFinalDelta: make(chan struct{}, 1),
+		finalDone: make(chan struct{}, 1), releaseFinalDone: make(chan struct{}, 1),
+	}
+}
+
+func (gate *orderedPresentationEventGate) EmitEvent(event Event) {
+	if gate == nil || event.Stream == nil {
+		return
+	}
+	var arrived, release chan struct{}
+	gate.mu.Lock()
+	switch event.Stream.Type {
+	case StreamObservationReasoningDelta:
+		gate.reasoningEvents++
+		if gate.reasoningEvents == 2 {
+			arrived, release = gate.secondReasoning, gate.releaseSecondReasoning
+		}
+	case StreamObservationToolCallEnd:
+		gate.toolStartEvents++
+		if gate.toolStartEvents == 1 {
+			arrived, release = gate.firstToolStart, gate.releaseFirstToolStart
+		} else if gate.toolStartEvents == 2 {
+			arrived, release = gate.secondToolStart, gate.releaseSecondToolStart
+		}
+	case StreamObservationAssistantDelta:
+		arrived, release = gate.finalDelta, gate.releaseFinalDelta
+	case StreamObservationModelStreamDone:
+		gate.modelDoneEvents++
+		if gate.modelDoneEvents == 3 {
+			arrived, release = gate.finalDone, gate.releaseFinalDone
+		}
+	}
+	gate.mu.Unlock()
+	if arrived != nil {
+		arrived <- struct{}{}
+		<-release
+	}
+}
+
+func (gate *orderedPresentationEventGate) wait(t *testing.T, checkpoint <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-checkpoint:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ordered presentation event checkpoint timed out")
+	}
+}
+
+func (gate *orderedPresentationEventGate) release(checkpoint chan<- struct{}) {
+	select {
+	case checkpoint <- struct{}{}:
+	default:
+	}
+}
+
+func (gate *orderedPresentationEventGate) releaseAll() {
+	gate.release(gate.releaseFirstToolStart)
+	gate.release(gate.releaseSecondReasoning)
+	gate.release(gate.releaseSecondToolStart)
+	gate.release(gate.releaseFinalDelta)
+	gate.release(gate.releaseFinalDone)
+}
+
 func (*automaticTitleGateway) Identity() provider.Identity {
 	return provider.Identity{Provider: "test", Model: "automatic-title", StateCompatibilityKey: "test:automatic-title:v1"}
 }
@@ -609,6 +694,246 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 	t.Fatalf("canonical tool result missing: %#v", completed.Items)
 }
 
+func TestThreadServicePreservesOrderedReasoningAndToolsAcrossApprovalAndReopen(t *testing.T) {
+	path := t.TempDir() + "/ordered-presentation.db"
+	eventGate := newOrderedPresentationEventGate()
+	t.Cleanup(eventGate.releaseAll)
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningSupported, ReasoningCapability: config.ReasoningCapability{Kind: config.ReasoningKindNone}},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventReasoning, Text: "reasoning-1"},
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ordered-tool-1", Name: "ordered_shell", Args: `{"command":"first"}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventReasoning, Text: "reasoning-2"},
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ordered-tool-2", Name: "ordered_shell", Args: `{"command":"second"}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "final-text"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	exitCode := 0
+	toolStarted := make(chan string, 2)
+	toolRelease := make(chan struct{}, 2)
+	t.Cleanup(func() {
+		select {
+		case toolRelease <- struct{}{}:
+		default:
+		}
+		select {
+		case toolRelease <- struct{}{}:
+		default:
+		}
+	})
+	effectTool := tools.Define[map[string]string](
+		tools.Definition{
+			Name: "ordered_shell", InputSchema: tools.StrictObject(map[string]any{"command": tools.String("command")}, []string{"command"}),
+			Effects: []tools.Effect{tools.EffectShell}, Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+				args, _ := inv.Args.(map[string]string)
+				return &tools.ActivityPresentation{Label: "Ordered shell", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: args["command"]}}, nil
+			},
+		},
+		nil, nil,
+		func(_ context.Context, inv tools.Invocation[map[string]string]) (tools.Result, error) {
+			toolStarted <- inv.Args["command"]
+			<-toolRelease
+			return tools.Result{Text: "result-" + inv.Args["command"], Activity: &tools.ActivityPresentation{
+				Label: "Ordered shell", Renderer: tools.ActivityRendererTerminal,
+				Payload: tools.TerminalActivityPayload{Command: inv.Args["command"], Status: string(observation.ActivityStatusSuccess), Stdout: "result-" + inv.Args["command"], ExitCode: &exitCode},
+			}}, nil
+		},
+	)
+	agent, err := testAgent(gateway,
+		WithAgentTools(effectTool),
+		WithAgentEventSink(eventGate),
+		WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+			return effect(ctx, EffectAuthorizationProof{
+				EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+				ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+				PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+			})
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-ordered-presentation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "run two tools"}, RequestKey: "send-ordered-presentation"}); err != nil {
+		t.Fatal(err)
+	}
+
+	eventGate.wait(t, eventGate.firstToolStart)
+	firstThinking := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking)
+	})
+	assertOrderedThreadItems(t, firstThinking.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "run two tools"},
+		{kind: ThreadItemThinking, text: "reasoning-1"},
+	})
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, firstThinking.Items)
+	eventGate.release(eventGate.releaseFirstToolStart)
+
+	firstWaiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return unresolvedApprovalCount(view) == 1 && threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool)
+	})
+	assertOrderedThreadItems(t, firstWaiting.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "run two tools"},
+		{kind: ThreadItemThinking, text: "reasoning-1"},
+		{kind: ThreadItemTool, toolID: "ordered-tool-1"},
+	})
+	assertToolInteractionState(t, firstWaiting.Items, "ordered-tool-1", false)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, firstWaiting.Items)
+	firstPrefix := orderedThreadItemIdentity(firstWaiting.Items)
+	approved := true
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: unresolvedApprovalID(firstWaiting), Answers: []InteractionAnswer{{Approved: &approved}}, RequestKey: "approve-ordered-tool-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if command := waitString(t, toolStarted); command != "first" {
+		t.Fatalf("first running command=%q", command)
+	}
+	firstRunning := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return unresolvedApprovalCount(view) == 0 && threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool)
+	})
+	assertStableThreadItemPrefix(t, firstPrefix, firstRunning.Items)
+	if status := threadToolStatus(firstRunning.Items, "ordered-tool-1"); status != observation.ActivityStatusRunning {
+		t.Fatalf("first running tool status=%q", status)
+	}
+	assertToolInteractionState(t, firstRunning.Items, "ordered-tool-1", true)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, firstRunning.Items)
+	toolRelease <- struct{}{}
+	eventGate.wait(t, eventGate.secondReasoning)
+	firstCompleted := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return threadToolStatus(view.Items, "ordered-tool-1") == observation.ActivityStatusSuccess
+	})
+	assertStableThreadItemPrefix(t, firstPrefix, firstCompleted.Items)
+	assertThreadToolTerminal(t, firstCompleted.Items, "ordered-tool-1")
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, firstCompleted.Items)
+	eventGate.release(eventGate.releaseSecondReasoning)
+	eventGate.wait(t, eventGate.secondToolStart)
+	secondThinking := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool, ThreadItemThinking)
+	})
+	assertStableThreadItemPrefix(t, firstPrefix, secondThinking.Items)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, secondThinking.Items)
+	eventGate.release(eventGate.releaseSecondToolStart)
+
+	secondWaiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return unresolvedApprovalCount(view) == 1 && threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool, ThreadItemThinking, ThreadItemTool)
+	})
+	assertStableThreadItemPrefix(t, firstPrefix, secondWaiting.Items)
+	assertOrderedThreadItems(t, secondWaiting.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "run two tools"},
+		{kind: ThreadItemThinking, text: "reasoning-1"},
+		{kind: ThreadItemTool, toolID: "ordered-tool-1"},
+		{kind: ThreadItemThinking, text: "reasoning-2"},
+		{kind: ThreadItemTool, toolID: "ordered-tool-2"},
+	})
+	assertToolInteractionState(t, secondWaiting.Items, "ordered-tool-2", false)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, secondWaiting.Items)
+	secondPrefix := orderedThreadItemIdentity(secondWaiting.Items)
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: unresolvedApprovalID(secondWaiting), Answers: []InteractionAnswer{{Approved: &approved}}, RequestKey: "approve-ordered-tool-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if command := waitString(t, toolStarted); command != "second" {
+		t.Fatalf("second running command=%q", command)
+	}
+	secondRunning := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return unresolvedApprovalCount(view) == 0 && threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool, ThreadItemThinking, ThreadItemTool)
+	})
+	assertStableThreadItemPrefix(t, secondPrefix, secondRunning.Items)
+	if status := threadToolStatus(secondRunning.Items, "ordered-tool-2"); status != observation.ActivityStatusRunning {
+		t.Fatalf("second running tool status=%q", status)
+	}
+	assertToolInteractionState(t, secondRunning.Items, "ordered-tool-2", true)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, secondRunning.Items)
+	toolRelease <- struct{}{}
+	eventGate.wait(t, eventGate.finalDelta)
+	secondCompleted := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return threadToolStatus(view.Items, "ordered-tool-2") == observation.ActivityStatusSuccess
+	})
+	assertStableThreadItemPrefix(t, secondPrefix, secondCompleted.Items)
+	assertThreadToolTerminal(t, secondCompleted.Items, "ordered-tool-2")
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, secondCompleted.Items)
+	eventGate.release(eventGate.releaseFinalDelta)
+	eventGate.wait(t, eventGate.finalDone)
+	finalLive := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool, ThreadItemThinking, ThreadItemTool, ThreadItemAssistant)
+	})
+	assertStableThreadItemPrefix(t, secondPrefix, finalLive.Items)
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, finalLive.Items)
+	eventGate.release(eventGate.releaseFinalDone)
+
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && threadItemKinds(view.Items, ThreadItemUser, ThreadItemThinking, ThreadItemTool, ThreadItemThinking, ThreadItemTool, ThreadItemAssistant)
+	})
+	assertStableThreadItemPrefix(t, secondPrefix, completed.Items)
+	assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "run two tools"},
+		{kind: ThreadItemThinking, text: "reasoning-1"},
+		{kind: ThreadItemTool, toolID: "ordered-tool-1"},
+		{kind: ThreadItemThinking, text: "reasoning-2"},
+		{kind: ThreadItemTool, toolID: "ordered-tool-2"},
+		{kind: ThreadItemAssistant, text: "final-text"},
+	})
+	assertNoLiveThreadItems(t, completed.Items)
+
+	assertSubscriptionThreadItems(t, subscription, created.ThreadID, completed.Items)
+	subscription.Close()
+	history, err := service.History(t.Context(), created.ThreadID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStableThreadItemPrefix(t, orderedThreadItemIdentity(completed.Items), history.Items)
+	latestPage, err := service.History(t.Context(), created.ThreadID, "", 2)
+	if err != nil || len(latestPage.Items) != 2 || latestPage.Items[0].Ordinal != 5 || latestPage.Items[1].Ordinal != 6 || !latestPage.HasMore {
+		t.Fatalf("latest ordered history page=%#v err=%v", latestPage, err)
+	}
+	middlePage, err := service.History(t.Context(), created.ThreadID, latestPage.Before, 2)
+	if err != nil || len(middlePage.Items) != 2 || middlePage.Items[0].Ordinal != 3 || middlePage.Items[1].Ordinal != 4 || !middlePage.HasMore {
+		t.Fatalf("middle ordered history page=%#v err=%v", middlePage, err)
+	}
+	oldestPage, err := service.History(t.Context(), created.ThreadID, middlePage.Before, 2)
+	if err != nil || len(oldestPage.Items) != 2 || oldestPage.Items[0].Ordinal != 1 || oldestPage.Items[1].Ordinal != 2 || oldestPage.HasMore {
+		t.Fatalf("oldest ordered history page=%#v err=%v", oldestPage, err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStableThreadItemPrefix(t, orderedThreadItemIdentity(completed.Items), reopened.Items)
+	assertNoLiveThreadItems(t, reopened.Items)
+}
+
 func TestThreadServiceRetryReusesCanonicalUserInput(t *testing.T) {
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
@@ -723,17 +1048,17 @@ func TestThreadRuntimeFencesLateAndDuplicateProviderAttempts(t *testing.T) {
 	current := Event{ThreadID: "thread-current", TurnID: "turn-current", RunID: "run-current", Stream: &StreamObservation{
 		Type: StreamObservationAssistantDelta, Text: "new", LogicalRequestID: "request", AttemptID: "attempt-2", AttemptEpoch: 2,
 	}}
-	if !actor.acceptLiveEvent(current) || actor.state.assistantDraft != "new" {
+	if !actor.acceptLiveEvent(current) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("current attempt was not accepted: %#v", actor.state)
 	}
 	late := current
 	late.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "stale", LogicalRequestID: "request", AttemptID: "attempt-1", AttemptEpoch: 1}
-	if actor.acceptLiveEvent(late) || actor.state.assistantDraft != "new" {
+	if actor.acceptLiveEvent(late) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("late attempt changed draft: %#v", actor.state)
 	}
 	duplicateIdentity := current
 	duplicateIdentity.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "other", LogicalRequestID: "request", AttemptID: "attempt-other", AttemptEpoch: 2}
-	if actor.acceptLiveEvent(duplicateIdentity) || actor.state.assistantDraft != "new" {
+	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("conflicting attempt changed draft: %#v", actor.state)
 	}
 }
@@ -1063,6 +1388,184 @@ func countThreadItems(items []ThreadItem, kind ThreadItemKind) int {
 		}
 	}
 	return count
+}
+
+type orderedThreadItemExpectation struct {
+	kind   ThreadItemKind
+	text   string
+	toolID string
+}
+
+type orderedThreadItemIdentitySnapshot struct {
+	ID      string
+	Ordinal uint64
+}
+
+func threadItemKinds(items []ThreadItem, kinds ...ThreadItemKind) bool {
+	if len(items) != len(kinds) {
+		return false
+	}
+	for index := range kinds {
+		if items[index].Kind != kinds[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertOrderedThreadItems(t *testing.T, items []ThreadItem, expected []orderedThreadItemExpectation) {
+	t.Helper()
+	if len(items) != len(expected) {
+		t.Fatalf("ordered items=%#v, want %d items", items, len(expected))
+	}
+	seenIDs := make(map[string]struct{}, len(items))
+	for index, want := range expected {
+		item := items[index]
+		if item.ID == "" || item.Ordinal != uint64(index+1) || item.Kind != want.kind {
+			t.Fatalf("ordered item[%d]=%#v, want kind=%q ordinal=%d", index, item, want.kind, index+1)
+		}
+		if _, duplicate := seenIDs[item.ID]; duplicate {
+			t.Fatalf("ordered item ID %q is duplicated: %#v", item.ID, items)
+		}
+		seenIDs[item.ID] = struct{}{}
+		if want.text != "" && item.Text != want.text {
+			t.Fatalf("ordered item[%d] text=%q, want %q", index, item.Text, want.text)
+		}
+		if want.toolID != "" && (item.Activity == nil || item.Activity.ToolID != want.toolID) {
+			t.Fatalf("ordered item[%d] activity=%#v, want tool %q", index, item.Activity, want.toolID)
+		}
+	}
+}
+
+func orderedThreadItemIdentity(items []ThreadItem) []orderedThreadItemIdentitySnapshot {
+	out := make([]orderedThreadItemIdentitySnapshot, len(items))
+	for index, item := range items {
+		out[index] = orderedThreadItemIdentitySnapshot{ID: item.ID, Ordinal: item.Ordinal}
+	}
+	return out
+}
+
+func assertStableThreadItemPrefix(t *testing.T, prefix []orderedThreadItemIdentitySnapshot, items []ThreadItem) {
+	t.Helper()
+	if len(items) < len(prefix) {
+		t.Fatalf("ordered sequence shrank from %d to %d: %#v", len(prefix), len(items), items)
+	}
+	for index, want := range prefix {
+		if items[index].ID != want.ID || items[index].Ordinal != want.Ordinal {
+			t.Fatalf("ordered prefix changed at %d: got=(%q,%d) want=(%q,%d)", index, items[index].ID, items[index].Ordinal, want.ID, want.Ordinal)
+		}
+	}
+}
+
+func unresolvedApprovalCount(view ThreadView) int {
+	count := 0
+	for _, interaction := range view.Interactions {
+		if interaction.Kind == ThreadInteractionApproval && !interaction.Resolved {
+			count++
+		}
+	}
+	return count
+}
+
+func unresolvedApprovalID(view ThreadView) string {
+	for _, interaction := range view.Interactions {
+		if interaction.Kind == ThreadInteractionApproval && !interaction.Resolved {
+			return interaction.ID
+		}
+	}
+	return ""
+}
+
+func threadToolStatus(items []ThreadItem, toolID string) observation.ActivityStatus {
+	for _, item := range items {
+		if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == toolID {
+			return item.Activity.Status
+		}
+	}
+	return ""
+}
+
+func assertToolInteractionState(t *testing.T, items []ThreadItem, toolID string, resolved bool) {
+	t.Helper()
+	for _, item := range items {
+		if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == toolID {
+			if item.Interaction == nil || item.Interaction.Kind != ThreadInteractionApproval || item.Interaction.Resolved != resolved {
+				t.Fatalf("tool %q interaction=%#v, want resolved=%v", toolID, item.Interaction, resolved)
+			}
+			return
+		}
+	}
+	t.Fatalf("tool %q is missing from %#v", toolID, items)
+}
+
+func assertThreadToolTerminal(t *testing.T, items []ThreadItem, toolID string) {
+	t.Helper()
+	for _, item := range items {
+		if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == toolID {
+			if item.Live || item.Activity.Status != observation.ActivityStatusSuccess {
+				t.Fatalf("tool %q terminal item=%#v", toolID, item)
+			}
+			return
+		}
+	}
+	t.Fatalf("tool %q is missing from %#v", toolID, items)
+}
+
+func assertNoLiveThreadItems(t *testing.T, items []ThreadItem) {
+	t.Helper()
+	for _, item := range items {
+		if item.Live {
+			t.Fatalf("terminal sequence retains live item %#v", item)
+		}
+	}
+}
+
+func waitString(t *testing.T, values <-chan string) string {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(3 * time.Second):
+		t.Fatal("ordered presentation tool checkpoint timed out")
+		return ""
+	}
+}
+
+func assertSubscriptionThreadItems(t *testing.T, subscription *WorkspaceSubscription, threadID identity.ThreadID, expected []ThreadItem) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	for {
+		view, err := subscription.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.ThreadID == threadID && sameThreadItemCheckpoint(view.Items, expected) {
+			return
+		}
+	}
+}
+
+func sameThreadItemCheckpoint(items, expected []ThreadItem) bool {
+	if len(items) != len(expected) {
+		return false
+	}
+	for index := range expected {
+		left, right := items[index], expected[index]
+		if left.ID != right.ID || left.Ordinal != right.Ordinal || left.Kind != right.Kind || left.Text != right.Text || left.Live != right.Live {
+			return false
+		}
+		if (left.Activity == nil) != (right.Activity == nil) || (left.Interaction == nil) != (right.Interaction == nil) {
+			return false
+		}
+		if left.Activity != nil && (left.Activity.ToolID != right.Activity.ToolID || left.Activity.Status != right.Activity.Status) {
+			return false
+		}
+		if left.Interaction != nil && (left.Interaction.ID != right.Interaction.ID || left.Interaction.Resolved != right.Interaction.Resolved) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestThreadViewJSONRemainsDetachedFromSubscriptionMutation(t *testing.T) {
