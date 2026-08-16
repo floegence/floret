@@ -4,12 +4,12 @@ set -euo pipefail
 readonly module_path="github.com/floegence/floret/v4"
 readonly repository_root=$(git rev-parse --show-toplevel)
 
-if [[ $# -ne 1 || $1 != v3.* ]]; then
-  printf 'usage: scripts/check_published_release_adoption.sh <exact-v3-tag>\n' >&2
+if [[ $# -ne 1 || $1 != v4.* ]]; then
+  printf 'usage: scripts/check_published_release_adoption.sh <exact-v4-tag>\n' >&2
   exit 1
 fi
 readonly tag=$1
-readonly adoption_root=$(mktemp -d "${TMPDIR:-/tmp}/floret-v3-published.XXXXXX")
+readonly adoption_root=$(mktemp -d "${TMPDIR:-/tmp}/floret-v4-published.XXXXXX")
 cleanup() {
   chmod -R u+w "${adoption_root}" 2>/dev/null || true
   rm -rf -- "${adoption_root}"
@@ -24,8 +24,8 @@ export GOCACHE="${adoption_root}/buildcache"
 mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}" "${adoption_root}/consumer"
 
 cd "${adoption_root}/consumer"
-go mod init example.com/floret-v3-published-adoption
-cp "${repository_root}/scripts/testdata/v3_adoption_test.go" adoption_test.go
+go mod init example.com/floret-v4-published-adoption
+cp "${repository_root}/scripts/testdata/v4_adoption_test.go" adoption_test.go
 go get "${module_path}@${tag}"
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...
