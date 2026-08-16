@@ -64,8 +64,10 @@ lease proof before either operation can mutate lifecycle state.
 
 The first canonical user message installs a non-empty fallback title in the
 same session-tree transaction as turn acceptance. Text is whitespace-normalized
-and bounded by the canonical title limit; attachment- or reference-only input
-uses its first display name. Provider-owned automatic title generation keeps
+and bounded by the canonical title limit. Truncation preserves trim-stable
+canonical text even when whitespace falls exactly on that boundary;
+attachment- or reference-only input uses its first display name.
+Provider-owned automatic title generation keeps
 that fallback visible while pending and after failure, and replaces it only on
 successful completion. A host `SetTitle` remains final authority over an
 in-flight automatic request. Startup repairs historical empty titles from the

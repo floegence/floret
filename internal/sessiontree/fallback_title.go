@@ -25,7 +25,7 @@ func fallbackThreadTitle(message session.Message) string {
 		}
 		runes := []rune(title)
 		if len(runes) > MaxThreadTitleRunes {
-			title = string(runes[:MaxThreadTitleRunes])
+			title = strings.TrimSpace(string(runes[:MaxThreadTitleRunes]))
 		}
 		return title
 	}

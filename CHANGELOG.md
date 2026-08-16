@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.0.11 - 2026-08-16
+
+- Keep fallback thread titles trim-stable when whitespace lands exactly on the
+  canonical length boundary, so accepting a long first message cannot corrupt
+  otherwise valid session-tree authority state.
+
 ## v4.0.10 - 2026-08-16
 
 - Make typed `ThreadService.Send` complete canonical turn acceptance before it

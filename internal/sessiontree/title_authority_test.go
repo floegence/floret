@@ -54,6 +54,23 @@ func TestAcceptTurnTruncatesFallbackTitleAtCanonicalLimit(t *testing.T) {
 	}
 }
 
+func TestAcceptTurnTrimsWhitespaceAtFallbackTitleLimit(t *testing.T) {
+	repo := NewMemoryRepo()
+	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
+	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "thread", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Repeat("a", MaxThreadTitleRunes-1) + " " + strings.Repeat("b", 20)
+	acceptTestTurn(t, repo, session.Message{Role: session.User, Content: input}, now.Add(time.Second))
+	meta, err := repo.Thread(t.Context(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Repeat("a", MaxThreadTitleRunes-1); meta.Title != want {
+		t.Fatalf("fallback title = %q, want %q", meta.Title, want)
+	}
+}
+
 func TestAutomaticTitleTransitionsRetainFallbackUntilProviderSuccess(t *testing.T) {
 	repo := NewMemoryRepo()
 	now := time.Date(2026, 8, 15, 1, 2, 3, 0, time.UTC)
