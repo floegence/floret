@@ -570,6 +570,11 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return len(view.Interactions) == 1 && view.Interactions[0].Kind == ThreadInteractionInput && !view.Interactions[0].Resolved
 	})
+	assertOrderedThreadItems(t, waiting.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "begin"},
+		{kind: ThreadItemInteraction},
+	})
+	waitingPrefix := orderedThreadItemIdentity(waiting.Items)
 	if input := waiting.Interactions[0].Input; input == nil || len(input.Questions) != 1 || input.Questions[0].Prompt != "Continue?" || input.Questions[0].Kind != "write" {
 		t.Fatalf("waiting input presentation = %#v", input)
 	}
@@ -585,6 +590,15 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	})
 	if completed.Error != "" || completed.LastOutcome == nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v provider_requests=%d", completed, len(gateway.Requests()))
+	}
+	assertStableThreadItemPrefix(t, waitingPrefix, completed.Items)
+	assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "begin"},
+		{kind: ThreadItemInteraction},
+		{kind: ThreadItemAssistant, text: "continued"},
+	})
+	if completed.Items[1].Interaction == nil || !completed.Items[1].Interaction.Resolved {
+		t.Fatalf("completed input interaction=%#v, want resolved in place", completed.Items[1].Interaction)
 	}
 	if requests := gateway.Requests(); len(requests) != 2 {
 		t.Fatalf("provider requests=%d, want 2", len(requests))
@@ -692,6 +706,96 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 		}
 	}
 	t.Fatalf("canonical tool result missing: %#v", completed.Items)
+}
+
+func TestThreadServiceRemovesSchemaCorrectionFromTerminalPresentation(t *testing.T) {
+	path := t.TempDir() + "/schema-correction-presentation.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "invalid-read-1", Name: "terminal.read", Args: `{"process_id":"proc-1","after_seq":0}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "recovered"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var called atomic.Bool
+	invalidTool := tools.Define[map[string]any](
+		tools.Definition{
+			Name: "terminal.read",
+			InputSchema: tools.StrictObject(map[string]any{
+				"process_id":  tools.String("process id"),
+				"description": tools.String("description"),
+				"after_seq":   map[string]any{"type": "integer", "minimum": 0},
+			}, []string{"process_id", "description", "after_seq"}),
+			ReadOnly:   true,
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+			InvalidActivity: func(tools.Invocation[map[string]any]) (*tools.ActivityPresentation, error) {
+				return &tools.ActivityPresentation{Label: "Read terminal output", Renderer: tools.ActivityRendererStructured}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+			called.Store(true)
+			return tools.Result{Text: "unexpected"}, nil
+		},
+	)
+	agent, err := testAgent(gateway, WithAgentTools(invalidTool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-schema-correction"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "read terminal"}, RequestKey: "send-schema-correction"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if called.Load() {
+		t.Fatal("schema-invalid tool handler ran")
+	}
+	assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "read terminal"},
+		{kind: ThreadItemAssistant, text: "recovered"},
+	})
+	for _, item := range completed.Items {
+		if item.Live || item.Kind == ThreadItemTool {
+			t.Fatalf("terminal presentation retained schema correction: %#v", completed.Items)
+		}
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOrderedThreadItems(t, reopened.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "read terminal"},
+		{kind: ThreadItemAssistant, text: "recovered"},
+	})
 }
 
 func TestThreadServicePreservesOrderedReasoningAndToolsAcrossApprovalAndReopen(t *testing.T) {

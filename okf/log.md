@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-16
+* **Ordered terminal settlement**: Resolved input interactions now update one
+  stable segment, input continuation claims its waiting run once, and terminal
+  views discard live schema-correction tools absent from canonical activity.
 * **Ordered thread presentation**: Typed current views now expose stable
   user/thinking/assistant/tool/interaction segment IDs and ordinals. Live text
   and tool lifecycle changes update in place, while canonical reload derives

@@ -213,6 +213,15 @@ host ordering store exists. The deprecated `AssistantDraft` and
 `ThinkingDraft` fields are derived compatibility views of the active item and
 must not be used as a second sequence.
 
+Input waits are represented by one interaction segment; resolving the input
+updates that segment in place, while the resumed provider output receives a new
+assistant segment. A continuation atomically claims the exact waiting run so
+concurrent recovery paths cannot dispatch it twice. At every non-waiting
+terminal outcome, canonical activity facts settle matching tool segments in
+place and remove only still-live provisional calls that never became canonical,
+including provider schema corrections. Terminal views therefore cannot retain
+duplicate interactions or noncanonical running tools.
+
 Runtime owns admitted conversation, turn/run lifecycle, projections, approval,
 Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache
 facts. Hosts read these through handles and do not persist a second Agent

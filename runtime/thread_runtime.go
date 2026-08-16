@@ -1790,9 +1790,13 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		}
 		if completed.Status != TurnStatusWaiting {
 			actor.state.view.LastOutcome = &outcome
+			actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
 		}
-		if output := strings.TrimSpace(completed.Output); output != "" && latestThreadTextItem(actor.state.view.Items, turnID, ThreadItemAssistant) < 0 {
-			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: nextThreadTextSegmentID(actor.state.view.Items, turnID, ThreadItemAssistant), TurnID: turnID, Kind: ThreadItemAssistant, Text: output, CreatedAt: time.Now().UTC()})
+		if output := strings.TrimSpace(completed.Output); completed.Status != TurnStatusWaiting && output != "" {
+			latest := latestThreadTextItem(actor.state.view.Items, turnID, ThreadItemAssistant)
+			if latest < 0 || strings.TrimSpace(actor.state.view.Items[latest].Text) != output {
+				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: nextThreadTextSegmentID(actor.state.view.Items, turnID, ThreadItemAssistant), TurnID: turnID, Kind: ThreadItemAssistant, Text: output, CreatedAt: time.Now().UTC()})
+			}
 		}
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -1992,7 +1996,12 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 				}
 			}
 		} else {
-			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+			itemID := "interaction:" + interaction.ID
+			if itemIndex := threadItemIndexByID(actor.state.view.Items, itemID); itemIndex >= 0 {
+				actor.state.view.Items[itemIndex].Interaction = &copy
+			} else {
+				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: itemID, TurnID: interaction.TurnID, Kind: ThreadItemInteraction, Interaction: &copy})
+			}
 		}
 		actor.state.view.ViewVersion++
 		return nil
@@ -2513,12 +2522,20 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	if err != nil {
 		return
 	}
+	claimed := false
 	_ = actor.apply(context.Background(), func() error {
+		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive {
+			return nil
+		}
 		actor.state.runID = runID
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.ViewVersion++
+		claimed = true
 		return nil
 	})
+	if !claimed {
+		return
+	}
 	continuationKey := "continue-input:" + interaction.ID
 	agent, err := service.factory.Agent(context.Background(), AgentRequest{
 		ThreadID: threadID, TurnID: interaction.TurnID, RequestKey: continuationKey,

@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.9 - 2026-08-16
+
+- Settle ordered input and tool presentation against canonical terminal facts.
+  Resolved input interactions retain one stable segment, schema-correction tool
+  drafts cannot remain live after recovery, and an input continuation claims
+  its waiting run exactly once.
+
 ## v4.0.8 - 2026-08-16
 
 - Expose thinking and all other typed current-view items as one stable ordered

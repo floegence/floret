@@ -159,6 +159,31 @@ func (runtime *threadRuntimeState) finishLiveTextSegment() {
 	runtime.state.openTextKind = ""
 }
 
+func settleTerminalToolSegments(items []ThreadItem, turnID identity.TurnID, timeline observation.ActivityTimeline) []ThreadItem {
+	terminal := make(map[string]observation.ActivityItem, len(timeline.Items))
+	for _, item := range timeline.Items {
+		if toolID := strings.TrimSpace(item.ToolID); toolID != "" {
+			terminal[toolID] = item
+		}
+	}
+	out := items[:0]
+	for _, item := range items {
+		if item.TurnID == turnID && item.Kind == ThreadItemTool && item.Activity != nil {
+			activity, found := terminal[strings.TrimSpace(item.Activity.ToolID)]
+			if found {
+				item.Activity = &activity
+				item.Live = false
+			} else if item.Live {
+				// Provider-streamed schema corrections never become canonical tool facts.
+				continue
+			}
+		}
+		item.Ordinal = uint64(len(out) + 1)
+		out = append(out, item)
+	}
+	return out
+}
+
 func nextThreadTextSegmentID(items []ThreadItem, turnID identity.TurnID, kind ThreadItemKind) string {
 	prefix := string(kind) + ":" + turnID.String() + ":"
 	next := 1
