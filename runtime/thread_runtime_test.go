@@ -509,6 +509,17 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 			t.Fatalf("continuation answer is not the final provider message: %#v", messages)
 		}
 	}
+	reader, ok := service.(ThreadContextReader)
+	if !ok {
+		t.Fatal("Host.ThreadService result does not expose ThreadContextReader")
+	}
+	contextSnapshot, err := reader.Context(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatalf("read context after input resume: %v", err)
+	}
+	if contextSnapshot.Usage == nil || contextSnapshot.Usage.TurnID != completed.TurnID {
+		t.Fatalf("context after input resume=%#v, want latest canonical usage for turn %q", contextSnapshot, completed.TurnID)
+	}
 }
 
 func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {

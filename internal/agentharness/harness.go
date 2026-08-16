@@ -1454,6 +1454,7 @@ func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, ru
 	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
 		ThreadID: t.id,
 		TurnID:   turnID,
+		RunID:    runID,
 		Type:     sessiontree.EntryCustom,
 		Metadata: metadata,
 	}, sessiontree.AppendOptions{Now: status.ObservedAt})

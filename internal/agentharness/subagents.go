@@ -305,7 +305,7 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			if status.ThreadID.String() != entry.ThreadID || status.TurnID.String() != entry.TurnID {
 				return ThreadContextSnapshot{}, errors.New("thread context status identity mismatch")
 			}
-			if runID := activityContext.runIDForTurn(entry.TurnID); runID != "" && status.RunID.String() != runID {
+			if entry.RunID != "" && status.RunID.String() != entry.RunID {
 				return ThreadContextSnapshot{}, errors.New("thread context status run identity mismatch")
 			}
 			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
