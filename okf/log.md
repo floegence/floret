@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-08-16
+* **Canonical thread context read**: The typed runtime service now implements a
+  narrow `ThreadContextReader` that derives context and merged compaction
+  lifecycle from the canonical journal, including after restart.
+
 ## 2026-08-15
 * **Dynamic tool surface inheritance**: Runtime adapters now preserve `nil`
   local and hosted definition lists so the engine can inherit registry or

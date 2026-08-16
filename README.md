@@ -164,6 +164,10 @@ deterministic identity injection belongs to `florettest.NewIDSource`.
 ## Consistent Reads
 
 `ThreadService.View` returns one complete replaceable current view.
+The value returned by `Host.ThreadService` also implements
+`ThreadContextReader`; `Context` returns Floret's canonical context policy,
+usage, and one latest lifecycle record per compaction operation, including
+terminal state restored after runtime restart.
 `ThreadService.Subscribe` publishes workspace summary and current-view updates;
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle

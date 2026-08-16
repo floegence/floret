@@ -757,6 +757,36 @@ method StreamObservationType.Valid func() bool
 type ThreadActivity string
 const ThreadActivityActive github.com/floegence/floret/v4/runtime.ThreadActivity = "active"
 const ThreadActivityIdle github.com/floegence/floret/v4/runtime.ThreadActivity = "idle"
+type ThreadContextCompaction struct
+field ThreadContextCompaction.RunID github.com/floegence/floret/v4/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadContextCompaction.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id,omitempty\""
+field ThreadContextCompaction.TurnID github.com/floegence/floret/v4/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadContextCompaction.Step int tag="json:\"step,omitempty\""
+field ThreadContextCompaction.OperationID string tag="json:\"operation_id,omitempty\""
+field ThreadContextCompaction.RequestID string tag="json:\"request_id,omitempty\""
+field ThreadContextCompaction.Phase string tag="json:\"phase,omitempty\""
+field ThreadContextCompaction.Status string tag="json:\"status,omitempty\""
+field ThreadContextCompaction.Trigger string tag="json:\"trigger,omitempty\""
+field ThreadContextCompaction.Reason string tag="json:\"reason,omitempty\""
+field ThreadContextCompaction.Source string tag="json:\"source,omitempty\""
+field ThreadContextCompaction.TokensBefore int64 tag="json:\"tokens_before,omitempty\""
+field ThreadContextCompaction.TokensAfterEstimate int64 tag="json:\"tokens_after_estimate,omitempty\""
+field ThreadContextCompaction.Error string tag="json:\"error,omitempty\""
+field ThreadContextCompaction.ObservedAt time.Time tag="json:\"observed_at,omitempty\""
+type ThreadContextModel struct
+field ThreadContextModel.Provider string tag="json:\"provider,omitempty\""
+field ThreadContextModel.Model string tag="json:\"model,omitempty\""
+type ThreadContextPolicy struct
+field ThreadContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
+field ThreadContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
+field ThreadContextPolicy.ReservedOutputTokens int64 tag="json:\"reserved_output_tokens,omitempty\""
+type ThreadContextReader interface interface{Context(context.Context, github.com/floegence/floret/v4/identity.ThreadID) (github.com/floegence/floret/v4/runtime.ThreadContextSnapshot, error)}
+type ThreadContextSnapshot struct
+field ThreadContextSnapshot.Model github.com/floegence/floret/v4/runtime.ThreadContextModel tag="json:\"model,omitempty\""
+field ThreadContextSnapshot.Policy github.com/floegence/floret/v4/runtime.ThreadContextPolicy tag="json:\"policy,omitempty\""
+field ThreadContextSnapshot.Usage *github.com/floegence/floret/v4/observation.ContextStatus tag="json:\"usage,omitempty\""
+field ThreadContextSnapshot.Compactions []github.com/floegence/floret/v4/runtime.ThreadContextCompaction tag="json:\"compactions,omitempty\""
+field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty\""
 type ThreadInteraction struct
 field ThreadInteraction.ID string tag="json:\"id\""
 field ThreadInteraction.TurnID github.com/floegence/floret/v4/identity.TurnID tag="json:\"turn_id\""

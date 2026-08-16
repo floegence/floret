@@ -196,6 +196,12 @@ remain transient observation, not durable authority.
 gate, event sink, dynamic tool surface, loop limits, title mode, capabilities,
 SubAgent timeout, and optional manual compaction source. It has no mutating API.
 
+The typed service returned by `Host.ThreadService` also implements the narrow
+`ThreadContextReader` capability. Its `Context` snapshot is derived directly
+from the canonical journal and merges compaction lifecycle checkpoints by
+operation identity, so restart restores one latest terminal record rather than
+leaving a prior `start` checkpoint as an independent operation.
+
 Runtime owns admitted conversation, turn/run lifecycle, projections, approval,
 Todo, SubAgent, artifact, pending settlement, provider state, and prompt cache
 facts. Hosts read these through handles and do not persist a second Agent

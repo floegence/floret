@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v4/internal/agentharness"
 	"github.com/floegence/floret/v4/internal/session"
 	"github.com/floegence/floret/v4/internal/sessiontree"
 	"github.com/floegence/floret/v4/observation"
@@ -323,6 +324,51 @@ type ThreadView struct {
 	ThinkingDraft  string              `json:"thinking_draft,omitempty"`
 }
 
+// ThreadContextSnapshot is the canonical context and compaction projection for
+// one thread. Compactions contain one latest lifecycle record per operation.
+type ThreadContextSnapshot struct {
+	Model       ThreadContextModel         `json:"model,omitempty"`
+	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
+	Usage       *observation.ContextStatus `json:"usage,omitempty"`
+	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
+	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
+}
+
+type ThreadContextModel struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+type ThreadContextPolicy struct {
+	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
+}
+
+type ThreadContextCompaction struct {
+	RunID               identity.RunID    `json:"run_id,omitempty"`
+	ThreadID            identity.ThreadID `json:"thread_id,omitempty"`
+	TurnID              identity.TurnID   `json:"turn_id,omitempty"`
+	Step                int               `json:"step,omitempty"`
+	OperationID         string            `json:"operation_id,omitempty"`
+	RequestID           string            `json:"request_id,omitempty"`
+	Phase               string            `json:"phase,omitempty"`
+	Status              string            `json:"status,omitempty"`
+	Trigger             string            `json:"trigger,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
+	Source              string            `json:"source,omitempty"`
+	TokensBefore        int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64             `json:"tokens_after_estimate,omitempty"`
+	Error               string            `json:"error,omitempty"`
+	ObservedAt          time.Time         `json:"observed_at,omitempty"`
+}
+
+// ThreadContextReader exposes canonical context lifecycle facts without
+// widening the lifecycle mutation surface of ThreadService.
+type ThreadContextReader interface {
+	Context(context.Context, identity.ThreadID) (ThreadContextSnapshot, error)
+}
+
 // ThreadService is the only provider-backed thread lifecycle boundary.
 type ThreadService interface {
 	Create(context.Context, CreateThreadInput) (ThreadView, error)
@@ -343,6 +389,8 @@ type ThreadService interface {
 	ImportPendingInputs(context.Context, ImportPendingInputsInput) (ImportResult, error)
 	Subscribe(context.Context) (*WorkspaceSubscription, error)
 }
+
+var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
 	host        *Host
@@ -687,6 +735,35 @@ func (service *threadRuntimeService) History(ctx context.Context, threadID ident
 		items = items[len(items)-limit:]
 	}
 	return HistoryPage{Items: cloneThreadItems(items), Before: page.NextEntryID, HasMore: page.HasMore}, nil
+}
+
+func (service *threadRuntimeService) Context(ctx context.Context, threadID identity.ThreadID) (ThreadContextSnapshot, error) {
+	if service == nil || service.host == nil || service.host.store == nil {
+		return ThreadContextSnapshot{}, ErrHostClosed
+	}
+	contextSnapshot, err := agentharness.New(agentharness.Options{Repo: service.host.store.repo}).ReadThreadContext(ctx, threadID.String())
+	if err != nil {
+		return ThreadContextSnapshot{}, runtimeHostError(err)
+	}
+	compactions := make([]ThreadContextCompaction, 0, len(contextSnapshot.Compactions))
+	for _, compaction := range contextSnapshot.Compactions {
+		compactions = append(compactions, ThreadContextCompaction{
+			RunID: identity.RunID(compaction.RunID), ThreadID: identity.ThreadID(compaction.ThreadID), TurnID: identity.TurnID(compaction.TurnID),
+			Step: compaction.Step, OperationID: compaction.OperationID, RequestID: compaction.RequestID,
+			Phase: compaction.Phase, Status: compaction.Status, Trigger: compaction.Trigger,
+			Reason: compaction.Reason, Source: compaction.Source, TokensBefore: compaction.TokensBefore,
+			TokensAfterEstimate: compaction.TokensAfterEstimate, Error: compaction.Error, ObservedAt: compaction.ObservedAt,
+		})
+	}
+	return ThreadContextSnapshot{
+		Model: ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
+		Policy: ThreadContextPolicy{
+			ContextWindowTokens:  contextSnapshot.Policy.ContextWindowTokens,
+			MaxOutputTokens:      contextSnapshot.Policy.MaxOutputTokens,
+			ReservedOutputTokens: contextSnapshot.Policy.ReservedOutputTokens,
+		},
+		Usage: contextSnapshot.Usage, Compactions: compactions, UpdatedAt: contextSnapshot.UpdatedAt,
+	}, nil
 }
 
 func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (ThreadView, error) {

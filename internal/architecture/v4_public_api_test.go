@@ -47,7 +47,8 @@ func TestV4PublicAPIAvoidsRemovedLifecycleFacades(t *testing.T) {
 	for _, required := range []string{
 		"type ThreadService interface", "View(context.Context", "Send(context.Context",
 		"Respond(context.Context", "Cancel(context.Context", "Retry(context.Context",
-		"RetryEffect(context.Context", "Subscribe(context.Context",
+		"RetryEffect(context.Context", "Subscribe(context.Context", "type ThreadContextReader interface",
+		"Context(context.Context, github.com/floegence/floret/v4/identity.ThreadID)",
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("v4 public API is missing typed runtime contract %q", required)

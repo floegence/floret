@@ -21,6 +21,17 @@ import (
 	"github.com/floegence/floret/v4/tools"
 )
 
+type oneShotThreadContextCompaction struct {
+	consumed atomic.Bool
+}
+
+func (source *oneShotThreadContextCompaction) PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error) {
+	if !source.consumed.CompareAndSwap(false, true) {
+		return ManualCompactionRequest{}, false, nil
+	}
+	return ManualCompactionRequest{RequestID: "manual-context-read", Source: "runtime_test"}, true, nil
+}
+
 type blockingThreadGateway struct {
 	started  chan struct{}
 	release  chan struct{}
@@ -162,6 +173,74 @@ func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	if err != nil || replayed.Activity != ThreadActivityIdle {
 		t.Fatalf("idempotent cancel=%#v prior=%#v err=%v", replayed, cancelled, err)
 	}
+}
+
+func TestThreadContextReaderRestoresOneTerminalCompactionPerOperation(t *testing.T) {
+	path := t.TempDir() + "/thread-context.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "after compact"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	agent, err := testAgent(gateway, WithAgentManualCompactions(&oneShotThreadContextCompaction{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstService, err := firstHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := firstService.Create(t.Context(), CreateThreadInput{RequestKey: "create-context-read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstService.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "compact context"}, RequestKey: "send-context-read"}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, firstService, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	firstReader, ok := firstService.(ThreadContextReader)
+	if !ok {
+		t.Fatal("Host.ThreadService result does not expose ThreadContextReader")
+	}
+	assertContext := func(label string, reader ThreadContextReader) {
+		t.Helper()
+		snapshot, readErr := reader.Context(t.Context(), created.ThreadID)
+		if readErr != nil {
+			t.Fatalf("%s context: %v", label, readErr)
+		}
+		if len(snapshot.Compactions) != 1 {
+			t.Fatalf("%s compactions=%#v, want one merged operation", label, snapshot.Compactions)
+		}
+		compaction := snapshot.Compactions[0]
+		if compaction.RequestID != "manual-context-read" || compaction.Source != "runtime_test" || compaction.Status != string(observation.CompactionStatusNoop) || compaction.Phase != string(observation.CompactionPhaseNoop) {
+			t.Fatalf("%s compaction=%#v", label, compaction)
+		}
+	}
+	assertContext("live", firstReader)
+	if err := firstHost.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	secondHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondHost.Shutdown(context.Background()) })
+	secondService, err := secondHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReader, ok := secondService.(ThreadContextReader)
+	if !ok {
+		t.Fatal("reopened Host.ThreadService result does not expose ThreadContextReader")
+	}
+	assertContext("reopened", secondReader)
 }
 
 func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.T) {

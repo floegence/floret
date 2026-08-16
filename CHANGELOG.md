@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.6 - 2026-08-16
+
+- Expose canonical thread context and compaction snapshots through the narrow
+  `runtime.ThreadContextReader` capability implemented by `Host.ThreadService`.
+  Compaction lifecycle checkpoints merge by operation identity and remain
+  readable after runtime restart without exposing storage internals.
+
 ## v4.0.4 - 2026-08-15
 
 - Install a canonical fallback thread title atomically with the first accepted
