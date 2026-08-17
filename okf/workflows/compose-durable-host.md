@@ -1,10 +1,10 @@
 ---
 type: Workflow
 title: Compose A Durable Host
-description: Open one v3 Host and distribute only bound thread capabilities.
-resource: /runtime/v3_host.go
+description: Open one v4 Host and expose only the typed thread service.
+resource: /runtime/host_v2.go
 tags: [workflow, host, composition]
-timestamp: 2026-07-29T00:00:00Z
+timestamp: 2026-08-18T00:00:00Z
 ---
 
 # Compose A Durable Host
@@ -13,12 +13,12 @@ timestamp: 2026-07-29T00:00:00Z
 2. Call `runtime.Open` in the composition root and retain `*runtime.Host` only
    there.
 3. Construct immutable Agents with explicit config and Gateway.
-4. Create or list roots through `Host.Threads`, then bind an exact thread with
-   `Host.Thread`.
-5. Grant `Thread.Reader`, `Thread.Lifecycle`, `Thread.TurnExecutor`,
-   `Thread.Compactor`, or `Thread.SubAgentManager`, and pass only the returned
-   narrow interface to the service that needs it.
+4. Bind an `AgentFactory` through `Host.ThreadService` and retain the returned
+   `ThreadService` at the host boundary.
+5. Use its `Create`, `View`, `Send`, `Respond`, queue, fork, and delete methods;
+   do not expose the backend or import `internal/*` in a downstream product.
 6. On shutdown, call `Host.Shutdown(ctx)` and continue waiting after a timeout.
 
-Use `ThreadReader.Bootstrap` for the initial read model. There is no generator,
-callback bootstrap, binder, or secondary Store to configure.
+Use `ThreadService.View` and `History` for the initial read model and
+`Subscribe` only for transient observation. A reconnect always reloads the
+canonical view.

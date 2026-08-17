@@ -1,37 +1,34 @@
 ---
 type: Architecture Decision
-title: V3 Public API Boundary
-description: Use one Gateway, one domain kernel, immutable Agents, bound threads, revision reads, and strict subscriptions.
+title: V4 Public API Boundary
+description: Use one provider gateway, one domain kernel, immutable Agents, and one typed ThreadService.
 resource: /README.md
-tags: [decision, public-api, v3]
-timestamp: 2026-07-29T00:00:00Z
+tags: [decision, public-api, v4]
+timestamp: 2026-08-18T00:00:00Z
 ---
 
 # Decision
 
-The v3 module uses semantic import path `/v3`. Ordinary applications use
+The v4 module uses semantic import path `/v4`. Ordinary applications use
 `identity`, `config`, `runtime`, `observation`, `tools`, official `provider`
 constructors, and opaque `storage.Source` values. Provider transports and
 `storage/spi` are advanced integration surfaces; `florettest` is test-only.
 
 All model execution uses `provider.Gateway`. All durable implementations use
 the same domain kernel over `storage.Backend`. `runtime.Agent` is immutable.
-`runtime.Host` remains at the composition root and issues bound thread handles.
-The composition root converts them to read, lifecycle, execution, compaction,
-and SubAgent capability interfaces before injection into services. Initial
-queries use one atomic `ThreadReader.Bootstrap`; subscriptions are linearized
-pull streams with explicit Gap resynchronization.
+`runtime.Host` remains at the composition root and issues one typed
+`ThreadService`. That service owns durable thread journals, actor projections,
+turn lifecycle, queue and interaction commands, effects, forks, and deletion
+fences. Initial reads use `View` and `History`; subscriptions are observation
+only and reconnect through a fresh `View` baseline after a gap or close.
 
-Receipt-first admission persists one immutable execution plan. Execution accepts
-only the receipt and ephemeral `ExecutionContext`; canonical input is never
-resubmitted by the host. Authoritative projections carry revision/provenance,
-while offline derivation uses a distinct result type.
-
-Production lifecycle identities are Floret-allocated. Deterministic injection
-is test-only through `florettest.NewIDSource`. v3 exposes no broad direct
-read/write methods on `Thread`; hosts must choose the narrow capability issuer
-that matches the service boundary they are composing.
+Canonical user input is accepted into the session-tree journal before a command
+reports success or provider work begins. Live views are replaceable projections
+of that journal and bounded in-memory execution state; they are never a second
+durable lifecycle. Provider continuation and host audit data remain outside
+the Floret storage contract.
 
 Public additions require external-package tests, API baseline review, README
-and OKF updates, changelog entry, backend conformance where relevant, and a
-blank-module adoption gate. Green compatibility tooling is not design approval.
+and OKF updates, changelog entry, backend conformance where relevant, and the
+published-release adoption gate. Green compatibility tooling is not design
+approval.

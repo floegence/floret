@@ -69,6 +69,16 @@ func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, tur
 	return result0, result1, err
 }
 
+func (repo *BackendRepo) ClaimEffectRetry(ctx context.Context, req ClaimEffectRetryRequest) (ClaimEffectRetryResult, error) {
+	var result0 ClaimEffectRetryResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ClaimEffectRetry(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
 	var result0 AgentTodoState
 	err := repo.update(ctx, func(memory *MemoryRepo) error {

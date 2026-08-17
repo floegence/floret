@@ -24,9 +24,11 @@ type ThreadTitleProjection struct {
 }
 
 type SetThreadTitleRequest struct {
-	ThreadID string
-	Title    string
-	Now      time.Time
+	ThreadID           string
+	Title              string
+	RequestKey         string
+	RequestFingerprint string
+	Now                time.Time
 }
 
 type BeginAutomaticThreadTitleRequest struct {
@@ -67,6 +69,12 @@ type ThreadTitleAuthorityRepo interface {
 func ValidateSetThreadTitleRequest(req SetThreadTitleRequest) error {
 	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.Title) == "" || req.Now.IsZero() {
 		return errors.New("manual thread title requires thread identity, title, and time")
+	}
+	if strings.TrimSpace(req.RequestKey) != "" && strings.TrimSpace(req.RequestFingerprint) == "" {
+		return errors.New("manual thread title request fingerprint is required")
+	}
+	if strings.TrimSpace(req.RequestKey) == "" && strings.TrimSpace(req.RequestFingerprint) != "" {
+		return errors.New("manual thread title request key is required")
 	}
 	return nil
 }
@@ -151,7 +159,9 @@ func ValidateThreadTitleProjection(projection ThreadTitleProjection) error {
 
 func ValidateThreadTitleState(meta ThreadMeta) error {
 	token := strings.TrimSpace(meta.TitleToken)
-	if token != meta.TitleToken {
+	requestKey := strings.TrimSpace(meta.TitleRequestKey)
+	requestFingerprint := strings.TrimSpace(meta.TitleRequestFingerprint)
+	if token != meta.TitleToken || requestKey != meta.TitleRequestKey || requestFingerprint != meta.TitleRequestFingerprint || (requestKey == "" && requestFingerprint != "") {
 		return ErrAuthorityCorrupt
 	}
 	if err := ValidateThreadTitleProjection(ThreadTitleProjection{
@@ -191,15 +201,23 @@ func ValidateThreadTitleState(meta ThreadMeta) error {
 func SameThreadTitleState(left, right ThreadMeta) bool {
 	return left.Title == right.Title && left.TitleStatus == right.TitleStatus && left.TitleSource == right.TitleSource &&
 		left.TitleUpdatedAt.Equal(right.TitleUpdatedAt) && left.TitleError == right.TitleError &&
-		left.TitleGeneration == right.TitleGeneration && left.TitleToken == right.TitleToken
+		left.TitleGeneration == right.TitleGeneration && left.TitleToken == right.TitleToken &&
+		left.TitleRequestKey == right.TitleRequestKey && left.TitleRequestFingerprint == right.TitleRequestFingerprint
 }
 
 func (r *MemoryRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadTitleMutationResult, error) {
 	if err := ValidateSetThreadTitleRequest(req); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
+	requestKey, requestFingerprint := strings.TrimSpace(req.RequestKey), strings.TrimSpace(req.RequestFingerprint)
 	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		title := strings.TrimSpace(req.Title)
+		if requestKey != "" && meta.TitleRequestKey == requestKey {
+			if meta.TitleRequestFingerprint != requestFingerprint {
+				return meta, false, ErrRequestConflict
+			}
+			return meta, false, nil
+		}
 		if meta.TitleStatus == ThreadTitleReady && meta.TitleSource == ThreadTitleSourceHost && meta.Title == title {
 			return meta, false, nil
 		}
@@ -213,6 +231,8 @@ func (r *MemoryRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleReque
 		meta.TitleError = ""
 		meta.TitleGeneration++
 		meta.TitleToken = ""
+		meta.TitleRequestKey = requestKey
+		meta.TitleRequestFingerprint = requestFingerprint
 		return meta, true, nil
 	})
 }
@@ -247,6 +267,8 @@ func (r *MemoryRepo) BeginAutomaticThreadTitle(ctx context.Context, req BeginAut
 		meta.TitleError = ""
 		meta.TitleGeneration++
 		meta.TitleToken = token
+		meta.TitleRequestKey = ""
+		meta.TitleRequestFingerprint = ""
 		return meta, true, nil
 	})
 }
@@ -275,6 +297,8 @@ func (r *MemoryRepo) CompleteAutomaticThreadTitle(ctx context.Context, req Compl
 			meta.TitleSource = ThreadTitleSourceProvider
 			meta.TitleUpdatedAt = req.Now.UTC()
 			meta.TitleError = ""
+			meta.TitleRequestKey = ""
+			meta.TitleRequestFingerprint = ""
 			return meta, true, nil
 		default:
 			return meta, false, ErrAuthorityCorrupt
@@ -304,6 +328,8 @@ func (r *MemoryRepo) FailAutomaticThreadTitle(ctx context.Context, req FailAutom
 			meta.TitleStatus = ThreadTitleFailed
 			meta.TitleUpdatedAt = req.Now.UTC()
 			meta.TitleError = titleError
+			meta.TitleRequestKey = ""
+			meta.TitleRequestFingerprint = ""
 			return meta, true, nil
 		default:
 			return meta, false, ErrAuthorityCorrupt

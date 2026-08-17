@@ -101,6 +101,14 @@ func TestDeriveLifecycleTable(t *testing.T) {
 			latestTurnID: "turn-1",
 			recoverable:  true,
 		},
+		{
+			name:         "interrupted failure code is interrupted",
+			phase:        PhaseIdle,
+			path:         entries(marker("turn-1", sessiontree.TurnStarted, nil), marker("turn-1", sessiontree.TurnAborted, map[string]string{sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureInterrupted})),
+			status:       "interrupted",
+			latestTurnID: "turn-1",
+			recoverable:  true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Derive(tc.path, tc.phase)

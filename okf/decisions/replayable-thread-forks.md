@@ -1,37 +1,32 @@
 ---
 type: Architecture Decision
 title: Replayable Thread Forks
-description: Public thread forks persist one immutable operation plan and execute exact marked targets.
-resource: /internal/agentharness/fork_operation.go
+description: Public thread forks use one canonical request identity and exact source leaf.
+resource: /runtime/thread_runtime.go
 tags: [decision, runtime, storage, fork]
-timestamp: 2026-07-15T00:00:00Z
+timestamp: 2026-08-18T00:00:00Z
 ---
 
 # Decision
 
-Every public thread fork requires a `ForkOperationID`. Floret saves an immutable
-plan before creating any target. The plan pins the source leaf, parent and
-terminal-child destinations, turn/run identity rewrites, and child metadata
-patches. Each target is identified by an exact operation/node marker.
+Every public thread fork carries a stable request key and fingerprint. Floret
+validates the source thread and leaf, appends the canonical fork facts, and
+returns the durable target projection. A replay with the same identity returns
+the existing result; a changed source, target, or metadata request fails with a
+conflict instead of creating another thread.
 
 # Reason
 
-A cross-store host cannot distinguish a lost response from an uncommitted fork
-by checking whether a destination thread happens to exist. Regenerating IDs or
-reading a newer source leaf during retry can also create duplicate identities or
-a semantically different copy. A durable plan makes retry behavior deterministic
-across process restarts.
+A lost response must be distinguishable from a different fork request without
+creating a second durable identity. The canonical journal and request authority
+provide that distinction while keeping one owner for thread lifecycle state.
 
 # Consequences
 
-The memory and SQLite stores implement a dedicated fork-operation contract.
-The current SQLite schema stores operation state, request fingerprint, plan,
-terminal result or error, timestamps, and thread markers. A matching prepared
-operation executes only missing marked nodes; a matching completed operation verifies all
-targets and returns its stored result. Request reuse, unrelated destinations,
-marker mismatch, and missing completed targets fail explicitly. Generic
-metadata is not part of this protocol, and hosts coordinate their own product
-records separately.
+The runtime service uses the shared session-tree domain kernel for both memory
+and physical backends. Hosts may keep product routing or authorization facts,
+but must not persist a second fork lifecycle or reconstruct the target from a
+product audit stream.
 
 # Related
 

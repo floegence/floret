@@ -304,6 +304,43 @@ func TestThreadServiceSendFailsBeforePublishingWhenCanonicalAcceptanceFails(t *t
 	}
 }
 
+func TestThreadServicePromoteFailsBeforePublishingWhenCanonicalAcceptanceFails(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-rejected-promote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "active"}, RequestKey: "send-rejected-promote-active"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "queued"}, RequestKey: "send-rejected-promote-queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-rejected-promote-active"}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && len(view.Queue) == 1
+	})
+	original := host.store.repo
+	turns := original.(sessiontree.RuntimeTurnRepo)
+	host.store.repo = rejectingRuntimeTurnRepo{Repo: original, turns: turns, err: errors.New("injected promote acceptance failure")}
+	t.Cleanup(func() { host.store.repo = original })
+	if _, err := service.PromoteQueued(t.Context(), PromoteQueuedInput{
+		ThreadID: created.ThreadID, QueueItemID: "queue:send-rejected-promote-queued", RequestKey: "promote-rejected",
+	}); err == nil || !strings.Contains(err.Error(), "injected promote acceptance failure") {
+		t.Fatalf("PromoteQueued error=%v, want synchronous canonical acceptance failure", err)
+	}
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Activity != ThreadActivityIdle || len(view.Queue) != 1 || len(view.Items) != 1 {
+		t.Fatalf("failed promote view=%#v, want unchanged idle queue", view)
+	}
+}
+
 func TestThreadContextReaderRestoresOneTerminalCompactionPerOperation(t *testing.T) {
 	path := t.TempDir() + "/thread-context.db"
 	gateway := florettest.NewScriptedGateway(

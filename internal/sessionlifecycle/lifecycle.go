@@ -31,8 +31,15 @@ const (
 )
 
 const (
-	PhaseIdle = string(phaseIdle)
-	PhaseTurn = string(phaseTurn)
+	PhaseIdle         = string(phaseIdle)
+	PhaseTurn         = string(phaseTurn)
+	StatusIdle        = string(statusIdle)
+	StatusRunning     = string(statusRunning)
+	StatusCompleted   = string(statusCompleted)
+	StatusWaiting     = string(statusWaiting)
+	StatusFailed      = string(statusFailed)
+	StatusCancelled   = string(statusCancelled)
+	StatusInterrupted = string(statusInterrupted)
 )
 
 type Lifecycle struct {
@@ -156,7 +163,7 @@ func Derive(path []sessiontree.Entry, rawPhase string) Lifecycle {
 				terminal[entry.TurnID] = true
 			}
 			lifecycle.waitingPrompt = ""
-			lifecycle.recoverable = entry.Metadata["recoverable"] == "true"
+			lifecycle.recoverable = entry.Metadata["recoverable"] == "true" || entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureInterrupted
 			if lifecycle.recoverable {
 				lifecycle.status = statusInterrupted
 			} else {

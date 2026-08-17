@@ -246,33 +246,35 @@ func (e AppendCommittedError) Unwrap() error {
 }
 
 type ThreadMeta struct {
-	ID                  string            `json:"id"`
-	OriginRequestKey    string            `json:"origin_request_key,omitempty"`
-	OriginFingerprint   string            `json:"origin_fingerprint,omitempty"`
-	LeafID              string            `json:"leaf_id,omitempty"`
-	ParentThreadID      string            `json:"parent_thread_id,omitempty"`
-	ParentTurnID        string            `json:"parent_turn_id,omitempty"`
-	ForkedFromThreadID  string            `json:"forked_from_thread_id,omitempty"`
-	ForkedFromEntryID   string            `json:"forked_from_entry_id,omitempty"`
-	LegacyForkRequestID string            `json:"fork_operation_id,omitempty"`
-	LegacyForkNodeID    string            `json:"fork_operation_node_id,omitempty"`
-	TaskName            string            `json:"task_name,omitempty"`
-	TaskDescription     string            `json:"task_description,omitempty"`
-	AgentPath           string            `json:"agent_path,omitempty"`
-	HostProfileRef      string            `json:"host_profile_ref,omitempty"`
-	ForkMode            string            `json:"fork_mode,omitempty"`
-	Lifecycle           ThreadLifecycle   `json:"lifecycle,omitempty"`
-	Archived            bool              `json:"archived,omitempty"`
-	Title               string            `json:"title,omitempty"`
-	TitleStatus         ThreadTitleStatus `json:"title_status,omitempty"`
-	TitleSource         ThreadTitleSource `json:"title_source,omitempty"`
-	TitleUpdatedAt      time.Time         `json:"title_updated_at,omitempty"`
-	TitleError          string            `json:"title_error,omitempty"`
-	TitleGeneration     int64             `json:"title_generation,omitempty"`
-	TitleToken          string            `json:"title_token,omitempty"`
-	CreatedAt           time.Time         `json:"created_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	LastViewedAt        time.Time         `json:"last_viewed_at,omitempty"`
+	ID                      string            `json:"id"`
+	OriginRequestKey        string            `json:"origin_request_key,omitempty"`
+	OriginFingerprint       string            `json:"origin_fingerprint,omitempty"`
+	LeafID                  string            `json:"leaf_id,omitempty"`
+	ParentThreadID          string            `json:"parent_thread_id,omitempty"`
+	ParentTurnID            string            `json:"parent_turn_id,omitempty"`
+	ForkedFromThreadID      string            `json:"forked_from_thread_id,omitempty"`
+	ForkedFromEntryID       string            `json:"forked_from_entry_id,omitempty"`
+	LegacyForkRequestID     string            `json:"fork_operation_id,omitempty"`
+	LegacyForkNodeID        string            `json:"fork_operation_node_id,omitempty"`
+	TaskName                string            `json:"task_name,omitempty"`
+	TaskDescription         string            `json:"task_description,omitempty"`
+	AgentPath               string            `json:"agent_path,omitempty"`
+	HostProfileRef          string            `json:"host_profile_ref,omitempty"`
+	ForkMode                string            `json:"fork_mode,omitempty"`
+	Lifecycle               ThreadLifecycle   `json:"lifecycle,omitempty"`
+	Archived                bool              `json:"archived,omitempty"`
+	Title                   string            `json:"title,omitempty"`
+	TitleStatus             ThreadTitleStatus `json:"title_status,omitempty"`
+	TitleSource             ThreadTitleSource `json:"title_source,omitempty"`
+	TitleUpdatedAt          time.Time         `json:"title_updated_at,omitempty"`
+	TitleError              string            `json:"title_error,omitempty"`
+	TitleGeneration         int64             `json:"title_generation,omitempty"`
+	TitleToken              string            `json:"title_token,omitempty"`
+	TitleRequestKey         string            `json:"title_request_key,omitempty"`
+	TitleRequestFingerprint string            `json:"title_request_fingerprint,omitempty"`
+	CreatedAt               time.Time         `json:"created_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
+	LastViewedAt            time.Time         `json:"last_viewed_at,omitempty"`
 }
 
 // ValidateThreadMetaAuthority enforces the durable distinction between

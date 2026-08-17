@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v4@v3.2.8
+go get github.com/floegence/floret/v4@v4.0.11
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -73,25 +73,17 @@ func main() {
         }
     }()
 
-    created, err := host.Threads().CreateThread(ctx, runtime.CreateThreadCommand{
-        LogicalRequestID: "create-conversation-42",
-    })
+    service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+        return agent, nil
+    }))
     if err != nil {
         panic(err)
     }
-    thread, err := host.Thread(ctx, created.ThreadID)
+    created, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "create-conversation-42"})
     if err != nil {
         panic(err)
     }
-    executor, err := thread.TurnExecutor(agent)
-    if err != nil {
-        panic(err)
-    }
-    command := runtime.StartTurnCommand{
-        LogicalRequestID: "send-message-42",
-        UserMessage:      runtime.TurnInput{Text: "Hello"},
-    }
-    _, err = executor.StartTurn(ctx, command)
+    _, err = service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "send-message-42", Input: runtime.UserInput{Text: "Hello"}})
     if err != nil {
         panic(err)
     }

@@ -35,7 +35,7 @@ provider profile persistence, and UI rendering stay in the downstream host.
 
 * [README](/README.md)
 * [Repository Guide](/AGENTS.md)
-* [Runtime Host](/runtime/v3_host.go)
+* [Runtime Host](/runtime/host_v2.go)
 * [Immutable Agent](/runtime/agent.go)
 * [Provider Contract](/provider/provider.go)
 * [Storage Contract](/storage/backend.go)

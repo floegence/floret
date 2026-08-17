@@ -191,15 +191,10 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 		return FinishTurnResult{}, ErrRequestConflict
 	}
 	attempts := canonicalEffectAttemptsForTurn(r.entries[meta.ID], req.TurnID)
-	resolvedUnknown := make(map[string]struct{})
-	for _, attempt := range attempts {
-		if attempt.Invocation.SourceEffectAttemptID != "" && effectAttemptTerminalSafe(attempt.State) && attempt.State != EffectAttemptUnknown {
-			resolvedUnknown[attempt.Invocation.SourceEffectAttemptID] = struct{}{}
-		}
-	}
+	resolvedUnknown := settledRetrySourcesForTurn(attempts)
 	for _, attempt := range attempts {
 		_, retried := resolvedUnknown[attempt.EffectAttemptID]
-		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown && !retried {
+		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptRetrying && !retried || attempt.State == EffectAttemptUnknown && !retried {
 			return FinishTurnResult{}, ErrEffectOutcomeUnknown
 		}
 	}
@@ -236,6 +231,34 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	}
 	result.Terminal = cloneEntry(terminal)
 	return result, nil
+}
+
+func settledRetrySourcesForTurn(attempts []EffectAttempt) map[string]struct{} {
+	resolved := make(map[string]struct{})
+	for {
+		changed := false
+		for _, attempt := range attempts {
+			sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID)
+			if sourceID == "" || (!effectAttemptTerminalSafe(attempt.State) && !hasSettledRetrySource(resolved, attempt.EffectAttemptID)) {
+				continue
+			}
+			if attempt.State == EffectAttemptUnknown {
+				continue
+			}
+			if _, found := resolved[sourceID]; !found {
+				resolved[sourceID] = struct{}{}
+				changed = true
+			}
+		}
+		if !changed {
+			return resolved
+		}
+	}
+}
+
+func hasSettledRetrySource(resolved map[string]struct{}, attemptID string) bool {
+	_, found := resolved[strings.TrimSpace(attemptID)]
+	return found
 }
 
 func runtimeTurnStartedEntryID(turnID string) string {

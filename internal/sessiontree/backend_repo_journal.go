@@ -208,7 +208,7 @@ func backendDomainJournalChecksum(sequence uint64, patch backendDomainJournalPat
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func replayBackendDomainJournal(ctx context.Context, tx spi.WriteTx, checkpoint *MemoryRepo, now func() time.Time) (*MemoryRepo, uint64, error) {
+func replayBackendDomainJournal(ctx context.Context, tx spi.ReadTx, checkpoint *MemoryRepo, now func() time.Time) (*MemoryRepo, uint64, error) {
 	if checkpoint == nil {
 		return nil, 0, errors.New("journal checkpoint is required")
 	}
@@ -222,20 +222,17 @@ func replayBackendDomainJournal(ctx context.Context, tx spi.WriteTx, checkpoint 
 	}
 	current := checkpoint
 	var sequence uint64
-	for index, record := range records {
+	for _, record := range records {
 		keySequence, keyErr := parseBackendJournalKey(record.Key)
 		if keyErr != nil || keySequence != sequence+1 {
 			return nil, 0, errors.Join(ErrAuthorityCorrupt, keyErr, errors.New("journal sequence is not contiguous"))
 		}
 		frame, frameErr := decodeBackendDomainJournalFrame(record.Value)
 		if frameErr != nil {
-			if index != len(records)-1 {
-				return nil, 0, errors.Join(ErrAuthorityCorrupt, frameErr)
-			}
-			if deleteErr := tx.Delete(backendDomainJournalNamespace, record.Key); deleteErr != nil {
-				return nil, 0, deleteErr
-			}
-			break
+			// A journal frame is committed atomically with its domain
+			// projection. There is no supported partial-tail shape to repair;
+			// accepting or deleting one would silently discard canonical facts.
+			return nil, 0, errors.Join(ErrAuthorityCorrupt, frameErr)
 		}
 		if frame.Sequence != keySequence {
 			return nil, 0, errors.Join(ErrAuthorityCorrupt, errors.New("journal key and frame sequence differ"))

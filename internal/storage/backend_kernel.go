@@ -25,29 +25,34 @@ type BackendKernel struct {
 
 // NewBackendKernel opens all canonical Floret domain state.
 func NewBackendKernel(ctx context.Context, backend spi.Backend, now func() time.Time) (*BackendKernel, error) {
-	repo, err := sessiontree.NewBackendRepo(ctx, backend, now)
+	var kernel *BackendKernel
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		var err error
+		kernel, err = NewBackendKernelInTransaction(ctx, backend, tx, now)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return kernel, nil
+}
+
+// NewBackendKernelInTransaction opens all canonical Floret domain state in
+// the caller's startup transaction.
+func NewBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time) (*BackendKernel, error) {
+	repo, err := sessiontree.NewBackendRepoInTransaction(ctx, backend, tx, now)
 	if err != nil {
 		return nil, err
 	}
 	kernel := &BackendKernel{BackendRepo: repo}
-	if err := repo.ViewDomainWithRecords(ctx, func(_ *sessiontree.MemoryRepo, tx spi.ReadTx) error {
-		prompt, found, err := loadPromptState(tx)
-		if err != nil {
-			return err
-		}
-		if found {
-			kernel.prompt = prompt
-			return nil
-		}
-		return nil
-	}); err != nil {
+	prompt, found, err := loadPromptState(tx)
+	if err != nil {
 		return nil, err
 	}
-	if kernel.prompt == nil {
+	if found {
+		kernel.prompt = prompt
+	} else {
 		kernel.prompt = cache.NewMemoryStore()
-		if err := repo.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
-			return savePromptState(tx, kernel.prompt)
-		}); err != nil {
+		if err := savePromptState(tx, kernel.prompt); err != nil {
 			return nil, err
 		}
 	}

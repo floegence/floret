@@ -28,7 +28,7 @@ func (t *Thread) RetryUnknownEffect(ctx context.Context, sourceAttemptID, reques
 	if err != nil {
 		return sessiontree.Entry{}, err
 	}
-	if source.State != sessiontree.EffectAttemptUnknown {
+	if source.State != sessiontree.EffectAttemptUnknown && source.State != sessiontree.EffectAttemptRetrying {
 		return sessiontree.Entry{}, sessiontree.ErrRequestConflict
 	}
 	call, err := t.retryEffectToolCall(ctx, source)

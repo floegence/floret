@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/floegence/floret/v4/config"
 	"github.com/floegence/floret/v4/identity"
 	"github.com/floegence/floret/v4/internal/agentharness"
 	"github.com/floegence/floret/v4/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v4/internal/storage"
 	"github.com/floegence/floret/v4/internal/storagebridge"
 	"github.com/floegence/floret/v4/provider"
 	publicstorage "github.com/floegence/floret/v4/storage"
@@ -194,18 +196,28 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	if backend == nil {
 		return nil, errors.New("runtime storage source returned a nil backend")
 	}
-	logicalState, err := inspectLogicalSchema(ctx, backend)
-	if err != nil {
-		_ = backend.Close()
-		return nil, err
-	}
 	coordinatedBackend := &serializedBackend{backend: backend}
-	store, err := newBackendRuntimeStore(ctx, coordinatedBackend)
+	var kernel *internalstorage.BackendKernel
+	err = coordinatedBackend.Update(ctx, func(tx spi.WriteTx) error {
+		logicalState, inspectErr := inspectLogicalSchemaTransaction(tx)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if inspectErr = commitLogicalSchemaTransaction(tx, logicalState); inspectErr != nil {
+			return inspectErr
+		}
+		return kernel.VerifyCurrentStateInTransaction(ctx, tx)
+	})
 	if err != nil {
 		_ = coordinatedBackend.Close()
 		return nil, err
 	}
-	if err := commitLogicalSchema(ctx, coordinatedBackend, logicalState); err != nil {
+	store, err := newBackendRuntimeStoreWithKernel(coordinatedBackend, kernel)
+	if err != nil {
 		_ = coordinatedBackend.Close()
 		return nil, err
 	}
@@ -286,16 +298,34 @@ func (host *Host) Shutdown(ctx context.Context) error {
 		return err
 	}
 	host.closing = true
+	done := host.closeDone
 	host.closeMu.Unlock()
-	if host.threadRuntime != nil {
-		host.threadRuntime.close()
+	go host.finishShutdown()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+	}
+	host.closeMu.Lock()
+	err := host.closeErr
+	host.closeMu.Unlock()
+	return err
+}
+
+func (host *Host) finishShutdown() {
+	host.mutationMu.Lock()
+	defer host.mutationMu.Unlock()
+	host.threadRuntimeMu.Lock()
+	service := host.threadRuntime
+	host.threadRuntimeMu.Unlock()
+	if service != nil {
+		service.close()
 	}
 	err := host.store.Close()
 	host.closeMu.Lock()
 	host.closeErr, host.closed, host.closing = err, true, false
 	close(host.closeDone)
 	host.closeMu.Unlock()
-	return err
 }
 
 func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.ThreadID, mutate func() error) error {
@@ -425,40 +455,43 @@ const (
 func inspectLogicalSchema(ctx context.Context, backend spi.Backend) (logicalSchemaState, error) {
 	var state logicalSchemaState
 	err := backend.View(ctx, func(tx spi.ReadTx) error {
-		encoded, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey))
-		if errors.Is(err, spi.ErrNotFound) {
-			state = logicalSchemaMissing
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
-		decoder.DisallowUnknownFields()
-		var envelope logicalSchemaEnvelope
-		if err := decoder.Decode(&envelope); err != nil {
-			return fmt.Errorf("%w: invalid schema envelope: %v", ErrUnsupportedSchema, err)
-		}
-		if decoder.More() {
-			return fmt.Errorf("%w: trailing schema data", ErrUnsupportedSchema)
-		}
-		if envelope.Version == "16" {
-			return &MigrationRequiredError{Version: envelope.Version}
-		}
-		if envelope.Version == previousLogicalSchemaVersion {
-			if envelope.Fingerprint != previousLogicalSchemaFingerprint {
-				return fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
-			}
-			state = logicalSchemaV4
-			return nil
-		}
-		if envelope.Version != logicalSchemaVersion || envelope.Fingerprint != logicalSchemaFingerprint {
-			return fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
-		}
-		state = logicalSchemaCurrent
-		return nil
+		var err error
+		state, err = inspectLogicalSchemaTransaction(tx)
+		return err
 	})
 	return state, err
+}
+
+func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) {
+	encoded, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey))
+	if errors.Is(err, spi.ErrNotFound) {
+		return logicalSchemaMissing, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	var envelope logicalSchemaEnvelope
+	if err := decoder.Decode(&envelope); err != nil {
+		return "", fmt.Errorf("%w: invalid schema envelope: %v", ErrUnsupportedSchema, err)
+	}
+	if decoder.More() {
+		return "", fmt.Errorf("%w: trailing schema data", ErrUnsupportedSchema)
+	}
+	if envelope.Version == "16" {
+		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == previousLogicalSchemaVersion {
+		if envelope.Fingerprint != previousLogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+		}
+		return logicalSchemaV4, nil
+	}
+	if envelope.Version != logicalSchemaVersion || envelope.Fingerprint != logicalSchemaFingerprint {
+		return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+	}
+	return logicalSchemaCurrent, nil
 }
 
 func commitLogicalSchema(ctx context.Context, backend spi.Backend, observed logicalSchemaState) error {
@@ -466,12 +499,19 @@ func commitLogicalSchema(ctx context.Context, backend spi.Backend, observed logi
 		return nil
 	}
 	return backend.Update(ctx, func(tx spi.WriteTx) error {
-		envelope, err := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
-		if err != nil {
-			return err
-		}
-		return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
+		return commitLogicalSchemaTransaction(tx, observed)
 	})
+}
+
+func commitLogicalSchemaTransaction(tx spi.WriteTx, observed logicalSchemaState) error {
+	if observed == logicalSchemaCurrent {
+		return nil
+	}
+	envelope, err := json.Marshal(logicalSchemaEnvelope{Version: logicalSchemaVersion, Fingerprint: logicalSchemaFingerprint})
+	if err != nil {
+		return err
+	}
+	return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), envelope)
 }
 
 func (agent *Agent) turnExecutionOptions() turnExecutionOptions {

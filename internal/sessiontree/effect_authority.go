@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ const (
 	EffectAttemptFailed      EffectAttemptState = "failed"
 	EffectAttemptRejected    EffectAttemptState = "rejected"
 	EffectAttemptUnknown     EffectAttemptState = "unknown"
+	EffectAttemptRetrying    EffectAttemptState = "retrying"
 	EffectAttemptCancelled   EffectAttemptState = "cancelled"
 )
 
@@ -42,16 +44,172 @@ type EffectInvocationIdentity struct {
 	SourceEffectAttemptID string `json:"source_effect_attempt_id,omitempty"`
 }
 
+func (inv *EffectInvocationIdentity) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	known := map[string]struct{}{
+		"thread_id": {}, "ThreadID": {}, "turn_id": {}, "TurnID": {}, "run_id": {}, "RunID": {},
+		"tool_call_id": {}, "ToolCallID": {}, "tool_name": {}, "ToolName": {}, "argument_hash": {}, "ArgumentHash": {},
+		"retry_key": {}, "RetryKey": {}, "source_effect_attempt_id": {}, "SourceEffectAttemptID": {},
+	}
+	for key := range raw {
+		if _, ok := known[key]; !ok {
+			return fmt.Errorf("unknown effect invocation field %q", key)
+		}
+	}
+	for _, aliases := range [][2]string{
+		{"thread_id", "ThreadID"}, {"turn_id", "TurnID"}, {"run_id", "RunID"},
+		{"tool_call_id", "ToolCallID"}, {"tool_name", "ToolName"}, {"argument_hash", "ArgumentHash"},
+		{"retry_key", "RetryKey"}, {"source_effect_attempt_id", "SourceEffectAttemptID"},
+	} {
+		if _, snake := raw[aliases[0]]; snake {
+			if _, legacy := raw[aliases[1]]; legacy {
+				return fmt.Errorf("ambiguous effect invocation fields %q and %q", aliases[0], aliases[1])
+			}
+		}
+	}
+	read := func(snake, legacy string) (string, error) {
+		value, ok := raw[snake]
+		if !ok {
+			value, ok = raw[legacy]
+		}
+		if !ok {
+			return "", nil
+		}
+		var result string
+		return result, json.Unmarshal(value, &result)
+	}
+	var err error
+	if inv.ThreadID, err = read("thread_id", "ThreadID"); err != nil {
+		return err
+	}
+	if inv.TurnID, err = read("turn_id", "TurnID"); err != nil {
+		return err
+	}
+	if inv.RunID, err = read("run_id", "RunID"); err != nil {
+		return err
+	}
+	if inv.ToolCallID, err = read("tool_call_id", "ToolCallID"); err != nil {
+		return err
+	}
+	if inv.ToolName, err = read("tool_name", "ToolName"); err != nil {
+		return err
+	}
+	if inv.ArgumentHash, err = read("argument_hash", "ArgumentHash"); err != nil {
+		return err
+	}
+	if inv.RetryKey, err = read("retry_key", "RetryKey"); err != nil {
+		return err
+	}
+	if inv.SourceEffectAttemptID, err = read("source_effect_attempt_id", "SourceEffectAttemptID"); err != nil {
+		return err
+	}
+	return nil
+}
+
 type EffectAttempt struct {
-	EffectAttemptID     string                   `json:"effect_attempt_id"`
-	Invocation          EffectInvocationIdentity `json:"invocation"`
-	RequestFingerprint  string                   `json:"request_fingerprint"`
-	State               EffectAttemptState       `json:"state"`
-	RejectionCode       string                   `json:"rejection_code,omitempty"`
-	TerminalFingerprint string                   `json:"terminal_fingerprint,omitempty"`
-	ResultEntryID       string                   `json:"result_entry_id,omitempty"`
-	CreatedAt           time.Time                `json:"created_at"`
-	UpdatedAt           time.Time                `json:"updated_at"`
+	EffectAttemptID         string                   `json:"effect_attempt_id"`
+	Invocation              EffectInvocationIdentity `json:"invocation"`
+	RequestFingerprint      string                   `json:"request_fingerprint"`
+	State                   EffectAttemptState       `json:"state"`
+	RejectionCode           string                   `json:"rejection_code,omitempty"`
+	TerminalFingerprint     string                   `json:"terminal_fingerprint,omitempty"`
+	ResultEntryID           string                   `json:"result_entry_id,omitempty"`
+	CreatedAt               time.Time                `json:"created_at"`
+	UpdatedAt               time.Time                `json:"updated_at"`
+	RetryRequestKey         string                   `json:"retry_request_key,omitempty"`
+	RetryRequestFingerprint string                   `json:"retry_request_fingerprint,omitempty"`
+	OwnerID                 string                   `json:"owner_id,omitempty"`
+	Generation              int64                    `json:"generation,omitempty"`
+}
+
+func (attempt *EffectAttempt) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	known := map[string]struct{}{
+		"effect_attempt_id": {}, "EffectAttemptID": {}, "invocation": {}, "Invocation": {},
+		"request_fingerprint": {}, "RequestFingerprint": {}, "state": {}, "State": {},
+		"rejection_code": {}, "RejectionCode": {}, "terminal_fingerprint": {}, "TerminalFingerprint": {},
+		"result_entry_id": {}, "ResultEntryID": {}, "created_at": {}, "CreatedAt": {}, "updated_at": {}, "UpdatedAt": {},
+		"retry_request_key": {}, "RetryRequestKey": {}, "retry_request_fingerprint": {}, "RetryRequestFingerprint": {},
+		"owner_id": {}, "OwnerID": {}, "generation": {}, "Generation": {},
+	}
+	for key := range raw {
+		if _, ok := known[key]; !ok {
+			return fmt.Errorf("unknown effect attempt field %q", key)
+		}
+	}
+	for _, aliases := range [][2]string{
+		{"effect_attempt_id", "EffectAttemptID"}, {"invocation", "Invocation"},
+		{"request_fingerprint", "RequestFingerprint"}, {"state", "State"},
+		{"rejection_code", "RejectionCode"}, {"terminal_fingerprint", "TerminalFingerprint"},
+		{"result_entry_id", "ResultEntryID"}, {"created_at", "CreatedAt"}, {"updated_at", "UpdatedAt"},
+		{"retry_request_key", "RetryRequestKey"}, {"retry_request_fingerprint", "RetryRequestFingerprint"},
+		{"owner_id", "OwnerID"}, {"generation", "Generation"},
+	} {
+		if _, snake := raw[aliases[0]]; snake {
+			if _, legacy := raw[aliases[1]]; legacy {
+				return fmt.Errorf("ambiguous effect attempt fields %q and %q", aliases[0], aliases[1])
+			}
+		}
+	}
+	read := func(snake, legacy string, target any) error {
+		value, ok := raw[snake]
+		if !ok {
+			value, ok = raw[legacy]
+		}
+		if !ok {
+			return nil
+		}
+		return json.Unmarshal(value, target)
+	}
+	if err := read("effect_attempt_id", "EffectAttemptID", &attempt.EffectAttemptID); err != nil {
+		return err
+	}
+	if value, ok := raw["invocation"]; ok {
+		if err := json.Unmarshal(value, &attempt.Invocation); err != nil {
+			return err
+		}
+	} else if value, ok := raw["Invocation"]; ok {
+		if err := json.Unmarshal(value, &attempt.Invocation); err != nil {
+			return err
+		}
+	}
+	if err := read("request_fingerprint", "RequestFingerprint", &attempt.RequestFingerprint); err != nil {
+		return err
+	}
+	if err := read("state", "State", &attempt.State); err != nil {
+		return err
+	}
+	if err := read("rejection_code", "RejectionCode", &attempt.RejectionCode); err != nil {
+		return err
+	}
+	if err := read("terminal_fingerprint", "TerminalFingerprint", &attempt.TerminalFingerprint); err != nil {
+		return err
+	}
+	if err := read("result_entry_id", "ResultEntryID", &attempt.ResultEntryID); err != nil {
+		return err
+	}
+	if err := read("created_at", "CreatedAt", &attempt.CreatedAt); err != nil {
+		return err
+	}
+	if err := read("updated_at", "UpdatedAt", &attempt.UpdatedAt); err != nil {
+		return err
+	}
+	if err := read("retry_request_key", "RetryRequestKey", &attempt.RetryRequestKey); err != nil {
+		return err
+	}
+	if err := read("retry_request_fingerprint", "RetryRequestFingerprint", &attempt.RetryRequestFingerprint); err != nil {
+		return err
+	}
+	if err := read("owner_id", "OwnerID", &attempt.OwnerID); err != nil {
+		return err
+	}
+	return read("generation", "Generation", &attempt.Generation)
 }
 
 type PendingToolSettlementTarget struct {
@@ -99,12 +257,26 @@ type MarkEffectUnknownRequest struct {
 	Now                                                     time.Time
 }
 
+type ClaimEffectRetryRequest struct {
+	EffectAttemptID, ToolCallID, RequestKey, RequestFingerprint string
+	Now                                                         time.Time
+}
+
+type ClaimEffectRetryResult struct {
+	Attempt  EffectAttempt
+	Replayed bool
+}
+
 type EffectAttemptRepo interface {
 	PrepareEffectAttempt(context.Context, PrepareEffectAttemptRequest) (PrepareEffectAttemptResult, error)
 	RejectEffectAttempt(context.Context, RejectEffectAttemptRequest) (EffectAttempt, error)
 	BeginEffectDispatch(context.Context, BeginEffectDispatchRequest) (EffectAttempt, error)
 	FinishEffectDispatch(context.Context, FinishEffectDispatchRequest) (FinishEffectDispatchResult, error)
 	MarkEffectUnknown(context.Context, MarkEffectUnknownRequest) (EffectAttempt, error)
+}
+
+type EffectRetryRepo interface {
+	ClaimEffectRetry(context.Context, ClaimEffectRetryRequest) (ClaimEffectRetryResult, error)
 }
 
 type EffectAttemptReader interface {
@@ -120,10 +292,13 @@ func validateEffectInvocation(inv EffectInvocationIdentity) error {
 }
 
 func effectInvocationKey(inv EffectInvocationIdentity) string {
-	return strings.Join([]string{
-		strings.TrimSpace(inv.ThreadID), strings.TrimSpace(inv.TurnID), strings.TrimSpace(inv.RunID),
-		strings.TrimSpace(inv.ToolCallID), strings.TrimSpace(inv.RetryKey), strings.TrimSpace(inv.SourceEffectAttemptID),
-	}, "\x00")
+	retryKey := strings.TrimSpace(inv.RetryKey)
+	if strings.TrimSpace(inv.SourceEffectAttemptID) != "" {
+		// A retry is one claim on the source attempt. Transport request keys
+		// identify the command, not a second irreversible effect attempt.
+		retryKey = ""
+	}
+	return strings.Join([]string{strings.TrimSpace(inv.ThreadID), strings.TrimSpace(inv.TurnID), strings.TrimSpace(inv.RunID), strings.TrimSpace(inv.ToolCallID), retryKey, strings.TrimSpace(inv.SourceEffectAttemptID)}, "\x00")
 }
 
 func effectAttemptID(inv EffectInvocationIdentity) string {
@@ -443,6 +618,52 @@ func (r *MemoryRepo) MarkEffectUnknown(_ context.Context, req MarkEffectUnknownR
 		return EffectAttempt{}, err
 	}
 	return attempt, nil
+}
+
+// ClaimEffectRetry atomically consumes the source Unknown authority before a
+// retried handler can be dispatched. A second request can only replay the same
+// request identity; it cannot create another irreversible attempt.
+func (r *MemoryRepo) ClaimEffectRetry(_ context.Context, req ClaimEffectRetryRequest) (ClaimEffectRetryResult, error) {
+	if strings.TrimSpace(req.EffectAttemptID) == "" || strings.TrimSpace(req.ToolCallID) == "" || strings.TrimSpace(req.RequestKey) == "" || strings.TrimSpace(req.RequestFingerprint) == "" {
+		return ClaimEffectRetryResult{}, errors.New("effect retry claim requires complete identity")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := r.entriesByEffectAttempt(req.EffectAttemptID)
+	attempt, found, err := latestEffectAttempt(entries, req.EffectAttemptID)
+	if err != nil {
+		return ClaimEffectRetryResult{}, err
+	}
+	if !found {
+		return ClaimEffectRetryResult{}, ErrEffectAttemptNotFound
+	}
+	if attempt.Invocation.ToolCallID != strings.TrimSpace(req.ToolCallID) {
+		return ClaimEffectRetryResult{}, ErrRequestConflict
+	}
+	if attempt.State == EffectAttemptRetrying {
+		if attempt.RetryRequestKey != strings.TrimSpace(req.RequestKey) || attempt.RetryRequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+			return ClaimEffectRetryResult{}, ErrRequestConflict
+		}
+		return ClaimEffectRetryResult{Attempt: attempt, Replayed: true}, nil
+	}
+	if attempt.State != EffectAttemptUnknown {
+		return ClaimEffectRetryResult{}, ErrRequestConflict
+	}
+	meta, ok := r.threads[attempt.Invocation.ThreadID]
+	if !ok {
+		return ClaimEffectRetryResult{}, ErrThreadNotFound
+	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
+		return ClaimEffectRetryResult{}, err
+	}
+	attempt.State = EffectAttemptRetrying
+	attempt.RetryRequestKey = strings.TrimSpace(req.RequestKey)
+	attempt.RetryRequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
+	attempt.UpdatedAt = canonicalTime(req.Now, r.now)
+	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+		return ClaimEffectRetryResult{}, err
+	}
+	return ClaimEffectRetryResult{Attempt: attempt}, nil
 }
 
 func (r *MemoryRepo) validateEffectArtifactReplayLocked(attempt EffectAttempt, entry Entry, req FinishEffectDispatchRequest) (*artifact.Ref, error) {

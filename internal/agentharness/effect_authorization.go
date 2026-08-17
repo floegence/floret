@@ -297,7 +297,7 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 			OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: len(text) + 1, VisibleMaxLines: strings.Count(text, "\n") + 2, Strategy: tools.OutputStrategy(entry.Message.ToolResult.Strategy), PreserveFullSet: true}}
 	case sessiontree.EffectAttemptRejected:
 		return tools.DeclinedResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName)
-	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptDispatching:
+	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptRetrying, sessiontree.EffectAttemptDispatching:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, sessiontree.ErrEffectOutcomeUnknown)
 	case sessiontree.EffectAttemptCancelled:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, context.Canceled)

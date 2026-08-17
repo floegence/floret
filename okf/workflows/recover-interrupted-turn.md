@@ -1,39 +1,39 @@
 ---
 type: Adoption Workflow
 title: Recover an Interrupted Turn
-description: Recover one exact Floret turn authority and settle host-owned pending work after restart.
-resource: /cmd/examples/startup-recovery/main.go
+description: Recover one exact Floret turn after restart without replaying a domain side effect.
+resource: /runtime/thread_runtime.go
 tags: [workflow, adoption, recovery, authority]
-timestamp: 2026-07-24T00:00:00Z
+timestamp: 2026-08-18T00:00:00Z
 ---
 
 # Goal
 
 Resume or reconcile an interrupted turn after process loss without fabricating
-identity, following replacement authority, or replaying a domain side effect.
+identity, following the wrong user, or replaying an irreversible effect.
 
 # Steps
 
-1. Open the Store with the same validated lease policy used before interruption.
-2. Configure the interrupted-turn recovery binder at the composition root and
-   bind one exact root turn or parent-child turn owner.
-3. Let Floret validate canonical admission, finish ledgers, lease generation,
-   heartbeat, and expiry before creating recovery authority.
-4. Handle typed not-found, resolved, busy, and invariant outcomes. Never poll
-   around a busy thread or choose a different unfinished turn heuristically.
-5. If the exact turn is terminal, use its canonical result/read model before
-   settling any remaining host-owned pending work through the bound recovery
-   capability. Reconcile external side effects by their host idempotency key.
+1. Open the Host with the same durable storage source.
+2. Hydrate the exact thread through `ThreadService.View`; Floret validates the
+   canonical turn markers and current leaf.
+3. Let the runtime recover only the admitted input, attachment references, and
+   retry source recorded in the journal. It must not use the thread creator as
+   the acting host user or rebuild a provider transcript.
+4. Treat waiting approval or input as a pending interaction and surface it
+   through the normal view; resolve it with `Respond` using a stable request key.
+5. If an effect is unknown, require explicit `RetryEffect` acknowledgement. Do
+   not automatically replay an irreversible tool call.
 
 # Verify
 
-Run the [startup recovery example](/cmd/examples/startup-recovery) and the
-terminal outcome contracts in [`florettest`](/florettest/doc.go). See the
-[`runtime` API](../api/runtime.md) for exact authority outcomes.
+Test restart hydration, attachment identity, waiting interactions, unknown
+effects, cancellation, and write failure. The [runtime API](../api/runtime.md)
+defines the host-facing contracts.
 
 # Boundary
 
-Floret owns turn admission, execution identity, lease proof, canonical terminal
-state, and pending-tool settlement facts. The host owns external job state and
-domain idempotency; it must not infer recovery from an audit stream or rewrite
-the Floret journal.
+Floret owns turn admission, execution identity, canonical terminal state,
+effect attempt identity, and durable thread facts. The host owns endpoint
+authorization, external resource resolution, and product audit; it must not
+infer lifecycle state from those records or rewrite the Floret journal.

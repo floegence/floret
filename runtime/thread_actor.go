@@ -17,6 +17,8 @@ type threadRuntimeState struct {
 	threadID string
 	mu       sync.Mutex
 	closed   bool
+	deleting bool
+	deleted  bool
 	state    threadRuntimeData
 }
 
@@ -32,6 +34,11 @@ type threadRuntimeData struct {
 	cancel              context.CancelFunc
 	cancelOwner         string
 	executionDone       <-chan struct{}
+	activeEffects       int
+	effectsDone         chan struct{}
+	effectRetryCancels  map[uint64]context.CancelFunc
+	effectRetryEpoch    uint64
+	effectRetrySources  map[string]struct{}
 	requestKeys         map[string]threadRuntimeRequest
 	agent               *Agent
 	pendingInteractions map[string]*pendingThreadInteraction
@@ -57,13 +64,16 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 	if runtime.closed {
 		return ErrHostClosed
 	}
+	if runtime.deleting || runtime.deleted {
+		return ErrThreadDeleted
+	}
 	return mutate()
 }
 
 // acceptLiveEvent applies the current provider-attempt fence and records the
 // latest memory-only projection. It is called only from the actor mailbox.
 func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
-	if runtime == nil {
+	if runtime == nil || runtime.deleting || runtime.deleted {
 		return false
 	}
 	if event.TurnID != "" && runtime.state.turnID != "" && event.TurnID != runtime.state.turnID {
@@ -105,6 +115,76 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		}
 	}
 	return true
+}
+
+func (runtime *threadRuntimeState) claimEffectDispatch() error {
+	if runtime == nil {
+		return ErrThreadDeleted
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return ErrHostClosed
+	}
+	if runtime.deleting || runtime.deleted {
+		return ErrThreadDeleted
+	}
+	if runtime.state.activeEffects == 0 {
+		runtime.state.effectsDone = make(chan struct{})
+	}
+	runtime.state.activeEffects++
+	return nil
+}
+
+func (runtime *threadRuntimeState) releaseEffectDispatch() {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.state.activeEffects <= 0 {
+		return
+	}
+	runtime.state.activeEffects--
+	if runtime.state.activeEffects == 0 && runtime.state.effectsDone != nil {
+		close(runtime.state.effectsDone)
+		runtime.state.effectsDone = nil
+	}
+}
+
+// claimEffectRetrySource fences one in-process dispatcher for a persisted
+// source attempt. The journal claim is the durable authority; this marker
+// distinguishes an active local dispatch from a stale claim recovered after a
+// process restart.
+func (runtime *threadRuntimeState) claimEffectRetrySource(sourceID string) (bool, error) {
+	if runtime == nil || strings.TrimSpace(sourceID) == "" {
+		return false, ErrThreadDeleted
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return false, ErrHostClosed
+	}
+	if runtime.deleting || runtime.deleted {
+		return false, ErrThreadDeleted
+	}
+	if runtime.state.effectRetrySources == nil {
+		runtime.state.effectRetrySources = make(map[string]struct{})
+	}
+	if _, exists := runtime.state.effectRetrySources[strings.TrimSpace(sourceID)]; exists {
+		return false, &RequestConflictError{Operation: "retry effect", RequestID: strings.TrimSpace(sourceID), Err: ErrRequestConflict}
+	}
+	runtime.state.effectRetrySources[strings.TrimSpace(sourceID)] = struct{}{}
+	return true, nil
+}
+
+func (runtime *threadRuntimeState) releaseEffectRetrySource(sourceID string) {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	delete(runtime.state.effectRetrySources, strings.TrimSpace(sourceID))
+	runtime.mu.Unlock()
 }
 
 func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream) {

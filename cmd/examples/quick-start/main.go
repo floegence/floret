@@ -24,14 +24,14 @@ func (gateway) Capabilities() provider.Capabilities {
 
 func (gateway) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
 	events := make(chan provider.Event, 2)
-	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v3."}
+	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v4."}
 	events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
 	close(events)
 	return events, nil
 }
 
 func main() {
-	path := filepath.Join(os.TempDir(), "floret-v3-example.db")
+	path := filepath.Join(os.TempDir(), "floret-v4-example.db")
 	if err := run(context.Background(), path); err != nil {
 		panic(err)
 	}

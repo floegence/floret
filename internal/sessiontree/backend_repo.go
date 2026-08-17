@@ -46,12 +46,31 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 	if backend == nil || now == nil {
 		return nil, errors.New("backend repo requires backend and clock")
 	}
+	var repo *BackendRepo
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		var err error
+		repo, err = NewBackendRepoInTransaction(ctx, backend, tx, now)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return repo, nil
+}
+
+// NewBackendRepoInTransaction initializes and fully validates the canonical
+// session-tree state using the caller's startup transaction. The returned
+// repository retains backend for ordinary operations after that transaction
+// commits.
+func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time) (*BackendRepo, error) {
+	if ctx == nil || backend == nil || tx == nil || now == nil {
+		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
+	}
 	repo := &BackendRepo{backend: backend, now: now}
 	var committedInventory []RootThreadInventoryItem
 	var committedInventoryEncoded []byte
 	var committedMemory *MemoryRepo
 	var committedJournalSeq uint64
-	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+	if err := func() error {
 		memory, found, migrated, err := repo.load(tx)
 		if err != nil {
 			return err
@@ -106,7 +125,7 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 		committedInventoryEncoded, err = tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)
 		committedMemory = memory
 		return err
-	}); err != nil {
+	}(); err != nil {
 		return nil, err
 	}
 	repo.rootInventoryEncoded = bytes.Clone(committedInventoryEncoded)
@@ -117,19 +136,41 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 		return nil, err
 	}
 	repo.journalBase = journalBase
-	if err := backend.View(ctx, func(tx spi.ReadTx) error {
-		encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
-		if err != nil {
-			return err
-		}
-		repo.domainEncoded = bytes.Clone(encoded)
-		return nil
-	}); err != nil {
+	encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
+	if err != nil {
 		return nil, err
 	}
+	repo.domainEncoded = bytes.Clone(encoded)
 	repo.domainDirty = committedJournalSeq > 0
 	repo.journalSeq = committedJournalSeq
 	return repo, nil
+}
+
+// VerifyCurrentStateInTransaction verifies the final current-schema domain
+// invariant without rewriting canonical bytes.
+func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if repo == nil || tx == nil || ctx == nil {
+		return errors.New("backend repository verification requires context, repository, and transaction")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	checkpoint, found, migrated, err := repo.load(tx)
+	if err != nil {
+		return err
+	}
+	if !found || migrated {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("session-tree state is not current after migration"))
+	}
+	// Startup may be reopening a store whose latest committed mutations are
+	// still represented by the recovery journal. Verify the same replayed
+	// authority that NewBackendRepoInTransaction hydrated, rather than comparing
+	// the stale checkpoint bytes with the current inventory projection.
+	memory, _, err := replayBackendDomainJournal(ctx, tx, checkpoint, repo.now)
+	if err != nil {
+		return err
+	}
+	return repo.verifyRootThreadInventory(tx, memory)
 }
 
 func (repo *BackendRepo) load(tx spi.ReadTx) (*MemoryRepo, bool, bool, error) {

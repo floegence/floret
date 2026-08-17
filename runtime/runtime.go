@@ -31,9 +31,6 @@ import (
 	"github.com/floegence/floret/v4/tools"
 )
 
-type forkOperationID string
-type createIntentID string
-
 var (
 	// ErrHostClosed reports that Host shutdown has started.
 	ErrHostClosed = errors.New("floret host is closed")
@@ -974,6 +971,21 @@ func newBackendRuntimeStore(ctx context.Context, backend spi.Backend) (*runtimeS
 	kernel, err := storage.NewBackendKernel(ctx, backend, time.Now)
 	if err != nil {
 		return nil, err
+	}
+	store := &runtimeStore{
+		repo: kernel, prompt: kernel,
+		agentTodos: kernel, rootAuthority: kernel,
+		deleteCleanup: func(context.Context, []string) error { return nil },
+	}
+	store.close = backend.Close
+	store.self = store
+	store.initLifetime()
+	return store, nil
+}
+
+func newBackendRuntimeStoreWithKernel(backend spi.Backend, kernel *storage.BackendKernel) (*runtimeStore, error) {
+	if backend == nil || kernel == nil {
+		return nil, errors.New("runtime store requires backend and kernel")
 	}
 	store := &runtimeStore{
 		repo: kernel, prompt: kernel,

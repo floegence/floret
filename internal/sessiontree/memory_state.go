@@ -99,8 +99,32 @@ func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, er
 		}
 		return nil, false, err
 	}
+	if state.Version >= 2 && state.Version <= 4 {
+		if err := decodeLegacyMemoryStateShapes(data, &state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+	}
 	migrated := false
 	switch state.Version {
+	case 2:
+		if err := migrateMemoryStateV2ToV3(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := migrateMemoryStateV3ToV4(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := migrateMemoryStateV4ToV5(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		migrated = true
+	case 3:
+		if err := migrateMemoryStateV3ToV4(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := migrateMemoryStateV4ToV5(&state); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
+		migrated = true
 	case 4:
 		if err := migrateMemoryStateV4ToV5(&state); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)

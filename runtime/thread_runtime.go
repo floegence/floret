@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/floegence/floret/v4/identity"
 	"github.com/floegence/floret/v4/internal/agentharness"
 	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/internal/sessionlifecycle"
 	"github.com/floegence/floret/v4/internal/sessiontree"
 	"github.com/floegence/floret/v4/observation"
 	"github.com/floegence/floret/v4/tools"
@@ -408,6 +410,7 @@ type threadRuntimeService struct {
 	factory     AgentFactory
 	mu          sync.Mutex
 	subscribers map[*WorkspaceSubscription]struct{}
+	published   map[string]uint64
 	runtimesMu  sync.Mutex
 	runtimes    map[string]*threadRuntimeState
 	closed      bool
@@ -476,11 +479,16 @@ func (subscription *WorkspaceSubscription) closeLocked() {
 
 // ThreadRuntime returns the Host-owned typed runtime service.
 func (host *Host) ThreadService(factory AgentFactory) (ThreadService, error) {
-	if err := host.available(); err != nil {
-		return nil, err
-	}
 	if factory == nil {
 		return nil, errors.New("thread runtime requires an Agent factory")
+	}
+	if host == nil {
+		return nil, errors.New("runtime Host is required")
+	}
+	host.closeMu.Lock()
+	defer host.closeMu.Unlock()
+	if host.closing || host.closed {
+		return nil, ErrHostClosed
 	}
 	host.threadRuntimeMu.Lock()
 	defer host.threadRuntimeMu.Unlock()
@@ -493,6 +501,7 @@ func (host *Host) ThreadService(factory AgentFactory) (ThreadService, error) {
 	host.threadRuntime = &threadRuntimeService{
 		host: host, factory: factory,
 		subscribers: make(map[*WorkspaceSubscription]struct{}),
+		published:   make(map[string]uint64),
 		runtimes:    make(map[string]*threadRuntimeState),
 	}
 	return host.threadRuntime, nil
@@ -674,8 +683,135 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 	if !ok {
 		return ErrUnsupportedStoreCapability
 	}
-	_, err = repo.DeleteRootTreeWithRequest(ctx, in.ThreadID.String(), key, fingerprint)
-	return runtimeHostError(err)
+	service.host.mutationMu.Lock()
+	defer service.host.mutationMu.Unlock()
+	if _, threadErr := service.host.store.repo.Thread(ctx, in.ThreadID.String()); threadErr != nil {
+		_, err = repo.DeleteRootTreeWithRequest(ctx, in.ThreadID.String(), key, fingerprint)
+		return runtimeHostError(err)
+	}
+	threadIDs, err := service.subtreeThreadIDs(ctx, in.ThreadID)
+	if err != nil {
+		return err
+	}
+	drains, err := service.fenceThreadRuntimes(threadIDs)
+	if err != nil {
+		return err
+	}
+	if err := waitThreadRuntimeDrains(ctx, drains); err != nil {
+		service.releaseDeleteFences(drains)
+		return err
+	}
+	result, err := repo.DeleteRootTreeWithRequest(ctx, in.ThreadID.String(), key, fingerprint)
+	if err != nil {
+		service.releaseDeleteFences(drains)
+		return runtimeHostError(err)
+	}
+	deleted := make(map[string]struct{}, len(result.ThreadIDs))
+	for _, threadID := range result.ThreadIDs {
+		deleted[threadID] = struct{}{}
+	}
+	for _, drain := range drains {
+		drain.actor.mu.Lock()
+		_, committed := deleted[drain.actor.threadID]
+		drain.actor.deleted = committed
+		drain.actor.deleting = false
+		drain.actor.mu.Unlock()
+	}
+	return nil
+}
+
+type threadRuntimeDrain struct {
+	actor         *threadRuntimeState
+	executionDone <-chan struct{}
+	effectsDone   <-chan struct{}
+}
+
+func (service *threadRuntimeService) subtreeThreadIDs(ctx context.Context, rootThreadID identity.ThreadID) ([]identity.ThreadID, error) {
+	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		return nil, runtimeHostError(err)
+	}
+	children := make(map[string][]string)
+	found := false
+	for _, meta := range metas {
+		if meta.ID == rootThreadID.String() {
+			found = true
+		}
+		children[meta.ParentThreadID] = append(children[meta.ParentThreadID], meta.ID)
+	}
+	if !found {
+		return nil, ErrThreadNotFound
+	}
+	ids := []string{rootThreadID.String()}
+	for index := 0; index < len(ids); index++ {
+		ids = append(ids, children[ids[index]]...)
+	}
+	sort.Strings(ids)
+	out := make([]identity.ThreadID, len(ids))
+	for index, threadID := range ids {
+		out[index] = identity.ThreadID(threadID)
+	}
+	return out, nil
+}
+
+func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.ThreadID) ([]threadRuntimeDrain, error) {
+	drains := make([]threadRuntimeDrain, len(threadIDs))
+	for index, threadID := range threadIDs {
+		drains[index].actor = service.runtime(threadID)
+		drains[index].actor.mu.Lock()
+	}
+	for _, drain := range drains {
+		if drain.actor.closed {
+			for _, locked := range drains {
+				locked.actor.mu.Unlock()
+			}
+			return nil, ErrHostClosed
+		}
+	}
+	for index := range drains {
+		actor := drains[index].actor
+		actor.deleting = true
+		drains[index].executionDone = actor.state.executionDone
+		drains[index].effectsDone = actor.state.effectsDone
+	}
+	for _, drain := range drains {
+		if drain.actor.state.cancel != nil {
+			drain.actor.state.cancel()
+		}
+		for _, cancelRetry := range drain.actor.state.effectRetryCancels {
+			cancelRetry()
+		}
+	}
+	for _, drain := range drains {
+		drain.actor.mu.Unlock()
+	}
+	return drains, nil
+}
+
+func waitThreadRuntimeDrains(ctx context.Context, drains []threadRuntimeDrain) error {
+	for _, drain := range drains {
+		for _, done := range []<-chan struct{}{drain.executionDone, drain.effectsDone} {
+			if done == nil {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-done:
+			}
+		}
+	}
+	return nil
+}
+
+func (service *threadRuntimeService) releaseDeleteFences(drains []threadRuntimeDrain) {
+	for _, drain := range drains {
+		drain.actor.mu.Lock()
+		if !drain.actor.deleted {
+			drain.actor.deleting = false
+		}
+		drain.actor.mu.Unlock()
+	}
 }
 
 func (service *threadRuntimeService) SetTitle(ctx context.Context, in SetTitleInput) (ThreadView, error) {
@@ -694,10 +830,18 @@ func (service *threadRuntimeService) SetTitle(ctx context.Context, in SetTitleIn
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
 	}
-	if _, err := titles.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{ThreadID: in.ThreadID.String(), Title: title, Now: time.Now().UTC()}); err != nil {
+	fingerprint, err := stableFingerprint(struct {
+		ThreadID identity.ThreadID `json:"thread_id"`
+		Title    string            `json:"title"`
+	}{in.ThreadID, title})
+	if err != nil {
+		return ThreadView{}, err
+	}
+	if _, err := titles.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
+		ThreadID: in.ThreadID.String(), Title: title, RequestKey: key, RequestFingerprint: fingerprint, Now: time.Now().UTC(),
+	}); err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	_ = key
 	return service.View(ctx, in.ThreadID)
 }
 
@@ -798,10 +942,11 @@ func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (Th
 }
 
 func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput) (ThreadView, error) {
-	if _, err := cleanRequestKey(in.RequestKey); err != nil {
+	key, err := cleanRequestKey(in.RequestKey)
+	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.cancel(ctx, in.ThreadID, string(in.RequestKey))
+	return service.cancel(ctx, in.ThreadID, key)
 }
 
 func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (ThreadView, error) {
@@ -833,18 +978,22 @@ func (service *threadRuntimeService) ReorderQueue(ctx context.Context, in Reorde
 	if err != nil {
 		return ThreadView{}, err
 	}
+	if _, err := service.View(ctx, in.ThreadID); err != nil {
+		return ThreadView{}, err
+	}
 	actor := service.runtime(in.ThreadID)
-	var before, reordered []QueuedInput
+	var reordered []QueuedInput
+	fingerprint, _ := stableFingerprint(in.OrderedItemIDs)
 	if err := actor.apply(ctx, func() error {
-		before = append([]QueuedInput(nil), actor.state.view.Queue...)
-		if len(before) != len(in.OrderedItemIDs) {
+		current := append([]QueuedInput(nil), actor.state.view.Queue...)
+		if len(current) != len(in.OrderedItemIDs) {
 			return ErrRequestConflict
 		}
-		byID := make(map[string]QueuedInput, len(before))
-		for _, item := range before {
+		byID := make(map[string]QueuedInput, len(current))
+		for _, item := range current {
 			byID[item.ID] = item
 		}
-		reordered = make([]QueuedInput, 0, len(before))
+		reordered = make([]QueuedInput, 0, len(current))
 		for _, id := range in.OrderedItemIDs {
 			item, ok := byID[strings.TrimSpace(id)]
 			if !ok {
@@ -856,15 +1005,13 @@ func (service *threadRuntimeService) ReorderQueue(ctx context.Context, in Reorde
 		if len(byID) != 0 {
 			return ErrRequestConflict
 		}
+		if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueReordered, "queue-reorder:"+key, key, fingerprint, in.OrderedItemIDs); err != nil {
+			return err
+		}
 		actor.state.view.Queue = reordered
 		actor.state.view.ViewVersion++
 		return nil
 	}); err != nil {
-		return ThreadView{}, err
-	}
-	fingerprint, _ := stableFingerprint(in.OrderedItemIDs)
-	if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueReordered, "queue-reorder:"+key, key, fingerprint, in.OrderedItemIDs); err != nil {
-		_ = actor.apply(context.Background(), func() error { actor.state.view.Queue = before; actor.state.view.ViewVersion++; return nil })
 		return ThreadView{}, err
 	}
 	view := service.currentView(actor)
@@ -877,13 +1024,18 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 	if err != nil {
 		return ThreadView{}, err
 	}
+	if _, err := service.View(ctx, in.ThreadID); err != nil {
+		return ThreadView{}, err
+	}
 	queueID := strings.TrimSpace(in.QueueItemID)
 	actor := service.runtime(in.ThreadID)
-	var before []QueuedInput
+	fingerprint, _ := stableFingerprint(queueID)
 	if err := actor.apply(ctx, func() error {
-		before = append([]QueuedInput(nil), actor.state.view.Queue...)
 		for index, item := range actor.state.view.Queue {
 			if item.ID == queueID {
+				if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueDeleted, "queue-delete:"+key, key, fingerprint, queueID); err != nil {
+					return err
+				}
 				actor.state.view.Queue = append(actor.state.view.Queue[:index], actor.state.view.Queue[index+1:]...)
 				actor.state.view.ViewVersion++
 				return nil
@@ -891,11 +1043,6 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 		}
 		return nil
 	}); err != nil {
-		return ThreadView{}, err
-	}
-	fingerprint, _ := stableFingerprint(queueID)
-	if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueDeleted, "queue-delete:"+key, key, fingerprint, queueID); err != nil {
-		_ = actor.apply(context.Background(), func() error { actor.state.view.Queue = before; actor.state.view.ViewVersion++; return nil })
 		return ThreadView{}, err
 	}
 	view := service.currentView(actor)
@@ -906,6 +1053,9 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in PromoteQueuedInput) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
+		return ThreadView{}, err
+	}
+	if _, err := service.View(ctx, in.ThreadID); err != nil {
 		return ThreadView{}, err
 	}
 	queueID := strings.TrimSpace(in.QueueItemID)
@@ -982,6 +1132,9 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 				replayed = true
 				return nil
 			}
+			if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueAdded, queued.ID, key, fingerprint, queued); err != nil {
+				return err
+			}
 			if actor.state.requestKeys == nil {
 				actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 			}
@@ -993,13 +1146,6 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 		}
 		if replayed {
 			continue
-		}
-		if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueAdded, queued.ID, key, fingerprint, queued); err != nil {
-			_ = actor.apply(context.Background(), func() error {
-				delete(actor.state.requestKeys, key)
-				return nil
-			})
-			return ImportResult{}, err
 		}
 		imported++
 	}
@@ -1032,13 +1178,93 @@ func (service *threadRuntimeService) RetryEffect(ctx context.Context, in RetryEf
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	if source.State != sessiontree.EffectAttemptUnknown || source.Invocation.ToolCallID != strings.TrimSpace(in.ToolCallID) {
+	if (source.State != sessiontree.EffectAttemptUnknown && source.State != sessiontree.EffectAttemptRetrying) || source.Invocation.ToolCallID != strings.TrimSpace(in.ToolCallID) {
 		return ThreadView{}, ErrRequestConflict
 	}
-	fingerprint, _ := stableFingerprint(in)
+	normalizedInput := in
+	normalizedInput.RequestKey = RequestKey(key)
+	normalizedInput.EffectAttemptID = strings.TrimSpace(normalizedInput.EffectAttemptID)
+	normalizedInput.ToolCallID = strings.TrimSpace(normalizedInput.ToolCallID)
+	fingerprint, _ := stableFingerprint(normalizedInput)
 	actor := service.runtime(in.ThreadID)
 	var result ThreadView
 	var replayed bool
+	// Request-key idempotency is checked before consulting the source
+	// authority. A completed source attempt is still a successful replay of
+	// the original command, not a new conflicting retry.
+	err = actor.apply(ctx, func() error {
+		if existing, found := actor.state.requestKeys[key]; found {
+			if existing.fingerprint != fingerprint {
+				return &RequestConflictError{Operation: "retry effect", RequestID: key, Err: ErrRequestConflict}
+			}
+			replayed = true
+			result = cloneThreadRuntimeView(actor.state.view)
+		}
+		return nil
+	})
+	if err != nil || replayed {
+		return result, err
+	}
+	claimedLocally, err := actor.claimEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
+	if err != nil {
+		return ThreadView{}, err
+	}
+	if !claimedLocally {
+		return ThreadView{}, ErrRequestConflict
+	}
+	if err := actor.claimEffectDispatch(); err != nil {
+		actor.releaseEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
+		return ThreadView{}, err
+	}
+	releaseEffect := func() {
+		actor.releaseEffectDispatch()
+		actor.releaseEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
+	}
+	operationCtx, finishOperation, err := service.host.store.beginLifetimeOperationContext()
+	if err != nil {
+		releaseEffect()
+		return ThreadView{}, err
+	}
+	retryCtx, retryCancel := context.WithCancel(operationCtx)
+	actor.mu.Lock()
+	if actor.deleting || actor.deleted || actor.closed {
+		actor.mu.Unlock()
+		retryCancel()
+		releaseEffect()
+		finishOperation()
+		return ThreadView{}, ErrThreadDeleted
+	}
+	actor.state.effectRetryEpoch++
+	retryEpoch := actor.state.effectRetryEpoch
+	if actor.state.effectRetryCancels == nil {
+		actor.state.effectRetryCancels = make(map[uint64]context.CancelFunc)
+	}
+	actor.state.effectRetryCancels[retryEpoch] = retryCancel
+	actor.mu.Unlock()
+	finishRetry := func() {
+		actor.mu.Lock()
+		if actor.state.effectRetryCancels != nil {
+			delete(actor.state.effectRetryCancels, retryEpoch)
+		}
+		actor.mu.Unlock()
+		retryCancel()
+		releaseEffect()
+		finishOperation()
+	}
+	claimer, ok := service.host.store.repo.(sessiontree.EffectRetryRepo)
+	if !ok {
+		finishRetry()
+		return ThreadView{}, ErrUnsupportedStoreCapability
+	}
+	claimed, err := claimer.ClaimEffectRetry(ctx, sessiontree.ClaimEffectRetryRequest{
+		EffectAttemptID: strings.TrimSpace(in.EffectAttemptID), ToolCallID: strings.TrimSpace(in.ToolCallID),
+		RequestKey: key, RequestFingerprint: fingerprint, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		finishRetry()
+		return ThreadView{}, runtimeHostError(err)
+	}
+	source = claimed.Attempt
 	err = actor.apply(ctx, func() error {
 		if existing, found := actor.state.requestKeys[key]; found {
 			if existing.fingerprint != fingerprint {
@@ -1057,30 +1283,57 @@ func (service *threadRuntimeService) RetryEffect(ctx context.Context, in RetryEf
 		return nil
 	})
 	if err != nil || replayed {
+		finishRetry()
 		return result, err
 	}
 	service.publish(result)
-	go service.runEffectRetry(actor, in.ThreadID, source, key)
+	if claimed.Replayed {
+		// The durable claim predates this process. The in-process source fence
+		// above makes this the sole dispatcher after restart; a concurrent local
+		// request returned before reaching the claim.
+	}
+	go service.runEffectRetry(retryCtx, finishRetry, actor, in.ThreadID, source, key)
 	return result, nil
 }
 
-func (service *threadRuntimeService) runEffectRetry(actor *threadRuntimeState, threadID identity.ThreadID, source sessiontree.EffectAttempt, requestKey string) {
-	agent, err := service.factory.Agent(context.Background(), AgentRequest{
+func (service *threadRuntimeService) runEffectRetry(ctx context.Context, finish func(), actor *threadRuntimeState, threadID identity.ThreadID, source sessiontree.EffectAttempt, requestKey string) {
+	defer finish()
+	agent, err := service.factory.Agent(ctx, AgentRequest{
 		ThreadID: threadID, TurnID: identity.TurnID(source.Invocation.TurnID), RequestKey: requestKey,
 		EffectAttemptID: source.EffectAttemptID,
 	})
-	if err != nil || agent == nil {
-		return
+	if err == nil && agent == nil {
+		err = errors.New("Agent factory returned nil")
 	}
-	runner, err := service.host.turnRunner(context.Background(), threadID, service.executionAgent(actor, agent))
 	if err != nil {
+		service.effectRetryFailed(actor, err)
 		return
 	}
-	if _, err := runner.RetryUnknownEffect(context.Background(), source.EffectAttemptID, requestKey); err != nil {
+	runner, err := service.host.turnRunner(ctx, threadID, service.executionAgent(actor, agent))
+	if err != nil {
+		service.effectRetryFailed(actor, err)
+		return
+	}
+	if _, err := runner.RetryUnknownEffect(ctx, source.EffectAttemptID, requestKey); err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			service.effectRetryFailed(actor, err)
+		}
 		return
 	}
 	service.refreshCanonical(threadID, identity.TurnID(source.Invocation.TurnID))
-	service.redispatchAcceptedTurn(context.Background(), threadID, identity.TurnID(source.Invocation.TurnID), identity.RunID(source.Invocation.RunID))
+	service.redispatchAcceptedTurn(ctx, threadID, identity.TurnID(source.Invocation.TurnID), identity.RunID(source.Invocation.RunID))
+}
+
+func (service *threadRuntimeService) effectRetryFailed(actor *threadRuntimeState, err error) {
+	if service != nil && service.host != nil && service.host.store != nil {
+		service.host.store.reportBackgroundError(err)
+	}
+	_ = actor.apply(context.Background(), func() error {
+		actor.state.view.Error = err.Error()
+		actor.state.view.ViewVersion++
+		service.publish(cloneThreadRuntimeView(actor.state.view))
+		return nil
+	})
 }
 
 func (service *threadRuntimeService) currentView(actor *threadRuntimeState) ThreadView {
@@ -1094,7 +1347,7 @@ func (host *Host) threadRuntimeForFence() *threadRuntimeService {
 	defer host.threadRuntimeMu.Unlock()
 	if host.threadRuntime == nil {
 		host.threadRuntime = &threadRuntimeService{
-			host: host, subscribers: make(map[*WorkspaceSubscription]struct{}), runtimes: make(map[string]*threadRuntimeState),
+			host: host, subscribers: make(map[*WorkspaceSubscription]struct{}), published: make(map[string]uint64), runtimes: make(map[string]*threadRuntimeState),
 		}
 	}
 	return host.threadRuntime
@@ -1120,13 +1373,17 @@ func (service *threadRuntimeService) close() {
 		return
 	}
 	service.mu.Lock()
+	subscriptions := make([]*WorkspaceSubscription, 0, len(service.subscribers))
 	for subscription := range service.subscribers {
+		subscriptions = append(subscriptions, subscription)
+	}
+	service.subscribers = make(map[*WorkspaceSubscription]struct{})
+	service.mu.Unlock()
+	for _, subscription := range subscriptions {
 		subscription.mu.Lock()
 		subscription.closeLocked()
 		subscription.mu.Unlock()
 	}
-	service.subscribers = make(map[*WorkspaceSubscription]struct{})
-	service.mu.Unlock()
 	service.runtimesMu.Lock()
 	service.closed = true
 	runtimes := make([]*threadRuntimeState, 0, len(service.runtimes))
@@ -1134,14 +1391,22 @@ func (service *threadRuntimeService) close() {
 		runtimes = append(runtimes, runtime)
 	}
 	service.runtimesMu.Unlock()
+	drains := make([]threadRuntimeDrain, 0, len(runtimes))
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
 		runtime.closed = true
+		drains = append(drains, threadRuntimeDrain{
+			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
+		})
 		if runtime.state.cancel != nil {
 			runtime.state.cancel()
 		}
+		for _, cancelRetry := range runtime.state.effectRetryCancels {
+			cancelRetry()
+		}
 		runtime.mu.Unlock()
 	}
+	_ = waitThreadRuntimeDrains(context.Background(), drains)
 }
 
 func (service *threadRuntimeService) View(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
@@ -1250,6 +1515,9 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		service.finishUnloadedCancellation(service.runtime(threadID), threadID, turnID, runID)
 		return
 	}
+	if service.recoverClaimedEffectRetries(ctx, threadID, turnID, entries) {
+		return
+	}
 	blockedByUnknown := service.recoverEffectAttempts(ctx, threadID, turnID, entries)
 	if blockedByUnknown {
 		service.refreshCanonical(threadID, turnID)
@@ -1278,6 +1546,54 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 	service.redispatchAcceptedTurn(ctx, threadID, turnID, runID)
 }
 
+func (service *threadRuntimeService) recoverClaimedEffectRetries(ctx context.Context, threadID identity.ThreadID, turnID identity.TurnID, entries []sessiontree.Entry) bool {
+	latest := make(map[string]sessiontree.EffectAttempt)
+	for _, entry := range entries {
+		if entry.TurnID != turnID.String() || entry.Type != sessiontree.EntryEffectAttempt {
+			continue
+		}
+		attempt, err := sessiontree.DecodeCanonicalEffectAttempt(entry)
+		if err == nil {
+			latest[attempt.EffectAttemptID] = attempt
+		}
+	}
+	resolved := settledRetrySources(latest)
+	children := make(map[string][]sessiontree.EffectAttempt)
+	for _, attempt := range latest {
+		if sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID); sourceID != "" {
+			children[sourceID] = append(children[sourceID], attempt)
+		}
+	}
+	started := false
+	for _, attempt := range latest {
+		if attempt.State != sessiontree.EffectAttemptRetrying || strings.TrimSpace(attempt.RetryRequestKey) == "" {
+			continue
+		}
+		if _, settled := resolved[attempt.EffectAttemptID]; settled {
+			continue
+		}
+		ready := len(children[attempt.EffectAttemptID]) == 0
+		for _, child := range children[attempt.EffectAttemptID] {
+			if child.State == sessiontree.EffectAttemptPrepared {
+				ready = true
+			}
+		}
+		if !ready {
+			continue
+		}
+		started = true
+		_, err := service.RetryEffect(ctx, RetryEffectInput{
+			ThreadID: threadID, EffectAttemptID: attempt.EffectAttemptID,
+			ToolCallID: attempt.Invocation.ToolCallID, AcknowledgeUnknownRisk: true,
+			RequestKey: RequestKey(attempt.RetryRequestKey),
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			service.host.store.reportBackgroundError(err)
+		}
+	}
+	return started
+}
+
 func turnHasCancelRequest(entries []sessiontree.Entry, turnID identity.TurnID) bool {
 	for _, entry := range entries {
 		if entry.TurnID == turnID.String() && entry.Type == sessiontree.EntryCancelRequested {
@@ -1298,12 +1614,7 @@ func (service *threadRuntimeService) recoverEffectAttempts(ctx context.Context, 
 			latest[attempt.EffectAttemptID] = attempt
 		}
 	}
-	resolved := make(map[string]struct{})
-	for _, attempt := range latest {
-		if attempt.Invocation.SourceEffectAttemptID != "" && effectAttemptSettlesRetry(attempt.State) {
-			resolved[attempt.Invocation.SourceEffectAttemptID] = struct{}{}
-		}
-	}
+	resolved := settledRetrySources(latest)
 	authority, ok := service.host.store.repo.(sessiontree.EffectAttemptRepo)
 	blocked := false
 	for _, attempt := range latest {
@@ -1316,6 +1627,10 @@ func (service *threadRuntimeService) recoverEffectAttempts(ctx context.Context, 
 					OutcomeFingerprint: sessiontree.StableHash(attempt.EffectAttemptID + "\x00runtime-restarted"), Now: time.Now().UTC(),
 				})
 			}
+		case sessiontree.EffectAttemptRetrying:
+			if _, settled := resolved[attempt.EffectAttemptID]; !settled {
+				blocked = true
+			}
 		case sessiontree.EffectAttemptUnknown:
 			if _, settled := resolved[attempt.EffectAttemptID]; !settled {
 				blocked = true
@@ -1323,6 +1638,31 @@ func (service *threadRuntimeService) recoverEffectAttempts(ctx context.Context, 
 		}
 	}
 	return blocked
+}
+
+func settledRetrySources(attempts map[string]sessiontree.EffectAttempt) map[string]struct{} {
+	resolved := make(map[string]struct{})
+	for {
+		changed := false
+		for _, attempt := range attempts {
+			sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID)
+			if sourceID == "" || (!effectAttemptSettlesRetry(attempt.State) && !hasResolvedRetrySource(resolved, attempt.EffectAttemptID)) {
+				continue
+			}
+			if _, found := resolved[sourceID]; !found {
+				resolved[sourceID] = struct{}{}
+				changed = true
+			}
+		}
+		if !changed {
+			return resolved
+		}
+	}
+}
+
+func hasResolvedRetrySource(resolved map[string]struct{}, attemptID string) bool {
+	_, found := resolved[strings.TrimSpace(attemptID)]
+	return found
 }
 
 func (service *threadRuntimeService) restoreSecretInteraction(ctx context.Context, threadID identity.ThreadID, source ThreadInteraction, leafID string) {
@@ -1358,7 +1698,22 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	}
 	input := turnInputFromSessionMessage(canonical.UserMessage.Message)
 	requestKey := strings.TrimSpace(canonical.TurnStarted.RequestKey)
-	agent, err := service.factory.Agent(ctx, AgentRequest{ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input})
+	var retrySourceTurnID identity.TurnID
+	var retrySourceEntryID string
+	if reader, ok := service.host.store.repo.(sessiontree.CanonicalTurnReadRepo); ok {
+		read, readErr := reader.ReadCanonicalTurn(ctx, threadID.String(), turnID.String())
+		if readErr != nil {
+			return
+		}
+		if read.Turn.RetrySource != nil {
+			retrySourceTurnID = identity.TurnID(read.Turn.RetrySource.TurnID)
+			retrySourceEntryID = strings.TrimSpace(read.Turn.RetrySource.EntryID)
+		}
+	}
+	agent, err := service.factory.Agent(ctx, AgentRequest{
+		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
+		RetrySource: retrySourceTurnID,
+	})
 	if err != nil || agent == nil {
 		return
 	}
@@ -1378,6 +1733,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
+		RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
 		Signals: TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
 	accepted := acceptedTurn{ThreadID: threadID, TurnID: turnID, RunID: runID, UserEntryID: canonical.UserMessage.ID, BaseLeafID: canonical.BaseLeafID, Replayed: true}
@@ -1454,7 +1810,24 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	}
 	if active {
 		queued := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, CreatedAt: time.Now().UTC()}
+		var replayedQueue bool
 		err := actor.apply(ctx, func() error {
+			if existing, ok := actor.state.requestKeys[requestKey]; ok {
+				if existing.fingerprint != fingerprint {
+					return &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
+				}
+				replayedQueue = true
+				return nil
+			}
+			for _, existing := range actor.state.view.Queue {
+				if existing.ID == queued.ID {
+					replayedQueue = true
+					return nil
+				}
+			}
+			if err := service.appendQueueFact(ctx, threadID, sessiontree.EntryQueueAdded, queued.ID, requestKey, fingerprint, queued); err != nil {
+				return err
+			}
 			actor.state.view.ViewVersion++
 			actor.state.view.Queue = append(actor.state.view.Queue, queued)
 			result := cloneThreadRuntimeView(actor.state.view)
@@ -1468,8 +1841,10 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		if err != nil {
 			return ThreadView{}, err
 		}
+		if replayedQueue {
+			return service.currentView(actor), nil
+		}
 		service.publish(replay)
-		go service.persistQueuedInput(actor, threadID, queued, requestKey, fingerprint)
 		return replay, nil
 	}
 	turnID, runID, err := service.host.nextTurnRunIDs()
@@ -1485,7 +1860,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	}
 	var result ThreadView
 	var accepted acceptedTurn
-	var queued, replayed bool
+	var replayed bool
 	var previousExecution <-chan struct{}
 	err = actor.apply(ctx, func() error {
 		if existing, ok := actor.state.requestKeys[requestKey]; ok {
@@ -1497,16 +1872,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 			return nil
 		}
 		if actor.state.view.Activity == ThreadActivityActive {
-			queuedInput := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, CreatedAt: time.Now().UTC()}
-			actor.state.view.ViewVersion++
-			actor.state.view.Queue = append(actor.state.view.Queue, queuedInput)
-			result = cloneThreadRuntimeView(actor.state.view)
-			if actor.state.requestKeys == nil {
-				actor.state.requestKeys = make(map[string]threadRuntimeRequest)
-			}
-			actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: fingerprint}
-			queued = true
-			return nil
+			return ErrThreadBusy
 		}
 		acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
 		defer cancelAccept()
@@ -1546,36 +1912,11 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		return result, nil
 	}
 	service.publish(result)
-	if queued {
-		cancel()
-		queuedInput := result.Queue[len(result.Queue)-1]
-		go service.persistQueuedInput(actor, threadID, queuedInput, requestKey, fingerprint)
-		return result, nil
-	}
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
 		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
 	})
 	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
-}
-
-func (service *threadRuntimeService) persistQueuedInput(actor *threadRuntimeState, threadID identity.ThreadID, queued QueuedInput, requestKey, fingerprint string) {
-	if err := service.appendQueueFact(context.Background(), threadID, sessiontree.EntryQueueAdded, queued.ID, requestKey, fingerprint, queued); err == nil {
-		return
-	}
-	_ = actor.apply(context.Background(), func() error {
-		for index := range actor.state.view.Queue {
-			if actor.state.view.Queue[index].ID != queued.ID {
-				continue
-			}
-			actor.state.view.Queue = append(actor.state.view.Queue[:index], actor.state.view.Queue[index+1:]...)
-			delete(actor.state.requestKeys, requestKey)
-			actor.state.view.ViewVersion++
-			service.publish(cloneThreadRuntimeView(actor.state.view))
-			break
-		}
-		return nil
-	})
 }
 
 func (service *threadRuntimeService) acceptAndExecutePreparedSend(
@@ -1731,7 +2072,7 @@ func (service *threadRuntimeService) executePreparedSend(
 	case execution := <-prepared:
 		if execution.err != nil {
 			close(executionDone)
-			service.finishSend(actor, request.TurnID, request.RunID, TurnResult{}, execution.err)
+			service.finishUnloadedTerminal(actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{}, execution.err)
 			return
 		}
 		request.ManualCompactions = agentManualCompactions(execution.agent)
@@ -1750,7 +2091,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 	if previousExecution != nil {
 		select {
 		case <-ctx.Done():
-			service.finishSend(actor, request.TurnID, request.RunID, TurnResult{Status: TurnStatusCancelled}, ctx.Err())
+			service.finishUnloadedTerminal(actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{Status: TurnStatusCancelled}, ctx.Err())
 			return
 		case <-previousExecution:
 		}
@@ -1882,7 +2223,7 @@ func (gate threadRuntimeEffectGate) Dispatch(ctx context.Context, request Effect
 		if gate.downstream == nil {
 			return EffectDispatchResult{}, ErrAuthorizationUnavailable
 		}
-		return gate.downstream.Dispatch(ctx, request, effect)
+		return gate.dispatch(ctx, request, effect)
 	}
 	threadInteraction := ThreadInteraction{
 		ID: "approval:" + request.EffectAttemptID, TurnID: request.TurnID, runID: request.RunID,
@@ -1905,6 +2246,15 @@ func (gate threadRuntimeEffectGate) Dispatch(ctx context.Context, request Effect
 	if gate.downstream == nil {
 		return EffectDispatchResult{}, ErrAuthorizationUnavailable
 	}
+	return gate.dispatch(ctx, request, effect)
+}
+
+func (gate threadRuntimeEffectGate) dispatch(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	actor := gate.service.runtime(request.ThreadID)
+	if err := actor.claimEffectDispatch(); err != nil {
+		return EffectDispatchResult{}, err
+	}
+	defer actor.releaseEffectDispatch()
 	return gate.downstream.Dispatch(ctx, request, effect)
 }
 
@@ -2196,11 +2546,13 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	var turnID identity.TurnID
 	var runID identity.RunID
 	var cancel context.CancelFunc
+	var executionDone <-chan struct{}
 	var active bool
 	var pending []ThreadInteraction
 	err := actor.apply(ctx, func() error {
 		active = actor.state.view.Activity == ThreadActivityActive
 		turnID, runID, cancel = actor.state.turnID, actor.state.runID, actor.state.cancel
+		executionDone = actor.state.executionDone
 		for _, interaction := range actor.state.view.Interactions {
 			if !interaction.Resolved {
 				pending = append(pending, interaction)
@@ -2227,25 +2579,45 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 		Type: sessiontree.EntryCancelRequested, RequestKey: requestKey, RequestFingerprint: fingerprint,
 	}}
 	resolutions := make(map[string]InteractionResolution, len(pending))
+	replayedCancel := false
 	for _, interaction := range pending {
 		resolution := InteractionResolution{Accepted: false, Outcome: "cancelled"}
 		payload, marshalErr := json.Marshal(resolution)
 		if marshalErr != nil {
 			return ThreadView{}, marshalErr
 		}
-		resolutionFingerprint, fingerprintErr := stableFingerprint(resolution)
-		if fingerprintErr != nil {
-			return ThreadView{}, fingerprintErr
-		}
 		entries = append(entries, sessiontree.Entry{
 			ID: "interaction-resolved:" + interaction.ID, ThreadID: threadID.String(),
 			TurnID: interaction.TurnID.String(), RunID: interaction.runID.String(),
 			Type: sessiontree.EntryInteractionDone, RequestKey: requestKey,
-			RequestFingerprint: resolutionFingerprint, Payload: payload,
+			RequestFingerprint: fingerprint, Payload: payload,
 		})
 		resolutions[interaction.ID] = resolution
 	}
 	err = actor.apply(ctx, func() error {
+		if existing, found := actor.state.requestKeys[requestKey]; found {
+			if existing.fingerprint != fingerprint {
+				return &RequestConflictError{Operation: "cancel", RequestID: requestKey, Err: ErrRequestConflict}
+			}
+			replayedCancel = true
+			return nil
+		}
+		if actor.state.view.Activity != ThreadActivityActive {
+			return ErrRequestConflict
+		}
+		for interactionID := range resolutions {
+			for _, interaction := range actor.state.view.Interactions {
+				if interaction.ID != interactionID {
+					continue
+				}
+				if interaction.Resolved {
+					return ErrRequestConflict
+				}
+			}
+		}
+		if err := service.appendRuntimeFactsError(ctx, threadID, entries); err != nil {
+			return err
+		}
 		for interactionID, resolution := range resolutions {
 			resolveThreadInteractionCanonical(&actor.state.view, interactionID, resolution)
 		}
@@ -2259,15 +2631,15 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	if err != nil {
 		return ThreadView{}, err
 	}
+	if replayedCancel {
+		return service.currentView(actor), nil
+	}
 	view := service.currentView(actor)
 	service.publish(view)
 	if cancel != nil {
 		cancel()
 	}
 	go func() {
-		if !service.appendRuntimeFacts(context.Background(), threadID, entries) {
-			return
-		}
 		_ = actor.apply(context.Background(), func() error {
 			for interactionID, resolution := range resolutions {
 				if waiter := actor.state.pendingInteractions[interactionID]; waiter != nil {
@@ -2277,20 +2649,54 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 			}
 			return nil
 		})
+		// Let an in-process runner finish its canonical terminal write before
+		// using the unloaded cancellation fallback. Otherwise the fallback can
+		// append a terminal marker that a late provider finalization follows
+		// with a save point, resurrecting the active turn in the journal.
+		if executionDone != nil {
+			<-executionDone
+		}
 		service.finishUnloadedCancellation(actor, threadID, turnID, runID)
 	}()
 	return view, nil
 }
 
 func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) {
+	service.finishUnloadedTerminal(actor, threadID, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+}
+
+// finishUnloadedTerminal is used when no agent-harness runner remains to
+// persist the terminal marker. Canonical settlement must precede the live
+// actor transition so a preparation failure cannot look complete in memory
+// while the journal still contains an active turn.
+func (service *threadRuntimeService) finishUnloadedTerminal(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
 	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
+		service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
 		return
 	}
+	status := sessiontree.TurnAborted
+	failureCode := sessiontree.TurnFailureCancelled
+	outcome := "cancelled"
+	failureMessage := ""
+	if completed.Status != TurnStatusCancelled && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
+		status = sessiontree.TurnFailed
+		failureCode = sessiontree.TurnFailureEngineContract
+		outcome = "failed"
+		if runErr != nil {
+			failureMessage = strings.TrimSpace(runErr.Error())
+		}
+		if failureMessage == "" {
+			failureMessage = "thread runtime execution preparation failed"
+		}
+	}
 	terminalID := stableCancellationEntryID(threadID, turnID, runID)
+	if status != sessiontree.TurnAborted {
+		terminalID = stableTerminalEntryID(threadID, turnID, runID)
+	}
 	metadata := map[string]string{
-		"run_id": runID.String(), "outcome": "cancelled",
-		sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled,
+		"run_id": runID.String(), "outcome": outcome,
+		sessiontree.TurnFailureCodeMetadataKey: failureCode,
 	}
 	payload, err := json.Marshal(struct {
 		ThreadID identity.ThreadID `json:"thread_id"`
@@ -2298,7 +2704,8 @@ func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRun
 		RunID    identity.RunID    `json:"run_id"`
 		Terminal string            `json:"terminal"`
 		Status   string            `json:"status"`
-	}{ThreadID: threadID, TurnID: turnID, RunID: runID, Terminal: terminalID, Status: "cancelled"})
+		Error    string            `json:"error,omitempty"`
+	}{ThreadID: threadID, TurnID: turnID, RunID: runID, Terminal: terminalID, Status: outcome, Error: failureMessage})
 	if err != nil {
 		return
 	}
@@ -2306,12 +2713,19 @@ func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRun
 	defer cancel()
 	_, err = repo.FinishTurn(ctx, sessiontree.FinishTurnRequest{
 		ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(),
-		TerminalEntryID: terminalID, Status: sessiontree.TurnAborted, Metadata: metadata,
+		TerminalEntryID: terminalID, Status: status, Metadata: metadata, FailureMessage: failureMessage,
 		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: time.Now().UTC(), ClearProviderState: true,
 	})
-	if err == nil {
-		service.finishSend(actor, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+	if err != nil {
+		// A runner may have committed its terminal before this fallback
+		// reaches the journal. Those stale/conflicting claims are an expected
+		// race, not a new background failure.
+		if !errors.Is(err, sessiontree.ErrStaleAuthority) && !errors.Is(err, sessiontree.ErrRequestConflict) {
+			service.host.store.reportBackgroundError(err)
+		}
+		return
 	}
+	service.finishSend(actor, turnID, runID, completed, runErr)
 }
 
 func stableCancellationEntryID(threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) string {
@@ -2368,18 +2782,55 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		if marshalErr != nil {
 			return ThreadView{}, marshalErr
 		}
-		fingerprint, _ := stableFingerprint(resolution)
 		entries = append(entries, sessiontree.Entry{
 			ID: "interaction-resolved:" + id, ThreadID: threadID.String(), TurnID: interaction.TurnID.String(),
 			RunID: interaction.runID.String(),
-			Type:  sessiontree.EntryInteractionDone, RequestKey: requestKey, RequestFingerprint: fingerprint, Payload: payload,
+			Type:  sessiontree.EntryInteractionDone, RequestKey: requestKey, Payload: payload,
 		})
 	}
 	if len(entries) == 0 {
 		return current, nil
 	}
+	canonicalBatch := make([]struct {
+		InteractionID string                `json:"interaction_id"`
+		Resolution    InteractionResolution `json:"resolution"`
+	}, 0, len(pendingAnswers))
+	for _, answer := range pendingAnswers {
+		canonicalBatch = append(canonicalBatch, struct {
+			InteractionID string                `json:"interaction_id"`
+			Resolution    InteractionResolution `json:"resolution"`
+		}{InteractionID: strings.TrimSpace(answer.InteractionID), Resolution: resolutions[strings.TrimSpace(answer.InteractionID)]})
+	}
+	answerFingerprint, err := stableFingerprint(canonicalBatch)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	for index := range entries {
+		entries[index].RequestFingerprint = answerFingerprint
+	}
 	now := time.Now().UTC()
+	replayedRespond := false
 	if err := actor.apply(ctx, func() error {
+		if existing, found := actor.state.requestKeys[requestKey]; found {
+			if existing.fingerprint != answerFingerprint {
+				return &RequestConflictError{Operation: "respond", RequestID: requestKey, Err: ErrRequestConflict}
+			}
+			replayedRespond = true
+			return nil
+		}
+		for interactionID := range resolutions {
+			for _, interaction := range actor.state.view.Interactions {
+				if interaction.ID != interactionID {
+					continue
+				}
+				if interaction.Resolved {
+					return ErrRequestConflict
+				}
+			}
+		}
+		if err := service.appendRuntimeFactsError(ctx, threadID, entries); err != nil {
+			return err
+		}
 		for id, resolution := range resolutions {
 			resolution.At = now
 			resolveThreadInteractionCanonical(&actor.state.view, id, resolution)
@@ -2387,39 +2838,40 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
-		fingerprint, _ := stableFingerprint(answers)
-		actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: fingerprint}
+		actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: answerFingerprint}
 		actor.state.view.ViewVersion++
 		return nil
 	}); err != nil {
 		return ThreadView{}, err
 	}
+	if replayedRespond {
+		return service.currentView(actor), nil
+	}
 	view := service.currentView(actor)
 	service.publish(view)
-	go service.persistAndResumeInteractions(actor, threadID, entries, resolutions, pendingAnswers, byID)
+	go service.resumeCanonicalInteractions(actor, threadID, resolutions, pendingAnswers, byID)
 	return view, nil
 }
 
-func (service *threadRuntimeService) appendRuntimeFacts(ctx context.Context, threadID identity.ThreadID, entries []sessiontree.Entry) bool {
+func (service *threadRuntimeService) appendRuntimeFactsError(ctx context.Context, threadID identity.ThreadID, entries []sessiontree.Entry) error {
 	writer, ok := service.host.store.repo.(sessiontree.RuntimeJournalRepo)
 	if !ok {
-		return false
+		return ErrUnsupportedStoreCapability
 	}
-	if _, err := writer.AppendRuntimeFacts(ctx, threadID.String(), entries); err != nil {
+	if _, err := writer.AppendRuntimeFacts(ctx, threadID.String(), entries); err == nil {
+		return nil
+	} else {
 		for _, entry := range entries {
 			existing, readErr := service.host.store.repo.Entry(ctx, threadID.String(), entry.ID)
-			if readErr != nil || existing.RequestFingerprint != entry.RequestFingerprint || string(existing.Payload) != string(entry.Payload) {
-				return false
+			if readErr != nil || existing.Type != entry.Type || existing.RequestKey != entry.RequestKey || existing.RequestFingerprint != entry.RequestFingerprint || string(existing.Payload) != string(entry.Payload) {
+				return runtimeHostError(err)
 			}
 		}
 	}
-	return true
+	return nil
 }
 
-func (service *threadRuntimeService) persistAndResumeInteractions(actor *threadRuntimeState, threadID identity.ThreadID, entries []sessiontree.Entry, resolutions map[string]InteractionResolution, answers []InteractionAnswer, interactions map[string]ThreadInteraction) {
-	if !service.appendRuntimeFacts(context.Background(), threadID, entries) {
-		return
-	}
+func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRuntimeState, threadID identity.ThreadID, resolutions map[string]InteractionResolution, answers []InteractionAnswer, interactions map[string]ThreadInteraction) {
 	resumedLocally := make(map[string]bool, len(resolutions))
 	_ = actor.apply(context.Background(), func() error {
 		for id, resolution := range resolutions {
@@ -2530,6 +2982,8 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	if err != nil {
 		return
 	}
+	executionCtx, cancel := context.WithCancel(context.Background())
+	executionDone := make(chan struct{})
 	claimed := false
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive {
@@ -2538,14 +2992,21 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		actor.state.runID = runID
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.ViewVersion++
+		actor.state.cancel = cancel
+		actor.state.cancelOwner = "run:" + runID.String()
+		actor.state.executionDone = executionDone
 		claimed = true
 		return nil
 	})
 	if !claimed {
+		cancel()
+		close(executionDone)
 		return
 	}
+	defer cancel()
+	defer close(executionDone)
 	continuationKey := "continue-input:" + interaction.ID
-	agent, err := service.factory.Agent(context.Background(), AgentRequest{
+	agent, err := service.factory.Agent(executionCtx, AgentRequest{
 		ThreadID: threadID, TurnID: interaction.TurnID, RequestKey: continuationKey,
 		Input: UserInput{Text: string(payload)}, InteractionID: interaction.ID,
 	})
@@ -2553,20 +3014,14 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		if err == nil {
 			err = errors.New("thread runtime agent is unavailable")
 		}
-		service.finishSend(actor, interaction.TurnID, runID, TurnResult{}, err)
+		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
 		return
 	}
-	runner, err := service.host.turnRunner(context.Background(), threadID, service.executionAgent(actor, agent))
+	runner, err := service.host.turnRunner(executionCtx, threadID, service.executionAgent(actor, agent))
 	if err != nil {
-		service.finishSend(actor, interaction.TurnID, runID, TurnResult{}, err)
+		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
 		return
 	}
-	executionCtx, cancel := context.WithCancel(context.Background())
-	_ = actor.apply(context.Background(), func() error {
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		return nil
-	})
 	result, runErr := runner.ResumeInput(executionCtx, resumeInputRequest{
 		TurnID: interaction.TurnID, WaitingRunID: waitingRunID, RunID: runID, Answer: string(payload),
 		Options: turnExecutionRequest{
@@ -2575,7 +3030,6 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 			ManualCompactions: agent.manualCompactions,
 		},
 	})
-	cancel()
 	service.finishSend(actor, interaction.TurnID, runID, result, runErr)
 }
 
@@ -2730,6 +3184,11 @@ func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceS
 func (service *threadRuntimeService) publish(current ThreadView) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	threadID := current.ThreadID.String()
+	if current.ViewVersion == 0 || current.ViewVersion <= service.published[threadID] {
+		return
+	}
+	service.published[threadID] = current.ViewVersion
 	for subscriber := range service.subscribers {
 		view := cloneThreadRuntimeView(current)
 		subscriber.mu.Lock()
@@ -2801,12 +3260,39 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 	}
 	executionCtx, cancel := context.WithCancel(context.Background())
 	executionDone := make(chan struct{})
+	request := turnExecutionRequest{
+		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
+		InputFingerprint:            inputFingerprint,
+		PromotedQueueID:             promotedQueueID,
+		PromotionRequestKey:         promotionRequestKey,
+		PromotionRequestFingerprint: promotionFingerprint,
+		Signals:                     TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
+	}
+	var accepted acceptedTurn
 	var result ThreadView
 	var previousExecution <-chan struct{}
-	var previousQueue []QueuedInput
 	err = actor.apply(ctx, func() error {
 		if actor.state.view.Activity == ThreadActivityActive {
 			return ErrThreadBusy
+		}
+		if promotedQueueID != "" {
+			found := false
+			for _, item := range actor.state.view.Queue {
+				if item.ID == promotedQueueID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return ErrRequestConflict
+			}
+		}
+		acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelAccept()
+		var acceptErr error
+		accepted, acceptErr = service.acceptCanonicalTurn(acceptCtx, threadID, request)
+		if acceptErr != nil {
+			return acceptErr
 		}
 		actor.state.turnID, actor.state.runID = turnID, runID
 		actor.state.logicalRequestID = identity.LogicalRequestID(requestKey)
@@ -2819,7 +3305,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Error = ""
-		previousQueue = append([]QueuedInput(nil), actor.state.view.Queue...)
 		if promotedQueueID != "" {
 			for index := range actor.state.view.Queue {
 				if actor.state.view.Queue[index].ID == promotedQueueID {
@@ -2846,50 +3331,11 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		return ThreadView{}, err
 	}
 	service.publish(result)
-	request := turnExecutionRequest{
-		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
-		InputFingerprint:            inputFingerprint,
-		PromotedQueueID:             promotedQueueID,
-		PromotionRequestKey:         promotionRequestKey,
-		PromotionRequestFingerprint: promotionFingerprint,
-		Signals:                     TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
-	}
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
 		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
 	})
-	go func() {
-		acceptance, acceptErr := service.acceptCanonicalTurn(executionCtx, threadID, request)
-		if acceptErr != nil {
-			close(executionDone)
-			cancel()
-			service.rollbackPromotedSend(actor, turnID, runID, requestKey, promotionRequestKey, previousQueue)
-			return
-		}
-		service.executePreparedSend(executionCtx, actor, prepared, acceptance, request, previousExecution, executionDone)
-	}()
+	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
-}
-
-func (service *threadRuntimeService) rollbackPromotedSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey, promotionRequestKey string, queue []QueuedInput) {
-	_ = actor.apply(context.Background(), func() error {
-		if actor.state.turnID != turnID || actor.state.runID != runID {
-			return nil
-		}
-		for index := len(actor.state.view.Items) - 1; index >= 0; index-- {
-			if actor.state.view.Items[index].ID == "user:"+requestKey {
-				actor.state.view.Items = append(actor.state.view.Items[:index], actor.state.view.Items[index+1:]...)
-				break
-			}
-		}
-		delete(actor.state.requestKeys, requestKey)
-		delete(actor.state.requestKeys, promotionRequestKey)
-		actor.state.view.Queue = append([]QueuedInput(nil), queue...)
-		actor.state.view.Activity = ThreadActivityIdle
-		actor.state.view.TurnID = ""
-		actor.state.view.ViewVersion++
-		service.publish(cloneThreadRuntimeView(actor.state.view))
-		return nil
-	})
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
@@ -3029,6 +3475,13 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 	}
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
 	if err != nil {
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			if tombstones, ok := service.host.store.repo.(sessiontree.ThreadTombstoneRepo); ok {
+				if _, tombstoneErr := tombstones.ThreadTombstone(ctx, threadID.String()); tombstoneErr == nil {
+					return sessiontree.ThreadMeta{}, runtimeHostError(sessiontree.ErrThreadDeleted)
+				}
+			}
+		}
 		return sessiontree.ThreadMeta{}, runtimeHostError(err)
 	}
 	return meta, nil
@@ -3283,46 +3736,41 @@ func hydrateThreadRuntimeLifecycle(ctx context.Context, repo sessiontree.Journal
 	if err != nil {
 		return "", "", activity, nil, ""
 	}
-	var turnID identity.TurnID
+	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseTurn)
+	var turnID identity.TurnID = identity.TurnID(lifecycle.LatestTurnID())
 	var runID identity.RunID
-	var outcome *TurnOutcome
 	failureMessage := ""
 	for _, entry := range path {
+		if entry.TurnID == turnID.String() {
+			if value := strings.TrimSpace(entry.RunID); value != "" {
+				runID = identity.RunID(value)
+			} else if value := strings.TrimSpace(entry.Metadata["run_id"]); value != "" {
+				runID = identity.RunID(value)
+			}
+		}
 		if entry.Type == sessiontree.EntryRunFailure {
 			failureMessage = strings.TrimSpace(entry.Error)
-			continue
 		}
-		if entry.Type == sessiontree.EntryCancelRequested && identity.TurnID(entry.TurnID) == turnID {
-			activity = ThreadActivityActive
-			continue
+		if failureMessage == "" {
+			failureMessage = strings.TrimSpace(entry.Metadata["failure_reason"])
 		}
-		if entry.Type != sessiontree.EntryTurnMarker {
-			continue
-		}
-		turnID = identity.TurnID(entry.TurnID)
-		if value := strings.TrimSpace(entry.RunID); value != "" {
-			runID = identity.RunID(value)
-		} else if value := strings.TrimSpace(entry.Metadata["run_id"]); value != "" {
-			runID = identity.RunID(value)
-		}
-		switch entry.TurnStatus {
-		case sessiontree.TurnStarted, sessiontree.TurnWaiting, sessiontree.TurnSavePoint:
-			activity = ThreadActivityActive
-			outcome = nil
-			failureMessage = ""
-		case sessiontree.TurnCompleted:
-			activity = ThreadActivityIdle
-			value := TurnOutcomeCompleted
-			outcome = &value
-		case sessiontree.TurnFailed:
-			activity = ThreadActivityIdle
-			value := TurnOutcomeFailed
-			outcome = &value
-		case sessiontree.TurnAborted:
-			activity = ThreadActivityIdle
-			value := TurnOutcomeCancelled
-			outcome = &value
-		}
+	}
+	var outcome *TurnOutcome
+	switch lifecycle.Status() {
+	case sessionlifecycle.StatusRunning, sessionlifecycle.StatusWaiting:
+		activity = ThreadActivityActive
+	case sessionlifecycle.StatusCompleted:
+		value := TurnOutcomeCompleted
+		outcome = &value
+	case sessionlifecycle.StatusFailed:
+		value := TurnOutcomeFailed
+		outcome = &value
+	case sessionlifecycle.StatusInterrupted:
+		value := TurnOutcomeInterrupted
+		outcome = &value
+	case sessionlifecycle.StatusCancelled:
+		value := TurnOutcomeCancelled
+		outcome = &value
 	}
 	return turnID, runID, activity, outcome, failureMessage
 }
