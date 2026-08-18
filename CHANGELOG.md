@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.0.12 - 2026-08-18
+
+- Restore the permanent version 2 to version 3 to version 4 to version 5
+  session-tree migration lineage. Runtime startup now migrates domain state,
+  updates the logical schema version, and verifies the final invariant in one
+  backend transaction; supported current stores remain byte-stable, while
+  drifted, corrupt, or future state fails closed without mutation.
+- Make queued turns and interaction decisions durable before publishing
+  success, claim an unknown effect source once before retry dispatch, and fence
+  active thread subtrees and effect work during delete and shutdown. These
+  corrections preserve the frozen v4 exported API while preventing restart
+  resurrection, duplicate irreversible effects, and late terminal-state
+  regression.
+- Keep hydrated interrupted and effect-retry lifecycle state aligned with live
+  projection, enforce monotonic per-thread view publication, and remove retired
+  internal storage and fork-operation machinery with no supported consumer.
+
 ## v4.0.11 - 2026-08-16
 
 - Keep fallback thread titles trim-stable when whitespace lands exactly on the
