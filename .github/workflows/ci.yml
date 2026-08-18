@@ -29,9 +29,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install workspace tool dependencies
-        run: sudo apt-get update && sudo apt-get install --yes ripgrep
-
       - name: Verify dependency boundaries
         run: >-
           go test ./internal/architecture
