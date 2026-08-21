@@ -478,6 +478,10 @@ invent near-synonyms when a concept below already fits.
 - Use English for source identifiers, comments, tests, scripts, docs, and commit/PR-facing text.
 - Non-English text is allowed only for explicit localization or language-sensitive fixtures.
 
+## Communication Clarity
+
+- Problem-analysis conclusions and solution designs must use concise, plain, and clear language.
+
 ## Quality Gate
 
 Run before integration:
