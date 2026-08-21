@@ -184,6 +184,34 @@ func (backend *sqliteBackend) Close() error {
 	return backend.db.Close()
 }
 
+func (backend *sqliteBackend) ResetFloretStorage(ctx context.Context) (bool, error) {
+	if ctx == nil {
+		return false, fmt.Errorf("%w: reset context is required", spi.ErrInvalidArgument)
+	}
+	if backend.isClosed() {
+		return false, spi.ErrClosed
+	}
+	tx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return false, classifySQLiteError(ctx, err)
+	}
+	defer tx.Rollback()
+	var count int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM floret_backend_records`).Scan(&count); err != nil {
+		return false, classifySQLiteError(ctx, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM floret_backend_records`); err != nil {
+		return false, classifySQLiteError(ctx, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, classifySQLiteError(ctx, err)
+	}
+	return count > 0, nil
+}
+
 func (backend *sqliteBackend) isClosed() bool {
 	backend.closeMu.Lock()
 	defer backend.closeMu.Unlock()

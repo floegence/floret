@@ -75,6 +75,21 @@ bytes. Current-schema startup is byte-preserving and idempotent. This automatic
 domain migration is separate from the explicit legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.
 
+## Destructive storage reset
+
+`PreflightStorageReset` and `ResetStorage` are the only public destructive
+maintenance boundary for Floret-owned records. The caller must first stop the
+`Host`, validate the exact environment and target through its own ownership
+manifest, and pass that environment ID, operation ID, and manifest digest to
+Floret. A backend without `storage/spi.MaintenanceResetter` fails closed.
+
+Reset never reads, exports, or migrates prior domain records. A supported
+backend removes all opaque Floret records through one backend-owned
+transaction; Floret then initializes and verifies the current schema. The
+operation is idempotent. Failure after old records are cleared leaves no old
+authority to reopen, so the host must keep readiness closed and retry reset or
+initialize a new store instead of falling back to normal startup.
+
 ## Packages
 
 Use `identity`, `config`, `runtime`, `observation`, `tools`, `provider`, and

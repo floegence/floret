@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.13 - 2026-08-21
+
+- Add an explicit, ownership-bound storage reset API for a stopped Host.
+  Supported backends clear all Floret-owned opaque records transactionally,
+  then initialize and verify a fresh current-schema store without exposing or
+  migrating prior records.
+
 ## v4.0.12 - 2026-08-18
 
 - Restore the permanent version 2 to version 3 to version 4 to version 5

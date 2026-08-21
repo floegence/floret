@@ -29,6 +29,13 @@ type Backend interface {
 	Close() error
 }
 
+// MaintenanceResetter is an optional backend capability used only while no
+// runtime Host owns the backend. Reset removes every Floret-owned opaque
+// record in one backend transaction and reports whether any record existed.
+type MaintenanceResetter interface {
+	ResetFloretStorage(context.Context) (bool, error)
+}
+
 type ReadTx interface {
 	Get(namespace string, key []byte) ([]byte, error)
 	Scan(ScanRequest) (ScanPage, error)

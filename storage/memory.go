@@ -96,6 +96,24 @@ func (backend *memoryBackend) Close() error {
 	return nil
 }
 
+func (backend *memoryBackend) ResetFloretStorage(ctx context.Context) (bool, error) {
+	if ctx == nil {
+		return false, fmt.Errorf("%w: reset context is required", spi.ErrInvalidArgument)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.closed {
+		return false, spi.ErrClosed
+	}
+	hadRecords := len(backend.records) > 0
+	backend.records = make(recordSet)
+	backend.version++
+	return hadRecords, nil
+}
+
 func (backend *memoryBackend) snapshot() (recordSet, uint64, error) {
 	backend.mu.RLock()
 	defer backend.mu.RUnlock()

@@ -504,6 +504,8 @@ var ErrRequestConflict error
 var ErrRevisionUnavailable error
 var ErrRunNotFound error
 var ErrStaleAuthority error
+var ErrStorageResetRequest error
+var ErrStorageResetUnsupported error
 var ErrStoreClosed error
 var ErrSubAgentClosed error
 var ErrSubAgentClosing error
@@ -672,6 +674,7 @@ func Open func(ctx context.Context, options github.com/floegence/floret/v4/runti
 type Options struct
 field Options.Storage github.com/floegence/floret/v4/storage.Source
 field Options.IDSource github.com/floegence/floret/v4/runtime.IDSource
+func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v4/runtime.StorageResetRequest) (github.com/floegence/floret/v4/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v4/tools.ToolCall) (github.com/floegence/floret/v4/runtime.TurnSignal, bool, error)
 type PromoteQueuedInput = github.com/floegence/floret/v4/runtime.PromoteQueuedInput
 func ProviderSafeCoreControlText func(signal github.com/floegence/floret/v4/runtime.TurnSignal) string
@@ -692,6 +695,7 @@ method *RequestConflictError.Error func() string
 method *RequestConflictError.Unwrap func() error
 method *RequestConflictError.Is func(target error) bool
 type RequestKey string
+func ResetStorage func(ctx context.Context, request github.com/floegence/floret/v4/runtime.StorageResetRequest) (result github.com/floegence/floret/v4/runtime.StorageResetResult, retErr error)
 type RespondInput struct
 field RespondInput.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id\""
 field RespondInput.InteractionID string tag="json:\"interaction_id\""
@@ -730,6 +734,21 @@ const SignalContinue github.com/floegence/floret/v4/runtime.SignalDisposition = 
 type SignalDisposition string
 const SignalTerminal github.com/floegence/floret/v4/runtime.SignalDisposition = "terminal"
 const SignalWaiting github.com/floegence/floret/v4/runtime.SignalDisposition = "waiting"
+type StorageResetPreflight struct
+field StorageResetPreflight.EnvironmentID string
+field StorageResetPreflight.OperationID string
+field StorageResetPreflight.OwnershipManifestSHA256 string
+field StorageResetPreflight.Supported bool
+type StorageResetRequest struct
+field StorageResetRequest.Storage github.com/floegence/floret/v4/storage.Source
+field StorageResetRequest.EnvironmentID string
+field StorageResetRequest.OperationID string
+field StorageResetRequest.OwnershipManifestSHA256 string
+type StorageResetResult struct
+field StorageResetResult.EnvironmentID string
+field StorageResetResult.OperationID string
+field StorageResetResult.OwnershipManifestSHA256 string
+field StorageResetResult.PreviousDataRemoved bool
 type StreamObservation struct
 field StreamObservation.Type github.com/floegence/floret/v4/runtime.StreamObservationType tag="json:\"type\""
 field StreamObservation.Text string tag="json:\"text,omitempty\""
@@ -1005,6 +1024,7 @@ var ErrInvalidArgument error
 var ErrMigrationRequired error
 var ErrNotFound error
 var ErrTransactionClosed error
+type MaintenanceResetter interface interface{ResetFloretStorage(context.Context) (bool, error)}
 type ReadTx interface interface{Get(namespace string, key []byte) ([]byte, error); Scan(github.com/floegence/floret/v4/storage/spi.ScanRequest) (github.com/floegence/floret/v4/storage/spi.ScanPage, error)}
 type Record struct
 field Record.Key []byte
