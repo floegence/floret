@@ -1433,7 +1433,7 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		return TurnResult{}, err
 	}
 	input := validated.input
-	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
+	supplementalContext := agentHarnessSupplementalContext(validated.supplementalContext)
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
 		return TurnResult{}, errors.New("opaque message attachments require a modelGateway host")
 	}
@@ -1484,9 +1484,10 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 }
 
 type validatedRunTurnRequest struct {
-	input            TurnInput
-	completionPolicy engine.CompletionPolicy
-	signalSpec       engine.ControlSpec
+	input               TurnInput
+	supplementalContext []TurnSupplementalContextItem
+	completionPolicy    engine.CompletionPolicy
+	signalSpec          engine.ControlSpec
 }
 
 func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error) {
@@ -1503,6 +1504,10 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 	if err != nil {
 		return validatedRunTurnRequest{}, err
 	}
+	supplementalContext, err := normalizeTurnSupplementalContext(req.SupplementalContext)
+	if err != nil {
+		return validatedRunTurnRequest{}, err
+	}
 	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
 	if err != nil {
 		return validatedRunTurnRequest{}, err
@@ -1512,7 +1517,7 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 		return validatedRunTurnRequest{}, err
 	}
 	return validatedRunTurnRequest{
-		input:            input,
+		input: input, supplementalContext: supplementalContext,
 		completionPolicy: completionPolicy, signalSpec: signalSpec,
 	}, nil
 }
@@ -1524,6 +1529,43 @@ func normalizeTurnInput(input TurnInput) (TurnInput, error) {
 		return TurnInput{}, err
 	}
 	return input, nil
+}
+
+func normalizeTurnSupplementalContext(items []TurnSupplementalContextItem) ([]TurnSupplementalContextItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	engineItems := make([]engine.TurnSupplementalContextItem, 0, len(items))
+	for _, item := range items {
+		engineItems = append(engineItems, engine.TurnSupplementalContextItem{
+			Kind: item.Kind, Title: item.Title, Text: item.Text, Metadata: cloneStringMap(item.Metadata),
+			Sensitive: item.Sensitive, Truncated: item.Truncated,
+		})
+	}
+	normalized, err := engine.NormalizeAndValidateTurnSupplementalContext(engineItems)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TurnSupplementalContextItem, 0, len(normalized))
+	for _, item := range normalized {
+		out = append(out, TurnSupplementalContextItem{
+			Kind: item.Kind, Title: item.Title, Text: item.Text, Metadata: cloneStringMap(item.Metadata),
+			Sensitive: item.Sensitive, Truncated: item.Truncated,
+		})
+	}
+	return out, nil
+}
+
+func cloneTurnSupplementalContext(items []TurnSupplementalContextItem) []TurnSupplementalContextItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]TurnSupplementalContextItem, len(items))
+	for index, item := range items {
+		out[index] = item
+		out[index].Metadata = cloneStringMap(item.Metadata)
+	}
+	return out
 }
 
 func sessionMessageAttachments(in []MessageAttachment) []session.MessageAttachment {

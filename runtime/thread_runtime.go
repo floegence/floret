@@ -91,9 +91,10 @@ type SetTitleInput struct {
 }
 
 type SendInput struct {
-	ThreadID   identity.ThreadID `json:"thread_id"`
-	Input      UserInput         `json:"input"`
-	RequestKey RequestKey        `json:"request_key"`
+	ThreadID            identity.ThreadID             `json:"thread_id"`
+	Input               UserInput                     `json:"input"`
+	SupplementalContext []TurnSupplementalContextItem `json:"supplemental_context,omitempty"`
+	RequestKey          RequestKey                    `json:"request_key"`
 }
 
 type RespondInput struct {
@@ -137,8 +138,9 @@ type DeleteQueuedInput struct {
 type PromoteQueuedInput = DeleteQueuedInput
 
 type ImportedPendingInput struct {
-	RequestKey RequestKey `json:"request_key"`
-	Input      UserInput  `json:"input"`
+	RequestKey          RequestKey                    `json:"request_key"`
+	Input               UserInput                     `json:"input"`
+	SupplementalContext []TurnSupplementalContextItem `json:"supplemental_context,omitempty"`
 }
 
 type ImportPendingInputsInput struct {
@@ -303,10 +305,11 @@ type InteractionResolution struct {
 
 // QueuedInput is one accepted input waiting behind the active turn.
 type QueuedInput struct {
-	ID         string    `json:"id"`
-	RequestKey string    `json:"request_key"`
-	Input      UserInput `json:"input"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID                  string                        `json:"id"`
+	RequestKey          string                        `json:"request_key"`
+	Input               UserInput                     `json:"input"`
+	SupplementalContext []TurnSupplementalContextItem `json:"supplemental_context,omitempty"`
+	CreatedAt           time.Time                     `json:"created_at"`
 }
 
 // InteractionAnswer resolves one user or approval interaction.
@@ -941,7 +944,11 @@ func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (Th
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.send(ctx, in.ThreadID, in.Input, key)
+	supplemental, err := normalizeTurnSupplementalContext(in.SupplementalContext)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	return service.send(ctx, in.ThreadID, in.Input, supplemental, key)
 }
 
 func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput) (ThreadView, error) {
@@ -1096,7 +1103,7 @@ func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in Promo
 	if replayed {
 		return service.currentView(actor), nil
 	}
-	result, err := service.startAccepted(ctx, actor, in.ThreadID, target.Input, target.RequestKey, target.ID, key)
+	result, err := service.startAccepted(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1124,7 +1131,11 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 		if err := item.Input.Validate(); err != nil {
 			return ImportResult{}, err
 		}
-		queued := QueuedInput{ID: "queue:" + key, RequestKey: key, Input: item.Input, CreatedAt: time.Now().UTC()}
+		supplemental, err := normalizeTurnSupplementalContext(item.SupplementalContext)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		queued := QueuedInput{ID: "queue:" + key, RequestKey: key, Input: item.Input, SupplementalContext: supplemental, CreatedAt: time.Now().UTC()}
 		fingerprint, _ := stableFingerprint(item.Input)
 		var replayed bool
 		err = actor.apply(ctx, func() error {
@@ -1759,7 +1770,7 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 	return input
 }
 
-func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, requestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string) (ThreadView, error) {
 	if err := input.Validate(); err != nil {
 		return ThreadView{}, err
 	}
@@ -1813,7 +1824,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		return ThreadView{}, err
 	}
 	if active {
-		queued := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, CreatedAt: time.Now().UTC()}
+		queued := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, SupplementalContext: cloneTurnSupplementalContext(supplemental), CreatedAt: time.Now().UTC()}
 		var replayedQueue bool
 		err := actor.apply(ctx, func() error {
 			if existing, ok := actor.state.requestKeys[requestKey]; ok {
@@ -1859,8 +1870,9 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	executionDone := make(chan struct{})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
-		InputFingerprint: fingerprint,
-		Signals:          TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
+		SupplementalContext: cloneTurnSupplementalContext(supplemental),
+		InputFingerprint:    fingerprint,
+		Signals:             TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
 	var result ThreadView
 	var accepted acceptedTurn
@@ -3239,7 +3251,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 		return
 	}
 	go func() {
-		if _, err := service.startAccepted(context.Background(), actor, threadID, next.Input, next.RequestKey, next.ID, "auto-promote:"+next.ID); err != nil {
+		if _, err := service.startAccepted(context.Background(), actor, threadID, next.Input, next.SupplementalContext, next.RequestKey, next.ID, "auto-promote:"+next.ID); err != nil {
 			_ = actor.apply(context.Background(), func() error {
 				actor.state.view.ViewVersion++
 				actor.state.view.Activity = ThreadActivityIdle
@@ -3252,7 +3264,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 	}()
 }
 
-func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, requestKey, promotedQueueID, promotionRequestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string) (ThreadView, error) {
 	inputFingerprint, err := stableFingerprint(input)
 	if err != nil {
 		return ThreadView{}, err
@@ -3274,6 +3286,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 	executionDone := make(chan struct{})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
+		SupplementalContext:         cloneTurnSupplementalContext(supplemental),
 		InputFingerprint:            inputFingerprint,
 		PromotedQueueID:             promotedQueueID,
 		PromotionRequestKey:         promotionRequestKey,
@@ -3367,6 +3380,11 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	}
 	view.Items = cloneThreadItems(view.Items)
 	view.Queue = append([]QueuedInput(nil), view.Queue...)
+	for index := range view.Queue {
+		view.Queue[index].Input.Attachments = cloneMessageAttachments(view.Queue[index].Input.Attachments)
+		view.Queue[index].Input.References = append([]MessageReference(nil), view.Queue[index].Input.References...)
+		view.Queue[index].SupplementalContext = cloneTurnSupplementalContext(view.Queue[index].SupplementalContext)
+	}
 	view.Interactions = cloneThreadInteractions(view.Interactions)
 	return view
 }

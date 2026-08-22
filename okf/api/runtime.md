@@ -29,11 +29,14 @@ user-visible association only and never replaces those execution identities.
 Child threads are ordinary durable threads with explicit parent metadata.
 
 `Send` validates and commits the canonical user turn before publishing a live
-view or starting provider work. Queue admission, interaction resolution, and
-cancellation use the same canonical-first ordering. A failed storage write
-returns an error without a successful live projection. The journal is the only
-durable lifecycle authority; hosts must not persist a second transcript or
-rebuild a Floret view from audit records.
+view or starting provider work. `SendInput.SupplementalContext` carries
+host-provided, turn-scoped material such as an explicitly selected file. It is
+validated and passed to the provider for that turn, but is not written into the
+canonical user message or provider history. Queue admission, interaction
+resolution, and cancellation use the same canonical-first ordering. A failed
+storage write returns an error without a successful live projection. The
+journal is the only durable lifecycle authority; hosts must not persist a
+second transcript or rebuild a Floret view from audit records.
 
 After `Send` returns an accepted turn, provider execution uses a runtime-owned
 background context. The request context only controls admission and response

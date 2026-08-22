@@ -90,6 +90,11 @@ func main() {
 }
 ```
 
+Hosts may also set `runtime.SendInput.SupplementalContext` for material that is
+needed only by the current provider turn. Floret validates and renders that
+context for the provider without adding a second canonical conversation
+message.
+
 Run it with `OPENAI_API_KEY=... go run ./cmd/examples/openai-sqlite`. The complete
 example also reads the authoritative assistant projection. `florettest` remains
 test-only; use it for deterministic provider scripts and `florettest.NewIDSource`

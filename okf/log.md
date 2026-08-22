@@ -1,6 +1,15 @@
 # Floret OKF Update Log
 
 ## 2026-08-22
+* **Turn-scoped supplemental send context**: Typed thread sends now validate and
+  carry host-provided supplemental context through immediate and queued provider
+  execution without adding a second canonical message or durable provider
+  history record.
+* **Single cancel result boundary**: Runtime cancellation remains idempotent and
+  returns the authoritative current view so hosts do not need a racy follow-up
+  read to render a stop result.
+
+## 2026-08-22
 * **Canonical terminal thread presentation**: Terminal current views now settle
   from canonical ordered items. The run-level `TurnResult.Output` remains an
   aggregate result and is no longer appended as a second assistant segment;

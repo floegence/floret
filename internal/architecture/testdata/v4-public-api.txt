@@ -581,6 +581,7 @@ field ImportResult.View github.com/floegence/floret/v4/runtime.ThreadView tag="j
 type ImportedPendingInput struct
 field ImportedPendingInput.RequestKey github.com/floegence/floret/v4/runtime.RequestKey tag="json:\"request_key\""
 field ImportedPendingInput.Input github.com/floegence/floret/v4/runtime.UserInput tag="json:\"input\""
+field ImportedPendingInput.SupplementalContext []github.com/floegence/floret/v4/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
 type InputPresentation struct
 field InputPresentation.Summary string tag="json:\"summary\""
 field InputPresentation.Questions []github.com/floegence/floret/v4/runtime.InputQuestion tag="json:\"questions\""
@@ -682,6 +683,7 @@ type QueuedInput struct
 field QueuedInput.ID string tag="json:\"id\""
 field QueuedInput.RequestKey string tag="json:\"request_key\""
 field QueuedInput.Input github.com/floegence/floret/v4/runtime.UserInput tag="json:\"input\""
+field QueuedInput.SupplementalContext []github.com/floegence/floret/v4/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
 field QueuedInput.CreatedAt time.Time tag="json:\"created_at\""
 type ReorderQueueInput struct
 field ReorderQueueInput.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id\""
@@ -725,6 +727,7 @@ field RunMetrics.WallTimeMS int64 tag="json:\"wall_time_ms,omitempty\""
 type SendInput struct
 field SendInput.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id\""
 field SendInput.Input github.com/floegence/floret/v4/runtime.UserInput tag="json:\"input\""
+field SendInput.SupplementalContext []github.com/floegence/floret/v4/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
 field SendInput.RequestKey github.com/floegence/floret/v4/runtime.RequestKey tag="json:\"request_key\""
 type SetTitleInput struct
 field SetTitleInput.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id\""

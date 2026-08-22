@@ -1565,6 +1565,48 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 	})
 }
 
+func TestThreadServiceSendCarriesSupplementalContextToProvider(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDone, Reason: "stop"}}},
+	)
+	_, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-supplemental"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID,
+		Input:    UserInput{Text: "edit the linked file"},
+		SupplementalContext: []TurnSupplementalContextItem{{
+			Kind: "file_path", Title: "User-selected file", Text: "The user explicitly selected this file for this turn.",
+			Metadata: map[string]string{"label": "notes.md"}, Sensitive: true,
+		}},
+		RequestKey: "send-supplemental",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	requests := gateway.Requests()
+	if len(requests) == 0 {
+		t.Fatal("provider received no request")
+	}
+	var found bool
+	for _, message := range requests[0].Messages {
+		if strings.Contains(message.Text, "notes.md") && strings.Contains(message.Text, "explicitly selected") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("provider request omitted supplemental file context: %#v", requests[0].Messages)
+	}
+}
+
 func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 	path := t.TempDir() + "/thread-runtime.db"
 	firstAgent, err := testAgent(newBlockingThreadGateway())

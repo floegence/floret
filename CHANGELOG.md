@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.0.17 - 2026-08-22
+
+- Carry validated turn-scoped supplemental context through typed thread sends,
+  queued input promotion, and provider execution without adding it to
+  canonical conversation history.
+- Keep cancellation idempotent and expose the current view returned by the
+  single runtime cancel boundary so hosts can settle stop actions without a
+  second, racy view read.
+
 ## v4.0.13 - 2026-08-21
 
 - Add an explicit, ownership-bound storage reset API for a stopped Host.
