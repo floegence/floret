@@ -51,6 +51,23 @@ type rejectingRuntimeTurnRepo struct {
 	err   error
 }
 
+type blockingCanonicalPathRepo struct {
+	sessiontree.Repo
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (repo *blockingCanonicalPathRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
+	repo.once.Do(func() { close(repo.started) })
+	select {
+	case <-repo.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return repo.Repo.Path(ctx, threadID, leafID)
+}
+
 func (repo rejectingRuntimeTurnRepo) AcceptTurn(context.Context, sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
 	return sessiontree.AcceptTurnResult{}, repo.err
 }
@@ -979,6 +996,53 @@ func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T)
 	active, ok := reconcileCanonicalThreadItems(current[:1], canonical[:1], false)
 	if !ok || len(active) != 1 || active[0].Text != "stream draft" || !active[0].Live {
 		t.Fatalf("active reconciliation lost live text: %#v, ok=%v", active, ok)
+	}
+}
+
+func TestThreadRuntimeCanonicalRefreshRejectsStaleSnapshot(t *testing.T) {
+	host, service := testThreadService(t, newBlockingThreadGateway())
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-canonical-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := service.(*threadRuntimeService)
+	actor := typed.runtime(created.ThreadID)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	host.store.repo = &blockingCanonicalPathRepo{Repo: host.store.repo, started: started, release: release}
+
+	_ = actor.apply(t.Context(), func() error {
+		actor.state.view.Items = []ThreadItem{{ID: "assistant:turn-race:1", TurnID: "turn-race", Ordinal: 1, Kind: ThreadItemAssistant, Text: "live", Live: true}}
+		actor.state.view.ViewVersion++
+		return nil
+	})
+	refreshDone := make(chan struct{})
+	go func() {
+		typed.refreshCanonical(created.ThreadID, "turn-race")
+		close(refreshDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("canonical refresh did not start reading")
+	}
+	_ = actor.apply(t.Context(), func() error {
+		outcome := TurnOutcomeCompleted
+		actor.state.view.Activity = ThreadActivityIdle
+		actor.state.view.LastOutcome = &outcome
+		actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "assistant:turn-race:2", TurnID: "turn-race", Ordinal: 2, Kind: ThreadItemAssistant, Text: "terminal"})
+		actor.state.view.ViewVersion++
+		return nil
+	})
+	close(release)
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("canonical refresh did not finish")
+	}
+	view := typed.currentView(actor)
+	if len(view.Items) != 2 || view.Items[1].ID != "assistant:turn-race:2" || view.Items[1].Text != "terminal" {
+		t.Fatalf("stale canonical snapshot replaced terminal view: %#v", view.Items)
 	}
 }
 

@@ -5,6 +5,7 @@
   from canonical ordered items. The run-level `TurnResult.Output` remains an
   aggregate result and is no longer appended as a second assistant segment;
   equal text with different stable IDs remains valid and distinct.
+  Canonical refreshes also reject snapshots read before a newer view version.
 
 ## 2026-08-16
 * **Ordered terminal settlement**: Resolved input interactions now update one

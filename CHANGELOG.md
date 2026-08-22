@@ -98,6 +98,10 @@
 
 ## Unreleased
 
+- Fence canonical refreshes against a view change that occurs while the
+  journal snapshot is being read, so an older snapshot cannot replace a
+  terminal current view.
+
 - Fix terminal thread presentation so the run-level `TurnResult.Output` is not
   appended as a second assistant item after streamed text. Terminal current
   views now settle from canonical ordered segments, preventing duplicate final

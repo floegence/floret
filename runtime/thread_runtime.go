@@ -2403,6 +2403,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		return
 	}
 	actor := service.runtime(threadID)
+	baseVersion := service.currentView(actor).ViewVersion
 	items, interactions, err := hydrateThreadRuntimeItems(context.Background(), service.host.store.repo, threadID)
 	if err != nil {
 		return
@@ -2410,6 +2411,9 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	var current ThreadView
 	changed := false
 	_ = actor.apply(context.Background(), func() error {
+		if actor.state.view.ViewVersion != baseVersion {
+			return nil
+		}
 		if turnID != "" && actor.state.turnID != "" && actor.state.turnID != turnID {
 			return nil
 		}

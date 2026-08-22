@@ -60,7 +60,9 @@ subscriber must reconnect and obtain a fresh baseline.
 Terminal presentation settles from the canonical ordered journal.
 `TurnResult.Output` remains the run-level aggregate result and is not appended
 as a new assistant item. Different stable assistant IDs remain distinct even
-when their text is equal.
+when their text is equal. A canonical snapshot is applied only if the
+in-memory view version is unchanged since the snapshot read began; this keeps
+an older read from replacing a newer terminal view.
 
 ## Agent and provider boundary
 

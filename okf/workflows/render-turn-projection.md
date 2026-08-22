@@ -30,9 +30,11 @@ arrival time.
 4. At terminal settlement, use canonical ordered items as the text authority.
    Do not append `TurnResult.Output` as a second assistant item: it is the
    aggregate for the whole run, not a display segment.
-5. Give waiting approvals and user-input requests clear primary actions; show
+5. Apply a canonical snapshot only when the view version captured before the
+   read is still current; otherwise discard the stale snapshot and reload.
+6. Give waiting approvals and user-input requests clear primary actions; show
    running, failed, cancelled, pending, and completed tool states distinctly.
-6. Keep stable row geometry while text and progress change, including narrow
+7. Keep stable row geometry while text and progress change, including narrow
    layouts.
 
 # Verify
