@@ -406,14 +406,16 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
-	host        *Host
-	factory     AgentFactory
-	mu          sync.Mutex
-	subscribers map[*WorkspaceSubscription]struct{}
-	published   map[string]uint64
-	runtimesMu  sync.Mutex
-	runtimes    map[string]*threadRuntimeState
-	closed      bool
+	host           *Host
+	factory        AgentFactory
+	mu             sync.Mutex
+	subscribers    map[*WorkspaceSubscription]struct{}
+	published      map[string]uint64
+	cancellationMu sync.Mutex
+	cancellations  []threadCancellationDiagnostic
+	runtimesMu     sync.Mutex
+	runtimes       map[string]*threadRuntimeState
+	closed         bool
 }
 
 type threadRuntimeRequest struct {
@@ -776,6 +778,7 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 	}
 	for _, drain := range drains {
 		if drain.actor.state.cancel != nil {
+			service.recordCancellation(identity.ThreadID(drain.actor.threadID), drain.actor.state.turnID, drain.actor.state.runID, "thread_delete", "thread deleted")
 			drain.actor.state.cancel()
 		}
 		for _, cancelRetry := range drain.actor.state.effectRetryCancels {
@@ -1399,6 +1402,7 @@ func (service *threadRuntimeService) close() {
 			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
 		})
 		if runtime.state.cancel != nil {
+			service.recordCancellation(identity.ThreadID(runtime.threadID), runtime.state.turnID, runtime.state.runID, "runtime_shutdown", "runtime shutdown")
 			runtime.state.cancel()
 		}
 		for _, cancelRetry := range runtime.state.effectRetryCancels {
@@ -2066,6 +2070,7 @@ func (service *threadRuntimeService) executePreparedSend(
 ) {
 	select {
 	case <-ctx.Done():
+		service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", ctx.Err().Error())
 		close(executionDone)
 		service.finishUnloadedCancellation(actor, accepted.ThreadID, request.TurnID, request.RunID)
 		return
@@ -2091,6 +2096,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 	if previousExecution != nil {
 		select {
 		case <-ctx.Done():
+			service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", ctx.Err().Error())
 			service.finishUnloadedTerminal(actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{Status: TurnStatusCancelled}, ctx.Err())
 			return
 		case <-previousExecution:
@@ -2102,6 +2108,9 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 		Completion: request.Completion, Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", err.Error())
+	}
 	service.finishSend(actor, request.TurnID, request.RunID, completed, err)
 }
 
@@ -2639,6 +2648,7 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	view := service.currentView(actor)
 	service.publish(view)
 	if cancel != nil {
+		service.recordCancellation(threadID, turnID, runID, "user_stop", "user requested stop")
 		cancel()
 	}
 	go func() {

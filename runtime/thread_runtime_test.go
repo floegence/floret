@@ -250,6 +250,7 @@ func testThreadServiceWithAgent(t *testing.T, agent *Agent) (*Host, ThreadServic
 func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	gateway := newBlockingThreadGateway()
 	_, service := testThreadService(t, gateway)
+	runtimeService := service.(*threadRuntimeService)
 	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-fast-send"})
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +298,47 @@ func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	replayed, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-again"})
 	if err != nil || replayed.Activity != ThreadActivityIdle {
 		t.Fatalf("idempotent cancel=%#v prior=%#v err=%v", replayed, cancelled, err)
+	}
+	diagnostics := runtimeService.cancellationDiagnostics()
+	if len(diagnostics) < 1 || diagnostics[0].Source != "user_stop" || !diagnostics[0].EntryCancelRequested {
+		t.Fatalf("cancel diagnostics=%#v, want user stop with canonical cancel entry", diagnostics)
+	}
+	for _, diagnostic := range diagnostics[1:] {
+		if diagnostic.Source != "execution_context" || !diagnostic.EntryCancelRequested {
+			t.Fatalf("follow-up cancellation diagnostic=%#v, want execution context observation", diagnostic)
+		}
+	}
+}
+
+func TestThreadServiceAcceptedSendOutlivesRequestContext(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	_, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	created, err := typed.Create(t.Context(), CreateThreadInput{RequestKey: "create-detached-send"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	if _, err := typed.Send(requestCtx, SendInput{
+		ThreadID:   created.ThreadID,
+		Input:      UserInput{Text: "continue after disconnect"},
+		RequestKey: "send-detached-context",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A transport disconnect is not an execution control signal after
+	// admission has returned. The provider must still receive and complete.
+	cancelRequest()
+	waitClosed(t, gateway.started, "provider did not start after request context cancellation")
+	close(gateway.release)
+	completed := waitThreadView(t, typed, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+	})
+	if len(completed.Items) != 2 || completed.Items[1].Kind != ThreadItemAssistant || completed.Items[1].Text != "done" {
+		t.Fatalf("completed view=%#v, want one assistant reply", completed)
+	}
+	if diagnostics := service.cancellationDiagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("request context cancellation recorded execution cancellation: %#v", diagnostics)
 	}
 }
 

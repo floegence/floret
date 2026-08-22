@@ -98,6 +98,10 @@
 
 ## Unreleased
 
+- Keep accepted thread turns independent from transport request contexts. Add
+  internal cancellation-source diagnostics so user stop, thread deletion,
+  runtime shutdown, and execution-context cancellation are distinguishable.
+
 - Fence canonical refreshes against a view change that occurs while the
   journal snapshot is being read, so an older snapshot cannot replace a
   terminal current view.

@@ -35,6 +35,12 @@ returns an error without a successful live projection. The journal is the only
 durable lifecycle authority; hosts must not persist a second transcript or
 rebuild a Floret view from audit records.
 
+After `Send` returns an accepted turn, provider execution uses a runtime-owned
+background context. The request context only controls admission and response
+waiting; closing an HTTP request, changing the selected thread, or reconnecting
+a view cannot cancel the accepted turn. Only `Cancel`, thread deletion, and
+Host shutdown are execution cancellation owners.
+
 ## Effects and shutdown
 
 Tool effects cross a durable one-shot authorization boundary. An uncertain
