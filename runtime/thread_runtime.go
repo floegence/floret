@@ -2106,6 +2106,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 }
 
 func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
+	settleCanonical := completed.Status != TurnStatusWaiting
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
 			return nil
@@ -2141,27 +2142,18 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.LastOutcome = &outcome
 			actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
 		}
-		if output := strings.TrimSpace(completed.Output); completed.Status != TurnStatusWaiting && output != "" {
-			latest := latestThreadTextItem(actor.state.view.Items, turnID, ThreadItemAssistant)
-			if latest < 0 || strings.TrimSpace(actor.state.view.Items[latest].Text) != output {
-				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: nextThreadTextSegmentID(actor.state.view.Items, turnID, ThreadItemAssistant), TurnID: turnID, Kind: ThreadItemAssistant, Text: output, CreatedAt: time.Now().UTC()})
-			}
-		}
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
 	})
+	if settleCanonical {
+		// TurnResult.Output is the run-level aggregate, not a display segment.
+		// The canonical journal owns terminal text and preserves each ordered
+		// assistant segment without creating a second item at settlement.
+		service.refreshCanonical(identity.ThreadID(actor.threadID), turnID)
+	}
 	if completed.Status == TurnStatusCompleted && runErr == nil {
 		service.startNextQueued(actor)
 	}
-}
-
-func latestThreadTextItem(items []ThreadItem, turnID identity.TurnID, kind ThreadItemKind) int {
-	for index := len(items) - 1; index >= 0; index-- {
-		if items[index].TurnID == turnID && items[index].Kind == kind {
-			return index
-		}
-	}
-	return -1
 }
 
 func threadItemIndexByID(items []ThreadItem, id string) int {
@@ -2326,7 +2318,7 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 	waiter := &pendingThreadInteraction{resolution: make(chan InteractionResolution, 1)}
 	err = actor.apply(ctx, func() error {
 		if canonicalErr == nil {
-			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems); ok {
+			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false); ok {
 				actor.state.view.Items = reconciled
 			}
 		}
@@ -2424,7 +2416,8 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		if actor.state.view.LastOutcome != nil && *actor.state.view.LastOutcome == TurnOutcomeCancelled && actor.state.view.Activity == ThreadActivityIdle {
 			return nil
 		}
-		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items)
+		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
+		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items, terminal)
 		if !ok {
 			return nil
 		}
@@ -2441,8 +2434,13 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	}
 }
 
-func reconcileCanonicalThreadItems(current, canonical []ThreadItem) ([]ThreadItem, bool) {
+func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool) ([]ThreadItem, bool) {
 	if len(current) == 0 {
+		return cloneThreadItems(canonical), true
+	}
+	if terminal {
+		// Once a turn is terminal, the journal is the complete presentation
+		// authority. Do not retain stream-only items or stale text.
 		return cloneThreadItems(canonical), true
 	}
 	byOrdinal := make(map[uint64]ThreadItem, len(canonical))

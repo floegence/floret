@@ -98,6 +98,11 @@
 
 ## Unreleased
 
+- Fix terminal thread presentation so the run-level `TurnResult.Output` is not
+  appended as a second assistant item after streamed text. Terminal current
+  views now settle from canonical ordered segments, preventing duplicate final
+  replies while preserving legitimate multi-segment assistant output.
+
 - Add the internal Phase 1 unified Thread/Turn/event primitives and contiguous
   revision log. Duplicate event IDs are idempotent, revision gaps request a
   canonical resync, and the model keeps pending approval/input as one

@@ -213,6 +213,11 @@ func testThreadService(t *testing.T, gateway provider.Gateway) (*Host, ThreadSer
 	if err != nil {
 		t.Fatal(err)
 	}
+	return testThreadServiceWithAgent(t, agent)
+}
+
+func testThreadServiceWithAgent(t *testing.T, agent *Agent) (*Host, ThreadService) {
+	t.Helper()
 	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
 	if err != nil {
 		t.Fatal(err)
@@ -879,6 +884,104 @@ func TestThreadServiceRemovesSchemaCorrectionFromTerminalPresentation(t *testing
 	})
 }
 
+func TestThreadServiceSettlesTerminalOutputFromCanonicalSegments(t *testing.T) {
+	t.Run("single step", func(t *testing.T) {
+		gateway := florettest.NewScriptedGateway(
+			provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+			provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+			florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "one reply"}, {Type: provider.EventDone, Reason: "stop"}}},
+		)
+		agent, err := testAgent(gateway)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, service := testThreadServiceWithAgent(t, agent)
+		created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-single"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "reply"}, RequestKey: "send-terminal-single"}); err != nil {
+			t.Fatal(err)
+		}
+		completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+		})
+		assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+			{kind: ThreadItemUser, text: "reply"},
+			{kind: ThreadItemAssistant, text: "one reply"},
+		})
+		assertNoLiveThreadItems(t, completed.Items)
+	})
+
+	t.Run("multiple steps preserve assistant segments", func(t *testing.T) {
+		gateway := florettest.NewScriptedGateway(
+			provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+			provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+			florettest.Step{Events: []provider.Event{
+				{Type: provider.EventDelta, Text: "progress"},
+				{Type: provider.EventTruncated, Reason: "length"},
+			}},
+			florettest.Step{Events: []provider.Event{{Type: provider.EventReasoning, Text: "thinking-2"}, {Type: provider.EventDelta, Text: "final"}, {Type: provider.EventDone, Reason: "stop"}}},
+		)
+		agent, err := testAgent(gateway)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, service := testThreadServiceWithAgent(t, agent)
+		created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-multiple"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "run"}, RequestKey: "send-terminal-multiple"}); err != nil {
+			t.Fatal(err)
+		}
+		completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && len(view.Items) == 4
+		})
+		assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+			{kind: ThreadItemUser, text: "run"},
+			{kind: ThreadItemAssistant, text: "progress"},
+			{kind: ThreadItemThinking, text: "thinking-2"},
+			{kind: ThreadItemAssistant, text: "final"},
+		})
+		assertNoLiveThreadItems(t, completed.Items)
+		for _, item := range completed.Items {
+			if item.Kind == ThreadItemAssistant && strings.Contains(item.Text, "progressfinal") {
+				t.Fatalf("run aggregate was appended as a display item: %#v", completed.Items)
+			}
+		}
+	})
+}
+
+func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T) {
+	current := []ThreadItem{
+		{ID: "assistant:turn-a:1", TurnID: "turn-a", Ordinal: 1, Kind: ThreadItemAssistant, Text: "stream draft", Live: true},
+		{ID: "assistant:turn-a:2", TurnID: "turn-a", Ordinal: 2, Kind: ThreadItemAssistant, Text: "stream draft", Live: true},
+		{ID: "assistant:turn-a:3", TurnID: "turn-a", Ordinal: 3, Kind: ThreadItemAssistant, Text: "aggregate copy", Live: false},
+	}
+	canonical := []ThreadItem{
+		{ID: "assistant:turn-a:1", TurnID: "turn-a", Ordinal: 1, Kind: ThreadItemAssistant, Text: "canonical first"},
+		{ID: "assistant:turn-a:2", TurnID: "turn-a", Ordinal: 2, Kind: ThreadItemAssistant, Text: "canonical first"},
+	}
+
+	terminal, ok := reconcileCanonicalThreadItems(current, canonical, true)
+	if !ok {
+		t.Fatal("terminal reconciliation rejected canonical items")
+	}
+	assertOrderedThreadItems(t, terminal, []orderedThreadItemExpectation{
+		{kind: ThreadItemAssistant, text: "canonical first"},
+		{kind: ThreadItemAssistant, text: "canonical first"},
+	})
+	if terminal[0].ID == terminal[1].ID {
+		t.Fatalf("distinct canonical IDs were merged: %#v", terminal)
+	}
+
+	active, ok := reconcileCanonicalThreadItems(current[:1], canonical[:1], false)
+	if !ok || len(active) != 1 || active[0].Text != "stream draft" || !active[0].Live {
+		t.Fatalf("active reconciliation lost live text: %#v, ok=%v", active, ok)
+	}
+}
+
 func TestThreadServicePreservesOrderedReasoningAndToolsAcrossApprovalAndReopen(t *testing.T) {
 	path := t.TempDir() + "/ordered-presentation.db"
 	eventGate := newOrderedPresentationEventGate()
@@ -1245,6 +1348,19 @@ func TestThreadRuntimeFencesLateAndDuplicateProviderAttempts(t *testing.T) {
 	duplicateIdentity.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "other", LogicalRequestID: "request", AttemptID: "attempt-other", AttemptEpoch: 2}
 	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("conflicting attempt changed draft: %#v", actor.state)
+	}
+}
+
+func TestThreadRuntimeDuplicateStreamEventKeepsOneAssistantIdentity(t *testing.T) {
+	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-duplicate", runID: "run-duplicate", view: ThreadView{ThreadID: "thread-duplicate", TurnID: "turn-duplicate"}}}
+	event := Event{ThreadID: "thread-duplicate", TurnID: "turn-duplicate", RunID: "run-duplicate", Stream: &StreamObservation{
+		Type: StreamObservationAssistantDelta, Text: "same", LogicalRequestID: "request-duplicate", AttemptID: "attempt-duplicate", AttemptEpoch: 1,
+	}}
+	if !actor.acceptLiveEvent(event) || !actor.acceptLiveEvent(event) {
+		t.Fatal("duplicate stream event was unexpectedly rejected")
+	}
+	if len(actor.state.view.Items) != 1 || actor.state.view.Items[0].ID != "assistant:turn-duplicate:1" {
+		t.Fatalf("duplicate stream event created another assistant identity: %#v", actor.state.view.Items)
 	}
 }
 

@@ -27,9 +27,12 @@ arrival time.
 3. On a closed subscriber, a version gap, or an unavailable terminal item,
    reload `View` and `History`; never rebuild canonical state from a product
    audit stream.
-4. Give waiting approvals and user-input requests clear primary actions; show
+4. At terminal settlement, use canonical ordered items as the text authority.
+   Do not append `TurnResult.Output` as a second assistant item: it is the
+   aggregate for the whole run, not a display segment.
+5. Give waiting approvals and user-input requests clear primary actions; show
    running, failed, cancelled, pending, and completed tool states distinctly.
-5. Keep stable row geometry while text and progress change, including narrow
+6. Keep stable row geometry while text and progress change, including narrow
    layouts.
 
 # Verify

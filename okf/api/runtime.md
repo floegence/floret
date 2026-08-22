@@ -57,6 +57,11 @@ is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
 
+Terminal presentation settles from the canonical ordered journal.
+`TurnResult.Output` remains the run-level aggregate result and is not appended
+as a new assistant item. Different stable assistant IDs remain distinct even
+when their text is equal.
+
 ## Agent and provider boundary
 
 `runtime.NewAgent` snapshots the configured profile, system prompt, gateway,

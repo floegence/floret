@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-08-22
+* **Canonical terminal thread presentation**: Terminal current views now settle
+  from canonical ordered items. The run-level `TurnResult.Output` remains an
+  aggregate result and is no longer appended as a second assistant segment;
+  equal text with different stable IDs remains valid and distinct.
+
 ## 2026-08-16
 * **Ordered terminal settlement**: Resolved input interactions now update one
   stable segment, input continuation claims its waiting run once, and terminal
