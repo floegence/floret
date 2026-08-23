@@ -79,6 +79,13 @@ as a host-owned read handle, byte counters, or latest visible output. It does
 not create a second activity row, change approval decisions, or complete the
 tool invocation.
 
+`StructuredActivityPayload.Rows` carries a bounded, ordered list of
+host-sanitized display rows. Each row may contain a title, metadata, and text,
+Markdown, or code content. Floret validates, copies, merges, and persists these
+rows without understanding the product tool that authored them. A non-empty
+update replaces the prior row list; an empty terminal update preserves existing
+rows. This remains a closed typed payload, not an arbitrary JSON escape hatch.
+
 # Batch Execution
 
 The engine validates and prepares the complete ordinary-call batch before any

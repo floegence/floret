@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-08-23
+* **Structured activity rows**: Structured tool activities may carry bounded,
+  ordered host-sanitized text, Markdown, or code rows. Floret preserves them
+  through cloning, lifecycle merges, persistence, and terminal settlement
+  without adding product tool semantics or arbitrary JSON payloads.
+
 ## 2026-08-22
 * **Turn-scoped supplemental send context**: Typed thread sends now validate and
   carry host-provided supplemental context through immediate and queued provider

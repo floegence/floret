@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.0.18 - 2026-08-23
+
+- Add bounded, ordered structured activity rows for host-sanitized text,
+  Markdown, and code details. Rows remain product-neutral typed display data
+  and survive lifecycle merges and terminal settlement.
+
 ## v4.0.17 - 2026-08-22
 
 - Carry validated turn-scoped supplemental context through typed thread sends,

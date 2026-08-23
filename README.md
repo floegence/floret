@@ -130,6 +130,11 @@ prompts. A secret answer is represented only by `Redacted: true`; Floret
 rejects a redacted answer that also carries values. These fields are display
 data, not an alternate input-response or durable message authority.
 
+Structured activity may include bounded, ordered `Rows` containing
+host-sanitized text, Markdown, or code. Floret validates and preserves these
+display rows without interpreting product tools or accepting arbitrary JSON
+payloads.
+
 ## Runtime Boundary
 
 `runtime.Host` belongs in the composition root. `Host.ThreadService` returns the

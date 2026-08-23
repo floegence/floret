@@ -1340,6 +1340,16 @@ field StructuredActivityPayload.DisplayName string tag="json:\"display_name,omit
 field StructuredActivityPayload.Summary string tag="json:\"summary,omitempty\""
 field StructuredActivityPayload.DurationMS int64 tag="json:\"duration_ms,omitempty\""
 field StructuredActivityPayload.Error *github.com/floegence/floret/v4/tools.ActivityError tag="json:\"error,omitempty\""
+field StructuredActivityPayload.Rows []github.com/floegence/floret/v4/tools.StructuredActivityRow tag="json:\"rows,omitempty\""
+type StructuredActivityRow struct
+field StructuredActivityRow.Title string tag="json:\"title,omitempty\""
+field StructuredActivityRow.Meta string tag="json:\"meta,omitempty\""
+field StructuredActivityRow.Content string tag="json:\"content,omitempty\""
+field StructuredActivityRow.Format github.com/floegence/floret/v4/tools.StructuredActivityRowFormat tag="json:\"format,omitempty\""
+type StructuredActivityRowFormat string
+const StructuredActivityRowFormatCode github.com/floegence/floret/v4/tools.StructuredActivityRowFormat = "code"
+const StructuredActivityRowFormatMarkdown github.com/floegence/floret/v4/tools.StructuredActivityRowFormat = "markdown"
+const StructuredActivityRowFormatText github.com/floegence/floret/v4/tools.StructuredActivityRowFormat = "text"
 type SubAgentActivityPayload struct
 field SubAgentActivityPayload.ThreadID github.com/floegence/floret/v4/identity.ThreadID tag="json:\"thread_id\""
 field SubAgentActivityPayload.Path string tag="json:\"path,omitempty\""

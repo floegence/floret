@@ -55,13 +55,33 @@ type ActivityError struct {
 	Message string `json:"message"`
 }
 
+// StructuredActivityRowFormat describes how a structured activity row's
+// content should be presented by a host.
+type StructuredActivityRowFormat string
+
+const (
+	StructuredActivityRowFormatText     StructuredActivityRowFormat = "text"
+	StructuredActivityRowFormatMarkdown StructuredActivityRowFormat = "markdown"
+	StructuredActivityRowFormatCode     StructuredActivityRowFormat = "code"
+)
+
+// StructuredActivityRow is one ordered, product-neutral display row for a
+// structured tool activity. Hosts author already-sanitized display text.
+type StructuredActivityRow struct {
+	Title   string                      `json:"title,omitempty"`
+	Meta    string                      `json:"meta,omitempty"`
+	Content string                      `json:"content,omitempty"`
+	Format  StructuredActivityRowFormat `json:"format,omitempty"`
+}
+
 type StructuredActivityPayload struct {
-	Status      string         `json:"status,omitempty"`
-	Operation   string         `json:"operation,omitempty"`
-	DisplayName string         `json:"display_name,omitempty"`
-	Summary     string         `json:"summary,omitempty"`
-	DurationMS  int64          `json:"duration_ms,omitempty"`
-	Error       *ActivityError `json:"error,omitempty"`
+	Status      string                  `json:"status,omitempty"`
+	Operation   string                  `json:"operation,omitempty"`
+	DisplayName string                  `json:"display_name,omitempty"`
+	Summary     string                  `json:"summary,omitempty"`
+	DurationMS  int64                   `json:"duration_ms,omitempty"`
+	Error       *ActivityError          `json:"error,omitempty"`
+	Rows        []StructuredActivityRow `json:"rows,omitempty"`
 }
 
 func (StructuredActivityPayload) activityRenderer() ActivityRenderer {
@@ -555,6 +575,9 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.Error != nil {
 			l.Error = cloneActivityError(r.Error)
 		}
+		if len(r.Rows) > 0 {
+			l.Rows = append([]StructuredActivityRow(nil), r.Rows...)
+		}
 		return l
 	case TerminalActivityPayload:
 		l, ok := left.(TerminalActivityPayload)
@@ -724,6 +747,7 @@ func cloneQuestionActivityAnswers(in []QuestionActivityAnswer) []QuestionActivit
 
 func cloneStructuredActivityPayload(payload StructuredActivityPayload) StructuredActivityPayload {
 	payload.Error = cloneActivityError(payload.Error)
+	payload.Rows = append([]StructuredActivityRow(nil), payload.Rows...)
 	return payload
 }
 
@@ -768,7 +792,23 @@ func validActivityRenderer(renderer ActivityRenderer) bool {
 func validateActivityPayload(payload ActivityPayload) error {
 	switch typed := payload.(type) {
 	case StructuredActivityPayload:
-		return validatePayloadTextAndError([]string{typed.Status, typed.Operation, typed.DisplayName, typed.Summary}, typed.Error)
+		if typed.DurationMS < 0 {
+			return errors.New("duration_ms must be non-negative")
+		}
+		if len(typed.Rows) > maxActivityPayloadItems {
+			return errors.New("too many structured activity rows")
+		}
+		values := []string{typed.Status, typed.Operation, typed.DisplayName, typed.Summary}
+		for _, row := range typed.Rows {
+			if strings.TrimSpace(row.Title) == "" && strings.TrimSpace(row.Meta) == "" && strings.TrimSpace(row.Content) == "" {
+				return errors.New("structured activity row requires title, meta, or content")
+			}
+			if !validStructuredActivityRowFormat(row.Format) {
+				return errors.New("structured activity row format is unsupported")
+			}
+			values = append(values, row.Title, row.Meta, row.Content)
+		}
+		return validatePayloadTextAndError(values, typed.Error)
 	case TerminalActivityPayload:
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
@@ -866,6 +906,15 @@ func validateActivityPayload(payload ActivityPayload) error {
 		}, nil)
 	default:
 		return fmt.Errorf("type %T is unsupported", payload)
+	}
+}
+
+func validStructuredActivityRowFormat(format StructuredActivityRowFormat) bool {
+	switch format {
+	case "", StructuredActivityRowFormatText, StructuredActivityRowFormatMarkdown, StructuredActivityRowFormatCode:
+		return true
+	default:
+		return false
 	}
 }
 
