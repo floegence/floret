@@ -79,6 +79,12 @@ as a host-owned read handle, byte counters, or latest visible output. It does
 not create a second activity row, change approval decisions, or complete the
 tool invocation.
 
+The matching tool result presentation is merged with the original call
+presentation before it is emitted or persisted. Result status and output may
+advance the same item without erasing a call-authored label, description,
+command, or other non-empty typed payload field. Canonical thread projection
+applies the same merge by tool-call identity, including after restart.
+
 `StructuredActivityPayload.Rows` carries a bounded, ordered list of
 host-sanitized display rows. Each row may contain a title, metadata, and text,
 Markdown, or code content. Floret validates, copies, merges, and persists these

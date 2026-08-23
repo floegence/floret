@@ -1228,6 +1228,50 @@ func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T)
 	}
 }
 
+func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
+	turnID := identity.TurnID("turn-activity-merge")
+	callPresentation := &tools.ActivityPresentation{
+		Label:       "Run command",
+		Description: "Fetch the hardware specification",
+		Renderer:    tools.ActivityRendererTerminal,
+		Payload:     tools.TerminalActivityPayload{Command: "curl https://example.test/spec"},
+	}
+	resultPresentation := &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererTerminal,
+		Payload: tools.TerminalActivityPayload{
+			Status: string(observation.ActivityStatusSuccess),
+			Stdout: "specification",
+		},
+	}
+	items, interactions, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
+		{
+			ID: "tool-call", ThreadID: "thread-activity-merge", TurnID: turnID.String(), Type: sessiontree.EntryToolCall,
+			Message: session.Message{Role: session.Assistant, ToolCallID: "call-activity-merge", ToolName: "terminal.exec", Activity: session.CloneActivityPresentation(callPresentation)},
+		},
+		{
+			ID: "tool-result", ThreadID: "thread-activity-merge", TurnID: turnID.String(), Type: sessiontree.EntryToolResult,
+			Message: session.Message{Role: session.Tool, ToolCallID: "call-activity-merge", ToolName: "terminal.exec", ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusSuccess)}, Activity: session.CloneActivityPresentation(resultPresentation)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interactions) != 0 || len(items) != 1 || items[0].Activity == nil {
+		t.Fatalf("projection=(items=%#v interactions=%#v), want one tool item", items, interactions)
+	}
+	activity := items[0].Activity
+	if activity.Status != observation.ActivityStatusSuccess || activity.Presentation == nil {
+		t.Fatalf("activity=%#v", activity)
+	}
+	if activity.Presentation.Label != "Run command" || activity.Presentation.Description != "Fetch the hardware specification" {
+		t.Fatalf("presentation copy=(%q, %q)", activity.Presentation.Label, activity.Presentation.Description)
+	}
+	payload, ok := activity.Presentation.Payload.(tools.TerminalActivityPayload)
+	if !ok || payload.Command != "curl https://example.test/spec" || payload.Stdout != "specification" {
+		t.Fatalf("terminal payload=%#v", activity.Presentation.Payload)
+	}
+}
+
 func TestThreadRuntimeCanonicalRefreshRejectsStaleSnapshot(t *testing.T) {
 	host, service := testThreadService(t, newBlockingThreadGateway())
 	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-canonical-race"})

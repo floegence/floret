@@ -1209,6 +1209,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if internalValidationCorrection {
 				result.Activity = nil
 			} else {
+				result.Activity = tools.MergeActivityPresentations(callActivities[result.CallID], result.Activity)
 				result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
 			}
 			resultView := (*session.ToolResultView)(nil)

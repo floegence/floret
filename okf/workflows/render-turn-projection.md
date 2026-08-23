@@ -34,7 +34,10 @@ arrival time.
    read is still current; otherwise discard the stale snapshot and reload.
 6. Give waiting approvals and user-input requests clear primary actions; show
    running, failed, cancelled, pending, and completed tool states distinctly.
-7. Keep stable row geometry while text and progress change, including narrow
+7. Render the cumulative Activity presentation supplied for each stable tool
+   item. Result facts may add status and output without removing safe display
+   facts authored by the matching tool call.
+8. Keep stable row geometry while text and progress change, including narrow
    layouts.
 
 # Verify

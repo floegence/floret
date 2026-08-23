@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.0.20 - 2026-08-23
+
+- Merge each tool result presentation with the matching tool call presentation
+  before persistence and canonical current-view projection. Terminal results
+  can add output and status without erasing host-authored descriptions,
+  commands, or other safe display facts from the original invocation.
+
 ## v4.0.19 - 2026-08-23
 
 - Make `ThreadService.Cancel` atomically commit the cancellation request,

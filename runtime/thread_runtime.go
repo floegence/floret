@@ -3601,6 +3601,7 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			activity := activityItemFromCanonicalEntry(entry)
 			toolKey := turnID.String() + ":" + entry.Message.ToolCallID
 			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
+				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
 				items[previous].Activity = &activity
 				items[previous].Live = false
 				reasoningOpen[turnID] = false

@@ -135,6 +135,10 @@ host-sanitized text, Markdown, or code. Floret validates and preserves these
 display rows without interpreting product tools or accepting arbitrary JSON
 payloads.
 
+Activity presentation is cumulative for one tool invocation. A result may add
+terminal status and output, while non-empty display facts from the matching
+tool call remain available in events, canonical views, and reopened threads.
+
 ## Runtime Boundary
 
 `runtime.Host` belongs in the composition root. `Host.ThreadService` returns the

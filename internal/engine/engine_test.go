@@ -2658,9 +2658,10 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 					t.Fatalf("args=%T, want stringArgs", inv.Args)
 				}
 				return &tools.ActivityPresentation{
-					Label:    args.Value,
-					Renderer: tools.ActivityRendererTerminal,
-					Payload:  tools.TerminalActivityPayload{Command: args.Value},
+					Label:       args.Value,
+					Description: "Run the project test suite",
+					Renderer:    tools.ActivityRendererTerminal,
+					Payload:     tools.TerminalActivityPayload{Command: args.Value},
 				}, nil
 			},
 		},
@@ -2700,6 +2701,7 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			ev.ToolID == "exec-1" &&
 			ev.Activity != nil &&
 			ev.Activity.Description == "Command completed" &&
+			terminalActivityPayload(ev.Activity).Command == "npm test" &&
 			terminalActivityPayload(ev.Activity).Stdout == "ok"
 	}) {
 		t.Fatalf("tool result activity missing: %#v", rec.Events)
@@ -2719,7 +2721,9 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			msg.ToolResult != nil &&
 			msg.ToolResult.Status == string(observation.ActivityStatusSuccess) &&
 			msg.Activity != nil &&
-			msg.Activity.Description == "Command completed"
+			msg.Activity.Description == "Command completed" &&
+			terminalActivityPayload(msg.Activity).Command == "npm test" &&
+			terminalActivityPayload(msg.Activity).Stdout == "ok"
 	}) {
 		t.Fatalf("tool result activity/status was not persisted: %#v", got.Messages)
 	}

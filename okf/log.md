@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-23
+* **Cumulative tool presentation**: Tool results now merge with the matching
+  call presentation before persistence and canonical projection, so status and
+  output cannot erase safe descriptions, commands, or other invocation display
+  facts.
 * **Authoritative Stop terminal**: User Stop now commits interaction and tool
   settlement, effect fencing, and the aborted turn in one canonical
   transaction. Unknown effects remain observable but cannot be retried after
