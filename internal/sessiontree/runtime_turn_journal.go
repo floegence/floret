@@ -3,10 +3,14 @@ package sessiontree
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"strings"
+	"time"
 
+	"github.com/floegence/floret/v4/internal/activityview"
 	"github.com/floegence/floret/v4/internal/provider"
 	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v4/observation"
 )
 
 // AcceptTurn records the canonical request boundary before provider dispatch.
@@ -231,6 +235,254 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	}
 	result.Terminal = cloneEntry(terminal)
 	return result, nil
+}
+
+// CancelTurn makes user Stop the canonical winner without waiting for provider
+// or tool goroutines. Any late turn-scoped writes are rejected by the terminal
+// authority installed in this transaction.
+func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (CancelTurnResult, error) {
+	if err := ValidateCancelTurnRequest(req); err != nil {
+		return CancelTurnResult{}, err
+	}
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
+	req.TurnID = strings.TrimSpace(req.TurnID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.CancelEntryID = strings.TrimSpace(req.CancelEntryID)
+	req.TerminalEntryID = strings.TrimSpace(req.TerminalEntryID)
+	req.RequestKey = strings.TrimSpace(req.RequestKey)
+	req.RequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
+	req.OutcomeFingerprint = strings.TrimSpace(req.OutcomeFingerprint)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	previousEntries := cloneEntries(r.entries[req.ThreadID])
+	previousOrdinals := maps.Clone(r.entryOrdinals[req.ThreadID])
+	previousDepths := maps.Clone(r.entryDepths[req.ThreadID])
+	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[req.ThreadID])
+	previousTurnCounts := maps.Clone(r.turnEntryCounts[req.ThreadID])
+	previousMeta, previousMetaFound := r.threads[req.ThreadID]
+	previousProviderState, previousProviderStateFound := r.providerStates[req.ThreadID]
+	previousSequence := r.seq
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		r.entries[req.ThreadID] = previousEntries
+		r.entryOrdinals[req.ThreadID] = previousOrdinals
+		r.entryDepths[req.ThreadID] = previousDepths
+		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
+		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
+		if previousMetaFound {
+			r.threads[req.ThreadID] = previousMeta
+		} else {
+			delete(r.threads, req.ThreadID)
+		}
+		if previousProviderStateFound {
+			r.providerStates[req.ThreadID] = previousProviderState
+		} else {
+			delete(r.providerStates, req.ThreadID)
+		}
+		r.seq = previousSequence
+	}()
+	if terminal, found := findEntry(r.entries[req.ThreadID], req.TerminalEntryID); found {
+		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID ||
+			terminal.TurnStatus != TurnAborted || terminal.RequestFingerprint != req.OutcomeFingerprint {
+			return CancelTurnResult{}, ErrRequestConflict
+		}
+		cancel, ok := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+		if !ok || cancel.Type != EntryCancelRequested || cancel.TurnID != req.TurnID || cancel.RunID != req.RunID ||
+			cancel.RequestFingerprint != req.RequestFingerprint {
+			return CancelTurnResult{}, ErrAuthorityCorrupt
+		}
+		committed = true
+		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
+	}
+	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
+	if !active || activeTurnID != req.TurnID {
+		return CancelTurnResult{}, ErrStaleAuthority
+	}
+	meta, ok := r.threads[req.ThreadID]
+	if !ok {
+		return CancelTurnResult{}, ErrThreadNotFound
+	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
+		return CancelTurnResult{}, err
+	}
+	now := canonicalTime(req.Now, r.now)
+	cancel, found := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+	if found {
+		if cancel.Type != EntryCancelRequested || cancel.TurnID != req.TurnID || cancel.RunID != req.RunID ||
+			cancel.RequestKey != req.RequestKey || cancel.RequestFingerprint != req.RequestFingerprint {
+			return CancelTurnResult{}, ErrRequestConflict
+		}
+	} else {
+		var appendErr error
+		cancel, appendErr = r.appendLocked(ctx, Entry{
+			ID: req.CancelEntryID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID,
+			Type: EntryCancelRequested, RequestKey: req.RequestKey, RequestFingerprint: req.RequestFingerprint,
+			CreatedAt: now,
+		}, AppendOptions{ID: req.CancelEntryID, Now: now})
+		if appendErr != nil {
+			return CancelTurnResult{}, appendErr
+		}
+	}
+	result := CancelTurnResult{CancelRequest: cancel}
+
+	pendingInteractions := runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID)
+	for _, interaction := range pendingInteractions {
+		entryID := "interaction-resolved:" + interaction.ID
+		resolved, appendErr := r.appendLocked(ctx, Entry{
+			ID: entryID, ThreadID: req.ThreadID, TurnID: interaction.TurnID, RunID: interaction.RunID,
+			Type: EntryInteractionDone, RequestKey: req.RequestKey, RequestFingerprint: req.RequestFingerprint,
+			Payload: append(json.RawMessage(nil), req.InteractionResolutionPayload...), CreatedAt: now,
+		}, AppendOptions{ID: entryID, Now: now})
+		if appendErr != nil {
+			return CancelTurnResult{}, appendErr
+		}
+		result.InteractionResolutions = append(result.InteractionResolutions, resolved)
+	}
+
+	meta = r.threads[req.ThreadID]
+	unknownToolCalls, err := r.cancelTurnEffectsLocked(&meta, req, now)
+	if err != nil {
+		return CancelTurnResult{}, err
+	}
+	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+		reason := "Tool call was canceled before completion."
+		if unknownToolCalls[call.Message.ToolCallID] {
+			reason = "Tool call was stopped before its effect outcome could be confirmed."
+		}
+		activity := activityview.WithTerminalStatus(call.Message.Activity, string(observation.ActivityStatusCanceled), reason)
+		entryID := "tool-cancelled:" + req.TurnID + ":" + strings.TrimSpace(call.Message.ToolCallID)
+		closed, appendErr := r.appendLocked(ctx, Entry{
+			ID: entryID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Type: EntryToolResult,
+			Message: session.Message{
+				Role: session.Tool, Content: reason, ToolCallID: call.Message.ToolCallID, ToolName: call.Message.ToolName,
+				ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusCanceled)}, Activity: activity,
+			},
+			CreatedAt: now,
+		}, AppendOptions{ID: entryID, Now: now})
+		if appendErr != nil {
+			return CancelTurnResult{}, appendErr
+		}
+		result.ToolResults = append(result.ToolResults, closed)
+	}
+
+	meta = r.threads[req.ThreadID]
+	terminal := Entry{
+		ID: req.TerminalEntryID, ThreadID: req.ThreadID, ParentID: meta.LeafID,
+		Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,
+		RequestFingerprint: req.OutcomeFingerprint, CreatedAt: now, TurnStatus: TurnAborted,
+		Metadata: cloneStringMap(req.Metadata),
+	}
+	terminal.Raw, terminal.RawHash = rawForEntry(terminal), stableHash(rawForEntry(terminal))
+	r.appendIndexedEntriesLocked(req.ThreadID, terminal)
+	meta.LeafID, meta.UpdatedAt = terminal.ID, now
+	r.threads[req.ThreadID] = meta
+	if req.ClearProviderState {
+		delete(r.providerStates, req.ThreadID)
+	}
+	result.Terminal = cloneEntry(terminal)
+	committed = true
+	return result, nil
+}
+
+type runtimePendingInteraction struct {
+	ID     string
+	TurnID string
+	RunID  string
+}
+
+func runtimePendingInteractions(entries []Entry, turnID string) []runtimePendingInteraction {
+	pending := make(map[string]runtimePendingInteraction)
+	order := make([]string, 0)
+	for _, entry := range entries {
+		if entry.TurnID != turnID {
+			continue
+		}
+		switch entry.Type {
+		case EntryInteractionAsked:
+			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
+			if _, exists := pending[id]; !exists {
+				order = append(order, id)
+			}
+			pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
+		case EntryInteractionDone:
+			delete(pending, strings.TrimPrefix(entry.ID, "interaction-resolved:"))
+		}
+	}
+	result := make([]runtimePendingInteraction, 0, len(pending))
+	for _, id := range order {
+		if interaction, ok := pending[id]; ok {
+			result = append(result, interaction)
+		}
+	}
+	return result
+}
+
+func runtimePendingToolCalls(entries []Entry, turnID string) []Entry {
+	pending := make(map[string]Entry)
+	order := make([]string, 0)
+	for _, entry := range entries {
+		if entry.TurnID != turnID || strings.TrimSpace(entry.Message.ToolCallID) == "" {
+			continue
+		}
+		callID := strings.TrimSpace(entry.Message.ToolCallID)
+		switch entry.Type {
+		case EntryToolCall:
+			if _, exists := pending[callID]; !exists {
+				order = append(order, callID)
+			}
+			pending[callID] = entry
+		case EntryToolResult:
+			delete(pending, callID)
+		}
+	}
+	result := make([]Entry, 0, len(pending))
+	for _, id := range order {
+		if call, ok := pending[id]; ok {
+			result = append(result, call)
+		}
+	}
+	return result
+}
+
+func (r *MemoryRepo) cancelTurnEffectsLocked(meta *ThreadMeta, req CancelTurnRequest, now time.Time) (map[string]bool, error) {
+	latest := make(map[string]EffectAttempt)
+	for _, entry := range r.entries[req.ThreadID] {
+		if entry.TurnID != req.TurnID || entry.Type != EntryEffectAttempt {
+			continue
+		}
+		attempt, err := decodeEffectAttempt(entry)
+		if err != nil {
+			return nil, err
+		}
+		latest[attempt.EffectAttemptID] = attempt
+	}
+	unknownToolCalls := make(map[string]bool)
+	for _, attempt := range latest {
+		switch attempt.State {
+		case EffectAttemptPrepared:
+			attempt.State = EffectAttemptCancelled
+			attempt.TerminalFingerprint = "turn-cancel:" + req.OutcomeFingerprint
+			attempt.UpdatedAt = now
+			if err := r.appendEffectAttemptLocked(meta, attempt); err != nil {
+				return nil, err
+			}
+		case EffectAttemptDispatching:
+			unknownToolCalls[attempt.Invocation.ToolCallID] = true
+			attempt.State = EffectAttemptUnknown
+			attempt.TerminalFingerprint = "turn-cancel:" + req.OutcomeFingerprint
+			attempt.UpdatedAt = now
+			if err := r.appendEffectAttemptLocked(meta, attempt); err != nil {
+				return nil, err
+			}
+		case EffectAttemptUnknown, EffectAttemptRetrying:
+			unknownToolCalls[attempt.Invocation.ToolCallID] = true
+		}
+	}
+	return unknownToolCalls, nil
 }
 
 func settledRetrySourcesForTurn(attempts []EffectAttempt) map[string]struct{} {

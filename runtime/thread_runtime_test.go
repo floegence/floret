@@ -76,6 +76,10 @@ func (repo rejectingRuntimeTurnRepo) ReadAcceptedTurn(ctx context.Context, threa
 	return repo.turns.ReadAcceptedTurn(ctx, threadID, turnID, runID)
 }
 
+func (repo rejectingRuntimeTurnRepo) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (sessiontree.CancelTurnResult, error) {
+	return repo.turns.CancelTurn(ctx, request)
+}
+
 func (repo rejectingRuntimeTurnRepo) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
 	return repo.turns.FinishTurn(ctx, request)
 }
@@ -339,6 +343,189 @@ func TestThreadServiceAcceptedSendOutlivesRequestContext(t *testing.T) {
 	}
 	if diagnostics := service.cancellationDiagnostics(); len(diagnostics) != 0 {
 		t.Fatalf("request context cancellation recorded execution cancellation: %#v", diagnostics)
+	}
+}
+
+func TestThreadServiceStopSealsUnknownEffectAndAcceptsNextSend(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-stop-effect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "run a slow command"}, RequestKey: "send-stop-effect",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, gateway.started, "provider did not start")
+	actor := service.runtime(created.ThreadID)
+	var runID identity.RunID
+	if err := actor.apply(t.Context(), func() error {
+		runID = actor.state.runID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	args := `{"command":"sleep 20"}`
+	toolEntry := sessiontree.Entry{
+		ID: "tool-call:slow", ThreadID: created.ThreadID.String(), TurnID: started.TurnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolCall,
+		Message: session.Message{Role: session.Assistant, ToolCallID: "slow-call", ToolName: "shell", ToolArgs: args},
+	}
+	writer := host.store.repo.(sessiontree.RuntimeJournalRepo)
+	if _, err := writer.AppendRuntimeFacts(t.Context(), created.ThreadID.String(), []sessiontree.Entry{toolEntry}); err != nil {
+		t.Fatal(err)
+	}
+	authority := host.store.repo.(sessiontree.EffectAttemptRepo)
+	prepared, err := authority.PrepareEffectAttempt(t.Context(), sessiontree.PrepareEffectAttemptRequest{
+		Invocation: sessiontree.EffectInvocationIdentity{
+			ThreadID: created.ThreadID.String(), TurnID: started.TurnID.String(), RunID: runID.String(),
+			ToolCallID: "slow-call", ToolName: "shell", ArgumentHash: sessiontree.StableHash(args),
+		},
+		RequestFingerprint: "slow-effect", Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.BeginEffectDispatch(t.Context(), sessiontree.BeginEffectDispatchRequest{
+		EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "slow-effect", AuthorizationProofHash: "proof", Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-effect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Activity != ThreadActivityIdle || cancelled.LastOutcome == nil || *cancelled.LastOutcome != TurnOutcomeCancelled {
+		t.Fatalf("cancelled view=%#v", cancelled)
+	}
+	var canceledTool bool
+	for _, item := range cancelled.Items {
+		if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == "slow-call" {
+			canceledTool = item.Activity.Status == observation.ActivityStatusCanceled
+		}
+	}
+	if !canceledTool {
+		t.Fatalf("cancelled items=%#v, want outer canceled tool status", cancelled.Items)
+	}
+	for _, interaction := range cancelled.Interactions {
+		if !interaction.Resolved {
+			t.Fatalf("cancelled view retained pending interaction: %#v", interaction)
+		}
+	}
+	if _, err := service.RetryEffect(t.Context(), RetryEffectInput{
+		ThreadID: created.ThreadID, EffectAttemptID: prepared.Attempt.EffectAttemptID, ToolCallID: "slow-call",
+		AcknowledgeUnknownRisk: true, RequestKey: "retry-cancelled-effect",
+	}); err == nil {
+		t.Fatal("RetryEffect accepted a canceled turn")
+	}
+	next, err := service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "send-after-stop",
+	})
+	if err != nil {
+		t.Fatalf("next Send after Stop: %v", err)
+	}
+	if next.Activity != ThreadActivityActive || next.TurnID == started.TurnID {
+		t.Fatalf("next view=%#v", next)
+	}
+	if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-next"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThreadServiceReopenSettlesPreviouslyRecordedStop(t *testing.T) {
+	path := t.TempDir() + "/stop-recovery.db"
+	firstHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGateway := newBlockingThreadGateway()
+	firstAgent, err := testAgent(firstGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstService, err := firstHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return firstAgent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := firstService.Create(t.Context(), CreateThreadInput{RequestKey: "create-stop-recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID, runID, err := firstHost.nextTurnRunIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := firstHost.store.repo.(sessiontree.RuntimeTurnRepo)
+	if _, err := turns.AcceptTurn(t.Context(), sessiontree.AcceptTurnRequest{
+		ThreadID: created.ThreadID.String(), TurnID: turnID.String(), RunID: runID.String(), LogicalRequestID: "send-before-restart",
+		RequestFingerprint: "send-before-restart", InputRequestFingerprint: "input-before-restart",
+		Input: session.Message{Role: session.User, Content: "run"}, Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stopFingerprint, _ := stableFingerprint(struct {
+		ThreadID identity.ThreadID `json:"thread_id"`
+		TurnID   identity.TurnID   `json:"turn_id"`
+	}{created.ThreadID, turnID})
+	writer := firstHost.store.repo.(sessiontree.RuntimeJournalRepo)
+	if _, err := writer.AppendRuntimeFacts(t.Context(), created.ThreadID.String(), []sessiontree.Entry{{
+		ID: "cancel:recorded-before-restart", ThreadID: created.ThreadID.String(), TurnID: turnID.String(), RunID: runID.String(),
+		Type: sessiontree.EntryCancelRequested, RequestKey: "recorded-before-restart", RequestFingerprint: stopFingerprint,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstHost.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	secondHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondHost.Shutdown(context.Background()) })
+	secondGateway := newBlockingThreadGateway()
+	secondAgent, err := testAgent(secondGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService, err := secondHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return secondAgent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := waitThreadView(t, secondService, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCancelled
+	})
+	if cancelled.Error != "" {
+		t.Fatalf("recovered cancelled view=%#v", cancelled)
+	}
+	entries, err := secondHost.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelFacts, terminals := 0, 0
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryCancelRequested {
+			cancelFacts++
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted {
+			terminals++
+		}
+	}
+	if cancelFacts != 1 || terminals != 1 {
+		t.Fatalf("cancel facts=%d terminals=%d entries=%#v", cancelFacts, terminals, entries)
+	}
+	next, err := secondService.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "send-after-recovered-stop",
+	})
+	if err != nil || next.Activity != ThreadActivityActive {
+		t.Fatalf("next Send=%#v err=%v", next, err)
+	}
+	if _, err := secondService.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-after-recovery"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

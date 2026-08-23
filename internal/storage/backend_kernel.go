@@ -141,6 +141,24 @@ func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree
 	return result, err
 }
 
+// CancelTurn commits the user Stop terminal and clears prompt continuation in
+// the same checkpoint. It is the cancellation counterpart of FinishTurn.
+func (kernel *BackendKernel) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (result sessiontree.CancelTurnResult, err error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return sessiontree.CancelTurnResult{}, errors.New("prompt state is missing")
+	}
+	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+		result, err = memory.CancelTurn(ctx, request)
+		if err != nil {
+			return err
+		}
+		return savePromptState(tx, kernel.prompt)
+	})
+	return result, err
+}
+
 // Checkpoint flushes both canonical domain state and memory-resident prompt
 // observations during graceful shutdown or an explicit recovery barrier.
 func (kernel *BackendKernel) Checkpoint(ctx context.Context) error {

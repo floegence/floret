@@ -430,6 +430,9 @@ func (r *MemoryRepo) PrepareEffectAttempt(_ context.Context, req PrepareEffectAt
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	}
+	if activeTurnID, active := runtimeActiveTurn(r.entries[meta.ID]); !active || activeTurnID != req.Invocation.TurnID {
+		return PrepareEffectAttemptResult{}, ErrStaleAuthority
+	}
 	if existing, found, err := effectAttemptByInvocation(r.entries[meta.ID], req.Invocation); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	} else if found {
@@ -505,6 +508,9 @@ func (r *MemoryRepo) BeginEffectDispatch(_ context.Context, req BeginEffectDispa
 	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 		return EffectAttempt{}, ErrRequestConflict
 	}
+	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
+		return EffectAttempt{}, ErrStaleAuthority
+	}
 	if attempt.State != EffectAttemptPrepared {
 		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
 			return EffectAttempt{}, ErrEffectOutcomeUnknown
@@ -549,6 +555,9 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		}
 		ref, err := r.validateEffectArtifactReplayLocked(attempt, entry, req)
 		return FinishEffectDispatchResult{Attempt: attempt, Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(ref), Replayed: true}, err
+	}
+	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
+		return FinishEffectDispatchResult{}, ErrStaleAuthority
 	}
 	if attempt.State != EffectAttemptDispatching {
 		return FinishEffectDispatchResult{}, ErrRequestConflict
@@ -639,6 +648,9 @@ func (r *MemoryRepo) ClaimEffectRetry(_ context.Context, req ClaimEffectRetryReq
 	}
 	if attempt.Invocation.ToolCallID != strings.TrimSpace(req.ToolCallID) {
 		return ClaimEffectRetryResult{}, ErrRequestConflict
+	}
+	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
+		return ClaimEffectRetryResult{}, ErrStaleAuthority
 	}
 	if attempt.State == EffectAttemptRetrying {
 		if attempt.RetryRequestKey != strings.TrimSpace(req.RequestKey) || attempt.RetryRequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {

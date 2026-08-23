@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.0.19 - 2026-08-23
+
+- Make `ThreadService.Cancel` atomically commit the cancellation request,
+  pending interaction and tool settlement, effect fence, and aborted turn.
+  Stop no longer waits for provider or tool goroutines, unknown effects cannot
+  be retried after cancellation, and late writes cannot reactivate the turn.
+- Project canceled tool results consistently at both the activity and payload
+  levels, and settle previously recorded incomplete cancellations on restart.
+
 ## v4.0.18 - 2026-08-23
 
 - Add bounded, ordered structured activity rows for host-sanitized text,

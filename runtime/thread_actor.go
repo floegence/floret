@@ -76,6 +76,9 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if runtime == nil || runtime.deleting || runtime.deleted {
 		return false
 	}
+	if runtime.state.view.Activity == ThreadActivityIdle && runtime.state.view.LastOutcome != nil {
+		return false
+	}
 	if event.TurnID != "" && runtime.state.turnID != "" && event.TurnID != runtime.state.turnID {
 		return false
 	}

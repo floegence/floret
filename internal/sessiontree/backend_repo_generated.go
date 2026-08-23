@@ -58,6 +58,16 @@ func (repo *BackendRepo) BeginEffectDispatch(ctx context.Context, req BeginEffec
 	return result0, err
 }
 
+func (repo *BackendRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (CancelTurnResult, error) {
+	var result0 CancelTurnResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.CancelTurn(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]Entry, bool, error) {
 	var result0 []Entry
 	var result1 bool

@@ -81,6 +81,12 @@ func TestClaimEffectRetryConsumesUnknownSourceExactlyOnce(t *testing.T) {
 	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repo.AcceptTurn(ctx, AcceptTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", LogicalRequestID: "request",
+		RequestFingerprint: "turn", InputRequestFingerprint: "input", Input: session.Message{Role: session.User, Content: "write"}, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	invocation := EffectInvocationIdentity{ThreadID: "thread", TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "write", ArgumentHash: StableHash(`{"path":"x"}`)}
 	prepared, err := repo.PrepareEffectAttempt(ctx, PrepareEffectAttemptRequest{Invocation: invocation, RequestFingerprint: "effect", Now: now})
 	if err != nil {

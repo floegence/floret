@@ -1334,6 +1334,15 @@ func (service *threadRuntimeService) runEffectRetry(ctx context.Context, finish 
 		}
 		return
 	}
+	active := false
+	_ = actor.apply(context.Background(), func() error {
+		active = actor.state.view.Activity == ThreadActivityActive &&
+			actor.state.turnID.String() == source.Invocation.TurnID && actor.state.runID.String() == source.Invocation.RunID
+		return nil
+	})
+	if !active {
+		return
+	}
 	service.refreshCanonical(threadID, identity.TurnID(source.Invocation.TurnID))
 	service.redispatchAcceptedTurn(ctx, threadID, identity.TurnID(source.Invocation.TurnID), identity.RunID(source.Invocation.RunID))
 }
@@ -2438,9 +2447,6 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		if turnID != "" && actor.state.turnID != "" && actor.state.turnID != turnID {
 			return nil
 		}
-		if actor.state.view.LastOutcome != nil && *actor.state.view.LastOutcome == TurnOutcomeCancelled && actor.state.view.Activity == ThreadActivityIdle {
-			return nil
-		}
 		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
 		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items, terminal)
 		if !ok {
@@ -2566,28 +2572,16 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 		return ThreadView{}, err
 	}
 	actor := service.runtime(threadID)
-	var turnID identity.TurnID
-	var runID identity.RunID
-	var cancel context.CancelFunc
-	var executionDone <-chan struct{}
-	var active bool
-	var pending []ThreadInteraction
-	err := actor.apply(ctx, func() error {
-		active = actor.state.view.Activity == ThreadActivityActive
-		turnID, runID, cancel = actor.state.turnID, actor.state.runID, actor.state.cancel
-		executionDone = actor.state.executionDone
-		for _, interaction := range actor.state.view.Interactions {
-			if !interaction.Resolved {
-				pending = append(pending, interaction)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return ThreadView{}, err
+	current := service.currentView(actor)
+	if current.Activity != ThreadActivityActive {
+		return current, nil
 	}
-	if !active {
-		return service.currentView(actor), nil
+	turnID, runID := current.TurnID, identity.RunID("")
+	if err := actor.apply(ctx, func() error {
+		turnID, runID = actor.state.turnID, actor.state.runID
+		return nil
+	}); err != nil {
+		return ThreadView{}, err
 	}
 	fingerprint, err := stableFingerprint(struct {
 		ThreadID identity.ThreadID `json:"thread_id"`
@@ -2596,97 +2590,122 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	if err != nil {
 		return ThreadView{}, err
 	}
-	entryID := "cancel:" + requestKey
-	entries := []sessiontree.Entry{{
-		ID: entryID, ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(),
-		Type: sessiontree.EntryCancelRequested, RequestKey: requestKey, RequestFingerprint: fingerprint,
-	}}
-	resolutions := make(map[string]InteractionResolution, len(pending))
-	replayedCancel := false
-	for _, interaction := range pending {
-		resolution := InteractionResolution{Accepted: false, Outcome: "cancelled"}
-		payload, marshalErr := json.Marshal(resolution)
-		if marshalErr != nil {
-			return ThreadView{}, marshalErr
-		}
-		entries = append(entries, sessiontree.Entry{
-			ID: "interaction-resolved:" + interaction.ID, ThreadID: threadID.String(),
-			TurnID: interaction.TurnID.String(), RunID: interaction.runID.String(),
-			Type: sessiontree.EntryInteractionDone, RequestKey: requestKey,
-			RequestFingerprint: fingerprint, Payload: payload,
-		})
-		resolutions[interaction.ID] = resolution
+	return service.settleCancellation(ctx, actor, threadID, turnID, runID, cancellationRequest{
+		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint,
+	}, "user_stop", "user requested stop")
+}
+
+type cancellationRequest struct {
+	EntryID            string
+	RequestKey         string
+	RequestFingerprint string
+}
+
+func (service *threadRuntimeService) settleCancellation(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, request cancellationRequest, source, reason string) (ThreadView, error) {
+	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
+	if !ok {
+		return ThreadView{}, ErrUnsupportedStoreCapability
 	}
+	resolution := InteractionResolution{Accepted: false, Outcome: "cancelled"}
+	resolutionPayload, err := json.Marshal(resolution)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	terminalID := stableCancellationEntryID(threadID, turnID, runID)
+	metadata := map[string]string{
+		"run_id": runID.String(), "outcome": "cancelled",
+		sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled,
+	}
+	outcomePayload, err := json.Marshal(struct {
+		ThreadID identity.ThreadID `json:"thread_id"`
+		TurnID   identity.TurnID   `json:"turn_id"`
+		RunID    identity.RunID    `json:"run_id"`
+		Terminal string            `json:"terminal"`
+		Status   string            `json:"status"`
+	}{ThreadID: threadID, TurnID: turnID, RunID: runID, Terminal: terminalID, Status: "cancelled"})
+	if err != nil {
+		return ThreadView{}, err
+	}
+	var runCancel context.CancelFunc
+	var retryCancels []context.CancelFunc
+	var waiters []chan InteractionResolution
 	err = actor.apply(ctx, func() error {
-		if existing, found := actor.state.requestKeys[requestKey]; found {
-			if existing.fingerprint != fingerprint {
-				return &RequestConflictError{Operation: "cancel", RequestID: requestKey, Err: ErrRequestConflict}
-			}
-			replayedCancel = true
+		if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != turnID || actor.state.runID != runID {
 			return nil
 		}
-		if actor.state.view.Activity != ThreadActivityActive {
-			return ErrRequestConflict
-		}
-		for interactionID := range resolutions {
-			for _, interaction := range actor.state.view.Interactions {
-				if interaction.ID != interactionID {
-					continue
-				}
-				if interaction.Resolved {
-					return ErrRequestConflict
-				}
-			}
-		}
-		if err := service.appendRuntimeFactsError(ctx, threadID, entries); err != nil {
+		if _, err := repo.CancelTurn(ctx, sessiontree.CancelTurnRequest{
+			ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(),
+			CancelEntryID: request.EntryID, TerminalEntryID: terminalID,
+			RequestKey: request.RequestKey, RequestFingerprint: request.RequestFingerprint,
+			OutcomeFingerprint:           sessiontree.StableHash(string(outcomePayload)),
+			InteractionResolutionPayload: resolutionPayload, Metadata: metadata,
+			ClearProviderState: true, Now: time.Now().UTC(),
+		}); err != nil {
 			return err
 		}
-		for interactionID, resolution := range resolutions {
-			resolveThreadInteractionCanonical(&actor.state.view, interactionID, resolution)
+		for _, interaction := range actor.state.view.Interactions {
+			if interaction.Resolved || interaction.TurnID != turnID {
+				continue
+			}
+			resolveThreadInteractionCanonical(&actor.state.view, interaction.ID, resolution)
+			if waiter := actor.state.pendingInteractions[interaction.ID]; waiter != nil {
+				waiters = append(waiters, waiter.resolution)
+				delete(actor.state.pendingInteractions, interaction.ID)
+			}
 		}
 		actor.state.view.ViewVersion++
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
-		actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: fingerprint}
+		actor.state.requestKeys[request.RequestKey] = threadRuntimeRequest{fingerprint: request.RequestFingerprint}
+		runCancel = actor.state.cancel
+		for _, cancelRetry := range actor.state.effectRetryCancels {
+			retryCancels = append(retryCancels, cancelRetry)
+		}
 		return nil
 	})
 	if err != nil {
-		return ThreadView{}, err
+		return ThreadView{}, runtimeHostError(err)
 	}
-	if replayedCancel {
-		return service.currentView(actor), nil
+	if runCancel != nil {
+		service.recordCancellation(threadID, turnID, runID, source, reason)
+		runCancel()
 	}
-	view := service.currentView(actor)
-	service.publish(view)
-	if cancel != nil {
-		service.recordCancellation(threadID, turnID, runID, "user_stop", "user requested stop")
-		cancel()
+	for _, cancelRetry := range retryCancels {
+		cancelRetry()
 	}
-	go func() {
-		_ = actor.apply(context.Background(), func() error {
-			for interactionID, resolution := range resolutions {
-				if waiter := actor.state.pendingInteractions[interactionID]; waiter != nil {
-					waiter.resolution <- resolution
-					delete(actor.state.pendingInteractions, interactionID)
-				}
-			}
-			return nil
-		})
-		// Let an in-process runner finish its canonical terminal write before
-		// using the unloaded cancellation fallback. Otherwise the fallback can
-		// append a terminal marker that a late provider finalization follows
-		// with a save point, resurrecting the active turn in the journal.
-		if executionDone != nil {
-			<-executionDone
-		}
-		service.finishUnloadedCancellation(actor, threadID, turnID, runID)
-	}()
-	return view, nil
+	for _, waiter := range waiters {
+		waiter <- resolution
+	}
+	service.finishSend(actor, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+	return service.currentView(actor), nil
 }
 
 func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) {
-	service.finishUnloadedTerminal(actor, threadID, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request := cancellationRequest{}
+	entries, err := service.host.store.repo.Entries(ctx, threadID.String())
+	if err == nil {
+		for index := len(entries) - 1; index >= 0; index-- {
+			entry := entries[index]
+			if entry.Type == sessiontree.EntryCancelRequested && entry.TurnID == turnID.String() && entry.RunID == runID.String() {
+				request = cancellationRequest{EntryID: entry.ID, RequestKey: entry.RequestKey, RequestFingerprint: entry.RequestFingerprint}
+				break
+			}
+		}
+	}
+	if request.EntryID == "" {
+		request.RequestKey = "runtime-cancel:" + turnID.String()
+		request.RequestFingerprint, _ = stableFingerprint(struct {
+			ThreadID identity.ThreadID `json:"thread_id"`
+			TurnID   identity.TurnID   `json:"turn_id"`
+		}{threadID, turnID})
+		request.EntryID = "cancel:" + request.RequestKey
+	}
+	if _, err := service.settleCancellation(ctx, actor, threadID, turnID, runID, request, "execution_context", "execution context cancelled"); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) {
+		service.host.store.reportBackgroundError(err)
+	}
 }
 
 // finishUnloadedTerminal is used when no agent-harness runner remains to
@@ -2694,30 +2713,26 @@ func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRun
 // actor transition so a preparation failure cannot look complete in memory
 // while the journal still contains an active turn.
 func (service *threadRuntimeService) finishUnloadedTerminal(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
+	if completed.Status == TurnStatusCancelled || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		service.finishUnloadedCancellation(actor, threadID, turnID, runID)
+		return
+	}
 	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
 		return
 	}
-	status := sessiontree.TurnAborted
-	failureCode := sessiontree.TurnFailureCancelled
-	outcome := "cancelled"
+	status := sessiontree.TurnFailed
+	failureCode := sessiontree.TurnFailureEngineContract
+	outcome := "failed"
 	failureMessage := ""
-	if completed.Status != TurnStatusCancelled && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
-		status = sessiontree.TurnFailed
-		failureCode = sessiontree.TurnFailureEngineContract
-		outcome = "failed"
-		if runErr != nil {
-			failureMessage = strings.TrimSpace(runErr.Error())
-		}
-		if failureMessage == "" {
-			failureMessage = "thread runtime execution preparation failed"
-		}
+	if runErr != nil {
+		failureMessage = strings.TrimSpace(runErr.Error())
 	}
-	terminalID := stableCancellationEntryID(threadID, turnID, runID)
-	if status != sessiontree.TurnAborted {
-		terminalID = stableTerminalEntryID(threadID, turnID, runID)
+	if failureMessage == "" {
+		failureMessage = "thread runtime execution preparation failed"
 	}
+	terminalID := stableTerminalEntryID(threadID, turnID, runID)
 	metadata := map[string]string{
 		"run_id": runID.String(), "outcome": outcome,
 		sessiontree.TurnFailureCodeMetadataKey: failureCode,
@@ -3520,6 +3535,16 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, []ThreadInteraction, error) {
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
+	terminalTurns := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryTurnMarker {
+			continue
+		}
+		switch entry.TurnStatus {
+		case sessiontree.TurnCompleted, sessiontree.TurnFailed, sessiontree.TurnAborted:
+			terminalTurns[entry.TurnID] = struct{}{}
+		}
+	}
 	interactionIndex := make(map[string]int)
 	itemIndex := make(map[string]int)
 	toolItemIndex := make(map[string]int)
@@ -3601,6 +3626,9 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				}
 			}
 			if attempt.State != sessiontree.EffectAttemptUnknown {
+				continue
+			}
+			if _, terminal := terminalTurns[attempt.Invocation.TurnID]; terminal {
 				continue
 			}
 			interaction := ThreadInteraction{
@@ -3694,11 +3722,15 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.Activit
 	status := observation.ActivityStatusRunning
 	if entry.Type == sessiontree.EntryToolResult {
 		status = observation.ActivityStatusSuccess
-		if entry.Message.ToolResult != nil && strings.EqualFold(strings.TrimSpace(entry.Message.ToolResult.Status), "error") {
-			status = observation.ActivityStatusError
-		}
-		if entry.Message.ToolResult != nil && strings.EqualFold(strings.TrimSpace(entry.Message.ToolResult.Status), "declined") {
-			status = observation.ActivityStatusDeclined
+		if entry.Message.ToolResult != nil {
+			switch strings.ToLower(strings.TrimSpace(entry.Message.ToolResult.Status)) {
+			case "error":
+				status = observation.ActivityStatusError
+			case "declined":
+				status = observation.ActivityStatusDeclined
+			case "canceled", "cancelled":
+				status = observation.ActivityStatusCanceled
+			}
 		}
 	}
 	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: tools.CloneActivityPresentation(entry.Message.Activity)}

@@ -24,6 +24,9 @@ identity, following the wrong user, or replaying an irreversible effect.
    through the normal view; resolve it with `Respond` using a stable request key.
 5. If an effect is unknown, require explicit `RetryEffect` acknowledgement. Do
    not automatically replay an irreversible tool call.
+6. If the journal already contains a cancel request without its terminal,
+   complete the same canonical cancellation transaction during hydration. Do
+   not create a second cancel fact or redispatch the old effect.
 
 # Verify
 

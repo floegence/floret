@@ -44,13 +44,21 @@ waiting; closing an HTTP request, changing the selected thread, or reconnecting
 a view cannot cancel the accepted turn. Only `Cancel`, thread deletion, and
 Host shutdown are execution cancellation owners.
 
+`Cancel` is the authoritative user Stop boundary. One transaction records the
+cancel request, resolves pending interactions, closes unfinished tool rows,
+seals effect attempts, and appends the aborted terminal. It returns that
+terminal view immediately instead of waiting for provider or tool goroutines.
+An effect that crossed dispatch may remain recorded as outcome-unknown, but it
+cannot be retried after the turn is canceled. Late turn writes are rejected.
+
 ## Effects and shutdown
 
 Tool effects cross a durable one-shot authorization boundary. An uncertain
 effect is never replayed automatically. `RetryEffect` requires explicit risk
 acknowledgement and atomically claims the original source attempt before a
 handler can run. The claim is keyed by the source effect identity, while the
-command request key provides idempotent transport replay.
+command request key provides idempotent transport replay. A terminal turn is a
+hard retry fence.
 
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.

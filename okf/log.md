@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-23
+* **Authoritative Stop terminal**: User Stop now commits interaction and tool
+  settlement, effect fencing, and the aborted turn in one canonical
+  transaction. Unknown effects remain observable but cannot be retried after
+  cancellation, and restart completes an older recorded cancellation without
+  redispatching work.
 * **Structured activity rows**: Structured tool activities may carry bounded,
   ordered host-sanitized text, Markdown, or code rows. Floret preserves them
   through cloning, lifecycle merges, persistence, and terminal settlement

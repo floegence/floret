@@ -148,7 +148,10 @@ Each thread has one in-memory runtime owner. `Send` first commits canonical turn
 acceptance, then publishes and returns the user item and active current view
 before provider dispatch. The canonical journal is the only durable fact
 source. Provider and tool I/O execute outside the thread lock.
-`Cancel` is idempotent for every known thread and fences late provider output.
+`Cancel` is idempotent for every known thread. It commits the aborted turn
+before returning, releases pending interactions, prevents retry of uncertain
+effects, and fences late provider or tool output without waiting for those
+goroutines to exit.
 `Respond` resolves the matching approval or input interaction in place. An
 uncertain effect is never replayed automatically; `RetryEffect` requires an
 explicit risk acknowledgement and remains attached to the original tool row.

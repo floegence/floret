@@ -94,11 +94,38 @@ type FinishTurnResult struct {
 	Replayed bool
 }
 
+// CancelTurnRequest atomically settles one active turn after an explicit user
+// stop. The cancellation fact, pending interaction resolutions, unfinished
+// tool closures, effect fences, and aborted terminal share one transaction.
+type CancelTurnRequest struct {
+	ThreadID                     string
+	TurnID                       string
+	RunID                        string
+	CancelEntryID                string
+	TerminalEntryID              string
+	RequestKey                   string
+	RequestFingerprint           string
+	OutcomeFingerprint           string
+	InteractionResolutionPayload json.RawMessage
+	Metadata                     map[string]string
+	ClearProviderState           bool
+	Now                          time.Time
+}
+
+type CancelTurnResult struct {
+	CancelRequest          Entry
+	InteractionResolutions []Entry
+	ToolResults            []Entry
+	Terminal               Entry
+	Replayed               bool
+}
+
 // RuntimeTurnRepo is the canonical low-frequency writer used by ThreadService.
 // Stable journal facts are the only replay and terminal authority.
 type RuntimeTurnRepo interface {
 	AcceptTurn(context.Context, AcceptTurnRequest) (AcceptTurnResult, error)
 	ReadAcceptedTurn(context.Context, string, string, string) (AcceptTurnResult, bool, error)
+	CancelTurn(context.Context, CancelTurnRequest) (CancelTurnResult, error)
 	FinishTurn(context.Context, FinishTurnRequest) (FinishTurnResult, error)
 }
 
@@ -282,6 +309,23 @@ func ValidateFinishTurnRequest(req FinishTurnRequest) error {
 		}
 	}
 	return nil
+}
+
+func ValidateCancelTurnRequest(req CancelTurnRequest) error {
+	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" ||
+		strings.TrimSpace(req.CancelEntryID) == "" || strings.TrimSpace(req.TerminalEntryID) == "" || strings.TrimSpace(req.RequestKey) == "" ||
+		strings.TrimSpace(req.RequestFingerprint) == "" || strings.TrimSpace(req.OutcomeFingerprint) == "" {
+		return errors.New("turn cancel requires thread, turn, run, request, and terminal identities")
+	}
+	if len(req.InteractionResolutionPayload) == 0 || !json.Valid(req.InteractionResolutionPayload) {
+		return errors.New("turn cancel requires a valid interaction resolution payload")
+	}
+	return ValidateFinishTurnRequest(FinishTurnRequest{
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID,
+		TerminalEntryID: req.TerminalEntryID, Status: TurnAborted,
+		Metadata: req.Metadata, OutcomeFingerprint: req.OutcomeFingerprint,
+		ClearProviderState: req.ClearProviderState, Now: req.Now,
+	})
 }
 
 func validateProviderStateRecord(record ProviderStateRecord) error {

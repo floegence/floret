@@ -1013,6 +1013,11 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return Entry{}, err
 	}
+	if turnID := strings.TrimSpace(entry.TurnID); turnID != "" {
+		if _, terminal := runtimeTurnTerminal(r.entries[entry.ThreadID], turnID); terminal {
+			return Entry{}, ErrStaleAuthority
+		}
+	}
 	_ = ctx
 	if err := ValidateNewEntryMessageAttachments(entry); err != nil {
 		return Entry{}, err
