@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/floegence/floret/v4/config"
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/config"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/tools"
 )
 
 // turnExecutionCapability is a provider/tool effect adapter. ThreadService is

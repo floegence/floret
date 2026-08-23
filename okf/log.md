@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-23
+* **V5 module boundary**: Floret now uses semantic import path `/v5`; the
+  generated API baseline and blank-module adoption gates freeze the current
+  typed runtime and structured Activity contracts for v5 consumers.
 * **Cumulative tool presentation**: Tool results now merge with the matching
   call presentation before persistence and canonical projection, so status and
   output cannot erase safe descriptions, commands, or other invocation display

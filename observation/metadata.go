@@ -1,7 +1,7 @@
 package observation
 
 import (
-	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v5/config"
 )
 
 func providerUsageFromAny(value any) ProviderUsage {

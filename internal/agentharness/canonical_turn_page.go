@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/sessionlifecycle"
-	"github.com/floegence/floret/v4/internal/sessiontree"
+	"github.com/floegence/floret/v5/internal/sessionlifecycle"
+	"github.com/floegence/floret/v5/internal/sessiontree"
 )
 
 type CanonicalTurnDetail struct {

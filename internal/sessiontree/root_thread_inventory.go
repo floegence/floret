@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/storagecodec"
-	"github.com/floegence/floret/v4/storage/spi"
+	"github.com/floegence/floret/v5/internal/storagecodec"
+	"github.com/floegence/floret/v5/storage/spi"
 )
 
 const rootThreadInventoryVersion = 1

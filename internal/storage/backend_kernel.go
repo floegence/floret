@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/provider/cache"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	"github.com/floegence/floret/v4/internal/storagecodec"
-	"github.com/floegence/floret/v4/storage/spi"
+	"github.com/floegence/floret/v5/internal/provider/cache"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v5/internal/storagecodec"
+	"github.com/floegence/floret/v5/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"

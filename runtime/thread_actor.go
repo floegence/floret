@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/observation"
 )
 
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.

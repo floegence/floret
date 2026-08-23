@@ -9,16 +9,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v4/config"
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/internal/agentharness"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	internalstorage "github.com/floegence/floret/v4/internal/storage"
-	"github.com/floegence/floret/v4/internal/storagebridge"
-	"github.com/floegence/floret/v4/provider"
-	publicstorage "github.com/floegence/floret/v4/storage"
-	"github.com/floegence/floret/v4/storage/spi"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/config"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/internal/agentharness"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v5/internal/storage"
+	"github.com/floegence/floret/v5/internal/storagebridge"
+	"github.com/floegence/floret/v5/provider"
+	publicstorage "github.com/floegence/floret/v5/storage"
+	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v5/tools"
 )
 
 const (

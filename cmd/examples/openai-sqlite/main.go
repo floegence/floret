@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/floegence/floret/v4/config"
-	"github.com/floegence/floret/v4/provider"
-	"github.com/floegence/floret/v4/runtime"
-	"github.com/floegence/floret/v4/storage"
+	"github.com/floegence/floret/v5/config"
+	"github.com/floegence/floret/v5/provider"
+	"github.com/floegence/floret/v5/runtime"
+	"github.com/floegence/floret/v5/storage"
 )
 
 func main() {

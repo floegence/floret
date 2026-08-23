@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/provider/cache"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/session/contextpolicy"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/internal/provider/cache"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/session/contextpolicy"
+	"github.com/floegence/floret/v5/tools"
 )
 
 var ErrContextOverflow = errors.New("provider context overflow")

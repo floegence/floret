@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/session"
 )
 
 var ErrProviderStateNotFound = errors.New("provider state not found")

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/tools"
 )
 
 func TestSanitizeActivityPresentationPreservesTypedNumbers(t *testing.T) {

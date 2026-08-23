@@ -1,5 +1,5 @@
-# Floret v3
+# Floret v5
 
-La documentation v3 canonique, les exemples d'API, le SPI de stockage et la migration se trouvent dans [README.md](README.md). Cette page ne duplique pas les exemples afin de ne conserver aucune surface d'API obsolete.
+La documentation v5 canonique, les exemples d'API, le SPI de stockage et la migration se trouvent dans [README.md](README.md). Cette page ne duplique pas les exemples afin de ne conserver aucune surface d'API obsolete.
 
-Module : `github.com/floegence/floret/v4`. Floret v3 est l'unique source de verite du cycle de vie Agent admis. Il utilise exclusivement `provider.Gateway`, conserve `runtime.Host` uniquement dans la racine de composition, attribue les identites du cycle de vie et emet des handles etroits lies aux identites. Le demarrage ne migre jamais automatiquement et ne contient aucun decodeur legacy.
+Module : `github.com/floegence/floret/v5`. Floret v5 est l'unique source de verite du cycle de vie Agent admis. Il utilise exclusivement `provider.Gateway`, conserve `runtime.Host` dans la racine de composition et expose un `ThreadService` type. `runtime.Open` migre automatiquement les etats de domaine compatibles geres par Floret.

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/activityview"
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/observation"
+	"github.com/floegence/floret/v5/internal/activityview"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/observation"
 )
 
 // AcceptTurn records the canonical request boundary before provider dispatch.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v5/identity"
 )
 
 // threadCancellationDiagnostic is intentionally internal. It records the

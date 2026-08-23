@@ -1,4 +1,4 @@
-module github.com/floegence/floret/v4
+module github.com/floegence/floret/v5
 
 go 1.26.5
 

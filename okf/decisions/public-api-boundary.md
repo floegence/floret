@@ -1,15 +1,15 @@
 ---
 type: Architecture Decision
-title: V4 Public API Boundary
+title: V5 Public API Boundary
 description: Use one provider gateway, one domain kernel, immutable Agents, and one typed ThreadService.
 resource: /README.md
-tags: [decision, public-api, v4]
+tags: [decision, public-api, v5]
 timestamp: 2026-08-18T00:00:00Z
 ---
 
 # Decision
 
-The v4 module uses semantic import path `/v4`. Ordinary applications use
+The v5 module uses semantic import path `/v5`. Ordinary applications use
 `identity`, `config`, `runtime`, `observation`, `tools`, official `provider`
 constructors, and opaque `storage.Source` values. Provider transports and
 `storage/spi` are advanced integration surfaces; `florettest` is test-only.

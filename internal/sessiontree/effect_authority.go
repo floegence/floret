@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/session/artifact"
 )
 
 const (

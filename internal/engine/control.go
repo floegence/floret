@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/control"
-	"github.com/floegence/floret/v4/internal/event"
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/internal/control"
+	"github.com/floegence/floret/v5/internal/event"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/tools"
 )
 
 type ControlDisposition string

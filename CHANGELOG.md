@@ -1,6 +1,10 @@
 # Changelog
 
-## v4.0.20 - 2026-08-23
+## v5.0.0 - 2026-08-23
+
+- Advance the module to semantic import path `/v5`. The v5 API baseline now
+  includes bounded structured Activity rows without weakening the frozen v4
+  compatibility contract.
 
 - Merge each tool result presentation with the matching tool call presentation
   before persistence and canonical current-view projection. Terminal results
@@ -520,7 +524,7 @@
 
 ## v3.0.0 - 2026-07-30
 
-- **Breaking:** Move the module to `github.com/floegence/floret/v4` and remove
+- **Breaking:** Move the module to `github.com/floegence/floret/v3` and remove
   the v2 capability-handle graph, caller-assigned lifecycle identities, and all
   compatibility facades and runtime legacy decoders.
 - Make `identity` the sole owner of thread, turn, run, prompt-scope, trace,

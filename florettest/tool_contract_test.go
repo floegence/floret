@@ -3,7 +3,7 @@ package florettest_test
 import (
 	"testing"
 
-	"github.com/floegence/floret/v4/florettest"
+	"github.com/floegence/floret/v5/florettest"
 )
 
 func TestPublicToolContract(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v5/identity"
 )
 
 const (

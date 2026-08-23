@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/engine"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/internal/engine"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v5/tools"
 )
 
 type effectRetryContextKey struct{}
@@ -25,7 +25,7 @@ func withEffectRetry(ctx context.Context, requestKey, sourceAttemptID string) co
 	})
 }
 
-// dispatchAuthorizedEffect is the v4 effect path. Approval is intentionally
+// dispatchAuthorizedEffect is the typed runtime effect path. Approval is intentionally
 // absent here: ThreadRuntime exposes it as one journal-backed interaction and
 // only invokes the host gate after that interaction is resolved.
 func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {

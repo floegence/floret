@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v5/internal/session"
 )
 
 func TestAcceptTurnInstallsCanonicalFallbackTitle(t *testing.T) {

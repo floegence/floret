@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/testing/tooltest"
-	"github.com/floegence/floret/v4/internal/tools/mcp"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/internal/testing/tooltest"
+	"github.com/floegence/floret/v5/internal/tools/mcp"
+	"github.com/floegence/floret/v5/tools"
 )
 
 func TestStdioServerListsAndCallsTools(t *testing.T) {

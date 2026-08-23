@@ -15,12 +15,12 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v4@v4.0.13
+go get github.com/floegence/floret/v5@v5.0.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
-`replace`, `go.work`, or sibling repository path. v1 and v2 remain available
-only from their published tags; v3 has no legacy facade or runtime decoder.
+`replace`, `go.work`, or sibling repository path. Earlier major versions remain
+available only from their published tags; v5 does not restore retired facades.
 
 ## Quick Start
 
@@ -36,10 +36,10 @@ import (
     "context"
     "os"
 
-    "github.com/floegence/floret/v4/config"
-    "github.com/floegence/floret/v4/provider"
-    "github.com/floegence/floret/v4/runtime"
-    "github.com/floegence/floret/v4/storage"
+    "github.com/floegence/floret/v5/config"
+    "github.com/floegence/floret/v5/provider"
+    "github.com/floegence/floret/v5/runtime"
+    "github.com/floegence/floret/v5/storage"
 )
 
 func main() {
@@ -171,7 +171,7 @@ thinking, assistant, tool, and interaction items, plus pending interactions and
 the accepted queue. Each item has a stable ID and ordinal; live deltas grow the
 same item in place, and tool approval, dispatch, and result state update the
 original tool item. Canonical reload derives the same sequence without a
-presentation ledger. `AssistantDraft` and `ThinkingDraft` remain deprecated v4
+presentation ledger. `AssistantDraft` and `ThinkingDraft` remain deprecated v5
 wire fields derived from the active item and are not a second ordering source.
 `ViewVersion` is process-local notification ordering, not a durable replay
 cursor. Production hosts leave `runtime.Options.IDSource` nil; deterministic

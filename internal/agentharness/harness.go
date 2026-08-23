@@ -13,22 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/internal/activityview"
-	"github.com/floegence/floret/v4/internal/configbridge"
-	"github.com/floegence/floret/v4/internal/engine"
-	enginecompaction "github.com/floegence/floret/v4/internal/engine/compaction"
-	"github.com/floegence/floret/v4/internal/event"
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/provider/cache"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/session/artifact"
-	"github.com/floegence/floret/v4/internal/session/compaction"
-	"github.com/floegence/floret/v4/internal/session/contextpolicy"
-	"github.com/floegence/floret/v4/internal/sessionlifecycle"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	"github.com/floegence/floret/v4/observation"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/internal/activityview"
+	"github.com/floegence/floret/v5/internal/configbridge"
+	"github.com/floegence/floret/v5/internal/engine"
+	enginecompaction "github.com/floegence/floret/v5/internal/engine/compaction"
+	"github.com/floegence/floret/v5/internal/event"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/provider/cache"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/session/artifact"
+	"github.com/floegence/floret/v5/internal/session/compaction"
+	"github.com/floegence/floret/v5/internal/session/contextpolicy"
+	"github.com/floegence/floret/v5/internal/sessionlifecycle"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v5/observation"
+	"github.com/floegence/floret/v5/tools"
 )
 
 var ErrJournalInvariant = errors.New("thread journal invariant violated")
@@ -731,7 +731,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
-	// ThreadRuntime owns approval interactions in v4. Effect dispatch retains
+	// ThreadRuntime owns approval interactions. Effect dispatch retains
 	// only the narrow prepared/dispatching/result safety boundary.
 	engineOptions.EffectBatchPreflight = nil
 	engineOptions.EffectDispatcher = t.effectDispatcher()

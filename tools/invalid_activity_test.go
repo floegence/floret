@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v4/identity"
+	"github.com/floegence/floret/v5/identity"
 )
 
 func TestActivityForCallUsesInvalidActivityOnlyForParseableSchemaFailures(t *testing.T) {

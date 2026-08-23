@@ -5,9 +5,9 @@ import (
 	"math"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/session/compaction"
-	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/session/compaction"
+	"github.com/floegence/floret/v5/internal/session/contextpolicy"
 )
 
 const (

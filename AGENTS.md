@@ -147,11 +147,11 @@ Rules:
   - `fix(provider): disable reasoning for title summaries`
   - `docs(repo): document commit message format`
 
-### v4 Semantic Versioning
+### v5 Semantic Versioning
 
-- `v4.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
+- `v5.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
   `storage`, `tools`, `observation`, and the test-only `florettest` package.
-- Within v4, do not delete or rename exported symbols, narrow previously
+- Within v5, do not delete or rename exported symbols, narrow previously
   accepted valid inputs, change established JSON field names or values, or
   change documented `errors.Is` / `errors.As` classifications.
 - Deprecations must remain available for at least one complete minor release
@@ -162,10 +162,10 @@ Rules:
 - Security emergency changes must document their compatibility and migration
   impact explicitly. Do not preserve or replace unsafe behavior through a
   silent fallback, substitute path, or unsupported transitional shape.
-- Run the v4 `go/types` baseline test and published-release adoption gate for
-  every public API change. After `v4.0.0` is published, compatibility checks
-  compare the exact published module with `HEAD`; removed v3 lifecycle APIs
-  remain only in their Git tag and must not return through aliases or facades.
+- Run the v5 `go/types` baseline test and published-release adoption gate for
+  every public API change. After `v5.0.0` is published, compatibility checks
+  compare the exact published module with `HEAD`; earlier major-version APIs
+  remain only in their Git tags and must not return through aliases or facades.
 
 ### Domain Schema Migration Contract
 

@@ -1,6 +1,6 @@
 package memory
 
-import "github.com/floegence/floret/v4/internal/session"
+import "github.com/floegence/floret/v5/internal/session"
 
 type Manager struct {
 	SystemPrompt string

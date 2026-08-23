@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v4/internal/provider"
+	"github.com/floegence/floret/v5/internal/provider"
 )
 
 func TestProviderStreamCloseErrorPrefersContextCancellation(t *testing.T) {

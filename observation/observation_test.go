@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v5/config"
 )
 
 func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {

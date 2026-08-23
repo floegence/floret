@@ -5,7 +5,7 @@ package sessiontree
 import (
 	"context"
 
-	"github.com/floegence/floret/v4/internal/session/artifact"
+	"github.com/floegence/floret/v5/internal/session/artifact"
 )
 
 func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {

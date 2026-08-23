@@ -3,8 +3,8 @@ package adapters
 import (
 	"encoding/json"
 
-	"github.com/floegence/floret/v4/internal/provider"
-	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v5/internal/session/contextpolicy"
 )
 
 func estimateRenderedParts(source string, prefix, history, tools any) (provider.TokenEstimate, error) {

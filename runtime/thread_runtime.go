@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/internal/agentharness"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/sessionlifecycle"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	"github.com/floegence/floret/v4/observation"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/internal/agentharness"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/sessionlifecycle"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v5/observation"
+	"github.com/floegence/floret/v5/tools"
 )
 
 // AgentRequest identifies one typed execution whose provider and tool surface
@@ -333,10 +333,10 @@ type ThreadView struct {
 	Queue        []QueuedInput       `json:"queue,omitempty"`
 	Interactions []ThreadInteraction `json:"interactions,omitempty"`
 	// Deprecated: derive active assistant content from Items. This field is
-	// retained for v4 wire compatibility and has no independent lifecycle.
+	// retained for v5 wire compatibility and has no independent lifecycle.
 	AssistantDraft string `json:"assistant_draft,omitempty"`
 	// Deprecated: derive active thinking content from Items. This field is
-	// retained for v4 wire compatibility and has no independent lifecycle.
+	// retained for v5 wire compatibility and has no independent lifecycle.
 	ThinkingDraft string `json:"thinking_draft,omitempty"`
 }
 

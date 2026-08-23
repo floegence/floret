@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/storagebridge"
-	"github.com/floegence/floret/v4/internal/storagecodec"
-	publicstorage "github.com/floegence/floret/v4/storage"
-	"github.com/floegence/floret/v4/storage/spi"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/storagebridge"
+	"github.com/floegence/floret/v5/internal/storagecodec"
+	publicstorage "github.com/floegence/floret/v5/storage"
+	"github.com/floegence/floret/v5/storage/spi"
 )
 
 func TestMemoryStateMigrationLineageReachesV5(t *testing.T) {

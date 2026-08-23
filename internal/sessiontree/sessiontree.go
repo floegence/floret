@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v4/internal/control"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/session/artifact"
-	"github.com/floegence/floret/v4/internal/session/compaction"
-	"github.com/floegence/floret/v4/internal/session/contextpolicy"
+	"github.com/floegence/floret/v5/internal/control"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/session/artifact"
+	"github.com/floegence/floret/v5/internal/session/compaction"
+	"github.com/floegence/floret/v5/internal/session/contextpolicy"
 )
 
 type EntryType string

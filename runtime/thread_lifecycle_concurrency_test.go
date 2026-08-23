@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v4/identity"
-	"github.com/floegence/floret/v4/internal/session"
-	"github.com/floegence/floret/v4/internal/sessiontree"
-	"github.com/floegence/floret/v4/provider"
-	"github.com/floegence/floret/v4/storage"
-	"github.com/floegence/floret/v4/tools"
+	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v5/provider"
+	"github.com/floegence/floret/v5/storage"
+	"github.com/floegence/floret/v5/tools"
 )
 
 type cancellationTrackingGateway struct {

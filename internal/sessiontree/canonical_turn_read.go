@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v5/internal/session"
 )
 
 var ErrCanonicalTurnNotFound = errors.New("session tree canonical turn not found")

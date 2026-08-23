@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/floegence/floret/v4/config"
-	"github.com/floegence/floret/v4/provider"
-	"github.com/floegence/floret/v4/runtime"
-	"github.com/floegence/floret/v4/storage"
+	"github.com/floegence/floret/v5/config"
+	"github.com/floegence/floret/v5/provider"
+	"github.com/floegence/floret/v5/runtime"
+	"github.com/floegence/floret/v5/storage"
 )
 
 type gateway struct{}
@@ -24,14 +24,14 @@ func (gateway) Capabilities() provider.Capabilities {
 
 func (gateway) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
 	events := make(chan provider.Event, 2)
-	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v4."}
+	events <- provider.Event{Type: provider.EventDelta, Text: "Hello from Floret v5."}
 	events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
 	close(events)
 	return events, nil
 }
 
 func main() {
-	path := filepath.Join(os.TempDir(), "floret-v4-example.db")
+	path := filepath.Join(os.TempDir(), "floret-v5-example.db")
 	if err := run(context.Background(), path); err != nil {
 		panic(err)
 	}

@@ -3,7 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/floegence/floret/v4/config"
+	"github.com/floegence/floret/v5/config"
 )
 
 func TestAgentConfigRequiresExplicitPersonaAndPrompt(t *testing.T) {

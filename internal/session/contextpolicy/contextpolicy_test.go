@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v4/internal/session"
+	"github.com/floegence/floret/v5/internal/session"
 )
 
 func TestNormalizeDefaultsKeepOrdinaryMaxOutputUnset(t *testing.T) {
