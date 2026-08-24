@@ -131,7 +131,7 @@
   inherit their configured registry/defaults, while explicit empty slices
   continue to clear provider-visible definitions.
 
-## Unreleased
+## v5.0.1 - 2026-08-24
 
 - Publish terminal thread views only after canonical journal projection. A
   completed turn with no visible assistant or terminal tool presentation now
