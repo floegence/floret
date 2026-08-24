@@ -2186,7 +2186,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	// cannot temporarily claim success while containing only the user item.
 	refreshErr := service.refreshCanonical(identity.ThreadID(actor.threadID), turnID)
 	current := service.currentView(actor)
-	if refreshErr != nil && outcome == TurnOutcomeCompleted {
+	if refreshErr != nil && !errors.Is(refreshErr, errCanonicalRefreshDiscarded) && outcome == TurnOutcomeCompleted {
 		_ = actor.apply(context.Background(), func() error {
 			if actor.state.turnID != turnID || actor.state.runID != runID {
 				return nil
@@ -2482,6 +2482,8 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 	}
 }
 
+var errCanonicalRefreshDiscarded = errors.New("canonical refresh snapshot discarded")
+
 func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID, turnID identity.TurnID) error {
 	if _, err := service.ensureThread(context.Background(), threadID); err != nil {
 		return fmt.Errorf("canonical refresh ensure thread: %w", err)
@@ -2494,16 +2496,20 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	}
 	var current ThreadView
 	changed := false
+	var refreshErr error
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.view.ViewVersion != baseVersion {
+			refreshErr = fmt.Errorf("%w: view version changed", errCanonicalRefreshDiscarded)
 			return nil
 		}
 		if turnID != "" && actor.state.turnID != "" && actor.state.turnID != turnID {
+			refreshErr = fmt.Errorf("%w: turn changed", errCanonicalRefreshDiscarded)
 			return nil
 		}
 		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
 		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items, terminal)
 		if !ok {
+			refreshErr = fmt.Errorf("%w: item identity or ordinal conflict", errCanonicalRefreshDiscarded)
 			return nil
 		}
 		actor.state.view.ViewVersion++
@@ -2517,7 +2523,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	if changed {
 		service.publish(current)
 	}
-	return nil
+	return refreshErr
 }
 
 func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool) ([]ThreadItem, bool) {
