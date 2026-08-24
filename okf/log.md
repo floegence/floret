@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-08-24
+* **Terminal publication barrier**: Terminal current views are published only
+  after canonical journal projection. A completed turn without visible output
+  now becomes an explicit failure instead of a blank user-only transcript.
+
 ## 2026-08-23
 * **V5 module boundary**: Floret now uses semantic import path `/v5`; the
   generated API baseline and blank-module adoption gates freeze the current

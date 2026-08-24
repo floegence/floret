@@ -1228,6 +1228,22 @@ func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T)
 	}
 }
 
+func TestHasTerminalPresentationRejectsUserOnlyTurn(t *testing.T) {
+	turnID := identity.TurnID("turn-empty-terminal")
+	items := []ThreadItem{{
+		ID: "user:request", TurnID: turnID, Kind: ThreadItemUser, Text: "hello",
+	}}
+	if hasTerminalPresentation(items, turnID) {
+		t.Fatal("user-only turn must not be treated as a visible terminal response")
+	}
+	items = append(items, ThreadItem{
+		ID: "assistant:response", TurnID: turnID, Kind: ThreadItemAssistant, Text: "answer",
+	})
+	if !hasTerminalPresentation(items, turnID) {
+		t.Fatal("assistant output must satisfy terminal presentation")
+	}
+}
+
 func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	turnID := identity.TurnID("turn-activity-merge")
 	callPresentation := &tools.ActivityPresentation{
@@ -1789,6 +1805,9 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 		before := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 		})
+		if *before.LastOutcome != TurnOutcomeFailed || strings.TrimSpace(before.Error) == "" {
+			t.Fatalf("empty terminal response=%#v, want failed outcome with an error", before)
+		}
 		after, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-terminal"})
 		if err != nil || after.LastOutcome == nil || *after.LastOutcome != *before.LastOutcome {
 			t.Fatalf("terminal cancel before=%#v after=%#v err=%v", before, after, err)

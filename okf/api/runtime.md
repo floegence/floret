@@ -74,7 +74,10 @@ is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
 
-Terminal presentation settles from the canonical ordered journal.
+Terminal presentation settles from the canonical ordered journal. The runtime
+publishes a terminal current only after that projection succeeds; a completed
+turn without a visible assistant or terminal tool item is reported as a
+failure rather than exposed as a successful user-only transcript.
 `TurnResult.Output` remains the run-level aggregate result and is not appended
 as a new assistant item. Different stable assistant IDs remain distinct even
 when their text is equal. A canonical snapshot is applied only if the

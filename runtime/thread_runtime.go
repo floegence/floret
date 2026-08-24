@@ -2137,6 +2137,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 
 func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
 	settleCanonical := completed.Status != TurnStatusWaiting
+	var outcome TurnOutcome
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
 			return nil
@@ -2150,7 +2151,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.state.view.AssistantDraft = ""
 		actor.state.view.ThinkingDraft = ""
 		actor.state.view.Activity = ThreadActivityIdle
-		outcome := TurnOutcomeCompleted
+		outcome = TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
@@ -2172,18 +2173,71 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.LastOutcome = &outcome
 			actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
 		}
-		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
 	})
-	if settleCanonical {
-		// TurnResult.Output is the run-level aggregate, not a display segment.
-		// The canonical journal owns terminal text and preserves each ordered
-		// assistant segment without creating a second item at settlement.
-		service.refreshCanonical(identity.ThreadID(actor.threadID), turnID)
+	if !settleCanonical {
+		service.publish(service.currentView(actor))
+		return
 	}
+	// TurnResult.Output is the run-level aggregate, not a display segment.
+	// The canonical journal owns terminal text and preserves each ordered
+	// assistant segment without creating a second item at settlement. Publish
+	// only after the journal projection has been applied, so a terminal view
+	// cannot temporarily claim success while containing only the user item.
+	refreshErr := service.refreshCanonical(identity.ThreadID(actor.threadID), turnID)
+	current := service.currentView(actor)
+	if refreshErr != nil && outcome == TurnOutcomeCompleted {
+		_ = actor.apply(context.Background(), func() error {
+			if actor.state.turnID != turnID || actor.state.runID != runID {
+				return nil
+			}
+			actor.state.view.ViewVersion++
+			failed := TurnOutcomeFailed
+			actor.state.view.LastOutcome = &failed
+			actor.state.view.Error = "The completed response could not be loaded."
+			return nil
+		})
+		current = service.currentView(actor)
+	} else if outcome == TurnOutcomeCompleted && !hasTerminalPresentation(current.Items, turnID) {
+		_ = actor.apply(context.Background(), func() error {
+			if actor.state.turnID != turnID || actor.state.runID != runID {
+				return nil
+			}
+			actor.state.view.ViewVersion++
+			failed := TurnOutcomeFailed
+			actor.state.view.LastOutcome = &failed
+			actor.state.view.Error = "The turn completed without a visible response."
+			return nil
+		})
+		current = service.currentView(actor)
+	}
+	service.publish(current)
 	if completed.Status == TurnStatusCompleted && runErr == nil {
 		service.startNextQueued(actor)
 	}
+}
+
+func hasTerminalPresentation(items []ThreadItem, turnID identity.TurnID) bool {
+	for _, item := range items {
+		if item.TurnID != turnID {
+			continue
+		}
+		switch item.Kind {
+		case ThreadItemAssistant:
+			if strings.TrimSpace(item.Text) != "" {
+				return true
+			}
+		case ThreadItemTool:
+			if item.Activity != nil && item.Activity.Status != observation.ActivityStatusRunning {
+				return true
+			}
+		case ThreadItemInteraction:
+			if item.Interaction != nil && item.Interaction.Resolved {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func threadItemIndexByID(items []ThreadItem, id string) int {
@@ -2428,15 +2482,15 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 	}
 }
 
-func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID, turnID identity.TurnID) {
+func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID, turnID identity.TurnID) error {
 	if _, err := service.ensureThread(context.Background(), threadID); err != nil {
-		return
+		return fmt.Errorf("canonical refresh ensure thread: %w", err)
 	}
 	actor := service.runtime(threadID)
 	baseVersion := service.currentView(actor).ViewVersion
 	items, interactions, err := hydrateThreadRuntimeItems(context.Background(), service.host.store.repo, threadID)
 	if err != nil {
-		return
+		return fmt.Errorf("canonical refresh hydrate items: %w", err)
 	}
 	var current ThreadView
 	changed := false
@@ -2463,6 +2517,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	if changed {
 		service.publish(current)
 	}
+	return nil
 }
 
 func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool) ([]ThreadItem, bool) {

@@ -133,6 +133,11 @@
 
 ## Unreleased
 
+- Publish terminal thread views only after canonical journal projection. A
+  completed turn with no visible assistant or terminal tool presentation now
+  fails explicitly instead of leaving a user-only transcript, and canonical
+  refresh failures are returned to the terminal settlement path.
+
 - Keep accepted thread turns independent from transport request contexts. Add
   internal cancellation-source diagnostics so user stop, thread deletion,
   runtime shutdown, and execution-context cancellation are distinguishable.
