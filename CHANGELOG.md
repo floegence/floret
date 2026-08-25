@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v5.0.2 - 2026-08-25
 
 - Bound recovery storage by checkpointing terminal turns atomically and folding
   unusually long active journals after 128 frames or 32 MiB.
