@@ -251,6 +251,46 @@ func testThreadServiceWithAgent(t *testing.T, agent *Agent) (*Host, ThreadServic
 	return host, service
 }
 
+func TestThreadServiceListProjectsActiveSummaryWithoutFullViewHydration(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	_, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-summary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "summarize this active turn"}, RequestKey: "send-summary",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gateway.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	if _, err := service.Send(t.Context(), SendInput{
+		ThreadID: created.ThreadID, Input: UserInput{Text: "queued follow-up"}, RequestKey: "queue-summary",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := service.List(t.Context(), ThreadScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries=%#v", summaries)
+	}
+	summary := summaries[0]
+	if summary.Activity != ThreadActivityActive || summary.TurnID != started.TurnID || summary.QueueCount != 1 {
+		t.Fatalf("active summary=%#v", summary)
+	}
+	if summary.LastItemPreview != "summarize this active turn" || summary.LastItemAt.IsZero() {
+		t.Fatalf("summary preview=%q at=%v", summary.LastItemPreview, summary.LastItemAt)
+	}
+	close(gateway.release)
+}
+
 func TestThreadServiceSendIsImmediateDeduplicatedAndCancelable(t *testing.T) {
 	gateway := newBlockingThreadGateway()
 	_, service := testThreadService(t, gateway)
@@ -1927,6 +1967,15 @@ func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 	secondService, err := secondHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return secondAgent, nil }))
 	if err != nil {
 		t.Fatal(err)
+	}
+	preHydrationSummaries, err := secondService.List(t.Context(), ThreadScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preHydrationSummaries) != 1 || preHydrationSummaries[0].Activity != ThreadActivityActive ||
+		preHydrationSummaries[0].TurnID != turnID || preHydrationSummaries[0].QueueCount != 1 ||
+		preHydrationSummaries[0].LastItemPreview != "resume me" || preHydrationSummaries[0].LastItemAt.IsZero() {
+		t.Fatalf("pre-hydration summary=%#v", preHydrationSummaries)
 	}
 	hydrated, err := secondService.View(t.Context(), created.ThreadID)
 	if err != nil || hydrated.Activity != ThreadActivityActive || len(hydrated.Queue) != 1 {

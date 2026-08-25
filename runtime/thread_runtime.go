@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -161,20 +162,26 @@ type HistoryPage struct {
 }
 
 type ThreadSummary struct {
-	ID              identity.ThreadID `json:"id"`
-	ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
-	ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
-	TaskName        string            `json:"task_name,omitempty"`
-	TaskDescription string            `json:"task_description,omitempty"`
-	HostProfileRef  string            `json:"host_profile_ref,omitempty"`
-	ForkMode        string            `json:"fork_mode,omitempty"`
-	Title           string            `json:"title,omitempty"`
-	TitleStatus     ThreadTitleStatus `json:"title_status,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	Activity        ThreadActivity    `json:"activity"`
-	Attention       AttentionSummary  `json:"attention"`
-	LastOutcome     *TurnOutcome      `json:"last_outcome,omitempty"`
+	ID              identity.ThreadID  `json:"id"`
+	ParentThreadID  identity.ThreadID  `json:"parent_thread_id,omitempty"`
+	ParentTurnID    identity.TurnID    `json:"parent_turn_id,omitempty"`
+	TaskName        string             `json:"task_name,omitempty"`
+	TaskDescription string             `json:"task_description,omitempty"`
+	HostProfileRef  string             `json:"host_profile_ref,omitempty"`
+	ForkMode        string             `json:"fork_mode,omitempty"`
+	Title           string             `json:"title,omitempty"`
+	TitleStatus     ThreadTitleStatus  `json:"title_status,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+	Activity        ThreadActivity     `json:"activity"`
+	Attention       AttentionSummary   `json:"attention"`
+	LastOutcome     *TurnOutcome       `json:"last_outcome,omitempty"`
+	TurnID          identity.TurnID    `json:"turn_id,omitempty"`
+	QueueCount      int                `json:"queue_count,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	PendingInput    *InputPresentation `json:"pending_input,omitempty"`
+	LastItemAt      time.Time          `json:"last_item_at,omitempty"`
+	LastItemPreview string             `json:"last_item_preview,omitempty"`
 }
 
 // ThreadTitleStatus is presentation metadata derived from the canonical
@@ -852,27 +859,234 @@ func (service *threadRuntimeService) SetTitle(ctx context.Context, in SetTitleIn
 }
 
 func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope) ([]ThreadSummary, error) {
+	if scope.ParentID == nil {
+		inventory, ok := service.host.store.repo.(interface {
+			ListRootThreadInventory(context.Context, sessiontree.ListThreadsOptions) ([]sessiontree.RootThreadInventoryItem, error)
+		})
+		if !ok {
+			return nil, ErrUnsupportedStoreCapability
+		}
+		items, err := inventory.ListRootThreadInventory(ctx, sessiontree.ListThreadsOptions{IncludeArchived: false})
+		if err != nil {
+			return nil, runtimeHostError(err)
+		}
+		out := make([]ThreadSummary, 0, len(items))
+		for _, item := range items {
+			summary, err := threadSummaryFromCanonicalPath(item.Meta, item.Path)
+			if err != nil {
+				return nil, err
+			}
+			service.applyActiveThreadSummary(&summary)
+			out = append(out, summary)
+		}
+		return out, nil
+	}
 	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: false})
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
 	out := make([]ThreadSummary, 0, len(metas))
 	for _, meta := range metas {
-		if scope.ParentID == nil && meta.ParentThreadID != "" || scope.ParentID != nil && meta.ParentThreadID != scope.ParentID.String() {
+		if meta.ParentThreadID != scope.ParentID.String() {
 			continue
 		}
-		view, viewErr := service.View(ctx, identity.ThreadID(meta.ID))
-		if viewErr != nil {
-			return nil, viewErr
+		path, err := service.host.store.repo.Path(ctx, meta.ID, meta.LeafID)
+		if err != nil {
+			return nil, runtimeHostError(err)
 		}
-		out = append(out, ThreadSummary{
-			ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
-			TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
-			Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
-			Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome,
-		})
+		summary, err := threadSummaryFromCanonicalPath(meta, path)
+		if err != nil {
+			return nil, err
+		}
+		service.applyActiveThreadSummary(&summary)
+		out = append(out, summary)
 	}
 	return out, nil
+}
+
+func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (ThreadSummary, error) {
+	turnID, _, activity, outcome, failure := threadRuntimeLifecycleFromEntries(meta, path)
+	queueCount, err := canonicalQueueCountFromEntries(path)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	summary := ThreadSummary{
+		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
+		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
+		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
+		Activity: activity, LastOutcome: outcome, TurnID: turnID, QueueCount: queueCount, Error: strings.TrimSpace(failure),
+	}
+	interactions := make(map[string]ThreadInteraction)
+	interactionOrder := make([]string, 0)
+	for _, entry := range path {
+		switch entry.Type {
+		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			if entry.Message.Kind != "control_signal" || entry.Message.ControlSignal == nil || entry.Message.ControlSignal.Disposition != string(SignalWaiting) {
+				continue
+			}
+			signal := entry.Message.ControlSignal
+			if _, found := interactions[signal.CallID]; !found {
+				interactionOrder = append(interactionOrder, signal.CallID)
+			}
+			interactions[signal.CallID] = ThreadInteraction{
+				ID: signal.CallID, TurnID: identity.TurnID(entry.TurnID), Kind: ThreadInteractionInput,
+				Input: inputPresentationFromControlSignal(signal.OutputText, signal.Payload),
+			}
+		case sessiontree.EntryInteractionAsked:
+			var interaction ThreadInteraction
+			if err := json.Unmarshal(entry.Payload, &interaction); err != nil {
+				return ThreadSummary{}, fmt.Errorf("decode interaction %q: %w", entry.ID, err)
+			}
+			if strings.TrimSpace(interaction.ID) == "" {
+				return ThreadSummary{}, ErrAuthorityCorrupt
+			}
+			if _, found := interactions[interaction.ID]; !found {
+				interactionOrder = append(interactionOrder, interaction.ID)
+			}
+			interactions[interaction.ID] = interaction
+		case sessiontree.EntryInteractionDone:
+			interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
+			interaction, found := interactions[interactionID]
+			if found {
+				interaction.Resolved = true
+				interactions[interactionID] = interaction
+			}
+		}
+		if entry.Type == sessiontree.EntryUserMessage || entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" {
+			if text := strings.TrimSpace(entry.Message.Content); text != "" {
+				summary.LastItemAt = entry.CreatedAt
+				summary.LastItemPreview = truncateThreadSummaryPreview(text, 160)
+			}
+		}
+	}
+	for _, interactionID := range interactionOrder {
+		interaction := interactions[interactionID]
+		if interaction.Resolved {
+			continue
+		}
+		switch interaction.Kind {
+		case ThreadInteractionApproval:
+			summary.Attention.ApprovalCount++
+		case ThreadInteractionInput:
+			summary.Attention.InputCount++
+			if interaction.Input != nil {
+				input := *interaction.Input
+				input.Questions = append([]InputQuestion(nil), interaction.Input.Questions...)
+				summary.PendingInput = &input
+			}
+		}
+	}
+	return summary, nil
+}
+
+func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
+	queue := make([]string, 0)
+	for _, entry := range entries {
+		switch entry.Type {
+		case sessiontree.EntryQueueAdded:
+			var item struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(entry.Payload, &item); err != nil {
+				return 0, fmt.Errorf("decode canonical queue item %q: %w", entry.ID, err)
+			}
+			if item.ID == "" {
+				item.ID = entry.ID
+			}
+			if !slices.Contains(queue, item.ID) {
+				queue = append(queue, item.ID)
+			}
+		case sessiontree.EntryQueueReordered:
+			var ids []string
+			if err := json.Unmarshal(entry.Payload, &ids); err != nil {
+				return 0, fmt.Errorf("decode canonical queue order %q: %w", entry.ID, err)
+			}
+			if len(ids) != len(queue) {
+				return 0, ErrAuthorityCorrupt
+			}
+			for _, id := range ids {
+				if !slices.Contains(queue, id) {
+					return 0, ErrAuthorityCorrupt
+				}
+			}
+			queue = append(queue[:0], ids...)
+		case sessiontree.EntryQueueDeleted, sessiontree.EntryQueuePromoted:
+			var id string
+			if err := json.Unmarshal(entry.Payload, &id); err != nil {
+				return 0, fmt.Errorf("decode canonical queue removal %q: %w", entry.ID, err)
+			}
+			for index := range queue {
+				if queue[index] == id {
+					queue = append(queue[:index], queue[index+1:]...)
+					break
+				}
+			}
+		}
+	}
+	return len(queue), nil
+}
+
+func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {
+	summary := ThreadSummary{
+		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
+		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
+		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
+		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
+		QueueCount: len(view.Queue), Error: strings.TrimSpace(view.Error),
+	}
+	for index := len(view.Interactions) - 1; index >= 0; index-- {
+		interaction := view.Interactions[index]
+		if !interaction.Resolved && interaction.Kind == ThreadInteractionInput && interaction.Input != nil {
+			input := *interaction.Input
+			input.Questions = append([]InputQuestion(nil), interaction.Input.Questions...)
+			summary.PendingInput = &input
+			break
+		}
+	}
+	for index := len(view.Items) - 1; index >= 0; index-- {
+		item := view.Items[index]
+		if summary.LastItemAt.IsZero() && !item.CreatedAt.IsZero() {
+			summary.LastItemAt = item.CreatedAt
+		}
+		if text := strings.TrimSpace(item.Text); text != "" {
+			summary.LastItemPreview = truncateThreadSummaryPreview(text, 160)
+			if !item.CreatedAt.IsZero() {
+				summary.LastItemAt = item.CreatedAt
+			}
+			break
+		}
+	}
+	return summary
+}
+
+func (service *threadRuntimeService) applyActiveThreadSummary(summary *ThreadSummary) {
+	if service == nil || summary == nil {
+		return
+	}
+	service.runtimesMu.Lock()
+	actor := service.runtimes[summary.ID.String()]
+	service.runtimesMu.Unlock()
+	if actor == nil {
+		return
+	}
+	view := service.currentView(actor)
+	if view.ViewVersion == 0 {
+		return
+	}
+	meta := sessiontree.ThreadMeta{
+		ID: summary.ID.String(), ParentThreadID: summary.ParentThreadID.String(), ParentTurnID: summary.ParentTurnID.String(),
+		TaskName: summary.TaskName, TaskDescription: summary.TaskDescription, HostProfileRef: summary.HostProfileRef, ForkMode: summary.ForkMode,
+		Title: summary.Title, TitleStatus: sessiontree.ThreadTitleStatus(summary.TitleStatus), CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt,
+	}
+	*summary = threadSummaryFromView(meta, view)
+}
+
+func truncateThreadSummaryPreview(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func (service *threadRuntimeService) History(ctx context.Context, threadID identity.ThreadID, before string, limit int) (HistoryPage, error) {
@@ -3501,6 +3715,10 @@ func hydrateCanonicalQueue(ctx context.Context, repo sessiontree.JournalRepo, th
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
+	return canonicalQueueFromEntries(entries)
+}
+
+func canonicalQueueFromEntries(entries []sessiontree.Entry) ([]QueuedInput, error) {
 	queue := make([]QueuedInput, 0)
 	for _, entry := range entries {
 		switch entry.Type {
@@ -3860,6 +4078,11 @@ func hydrateThreadRuntimeLifecycle(ctx context.Context, repo sessiontree.Journal
 	if err != nil {
 		return "", "", activity, nil, ""
 	}
+	return threadRuntimeLifecycleFromEntries(meta, path)
+}
+
+func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, string) {
+	activity := ThreadActivityIdle
 	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseTurn)
 	var turnID identity.TurnID = identity.TurnID(lifecycle.LatestTurnID())
 	var runID identity.RunID
