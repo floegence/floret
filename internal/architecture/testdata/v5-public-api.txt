@@ -871,6 +871,12 @@ field ThreadSummary.UpdatedAt time.Time tag="json:\"updated_at\""
 field ThreadSummary.Activity github.com/floegence/floret/v5/runtime.ThreadActivity tag="json:\"activity\""
 field ThreadSummary.Attention github.com/floegence/floret/v5/runtime.AttentionSummary tag="json:\"attention\""
 field ThreadSummary.LastOutcome *github.com/floegence/floret/v5/runtime.TurnOutcome tag="json:\"last_outcome,omitempty\""
+field ThreadSummary.TurnID github.com/floegence/floret/v5/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadSummary.QueueCount int tag="json:\"queue_count,omitempty\""
+field ThreadSummary.Error string tag="json:\"error,omitempty\""
+field ThreadSummary.PendingInput *github.com/floegence/floret/v5/runtime.InputPresentation tag="json:\"pending_input,omitempty\""
+field ThreadSummary.LastItemAt time.Time tag="json:\"last_item_at,omitempty\""
+field ThreadSummary.LastItemPreview string tag="json:\"last_item_preview,omitempty\""
 type ThreadTitleMode string
 const ThreadTitleModeHostOwned github.com/floegence/floret/v5/runtime.ThreadTitleMode = "host_owned"
 const ThreadTitleModeProvider github.com/floegence/floret/v5/runtime.ThreadTitleMode = "provider"
@@ -1014,9 +1020,30 @@ method *WorkspaceSubscription.Next func(ctx context.Context) (github.com/floegen
 method *WorkspaceSubscription.Close func()
 
 package github.com/floegence/floret/v5/storage
+func MaintainSQLite func(ctx context.Context, path string, policy github.com/floegence/floret/v5/storage.SQLiteMaintenancePolicy) (github.com/floegence/floret/v5/storage.SQLiteMaintenanceResult, error)
 func Memory func() github.com/floegence/floret/v5/storage.Source
 func NewSource func(source github.com/floegence/floret/v5/storage/spi.Source) github.com/floegence/floret/v5/storage.Source
 func SQLite func(path string) github.com/floegence/floret/v5/storage.Source
+const SQLiteMaintenanceActionIncrementalVacuum untyped string = "incremental_vacuum"
+const SQLiteMaintenanceActionNone untyped string = "none"
+const SQLiteMaintenanceActionVacuum untyped string = "vacuum"
+type SQLiteMaintenancePolicy struct
+field SQLiteMaintenancePolicy.MinimumFileBytes int64
+field SQLiteMaintenancePolicy.MinimumReclaimBytes int64
+field SQLiteMaintenancePolicy.MinimumReclaimRatio float64
+field SQLiteMaintenancePolicy.RetainedFreeBytes int64
+type SQLiteMaintenanceResult struct
+field SQLiteMaintenanceResult.Action string tag="json:\"action\""
+field SQLiteMaintenanceResult.Before github.com/floegence/floret/v5/storage.SQLiteSpaceUsage tag="json:\"before\""
+field SQLiteMaintenanceResult.After github.com/floegence/floret/v5/storage.SQLiteSpaceUsage tag="json:\"after\""
+field SQLiteMaintenanceResult.Reason string tag="json:\"reason\""
+type SQLiteSpaceUsage struct
+field SQLiteSpaceUsage.FileBytes int64 tag="json:\"file_bytes\""
+field SQLiteSpaceUsage.PageSize int64 tag="json:\"page_size\""
+field SQLiteSpaceUsage.PageCount int64 tag="json:\"page_count\""
+field SQLiteSpaceUsage.FreePageCount int64 tag="json:\"free_page_count\""
+field SQLiteSpaceUsage.ReclaimableBytes int64 tag="json:\"reclaimable_bytes\""
+field SQLiteSpaceUsage.AutoVacuum string tag="json:\"auto_vacuum\""
 type Source struct
 
 package github.com/floegence/floret/v5/storage/spi

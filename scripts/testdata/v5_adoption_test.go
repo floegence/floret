@@ -80,6 +80,15 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err := firstHost.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
+	maintenance, err := storage.MaintainSQLite(ctx, databasePath, storage.SQLiteMaintenancePolicy{
+		MinimumFileBytes: 1 << 40, MinimumReclaimBytes: 1 << 40, MinimumReclaimRatio: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maintenance.Action != storage.SQLiteMaintenanceActionNone {
+		t.Fatalf("unexpected maintenance action: %#v", maintenance)
+	}
 
 	secondHost, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(databasePath)})
 	if err != nil {

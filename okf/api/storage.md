@@ -42,3 +42,24 @@ facts under the runtime owner. In-process active execution, drafts,
 subscribers, and short-lived deduplication are not durable projections. Facts
 that survive restart are committed through the canonical journal and domain
 snapshot; a failed transaction never reports a successful live mutation.
+
+Terminal turn settlement writes the final domain state and prompt state as one
+canonical checkpoint and clears folded recovery frames in the same transaction.
+During an unusually long active turn, Floret checkpoints on the next safe write
+after the recovery journal reaches 128 frames or 32 MiB. The journal remains a
+crash-recovery mechanism, not an unbounded history.
+
+## SQLite space maintenance
+
+Fresh SQLite stores select `auto_vacuum=INCREMENTAL` before creating tables.
+`MaintainSQLite` is the only public physical space-reclamation boundary. A host
+may call it for an idle file before `runtime.Open`, with explicit file-size,
+reclaimable-byte, reclaim-ratio, and retained-free-space thresholds.
+
+Maintenance validates the exact Floret physical schema and SQLite integrity.
+An older `auto_vacuum=NONE` file is converted with SQLite's native `VACUUM` only
+when sufficient temporary disk space is available. An incremental store uses
+`incremental_vacuum`. A database owned by an open Floret runtime, a busy file,
+insufficient disk space, or an expired maintenance context is safely skipped
+and reported through `SQLiteMaintenanceResult`; corruption and schema drift
+remain errors. No record is decoded, copied, or replaced by the host.

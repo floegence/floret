@@ -1,5 +1,16 @@
 # Floret OKF Update Log
 
+## 2026-08-25
+* **Bounded recovery storage**: Terminal turns now checkpoint canonical domain
+  and prompt state while clearing folded recovery frames. Long active turns
+  checkpoint after bounded frame or byte thresholds without weakening crash
+  recovery.
+* **SQLite space maintenance**: Fresh stores use incremental auto-vacuum, and
+  hosts can reclaim an idle legacy store through one validated pre-open API.
+* **Bounded thread listing**: Root thread summaries now come from one inventory
+  snapshot and include the minimal lifecycle, queue, input, error, and preview
+  fields needed by host lists without hydrating every full current view.
+
 ## 2026-08-24
 * **Terminal publication barrier**: Terminal current views are published only
   after canonical journal projection. A completed turn without visible output

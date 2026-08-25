@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Bound recovery storage by checkpointing terminal turns atomically and folding
+  unusually long active journals after 128 frames or 32 MiB.
+- Add validated pre-open SQLite space maintenance. Fresh stores use incremental
+  auto-vacuum; legacy stores can be rebuilt with native SQLite `VACUUM` without
+  exposing or copying opaque Floret records.
+- Project root thread lists from one canonical inventory snapshot and expose
+  bounded lifecycle, queue, pending-input, error, and last-item summary fields.
+
 ## v5.0.0 - 2026-08-23
 
 - Advance the module to semantic import path `/v5`. The v5 API baseline now

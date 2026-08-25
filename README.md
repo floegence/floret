@@ -205,6 +205,13 @@ conformance suite. SPI records remain opaque Floret data; a backend must not
 decode them into a second Agent model. Memory, SQLite, and third-party backends
 all run the same Floret-owned domain kernel.
 
+New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
+without rebuilding the database. A host that owns an older SQLite file may call
+`storage.MaintainSQLite` before `runtime.Open`. The maintenance boundary checks
+the exact Floret physical schema and database integrity, refuses an open
+runtime, and uses SQLite's native `VACUUM` or `incremental_vacuum`; it never
+copies records or exposes their contents.
+
 ## Source Of Truth
 
 Floret exclusively owns admitted messages and references, thread/turn/run

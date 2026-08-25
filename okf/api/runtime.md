@@ -84,6 +84,12 @@ when their text is equal. A canonical snapshot is applied only if the
 in-memory view version is unchanged since the snapshot read began; this keeps
 an older read from replacing a newer terminal view.
 
+`ThreadService.List` reads root lifecycle facts from one canonical inventory
+snapshot. `ThreadSummary` carries the current turn identity, attention, queue
+count, pending input, terminal error, and bounded last-item preview needed by a
+host list. It does not hydrate complete timeline, attachment, context, or
+SubAgent detail for every thread; those remain selected-thread queries.
+
 ## Agent and provider boundary
 
 `runtime.NewAgent` snapshots the configured profile, system prompt, gateway,
