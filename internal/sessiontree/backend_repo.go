@@ -36,9 +36,10 @@ type BackendRepo struct {
 	// journalBase is the exact memory-state payload represented by the latest
 	// durable checkpoint plus all committed journal frames. Memory-only live
 	// mutations intentionally do not advance it.
-	journalBase []byte
-	domainDirty bool
-	journalSeq  uint64
+	journalBase  []byte
+	domainDirty  bool
+	journalSeq   uint64
+	journalBytes int64
 }
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
@@ -69,7 +70,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	var committedInventory []RootThreadInventoryItem
 	var committedInventoryEncoded []byte
 	var committedMemory *MemoryRepo
-	var committedJournalSeq uint64
+	var committedJournal backendDomainJournalUsage
 	if err := func() error {
 		memory, found, migrated, err := repo.load(tx)
 		if err != nil {
@@ -77,7 +78,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		}
 		if !found {
 			memory = newMemoryRepo(now)
-			committedInventoryEncoded, err = repo.save(tx, memory)
+			_, committedInventoryEncoded, err = repo.save(tx, memory)
 			if err != nil {
 				return err
 			}
@@ -97,7 +98,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			} else if len(records) != 0 {
 				return errors.Join(ErrAuthorityCorrupt, errors.New("domain migration cannot replay a newer recovery journal"))
 			}
-			committedInventoryEncoded, err = repo.save(tx, memory)
+			_, committedInventoryEncoded, err = repo.save(tx, memory)
 			if err != nil {
 				return err
 			}
@@ -111,7 +112,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			committedMemory = memory
 			return nil
 		}
-		memory, committedJournalSeq, err = replayBackendDomainJournal(ctx, tx, memory, repo.now)
+		memory, committedJournal, err = replayBackendDomainJournal(ctx, tx, memory, repo.now)
 		if err != nil {
 			return err
 		}
@@ -141,8 +142,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		return nil, err
 	}
 	repo.domainEncoded = bytes.Clone(encoded)
-	repo.domainDirty = committedJournalSeq > 0
-	repo.journalSeq = committedJournalSeq
+	repo.domainDirty = committedJournal.Sequence > 0
+	repo.journalSeq = committedJournal.Sequence
+	repo.journalBytes = committedJournal.Bytes
 	return repo, nil
 }
 
@@ -214,26 +216,26 @@ func (repo *BackendRepo) loadView(tx spi.ReadTx) (*MemoryRepo, bool, []byte, boo
 	return memory, true, encoded, false, nil
 }
 
-func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) ([]byte, error) {
+func (repo *BackendRepo) save(tx spi.WriteTx, memory *MemoryRepo) ([]byte, []byte, error) {
 	payload, err := memory.EncodeMemoryState()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	encoded, err := storagecodec.EncodeEnvelope("sessiontree", payload)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	inventory, err := encodeRootThreadInventory(memory)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := tx.Put(backendDomainNamespace, backendStateKey, encoded); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventory); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return inventory, nil
+	return encoded, inventory, nil
 }
 
 func (repo *BackendRepo) verifyRootThreadInventory(tx spi.ReadTx, memory *MemoryRepo) error {
@@ -341,14 +343,21 @@ func (repo *BackendRepo) CheckpointDomain(ctx context.Context, checkpoint func(s
 	}
 	var committedInventory []RootThreadInventoryItem
 	var committedInventoryEncoded []byte
+	var committedDomainEncoded []byte
+	var committedJournalBase []byte
 	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
 		if checkpoint != nil {
 			if err := checkpoint(tx); err != nil {
 				return err
 			}
 		}
+		var encodeErr error
+		committedJournalBase, encodeErr = repo.domainMemory.EncodeMemoryState()
+		if encodeErr != nil {
+			return encodeErr
+		}
 		var saveErr error
-		committedInventoryEncoded, saveErr = repo.save(tx, repo.domainMemory)
+		committedDomainEncoded, committedInventoryEncoded, saveErr = repo.save(tx, repo.domainMemory)
 		if saveErr != nil {
 			return saveErr
 		}
@@ -368,17 +377,10 @@ func (repo *BackendRepo) CheckpointDomain(ctx context.Context, checkpoint func(s
 	repo.rootInventoryItems = cloneRootThreadInventoryItems(committedInventory)
 	repo.domainDirty = false
 	repo.journalSeq = 0
-	repo.journalBase, err = repo.domainMemory.EncodeMemoryState()
-	if err != nil {
-		return err
-	}
-	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
-		encoded, err := tx.Get(backendDomainNamespace, backendStateKey)
-		if err == nil {
-			repo.domainEncoded = bytes.Clone(encoded)
-		}
-		return err
-	})
+	repo.journalBytes = 0
+	repo.journalBase = bytes.Clone(committedJournalBase)
+	repo.domainEncoded = bytes.Clone(committedDomainEncoded)
+	return nil
 }
 
 func (repo *BackendRepo) update(ctx context.Context, mutate func(*MemoryRepo) error) error {
@@ -409,10 +411,16 @@ func (repo *BackendRepo) ReadAcceptedTurn(ctx context.Context, threadID, turnID,
 // UpdateDomain executes one session-tree mutation and related domain writes in
 // the same serializable backend transaction.
 func (repo *BackendRepo) UpdateDomain(ctx context.Context, mutate func(*MemoryRepo, spi.WriteTx) error) error {
-	return repo.updateDomain(ctx, mutate)
+	return repo.updateDomain(ctx, mutate, false)
 }
 
-func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRepo, spi.WriteTx) error) error {
+// CheckpointDomainUpdate applies one mutation and folds all recovery frames
+// into the canonical checkpoint in the same backend transaction.
+func (repo *BackendRepo) CheckpointDomainUpdate(ctx context.Context, mutate func(*MemoryRepo, spi.WriteTx) error) error {
+	return repo.updateDomain(ctx, mutate, true)
+}
+
+func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRepo, spi.WriteTx) error, forceCheckpoint bool) error {
 	if repo == nil || mutate == nil {
 		return errors.New("backend domain mutation requires repository and callback")
 	}
@@ -427,6 +435,10 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 	var committedInventoryEncoded []byte
 	var committedMemory *MemoryRepo
 	var committedSequence uint64
+	var committedJournalBytes int64
+	var committedDomainEncoded []byte
+	var committedJournalBase []byte
+	checkpointed := false
 	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
 		if repo.domainMemory == nil {
 			return errors.New("session-tree state is missing")
@@ -460,15 +472,28 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 			if marshalErr != nil {
 				return marshalErr
 			}
-			if putErr := tx.Put(backendDomainJournalNamespace, backendJournalKey(frame.Sequence), encodedFrame); putErr != nil {
-				return putErr
-			}
-			committedInventoryEncoded, encodeErr = encodeRootThreadInventory(memory)
-			if encodeErr != nil {
-				return encodeErr
-			}
-			if putErr := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, committedInventoryEncoded); putErr != nil {
-				return putErr
+			checkpointed = forceCheckpoint || (backendDomainJournalUsage{Sequence: repo.journalSeq, Bytes: repo.journalBytes}).requiresCheckpoint()
+			if checkpointed {
+				committedDomainEncoded, committedInventoryEncoded, encodeErr = repo.save(tx, memory)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				if clearErr := clearBackendDomainJournal(ctx, tx); clearErr != nil {
+					return clearErr
+				}
+			} else {
+				if putErr := tx.Put(backendDomainJournalNamespace, backendJournalKey(frame.Sequence), encodedFrame); putErr != nil {
+					return putErr
+				}
+				committedInventoryEncoded, encodeErr = encodeRootThreadInventory(memory)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				if putErr := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, committedInventoryEncoded); putErr != nil {
+					return putErr
+				}
+				committedSequence = frame.Sequence
+				committedJournalBytes = repo.journalBytes + int64(len(encodedFrame))
 			}
 			committedInventory, encodeErr = memory.rootThreadInventoryLocked()
 			if encodeErr != nil {
@@ -478,8 +503,8 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 				return fingerprintErr
 			}
 			journaled = true
-			committedSequence = frame.Sequence
 		}
+		committedJournalBase = bytes.Clone(afterEncoded)
 		committedMemory = memory
 		return nil
 	})
@@ -487,11 +512,12 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if journaled {
 			repo.rootInventoryEncoded = bytes.Clone(committedInventoryEncoded)
 			repo.rootInventoryItems = cloneRootThreadInventoryItems(committedInventory)
-			repo.domainDirty = true
+			repo.domainDirty = !checkpointed
 			repo.journalSeq = committedSequence
-			repo.journalBase, err = committedMemory.EncodeMemoryState()
-			if err != nil {
-				return err
+			repo.journalBytes = committedJournalBytes
+			repo.journalBase = bytes.Clone(committedJournalBase)
+			if checkpointed {
+				repo.domainEncoded = bytes.Clone(committedDomainEncoded)
 			}
 		}
 		repo.domainMemory = committedMemory

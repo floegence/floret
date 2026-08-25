@@ -19,7 +19,18 @@ const (
 	backendDomainJournalNamespace = "floret.domain.sessiontree.journal.v1"
 	backendDomainJournalVersion   = 1
 	backendDomainJournalScanLimit = 256
+	backendDomainJournalMaxFrames = 128
+	backendDomainJournalMaxBytes  = 32 << 20
 )
+
+type backendDomainJournalUsage struct {
+	Sequence uint64
+	Bytes    int64
+}
+
+func (usage backendDomainJournalUsage) requiresCheckpoint() bool {
+	return usage.Sequence >= backendDomainJournalMaxFrames || usage.Bytes >= backendDomainJournalMaxBytes
+}
 
 type backendDomainJournalPatch struct {
 	Set     map[string]map[string]json.RawMessage `json:"set,omitempty"`
@@ -208,46 +219,47 @@ func backendDomainJournalChecksum(sequence uint64, patch backendDomainJournalPat
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func replayBackendDomainJournal(ctx context.Context, tx spi.ReadTx, checkpoint *MemoryRepo, now func() time.Time) (*MemoryRepo, uint64, error) {
+func replayBackendDomainJournal(ctx context.Context, tx spi.ReadTx, checkpoint *MemoryRepo, now func() time.Time) (*MemoryRepo, backendDomainJournalUsage, error) {
 	if checkpoint == nil {
-		return nil, 0, errors.New("journal checkpoint is required")
+		return nil, backendDomainJournalUsage{}, errors.New("journal checkpoint is required")
 	}
 	payload, err := checkpoint.EncodeMemoryState()
 	if err != nil {
-		return nil, 0, err
+		return nil, backendDomainJournalUsage{}, err
 	}
 	records, err := scanBackendDomainJournal(ctx, tx)
 	if err != nil {
-		return nil, 0, err
+		return nil, backendDomainJournalUsage{}, err
 	}
 	current := checkpoint
-	var sequence uint64
+	usage := backendDomainJournalUsage{}
 	for _, record := range records {
 		keySequence, keyErr := parseBackendJournalKey(record.Key)
-		if keyErr != nil || keySequence != sequence+1 {
-			return nil, 0, errors.Join(ErrAuthorityCorrupt, keyErr, errors.New("journal sequence is not contiguous"))
+		if keyErr != nil || keySequence != usage.Sequence+1 {
+			return nil, backendDomainJournalUsage{}, errors.Join(ErrAuthorityCorrupt, keyErr, errors.New("journal sequence is not contiguous"))
 		}
 		frame, frameErr := decodeBackendDomainJournalFrame(record.Value)
 		if frameErr != nil {
 			// A journal frame is committed atomically with its domain
 			// projection. There is no supported partial-tail shape to repair;
 			// accepting or deleting one would silently discard canonical facts.
-			return nil, 0, errors.Join(ErrAuthorityCorrupt, frameErr)
+			return nil, backendDomainJournalUsage{}, errors.Join(ErrAuthorityCorrupt, frameErr)
 		}
 		if frame.Sequence != keySequence {
-			return nil, 0, errors.Join(ErrAuthorityCorrupt, errors.New("journal key and frame sequence differ"))
+			return nil, backendDomainJournalUsage{}, errors.Join(ErrAuthorityCorrupt, errors.New("journal key and frame sequence differ"))
 		}
 		payload, err = applyBackendDomainJournalPatch(payload, frame.Patch)
 		if err != nil {
-			return nil, 0, errors.Join(ErrAuthorityCorrupt, err)
+			return nil, backendDomainJournalUsage{}, errors.Join(ErrAuthorityCorrupt, err)
 		}
 		current, err = DecodeMemoryState(payload, now)
 		if err != nil {
-			return nil, 0, errors.Join(ErrAuthorityCorrupt, err)
+			return nil, backendDomainJournalUsage{}, errors.Join(ErrAuthorityCorrupt, err)
 		}
-		sequence = frame.Sequence
+		usage.Sequence = frame.Sequence
+		usage.Bytes += int64(len(record.Value))
 	}
-	return current, sequence, nil
+	return current, usage, nil
 }
 
 func scanBackendDomainJournal(ctx context.Context, tx spi.ReadTx) ([]spi.Record, error) {

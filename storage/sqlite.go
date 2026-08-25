@@ -21,6 +21,11 @@ type sqliteSource struct {
 	path string
 }
 
+var sqliteOwnership = struct {
+	sync.Mutex
+	open map[string]int
+}{open: make(map[string]int)}
+
 // SQLite returns a Source backed by the SQLite file at path. The physical
 // database contains only backend metadata and opaque namespaced records.
 func SQLite(path string) Source {
@@ -42,29 +47,75 @@ func (source sqliteSource) Open(ctx context.Context) (spi.Backend, error) {
 			return nil, err
 		}
 	}
+	ownedPath := ""
+	if source.path != ":memory:" {
+		var err error
+		ownedPath, err = filepath.Abs(source.path)
+		if err != nil {
+			return nil, err
+		}
+		ownedPath = filepath.Clean(ownedPath)
+		sqliteOwnership.Lock()
+		sqliteOwnership.open[ownedPath]++
+		sqliteOwnership.Unlock()
+	}
+	releaseOwnership := func() {
+		if ownedPath == "" {
+			return
+		}
+		sqliteOwnership.Lock()
+		if sqliteOwnership.open[ownedPath] <= 1 {
+			delete(sqliteOwnership.open, ownedPath)
+		} else {
+			sqliteOwnership.open[ownedPath]--
+		}
+		sqliteOwnership.Unlock()
+	}
 	db, err := sql.Open(sqliteDriverName, source.path)
 	if err != nil {
+		releaseOwnership()
+		return nil, err
+	}
+	// Initialization PRAGMAs and the first schema transaction must share one
+	// connection so a fresh database persists auto_vacuum before table creation.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	backend := &sqliteBackend{db: db, ownedPath: ownedPath}
+	if err := backend.initialize(ctx); err != nil {
+		_ = db.Close()
+		releaseOwnership()
 		return nil, err
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	backend := &sqliteBackend{db: db}
-	if err := backend.initialize(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	return backend, nil
 }
 
 type sqliteBackend struct {
-	db      *sql.DB
-	closeMu sync.Mutex
-	closed  bool
+	db        *sql.DB
+	ownedPath string
+	closeMu   sync.Mutex
+	closed    bool
 }
 
 func (backend *sqliteBackend) initialize(ctx context.Context) error {
 	if _, err := backend.db.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
 		return err
+	}
+	var existingTableCount int
+	if err := backend.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+	`).Scan(&existingTableCount); err != nil {
+		return err
+	}
+	// auto_vacuum must be selected before the first table is created. Existing
+	// databases are converted only by MaintainSQLite while no runtime is open.
+	if existingTableCount == 0 {
+		if _, err := backend.db.ExecContext(ctx, `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
+			return err
+		}
 	}
 	if _, err := backend.db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
 		return err
@@ -181,7 +232,17 @@ func (backend *sqliteBackend) Close() error {
 		return nil
 	}
 	backend.closed = true
-	return backend.db.Close()
+	err := backend.db.Close()
+	if backend.ownedPath != "" {
+		sqliteOwnership.Lock()
+		if sqliteOwnership.open[backend.ownedPath] <= 1 {
+			delete(sqliteOwnership.open, backend.ownedPath)
+		} else {
+			sqliteOwnership.open[backend.ownedPath]--
+		}
+		sqliteOwnership.Unlock()
+	}
+	return err
 }
 
 func (backend *sqliteBackend) ResetFloretStorage(ctx context.Context) (bool, error) {

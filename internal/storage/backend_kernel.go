@@ -131,7 +131,7 @@ func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree
 	if kernel.prompt == nil {
 		return sessiontree.FinishTurnResult{}, errors.New("prompt state is missing")
 	}
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.FinishTurn(ctx, request)
 		if err != nil {
 			return err
@@ -149,7 +149,7 @@ func (kernel *BackendKernel) CancelTurn(ctx context.Context, request sessiontree
 	if kernel.prompt == nil {
 		return sessiontree.CancelTurnResult{}, errors.New("prompt state is missing")
 	}
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.CancelTurn(ctx, request)
 		if err != nil {
 			return err

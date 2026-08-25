@@ -216,6 +216,68 @@ func TestBackendRepoStartupReplaysJournalBeforeFinalVerification(t *testing.T) {
 	}
 }
 
+func TestBackendRepoCheckpointsJournalAtFrameLimit(t *testing.T) {
+	ctx := context.Background()
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	now := time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC)
+	repo, err := NewBackendRepo(ctx, backend, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < backendDomainJournalMaxFrames; index++ {
+		if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
+			memory.mu.Lock()
+			defer memory.mu.Unlock()
+			memory.seq++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if repo.journalSeq != backendDomainJournalMaxFrames {
+		t.Fatalf("journal sequence=%d, want %d", repo.journalSeq, backendDomainJournalMaxFrames)
+	}
+	if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
+		memory.mu.Lock()
+		defer memory.mu.Unlock()
+		memory.seq++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.journalSeq != 0 || repo.journalBytes != 0 || repo.domainDirty {
+		t.Fatalf("journal remained after checkpoint: seq=%d bytes=%d dirty=%v", repo.journalSeq, repo.journalBytes, repo.domainDirty)
+	}
+	if err := backend.View(ctx, func(tx spi.ReadTx) error {
+		records, err := scanBackendDomainJournal(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if len(records) != 0 {
+			t.Fatalf("durable journal contains %d records", len(records))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBackendDomainJournalUsageThresholds(t *testing.T) {
+	if !(backendDomainJournalUsage{Sequence: backendDomainJournalMaxFrames}).requiresCheckpoint() {
+		t.Fatal("frame limit did not require checkpoint")
+	}
+	if !(backendDomainJournalUsage{Bytes: backendDomainJournalMaxBytes}).requiresCheckpoint() {
+		t.Fatal("byte limit did not require checkpoint")
+	}
+	if (backendDomainJournalUsage{Sequence: backendDomainJournalMaxFrames - 1, Bytes: backendDomainJournalMaxBytes - 1}).requiresCheckpoint() {
+		t.Fatal("usage below both limits required checkpoint")
+	}
+}
+
 func TestBackendRepoRejectsCorruptJournalWithoutDeletingIt(t *testing.T) {
 	ctx := context.Background()
 	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
