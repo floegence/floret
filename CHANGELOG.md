@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v5.0.3 - 2026-08-26
 
 - Normalize invalid UTF-8 in tool-result text and typed Activity presentation
   before output projection, observation, and canonical persistence.
