@@ -2384,11 +2384,13 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		if !ok {
 			break
 		}
-		committed, err := p.committedEffectResult(result.message, result.canonicalEntryID)
+		canonical, committed, err := p.canonicalEffectResult(result.message.ToolCallID, result.message.ToolName, result.canonicalEntryID)
 		if err != nil {
 			return err
 		}
-		if !committed {
+		if committed {
+			result.message = canonical
+		} else {
 			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
 				return err
 			}
@@ -2416,7 +2418,7 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	}
 	if appendedResult && len(remainingCalls) == 0 {
 		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID}); err != nil {
-			return err
+			return fmt.Errorf("canonical tool result save point: %w", err)
 		} else {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
@@ -2438,28 +2440,28 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	return nil
 }
 
-func (p *turnProjection) committedEffectResult(message session.Message, canonicalEntryID string) (bool, error) {
+func (p *turnProjection) canonicalEffectResult(toolCallID, toolName, canonicalEntryID string) (session.Message, bool, error) {
 	canonicalEntryID = strings.TrimSpace(canonicalEntryID)
 	if canonicalEntryID == "" {
-		return false, nil
+		return session.Message{}, false, nil
 	}
 	entry, err := p.thread.harness.options.Repo.Entry(p.ctx, p.thread.id, canonicalEntryID)
 	if err != nil {
 		if errors.Is(err, sessiontree.ErrEntryNotFound) || errors.Is(err, sessiontree.ErrThreadNotFound) {
-			return false, sessiontree.ErrAuthorityCorrupt
+			return session.Message{}, false, fmt.Errorf("canonical effect result lookup: %w", sessiontree.ErrAuthorityCorrupt)
 		}
-		return false, err
+		return session.Message{}, false, fmt.Errorf("canonical effect result lookup: %w", err)
 	}
-	if entry.ID != canonicalEntryID || entry.ThreadID != p.thread.id || entry.TurnID != p.turnID || entry.Type != sessiontree.EntryToolResult || entry.Message.ToolCallID != message.ToolCallID || entry.Message.ToolName != message.ToolName {
-		return false, sessiontree.ErrAuthorityCorrupt
+	if entry.ID != canonicalEntryID || entry.ThreadID != p.thread.id || entry.TurnID != p.turnID ||
+		entry.Type != sessiontree.EntryToolResult || entry.Message.Role != session.Tool ||
+		entry.Message.ToolCallID != toolCallID || entry.Message.ToolName != toolName ||
+		entry.Message.ToolResult == nil || strings.TrimSpace(entry.Metadata[sessiontree.PendingToolEffectAttemptIDKey]) == "" {
+		return session.Message{}, false, fmt.Errorf("canonical effect result identity: %w", sessiontree.ErrAuthorityCorrupt)
 	}
 	if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
-		return false, err
+		return session.Message{}, false, fmt.Errorf("canonical effect result integrity: %w", err)
 	}
-	if durableSignature(entry.Message) != durableSignature(message) {
-		return false, sessiontree.ErrAuthorityCorrupt
-	}
-	return true, nil
+	return session.CloneMessage(entry.Message), true, nil
 }
 
 func eventBatchSize(metadata any) int {

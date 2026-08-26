@@ -52,6 +52,13 @@ commits the captured success or failure once, or marks the attempt `unknown` if
 that exact result cannot be durably finalized. Cancellation and adapter return
 errors never authorize a second handler call.
 
+The committed Effect result entry is the only durable result message. Engine
+projection reads that canonical entry after validating Effect identity, entry
+integrity, and artifact references; it does not compare the persisted message
+against a second event-derived copy. Tool-result text and typed Activity text
+are normalized to valid UTF-8 before projection, observation, fingerprinting,
+and persistence, so storage serialization cannot change their representation.
+
 An effect dispatcher result requires durable effect-result finalization only if
 the dispatcher invoked the supplied handler callback. `tools.DeclinedResult`
 represents a user decision before execution with structured `outcome=declined`,

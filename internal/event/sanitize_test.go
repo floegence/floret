@@ -3,9 +3,25 @@ package event
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v5/tools"
 )
+
+func TestSanitizeActivityPresentationNormalizesInvalidUTF8(t *testing.T) {
+	invalid := "valid prefix " + string([]byte{0xe8, 0xa2})
+	got := Sanitize(Event{Activity: &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererTerminal,
+		Payload:  tools.TerminalActivityPayload{Output: invalid},
+	}})
+	if got.Activity == nil {
+		t.Fatal("typed activity was dropped")
+	}
+	payload, ok := got.Activity.Payload.(tools.TerminalActivityPayload)
+	if !ok || !utf8.ValidString(payload.Output) || !strings.Contains(payload.Output, "\uFFFD") {
+		t.Fatalf("terminal payload=%#v, want valid UTF-8 replacement", got.Activity.Payload)
+	}
+}
 
 func TestSanitizeActivityPresentationPreservesTypedNumbers(t *testing.T) {
 	exitCode := 7

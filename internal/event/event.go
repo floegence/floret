@@ -390,6 +390,7 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 }
 
 func safeActivityText(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
 	value = strings.TrimSpace(SafePathRefsText(value))
 	if value == "" {
 		return ""

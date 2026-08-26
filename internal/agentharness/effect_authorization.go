@@ -222,15 +222,36 @@ func (t *Thread) convergeDispatchedEffect(ctx context.Context, repo sessiontree.
 }
 
 func validateCommittedEffectFinalization(req engine.EffectResultFinalizationRequest, prepared sessiontree.EffectAttempt, finished sessiontree.FinishEffectDispatchResult) (engine.EffectResultFinalizationResult, error) {
-	requested := sessiontree.Entry{ThreadID: req.ThreadID, TurnID: req.TurnID, Type: sessiontree.EntryToolResult, Message: session.CloneMessage(req.Message)}
-	if finished.Attempt.EffectAttemptID != prepared.EffectAttemptID || finished.Attempt.ResultEntryID == "" || finished.Result.ID != finished.Attempt.ResultEntryID ||
-		!sessiontree.EffectResultRequestMatches(finished.Result, requested, prepared.EffectAttemptID) {
-		return engine.EffectResultFinalizationResult{}, sessiontree.ErrAuthorityCorrupt
+	if req.ThreadID != prepared.Invocation.ThreadID ||
+		req.TurnID != prepared.Invocation.TurnID ||
+		req.RunID != prepared.Invocation.RunID ||
+		req.ToolCallID != prepared.Invocation.ToolCallID ||
+		req.Message.Role != session.Tool ||
+		req.Message.ToolCallID != req.ToolCallID ||
+		req.Message.ToolName != prepared.Invocation.ToolName ||
+		req.Message.ToolResult == nil ||
+		finished.Attempt.EffectAttemptID != prepared.EffectAttemptID ||
+		finished.Attempt.Invocation != prepared.Invocation ||
+		(finished.Attempt.State != sessiontree.EffectAttemptCompleted && finished.Attempt.State != sessiontree.EffectAttemptFailed) ||
+		finished.Attempt.ResultEntryID == "" ||
+		finished.Result.ID != finished.Attempt.ResultEntryID ||
+		finished.Result.ThreadID != req.ThreadID ||
+		finished.Result.TurnID != req.TurnID ||
+		finished.Result.Type != sessiontree.EntryToolResult ||
+		finished.Result.Message.Role != session.Tool ||
+		finished.Result.Message.ToolCallID != req.ToolCallID ||
+		finished.Result.Message.ToolName != prepared.Invocation.ToolName ||
+		finished.Result.Message.ToolResult == nil ||
+		finished.Result.Metadata[sessiontree.PendingToolEffectAttemptIDKey] != prepared.EffectAttemptID {
+		return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization identity: %w", sessiontree.ErrAuthorityCorrupt)
+	}
+	if err := sessiontree.ValidateEntryIntegrity(finished.Result); err != nil {
+		return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization integrity: %w", err)
 	}
 	committedRef := finished.Result.Message.ToolResult.FullOutput
 	if req.FullOutput == nil {
 		if committedRef != nil || finished.Artifact != nil {
-			return engine.EffectResultFinalizationResult{}, sessiontree.ErrAuthorityCorrupt
+			return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization artifact: %w", sessiontree.ErrAuthorityCorrupt)
 		}
 	} else {
 		expected, err := artifact.RefForEffect(prepared.EffectAttemptID, prepared.Invocation.ToolName, *req.FullOutput)
@@ -238,7 +259,7 @@ func validateCommittedEffectFinalization(req engine.EffectResultFinalizationRequ
 			return engine.EffectResultFinalizationResult{}, err
 		}
 		if committedRef == nil || finished.Artifact == nil || *committedRef != expected || *finished.Artifact != expected {
-			return engine.EffectResultFinalizationResult{}, sessiontree.ErrAuthorityCorrupt
+			return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization artifact: %w", sessiontree.ErrAuthorityCorrupt)
 		}
 	}
 	return engine.EffectResultFinalizationResult{Handled: true, Message: session.CloneMessage(finished.Result.Message), Replayed: finished.Replayed, CanonicalEntryID: finished.Result.ID}, nil

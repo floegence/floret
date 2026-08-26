@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Normalize invalid UTF-8 in tool-result text and typed Activity presentation
+  before output projection, observation, and canonical persistence.
+- Treat the committed Effect result entry as the single result fact while
+  retaining strict Effect identity, entry-integrity, and artifact checks. JSON
+  normalization can no longer create a false authority-corruption failure.
+
 ## v5.0.2 - 2026-08-25
 
 - Bound recovery storage by checkpointing terminal turns atomically and folding

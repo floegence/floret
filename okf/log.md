@@ -1,5 +1,13 @@
 # Floret OKF Update Log
 
+## 2026-08-26
+* **Canonical Effect result convergence**: The committed Effect result entry is
+  now the only durable result message. Projection retains strict identity,
+  integrity, and artifact checks without comparing an event-derived duplicate.
+* **UTF-8 tool-result boundary**: Tool-result and typed Activity text are
+  normalized before projection and persistence, preventing serialization from
+  changing canonical result bytes after an Effect commits.
+
 ## 2026-08-25
 * **Bounded recovery storage**: Terminal turns now checkpoint canonical domain
   and prompt state while clearing folded recovery frames. Long active turns

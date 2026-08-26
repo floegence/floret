@@ -1178,6 +1178,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return result.DispatchErr
 			}
 			result = preparePendingToolResult(result)
+			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
 			result.Activity = sanitizeActivityPresentation(result.Activity)
 			toolResults[i] = result
 			resultStatus := toolResultStatus(result)

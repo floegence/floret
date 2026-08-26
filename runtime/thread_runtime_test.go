@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v5/config"
 	"github.com/floegence/floret/v5/florettest"
@@ -2094,6 +2095,122 @@ func TestThreadServiceUnknownEffectRequiresExplicitOneShotRetry(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if toolRuns.Load() != 1 {
 		t.Fatalf("effect retry crossed one-shot fence %d times", toolRuns.Load())
+	}
+}
+
+func TestThreadServiceCanonicalEffectResultNormalizesInvalidUTF8Once(t *testing.T) {
+	path := t.TempDir() + "/effect-result-utf8.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "utf8-tool", Name: "utf8_shell", Args: `{}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var toolRuns atomic.Int32
+	invalidOutput := "valid prefix " + string([]byte{0xe8, 0xa2})
+	exitCode := 0
+	effectTool := tools.Define[map[string]any](
+		tools.Definition{
+			Name: "utf8_shell", InputSchema: tools.StrictObject(map[string]any{}, nil),
+			Effects: []tools.Effect{tools.EffectShell}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil, nil,
+		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+			toolRuns.Add(1)
+			return tools.Result{
+				Text: invalidOutput,
+				Activity: &tools.ActivityPresentation{
+					Label: "UTF-8 shell", Renderer: tools.ActivityRendererTerminal,
+					Payload: tools.TerminalActivityPayload{Status: string(observation.ActivityStatusSuccess), Output: invalidOutput, ExitCode: &exitCode},
+				},
+			}, nil
+		},
+	)
+	agent, err := testAgent(gateway,
+		WithAgentTools(effectTool),
+		WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+			return effect(ctx, EffectAuthorizationProof{
+				EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+				ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+				PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+			})
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-effect-result-utf8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "run"}, RequestKey: "send-effect-result-utf8"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if *completed.LastOutcome != TurnOutcomeCompleted || completed.Error != "" {
+		t.Fatalf("completed view=%#v", completed)
+	}
+	if toolRuns.Load() != 1 {
+		t.Fatalf("tool runs=%d, want 1", toolRuns.Load())
+	}
+	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalResults := 0
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryToolResult {
+			continue
+		}
+		canonicalResults++
+		if !utf8.ValidString(entry.Message.Content) || !strings.Contains(entry.Message.Content, "\uFFFD") {
+			t.Fatalf("canonical result content=%q, want valid UTF-8 replacement", entry.Message.Content)
+		}
+	}
+	if canonicalResults != 1 {
+		t.Fatalf("canonical tool results=%d, want 1", canonicalResults)
+	}
+	var output string
+	for _, item := range completed.Items {
+		if item.Kind != ThreadItemTool || item.Activity == nil || item.Activity.Presentation == nil {
+			continue
+		}
+		terminal, ok := item.Activity.Presentation.Payload.(tools.TerminalActivityPayload)
+		if ok {
+			output = terminal.Output
+		}
+	}
+	if output == "" || !utf8.ValidString(output) || !strings.Contains(output, "\uFFFD") {
+		t.Fatalf("canonical terminal output=%q, want valid UTF-8 replacement", output)
+	}
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Shutdown(context.Background()) })
+	reopenedService, err := reopened.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil || view.LastOutcome == nil || *view.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("reopened view=%#v err=%v", view, err)
 	}
 }
 
