@@ -99,6 +99,15 @@ rows without understanding the product tool that authored them. A non-empty
 update replaces the prior row list; an empty terminal update preserves existing
 rows. This remains a closed typed payload, not an arbitrary JSON escape hatch.
 
+`OutputPolicy.TruncationNotice` lets the single output projection path place a
+bounded notice at the truncation edge. The visible text remains inside the
+configured byte and line limits, while `PreserveFull` continues to admit the
+complete result through the canonical artifact path.
+
+`WebFetchActivityPayload` carries only requested and final URLs, status, MIME,
+format, byte count, truncation, and error metadata. The fetched page body stays
+in the tool result and is never duplicated in Activity.
+
 # Batch Execution
 
 The engine validates and prepares the complete ordinary-call batch before any
@@ -138,3 +147,4 @@ only for polling tools and must name unique properties from the input schema.
 * [Schema Helpers](/tools/schema.go)
 * [Permissions](/tools/permission.go)
 * [Output Projection](/tools/output_projection.go)
+* [Web Fetch Tool](/tools/webfetch/webfetch.go)

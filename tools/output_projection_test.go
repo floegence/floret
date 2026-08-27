@@ -51,3 +51,30 @@ func TestBuildOutputProjectionAllowsExplicitNoPreserve(t *testing.T) {
 		t.Fatalf("projection = %#v", got)
 	}
 }
+
+func TestBuildOutputProjectionAddsBoundedTruncationNotice(t *testing.T) {
+	head := BuildOutputProjection(Result{Name: "demo", Text: "01234567890123456789"}, OutputPolicy{
+		VisibleMaxBytes: 18, Strategy: OutputHead, PreserveFull: true,
+		TruncationNotice: "[truncated]",
+	})
+	if head.VisibleText != "01234\n\n[truncated]" || len(head.VisibleText) > 18 || head.FullOutputPlan == nil {
+		t.Fatalf("head projection = %#v", head)
+	}
+
+	tail := BuildOutputProjection(Result{Name: "demo", Text: "01234567890123456789"}, OutputPolicy{
+		VisibleMaxBytes: 18, Strategy: OutputTail, PreserveFull: true,
+		TruncationNotice: "[truncated]",
+	})
+	if tail.VisibleText != "[truncated]\n\n56789" || len(tail.VisibleText) > 18 || tail.FullOutputPlan == nil {
+		t.Fatalf("tail projection = %#v", tail)
+	}
+}
+
+func TestBuildOutputProjectionTrimsNoticeWhenItExceedsLimit(t *testing.T) {
+	got := BuildOutputProjection(Result{Name: "demo", Text: "0123456789"}, OutputPolicy{
+		VisibleMaxBytes: 4, Strategy: OutputHead, TruncationNotice: "[truncated]",
+	})
+	if got.VisibleText != "[tru" || got.VisibleBytes != 4 {
+		t.Fatalf("projection = %#v", got)
+	}
+}

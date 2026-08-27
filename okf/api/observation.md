@@ -94,7 +94,7 @@ the product-neutral renderer and lifecycle fact. Floret validates that payload
 shape for safe transport and preserves it through live and durable activity
 projection, but it does not define tool-specific UI layout, copy, grouping, or
 field priority. Downstream hosts remain responsible for interpreting terminal,
-file, patch, web-search, question, completion, todo, and other renderer payloads
+file, patch, web-search, web-fetch, question, completion, todo, and other renderer payloads
 as product presentation.
 Question payloads may carry optional host-authored answer summaries after a
 prompt is resolved. Each answer binds to a question id and either contains

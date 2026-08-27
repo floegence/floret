@@ -24,6 +24,7 @@ const (
 	ActivityRendererFile       ActivityRenderer = "file"
 	ActivityRendererPatch      ActivityRenderer = "patch"
 	ActivityRendererWebSearch  ActivityRenderer = "web_search"
+	ActivityRendererWebFetch   ActivityRenderer = "web_fetch"
 	ActivityRendererTodos      ActivityRenderer = "todos"
 	ActivityRendererQuestion   ActivityRenderer = "question"
 	ActivityRendererCompletion ActivityRenderer = "completion"
@@ -143,6 +144,24 @@ type WebSearchActivityPayload struct {
 
 func (WebSearchActivityPayload) activityRenderer() ActivityRenderer {
 	return ActivityRendererWebSearch
+}
+
+// WebFetchActivityPayload carries bounded public response metadata for a
+// web_fetch activity. Fetched page content stays in the tool result.
+type WebFetchActivityPayload struct {
+	URL         string         `json:"url,omitempty"`
+	FinalURL    string         `json:"final_url,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	StatusCode  int            `json:"status_code,omitempty"`
+	ContentType string         `json:"content_type,omitempty"`
+	Format      string         `json:"format,omitempty"`
+	BytesRead   int64          `json:"bytes_read,omitempty"`
+	Truncated   bool           `json:"truncated,omitempty"`
+	Error       *ActivityError `json:"error,omitempty"`
+}
+
+func (WebFetchActivityPayload) activityRenderer() ActivityRenderer {
+	return ActivityRendererWebFetch
 }
 
 type TodoActivityItem struct {
@@ -335,6 +354,8 @@ func (presentation *ActivityPresentation) UnmarshalJSON(data []byte) error {
 			target = new(PatchActivityPayload)
 		case ActivityRendererWebSearch:
 			target = new(WebSearchActivityPayload)
+		case ActivityRendererWebFetch:
+			target = new(WebFetchActivityPayload)
 		case ActivityRendererTodos:
 			target = new(TodosActivityPayload)
 		case ActivityRendererQuestion:
@@ -359,6 +380,8 @@ func (presentation *ActivityPresentation) UnmarshalJSON(data []byte) error {
 		case *PatchActivityPayload:
 			payload = *value
 		case *WebSearchActivityPayload:
+			payload = *value
+		case *WebFetchActivityPayload:
 			payload = *value
 		case *TodosActivityPayload:
 			payload = *value
@@ -473,6 +496,9 @@ func FinalizeActivityPresentation(in *ActivityPresentation, status string) *Acti
 	case WebSearchActivityPayload:
 		payload.Status = status
 		out.Payload = payload
+	case WebFetchActivityPayload:
+		payload.Status = status
+		out.Payload = payload
 	case CompletionActivityPayload:
 		payload.Status = status
 		out.Payload = payload
@@ -500,6 +526,8 @@ func ActivityStatus(in *ActivityPresentation) (string, bool) {
 	case PatchActivityPayload:
 		status = payload.Status
 	case WebSearchActivityPayload:
+		status = payload.Status
+	case WebFetchActivityPayload:
 		status = payload.Status
 	case CompletionActivityPayload:
 		status = payload.Status
@@ -666,6 +694,37 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.Error = cloneActivityError(r.Error)
 		}
 		return l
+	case WebFetchActivityPayload:
+		l, ok := left.(WebFetchActivityPayload)
+		if !ok {
+			return cloneActivityPayload(r)
+		}
+		if r.URL != "" {
+			l.URL = r.URL
+		}
+		if r.FinalURL != "" {
+			l.FinalURL = r.FinalURL
+		}
+		if r.Status != "" {
+			l.Status = r.Status
+		}
+		if r.StatusCode != 0 {
+			l.StatusCode = r.StatusCode
+		}
+		if r.ContentType != "" {
+			l.ContentType = r.ContentType
+		}
+		if r.Format != "" {
+			l.Format = r.Format
+		}
+		if r.BytesRead != 0 {
+			l.BytesRead = r.BytesRead
+		}
+		l.Truncated = l.Truncated || r.Truncated
+		if r.Error != nil {
+			l.Error = cloneActivityError(r.Error)
+		}
+		return l
 	case QuestionActivityPayload:
 		l, ok := left.(QuestionActivityPayload)
 		if !ok {
@@ -689,7 +748,7 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 func activityPayloadRenderer(payload ActivityPayload) (ActivityRenderer, error) {
 	switch typed := payload.(type) {
 	case StructuredActivityPayload, TerminalActivityPayload, FileActivityPayload, PatchActivityPayload,
-		WebSearchActivityPayload, TodosActivityPayload, QuestionActivityPayload, CompletionActivityPayload,
+		WebSearchActivityPayload, WebFetchActivityPayload, TodosActivityPayload, QuestionActivityPayload, CompletionActivityPayload,
 		SubAgentActivityPayload:
 		return typed.activityRenderer(), nil
 	default:
@@ -711,6 +770,9 @@ func cloneActivityPayload(payload ActivityPayload) ActivityPayload {
 		return clonePatchActivityPayload(typed)
 	case WebSearchActivityPayload:
 		typed.Results = append([]WebSearchActivityResult(nil), typed.Results...)
+		typed.Error = cloneActivityError(typed.Error)
+		return typed
+	case WebFetchActivityPayload:
 		typed.Error = cloneActivityError(typed.Error)
 		return typed
 	case TodosActivityPayload:
@@ -781,7 +843,7 @@ func cloneActivityError(in *ActivityError) *ActivityError {
 func validActivityRenderer(renderer ActivityRenderer) bool {
 	switch renderer {
 	case ActivityRendererStructured, ActivityRendererTerminal, ActivityRendererFile, ActivityRendererPatch,
-		ActivityRendererWebSearch, ActivityRendererTodos, ActivityRendererQuestion, ActivityRendererCompletion,
+		ActivityRendererWebSearch, ActivityRendererWebFetch, ActivityRendererTodos, ActivityRendererQuestion, ActivityRendererCompletion,
 		ActivityRendererSubAgent:
 		return true
 	default:
@@ -833,6 +895,13 @@ func validateActivityPayload(payload ActivityPayload) error {
 			values = append(values, result.Title, result.URL)
 		}
 		return validatePayloadTextAndError(values, typed.Error)
+	case WebFetchActivityPayload:
+		if typed.StatusCode < 0 || typed.BytesRead < 0 {
+			return errors.New("web fetch status code and bytes_read must be non-negative")
+		}
+		return validatePayloadTextAndError([]string{
+			typed.URL, typed.FinalURL, typed.Status, typed.ContentType, typed.Format,
+		}, typed.Error)
 	case TodosActivityPayload:
 		if len(typed.Items) > maxActivityPayloadItems {
 			return errors.New("too many todo items")

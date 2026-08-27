@@ -53,6 +53,11 @@ func WithTerminalStatus(in *tools.ActivityPresentation, status, reason string) *
 		payload.Error = activityError(payload.Error)
 		out.Renderer = tools.ActivityRendererWebSearch
 		out.Payload = payload
+	case tools.WebFetchActivityPayload:
+		payload.Status = status
+		payload.Error = activityError(payload.Error)
+		out.Renderer = tools.ActivityRendererWebFetch
+		out.Payload = payload
 	case tools.CompletionActivityPayload:
 		payload.Status = status
 		if payload.Summary == "" {

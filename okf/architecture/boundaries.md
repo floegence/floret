@@ -39,3 +39,7 @@ Ordinary downstream production code imports only `identity`, `config`,
 `storage.Source` values. Provider transports and `storage/spi` are advanced
 integration surfaces. `florettest` is test-only; `internal/*` is never a host
 dependency.
+
+General public-text retrieval is implemented once in `tools/webfetch`. Hosts
+select when it is visible, resolve product permission at dispatch, and render
+its typed metadata; they do not maintain another HTTP fetch implementation.

@@ -26,6 +26,7 @@ Hosts integrate through a small public surface:
 * [runtime](api/runtime.md) owns durable Hosts, immutable Agents, bound threads, commands, queries, and subscriptions.
 * [storage](api/storage.md) provides opaque Sources; advanced physical backends implement `storage/spi`.
 * [tools](api/tools.md) defines and dispatches host-provided local tools.
+* [tools/webfetch](api/webfetch.md) provides the shared secure public-text fetch tool.
 * [observation](api/observation.md) projects sanitized runtime facts for hosts.
 
 Product concerns such as users, workspace policy, billing, credentials,

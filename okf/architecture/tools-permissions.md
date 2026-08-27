@@ -36,6 +36,20 @@ Read-only safe tools may default to allow. Riskier tools must explicitly ask,
 allow, or deny. Open-world and destructive tools require careful permission
 declarations.
 
+# Public Web Fetch
+
+`tools/webfetch` owns one product-neutral `web_fetch` implementation. It uses a
+fixed GET-only HTTP/HTTPS policy, validates every DNS and redirect target again
+at dial time, bounds reads and model-visible output, decodes text charsets, and
+converts sanitized HTML to Markdown. The tool does not provide authentication,
+custom headers, non-GET methods, binary download, JavaScript rendering, or
+browser state.
+
+The package owns network safety, parsing, result fields, and typed Activity
+metadata. A host owns visibility and supplies the current product permission
+through `Options.Permission` and `Options.PermissionFor`. This keeps one fetch
+execution path without moving product modes or approval UI into Floret.
+
 # Hosted Tool Boundary
 
 Hosted provider tools are provider-native capabilities. They are not dispatched
@@ -191,3 +205,4 @@ runtime facade.
 * [Tool Invocation](/tools/invocation.go)
 * [Permissions](/tools/permission.go)
 * [Pending Results](/tools/pending.go)
+* [Web Fetch Tool](/tools/webfetch/webfetch.go)

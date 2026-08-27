@@ -23,6 +23,7 @@ var publicPackages = []string{
 	"github.com/floegence/floret/v5/storage",
 	"github.com/floegence/floret/v5/storage/spi",
 	"github.com/floegence/floret/v5/tools",
+	"github.com/floegence/floret/v5/tools/webfetch",
 	"github.com/floegence/floret/v5/observation",
 	"github.com/floegence/floret/v5/florettest",
 }

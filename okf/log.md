@@ -1,6 +1,13 @@
 # Floret OKF Update Log
 
 ## 2026-08-27
+* **Shared secure web fetch**: Added the public `tools/webfetch` tool as the
+  single owner of GET-only public-text retrieval, SSRF validation, bounded
+  decoding, HTML conversion, canonical result fields, and body-free typed
+  Activity metadata. Hosts retain visibility, product permission, and UI.
+* **Visible truncation notice**: `OutputPolicy.TruncationNotice` now uses the
+  single output projection path to mark bounded visible truncation while the
+  complete result continues through canonical artifact admission.
 * **Projected tool-batch contract**: Tool validation now produces one dense
   public batch plan shared by call, dispatch, activity, and result events.
   Provider-only schema corrections no longer leave canonical projection

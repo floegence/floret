@@ -115,7 +115,7 @@ func TestApplicationStorageSourceIsOpaque(t *testing.T) {
 
 func TestPublicPackageDependencyDirection(t *testing.T) {
 	allowed := map[string]map[string]bool{
-		"tools":       {"identity": true},
+		"tools":       {"identity": true, "tools": true},
 		"observation": {"config": true, "identity": true, "tools": true},
 	}
 	for directory, packageAllowlist := range allowed {

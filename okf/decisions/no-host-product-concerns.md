@@ -25,6 +25,10 @@ When a downstream host needs a new behavior, first decide whether it is a
 general agent-engine contract. Product-specific behavior should stay in the
 host or be exposed through host-provided tools and public runtime options.
 
+Secure retrieval of a public text URL is general agent-engine behavior, so its
+network validation, parsing, and result contract live in `tools/webfetch`.
+Visibility, product permission, link interaction, and UI remain host concerns.
+
 # Related
 
 * [Boundaries](../architecture/boundaries.md)

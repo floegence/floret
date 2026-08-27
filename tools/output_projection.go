@@ -24,13 +24,14 @@ const (
 )
 
 type OutputPolicy struct {
-	VisibleMaxBytes int
-	VisibleMaxLines int
-	Strategy        OutputStrategy
-	PreserveFull    bool
-	PreserveFullSet bool
-	ArtifactKind    string
-	ArtifactMIME    string
+	VisibleMaxBytes  int
+	VisibleMaxLines  int
+	Strategy         OutputStrategy
+	PreserveFull     bool
+	PreserveFullSet  bool
+	ArtifactKind     string
+	ArtifactMIME     string
+	TruncationNotice string
 }
 
 type OutputProjection struct {
@@ -117,28 +118,18 @@ func MergeOutputPolicy(base OutputPolicy, override *OutputPolicy) OutputPolicy {
 	if override.ArtifactMIME != "" {
 		out.ArtifactMIME = override.ArtifactMIME
 	}
+	if override.TruncationNotice != "" {
+		out.TruncationNotice = override.TruncationNotice
+	}
 	return NormalizeOutputPolicy(out)
 }
 
 func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection {
 	policy = NormalizeOutputPolicy(policy)
 	text := result.Text
-	limited := text
-	truncated := false
-	if policy.VisibleMaxLines > 0 {
-		next, ok := limitLines(limited, policy.VisibleMaxLines, policy.Strategy)
-		if ok {
-			limited = next
-			truncated = true
-		}
-	}
-	if policy.VisibleMaxBytes > 0 && len(limited) > policy.VisibleMaxBytes {
-		truncated = true
-		if policy.Strategy == OutputHead {
-			limited = safeHead(limited, policy.VisibleMaxBytes)
-		} else {
-			limited = safeTail(limited, policy.VisibleMaxBytes)
-		}
+	limited, truncated := applyOutputLimits(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy)
+	if truncated && strings.TrimSpace(policy.TruncationNotice) != "" {
+		limited = outputWithTruncationNotice(text, policy)
 	}
 	projection := OutputProjection{
 		VisibleText:   limited,
@@ -157,6 +148,61 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 		projection.FullOutputPlan = &FullOutputPlan{Text: text, Kind: policy.ArtifactKind, MIME: policy.ArtifactMIME}
 	}
 	return projection
+}
+
+func applyOutputLimits(text string, maxBytes, maxLines int, strategy OutputStrategy) (string, bool) {
+	limited := text
+	truncated := false
+	if maxLines > 0 {
+		next, ok := limitLines(limited, maxLines, strategy)
+		if ok {
+			limited = next
+			truncated = true
+		}
+	}
+	if maxBytes > 0 && len(limited) > maxBytes {
+		truncated = true
+		if strategy == OutputHead {
+			limited = safeHead(limited, maxBytes)
+		} else {
+			limited = safeTail(limited, maxBytes)
+		}
+	}
+	return limited, truncated
+}
+
+func outputWithTruncationNotice(text string, policy OutputPolicy) string {
+	notice := strings.TrimSpace(policy.TruncationNotice)
+	if notice == "" {
+		limited, _ := applyOutputLimits(text, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy)
+		return limited
+	}
+	if noticeOnly, truncated := applyOutputLimits(notice, policy.VisibleMaxBytes, policy.VisibleMaxLines, policy.Strategy); truncated {
+		return noticeOnly
+	}
+	separator := "\n\n"
+	contentMaxBytes := policy.VisibleMaxBytes
+	if contentMaxBytes > 0 {
+		contentMaxBytes -= len(separator) + len(notice)
+		if contentMaxBytes <= 0 {
+			return notice
+		}
+	}
+	contentMaxLines := policy.VisibleMaxLines
+	if contentMaxLines > 0 {
+		contentMaxLines -= strings.Count(separator+notice, "\n")
+		if contentMaxLines <= 0 {
+			return notice
+		}
+	}
+	content, _ := applyOutputLimits(text, contentMaxBytes, contentMaxLines, policy.Strategy)
+	if content == "" {
+		return notice
+	}
+	if policy.Strategy == OutputHead {
+		return content + separator + notice
+	}
+	return notice + separator + content
 }
 
 func limitLines(text string, maxLines int, strategy OutputStrategy) (string, bool) {
