@@ -214,7 +214,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	})
 	if err != nil {
 		_ = coordinatedBackend.Close()
-		return nil, err
+		return nil, runtimeHostError(err)
 	}
 	store, err := newBackendRuntimeStoreWithKernel(coordinatedBackend, kernel)
 	if err != nil {

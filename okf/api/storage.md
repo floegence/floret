@@ -28,7 +28,12 @@ current invariant.
 verification in one backend transaction. Write failure, cancellation, panic,
 schema drift, corrupt state, and future versions roll back or fail closed with
 the prior canonical bytes intact. A current store opens without rewriting its
-canonical envelope; repeating startup is idempotent.
+canonical envelope. The sole v5 adoption repair accepts a tool-result Raw value
+only when its stored hash is valid and replacing JSON's legacy `\\ufffd` escape
+produces the exact current projection. Floret validates the correspondingly
+repaired root inventory and checkpoints state, inventory, and recovery journal
+atomically. Other representation or authority differences remain corrupt.
+Repeating startup is idempotent.
 
 This automatic Floret-owned migration is distinct from the explicit legacy
 physical conversion package. Normal startup must not inspect, convert,

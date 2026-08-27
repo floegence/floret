@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +215,187 @@ func TestBackendRepoStartupReplaysJournalBeforeFinalVerification(t *testing.T) {
 	if _, err := reopened.Thread(ctx, "journal-thread"); err != nil {
 		t.Fatalf("replayed thread missing after restart: %v", err)
 	}
+}
+
+func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
+	for _, withJournal := range []bool{false, true} {
+		name := "checkpoint"
+		if withJournal {
+			name = "journal"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backend.Close()
+			wantRaw := installLegacyUTF8ToolResultStore(t, backend, withJournal, true)
+
+			repo, err := NewBackendRepo(ctx, backend, time.Now)
+			if err != nil {
+				t.Fatalf("startup repair failed: %v", err)
+			}
+			meta, err := repo.Thread(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, err := repo.Path(ctx, "thread", meta.LeafID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(path) != 1 || path[0].Raw != wantRaw || path[0].RawHash != StableHash(wantRaw) {
+				t.Fatalf("repaired path=%#v, want canonical raw", path)
+			}
+			if _, replacements := normalizeLegacyJSONReplacementEscapes(path[0].Raw); replacements != 0 {
+				t.Fatalf("legacy replacement escape survived: %q", path[0].Raw)
+			}
+			if err := backend.View(ctx, func(tx spi.ReadTx) error {
+				records, err := scanBackendDomainJournal(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if len(records) != 0 {
+					t.Fatalf("repair did not checkpoint journal: %d records", len(records))
+				}
+				return repo.VerifyCurrentStateInTransaction(ctx, tx)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			stateAfterFirstOpen := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey)
+			if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
+				t.Fatal(err)
+			}
+			if got := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey); !bytes.Equal(got, stateAfterFirstOpen) {
+				t.Fatal("repaired state was rewritten during idempotent reopen")
+			}
+		})
+	}
+}
+
+func TestBackendRepoRejectsOtherEntryProjectionMismatchWithoutMutation(t *testing.T) {
+	ctx := t.Context()
+	backend := newMigrationTestBackend()
+	installLegacyUTF8ToolResultStore(t, backend, false, false)
+	beforeState := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey)
+	beforeInventory := migrationTestRecord(t, backend, backendDomainNamespace, backendRootThreadInventoryKey)
+
+	if _, err := NewBackendRepo(ctx, backend, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("startup error=%v, want ErrAuthorityCorrupt", err)
+	}
+	if got := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey); !bytes.Equal(got, beforeState) {
+		t.Fatal("rejected state mismatch changed canonical state")
+	}
+	if got := migrationTestRecord(t, backend, backendDomainNamespace, backendRootThreadInventoryKey); !bytes.Equal(got, beforeInventory) {
+		t.Fatal("rejected state mismatch changed root inventory")
+	}
+}
+
+func TestBackendRepoLegacyUTF8RepairRollsBackAtomically(t *testing.T) {
+	ctx := t.Context()
+	backend := newMigrationTestBackend()
+	installLegacyUTF8ToolResultStore(t, backend, false, true)
+	beforeState := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey)
+	beforeInventory := migrationTestRecord(t, backend, backendDomainNamespace, backendRootThreadInventoryKey)
+	injected := errors.New("repair inventory write failed")
+
+	if _, err := NewBackendRepo(ctx, migrationFailingBackend{Backend: backend, err: injected}, time.Now); !errors.Is(err, injected) {
+		t.Fatalf("startup error=%v, want injected failure", err)
+	}
+	if got := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey); !bytes.Equal(got, beforeState) {
+		t.Fatal("failed repair changed canonical state")
+	}
+	if got := migrationTestRecord(t, backend, backendDomainNamespace, backendRootThreadInventoryKey); !bytes.Equal(got, beforeInventory) {
+		t.Fatal("failed repair changed root inventory")
+	}
+}
+
+func installLegacyUTF8ToolResultStore(t *testing.T, backend spi.Backend, withJournal, repairable bool) string {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Date(2026, 8, 26, 15, 24, 0, 0, time.UTC)
+	base := NewMemoryRepo()
+	if _, err := base.CreateThread(ctx, ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	basePayload, err := base.EncodeMemoryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := DecodeMemoryState(basePayload, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := final.Append(ctx, Entry{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolResult,
+		Message: session.Message{
+			Role: session.Tool, Content: "nested JSON keeps \\ufffd while terminal output ends in \uFFFD", ToolCallID: "call", ToolName: "terminal.exec",
+			ToolResult: &session.ToolResultView{Status: "success"},
+		},
+	}, AppendOptions{ID: "result", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRaw := entry.Raw
+	items, err := final.rootThreadInventoryLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw := strings.ReplaceAll(canonicalRaw, "\ufffd", legacyJSONReplacementEscape)
+	if !repairable {
+		legacyRaw = canonicalRaw + " "
+	}
+	if legacyRaw == canonicalRaw {
+		t.Fatal("fixture did not create a distinct legacy projection")
+	}
+	final.mu.Lock()
+	final.entries["thread"][0].Raw = legacyRaw
+	final.entries["thread"][0].RawHash = StableHash(legacyRaw)
+	final.mu.Unlock()
+	items[0].Path[0].Raw = legacyRaw
+	items[0].Path[0].RawHash = StableHash(legacyRaw)
+	finalPayload, err := final.EncodeMemoryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePayload := finalPayload
+	if withJournal {
+		statePayload = basePayload
+	}
+	stateEnvelope, err := storagecodec.EncodeEnvelope("sessiontree", statePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryEnvelope, err := encodeRootThreadInventoryItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		if err := tx.Put(backendDomainNamespace, backendStateKey, stateEnvelope); err != nil {
+			return err
+		}
+		if err := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventoryEnvelope); err != nil {
+			return err
+		}
+		if !withJournal {
+			return nil
+		}
+		frame, changed, err := buildBackendDomainJournalFrame(1, basePayload, finalPayload)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return errors.New("legacy fixture journal did not change domain state")
+		}
+		encodedFrame, err := encodeBackendDomainJournalFrame(frame)
+		if err != nil {
+			return err
+		}
+		return tx.Put(backendDomainJournalNamespace, backendJournalKey(1), encodedFrame)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return canonicalRaw
 }
 
 func TestBackendRepoCheckpointsJournalAtFrameLimit(t *testing.T) {

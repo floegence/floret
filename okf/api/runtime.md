@@ -104,9 +104,17 @@ The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
 v5 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
-bytes. Current-schema startup is byte-preserving and idempotent. This automatic
-domain migration is separate from the explicit legacy physical conversion
+bytes. Current-schema startup is byte-preserving and idempotent except for the
+exact v5 tool-result Raw representation produced before UTF-8 normalization was
+enforced. For that released shape, startup verifies the stored hash and matching
+root inventory, then checkpoints the equivalent canonical representation in
+the same transaction. Every other mismatch still fails closed. This automatic
+domain convergence is separate from the explicit legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.
+
+Startup errors from internal session-tree authority validation are exposed
+through `runtime.ErrAuthorityCorrupt`; hosts do not inspect internal errors or
+physical records to classify them.
 
 ## Destructive storage reset
 

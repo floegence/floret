@@ -102,6 +102,33 @@ func TestOpenRollsBackDomainWhenStartupPanics(t *testing.T) {
 	}
 }
 
+func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
+	path := t.TempDir() + "/floret.sqlite"
+	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.SQLite(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		return tx.Delete("floret.domain", storagecodec.Tuple(storagecodec.TupleString("sessiontree"), storagecodec.TupleString("root_thread_inventory")))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("Open error=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
 type startupBackendSource struct{ backend spi.Backend }
 
 func (source startupBackendSource) Open(context.Context) (spi.Backend, error) {

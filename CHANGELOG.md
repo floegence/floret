@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Repair the exact legacy tool-result Raw projection written when invalid UTF-8
+  was JSON-escaped before normalization. Startup verifies the original hash and
+  root inventory, checkpoints the canonical representation atomically, and
+  continues to reject every other authority mismatch.
+- Preserve the public `runtime.ErrAuthorityCorrupt` classification for
+  session-tree failures returned by `runtime.Open`.
+
 ## v5.0.3 - 2026-08-26
 
 - Normalize invalid UTF-8 in tool-result text and typed Activity presentation

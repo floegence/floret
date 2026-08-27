@@ -2827,32 +2827,33 @@ func StableHash(value string) string {
 	return stableHash(value)
 }
 
+type canonicalEntryRaw struct {
+	Type                    EntryType         `json:"type"`
+	TurnStatus              TurnMarkerStatus  `json:"turn_status,omitempty"`
+	Message                 session.Message   `json:"message,omitempty"`
+	Provider                string            `json:"provider,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	CompactionID            string            `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
+	Summary                 string            `json:"summary,omitempty"`
+	CompactionTrigger       string            `json:"compaction_trigger,omitempty"`
+	CompactionReason        string            `json:"compaction_reason,omitempty"`
+	CompactionPhase         string            `json:"compaction_phase,omitempty"`
+	TokensBefore            int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
+	Error                   string            `json:"error,omitempty"`
+	Metadata                map[string]string `json:"metadata,omitempty"`
+	Payload                 json.RawMessage   `json:"payload,omitempty"`
+}
+
 func rawForEntry(entry Entry) string {
-	type rawEntry struct {
-		Type                    EntryType         `json:"type"`
-		TurnStatus              TurnMarkerStatus  `json:"turn_status,omitempty"`
-		Message                 session.Message   `json:"message,omitempty"`
-		Provider                string            `json:"provider,omitempty"`
-		Model                   string            `json:"model,omitempty"`
-		CompactionID            string            `json:"compaction_id,omitempty"`
-		PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
-		CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
-		SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
-		CompactionGeneration    int               `json:"compaction_generation,omitempty"`
-		CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
-		FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
-		KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
-		Summary                 string            `json:"summary,omitempty"`
-		CompactionTrigger       string            `json:"compaction_trigger,omitempty"`
-		CompactionReason        string            `json:"compaction_reason,omitempty"`
-		CompactionPhase         string            `json:"compaction_phase,omitempty"`
-		TokensBefore            int64             `json:"tokens_before,omitempty"`
-		TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
-		Error                   string            `json:"error,omitempty"`
-		Metadata                map[string]string `json:"metadata,omitempty"`
-		Payload                 json.RawMessage   `json:"payload,omitempty"`
-	}
-	data, _ := json.Marshal(rawEntry{
+	data, _ := json.Marshal(canonicalEntryRaw{
 		Type:                    entry.Type,
 		TurnStatus:              entry.TurnStatus,
 		Message:                 entry.Message,

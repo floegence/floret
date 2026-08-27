@@ -80,11 +80,59 @@ func encodeRootThreadInventory(memory *MemoryRepo) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return encodeRootThreadInventoryItems(items)
+}
+
+func encodeRootThreadInventoryItems(items []RootThreadInventoryItem) ([]byte, error) {
 	payload, err := json.Marshal(persistedRootThreadInventory{Version: rootThreadInventoryVersion, Items: items})
 	if err != nil {
 		return nil, err
 	}
 	return storagecodec.EncodeEnvelope("sessiontree-root-thread-inventory", payload)
+}
+
+func verifyLegacyUTF8RootThreadInventory(encoded []byte, memory *MemoryRepo) error {
+	payload, err := storagecodec.DecodeEnvelope(encoded, "sessiontree-root-thread-inventory")
+	if err != nil {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var inventory persistedRootThreadInventory
+	if err := decoder.Decode(&inventory); err != nil {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("root thread inventory contains trailing data")
+		}
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if inventory.Version != rootThreadInventoryVersion || inventory.Items == nil {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("unsupported root thread inventory"))
+	}
+	for itemIndex := range inventory.Items {
+		for entryIndex := range inventory.Items[itemIndex].Path {
+			if _, err := repairLegacyUTF8EntryProjection(&inventory.Items[itemIndex].Path[entryIndex]); err != nil {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+		}
+	}
+	if err := validateRootThreadInventory(inventory.Items); err != nil {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	got, err := encodeRootThreadInventoryItems(inventory.Items)
+	if err != nil {
+		return err
+	}
+	want, err := encodeRootThreadInventory(memory)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, want) {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("legacy root thread inventory does not match canonical domain"))
+	}
+	return nil
 }
 
 // EncodeBackendRootThreadInventoryRecord derives the backend record committed

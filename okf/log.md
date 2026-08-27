@@ -1,5 +1,13 @@
 # Floret OKF Update Log
 
+## 2026-08-27
+* **Legacy UTF-8 projection convergence**: Runtime startup now repairs the
+  exact tool-result Raw representation written before UTF-8 normalization,
+  after validating its original hash and matching root inventory. The repair
+  checkpoints atomically; unrelated authority differences still fail closed.
+* **Runtime startup errors**: Internal session-tree authority failures now keep
+  the public `runtime.ErrAuthorityCorrupt` classification across `runtime.Open`.
+
 ## 2026-08-26
 * **Canonical Effect result convergence**: The committed Effect result entry is
   now the only durable result message. Projection retains strict identity,

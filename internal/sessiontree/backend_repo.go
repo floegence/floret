@@ -116,6 +116,36 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err != nil {
 			return err
 		}
+		repaired, err := repairLegacyUTF8EntryProjections(memory)
+		if err != nil {
+			return err
+		}
+		if repaired {
+			persistedInventory, readErr := tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)
+			if readErr != nil {
+				return errors.Join(ErrAuthorityCorrupt, readErr)
+			}
+			if err := verifyLegacyUTF8RootThreadInventory(persistedInventory, memory); err != nil {
+				return err
+			}
+			_, committedInventoryEncoded, err = repo.save(tx, memory)
+			if err != nil {
+				return err
+			}
+			if err := clearBackendDomainJournal(ctx, tx); err != nil {
+				return err
+			}
+			committedJournal = backendDomainJournalUsage{}
+			committedInventory, err = memory.rootThreadInventoryLocked()
+			if err != nil {
+				return err
+			}
+			if err := attachRootThreadInventoryProjectionFingerprints(committedInventory); err != nil {
+				return err
+			}
+			committedMemory = memory
+			return nil
+		}
 		if err := repo.verifyRootThreadInventory(tx, memory); err != nil {
 			return err
 		}
