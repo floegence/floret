@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v5.0.4 - 2026-08-27
 
 - Repair the exact legacy tool-result Raw projection written when invalid UTF-8
   was JSON-escaped before normalization. Startup verifies the original hash and
