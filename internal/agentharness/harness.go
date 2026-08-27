@@ -1523,8 +1523,8 @@ func subAgentContextStatusFromEvent(ev event.Event) (observation.ContextStatus, 
 			ProjectedPressure: configbridge.PublicContextPressure(pressure),
 		}), true
 	case event.ProviderUsage:
-		status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
-		if !ok || status.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+		status, ok := engine.ProviderUsageContextStatusFromMetadata(ev.Metadata)
+		if !ok {
 			return observation.ContextStatus{}, false
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{

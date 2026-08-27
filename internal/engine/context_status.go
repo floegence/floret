@@ -81,6 +81,29 @@ func providerUsageContextStatus(req provider.Request, usage provider.Usage, pres
 	}
 }
 
+// ProviderUsageContextStatusFromMetadata reads the final provider-usage
+// payload from the attempt-scoped event metadata emitted by Engine.
+func ProviderUsageContextStatusFromMetadata(metadata any) (ProviderUsageContextStatus, bool) {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return ProviderUsageContextStatus{}, false
+	}
+	status, ok := values["details"].(ProviderUsageContextStatus)
+	if !ok || status.Phase != ProviderUsagePhaseFinalContextStatus {
+		return ProviderUsageContextStatus{}, false
+	}
+	logicalRequestID, logicalOK := values["logical_request_id"].(string)
+	attemptID, attemptIDOK := values["attempt_id"].(string)
+	attemptEpoch, attemptEpochOK := values["attempt_epoch"].(int)
+	attempt, attemptOK := values["attempt"].(int)
+	if !logicalOK || !attemptIDOK || !attemptEpochOK || !attemptOK ||
+		strings.TrimSpace(logicalRequestID) == "" || strings.TrimSpace(attemptID) == "" || attemptEpoch <= 0 || attempt <= 0 ||
+		status.LogicalRequestID != logicalRequestID || status.Attempt != attempt {
+		return ProviderUsageContextStatus{}, false
+	}
+	return status, true
+}
+
 func streamUsageMetadata() map[string]any {
 	return map[string]any{"phase": ProviderUsagePhaseStreamUsage}
 }

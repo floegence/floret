@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-27
+* **Attempt-scoped provider usage projection**: Final provider usage now passes
+  through one strict attempt-envelope decoder before live context and canonical
+  thread totals consume it, restoring cache totals without accepting incomplete
+  attempt identity.
 * **Shared secure web fetch**: Added the public `tools/webfetch` tool as the
   single owner of GET-only public-text retrieval, SSRF validation, bounded
   decoding, HTML conversion, canonical result fields, and body-free typed

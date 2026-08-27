@@ -2002,8 +2002,8 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 		})
 		return &status
 	case event.ProviderUsage:
-		status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
-		if !ok || status.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+		status, ok := engine.ProviderUsageContextStatusFromMetadata(ev.Metadata)
+		if !ok {
 			return nil
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{

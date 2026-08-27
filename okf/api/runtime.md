@@ -98,7 +98,9 @@ queries.
 `ThreadContextReader.Context` keeps two scopes explicit: `Usage` is the latest
 context-pressure status, while `UsageTotals` folds disjoint input, output,
 cache-read, and cache-write counts from canonical final provider-usage entries
-across the thread. Projected request estimates are never included in totals.
+across the thread. Final usage reaches both projections through the same
+attempt-scoped event decoder. Projected request estimates are never included in
+totals.
 
 ## Agent and provider boundary
 

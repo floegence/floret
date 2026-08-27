@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1498,15 +1499,33 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 }
 
 func usageEventContextStatus(ev event.Event) (engine.ProviderUsageContextStatus, bool) {
-	if status, ok := ev.Metadata.(engine.ProviderUsageContextStatus); ok {
-		return status, true
+	return engine.ProviderUsageContextStatusFromMetadata(ev.Metadata)
+}
+
+func TestProviderUsageContextStatusFromMetadataRejectsIncompleteAttemptEnvelope(t *testing.T) {
+	status := engine.ProviderUsageContextStatus{
+		Phase:            engine.ProviderUsagePhaseFinalContextStatus,
+		LogicalRequestID: "logical-request",
+		Attempt:          2,
 	}
-	meta, ok := ev.Metadata.(map[string]any)
-	if !ok {
-		return engine.ProviderUsageContextStatus{}, false
+	valid := map[string]any{
+		"logical_request_id": "logical-request",
+		"attempt_id":         "logical-request:attempt:2",
+		"attempt_epoch":      2,
+		"attempt":            2,
+		"details":            status,
 	}
-	status, ok := meta["details"].(engine.ProviderUsageContextStatus)
-	return status, ok
+	if got, ok := engine.ProviderUsageContextStatusFromMetadata(valid); !ok || got != status {
+		t.Fatalf("valid metadata = (%#v, %t)", got, ok)
+	}
+	if _, ok := engine.ProviderUsageContextStatusFromMetadata(status); ok {
+		t.Fatal("legacy unscoped metadata was accepted")
+	}
+	invalid := maps.Clone(valid)
+	invalid["attempt"] = 1
+	if _, ok := engine.ProviderUsageContextStatusFromMetadata(invalid); ok {
+		t.Fatal("mismatched attempt metadata was accepted")
+	}
 }
 
 func TestRequestRecordsRequestEstimateMetadata(t *testing.T) {

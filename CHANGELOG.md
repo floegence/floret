@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.0.8 - 2026-08-27
+
+- Project final provider usage through the current attempt-scoped event
+  envelope so canonical thread totals and live context status retain input,
+  output, cache-read, and cache-write counts.
+- Use one strict attempt-envelope decoder for runtime and harness projections;
+  incomplete or mismatched attempt identity remains rejected.
+
 ## v5.0.7 - 2026-08-27
 
 - Add the public `tools/webfetch` tool with fixed GET-only limits, redirect and
