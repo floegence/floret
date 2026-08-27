@@ -102,6 +102,23 @@ type orderedPresentationEventGate struct {
 	releaseFinalDone       chan struct{}
 }
 
+type runtimeEventRecorder struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (recorder *runtimeEventRecorder) EmitEvent(event Event) {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	recorder.events = append(recorder.events, event)
+}
+
+func (recorder *runtimeEventRecorder) snapshot() []Event {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]Event(nil), recorder.events...)
+}
+
 func newOrderedPresentationEventGate() *orderedPresentationEventGate {
 	return &orderedPresentationEventGate{
 		firstToolStart: make(chan struct{}, 1), releaseFirstToolStart: make(chan struct{}, 1),
@@ -1167,6 +1184,140 @@ func TestThreadServiceRemovesSchemaCorrectionFromTerminalPresentation(t *testing
 	}
 	assertOrderedThreadItems(t, reopened.Items, []orderedThreadItemExpectation{
 		{kind: ThreadItemUser, text: "read terminal"},
+		{kind: ThreadItemAssistant, text: "recovered"},
+	})
+}
+
+func TestThreadServiceProjectsMixedSchemaCorrectionBatchWithVisibleCardinality(t *testing.T) {
+	path := t.TempDir() + "/mixed-schema-correction.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "invalid-read-1", Name: "terminal.read", Args: `{"process_id":"proc-1","after_seq":0}`},
+				{ID: "visible-read-1", Name: "terminal.read", Args: `{"process_id":"proc-1","description":"first","after_seq":0}`},
+				{ID: "invalid-read-2", Name: "terminal.read", Args: `{"process_id":"proc-2","after_seq":0}`},
+				{ID: "visible-read-2", Name: "terminal.read", Args: `{"process_id":"proc-2","description":"second","after_seq":0}`},
+			}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "recovered"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var calls atomic.Int32
+	terminalRead := tools.Define[map[string]any](
+		tools.Definition{
+			Name: "terminal.read",
+			InputSchema: tools.StrictObject(map[string]any{
+				"process_id":  tools.String("process id"),
+				"description": tools.String("description"),
+				"after_seq":   map[string]any{"type": "integer", "minimum": 0},
+			}, []string{"process_id", "description", "after_seq"}),
+			ReadOnly:   true,
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+			InvalidActivity: func(tools.Invocation[map[string]any]) (*tools.ActivityPresentation, error) {
+				return &tools.ActivityPresentation{Label: "Read terminal output", Renderer: tools.ActivityRendererStructured}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+			calls.Add(1)
+			return tools.Result{Text: "output"}, nil
+		},
+	)
+	recorder := &runtimeEventRecorder{}
+	agent, err := testAgent(
+		gateway,
+		WithAgentTools(terminalRead),
+		WithAgentEventSink(recorder),
+		WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+			return effect(ctx, EffectAuthorizationProof{
+				EffectAttemptID:    request.EffectAttemptID,
+				RequestFingerprint: request.RequestFingerprint,
+				ThreadID:           request.ThreadID,
+				TurnID:             request.TurnID,
+				RunID:              request.RunID,
+				ToolCallID:         request.ToolCallID,
+				PolicyRevision:     "test-policy",
+				AuditReference:     "test-audit",
+				AuditHash:          "test-audit-hash",
+				AuthorizedAt:       time.Now().UTC(),
+			})
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-mixed-schema-correction"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "read terminals"}, RequestKey: "send-mixed-schema-correction"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if completed.Error != "" || *completed.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("completed=%#v", completed)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("visible tool executions=%d, want 2", calls.Load())
+	}
+	assertOrderedThreadItems(t, completed.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "read terminals"},
+		{kind: ThreadItemTool, toolID: "visible-read-1"},
+		{kind: ThreadItemTool, toolID: "visible-read-2"},
+		{kind: ThreadItemAssistant, text: "recovered"},
+	})
+	for _, event := range recorder.snapshot() {
+		if event.Type != observation.EventTypeToolCall && event.Type != observation.EventTypeToolResult {
+			continue
+		}
+		if event.ToolID == "invalid-read-1" || event.ToolID == "invalid-read-2" {
+			t.Fatalf("schema correction leaked as canonical tool event: %#v", event)
+		}
+		if event.ToolID != "visible-read-1" && event.ToolID != "visible-read-2" {
+			continue
+		}
+		wantIndex := 0
+		if event.ToolID == "visible-read-2" {
+			wantIndex = 1
+		}
+		if event.Metadata["batch_index"] != wantIndex || event.Metadata["batch_size"] != 2 {
+			t.Fatalf("event batch metadata=%#v for %s", event.Metadata, event.ToolID)
+		}
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil || reopened.LastOutcome == nil || *reopened.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("reopened=%#v err=%v", reopened, err)
+	}
+	assertOrderedThreadItems(t, reopened.Items, []orderedThreadItemExpectation{
+		{kind: ThreadItemUser, text: "read terminals"},
+		{kind: ThreadItemTool, toolID: "visible-read-1"},
+		{kind: ThreadItemTool, toolID: "visible-read-2"},
 		{kind: ThreadItemAssistant, text: "recovered"},
 	})
 }
@@ -2435,10 +2586,75 @@ func sameThreadItemCheckpoint(items, expected []ThreadItem) bool {
 
 func TestThreadViewJSONRemainsDetachedFromSubscriptionMutation(t *testing.T) {
 	// Keep the replaceable-current contract honest for host transports.
-	view := ThreadView{ThreadID: "thread-json", Items: []ThreadItem{{ID: "item", Kind: ThreadItemAssistant, Text: "ok"}}}
-	encoded, err := json.Marshal(cloneThreadRuntimeView(view))
+	view := ThreadView{
+		ThreadID: "thread-json", Items: []ThreadItem{{ID: "item", Kind: ThreadItemAssistant, Text: "ok"}},
+		Failure: &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "failed"}, Error: "failed",
+	}
+	cloned := cloneThreadRuntimeView(view)
+	cloned.Failure.Message = "changed"
+	if view.Failure.Message != "failed" {
+		t.Fatalf("failure clone mutated source: %#v", view.Failure)
+	}
+	encoded, err := json.Marshal(cloned)
 	if err != nil || len(encoded) == 0 || !json.Valid(encoded) {
 		t.Fatalf("view json=%q err=%v", encoded, err)
+	}
+}
+
+func TestThreadServiceProjectsTypedCanonicalFailureInViewAndSummary(t *testing.T) {
+	path := t.TempDir() + "/typed-failure.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{ReturnError: errors.New("provider unavailable")},
+	)
+	agent, err := testAgent(gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-typed-failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "fail"}, RequestKey: "send-typed-failure"}); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if *failed.LastOutcome != TurnOutcomeFailed || failed.Failure == nil ||
+		failed.Failure.Code != ThreadTurnFailureProvider || failed.Failure.Message != "provider unavailable" || failed.Error != failed.Failure.Message {
+		t.Fatalf("failed view=%#v", failed)
+	}
+	summaries, err := service.List(t.Context(), ThreadScope{})
+	if err != nil || len(summaries) != 1 || summaries[0].Failure == nil ||
+		summaries[0].Failure.Code != ThreadTurnFailureProvider || summaries[0].Error != summaries[0].Failure.Message {
+		t.Fatalf("summaries=%#v err=%v", summaries, err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil || reopened.Failure == nil || reopened.Failure.Code != ThreadTurnFailureProvider || reopened.Error != reopened.Failure.Message {
+		t.Fatalf("reopened=%#v err=%v", reopened, err)
 	}
 }
 

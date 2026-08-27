@@ -789,10 +789,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	projection.ctx = persistCtx
 	if projection.err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error", turnProjectionFailureOrigin(projection.err))
 	}
 	if err := projection.FlushForTurnStatus(result.Status, result.Err); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error", turnProjectionFailureOrigin(err))
 	}
 	current, err := t.Journal(persistCtx)
 	if err != nil {
@@ -1933,6 +1933,34 @@ type providerAttemptIdentity struct {
 	attemptEpoch     int
 }
 
+type turnProjectionContractError struct {
+	err error
+}
+
+func (failure *turnProjectionContractError) Error() string {
+	return failure.err.Error()
+}
+
+func (failure *turnProjectionContractError) Unwrap() error {
+	return failure.err
+}
+
+func newTurnProjectionContractError(message string) error {
+	return &turnProjectionContractError{err: errors.New(message)}
+}
+
+func newTurnProjectionContractErrorf(format string, args ...any) error {
+	return &turnProjectionContractError{err: fmt.Errorf(format, args...)}
+}
+
+func turnProjectionFailureOrigin(err error) engine.FailureOrigin {
+	var contractFailure *turnProjectionContractError
+	if errors.As(err, &contractFailure) {
+		return engine.FailureOriginContract
+	}
+	return engine.FailureOriginStorage
+}
+
 func (identity providerAttemptIdentity) empty() bool {
 	return identity.logicalRequestID == "" && identity.attemptID == "" && identity.attemptEpoch == 0
 }
@@ -2094,23 +2122,23 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 	identity, present := providerAttemptFromMetadata(ev.Metadata)
 	if ev.Type == event.ProviderRequest {
 		if !present || !identity.valid() {
-			return false, errors.New("provider request requires complete attempt identity")
+			return false, newTurnProjectionContractError("provider request requires complete attempt identity")
 		}
 		if p.activeAttempt.empty() {
 			p.activeAttempt = identity
 			return true, nil
 		}
 		if identity.logicalRequestID != p.activeAttempt.logicalRequestID {
-			return false, errors.New("provider attempt identity conflict: logical request changed")
+			return false, newTurnProjectionContractError("provider attempt identity conflict: logical request changed")
 		}
 		switch {
 		case identity.attemptEpoch < p.activeAttempt.attemptEpoch:
 			return false, nil
 		case identity.attemptEpoch == p.activeAttempt.attemptEpoch && identity.attemptID != p.activeAttempt.attemptID:
-			return false, errors.New("provider attempt identity conflict: epoch reused by another attempt")
+			return false, newTurnProjectionContractError("provider attempt identity conflict: epoch reused by another attempt")
 		case identity.attemptEpoch > p.activeAttempt.attemptEpoch:
 			if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
-				return false, errors.New("provider attempt superseded with pending canonical tool batch")
+				return false, newTurnProjectionContractError("provider attempt superseded with pending canonical tool batch")
 			}
 			p.text = ""
 			p.reasoning = ""
@@ -2122,22 +2150,22 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 		return true, nil
 	}
 	if !identity.valid() {
-		return false, errors.New("provider event requires complete attempt identity")
+		return false, newTurnProjectionContractError("provider event requires complete attempt identity")
 	}
 	if p.activeAttempt.empty() {
-		return false, errors.New("provider event arrived before attempt activation")
+		return false, newTurnProjectionContractError("provider event arrived before attempt activation")
 	}
 	if identity.logicalRequestID != p.activeAttempt.logicalRequestID {
-		return false, errors.New("provider attempt identity conflict: logical request changed")
+		return false, newTurnProjectionContractError("provider attempt identity conflict: logical request changed")
 	}
 	if identity.attemptEpoch < p.activeAttempt.attemptEpoch {
 		return false, nil
 	}
 	if identity.attemptEpoch == p.activeAttempt.attemptEpoch && identity.attemptID != p.activeAttempt.attemptID {
-		return false, errors.New("provider attempt identity conflict: epoch reused by another attempt")
+		return false, newTurnProjectionContractError("provider attempt identity conflict: epoch reused by another attempt")
 	}
 	if identity.attemptEpoch > p.activeAttempt.attemptEpoch {
-		return false, errors.New("provider event arrived for inactive future attempt")
+		return false, newTurnProjectionContractError("provider event arrived for inactive future attempt")
 	}
 	return true, nil
 }
@@ -2247,10 +2275,10 @@ func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Stat
 		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
 		for _, call := range p.pendingCalls {
 			if call.message.ToolCallID == "" {
-				return errors.New("tool call batch contains empty tool_call_id")
+				return newTurnProjectionContractError("tool call batch contains empty tool_call_id")
 			}
 			if _, ok := seenCalls[call.message.ToolCallID]; ok {
-				return fmt.Errorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
+				return newTurnProjectionContractErrorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
 			}
 			seenCalls[call.message.ToolCallID] = struct{}{}
 		}
@@ -2266,10 +2294,10 @@ func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Stat
 	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
 	for _, result := range p.pendingResults {
 		if result.message.ToolCallID == "" {
-			return errors.New("tool result batch contains empty tool_call_id")
+			return newTurnProjectionContractError("tool result batch contains empty tool_call_id")
 		}
 		if _, ok := byID[result.message.ToolCallID]; ok {
-			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
+			return newTurnProjectionContractErrorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
 		}
 		byID[result.message.ToolCallID] = result
 	}
@@ -2290,7 +2318,7 @@ func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Stat
 		appended = true
 	}
 	for id := range byID {
-		return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
+		return newTurnProjectionContractErrorf("tool result batch references unknown tool_call_id %q", id)
 	}
 	if appended {
 		entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID})
@@ -2341,17 +2369,17 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	if !p.pendingCallsSent {
 		if len(p.pendingCalls) < size {
 			if force {
-				return fmt.Errorf("incomplete tool call batch: %d calls, want %d", len(p.pendingCalls), size)
+				return newTurnProjectionContractErrorf("incomplete tool call batch: %d calls, want %d", len(p.pendingCalls), size)
 			}
 			return nil
 		}
 		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
 		for _, call := range p.pendingCalls {
 			if call.message.ToolCallID == "" {
-				return errors.New("tool call batch contains empty tool_call_id")
+				return newTurnProjectionContractError("tool call batch contains empty tool_call_id")
 			}
 			if _, ok := seenCalls[call.message.ToolCallID]; ok {
-				return fmt.Errorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
+				return newTurnProjectionContractErrorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
 			}
 			seenCalls[call.message.ToolCallID] = struct{}{}
 		}
@@ -2369,10 +2397,10 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
 	for _, result := range p.pendingResults {
 		if result.message.ToolCallID == "" {
-			return errors.New("tool result batch contains empty tool_call_id")
+			return newTurnProjectionContractError("tool result batch contains empty tool_call_id")
 		}
 		if _, ok := byID[result.message.ToolCallID]; ok {
-			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
+			return newTurnProjectionContractErrorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
 		}
 		byID[result.message.ToolCallID] = result
 	}
@@ -2409,12 +2437,12 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 			}
 		}
 		if !known {
-			return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
+			return newTurnProjectionContractErrorf("tool result batch references unknown tool_call_id %q", id)
 		}
 	}
 	remainingCalls := p.pendingCalls[appendable:]
 	if force && len(remainingCalls) > 0 {
-		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), len(byID))
+		return newTurnProjectionContractErrorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), len(byID))
 	}
 	if appendedResult && len(remainingCalls) == 0 {
 		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID}); err != nil {

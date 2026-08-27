@@ -1,5 +1,17 @@
 # Changelog
 
+## v5.0.6 - 2026-08-27
+
+- Derive one dense public tool-batch plan after argument validation so internal
+  schema-correction results cannot leave canonical tool projection waiting for
+  calls that were intentionally hidden.
+- Expose canonical typed terminal failure details on `ThreadView` and
+  `ThreadSummary`. The existing `Error` field remains a deprecated text mirror
+  for v5 wire compatibility.
+- Classify provider-attempt and tool-batch projection invariant failures as
+  engine-contract failures while preserving storage failure classification for
+  repository writes.
+
 ## v5.0.5 - 2026-08-27
 
 - Expose disjoint cumulative input, output, cache-read, and cache-write token

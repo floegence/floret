@@ -370,8 +370,9 @@ func TestHydrateThreadRuntimeLifecyclePreservesForkInterruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, activity, outcome, failure := hydrateThreadRuntimeLifecycle(t.Context(), repo, forked)
-	if activity != ThreadActivityIdle || outcome == nil || *outcome != TurnOutcomeInterrupted || failure != sessiontree.BranchBoundaryTurnFailureMessage {
-		t.Fatalf("hydrated fork lifecycle = activity=%q outcome=%v failure=%q", activity, outcome, failure)
+	if activity != ThreadActivityIdle || outcome == nil || *outcome != TurnOutcomeInterrupted ||
+		failure == nil || failure.Code != ThreadTurnFailureInterrupted || failure.Message != sessiontree.BranchBoundaryTurnFailureMessage {
+		t.Fatalf("hydrated fork lifecycle = activity=%q outcome=%v failure=%#v", activity, outcome, failure)
 	}
 }
 

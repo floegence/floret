@@ -178,6 +178,9 @@ type ThreadSummary struct {
 	LastOutcome     *TurnOutcome       `json:"last_outcome,omitempty"`
 	TurnID          identity.TurnID    `json:"turn_id,omitempty"`
 	QueueCount      int                `json:"queue_count,omitempty"`
+	Failure         *ThreadTurnFailure `json:"failure,omitempty"`
+	// Deprecated: use Failure for terminal failures. Error remains a text
+	// mirror for v5 wire compatibility and transient runtime diagnostics.
 	Error           string             `json:"error,omitempty"`
 	PendingInput    *InputPresentation `json:"pending_input,omitempty"`
 	LastItemAt      time.Time          `json:"last_item_at,omitempty"`
@@ -329,11 +332,14 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
-	ThreadID     identity.ThreadID   `json:"thread_id"`
-	ViewVersion  uint64              `json:"view_version"`
-	Activity     ThreadActivity      `json:"activity"`
-	Attention    AttentionSummary    `json:"attention"`
-	LastOutcome  *TurnOutcome        `json:"last_outcome,omitempty"`
+	ThreadID    identity.ThreadID  `json:"thread_id"`
+	ViewVersion uint64             `json:"view_version"`
+	Activity    ThreadActivity     `json:"activity"`
+	Attention   AttentionSummary   `json:"attention"`
+	LastOutcome *TurnOutcome       `json:"last_outcome,omitempty"`
+	Failure     *ThreadTurnFailure `json:"failure,omitempty"`
+	// Deprecated: use Failure for terminal failures. Error remains a text
+	// mirror for v5 wire compatibility and transient runtime diagnostics.
 	Error        string              `json:"error,omitempty"`
 	TurnID       identity.TurnID     `json:"turn_id,omitempty"`
 	Items        []ThreadItem        `json:"items,omitempty"`
@@ -924,7 +930,8 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
-		Activity: activity, LastOutcome: outcome, TurnID: turnID, QueueCount: queueCount, Error: strings.TrimSpace(failure),
+		Activity: activity, LastOutcome: outcome, TurnID: turnID, QueueCount: queueCount,
+		Failure: cloneThreadTurnFailure(failure), Error: threadTurnFailureMessage(failure),
 	}
 	interactions := make(map[string]ThreadInteraction)
 	interactionOrder := make([]string, 0)
@@ -1037,12 +1044,17 @@ func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
 }
 
 func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {
+	failure := cloneThreadTurnFailure(view.Failure)
+	errorText := strings.TrimSpace(view.Error)
+	if failure != nil {
+		errorText = threadTurnFailureMessage(failure)
+	}
 	summary := ThreadSummary{
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
-		QueueCount: len(view.Queue), Error: strings.TrimSpace(view.Error),
+		QueueCount: len(view.Queue), Failure: failure, Error: errorText,
 	}
 	for index := len(view.Interactions) - 1; index >= 0; index-- {
 		interaction := view.Interactions[index]
@@ -1704,7 +1716,8 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		canonical.ViewVersion = 1
 		canonical.ThreadID = threadID
 		var runID identity.RunID
-		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Error = hydrateThreadRuntimeLifecycle(ctx, service.host.store.repo, meta)
+		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = hydrateThreadRuntimeLifecycle(ctx, service.host.store.repo, meta)
+		canonical.Error = threadTurnFailureMessage(canonical.Failure)
 		actor.state.view = canonical
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = runID
@@ -2152,6 +2165,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
+		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
 		actor.state.openTextSegmentID = ""
 		actor.state.openTextKind = ""
@@ -2395,13 +2409,16 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		} else if runErr != nil || completed.Status == TurnStatusFailed {
 			outcome = TurnOutcomeFailed
 		}
+		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
 		if outcome == TurnOutcomeFailed {
 			if completed.Failure != nil {
-				actor.state.view.Error = strings.TrimSpace(completed.Failure.Message)
+				actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
+				actor.state.view.Error = threadTurnFailureMessage(actor.state.view.Failure)
 			}
 			if actor.state.view.Error == "" && runErr != nil {
-				actor.state.view.Error = strings.TrimSpace(runErr.Error())
+				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: strings.TrimSpace(runErr.Error())}
+				actor.state.view.Error = threadTurnFailureMessage(actor.state.view.Failure)
 			}
 		}
 		if completed.Status != TurnStatusWaiting {
@@ -3413,6 +3430,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
+		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
 		actor.finishLiveTextSegment()
 		actor.state.view.AssistantDraft = ""
@@ -3640,6 +3658,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
 		actor.state.view.LastOutcome = nil
+		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
 		if promotedQueueID != "" {
 			for index := range actor.state.view.Queue {
@@ -3697,6 +3716,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 		view.Queue[index].SupplementalContext = cloneTurnSupplementalContext(view.Queue[index].SupplementalContext)
 	}
 	view.Interactions = cloneThreadInteractions(view.Interactions)
+	view.Failure = cloneThreadTurnFailure(view.Failure)
 	return view
 }
 
@@ -4090,37 +4110,42 @@ func optionalString(value any) string {
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 
-func hydrateThreadRuntimeLifecycle(ctx context.Context, repo sessiontree.JournalRepo, meta sessiontree.ThreadMeta) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, string) {
+func hydrateThreadRuntimeLifecycle(ctx context.Context, repo sessiontree.JournalRepo, meta sessiontree.ThreadMeta) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, *ThreadTurnFailure) {
 	activity := ThreadActivityIdle
 	if strings.TrimSpace(meta.LeafID) == "" {
-		return "", "", activity, nil, ""
+		return "", "", activity, nil, nil
 	}
 	path, err := repo.Path(ctx, meta.ID, meta.LeafID)
 	if err != nil {
-		return "", "", activity, nil, ""
+		return "", "", activity, nil, nil
 	}
 	return threadRuntimeLifecycleFromEntries(meta, path)
 }
 
-func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, string) {
+func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, *ThreadTurnFailure) {
 	activity := ThreadActivityIdle
 	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseTurn)
 	var turnID identity.TurnID = identity.TurnID(lifecycle.LatestTurnID())
 	var runID identity.RunID
 	failureMessage := ""
+	failureCode := ThreadTurnFailureCode("")
 	for _, entry := range path {
-		if entry.TurnID == turnID.String() {
-			if value := strings.TrimSpace(entry.RunID); value != "" {
-				runID = identity.RunID(value)
-			} else if value := strings.TrimSpace(entry.Metadata["run_id"]); value != "" {
-				runID = identity.RunID(value)
-			}
+		if entry.TurnID != turnID.String() {
+			continue
+		}
+		if value := strings.TrimSpace(entry.RunID); value != "" {
+			runID = identity.RunID(value)
+		} else if value := strings.TrimSpace(entry.Metadata["run_id"]); value != "" {
+			runID = identity.RunID(value)
 		}
 		if entry.Type == sessiontree.EntryRunFailure {
 			failureMessage = strings.TrimSpace(entry.Error)
 		}
 		if failureMessage == "" {
 			failureMessage = strings.TrimSpace(entry.Metadata["failure_reason"])
+		}
+		if value := strings.TrimSpace(entry.Metadata[sessiontree.TurnFailureCodeMetadataKey]); value != "" {
+			failureCode = ThreadTurnFailureCode(value)
 		}
 	}
 	var outcome *TurnOutcome
@@ -4140,5 +4165,27 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 		value := TurnOutcomeCancelled
 		outcome = &value
 	}
-	return turnID, runID, activity, outcome, failureMessage
+	var failure *ThreadTurnFailure
+	if failureMessage != "" {
+		if !failureCode.Valid() {
+			failureCode = ThreadTurnFailureLegacyUnclassified
+		}
+		failure = &ThreadTurnFailure{Code: failureCode, Message: failureMessage}
+	}
+	return turnID, runID, activity, outcome, failure
+}
+
+func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
+	if failure == nil {
+		return nil
+	}
+	cloned := *failure
+	return &cloned
+}
+
+func threadTurnFailureMessage(failure *ThreadTurnFailure) string {
+	if failure == nil {
+		return ""
+	}
+	return strings.TrimSpace(failure.Message)
 }

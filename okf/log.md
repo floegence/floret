@@ -1,6 +1,14 @@
 # Floret OKF Update Log
 
 ## 2026-08-27
+* **Projected tool-batch contract**: Tool validation now produces one dense
+  public batch plan shared by call, dispatch, activity, and result events.
+  Provider-only schema corrections no longer leave canonical projection
+  waiting for hidden calls, while genuinely incomplete batches still fail
+  closed as engine-contract failures.
+* **Typed current failure**: `ThreadView` and `ThreadSummary` now expose the
+  canonical terminal failure code and message. The v5 `Error` field remains a
+  deprecated text mirror for wire compatibility.
 * **Canonical thread token totals**: `ThreadContextReader` now exposes
   conversation-wide disjoint input, output, cache-read, and cache-write totals
   folded from final provider-usage entries without adding another ledger.

@@ -78,6 +78,10 @@ Terminal presentation settles from the canonical ordered journal. The runtime
 publishes a terminal current only after that projection succeeds; a completed
 turn without a visible assistant or terminal tool item is reported as a
 failure rather than exposed as a successful user-only transcript.
+`ThreadView.Failure` exposes the canonical terminal failure code and message.
+The deprecated `Error` field remains a text mirror for v5 wire compatibility;
+hosts should classify terminal failures from `Failure.Code` rather than parse
+engine text.
 `TurnResult.Output` remains the run-level aggregate result and is not appended
 as a new assistant item. Different stable assistant IDs remain distinct even
 when their text is equal. A canonical snapshot is applied only if the
@@ -86,9 +90,10 @@ an older read from replacing a newer terminal view.
 
 `ThreadService.List` reads root lifecycle facts from one canonical inventory
 snapshot. `ThreadSummary` carries the current turn identity, attention, queue
-count, pending input, terminal error, and bounded last-item preview needed by a
-host list. It does not hydrate complete timeline, attachment, context, or
-SubAgent detail for every thread; those remain selected-thread queries.
+count, pending input, typed terminal failure, and bounded last-item preview
+needed by a host list. It does not hydrate complete timeline, attachment,
+context, or SubAgent detail for every thread; those remain selected-thread
+queries.
 
 `ThreadContextReader.Context` keeps two scopes explicit: `Usage` is the latest
 context-pressure status, while `UsageTotals` folds disjoint input, output,

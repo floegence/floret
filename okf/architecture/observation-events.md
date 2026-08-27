@@ -152,6 +152,11 @@ or validation failures require a canonical reload rather than event replay.
   activity. `tool_result_batch` save points split durable turn activity into
   product-neutral segments without creating marker activity rows, and repeated
   facts for the same tool invocation collapse back into the original item.
+  After tool argument validation, the engine derives one public tool-batch
+  plan containing only calls that may enter observation and canonical history.
+  Its indices are dense and its size is the visible call count. Tool call,
+  dispatch, activity, and result events reuse that plan; provider-only schema
+  corrections never advance the public batch.
   Approval detail advances that item's lifecycle without replacing an existing
   tool-authored presentation. The live projection recorder retains presentation
   observed on the tool call while committed approval detail is arriving, even

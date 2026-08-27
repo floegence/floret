@@ -980,7 +980,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*tools.ActivityPresentation{}
 		internalValidationCorrections := state.internalValidationCorrections
-		callBatchMetadata := map[string]map[string]any{}
+		projectedCallBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
 			if err != nil {
@@ -1021,7 +1021,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						ToolKind: "local",
 						Args:     start.RawArgs,
 						Activity: callActivities[start.CallID],
-						Metadata: mergeAnyMetadata(attemptMetadata, callBatchMetadata[start.CallID]),
+						Metadata: mergeAnyMetadata(attemptMetadata, projectedCallBatchMetadata[start.CallID]),
 					})
 				},
 				ActivityUpdated: func(update tools.ToolActivityUpdate) {
@@ -1038,20 +1038,24 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						ToolKind: "local",
 						Args:     update.RawArgs,
 						Activity: update.Activity,
-						Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata)),
+						Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(projectedCallBatchMetadata[update.CallID], update.Metadata)),
 					})
 				},
 				EffectBatchPreflight: opts.EffectBatchPreflight,
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
-			for i, call := range calls {
+			projectedCallIDs := make([]string, 0, len(calls))
+			for _, call := range calls {
 				activity, validationErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
 				if validationErr != nil {
 					internalValidationCorrections[call.ID] = true
 				} else {
 					callActivities[call.ID] = sanitizeActivityPresentation(activity)
+					projectedCallIDs = append(projectedCallIDs, call.ID)
 				}
-				callBatchMetadata[call.ID] = map[string]any{"batch_index": i, "batch_size": len(calls)}
+			}
+			for index, callID := range projectedCallIDs {
+				projectedCallBatchMetadata[callID] = map[string]any{"batch_index": index, "batch_size": len(projectedCallIDs)}
 			}
 		}
 		for _, call := range calls {
@@ -1146,14 +1150,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		for i, call := range calls {
+		for _, call := range calls {
 			if internalValidationCorrections[call.ID] {
 				continue
 			}
 			activity := callActivities[call.ID]
-			metadata := callBatchMetadata[call.ID]
+			metadata := projectedCallBatchMetadata[call.ID]
 			if metadata == nil {
-				metadata = map[string]any{"batch_index": i, "batch_size": len(calls)}
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(fmt.Errorf("projected tool call %q is missing batch metadata", call.ID), FailureOriginContract), metrics, started, decision)
 			}
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 		}
@@ -1233,7 +1237,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				if result.Pending == nil {
 					metadataBase = toolProjectionMetadata(result.Metadata, projection)
 				}
-				metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
+				metadata := mergeAnyMetadata(metadataBase, projectedCallBatchMetadata[result.CallID])
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: failureActivity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 				return err
 			}
@@ -1248,7 +1252,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				}
 			} else if projection.FullOutputPlan != nil {
 				err := errors.New("effect result finalizer is required to preserve truncated tool output")
-				metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(calls))
+				metadata := mergeAnyMetadata(toolProjectionMetadata(result.Metadata, projection), projectedCallBatchMetadata[result.CallID])
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 				return err
 			}
@@ -1256,7 +1260,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if result.Pending == nil {
 				metadataBase = toolProjectionMetadata(result.Metadata, projection)
 			}
-			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
+			metadata := mergeAnyMetadata(metadataBase, projectedCallBatchMetadata[result.CallID])
 			metadata["tool_result_status"] = resultStatus
 			if !internalValidationCorrection {
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
@@ -3899,16 +3903,6 @@ func toolResultView(projection tools.OutputProjection) *session.ToolResultView {
 		view.FullOutput = &ref
 	}
 	return view
-}
-
-func mergeToolResultMetadata(base map[string]any, batchIndex, batchSize int) map[string]any {
-	metadata := make(map[string]any, len(base)+2)
-	for key, value := range base {
-		metadata[key] = value
-	}
-	metadata["batch_index"] = batchIndex
-	metadata["batch_size"] = batchSize
-	return metadata
 }
 
 func shortHash(hash string) string {
