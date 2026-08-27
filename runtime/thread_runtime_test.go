@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1478,6 +1479,115 @@ func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	if !ok || payload.Command != "curl https://example.test/spec" || payload.Stdout != "specification" {
 		t.Fatalf("terminal payload=%#v", activity.Presentation.Payload)
 	}
+}
+
+func TestThreadServicePreservesWebFetchActivityThroughJournalAndReopen(t *testing.T) {
+	path := t.TempDir() + "/web-fetch-activity.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "web-fetch-1", Name: "web_fetch_fixture", Args: `{"url":"https://example.com/page"}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	iconData := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}
+	webFetchTool := tools.Define[map[string]string](
+		tools.Definition{
+			Name: "web_fetch_fixture", InputSchema: tools.StrictObject(map[string]any{"url": tools.String("url")}, []string{"url"}),
+			ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+				args, _ := inv.Args.(map[string]string)
+				return &tools.ActivityPresentation{Label: "Web fetch · " + args["url"], Renderer: tools.ActivityRendererWebFetch, Payload: tools.WebFetchActivityPayload{URL: args["url"], Format: "markdown"}}, nil
+			},
+		},
+		nil, nil,
+		func(context.Context, tools.Invocation[map[string]string]) (tools.Result, error) {
+			return tools.Result{Text: "complete body", Activity: &tools.ActivityPresentation{
+				Label: "Web fetch · https://example.com/page", Renderer: tools.ActivityRendererWebFetch,
+				Payload: tools.WebFetchActivityPayload{
+					URL: "https://example.com/page", FinalURL: "https://example.com/final", Status: "success", StatusCode: 200,
+					ContentType: "text/html; charset=utf-8", Format: "markdown", ContentPreview: "# Preview",
+					PreviewTruncated: true, SiteIcon: &tools.WebFetchActivityIcon{ContentType: "image/png", Data: iconData},
+					BytesRead: 1234, Truncated: true,
+				},
+			}}, nil
+		},
+	)
+	agent, err := testAgent(gateway,
+		WithAgentTools(webFetchTool),
+		WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+			return effect(ctx, EffectAuthorizationProof{
+				EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+				ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+				PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+			})
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-web-fetch-activity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "fetch page"}, RequestKey: "send-web-fetch-activity"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+	})
+	assertWebFetchActivity := func(source string, view ThreadView) {
+		t.Helper()
+		for _, item := range view.Items {
+			if item.Kind != ThreadItemTool || item.Activity == nil || item.Activity.ToolID != "web-fetch-1" || item.Activity.Presentation == nil {
+				continue
+			}
+			payload, ok := item.Activity.Presentation.Payload.(tools.WebFetchActivityPayload)
+			if !ok || payload.URL != "https://example.com/page" || payload.FinalURL != "https://example.com/final" || payload.StatusCode != 200 || payload.ContentPreview != "# Preview" || !payload.PreviewTruncated || payload.SiteIcon == nil || !bytes.Equal(payload.SiteIcon.Data, iconData) || payload.BytesRead != 1234 || !payload.Truncated {
+				t.Fatalf("%s payload=%#v", source, item.Activity.Presentation.Payload)
+			}
+			return
+		}
+		t.Fatalf("%s web fetch activity missing: %#v", source, view.Items)
+	}
+	assertWebFetchActivity("live view", completed)
+	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalItems, _, err := threadRuntimeItemsFromEntries(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWebFetchActivity("canonical journal", ThreadView{Items: journalItems})
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWebFetchActivity("reopened view", reopened)
 }
 
 func TestThreadRuntimeCanonicalRefreshRejectsStaleSnapshot(t *testing.T) {

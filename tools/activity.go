@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	maxActivityTextRunes    = 8_000
-	maxActivityPayloadItems = 200
+	maxActivityTextRunes            = 8_000
+	maxActivityPayloadItems         = 200
+	maxWebFetchPreviewRunes         = 2_000
+	maxWebFetchActivityIconDataSize = 8 << 10
 )
 
 type ActivityRenderer string
@@ -146,18 +148,29 @@ func (WebSearchActivityPayload) activityRenderer() ActivityRenderer {
 	return ActivityRendererWebSearch
 }
 
-// WebFetchActivityPayload carries bounded public response metadata for a
-// web_fetch activity. Fetched page content stays in the tool result.
+// WebFetchActivityIcon carries one passive, bounded site icon. Hosts may
+// render the bytes directly and must not refetch a remote icon URL.
+type WebFetchActivityIcon struct {
+	ContentType string `json:"content_type"`
+	Data        []byte `json:"data"`
+}
+
+// WebFetchActivityPayload carries bounded public response metadata and a
+// lightweight content preview for a web_fetch activity. Complete fetched page
+// content stays in the tool result and artifact.
 type WebFetchActivityPayload struct {
-	URL         string         `json:"url,omitempty"`
-	FinalURL    string         `json:"final_url,omitempty"`
-	Status      string         `json:"status,omitempty"`
-	StatusCode  int            `json:"status_code,omitempty"`
-	ContentType string         `json:"content_type,omitempty"`
-	Format      string         `json:"format,omitempty"`
-	BytesRead   int64          `json:"bytes_read,omitempty"`
-	Truncated   bool           `json:"truncated,omitempty"`
-	Error       *ActivityError `json:"error,omitempty"`
+	URL              string                `json:"url,omitempty"`
+	FinalURL         string                `json:"final_url,omitempty"`
+	Status           string                `json:"status,omitempty"`
+	StatusCode       int                   `json:"status_code,omitempty"`
+	ContentType      string                `json:"content_type,omitempty"`
+	Format           string                `json:"format,omitempty"`
+	ContentPreview   string                `json:"content_preview,omitempty"`
+	PreviewTruncated bool                  `json:"preview_truncated,omitempty"`
+	SiteIcon         *WebFetchActivityIcon `json:"site_icon,omitempty"`
+	BytesRead        int64                 `json:"bytes_read,omitempty"`
+	Truncated        bool                  `json:"truncated,omitempty"`
+	Error            *ActivityError        `json:"error,omitempty"`
 }
 
 func (WebFetchActivityPayload) activityRenderer() ActivityRenderer {
@@ -717,6 +730,13 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.Format != "" {
 			l.Format = r.Format
 		}
+		if r.ContentPreview != "" {
+			l.ContentPreview = r.ContentPreview
+		}
+		l.PreviewTruncated = l.PreviewTruncated || r.PreviewTruncated
+		if r.SiteIcon != nil {
+			l.SiteIcon = cloneWebFetchActivityIcon(r.SiteIcon)
+		}
 		if r.BytesRead != 0 {
 			l.BytesRead = r.BytesRead
 		}
@@ -773,6 +793,7 @@ func cloneActivityPayload(payload ActivityPayload) ActivityPayload {
 		typed.Error = cloneActivityError(typed.Error)
 		return typed
 	case WebFetchActivityPayload:
+		typed.SiteIcon = cloneWebFetchActivityIcon(typed.SiteIcon)
 		typed.Error = cloneActivityError(typed.Error)
 		return typed
 	case TodosActivityPayload:
@@ -840,6 +861,40 @@ func cloneActivityError(in *ActivityError) *ActivityError {
 	return &out
 }
 
+func cloneWebFetchActivityIcon(in *WebFetchActivityIcon) *WebFetchActivityIcon {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Data = append([]byte(nil), in.Data...)
+	return &out
+}
+
+func validWebFetchActivityIconContentType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "image/png", "image/jpeg", "image/webp", "image/x-icon", "image/vnd.microsoft.icon":
+		return true
+	default:
+		return false
+	}
+}
+
+func validWebFetchActivityIconData(contentType string, data []byte) bool {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}):
+		return contentType == "image/png"
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return contentType == "image/jpeg"
+	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return contentType == "image/webp"
+	case len(data) >= 4 && bytes.Equal(data[:4], []byte{0, 0, 1, 0}):
+		return contentType == "image/x-icon" || contentType == "image/vnd.microsoft.icon"
+	default:
+		return false
+	}
+}
+
 func validActivityRenderer(renderer ActivityRenderer) bool {
 	switch renderer {
 	case ActivityRendererStructured, ActivityRendererTerminal, ActivityRendererFile, ActivityRendererPatch,
@@ -899,8 +954,22 @@ func validateActivityPayload(payload ActivityPayload) error {
 		if typed.StatusCode < 0 || typed.BytesRead < 0 {
 			return errors.New("web fetch status code and bytes_read must be non-negative")
 		}
+		if activityTextTooLong(typed.ContentPreview, maxWebFetchPreviewRunes) {
+			return errors.New("web fetch content preview exceeds its size limit")
+		}
+		if typed.SiteIcon != nil {
+			if !validWebFetchActivityIconContentType(typed.SiteIcon.ContentType) {
+				return errors.New("web fetch site icon content type is unsupported")
+			}
+			if len(typed.SiteIcon.Data) == 0 || len(typed.SiteIcon.Data) > maxWebFetchActivityIconDataSize {
+				return errors.New("web fetch site icon data exceeds its size limit")
+			}
+			if !validWebFetchActivityIconData(typed.SiteIcon.ContentType, typed.SiteIcon.Data) {
+				return errors.New("web fetch site icon content type does not match its data")
+			}
+		}
 		return validatePayloadTextAndError([]string{
-			typed.URL, typed.FinalURL, typed.Status, typed.ContentType, typed.Format,
+			typed.URL, typed.FinalURL, typed.Status, typed.ContentType, typed.Format, typed.ContentPreview,
 		}, typed.Error)
 	case TodosActivityPayload:
 		if len(typed.Items) > maxActivityPayloadItems {

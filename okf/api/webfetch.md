@@ -28,11 +28,20 @@ text; relative links use the final URL as their base. Binary data, JavaScript
 rendering, authentication, custom headers, and non-GET requests are outside the
 contract.
 
+The Activity projection includes at most 2,000 Unicode characters of sanitized
+content. For HTML, the same fetch path may make one best-effort icon retrieval:
+the first same-origin `rel=icon` target or same-origin `/favicon.ico`. The icon
+has a two-second sub-timeout and 8 KiB limit, follows only same-origin validated
+redirects, and accepts PNG, JPEG, WebP, or ICO bytes. SVG and other active or
+unsupported content fail closed without failing the page read.
+
 # Host Boundary
 
 Hosts bind `Options.Permission` and `Options.PermissionFor` to current product
 authorization. They decide visibility and render `WebFetchActivityPayload`.
-That payload contains response metadata and errors, never fetched content.
+That payload contains response metadata, errors, the lightweight preview, and
+optional passive icon. Hosts render those bytes directly and never refetch a
+remote icon URL. Complete content remains in the tool result and artifact.
 
 # Key Source Files
 

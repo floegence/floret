@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/v5/provider"
 	"github.com/floegence/floret/v5/runtime"
 	"github.com/floegence/floret/v5/storage"
+	"github.com/floegence/floret/v5/tools"
 )
 
 type oneShotCompaction struct {
@@ -28,6 +29,10 @@ func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.M
 
 func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	_ = runtime.ThreadTokenUsageTotals{InputTokens: 80, CacheReadTokens: 15, CacheWriteTokens: 5, OutputTokens: 20}
+	_ = tools.WebFetchActivityPayload{
+		ContentPreview: "preview", PreviewTruncated: true,
+		SiteIcon: &tools.WebFetchActivityIcon{ContentType: "image/png", Data: []byte("png")},
+	}
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "floret.db")
 	gateway := florettest.NewScriptedGateway(

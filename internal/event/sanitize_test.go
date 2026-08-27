@@ -1,12 +1,74 @@
 package event
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/floegence/floret/v5/identity"
 	"github.com/floegence/floret/v5/tools"
 )
+
+func TestSanitizeActivityPresentationPreservesEveryTypedPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		renderer tools.ActivityRenderer
+		payload  tools.ActivityPayload
+	}{
+		{name: "structured", renderer: tools.ActivityRendererStructured, payload: tools.StructuredActivityPayload{}},
+		{name: "terminal", renderer: tools.ActivityRendererTerminal, payload: tools.TerminalActivityPayload{}},
+		{name: "file", renderer: tools.ActivityRendererFile, payload: tools.FileActivityPayload{}},
+		{name: "patch", renderer: tools.ActivityRendererPatch, payload: tools.PatchActivityPayload{}},
+		{name: "web search", renderer: tools.ActivityRendererWebSearch, payload: tools.WebSearchActivityPayload{}},
+		{name: "web fetch", renderer: tools.ActivityRendererWebFetch, payload: tools.WebFetchActivityPayload{}},
+		{name: "todos", renderer: tools.ActivityRendererTodos, payload: tools.TodosActivityPayload{}},
+		{name: "question", renderer: tools.ActivityRendererQuestion, payload: tools.QuestionActivityPayload{}},
+		{name: "completion", renderer: tools.ActivityRendererCompletion, payload: tools.CompletionActivityPayload{}},
+		{name: "subagent", renderer: tools.ActivityRendererSubAgent, payload: tools.SubAgentActivityPayload{
+			ThreadID: identity.ThreadID("thread-child"), ParentThreadID: identity.ThreadID("thread-parent"), Status: "running",
+		}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := Sanitize(Event{Activity: &tools.ActivityPresentation{Renderer: test.renderer, Payload: test.payload}})
+			if got.Activity == nil || got.Activity.Payload == nil || reflect.TypeOf(got.Activity.Payload) != reflect.TypeOf(test.payload) {
+				t.Fatalf("payload %T was not preserved: %#v", test.payload, got.Activity)
+			}
+		})
+	}
+}
+
+func TestSanitizeWebFetchActivityPreservesBoundedPreviewAndIcon(t *testing.T) {
+	t.Parallel()
+
+	iconData := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}
+	got := Sanitize(Event{Activity: &tools.ActivityPresentation{
+		Label:    "Web fetch · https://example.com/page",
+		Renderer: tools.ActivityRendererWebFetch,
+		Payload: tools.WebFetchActivityPayload{
+			URL: "https://example.com/page", FinalURL: "https://example.com/final", Status: "success",
+			StatusCode: 200, ContentType: "text/html", Format: "markdown", ContentPreview: "# Preview",
+			PreviewTruncated: true, SiteIcon: &tools.WebFetchActivityIcon{ContentType: "image/png", Data: iconData},
+			BytesRead: 42, Truncated: true,
+		},
+	}})
+	if got.Activity == nil {
+		t.Fatal("web fetch activity was dropped")
+	}
+	payload, ok := got.Activity.Payload.(tools.WebFetchActivityPayload)
+	if !ok || payload.URL != "https://example.com/page" || payload.FinalURL != "https://example.com/final" || payload.StatusCode != 200 || payload.ContentPreview != "# Preview" || !payload.PreviewTruncated || payload.SiteIcon == nil || payload.SiteIcon.Data[0] != '\x89' || payload.BytesRead != 42 || !payload.Truncated {
+		t.Fatalf("web fetch payload = %#v", got.Activity.Payload)
+	}
+	iconData[0] = 'X'
+	if payload.SiteIcon.Data[0] != '\x89' {
+		t.Fatal("sanitized web fetch icon shares input bytes")
+	}
+}
 
 func TestSanitizeActivityPresentationNormalizesInvalidUTF8(t *testing.T) {
 	invalid := "valid prefix " + string([]byte{0xe8, 0xa2})

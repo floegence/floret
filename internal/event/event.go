@@ -321,6 +321,11 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.DisplayName = sanitizeText(payload.DisplayName)
 		payload.Summary = sanitizeText(payload.Summary)
 		payload.Error = sanitizeError(payload.Error)
+		for i := range payload.Rows {
+			payload.Rows[i].Title = sanitizeText(payload.Rows[i].Title)
+			payload.Rows[i].Meta = sanitizeText(payload.Rows[i].Meta)
+			payload.Rows[i].Content = sanitizeText(payload.Rows[i].Content)
+		}
 		return payload
 	case tools.TerminalActivityPayload:
 		payload.Command = sanitizeText(payload.Command)
@@ -356,6 +361,21 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 			payload.Results[i].URL = sanitizeText(payload.Results[i].URL)
 		}
 		return payload
+	case tools.WebFetchActivityPayload:
+		payload.URL = sanitizeText(payload.URL)
+		payload.FinalURL = sanitizeText(payload.FinalURL)
+		payload.Status = sanitizeText(payload.Status)
+		payload.ContentType = sanitizeText(payload.ContentType)
+		payload.Format = sanitizeText(payload.Format)
+		payload.ContentPreview = safeActivityText(payload.ContentPreview, 2_000)
+		payload.Error = sanitizeError(payload.Error)
+		if payload.SiteIcon != nil {
+			payload.SiteIcon = &tools.WebFetchActivityIcon{
+				ContentType: sanitizeText(payload.SiteIcon.ContentType),
+				Data:        append([]byte(nil), payload.SiteIcon.Data...),
+			}
+		}
+		return payload
 	case tools.TodosActivityPayload:
 		payload.Operation = sanitizeText(payload.Operation)
 		for i := range payload.Items {
@@ -383,6 +403,17 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 	case tools.CompletionActivityPayload:
 		payload.Status = sanitizeText(payload.Status)
 		payload.Summary = sanitizeText(payload.Summary)
+		return payload
+	case tools.SubAgentActivityPayload:
+		payload.Path = sanitizeText(payload.Path)
+		payload.TaskName = sanitizeText(payload.TaskName)
+		payload.TaskDescription = sanitizeText(payload.TaskDescription)
+		payload.Title = sanitizeText(payload.Title)
+		payload.HostProfileRef = sanitizeText(payload.HostProfileRef)
+		payload.ForkMode = sanitizeText(payload.ForkMode)
+		payload.Status = sanitizeText(payload.Status)
+		payload.LastMessage = sanitizeText(payload.LastMessage)
+		payload.WaitingPrompt = sanitizeText(payload.WaitingPrompt)
 		return payload
 	default:
 		return nil

@@ -104,9 +104,10 @@ bounded notice at the truncation edge. The visible text remains inside the
 configured byte and line limits, while `PreserveFull` continues to admit the
 complete result through the canonical artifact path.
 
-`WebFetchActivityPayload` carries only requested and final URLs, status, MIME,
-format, byte count, truncation, and error metadata. The fetched page body stays
-in the tool result and is never duplicated in Activity.
+`WebFetchActivityPayload` carries requested and final URLs, status, MIME,
+format, byte count, truncation, error metadata, and a lightweight bounded
+content preview. It may also contain one validated passive same-origin site
+icon. Complete fetched content stays in the tool result and artifact.
 
 # Batch Execution
 

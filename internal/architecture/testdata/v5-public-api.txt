@@ -1459,6 +1459,9 @@ field ToolDefinition.Annotations map[string]any tag="json:\"annotations,omitempt
 func Validate func(schema map[string]any, raw []byte) (map[string]any, error)
 func ValidateDefinition func(def github.com/floegence/floret/v5/tools.Definition) (github.com/floegence/floret/v5/tools.Definition, error)
 func ValidateStructured func(schema map[string]any, value any) error
+type WebFetchActivityIcon struct
+field WebFetchActivityIcon.ContentType string tag="json:\"content_type\""
+field WebFetchActivityIcon.Data []byte tag="json:\"data\""
 type WebFetchActivityPayload struct
 field WebFetchActivityPayload.URL string tag="json:\"url,omitempty\""
 field WebFetchActivityPayload.FinalURL string tag="json:\"final_url,omitempty\""
@@ -1466,6 +1469,9 @@ field WebFetchActivityPayload.Status string tag="json:\"status,omitempty\""
 field WebFetchActivityPayload.StatusCode int tag="json:\"status_code,omitempty\""
 field WebFetchActivityPayload.ContentType string tag="json:\"content_type,omitempty\""
 field WebFetchActivityPayload.Format string tag="json:\"format,omitempty\""
+field WebFetchActivityPayload.ContentPreview string tag="json:\"content_preview,omitempty\""
+field WebFetchActivityPayload.PreviewTruncated bool tag="json:\"preview_truncated,omitempty\""
+field WebFetchActivityPayload.SiteIcon *github.com/floegence/floret/v5/tools.WebFetchActivityIcon tag="json:\"site_icon,omitempty\""
 field WebFetchActivityPayload.BytesRead int64 tag="json:\"bytes_read,omitempty\""
 field WebFetchActivityPayload.Truncated bool tag="json:\"truncated,omitempty\""
 field WebFetchActivityPayload.Error *github.com/floegence/floret/v5/tools.ActivityError tag="json:\"error,omitempty\""

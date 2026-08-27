@@ -1,10 +1,12 @@
 package webfetch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -37,50 +39,157 @@ func secureHTTPClient(resolver hostResolver, allowBenchmark bool) *http.Client {
 
 func fetch(ctx context.Context, client *http.Client, resolver hostResolver, allowBenchmark bool, args arguments) (fetchResult, error) {
 	requestedURL := args.URL
-	current, err := parseAndValidateURL(ctx, resolver, allowBenchmark, requestedURL)
+	resp, current, err := requestFollowingValidatedRedirects(ctx, client, resolver, allowBenchmark, requestedURL, acceptHeader(args.Format), nil)
 	if err != nil {
 		return fetchResult{}, err
 	}
+	result, resultErr := responseResult(resp, requestedURL, current.String(), args.Format)
+	_ = resp.Body.Close()
+	if result.iconURL != "" {
+		iconContext, cancel := context.WithTimeout(ctx, siteIconTimeout)
+		result.siteIcon, _ = fetchSiteIcon(iconContext, client, resolver, allowBenchmark, current, result.iconURL)
+		cancel()
+	}
+	return result, resultErr
+}
+
+func requestFollowingValidatedRedirects(
+	ctx context.Context,
+	client *http.Client,
+	resolver hostResolver,
+	allowBenchmark bool,
+	rawURL string,
+	accept string,
+	allowURL func(*url.URL) bool,
+) (*http.Response, *url.URL, error) {
+	current, err := parseAndValidateURL(ctx, resolver, allowBenchmark, rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if allowURL != nil && !allowURL(current) {
+		return nil, nil, errors.New("cross-origin request is not allowed")
+	}
 	for redirects := 0; ; redirects++ {
 		if redirects > maxRedirects {
-			return fetchResult{}, errors.New("too many redirects")
+			return nil, nil, errors.New("too many redirects")
 		}
-		resp, err := executeRequest(ctx, client, current, args.Format)
+		resp, err := executeRequest(ctx, client, current, accept)
 		if err != nil {
-			return fetchResult{}, fmt.Errorf("fetch %s: %w", current.Redacted(), err)
+			return nil, nil, fmt.Errorf("fetch %s: %w", current.Redacted(), err)
 		}
 		if isRedirect(resp.StatusCode) {
 			location := strings.TrimSpace(resp.Header.Get("Location"))
 			_ = resp.Body.Close()
 			if location == "" {
-				return fetchResult{}, errors.New("redirect missing location")
+				return nil, nil, errors.New("redirect missing location")
 			}
 			nextURL, err := current.Parse(location)
 			if err != nil {
-				return fetchResult{}, errors.New("invalid redirect location")
+				return nil, nil, errors.New("invalid redirect location")
 			}
 			current, err = parseAndValidateURL(ctx, resolver, allowBenchmark, nextURL.String())
 			if err != nil {
-				return fetchResult{}, err
+				return nil, nil, err
+			}
+			if allowURL != nil && !allowURL(current) {
+				return nil, nil, errors.New("cross-origin redirect is not allowed")
 			}
 			continue
 		}
-		result, resultErr := responseResult(resp, requestedURL, current.String(), args.Format)
-		_ = resp.Body.Close()
-		return result, resultErr
+		return resp, current, nil
 	}
 }
 
-func executeRequest(ctx context.Context, client *http.Client, target *url.URL, format string) (*http.Response, error) {
+func executeRequest(ctx context.Context, client *http.Client, target *url.URL, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", acceptHeader(format))
+	req.Header.Set("Accept", accept)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Accept-Encoding", "identity")
 	return client.Do(req)
+}
+
+func fetchSiteIcon(ctx context.Context, client *http.Client, resolver hostResolver, allowBenchmark bool, pageURL *url.URL, rawURL string) (*siteIcon, error) {
+	resp, _, err := requestFollowingValidatedRedirects(ctx, client, resolver, allowBenchmark, rawURL,
+		"image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft.icon;q=0.9",
+		func(candidate *url.URL) bool { return sameOrigin(pageURL, candidate) },
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("icon returned HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSiteIconBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read site icon: %w", err)
+	}
+	if int64(len(data)) > maxSiteIconBytes {
+		return nil, errors.New("site icon exceeds the size limit")
+	}
+	contentType, err := validateSiteIconContentType(resp.Header.Get("Content-Type"), data)
+	if err != nil {
+		return nil, err
+	}
+	return &siteIcon{ContentType: contentType, Data: append([]byte(nil), data...)}, nil
+}
+
+func validateSiteIconContentType(header string, data []byte) (string, error) {
+	declared := ""
+	if strings.TrimSpace(header) != "" {
+		mediaType, _, err := mime.ParseMediaType(header)
+		if err != nil {
+			return "", errors.New("invalid site icon content type")
+		}
+		declared = strings.ToLower(strings.TrimSpace(mediaType))
+		if !allowedSiteIconContentType(declared) {
+			return "", fmt.Errorf("unsupported site icon content type %q", declared)
+		}
+	}
+	detected := detectSiteIconContentType(data)
+	if detected == "" {
+		return "", errors.New("unsupported site icon data")
+	}
+	if declared != "" && !equivalentSiteIconContentType(declared, detected) {
+		return "", errors.New("site icon content type does not match its data")
+	}
+	return detected, nil
+}
+
+func allowedSiteIconContentType(value string) bool {
+	switch value {
+	case "image/png", "image/jpeg", "image/webp", "image/x-icon", "image/vnd.microsoft.icon":
+		return true
+	default:
+		return false
+	}
+}
+
+func equivalentSiteIconContentType(left, right string) bool {
+	if left == right {
+		return true
+	}
+	return (left == "image/x-icon" || left == "image/vnd.microsoft.icon") &&
+		(right == "image/x-icon" || right == "image/vnd.microsoft.icon")
+}
+
+func detectSiteIconContentType(data []byte) string {
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'}):
+		return "image/png"
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg"
+	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return "image/webp"
+	case len(data) >= 4 && bytes.Equal(data[:4], []byte{0, 0, 1, 0}):
+		return "image/x-icon"
+	default:
+		return ""
+	}
 }
 
 func parseAndValidateURL(ctx context.Context, resolver hostResolver, allowBenchmark bool, raw string) (*url.URL, error) {

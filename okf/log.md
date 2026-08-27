@@ -1,14 +1,18 @@
 # Floret OKF Update Log
 
 ## 2026-08-27
+* **Readable Web Fetch Activity**: Web Fetch payloads now survive event
+  sanitization and canonical restart projection. They carry one bounded content
+  preview and optional SSRF-safe passive site icon while complete content stays
+  in the tool result and artifact.
 * **Attempt-scoped provider usage projection**: Final provider usage now passes
   through one strict attempt-envelope decoder before live context and canonical
   thread totals consume it, restoring cache totals without accepting incomplete
   attempt identity.
 * **Shared secure web fetch**: Added the public `tools/webfetch` tool as the
   single owner of GET-only public-text retrieval, SSRF validation, bounded
-  decoding, HTML conversion, canonical result fields, and body-free typed
-  Activity metadata. Hosts retain visibility, product permission, and UI.
+  decoding, HTML conversion, canonical result fields, and typed Activity
+  metadata. Hosts retain visibility, product permission, and UI.
 * **Visible truncation notice**: `OutputPolicy.TruncationNotice` now uses the
   single output projection path to mark bounded visible truncation while the
   complete result continues through canonical artifact admission.
