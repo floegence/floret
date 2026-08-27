@@ -43,3 +43,55 @@ func TestThreadDetailContextUsesEntryRunIdentityAndReadsLegacyStatus(t *testing.
 		t.Fatalf("mismatched canonical entry run error=%v", err)
 	}
 }
+
+func TestThreadDetailContextAccumulatesCanonicalProviderUsageOnly(t *testing.T) {
+	policy := sessiontree.Entry{
+		ThreadID: "thread-context", TurnID: "turn-one", Type: sessiontree.EntryCustom,
+		Metadata: subAgentContextPolicyMetadata("test", "scripted", contextpolicy.Policy{}),
+	}
+	statusEntry := func(turnID, runID string, status observation.ContextStatus) sessiontree.Entry {
+		return sessiontree.Entry{
+			ThreadID: "thread-context", TurnID: turnID, RunID: runID, Type: sessiontree.EntryCustom,
+			Metadata: map[string]string{
+				threadDetailKindKey:      subAgentContextStatusEntryKind,
+				subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
+			},
+		}
+	}
+	projected := observation.ContextStatus{
+		RunID: "run-one", ThreadID: "thread-context", TurnID: "turn-one",
+		Phase: observation.ContextPhaseProjectedRequest, Status: observation.ContextStatusStable,
+		Provider: "test", Model: "scripted", ObservedAt: time.Unix(1_723_800_000, 0).UTC(),
+	}
+	first := observation.ContextStatus{
+		RunID: "run-one", ThreadID: "thread-context", TurnID: "turn-one",
+		Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable,
+		Provider: "test", Model: "scripted", ObservedAt: time.Unix(1_723_800_001, 0).UTC(),
+		Usage: observation.ProviderUsage{InputTokens: 80, OutputTokens: 20, CacheReadTokens: 15, CacheWriteTokens: 5},
+	}
+	second := observation.ContextStatus{
+		RunID: "run-two", ThreadID: "thread-context", TurnID: "turn-two",
+		Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable,
+		Provider: "test", Model: "scripted", ObservedAt: time.Unix(1_723_800_002, 0).UTC(),
+		Usage: observation.ProviderUsage{InputTokens: 40, OutputTokens: 10, CacheReadTokens: 30},
+	}
+	entries := []sessiontree.Entry{
+		policy,
+		statusEntry("turn-one", "run-one", projected),
+		statusEntry("turn-one", "run-one", first),
+		statusEntry("turn-two", "run-two", second),
+	}
+
+	snapshot, err := (&AgentHarness{}).threadDetailContext(entries, 1, newThreadDetailActivityContext(entries), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.UsageTotals == nil || *snapshot.UsageTotals != (ThreadTokenUsageTotals{
+		InputTokens: 120, OutputTokens: 30, CacheReadTokens: 45, CacheWriteTokens: 5,
+	}) {
+		t.Fatalf("usage totals=%#v", snapshot.UsageTotals)
+	}
+	if snapshot.Usage == nil || snapshot.Usage.RunID != "run-two" {
+		t.Fatalf("latest usage=%#v", snapshot.Usage)
+	}
+}

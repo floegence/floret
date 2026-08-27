@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Expose disjoint cumulative input, output, cache-read, and cache-write token
+  totals from canonical final provider usage records through
+  `ThreadContextReader`, while preserving the latest context-pressure status.
+
 ## v5.0.4 - 2026-08-27
 
 - Repair the exact legacy tool-result Raw projection written when invalid UTF-8

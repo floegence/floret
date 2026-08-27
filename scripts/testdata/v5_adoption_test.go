@@ -27,6 +27,7 @@ func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.M
 }
 
 func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
+	_ = runtime.ThreadTokenUsageTotals{InputTokens: 80, CacheReadTokens: 15, CacheWriteTokens: 5, OutputTokens: 20}
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "floret.db")
 	gateway := florettest.NewScriptedGateway(

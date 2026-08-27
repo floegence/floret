@@ -50,4 +50,7 @@ func TestHostThreadServiceExposesCanonicalThreadContextReader(t *testing.T) {
 	if len(snapshot.Compactions) != 0 {
 		t.Fatalf("new thread compactions=%#v", snapshot.Compactions)
 	}
+	if snapshot.UsageTotals != nil {
+		t.Fatalf("new thread usage totals=%#v, want nil", snapshot.UsageTotals)
+	}
 }

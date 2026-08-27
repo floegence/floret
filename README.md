@@ -183,7 +183,9 @@ identity injection belongs to `florettest.NewIDSource`.
 The value returned by `Host.ThreadService` also implements
 `ThreadContextReader`; `Context` returns Floret's canonical context policy,
 usage, and one latest lifecycle record per compaction operation, including
-terminal state restored after runtime restart.
+terminal state restored after runtime restart. The snapshot also exposes
+conversation-wide disjoint input, output, cache-read, and cache-write totals
+folded from canonical final provider usage records.
 `ThreadService.Subscribe` publishes workspace summary and current-view updates;
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle

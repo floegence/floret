@@ -89,8 +89,16 @@ type ThreadContextSnapshot struct {
 	Model       ThreadContextModel         `json:"model,omitempty"`
 	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
 	Usage       *observation.ContextStatus `json:"usage,omitempty"`
+	UsageTotals *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
 	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
 	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
+}
+
+type ThreadTokenUsageTotals struct {
+	InputTokens      int64 `json:"input_tokens,omitempty"`
+	OutputTokens     int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
 type ThreadContextModel struct {
@@ -310,6 +318,15 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			}
 			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
 				return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
+			}
+			if status.Phase == observation.ContextPhaseProviderUsage {
+				if out.UsageTotals == nil {
+					out.UsageTotals = &ThreadTokenUsageTotals{}
+				}
+				out.UsageTotals.InputTokens += status.Usage.InputTokens
+				out.UsageTotals.OutputTokens += status.Usage.OutputTokens
+				out.UsageTotals.CacheReadTokens += status.Usage.CacheReadTokens
+				out.UsageTotals.CacheWriteTokens += status.Usage.CacheWriteTokens
 			}
 			out.Usage = &status
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))

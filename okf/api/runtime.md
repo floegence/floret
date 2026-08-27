@@ -90,6 +90,11 @@ count, pending input, terminal error, and bounded last-item preview needed by a
 host list. It does not hydrate complete timeline, attachment, context, or
 SubAgent detail for every thread; those remain selected-thread queries.
 
+`ThreadContextReader.Context` keeps two scopes explicit: `Usage` is the latest
+context-pressure status, while `UsageTotals` folds disjoint input, output,
+cache-read, and cache-write counts from canonical final provider-usage entries
+across the thread. Projected request estimates are never included in totals.
+
 ## Agent and provider boundary
 
 `runtime.NewAgent` snapshots the configured profile, system prompt, gateway,

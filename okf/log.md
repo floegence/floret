@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-27
+* **Canonical thread token totals**: `ThreadContextReader` now exposes
+  conversation-wide disjoint input, output, cache-read, and cache-write totals
+  folded from final provider-usage entries without adding another ledger.
 * **Legacy UTF-8 projection convergence**: Runtime startup now repairs the
   exact tool-result Raw representation written before UTF-8 normalization,
   after validating its original hash and matching root inventory. The repair

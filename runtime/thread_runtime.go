@@ -353,8 +353,18 @@ type ThreadContextSnapshot struct {
 	Model       ThreadContextModel         `json:"model,omitempty"`
 	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
 	Usage       *observation.ContextStatus `json:"usage,omitempty"`
+	UsageTotals *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
 	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
 	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
+}
+
+// ThreadTokenUsageTotals contains disjoint token totals from canonical final
+// provider usage records across one thread.
+type ThreadTokenUsageTotals struct {
+	InputTokens      int64 `json:"input_tokens,omitempty"`
+	OutputTokens     int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
 type ThreadContextModel struct {
@@ -1149,8 +1159,19 @@ func (service *threadRuntimeService) Context(ctx context.Context, threadID ident
 			MaxOutputTokens:      contextSnapshot.Policy.MaxOutputTokens,
 			ReservedOutputTokens: contextSnapshot.Policy.ReservedOutputTokens,
 		},
-		Usage: contextSnapshot.Usage, Compactions: compactions, UpdatedAt: contextSnapshot.UpdatedAt,
+		Usage: contextSnapshot.Usage, UsageTotals: threadTokenUsageTotals(contextSnapshot.UsageTotals),
+		Compactions: compactions, UpdatedAt: contextSnapshot.UpdatedAt,
 	}, nil
+}
+
+func threadTokenUsageTotals(in *agentharness.ThreadTokenUsageTotals) *ThreadTokenUsageTotals {
+	if in == nil {
+		return nil
+	}
+	return &ThreadTokenUsageTotals{
+		InputTokens: in.InputTokens, OutputTokens: in.OutputTokens,
+		CacheReadTokens: in.CacheReadTokens, CacheWriteTokens: in.CacheWriteTokens,
+	}
 }
 
 func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (ThreadView, error) {

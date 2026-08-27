@@ -807,6 +807,7 @@ type ThreadContextSnapshot struct
 field ThreadContextSnapshot.Model github.com/floegence/floret/v5/runtime.ThreadContextModel tag="json:\"model,omitempty\""
 field ThreadContextSnapshot.Policy github.com/floegence/floret/v5/runtime.ThreadContextPolicy tag="json:\"policy,omitempty\""
 field ThreadContextSnapshot.Usage *github.com/floegence/floret/v5/observation.ContextStatus tag="json:\"usage,omitempty\""
+field ThreadContextSnapshot.UsageTotals *github.com/floegence/floret/v5/runtime.ThreadTokenUsageTotals tag="json:\"usage_totals,omitempty\""
 field ThreadContextSnapshot.Compactions []github.com/floegence/floret/v5/runtime.ThreadContextCompaction tag="json:\"compactions,omitempty\""
 field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty\""
 type ThreadInteraction struct
@@ -885,6 +886,11 @@ const ThreadTitleStatusFailed github.com/floegence/floret/v5/runtime.ThreadTitle
 const ThreadTitleStatusPending github.com/floegence/floret/v5/runtime.ThreadTitleStatus = "pending"
 const ThreadTitleStatusReady github.com/floegence/floret/v5/runtime.ThreadTitleStatus = "ready"
 const ThreadTitleStatusUnset github.com/floegence/floret/v5/runtime.ThreadTitleStatus = ""
+type ThreadTokenUsageTotals struct
+field ThreadTokenUsageTotals.InputTokens int64 tag="json:\"input_tokens,omitempty\""
+field ThreadTokenUsageTotals.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
+field ThreadTokenUsageTotals.CacheReadTokens int64 tag="json:\"cache_read_tokens,omitempty\""
+field ThreadTokenUsageTotals.CacheWriteTokens int64 tag="json:\"cache_write_tokens,omitempty\""
 type ThreadTurnFailure struct
 field ThreadTurnFailure.Code github.com/floegence/floret/v5/runtime.ThreadTurnFailureCode tag="json:\"code\""
 field ThreadTurnFailure.Message string tag="json:\"message\""
