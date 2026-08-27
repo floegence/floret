@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v5@v5.0.0
+go get github.com/floegence/floret/v5@v5.0.7
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -109,6 +109,7 @@ for deterministic lifecycle identities.
 | `runtime` | Immutable Agent construction, durable Host lifecycle, commands, queries, and subscriptions |
 | `observation` | Sanitized runtime events and host-facing projections |
 | `tools` | Local tool definitions, permissions, resources, effects, and results |
+| `tools/webfetch` | Secure public-text HTTP/HTTPS fetch tool with fixed network and output limits |
 | `provider` | Model Gateway contract and official provider constructors |
 | `storage` | Opaque storage values and official memory and SQLite constructors |
 | `storage/spi` | Advanced physical storage implementation contract |
@@ -138,6 +139,13 @@ payloads.
 Activity presentation is cumulative for one tool invocation. A result may add
 terminal status and output, while non-empty display facts from the matching
 tool call remain available in events, canonical views, and reopened threads.
+
+`tools/webfetch.New` supplies the product-neutral `web_fetch` implementation.
+It performs GET-only public HTTP/HTTPS reads, revalidates redirects, DNS, and
+dial targets, rejects non-text bodies, and returns Markdown or text under fixed
+limits. Hosts still own tool visibility, current product permission policy, and
+UI. Authentication, custom headers, non-GET requests, binary downloads, and
+browser rendering remain separate host capabilities.
 
 ## Runtime Boundary
 

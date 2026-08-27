@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.0.7 - 2026-08-27
+
+- Add the public `tools/webfetch` tool with fixed GET-only limits, redirect and
+  dial-time SSRF validation, bounded text decoding, and HTML-to-Markdown
+  conversion.
+- Add typed web-fetch Activity metadata and an output-policy truncation notice
+  while preserving the complete tool result in the canonical artifact path.
+
 ## v5.0.6 - 2026-08-27
 
 - Derive one dense public tool-batch plan after argument validation so internal
