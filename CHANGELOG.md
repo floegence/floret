@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v5.0.5 - 2026-08-27
 
 - Expose disjoint cumulative input, output, cache-read, and cache-write token
   totals from canonical final provider usage records through
