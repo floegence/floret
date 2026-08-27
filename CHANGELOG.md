@@ -1,5 +1,15 @@
 # Changelog
 
+## v5.0.9 - 2026-08-27
+
+- Preserve typed Web Fetch Activity payloads through event sanitization,
+  canonical journal storage, restart recovery, and current thread views.
+- Add a 2,000-character content preview and one best-effort passive same-origin
+  site icon under the existing SSRF-safe fetch path. Complete page content
+  remains in the tool result and artifact.
+- Include the bounded requested URL in the default Web Fetch Activity label so
+  hosts have a useful fallback title.
+
 ## v5.0.8 - 2026-08-27
 
 - Project final provider usage through the current attempt-scoped event
