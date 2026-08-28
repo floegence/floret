@@ -144,10 +144,9 @@ tool call remain available in events, canonical views, and reopened threads.
 It performs GET-only public HTTP/HTTPS reads, revalidates redirects, DNS, and
 dial targets, rejects non-text bodies, and returns Markdown or text under fixed
 limits. Its typed Activity carries the requested URL, response metadata, a
-2,000-character preview, and at most one passive 8 KiB same-origin site icon;
-complete content remains in the tool result and artifact. Icon retrieval uses
-the same SSRF-safe request path and fails independently from the page read.
-Hosts still own tool visibility, current product permission policy, and UI.
+2,000-character preview; complete content remains in the tool result and
+artifact. It does not discover or request page icons. Hosts own static tool
+iconography, visibility, current product permission policy, and UI.
 Authentication, custom headers, non-GET requests, binary downloads, and browser
 rendering remain separate host capabilities.
 

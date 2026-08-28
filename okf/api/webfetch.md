@@ -29,19 +29,17 @@ rendering, authentication, custom headers, and non-GET requests are outside the
 contract.
 
 The Activity projection includes at most 2,000 Unicode characters of sanitized
-content. For HTML, the same fetch path may make one best-effort icon retrieval:
-the first same-origin `rel=icon` target or same-origin `/favicon.ico`. The icon
-has a two-second sub-timeout and 8 KiB limit, follows only same-origin validated
-redirects, and accepts PNG, JPEG, WebP, or ICO bytes. SVG and other active or
-unsupported content fail closed without failing the page read.
+content. HTML icon metadata is ignored. The tool does not discover or request a
+favicon, so one invocation performs only the requests required for the page and
+its validated redirects.
 
 # Host Boundary
 
 Hosts bind `Options.Permission` and `Options.PermissionFor` to current product
 authorization. They decide visibility and render `WebFetchActivityPayload`.
-That payload contains response metadata, errors, the lightweight preview, and
-optional passive icon. Hosts render those bytes directly and never refetch a
-remote icon URL. Complete content remains in the tool result and artifact.
+That payload contains response metadata, errors, and the lightweight preview.
+Complete content remains in the tool result and artifact. Static tool
+iconography belongs to the host.
 
 # Key Source Files
 

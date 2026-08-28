@@ -7,7 +7,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -37,16 +36,15 @@ func responseResult(resp *http.Response, requestedURL, finalURL, format string) 
 		return fetchResult{}, err
 	}
 	content := decoded
-	var iconURL string
 	if isHTMLMIME(mediaType) {
-		content, iconURL, err = extractHTML(decoded, finalURL, format)
+		content, err = extractHTML(decoded, finalURL, format)
 		if err != nil {
 			return fetchResult{}, err
 		}
 	}
 	return fetchResult{
 		URL: requestedURL, FinalURL: finalURL, StatusCode: resp.StatusCode, ContentType: contentType,
-		Format: format, Content: strings.TrimSpace(content), BytesRead: int64(len(body)), Truncated: truncated, iconURL: iconURL,
+		Format: format, Content: strings.TrimSpace(content), BytesRead: int64(len(body)), Truncated: truncated,
 	}, nil
 }
 
@@ -113,18 +111,17 @@ func decodeText(body []byte, mediaType, contentType string, params map[string]st
 	return string(body), nil
 }
 
-func extractHTML(source, finalURL, format string) (string, string, error) {
+func extractHTML(source, finalURL, format string) (string, error) {
 	document, err := html.Parse(strings.NewReader(source))
 	if err != nil {
-		return "", "", fmt.Errorf("parse html: %w", err)
+		return "", fmt.Errorf("parse html: %w", err)
 	}
 	if exceedsHTMLDepth(document, 0) {
-		return "", "", errors.New("html nesting exceeds the supported limit")
+		return "", errors.New("html nesting exceeds the supported limit")
 	}
-	iconURL := discoverSiteIconURL(document, finalURL)
 	pruneUntrustedHTML(document)
 	if format == "text" {
-		return htmlPlainText(document), iconURL, nil
+		return htmlPlainText(document), nil
 	}
 	markdown := converter.NewConverter(converter.WithPlugins(
 		base.NewBasePlugin(),
@@ -137,80 +134,9 @@ func extractHTML(source, finalURL, format string) (string, string, error) {
 	}
 	converted, err := markdown.ConvertNode(document, converter.WithDomain(finalURL))
 	if err != nil {
-		return "", "", fmt.Errorf("convert html to markdown: %w", err)
+		return "", fmt.Errorf("convert html to markdown: %w", err)
 	}
-	return strings.TrimSpace(string(converted)), iconURL, nil
-}
-
-func discoverSiteIconURL(document *html.Node, finalURL string) string {
-	pageURL, err := parseWebURL(finalURL)
-	if err != nil {
-		return ""
-	}
-	var iconURL string
-	var visit func(*html.Node)
-	visit = func(node *html.Node) {
-		if iconURL != "" {
-			return
-		}
-		if node.Type == html.ElementNode && strings.EqualFold(node.Data, "link") {
-			var rel, href string
-			for _, attribute := range node.Attr {
-				switch strings.ToLower(attribute.Key) {
-				case "rel":
-					rel = attribute.Val
-				case "href":
-					href = attribute.Val
-				}
-			}
-			if hasIconRelation(rel) && strings.TrimSpace(href) != "" {
-				candidate, parseErr := pageURL.Parse(strings.TrimSpace(href))
-				if parseErr == nil && sameOrigin(pageURL, candidate) {
-					if validated, validateErr := parseWebURL(candidate.String()); validateErr == nil {
-						iconURL = validated.String()
-					}
-				}
-			}
-		}
-		for child := node.FirstChild; child != nil && iconURL == ""; child = child.NextSibling {
-			visit(child)
-		}
-	}
-	visit(document)
-	if iconURL != "" {
-		return iconURL
-	}
-	fallback := &url.URL{Scheme: pageURL.Scheme, Host: pageURL.Host, Path: "/favicon.ico"}
-	return fallback.String()
-}
-
-func hasIconRelation(value string) bool {
-	for _, token := range strings.Fields(strings.ToLower(value)) {
-		if token == "icon" {
-			return true
-		}
-	}
-	return false
-}
-
-func sameOrigin(left, right *url.URL) bool {
-	if left == nil || right == nil || !strings.EqualFold(left.Scheme, right.Scheme) || !strings.EqualFold(left.Hostname(), right.Hostname()) {
-		return false
-	}
-	return effectivePort(left) == effectivePort(right)
-}
-
-func effectivePort(value *url.URL) string {
-	if port := value.Port(); port != "" {
-		return port
-	}
-	if strings.EqualFold(value.Scheme, "http") {
-		return "80"
-	}
-	if strings.EqualFold(value.Scheme, "https") {
-		return "443"
-	}
-	return ""
+	return strings.TrimSpace(string(converted)), nil
 }
 
 func pruneUntrustedHTML(node *html.Node) {

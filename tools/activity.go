@@ -148,8 +148,10 @@ func (WebSearchActivityPayload) activityRenderer() ActivityRenderer {
 	return ActivityRendererWebSearch
 }
 
-// WebFetchActivityIcon carries one passive, bounded site icon. Hosts may
-// render the bytes directly and must not refetch a remote icon URL.
+// WebFetchActivityIcon is retained for v5 source and JSON compatibility.
+//
+// Deprecated: web_fetch no longer requests or emits site icons. Hosts should
+// use product-owned static iconography.
 type WebFetchActivityIcon struct {
 	ContentType string `json:"content_type"`
 	Data        []byte `json:"data"`
@@ -159,18 +161,20 @@ type WebFetchActivityIcon struct {
 // lightweight content preview for a web_fetch activity. Complete fetched page
 // content stays in the tool result and artifact.
 type WebFetchActivityPayload struct {
-	URL              string                `json:"url,omitempty"`
-	FinalURL         string                `json:"final_url,omitempty"`
-	Status           string                `json:"status,omitempty"`
-	StatusCode       int                   `json:"status_code,omitempty"`
-	ContentType      string                `json:"content_type,omitempty"`
-	Format           string                `json:"format,omitempty"`
-	ContentPreview   string                `json:"content_preview,omitempty"`
-	PreviewTruncated bool                  `json:"preview_truncated,omitempty"`
-	SiteIcon         *WebFetchActivityIcon `json:"site_icon,omitempty"`
-	BytesRead        int64                 `json:"bytes_read,omitempty"`
-	Truncated        bool                  `json:"truncated,omitempty"`
-	Error            *ActivityError        `json:"error,omitempty"`
+	URL              string `json:"url,omitempty"`
+	FinalURL         string `json:"final_url,omitempty"`
+	Status           string `json:"status,omitempty"`
+	StatusCode       int    `json:"status_code,omitempty"`
+	ContentType      string `json:"content_type,omitempty"`
+	Format           string `json:"format,omitempty"`
+	ContentPreview   string `json:"content_preview,omitempty"`
+	PreviewTruncated bool   `json:"preview_truncated,omitempty"`
+	// Deprecated: web_fetch no longer requests or emits site icons. This field
+	// remains available only to read Activity data written by v5.0.9.
+	SiteIcon  *WebFetchActivityIcon `json:"site_icon,omitempty"`
+	BytesRead int64                 `json:"bytes_read,omitempty"`
+	Truncated bool                  `json:"truncated,omitempty"`
+	Error     *ActivityError        `json:"error,omitempty"`
 }
 
 func (WebFetchActivityPayload) activityRenderer() ActivityRenderer {

@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-08-28
+* **Web Fetch static host iconography**: Web Fetch no longer discovers,
+  requests, or emits page icons. Activity remains limited to response metadata
+  and a bounded preview; hosts own static tool icons.
+
 ## 2026-08-27
 * **Readable Web Fetch Activity**: Web Fetch payloads now survive event
   sanitization and canonical restart projection. They carry one bounded content

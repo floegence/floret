@@ -95,8 +95,8 @@ func TestDefinitionKeepsFixedPublicContract(t *testing.T) {
 	if definition.Permission.Mode != tools.PermissionAsk || definition.OutputPolicy.VisibleMaxBytes != visibleOutputBytes || definition.OutputPolicy.TruncationNotice == "" {
 		t.Fatalf("policy = %#v permission = %#v", definition.OutputPolicy, definition.Permission)
 	}
-	if requestTimeout != 30*time.Second || maxRedirects != 5 || maxBodyBytes != 5<<20 || activityPreviewRunes != 2_000 || siteIconTimeout != 2*time.Second || maxSiteIconBytes != 8<<10 {
-		t.Fatalf("fixed limits changed: timeout=%s redirects=%d bytes=%d preview=%d icon_timeout=%s icon_bytes=%d", requestTimeout, maxRedirects, maxBodyBytes, activityPreviewRunes, siteIconTimeout, maxSiteIconBytes)
+	if requestTimeout != 30*time.Second || maxRedirects != 5 || maxBodyBytes != 5<<20 || activityPreviewRunes != 2_000 {
+		t.Fatalf("fixed limits changed: timeout=%s redirects=%d bytes=%d preview=%d", requestTimeout, maxRedirects, maxBodyBytes, activityPreviewRunes)
 	}
 }
 
@@ -239,130 +239,22 @@ func TestActivityPreviewIsUnicodeBoundedAndRemovesTerminalControls(t *testing.T)
 	}
 }
 
-func TestFetchEmbedsOneSameOriginPassiveSiteIcon(t *testing.T) {
+func TestFetchIgnoresSiteIconMetadataWithoutAdditionalRequest(t *testing.T) {
 	t.Parallel()
 
 	resolver := &fakeResolver{addresses: map[string][]string{"example.com": {"93.184.216.34"}}}
-	png := []byte{'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n', 1, 2, 3}
 	var requested []string
 	tool := newTool(Options{}, dependencies{resolver: resolver, client: testClient(func(req *http.Request) (*http.Response, error) {
 		requested = append(requested, req.URL.String())
-		switch req.URL.Path {
-		case "/page":
-			return testResponse(http.StatusOK, "text/html", []byte(`<html><head><link rel="shortcut icon" href="/assets/icon.png"></head><body>Hello</body></html>`)), nil
-		case "/assets/icon.png":
-			return testResponse(http.StatusOK, "image/png", png), nil
-		default:
-			t.Fatalf("unexpected request: %s", req.URL)
-			return nil, nil
-		}
+		return testResponse(http.StatusOK, "text/html", []byte(`<html><head><link rel="shortcut icon" href="/assets/icon.png"></head><body>Hello</body></html>`)), nil
 	})})
 	result := runTool(t, tool, context.Background(), `{"url":"https://example.com/page"}`)
 	payload := result.Activity.Payload.(tools.WebFetchActivityPayload)
-	if result.IsError || payload.SiteIcon == nil || payload.SiteIcon.ContentType != "image/png" || !bytes.Equal(payload.SiteIcon.Data, png) {
+	if result.IsError || payload.ContentPreview != "Hello" || payload.SiteIcon != nil {
 		t.Fatalf("result=%#v activity=%#v", result, payload)
 	}
-	if !reflect.DeepEqual(requested, []string{"https://example.com/page", "https://example.com/assets/icon.png"}) {
+	if !reflect.DeepEqual(requested, []string{"https://example.com/page"}) {
 		t.Fatalf("requests = %#v", requested)
-	}
-}
-
-func TestFetchSiteIconFailureNeverFailsPage(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		iconHeader string
-		iconBody   []byte
-		iconStatus int
-	}{
-		{name: "svg", iconHeader: "image/svg+xml", iconBody: []byte(`<svg/>`), iconStatus: http.StatusOK},
-		{name: "spoofed png", iconHeader: "image/png", iconBody: []byte(`<svg/>`), iconStatus: http.StatusOK},
-		{name: "oversized", iconHeader: "image/png", iconBody: bytes.Repeat([]byte{'x'}, int(maxSiteIconBytes)+1), iconStatus: http.StatusOK},
-		{name: "not found", iconHeader: "image/png", iconBody: []byte("missing"), iconStatus: http.StatusNotFound},
-	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			resolver := &fakeResolver{addresses: map[string][]string{"example.com": {"93.184.216.34"}}}
-			tool := newTool(Options{}, dependencies{resolver: resolver, client: testClient(func(req *http.Request) (*http.Response, error) {
-				if req.URL.Path == "/page" {
-					return testResponse(http.StatusOK, "text/html", []byte(`<html><body>readable page</body></html>`)), nil
-				}
-				return testResponse(test.iconStatus, test.iconHeader, test.iconBody), nil
-			})})
-			result := runTool(t, tool, context.Background(), `{"url":"https://example.com/page"}`)
-			payload := result.Activity.Payload.(tools.WebFetchActivityPayload)
-			if result.IsError || payload.ContentPreview != "readable page" || payload.SiteIcon != nil {
-				t.Fatalf("result=%#v activity=%#v", result, payload)
-			}
-		})
-	}
-}
-
-func TestSiteIconRedirectMustRemainSameOrigin(t *testing.T) {
-	t.Parallel()
-
-	resolver := &fakeResolver{addresses: map[string][]string{
-		"example.com": {"93.184.216.34"}, "cdn.example": {"93.184.216.35"},
-	}}
-	var requested []string
-	tool := newTool(Options{}, dependencies{resolver: resolver, client: testClient(func(req *http.Request) (*http.Response, error) {
-		requested = append(requested, req.URL.String())
-		if req.URL.Path == "/page" {
-			return testResponse(http.StatusOK, "text/html", []byte(`<link rel="icon" href="/icon.png"><p>ok</p>`)), nil
-		}
-		response := testResponse(http.StatusFound, "text/plain", nil)
-		response.Header.Set("Location", "https://cdn.example/icon.png")
-		return response, nil
-	})})
-	result := runTool(t, tool, context.Background(), `{"url":"https://example.com/page"}`)
-	payload := result.Activity.Payload.(tools.WebFetchActivityPayload)
-	if result.IsError || payload.SiteIcon != nil || len(requested) != 2 {
-		t.Fatalf("requests=%#v result=%#v activity=%#v", requested, result, payload)
-	}
-}
-
-func TestSiteIconRevalidatesDNSBeforeRequest(t *testing.T) {
-	t.Parallel()
-
-	resolver := &fakeResolver{sequence: map[string][][]string{
-		"example.com": {{"93.184.216.34"}, {"127.0.0.1"}},
-	}}
-	requests := 0
-	tool := newTool(Options{}, dependencies{resolver: resolver, client: testClient(func(req *http.Request) (*http.Response, error) {
-		requests++
-		return testResponse(http.StatusOK, "text/html", []byte(`<link rel="icon" href="/icon.png"><p>ok</p>`)), nil
-	})})
-	result := runTool(t, tool, context.Background(), `{"url":"https://example.com/page"}`)
-	payload := result.Activity.Payload.(tools.WebFetchActivityPayload)
-	if result.IsError || payload.SiteIcon != nil || requests != 1 {
-		t.Fatalf("requests=%d result=%#v activity=%#v", requests, result, payload)
-	}
-}
-
-func TestSiteIconUsesSameOriginFallbackAndHonorsCancellation(t *testing.T) {
-	t.Parallel()
-
-	document := `<html><head><link rel="icon" href="https://cdn.example/icon.png"></head><body>ok</body></html>`
-	result, err := responseResult(testResponse(http.StatusOK, "text/html", []byte(document)), "https://example.com/page", "https://example.com/page", "text")
-	if err != nil || result.iconURL != "https://example.com/favicon.ico" {
-		t.Fatalf("icon URL=%q err=%v", result.iconURL, err)
-	}
-	pageURL, err := parseWebURL("https://example.com/page")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolver := &fakeResolver{addresses: map[string][]string{"example.com": {"93.184.216.34"}}}
-	client := testClient(func(req *http.Request) (*http.Response, error) {
-		<-req.Context().Done()
-		return nil, req.Context().Err()
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if _, err := fetchSiteIcon(ctx, client, resolver, false, pageURL, result.iconURL); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("icon cancellation error = %v", err)
 	}
 }
 

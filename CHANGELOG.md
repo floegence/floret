@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.0.10 - 2026-08-28
+
+- Stop discovering, requesting, and emitting page icons from `web_fetch`.
+  Activity remains limited to response metadata and a bounded content preview;
+  hosts own static tool iconography.
+- Retain the previously exported site-icon Activity fields as deprecated v5
+  compatibility data for records written by v5.0.9.
+
 ## v5.0.9 - 2026-08-27
 
 - Preserve typed Web Fetch Activity payloads through event sanitization,

@@ -106,8 +106,9 @@ complete result through the canonical artifact path.
 
 `WebFetchActivityPayload` carries requested and final URLs, status, MIME,
 format, byte count, truncation, error metadata, and a lightweight bounded
-content preview. It may also contain one validated passive same-origin site
-icon. Complete fetched content stays in the tool result and artifact.
+content preview. Complete fetched content stays in the tool result and artifact.
+Floret does not discover or request page icons; static tool iconography belongs
+to the host.
 
 # Batch Execution
 
