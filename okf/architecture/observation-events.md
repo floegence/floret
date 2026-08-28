@@ -90,8 +90,12 @@ or validation failures require a canonical reload rather than event replay.
   identity, so a host can reset only its transient draft on a newer activation
   while keeping Floret's canonical projection as the authority. Final provider
   usage is decoded through this same attempt-scoped envelope before either the
-  live context status or canonical thread totals consume it. The two projections
-  therefore cannot diverge or accept usage with incomplete attempt identity.
+  live context status or canonical thread totals consume it. After canonical
+  append succeeds, the provider-usage event carries the updated
+  `ThreadUsageTotals`; stream usage and failed writes do not. The two
+  projections therefore cannot diverge or accept usage with incomplete attempt
+  identity. Reconnect reloads `ThreadContextReader.Context` instead of replaying
+  or locally accumulating events.
 * The public runtime event sink contains only finite `observation.EventType`
   values. Agent-harness lifecycle notifications such as thread resume, turn
   start, and entry append remain on the internal harness sink and are not

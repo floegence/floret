@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.0.12 - 2026-08-28
+
+- Publish cumulative canonical thread token totals on each successfully
+  committed final provider-usage runtime event, so first-turn live consumers
+  can show cache usage without polling or maintaining a second ledger.
+- Reject stale provider-attempt usage before journal admission, and never attach
+  totals to stream-only usage or failed journal writes.
+
 ## v5.0.11 - 2026-08-28
 
 - Preserve bounded file read content, line ranges, mutation counts, unified

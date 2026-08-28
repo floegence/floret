@@ -4,12 +4,14 @@ package adoption_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/floegence/floret/v5/config"
 	"github.com/floegence/floret/v5/florettest"
+	"github.com/floegence/floret/v5/observation"
 	"github.com/floegence/floret/v5/provider"
 	"github.com/floegence/floret/v5/runtime"
 	"github.com/floegence/floret/v5/storage"
@@ -18,6 +20,26 @@ import (
 
 type oneShotCompaction struct {
 	consumed atomic.Bool
+}
+
+type usageEventRecorder struct {
+	mu     sync.Mutex
+	totals []runtime.ThreadTokenUsageTotals
+}
+
+func (recorder *usageEventRecorder) EmitEvent(event runtime.Event) {
+	if event.Type != observation.EventTypeProviderUsage || event.ThreadUsageTotals == nil {
+		return
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	recorder.totals = append(recorder.totals, *event.ThreadUsageTotals)
+}
+
+func (recorder *usageEventRecorder) snapshot() []runtime.ThreadTokenUsageTotals {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]runtime.ThreadTokenUsageTotals(nil), recorder.totals...)
 }
 
 func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.ManualCompactionPollRequest) (runtime.ManualCompactionRequest, bool, error) {
@@ -29,6 +51,7 @@ func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.M
 
 func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	_ = runtime.ThreadTokenUsageTotals{InputTokens: 80, CacheReadTokens: 15, CacheWriteTokens: 5, OutputTokens: 20}
+	_ = runtime.Event{ThreadUsageTotals: &runtime.ThreadTokenUsageTotals{InputTokens: 80}}
 	_ = tools.WebFetchActivityPayload{
 		ContentPreview: "preview", PreviewTruncated: true,
 		SiteIcon: &tools.WebFetchActivityIcon{ContentType: "image/png", Data: []byte("png")},
@@ -38,13 +61,20 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "adoption", Model: "scripted", StateCompatibilityKey: "adoption:scripted:v1"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventUsage, Usage: provider.Usage{
+				InputTokens: 80, OutputTokens: 20, CacheReadTokens: 15, CacheWriteTokens: 5,
+				WindowInputTokens: 100, TotalTokens: 120, Source: "native", Available: true,
+			}},
+			{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"},
+		}},
 	)
+	recorder := &usageEventRecorder{}
 	agent, err := runtime.NewAgent(config.AgentConfig{
 		Profile:      config.AgentProfile{ID: "adoption", Name: "Adoption Agent"},
 		SystemPrompt: "Complete the requested task.",
 		Context:      config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-	}, gateway, runtime.WithAgentManualCompactions(&oneShotCompaction{}))
+	}, gateway, runtime.WithAgentManualCompactions(&oneShotCompaction{}), runtime.WithAgentEventSink(recorder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +106,11 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 				t.Fatalf("published ordered presentation=%#v", view.Items)
 			}
 			_ = runtime.ThreadItem{ID: "adoption-thinking", Ordinal: 1, Kind: runtime.ThreadItemThinking, Live: true}
+			if got := recorder.snapshot(); len(got) != 1 || got[0] != (runtime.ThreadTokenUsageTotals{
+				InputTokens: 80, OutputTokens: 20, CacheReadTokens: 15, CacheWriteTokens: 5,
+			}) {
+				t.Fatalf("published live usage totals=%#v", got)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -115,5 +150,10 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	}
 	if len(snapshot.Compactions) != 1 || snapshot.Compactions[0].RequestID != "adoption-compact" || snapshot.Compactions[0].Status != "noop" {
 		t.Fatalf("canonical compactions=%#v", snapshot.Compactions)
+	}
+	if snapshot.UsageTotals == nil || *snapshot.UsageTotals != (runtime.ThreadTokenUsageTotals{
+		InputTokens: 80, OutputTokens: 20, CacheReadTokens: 15, CacheWriteTokens: 5,
+	}) {
+		t.Fatalf("published canonical usage totals=%#v", snapshot.UsageTotals)
 	}
 }

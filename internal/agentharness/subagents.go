@@ -101,6 +101,23 @@ type ThreadTokenUsageTotals struct {
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
+func cloneThreadTokenUsageTotals(in *ThreadTokenUsageTotals) ThreadTokenUsageTotals {
+	if in == nil {
+		return ThreadTokenUsageTotals{}
+	}
+	return *in
+}
+
+func (totals *ThreadTokenUsageTotals) add(usage observation.ProviderUsage) {
+	if totals == nil {
+		return
+	}
+	totals.InputTokens += usage.InputTokens
+	totals.OutputTokens += usage.OutputTokens
+	totals.CacheReadTokens += usage.CacheReadTokens
+	totals.CacheWriteTokens += usage.CacheWriteTokens
+}
+
 type ThreadContextModel struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -323,10 +340,7 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 				if out.UsageTotals == nil {
 					out.UsageTotals = &ThreadTokenUsageTotals{}
 				}
-				out.UsageTotals.InputTokens += status.Usage.InputTokens
-				out.UsageTotals.OutputTokens += status.Usage.OutputTokens
-				out.UsageTotals.CacheReadTokens += status.Usage.CacheReadTokens
-				out.UsageTotals.CacheWriteTokens += status.Usage.CacheWriteTokens
+				out.UsageTotals.add(status.Usage)
 			}
 			out.Usage = &status
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))

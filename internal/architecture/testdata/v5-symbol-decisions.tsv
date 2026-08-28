@@ -16,5 +16,6 @@ runtime.CancelInput	keep	ThreadService.Cancel	idempotent cancellation in every k
 runtime.RetryInput	keep	ThreadService.Retry	canonical retry lineage without duplicate user input
 runtime.RetryEffectInput	keep	ThreadService.RetryEffect	explicit retry for unknown effect outcomes
 runtime.WorkspaceSubscription	keep	ThreadService.Subscribe	one workspace current-view stream without replay metadata
+runtime.Event.ThreadUsageTotals	add	runtime.Event	live cumulative usage is published only after the canonical final usage append succeeds
 tools.StructuredActivityRow	add	StructuredActivityPayload.Rows	bounded product-neutral structured display content
 tools.StructuredActivityRowFormat	add	StructuredActivityPayload.Rows	closed text markdown and code presentation formats

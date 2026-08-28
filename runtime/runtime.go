@@ -631,37 +631,40 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type               observation.EventType             `json:"type"`
-	TraceID            identity.TraceID                  `json:"trace_id,omitempty"`
-	RunID              identity.RunID                    `json:"run_id,omitempty"`
-	ThreadID           identity.ThreadID                 `json:"thread_id,omitempty"`
-	TurnID             identity.TurnID                   `json:"turn_id,omitempty"`
-	Step               int                               `json:"step,omitempty"`
-	Provider           string                            `json:"provider,omitempty"`
-	Model              string                            `json:"model,omitempty"`
-	Message            string                            `json:"message,omitempty"`
-	Result             string                            `json:"result,omitempty"`
-	Error              string                            `json:"error,omitempty"`
-	ToolID             string                            `json:"tool_id,omitempty"`
-	ToolName           string                            `json:"tool_name,omitempty"`
-	ToolKind           string                            `json:"tool_kind,omitempty"`
-	ArgsHash           string                            `json:"args_hash,omitempty"`
-	DurationMS         int64                             `json:"duration_ms,omitempty"`
-	FinishReason       observation.FinishReason          `json:"finish_reason,omitempty"`
-	RawFinishReason    string                            `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                              `json:"finish_inferred,omitempty"`
-	CompletionReason   observation.CompletionReason      `json:"completion_reason,omitempty"`
-	ContinuationReason observation.ContinuationReason    `json:"continuation_reason,omitempty"`
-	Activity           *tools.ActivityPresentation       `json:"activity,omitempty"`
-	ActivityTimeline   *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
-	Stream             *StreamObservation                `json:"stream,omitempty"`
-	ContextStatus      *observation.ContextStatus        `json:"context_status,omitempty"`
-	Compaction         *observation.CompactionEvent      `json:"compaction,omitempty"`
-	CompactionDebug    *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Sources            []publicprovider.Source           `json:"sources,omitempty"`
-	Metadata           map[string]any                    `json:"metadata,omitempty"`
-	Timestamp          time.Time                         `json:"timestamp,omitempty"`
-	committed          *agentharness.ThreadDetailEvent
+	Type               observation.EventType          `json:"type"`
+	TraceID            identity.TraceID               `json:"trace_id,omitempty"`
+	RunID              identity.RunID                 `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID              `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID                `json:"turn_id,omitempty"`
+	Step               int                            `json:"step,omitempty"`
+	Provider           string                         `json:"provider,omitempty"`
+	Model              string                         `json:"model,omitempty"`
+	Message            string                         `json:"message,omitempty"`
+	Result             string                         `json:"result,omitempty"`
+	Error              string                         `json:"error,omitempty"`
+	ToolID             string                         `json:"tool_id,omitempty"`
+	ToolName           string                         `json:"tool_name,omitempty"`
+	ToolKind           string                         `json:"tool_kind,omitempty"`
+	ArgsHash           string                         `json:"args_hash,omitempty"`
+	DurationMS         int64                          `json:"duration_ms,omitempty"`
+	FinishReason       observation.FinishReason       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                         `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                           `json:"finish_inferred,omitempty"`
+	CompletionReason   observation.CompletionReason   `json:"completion_reason,omitempty"`
+	ContinuationReason observation.ContinuationReason `json:"continuation_reason,omitempty"`
+	Activity           *tools.ActivityPresentation    `json:"activity,omitempty"`
+	ActivityTimeline   *observation.ActivityTimeline  `json:"activity_timeline,omitempty"`
+	Stream             *StreamObservation             `json:"stream,omitempty"`
+	ContextStatus      *observation.ContextStatus     `json:"context_status,omitempty"`
+	// ThreadUsageTotals contains cumulative canonical usage after this final
+	// provider-usage record has been committed to the thread journal.
+	ThreadUsageTotals *ThreadTokenUsageTotals           `json:"thread_usage_totals,omitempty"`
+	Compaction        *observation.CompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug   *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
+	Sources           []publicprovider.Source           `json:"sources,omitempty"`
+	Metadata          map[string]any                    `json:"metadata,omitempty"`
+	Timestamp         time.Time                         `json:"timestamp,omitempty"`
+	committed         *agentharness.ThreadDetailEvent
 }
 
 func (e Event) Validate() error {
@@ -689,6 +692,14 @@ func (e Event) Validate() error {
 		}
 		if !eventIdentityMatches(e, e.ContextStatus.RunID.String(), e.ContextStatus.ThreadID.String(), e.ContextStatus.TurnID.String(), e.ContextStatus.Step) {
 			return errors.New("runtime event context status identity mismatch")
+		}
+	}
+	if e.ThreadUsageTotals != nil {
+		if e.ContextStatus == nil || e.ContextStatus.Phase != observation.ContextPhaseProviderUsage || e.Type != observation.EventTypeProviderUsage {
+			return errors.New("runtime event thread usage totals require final provider usage")
+		}
+		if e.ThreadUsageTotals.InputTokens < 0 || e.ThreadUsageTotals.OutputTokens < 0 || e.ThreadUsageTotals.CacheReadTokens < 0 || e.ThreadUsageTotals.CacheWriteTokens < 0 {
+			return errors.New("runtime event thread usage totals cannot be negative")
 		}
 	}
 	if e.Compaction != nil {
@@ -1954,12 +1965,23 @@ func runtimeEvent(ev event.Event) Event {
 		Activity:           cloneActivityPresentation(ev.Activity),
 		Stream:             stream,
 		ContextStatus:      contextStatus,
+		ThreadUsageTotals:  runtimeThreadUsageTotals(ev.ThreadUsageTotals),
 		Compaction:         compactionEvent,
 		CompactionDebug:    compactionDebugEvent,
 		Sources:            runtimeSourceRefs(ev.Sources),
 		Metadata:           safeMetadata(ev.Metadata),
 		Timestamp:          ev.Timestamp,
 		committed:          committed,
+	}
+}
+
+func runtimeThreadUsageTotals(in *event.ThreadUsageTotals) *ThreadTokenUsageTotals {
+	if in == nil {
+		return nil
+	}
+	return &ThreadTokenUsageTotals{
+		InputTokens: in.InputTokens, OutputTokens: in.OutputTokens,
+		CacheReadTokens: in.CacheReadTokens, CacheWriteTokens: in.CacheWriteTokens,
 	}
 }
 

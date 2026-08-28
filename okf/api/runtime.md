@@ -102,6 +102,13 @@ across the thread. Final usage reaches both projections through the same
 attempt-scoped event decoder. Projected request estimates are never included in
 totals.
 
+After a final provider-usage context status is appended successfully,
+`runtime.Event.ThreadUsageTotals` publishes the updated value from that same
+canonical fold. It is absent from projected requests, stream usage, rejected
+attempts, and uncommitted events. Hosts may use it for immediate display, then
+reload `ThreadContextReader.Context` after reconnect; they must not accumulate
+or persist a parallel total.
+
 ## Agent and provider boundary
 
 `runtime.NewAgent` snapshots the configured profile, system prompt, gateway,

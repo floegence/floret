@@ -94,10 +94,20 @@ type Event struct {
 	Metrics            any                         `json:"metrics,omitempty"`
 	Metadata           any                         `json:"metadata,omitempty"`
 	Activity           *tools.ActivityPresentation `json:"activity,omitempty"`
-	Artifacts          []Artifact                  `json:"artifacts,omitempty"`
-	Sources            []SourceRef                 `json:"sources,omitempty"`
-	Payload            any                         `json:"-"`
-	Timestamp          time.Time                   `json:"timestamp"`
+	// ThreadUsageTotals is populated only after a final provider-usage status
+	// has been committed to the canonical thread journal.
+	ThreadUsageTotals *ThreadUsageTotals `json:"thread_usage_totals,omitempty"`
+	Artifacts         []Artifact         `json:"artifacts,omitempty"`
+	Sources           []SourceRef        `json:"sources,omitempty"`
+	Payload           any                `json:"-"`
+	Timestamp         time.Time          `json:"timestamp"`
+}
+
+type ThreadUsageTotals struct {
+	InputTokens      int64 `json:"input_tokens,omitempty"`
+	OutputTokens     int64 `json:"output_tokens,omitempty"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
 type SourceRef struct {

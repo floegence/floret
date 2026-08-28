@@ -546,6 +546,7 @@ field Event.Activity *github.com/floegence/floret/v5/tools.ActivityPresentation 
 field Event.ActivityTimeline *github.com/floegence/floret/v5/observation.ActivityTimeline tag="json:\"activity_timeline,omitempty\""
 field Event.Stream *github.com/floegence/floret/v5/runtime.StreamObservation tag="json:\"stream,omitempty\""
 field Event.ContextStatus *github.com/floegence/floret/v5/observation.ContextStatus tag="json:\"context_status,omitempty\""
+field Event.ThreadUsageTotals *github.com/floegence/floret/v5/runtime.ThreadTokenUsageTotals tag="json:\"thread_usage_totals,omitempty\""
 field Event.Compaction *github.com/floegence/floret/v5/observation.CompactionEvent tag="json:\"compaction,omitempty\""
 field Event.CompactionDebug *github.com/floegence/floret/v5/observation.CompactionDebugEvent tag="json:\"compaction_debug,omitempty\""
 field Event.Sources []github.com/floegence/floret/v5/provider.Source tag="json:\"sources,omitempty\""

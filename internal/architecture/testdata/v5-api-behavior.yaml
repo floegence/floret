@@ -7,6 +7,15 @@ defaults:
   active_state_owner: one ThreadRuntime mutex per thread
   durable_fact_source: canonical journal
 methods:
+  - method: Event.Validate
+    errors_is: []
+    errors_as: []
+    retryability: rebuild the event from authoritative runtime facts
+    commit: read-only validation; thread usage totals are valid only on final provider-usage context events
+    replay: the same event returns the same validation result
+    concurrency: detached event values are independently safe to validate
+    cancellation: no context is accepted
+    closing: not applicable
   - method: Open
     errors_is: [context.Canceled, context.DeadlineExceeded, storage/spi.ErrMigrationRequired]
     errors_as: [MigrationRequiredError, UnsupportedLegacyContentError]

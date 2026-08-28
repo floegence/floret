@@ -704,6 +704,12 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error", engine.FailureOriginStorage)
 	}
+	canonicalContext, err := t.harness.threadDetailContext(snap.Path, threadDetailRetainedFrom(snap.Path), threadDetailActivityContext{}, time.Time{})
+	if err != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "context_snapshot_error", engine.FailureOriginStorage)
+	}
 	historyPath := snap.Path
 	if retrySource != nil {
 		historyPath, err = t.harness.options.Repo.Path(ctx, t.id, retrySource.ID)
@@ -763,7 +769,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if opts.Sink != nil {
 		downstream = opts.Sink
 	}
-	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream}
+	projection := &turnProjection{
+		thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream,
+		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
+	}
 	eng.SetSink(projection)
 	result := eng.RunTurn(ctx, engine.RunInput{
 		RunID:               runID,
@@ -1441,10 +1450,10 @@ func (t *Thread) appendContextPolicyEvent(ctx context.Context, turnID string, ru
 	return nil
 }
 
-func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, runID string, ev event.Event) (observation.ContextStatus, bool, error) {
 	status, ok := subAgentContextStatusFromEvent(ev)
 	if !ok {
-		return nil
+		return observation.ContextStatus{}, false, nil
 	}
 	metadata := map[string]string{
 		threadDetailKindKey:      subAgentContextStatusEntryKind,
@@ -1459,11 +1468,11 @@ func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, ru
 		Metadata: metadata,
 	}, sessiontree.AppendOptions{Now: status.ObservedAt})
 	if err != nil {
-		return err
+		return observation.ContextStatus{}, false, err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextStatusEntryKind})
-	return nil
+	return status, true, nil
 }
 
 func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
@@ -1909,22 +1918,23 @@ func (r *HarnessRecorder) Snapshot() []HarnessEvent {
 }
 
 type turnProjection struct {
-	thread           *Thread
-	ctx              context.Context
-	turnID           string
-	runID            string
-	downstream       event.Sink
-	emitMu           sync.Mutex
-	mu               sync.Mutex
-	text             string
-	reasoning        string
-	pendingCalls     []pendingToolMessage
-	pendingResults   []pendingToolMessage
-	pendingBatchSize int
-	pendingCallsSent bool
-	lastCompaction   event.Event
-	activeAttempt    providerAttemptIdentity
-	err              error
+	thread            *Thread
+	ctx               context.Context
+	turnID            string
+	runID             string
+	downstream        event.Sink
+	emitMu            sync.Mutex
+	mu                sync.Mutex
+	text              string
+	reasoning         string
+	pendingCalls      []pendingToolMessage
+	pendingResults    []pendingToolMessage
+	pendingBatchSize  int
+	pendingCallsSent  bool
+	lastCompaction    event.Event
+	activeAttempt     providerAttemptIdentity
+	threadUsageTotals ThreadTokenUsageTotals
+	err               error
 }
 
 type providerAttemptIdentity struct {
@@ -1997,6 +2007,25 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	p.mu.Unlock()
+	if ev.Type == event.ProviderUsage {
+		status, committed, appendErr := p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
+		if appendErr != nil {
+			p.mu.Lock()
+			p.err = appendErr
+			p.mu.Unlock()
+			return
+		}
+		if committed {
+			p.mu.Lock()
+			p.threadUsageTotals.add(status.Usage)
+			totals := p.threadUsageTotals
+			p.mu.Unlock()
+			ev.ThreadUsageTotals = &event.ThreadUsageTotals{
+				InputTokens: totals.InputTokens, OutputTokens: totals.OutputTokens,
+				CacheReadTokens: totals.CacheReadTokens, CacheWriteTokens: totals.CacheWriteTokens,
+			}
+		}
+	}
 	if p.downstream != nil {
 		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}
@@ -2006,8 +2035,11 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	switch ev.Type {
-	case event.ProviderRequest, event.ProviderUsage:
-		p.err = p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
+	case event.ProviderRequest:
+		_, _, p.err = p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
+	case event.ProviderUsage:
+		// Final usage was committed before live publication so totals and the
+		// canonical journal always advance together. Stream usage is not durable.
 	case event.ContextCompact:
 		p.err = p.thread.appendContextCompactionEvent(p.ctx, p.turnID, p.runID, ev)
 		if p.err == nil {
@@ -2113,7 +2145,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 }
 
 func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, error) {
-	tracked := ev.Type == event.ProviderRequest || ev.Type == event.ProviderDelta ||
+	tracked := ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
 		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderToolCallStart ||
 		ev.Type == event.ProviderToolCallDelta || ev.Type == event.ProviderToolCallEnd
 	if !tracked {

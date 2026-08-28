@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-28
+* **Live canonical thread usage totals**: Each successfully committed final
+  provider-usage event now carries cumulative thread totals from the same
+  canonical fold used by `ThreadContextReader`. Rejected attempts, stream usage,
+  cancellation, and failed writes cannot advance the live value.
 * **Typed file mutation Activity**: File and Patch payloads now preserve
   bounded read detail, per-file line counts, unified diffs, and truncation
   through live projection, canonical storage, and restart recovery.
