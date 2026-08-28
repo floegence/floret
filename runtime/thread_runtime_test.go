@@ -633,6 +633,7 @@ func TestThreadServicePromoteFailsBeforePublishingWhenCanonicalAcceptanceFails(t
 	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && len(view.Queue) == 1
 	})
+	waitThreadExecutionDone(t, service.(*threadRuntimeService), created.ThreadID)
 	original := host.store.repo
 	turns := original.(sessiontree.RuntimeTurnRepo)
 	host.store.repo = rejectingRuntimeTurnRepo{Repo: original, turns: turns, err: errors.New("injected promote acceptance failure")}
@@ -2784,4 +2785,20 @@ func waitThreadView(t *testing.T, service ThreadService, threadID identity.Threa
 	view, err := service.View(t.Context(), threadID)
 	t.Fatalf("thread view did not converge: view=%#v err=%v", view, err)
 	return ThreadView{}
+}
+
+func waitThreadExecutionDone(t *testing.T, service *threadRuntimeService, threadID identity.ThreadID) {
+	t.Helper()
+	actor := service.runtime(threadID)
+	actor.mu.Lock()
+	done := actor.state.executionDone
+	actor.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("thread execution did not finish")
+	}
 }
