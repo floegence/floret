@@ -3336,6 +3336,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	executionCtx, cancel := context.WithCancel(context.Background())
 	executionDone := make(chan struct{})
+	var previousExecution <-chan struct{}
 	claimed := false
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive {
@@ -3346,6 +3347,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		actor.state.view.ViewVersion++
 		actor.state.cancel = cancel
 		actor.state.cancelOwner = "run:" + runID.String()
+		previousExecution = actor.state.executionDone
 		actor.state.executionDone = executionDone
 		claimed = true
 		return nil
@@ -3357,6 +3359,13 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	defer cancel()
 	defer close(executionDone)
+	if previousExecution != nil {
+		select {
+		case <-executionCtx.Done():
+			return
+		case <-previousExecution:
+		}
+	}
 	continuationKey := "continue-input:" + interaction.ID
 	agent, err := service.factory.Agent(executionCtx, AgentRequest{
 		ThreadID: threadID, TurnID: interaction.TurnID, RequestKey: continuationKey,
