@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/floegence/floret/v5/config"
 	"github.com/floegence/floret/v5/provider"
@@ -37,14 +38,14 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, path string) error {
+func run(ctx context.Context, path string) (runErr error) {
 	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
 	if err != nil {
 		return fmt.Errorf("open runtime: %w", err)
 	}
 	defer func() {
-		if err := host.Shutdown(context.Background()); err != nil {
-			panic(err)
+		if err := host.Shutdown(context.Background()); err != nil && runErr == nil {
+			runErr = fmt.Errorf("shutdown runtime: %w", err)
 		}
 	}()
 	agent, err := runtime.NewAgent(config.AgentConfig{
@@ -68,5 +69,21 @@ func run(ctx context.Context, path string) error {
 		return fmt.Errorf("send: %w", err)
 	}
 	fmt.Println(started.ThreadID, started.TurnID)
-	return nil
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		view, err := service.View(ctx, created.ThreadID)
+		if err != nil {
+			return fmt.Errorf("read thread: %w", err)
+		}
+		if view.Activity == runtime.ThreadActivityIdle && view.LastOutcome != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
