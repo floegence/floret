@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-08-29
+* **Typed SubAgent operation Activity**: Management calls now preserve their
+  exact action, ordered child targets, and bounded outcome counts separately
+  from the durable single-child fact renderer.
+
 ## 2026-08-28
 * **Live canonical thread usage totals**: Each successfully committed final
   provider-usage event now carries cumulative thread totals from the same

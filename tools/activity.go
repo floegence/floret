@@ -31,6 +31,10 @@ const (
 	ActivityRendererQuestion   ActivityRenderer = "question"
 	ActivityRendererCompletion ActivityRenderer = "completion"
 	ActivityRendererSubAgent   ActivityRenderer = "subagent"
+	// ActivityRendererSubAgentOperation renders one management operation over
+	// an ordered set of child threads. ActivityRendererSubAgent remains the
+	// renderer for one durable child-thread fact.
+	ActivityRendererSubAgentOperation ActivityRenderer = "subagent_operation"
 )
 
 type ActivityChip struct {
@@ -297,6 +301,48 @@ func (SubAgentActivityPayload) activityRenderer() ActivityRenderer {
 	return ActivityRendererSubAgent
 }
 
+// SubAgentOperationAction identifies one product-neutral child-thread
+// management operation.
+type SubAgentOperationAction string
+
+const (
+	SubAgentOperationSpawn     SubAgentOperationAction = "spawn"
+	SubAgentOperationWait      SubAgentOperationAction = "wait"
+	SubAgentOperationList      SubAgentOperationAction = "list"
+	SubAgentOperationInspect   SubAgentOperationAction = "inspect"
+	SubAgentOperationSendInput SubAgentOperationAction = "send_input"
+	SubAgentOperationClose     SubAgentOperationAction = "close"
+	SubAgentOperationCloseAll  SubAgentOperationAction = "close_all"
+)
+
+// SubAgentOperationTarget is one ordered child target or spawn request shown
+// by a management activity. ThreadID may be empty before a spawn is admitted;
+// in that state TaskName identifies the requested child for presentation.
+type SubAgentOperationTarget struct {
+	ThreadID        identity.ThreadID `json:"thread_id,omitempty"`
+	TaskName        string            `json:"task_name,omitempty"`
+	TaskDescription string            `json:"task_description,omitempty"`
+	Status          string            `json:"status,omitempty"`
+}
+
+// SubAgentOperationActivityPayload preserves the exact management action,
+// ordered targets, and bounded outcome counts for one tool invocation.
+// Child execution details remain in each child thread's own activity stream.
+type SubAgentOperationActivityPayload struct {
+	Action         SubAgentOperationAction   `json:"action"`
+	Status         string                    `json:"status,omitempty"`
+	Targets        []SubAgentOperationTarget `json:"targets,omitempty"`
+	RequestedCount int                       `json:"requested_count,omitempty"`
+	CompletedCount int                       `json:"completed_count,omitempty"`
+	MissingCount   int                       `json:"missing_count,omitempty"`
+	TimedOut       bool                      `json:"timed_out,omitempty"`
+	Error          *ActivityError            `json:"error,omitempty"`
+}
+
+func (SubAgentOperationActivityPayload) activityRenderer() ActivityRenderer {
+	return ActivityRendererSubAgentOperation
+}
+
 // ActivityPresentation is display data authored by the tool that owns the
 // invocation. Its renderer is the discriminator for exactly one payload type.
 type ActivityPresentation struct {
@@ -418,6 +464,8 @@ func (presentation *ActivityPresentation) UnmarshalJSON(data []byte) error {
 			target = new(CompletionActivityPayload)
 		case ActivityRendererSubAgent:
 			target = new(SubAgentActivityPayload)
+		case ActivityRendererSubAgentOperation:
+			target = new(SubAgentOperationActivityPayload)
 		default:
 			return errors.New("tool activity payload requires a supported renderer")
 		}
@@ -444,6 +492,8 @@ func (presentation *ActivityPresentation) UnmarshalJSON(data []byte) error {
 		case *CompletionActivityPayload:
 			payload = *value
 		case *SubAgentActivityPayload:
+			payload = *value
+		case *SubAgentOperationActivityPayload:
 			payload = *value
 		}
 	}
@@ -559,6 +609,9 @@ func FinalizeActivityPresentation(in *ActivityPresentation, status string) *Acti
 	case SubAgentActivityPayload:
 		payload.Status = status
 		out.Payload = payload
+	case SubAgentOperationActivityPayload:
+		payload.Status = status
+		out.Payload = payload
 	}
 	return out
 }
@@ -586,6 +639,8 @@ func ActivityStatus(in *ActivityPresentation) (string, bool) {
 	case CompletionActivityPayload:
 		status = payload.Status
 	case SubAgentActivityPayload:
+		status = payload.Status
+	case SubAgentOperationActivityPayload:
 		status = payload.Status
 	default:
 		return "", false
@@ -847,6 +902,34 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.Answers = cloneQuestionActivityAnswers(r.Answers)
 		}
 		return l
+	case SubAgentOperationActivityPayload:
+		l, ok := left.(SubAgentOperationActivityPayload)
+		if !ok {
+			return cloneActivityPayload(r)
+		}
+		if r.Action != "" {
+			l.Action = r.Action
+		}
+		if r.Status != "" {
+			l.Status = r.Status
+		}
+		if len(r.Targets) > 0 {
+			l.Targets = append([]SubAgentOperationTarget(nil), r.Targets...)
+		}
+		if r.RequestedCount != 0 {
+			l.RequestedCount = r.RequestedCount
+		}
+		if r.CompletedCount != 0 {
+			l.CompletedCount = r.CompletedCount
+		}
+		if r.MissingCount != 0 {
+			l.MissingCount = r.MissingCount
+		}
+		l.TimedOut = l.TimedOut || r.TimedOut
+		if r.Error != nil {
+			l.Error = cloneActivityError(r.Error)
+		}
+		return l
 	default:
 		return cloneActivityPayload(right)
 	}
@@ -856,7 +939,7 @@ func activityPayloadRenderer(payload ActivityPayload) (ActivityRenderer, error) 
 	switch typed := payload.(type) {
 	case StructuredActivityPayload, TerminalActivityPayload, FileActivityPayload, PatchActivityPayload,
 		WebSearchActivityPayload, WebFetchActivityPayload, TodosActivityPayload, QuestionActivityPayload, CompletionActivityPayload,
-		SubAgentActivityPayload:
+		SubAgentActivityPayload, SubAgentOperationActivityPayload:
 		return typed.activityRenderer(), nil
 	default:
 		return "", fmt.Errorf("tool activity payload type %T is unsupported; use a value variant", payload)
@@ -893,6 +976,10 @@ func cloneActivityPayload(payload ActivityPayload) ActivityPayload {
 	case CompletionActivityPayload:
 		return typed
 	case SubAgentActivityPayload:
+		return typed
+	case SubAgentOperationActivityPayload:
+		typed.Targets = append([]SubAgentOperationTarget(nil), typed.Targets...)
+		typed.Error = cloneActivityError(typed.Error)
 		return typed
 	default:
 		return nil
@@ -990,7 +1077,7 @@ func validActivityRenderer(renderer ActivityRenderer) bool {
 	switch renderer {
 	case ActivityRendererStructured, ActivityRendererTerminal, ActivityRendererFile, ActivityRendererPatch,
 		ActivityRendererWebSearch, ActivityRendererWebFetch, ActivityRendererTodos, ActivityRendererQuestion, ActivityRendererCompletion,
-		ActivityRendererSubAgent:
+		ActivityRendererSubAgent, ActivityRendererSubAgentOperation:
 		return true
 	default:
 		return false
@@ -1151,8 +1238,49 @@ func validateActivityPayload(payload ActivityPayload) error {
 			typed.HostProfileRef, typed.ForkMode, typed.Status, typed.LastMessage, typed.WaitingPrompt,
 			typed.ParentThreadID.String(), typed.ParentTurnID.String(), typed.LatestTurnID.String(),
 		}, nil)
+	case SubAgentOperationActivityPayload:
+		if !validSubAgentOperationAction(typed.Action) {
+			return errors.New("subagent operation action is unsupported")
+		}
+		if len(typed.Targets) > maxActivityPayloadItems {
+			return errors.New("too many subagent operation targets")
+		}
+		if typed.RequestedCount < 0 || typed.CompletedCount < 0 || typed.MissingCount < 0 {
+			return errors.New("subagent operation counts must be non-negative")
+		}
+		if typed.RequestedCount > 0 && typed.CompletedCount+typed.MissingCount > typed.RequestedCount {
+			return errors.New("subagent operation outcome exceeds requested count")
+		}
+		if typed.TimedOut && typed.Action != SubAgentOperationWait {
+			return errors.New("only a subagent wait operation may time out")
+		}
+		values := []string{string(typed.Action), typed.Status}
+		seen := make(map[identity.ThreadID]struct{}, len(typed.Targets))
+		for _, target := range typed.Targets {
+			if target.ThreadID == "" && strings.TrimSpace(target.TaskName) == "" {
+				return errors.New("subagent operation target requires thread or task name")
+			}
+			if target.ThreadID != "" {
+				if _, ok := seen[target.ThreadID]; ok {
+					return errors.New("subagent operation target thread is duplicated")
+				}
+				seen[target.ThreadID] = struct{}{}
+			}
+			values = append(values, target.ThreadID.String(), target.TaskName, target.TaskDescription, target.Status)
+		}
+		return validatePayloadTextAndError(values, typed.Error)
 	default:
 		return fmt.Errorf("type %T is unsupported", payload)
+	}
+}
+
+func validSubAgentOperationAction(action SubAgentOperationAction) bool {
+	switch action {
+	case SubAgentOperationSpawn, SubAgentOperationWait, SubAgentOperationList, SubAgentOperationInspect,
+		SubAgentOperationSendInput, SubAgentOperationClose, SubAgentOperationCloseAll:
+		return true
+	default:
+		return false
 	}
 }
 

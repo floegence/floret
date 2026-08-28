@@ -30,6 +30,10 @@ func TestSanitizeActivityPresentationPreservesEveryTypedPayload(t *testing.T) {
 		{name: "subagent", renderer: tools.ActivityRendererSubAgent, payload: tools.SubAgentActivityPayload{
 			ThreadID: identity.ThreadID("thread-child"), ParentThreadID: identity.ThreadID("thread-parent"), Status: "running",
 		}},
+		{name: "subagent operation", renderer: tools.ActivityRendererSubAgentOperation, payload: tools.SubAgentOperationActivityPayload{
+			Action: tools.SubAgentOperationWait, Status: "running", RequestedCount: 1,
+			Targets: []tools.SubAgentOperationTarget{{ThreadID: identity.ThreadID("thread-child"), TaskName: "research"}},
+		}},
 	}
 	for _, test := range tests {
 		test := test

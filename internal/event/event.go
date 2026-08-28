@@ -442,6 +442,15 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.LastMessage = sanitizeText(payload.LastMessage)
 		payload.WaitingPrompt = sanitizeText(payload.WaitingPrompt)
 		return payload
+	case tools.SubAgentOperationActivityPayload:
+		payload.Status = sanitizeText(payload.Status)
+		for i := range payload.Targets {
+			payload.Targets[i].TaskName = sanitizeText(payload.Targets[i].TaskName)
+			payload.Targets[i].TaskDescription = sanitizeText(payload.Targets[i].TaskDescription)
+			payload.Targets[i].Status = sanitizeText(payload.Targets[i].Status)
+		}
+		payload.Error = sanitizeError(payload.Error)
+		return payload
 	default:
 		return nil
 	}

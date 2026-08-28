@@ -1,5 +1,11 @@
 # Changelog
 
+## v5.0.13 - 2026-08-29
+
+- Add typed SubAgent operation Activity payloads that preserve management
+  actions, ordered targets, completion counts, missing targets, and wait
+  timeouts without overloading the single child-thread fact renderer.
+
 ## v5.0.12 - 2026-08-28
 
 - Publish cumulative canonical thread token totals on each successfully

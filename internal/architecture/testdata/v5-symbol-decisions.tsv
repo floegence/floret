@@ -19,3 +19,7 @@ runtime.WorkspaceSubscription	keep	ThreadService.Subscribe	one workspace current
 runtime.Event.ThreadUsageTotals	add	runtime.Event	live cumulative usage is published only after the canonical final usage append succeeds
 tools.StructuredActivityRow	add	StructuredActivityPayload.Rows	bounded product-neutral structured display content
 tools.StructuredActivityRowFormat	add	StructuredActivityPayload.Rows	closed text markdown and code presentation formats
+tools.ActivityRendererSubAgentOperation	add	ActivityPresentation	distinguishes management operations from one durable child fact
+tools.SubAgentOperationAction	add	SubAgentOperationActivityPayload	closed product-neutral management action vocabulary
+tools.SubAgentOperationTarget	add	SubAgentOperationActivityPayload	ordered child identity and bounded display summary
+tools.SubAgentOperationActivityPayload	add	ActivityPresentation	preserves exact multi-child operation semantics without label inference

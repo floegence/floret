@@ -65,6 +65,11 @@ func WithTerminalStatus(in *tools.ActivityPresentation, status, reason string) *
 		}
 		out.Renderer = tools.ActivityRendererCompletion
 		out.Payload = payload
+	case tools.SubAgentOperationActivityPayload:
+		payload.Status = status
+		payload.Error = activityError(payload.Error)
+		out.Renderer = tools.ActivityRendererSubAgentOperation
+		out.Payload = payload
 	default:
 		out.Renderer = tools.ActivityRendererStructured
 		out.Payload = tools.StructuredActivityPayload{

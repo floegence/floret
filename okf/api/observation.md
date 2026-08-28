@@ -108,6 +108,11 @@ ordered non-secret display values or sets `redacted` with no values. Floret
 validates, deep-clones, merges, sanitizes, and projects that shape, but it does
 not treat the summary as input admission or a replacement for canonical user
 messages.
+SubAgent activity has two non-overlapping renderer contracts. The `subagent`
+renderer describes one durable child-thread fact. The `subagent_operation`
+renderer describes one management invocation and preserves its exact action,
+ordered targets, bounded outcome counts, missing targets, and wait timeout.
+Hosts must use the typed action instead of inferring operations from labels.
 When a schema-invalid local call is returned by the provider, the engine keeps
 the call and ordered validation result inside provider-visible correction
 history and emits no public tool activity. For other local tool failures before
