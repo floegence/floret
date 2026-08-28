@@ -1,5 +1,12 @@
 # Changelog
 
+## v5.0.11 - 2026-08-28
+
+- Preserve bounded file read content, line ranges, mutation counts, unified
+  diffs, and unavailable-diff details in typed File Activity payloads.
+- Add typed multi-file Patch mutations and aggregate change metadata so hosts
+  do not need to parse tool-result text or maintain a second projection.
+
 ## v5.0.10 - 2026-08-28
 
 - Stop discovering, requesting, and emitting page icons from `web_fetch`.

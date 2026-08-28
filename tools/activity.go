@@ -112,22 +112,59 @@ func (TerminalActivityPayload) activityRenderer() ActivityRenderer {
 }
 
 type FileActivityPayload struct {
-	Path      string         `json:"path,omitempty"`
-	Operation string         `json:"operation,omitempty"`
-	Status    string         `json:"status,omitempty"`
-	Summary   string         `json:"summary,omitempty"`
-	SizeBytes int64          `json:"size_bytes,omitempty"`
-	Error     *ActivityError `json:"error,omitempty"`
+	Path                  string         `json:"path,omitempty"`
+	Operation             string         `json:"operation,omitempty"`
+	Status                string         `json:"status,omitempty"`
+	Summary               string         `json:"summary,omitempty"`
+	SizeBytes             int64          `json:"size_bytes,omitempty"`
+	DisplayName           string         `json:"display_name,omitempty"`
+	Content               string         `json:"content,omitempty"`
+	LineOffset            int            `json:"line_offset,omitempty"`
+	LineCount             int            `json:"line_count,omitempty"`
+	TotalLines            int            `json:"total_lines,omitempty"`
+	ChangeType            string         `json:"change_type,omitempty"`
+	Additions             int            `json:"additions,omitempty"`
+	Deletions             int            `json:"deletions,omitempty"`
+	UnifiedDiff           string         `json:"unified_diff,omitempty"`
+	DiffUnavailableReason string         `json:"diff_unavailable_reason,omitempty"`
+	Truncated             bool           `json:"truncated,omitempty"`
+	Error                 *ActivityError `json:"error,omitempty"`
 }
 
 func (FileActivityPayload) activityRenderer() ActivityRenderer { return ActivityRendererFile }
 
+// FileMutationActivityPayload is one bounded, product-neutral file mutation
+// rendered by a patch activity. Resource authority remains in TargetRefs.
+type FileMutationActivityPayload struct {
+	DisplayName           string `json:"display_name,omitempty"`
+	ChangeType            string `json:"change_type,omitempty"`
+	Additions             int    `json:"additions,omitempty"`
+	Deletions             int    `json:"deletions,omitempty"`
+	UnifiedDiff           string `json:"unified_diff,omitempty"`
+	DiffUnavailableReason string `json:"diff_unavailable_reason,omitempty"`
+	Truncated             bool   `json:"truncated,omitempty"`
+}
+
+// FileMutationActivityPayloads is an ordered set of patch mutations. Patch
+// payloads hold it by pointer to preserve the v5 payload's comparability.
+type FileMutationActivityPayloads []FileMutationActivityPayload
+
 type PatchActivityPayload struct {
-	Path    string         `json:"path,omitempty"`
-	Diff    string         `json:"diff,omitempty"`
-	Status  string         `json:"status,omitempty"`
-	Summary string         `json:"summary,omitempty"`
-	Error   *ActivityError `json:"error,omitempty"`
+	// Path and Diff remain for v5 source and JSON compatibility. New hosts
+	// should use Mutations so multi-file results retain complete typed detail.
+	Path             string                        `json:"path,omitempty"`
+	Diff             string                        `json:"diff,omitempty"`
+	Status           string                        `json:"status,omitempty"`
+	Summary          string                        `json:"summary,omitempty"`
+	FilesChanged     int                           `json:"files_changed,omitempty"`
+	Hunks            int                           `json:"hunks,omitempty"`
+	Additions        int                           `json:"additions,omitempty"`
+	Deletions        int                           `json:"deletions,omitempty"`
+	InputFormat      string                        `json:"input_format,omitempty"`
+	NormalizedFormat string                        `json:"normalized_format,omitempty"`
+	Mutations        *FileMutationActivityPayloads `json:"mutations,omitempty"`
+	Truncated        bool                          `json:"truncated,omitempty"`
+	Error            *ActivityError                `json:"error,omitempty"`
 }
 
 func (PatchActivityPayload) activityRenderer() ActivityRenderer { return ActivityRendererPatch }
@@ -686,6 +723,29 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.SizeBytes != 0 {
 			l.SizeBytes = r.SizeBytes
 		}
+		if r.DisplayName != "" {
+			l.DisplayName = r.DisplayName
+		}
+		if r.Content != "" {
+			l.Content = r.Content
+		}
+		if r.LineOffset != 0 {
+			l.LineOffset = r.LineOffset
+		}
+		if r.LineCount != 0 {
+			l.LineCount = r.LineCount
+		}
+		if r.TotalLines != 0 {
+			l.TotalLines = r.TotalLines
+		}
+		if r.ChangeType != "" {
+			l.ChangeType = r.ChangeType
+			l.Additions = r.Additions
+			l.Deletions = r.Deletions
+			l.UnifiedDiff = r.UnifiedDiff
+			l.DiffUnavailableReason = r.DiffUnavailableReason
+		}
+		l.Truncated = l.Truncated || r.Truncated
 		if r.Error != nil {
 			l.Error = cloneActivityError(r.Error)
 		}
@@ -707,6 +767,29 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.Summary != "" {
 			l.Summary = r.Summary
 		}
+		if r.FilesChanged != 0 {
+			l.FilesChanged = r.FilesChanged
+		}
+		if r.Hunks != 0 {
+			l.Hunks = r.Hunks
+		}
+		if r.Additions != 0 {
+			l.Additions = r.Additions
+		}
+		if r.Deletions != 0 {
+			l.Deletions = r.Deletions
+		}
+		if r.InputFormat != "" {
+			l.InputFormat = r.InputFormat
+		}
+		if r.NormalizedFormat != "" {
+			l.NormalizedFormat = r.NormalizedFormat
+		}
+		if r.Mutations != nil {
+			mutations := append(FileMutationActivityPayloads(nil), (*r.Mutations)...)
+			l.Mutations = &mutations
+		}
+		l.Truncated = l.Truncated || r.Truncated
 		if r.Error != nil {
 			l.Error = cloneActivityError(r.Error)
 		}
@@ -854,6 +937,10 @@ func cloneFileActivityPayload(payload FileActivityPayload) FileActivityPayload {
 
 func clonePatchActivityPayload(payload PatchActivityPayload) PatchActivityPayload {
 	payload.Error = cloneActivityError(payload.Error)
+	if payload.Mutations != nil {
+		mutations := append(FileMutationActivityPayloads(nil), (*payload.Mutations)...)
+		payload.Mutations = &mutations
+	}
 	return payload
 }
 
@@ -936,12 +1023,30 @@ func validateActivityPayload(payload ActivityPayload) error {
 		}
 		return validatePayloadTextAndError([]string{typed.Command, typed.Status, typed.ProcessID, typed.LatestOutput, typed.Output, typed.Stdout, typed.Stderr, typed.PendingResult}, typed.Error)
 	case FileActivityPayload:
-		if typed.SizeBytes < 0 {
-			return errors.New("size_bytes must be non-negative")
+		if typed.SizeBytes < 0 || typed.LineOffset < 0 || typed.LineCount < 0 || typed.TotalLines < 0 || typed.Additions < 0 || typed.Deletions < 0 {
+			return errors.New("file activity sizes, lines, and change counts must be non-negative")
 		}
-		return validatePayloadTextAndError([]string{typed.Path, typed.Operation, typed.Status, typed.Summary}, typed.Error)
+		return validatePayloadTextAndError([]string{
+			typed.Path, typed.Operation, typed.Status, typed.Summary, typed.DisplayName, typed.Content,
+			typed.ChangeType, typed.UnifiedDiff, typed.DiffUnavailableReason,
+		}, typed.Error)
 	case PatchActivityPayload:
-		return validatePayloadTextAndError([]string{typed.Path, typed.Diff, typed.Status, typed.Summary}, typed.Error)
+		if typed.FilesChanged < 0 || typed.Hunks < 0 || typed.Additions < 0 || typed.Deletions < 0 {
+			return errors.New("patch activity counts must be non-negative")
+		}
+		if typed.Mutations != nil && len(*typed.Mutations) > maxActivityPayloadItems {
+			return errors.New("too many patch activity mutations")
+		}
+		values := []string{typed.Path, typed.Diff, typed.Status, typed.Summary, typed.InputFormat, typed.NormalizedFormat}
+		if typed.Mutations != nil {
+			for _, mutation := range *typed.Mutations {
+				if mutation.Additions < 0 || mutation.Deletions < 0 {
+					return errors.New("patch mutation counts must be non-negative")
+				}
+				values = append(values, mutation.DisplayName, mutation.ChangeType, mutation.UnifiedDiff, mutation.DiffUnavailableReason)
+			}
+		}
+		return validatePayloadTextAndError(values, typed.Error)
 	case WebSearchActivityPayload:
 		if len(typed.Results) > maxActivityPayloadItems {
 			return errors.New("too many search results")

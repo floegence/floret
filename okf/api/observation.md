@@ -96,6 +96,12 @@ projection, but it does not define tool-specific UI layout, copy, grouping, or
 field priority. Downstream hosts remain responsible for interpreting terminal,
 file, patch, web-search, web-fetch, question, completion, todo, and other renderer payloads
 as product presentation.
+File payloads carry bounded read content and line ranges or one typed mutation
+with display name, change type, line counts, unified diff, truncation, and a
+safe unavailable-diff reason. Patch payloads carry the same per-file mutation
+shape plus aggregate counts. Resource identity and authorization remain in
+`ActivityTargetRef`; hosts must not reconstruct file display data by parsing
+canonical tool-result text.
 Question payloads may carry optional host-authored answer summaries after a
 prompt is resolved. Each answer binds to a question id and either contains
 ordered non-secret display values or sets `redacted` with no values. Floret

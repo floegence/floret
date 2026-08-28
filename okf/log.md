@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-28
+* **Typed file mutation Activity**: File and Patch payloads now preserve
+  bounded read detail, per-file line counts, unified diffs, and truncation
+  through live projection, canonical storage, and restart recovery.
 * **Web Fetch static host iconography**: Web Fetch no longer discovers,
   requests, or emits page icons. Activity remains limited to response metadata
   and a bounded preview; hosts own static tool icons.

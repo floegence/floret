@@ -343,6 +343,11 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.Operation = sanitizeText(payload.Operation)
 		payload.Status = sanitizeText(payload.Status)
 		payload.Summary = sanitizeText(payload.Summary)
+		payload.DisplayName = sanitizeText(payload.DisplayName)
+		payload.Content = sanitizeText(payload.Content)
+		payload.ChangeType = sanitizeText(payload.ChangeType)
+		payload.UnifiedDiff = sanitizeText(payload.UnifiedDiff)
+		payload.DiffUnavailableReason = sanitizeText(payload.DiffUnavailableReason)
 		payload.Error = sanitizeError(payload.Error)
 		return payload
 	case tools.PatchActivityPayload:
@@ -350,6 +355,18 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.Diff = sanitizeText(payload.Diff)
 		payload.Status = sanitizeText(payload.Status)
 		payload.Summary = sanitizeText(payload.Summary)
+		payload.InputFormat = sanitizeText(payload.InputFormat)
+		payload.NormalizedFormat = sanitizeText(payload.NormalizedFormat)
+		if payload.Mutations != nil {
+			mutations := append(tools.FileMutationActivityPayloads(nil), (*payload.Mutations)...)
+			payload.Mutations = &mutations
+			for i := range *payload.Mutations {
+				(*payload.Mutations)[i].DisplayName = sanitizeText((*payload.Mutations)[i].DisplayName)
+				(*payload.Mutations)[i].ChangeType = sanitizeText((*payload.Mutations)[i].ChangeType)
+				(*payload.Mutations)[i].UnifiedDiff = sanitizeText((*payload.Mutations)[i].UnifiedDiff)
+				(*payload.Mutations)[i].DiffUnavailableReason = sanitizeText((*payload.Mutations)[i].DiffUnavailableReason)
+			}
+		}
 		payload.Error = sanitizeError(payload.Error)
 		return payload
 	case tools.WebSearchActivityPayload:

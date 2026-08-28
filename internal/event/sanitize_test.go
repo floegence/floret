@@ -100,6 +100,31 @@ func TestSanitizeActivityPresentationPreservesTypedNumbers(t *testing.T) {
 	}
 }
 
+func TestSanitizePatchActivityDetachesMutations(t *testing.T) {
+	t.Parallel()
+
+	mutations := tools.FileMutationActivityPayloads{{
+		DisplayName: "app.ts", ChangeType: "update", Additions: 1,
+		UnifiedDiff: "@@ -0,0 +1 @@\n+new\n",
+	}}
+	input := &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererPatch,
+		Payload:  tools.PatchActivityPayload{Mutations: &mutations},
+	}
+	got := Sanitize(Event{Activity: input})
+	if got.Activity == nil {
+		t.Fatal("patch activity was dropped")
+	}
+	payload, ok := got.Activity.Payload.(tools.PatchActivityPayload)
+	if !ok || payload.Mutations == nil || len(*payload.Mutations) != 1 {
+		t.Fatalf("patch payload = %#v", got.Activity.Payload)
+	}
+	mutations[0].DisplayName = "changed.ts"
+	if (*payload.Mutations)[0].DisplayName != "app.ts" {
+		t.Fatal("sanitized patch mutations share input storage")
+	}
+}
+
 func TestSafePathRefsTextSanitizesLocalPathsAndKeepsURLs(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"
 	homePath := "~/work/floret/secret.txt"
