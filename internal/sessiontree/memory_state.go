@@ -10,6 +10,8 @@ import (
 	"github.com/floegence/floret/v5/internal/session/artifact"
 )
 
+// memoryStateVersion identifies the last monolithic checkpoint shape. Schema
+// v6 reads this shape only while migrating legacy stores.
 const memoryStateVersion = 5
 
 type memoryState struct {
@@ -54,8 +56,8 @@ type memoryState struct {
 	Sequence                       int64                             `json:"sequence"`
 }
 
-// EncodeMemoryState returns a detached strict representation of the complete
-// session-tree domain state. The caller owns the returned bytes.
+// EncodeMemoryState returns the detached strict v5 checkpoint representation.
+// Production schema-v6 mutations persist segmented records instead.
 func (repo *MemoryRepo) EncodeMemoryState() ([]byte, error) {
 	if repo == nil {
 		return nil, errors.New("memory repo is required")
@@ -77,7 +79,7 @@ func (repo *MemoryRepo) memoryStateLocked() memoryState {
 	}
 }
 
-// DecodeMemoryState constructs a repo from one exact encoded state.
+// DecodeMemoryState constructs a repo from one exact legacy checkpoint.
 func DecodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, error) {
 	repo, _, err := decodeMemoryState(data, now)
 	return repo, err

@@ -1,5 +1,8 @@
 package sessiontree
 
+// This file decodes the released v5 recovery journal during the v5 -> v6
+// migration. Schema v6 never writes these frames.
+
 import (
 	"bytes"
 	"context"

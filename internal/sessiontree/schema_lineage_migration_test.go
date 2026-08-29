@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +170,7 @@ func TestBackendRepoMigrationRollbackAndCurrentBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	injected := errors.New("inventory write failed")
+	injected := errors.New("v6 root index write failed")
 	if _, err := NewBackendRepo(ctx, migrationFailingBackend{Backend: backend, err: injected}, time.Now); !errors.Is(err, injected) {
 		t.Fatalf("migration error=%v, want injected failure", err)
 	}
@@ -179,12 +181,12 @@ func TestBackendRepoMigrationRollbackAndCurrentBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey)
+	current := cloneMigrationRecords(backend.records)
 	if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey); !bytes.Equal(got, current) {
-		t.Fatal("current startup rewrote canonical bytes")
+	if !reflect.DeepEqual(backend.records, current) {
+		t.Fatal("current startup rewrote canonical records")
 	}
 	if err := backend.View(ctx, func(tx spi.ReadTx) error { return repo.VerifyCurrentStateInTransaction(ctx, tx) }); err != nil {
 		t.Fatal(err)
@@ -199,21 +201,58 @@ func TestBackendRepoStartupReplaysJournalBeforeFinalVerification(t *testing.T) {
 	}
 	defer backend.Close()
 	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)
-	repo, err := NewBackendRepo(ctx, backend, func() time.Time { return now })
+	base := newMemoryRepo(func() time.Time { return now })
+	basePayload, err := base.EncodeMemoryState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "journal-thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+	final, err := DecodeMemoryState(basePayload, func() time.Time { return now })
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Leave the committed recovery journal pending, as it would be after a
-	// process crash before the next checkpoint.
+	if _, err := final.CreateThread(ctx, ThreadMeta{ID: "journal-thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	finalPayload, err := final.EncodeMemoryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, changed, err := buildBackendDomainJournalFrame(1, basePayload, finalPayload)
+	if err != nil || !changed {
+		t.Fatalf("journal frame changed=%v err=%v", changed, err)
+	}
+	encodedFrame, err := encodeBackendDomainJournalFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateEnvelope, err := storagecodec.EncodeEnvelope("sessiontree", basePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryEnvelope, err := encodeRootThreadInventory(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		if err := tx.Put(backendDomainNamespace, backendStateKey, stateEnvelope); err != nil {
+			return err
+		}
+		if err := tx.Put(backendDomainNamespace, backendRootThreadInventoryKey, inventoryEnvelope); err != nil {
+			return err
+		}
+		return tx.Put(backendDomainJournalNamespace, backendJournalKey(1), encodedFrame)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	reopened, err := NewBackendRepo(ctx, backend, func() time.Time { return now })
 	if err != nil {
 		t.Fatalf("startup with pending journal failed: %v", err)
 	}
 	if _, err := reopened.Thread(ctx, "journal-thread"); err != nil {
 		t.Fatalf("replayed thread missing after restart: %v", err)
+	}
+	if err := backend.View(ctx, func(tx spi.ReadTx) error { return rejectLegacyBackendDomain(ctx, tx) }); err != nil {
+		t.Fatalf("v5 records survived migration: %v", err)
 	}
 }
 
@@ -262,11 +301,11 @@ func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			stateAfterFirstOpen := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey)
+			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV6Namespace)
 			if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if got := migrationTestRecord(t, backend, backendDomainNamespace, backendStateKey); !bytes.Equal(got, stateAfterFirstOpen) {
+			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV6Namespace), stateAfterFirstOpen) {
 				t.Fatal("repaired state was rewritten during idempotent reopen")
 			}
 		})
@@ -398,7 +437,7 @@ func installLegacyUTF8ToolResultStore(t *testing.T, backend spi.Backend, withJou
 	return canonicalRaw
 }
 
-func TestBackendRepoCheckpointsJournalAtFrameLimit(t *testing.T) {
+func TestBackendRepoDoesNotWriteLegacyRecoveryJournal(t *testing.T) {
 	ctx := context.Background()
 	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
 	if err != nil {
@@ -410,7 +449,7 @@ func TestBackendRepoCheckpointsJournalAtFrameLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index := 0; index < backendDomainJournalMaxFrames; index++ {
+	for index := 0; index < backendDomainJournalMaxFrames+1; index++ {
 		if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
 			memory.mu.Lock()
 			defer memory.mu.Unlock()
@@ -419,20 +458,6 @@ func TestBackendRepoCheckpointsJournalAtFrameLimit(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if repo.journalSeq != backendDomainJournalMaxFrames {
-		t.Fatalf("journal sequence=%d, want %d", repo.journalSeq, backendDomainJournalMaxFrames)
-	}
-	if err := repo.UpdateDomain(ctx, func(memory *MemoryRepo, _ spi.WriteTx) error {
-		memory.mu.Lock()
-		defer memory.mu.Unlock()
-		memory.seq++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if repo.journalSeq != 0 || repo.journalBytes != 0 || repo.domainDirty {
-		t.Fatalf("journal remained after checkpoint: seq=%d bytes=%d dirty=%v", repo.journalSeq, repo.journalBytes, repo.domainDirty)
 	}
 	if err := backend.View(ctx, func(tx spi.ReadTx) error {
 		records, err := scanBackendDomainJournal(ctx, tx)
@@ -579,7 +604,33 @@ func (tx *migrationTestTx) Get(namespace string, key []byte) ([]byte, error) {
 	}
 	return bytes.Clone(value), nil
 }
-func (tx *migrationTestTx) Scan(spi.ScanRequest) (spi.ScanPage, error) { return spi.ScanPage{}, nil }
+func (tx *migrationTestTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	if request.Namespace == "" || request.Limit <= 0 {
+		return spi.ScanPage{}, spi.ErrInvalidArgument
+	}
+	keys := make([]string, 0, len(tx.records[request.Namespace]))
+	for key := range tx.records[request.Namespace] {
+		if len(request.Start) != 0 && bytes.Compare([]byte(key), request.Start) < 0 ||
+			len(request.End) != 0 && bytes.Compare([]byte(key), request.End) >= 0 ||
+			len(request.After) != 0 && bytes.Compare([]byte(key), request.After) <= 0 {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	page := spi.ScanPage{}
+	if len(keys) > request.Limit {
+		page.HasMore = true
+		keys = keys[:request.Limit]
+	}
+	for _, key := range keys {
+		page.Records = append(page.Records, spi.Record{Key: []byte(key), Value: bytes.Clone(tx.records[request.Namespace][key])})
+	}
+	if page.HasMore {
+		page.Next = bytes.Clone(page.Records[len(page.Records)-1].Key)
+	}
+	return page, nil
+}
 func (tx *migrationTestTx) Put(namespace string, key, value []byte) error {
 	if tx.readOnly {
 		return spi.ErrTransactionClosed
@@ -613,7 +664,7 @@ type migrationFailingTx struct {
 }
 
 func (tx migrationFailingTx) Put(namespace string, key, value []byte) error {
-	if bytes.Equal(key, backendRootThreadInventoryKey) {
+	if namespace == backendDomainV6Namespace && bytes.Equal(key, backendDomainV6Key(backendDomainRecordRootIndex)) {
 		return tx.err
 	}
 	return tx.WriteTx.Put(namespace, key, value)
@@ -636,4 +687,28 @@ func migrationTestRecord(t *testing.T, backend spi.Backend, namespace string, ke
 		t.Fatal(err)
 	}
 	return value
+}
+
+func migrationTestNamespaceRecords(t *testing.T, backend spi.Backend, namespace string) map[string][]byte {
+	t.Helper()
+	records := make(map[string][]byte)
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		var after []byte
+		for {
+			page, err := tx.Scan(spi.ScanRequest{Namespace: namespace, After: after, Limit: 256})
+			if err != nil {
+				return err
+			}
+			for _, record := range page.Records {
+				records[string(record.Key)] = bytes.Clone(record.Value)
+			}
+			if !page.HasMore {
+				return nil
+			}
+			after = page.Next
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return records
 }

@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v5/internal/storagecodec"
-	"github.com/floegence/floret/v5/storage/spi"
 )
 
 const rootThreadInventoryVersion = 1
@@ -38,39 +37,25 @@ type RootThreadInventoryItem struct {
 // ListRootThreadInventory reads a bounded root-thread page and the lifecycle
 // facts needed to project each item inside one backend snapshot.
 func (repo *BackendRepo) ListRootThreadInventory(ctx context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
+	if repo == nil || ctx == nil {
+		return nil, errors.New("root thread inventory requires context and repository")
+	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	if repo.domainDirty && repo.domainMemory != nil {
-		items, err := repo.domainMemory.rootThreadInventoryLocked()
-		if err != nil {
-			return nil, err
-		}
-		if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
-			return nil, err
-		}
-		repo.rootInventoryItems = cloneRootThreadInventoryItems(items)
-		return applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(items), opts), nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	var out []RootThreadInventoryItem
-	err := repo.backend.View(ctx, func(tx spi.ReadTx) error {
-		encoded, err := tx.Get(backendDomainNamespace, backendRootThreadInventoryKey)
-		if err != nil {
-			return errors.Join(ErrAuthorityCorrupt, err)
-		}
-		if bytes.Equal(encoded, repo.rootInventoryEncoded) && repo.rootInventoryItems != nil {
-			out = applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(repo.rootInventoryItems), opts)
-			return nil
-		}
-		items, err := decodeRootThreadInventory(encoded)
-		if err != nil {
-			return err
-		}
-		repo.rootInventoryEncoded = bytes.Clone(encoded)
-		repo.rootInventoryItems = cloneRootThreadInventoryItems(items)
-		out = applyRootThreadInventoryOptions(cloneRootThreadInventoryItems(items), opts)
-		return nil
-	})
-	return out, err
+	if repo.domainMemory == nil {
+		return nil, errors.New("session-tree state is missing")
+	}
+	items, err := repo.domainMemory.rootThreadInventoryLocked()
+	if err != nil {
+		return nil, err
+	}
+	if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
+		return nil, err
+	}
+	return applyRootThreadInventoryOptions(items, opts), nil
 }
 
 func encodeRootThreadInventory(memory *MemoryRepo) ([]byte, error) {
@@ -135,18 +120,6 @@ func verifyLegacyUTF8RootThreadInventory(encoded []byte, memory *MemoryRepo) err
 	return nil
 }
 
-// EncodeBackendRootThreadInventoryRecord derives the backend record committed
-// beside one canonical session-tree state. The package is internal; this
-// helper exists so the explicit physical migration can write the same record
-// as BackendRepo without duplicating its storage identity or encoding.
-func EncodeBackendRootThreadInventoryRecord(memory *MemoryRepo) (key, value []byte, err error) {
-	value, err = encodeRootThreadInventory(memory)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bytes.Clone(backendRootThreadInventoryKey), value, nil
-}
-
 func (r *MemoryRepo) rootThreadInventoryLocked() ([]RootThreadInventoryItem, error) {
 	metas := make([]ThreadMeta, 0, len(r.threads))
 	for _, meta := range r.threads {
@@ -164,35 +137,6 @@ func (r *MemoryRepo) rootThreadInventoryLocked() ([]RootThreadInventoryItem, err
 		items = append(items, RootThreadInventoryItem{Meta: meta, Path: path})
 	}
 	return items, nil
-}
-
-func decodeRootThreadInventory(encoded []byte) ([]RootThreadInventoryItem, error) {
-	payload, err := storagecodec.DecodeEnvelope(encoded, "sessiontree-root-thread-inventory")
-	if err != nil {
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	var inventory persistedRootThreadInventory
-	if err := decoder.Decode(&inventory); err != nil {
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("root thread inventory contains trailing data")
-		}
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
-	}
-	if inventory.Version != rootThreadInventoryVersion || inventory.Items == nil {
-		return nil, errors.Join(ErrAuthorityCorrupt, errors.New("unsupported root thread inventory"))
-	}
-	if err := validateRootThreadInventory(inventory.Items); err != nil {
-		return nil, errors.Join(ErrAuthorityCorrupt, err)
-	}
-	if err := attachRootThreadInventoryProjectionFingerprints(inventory.Items); err != nil {
-		return nil, err
-	}
-	return inventory.Items, nil
 }
 
 func attachRootThreadInventoryProjectionFingerprints(items []RootThreadInventoryItem) error {
@@ -261,18 +205,6 @@ func applyRootThreadInventoryOptions(items []RootThreadInventoryItem, opts ListT
 		if opts.Limit > 0 && len(out) >= opts.Limit {
 			break
 		}
-	}
-	return out
-}
-
-func cloneRootThreadInventoryItems(items []RootThreadInventoryItem) []RootThreadInventoryItem {
-	if items == nil {
-		return nil
-	}
-	out := make([]RootThreadInventoryItem, len(items))
-	for index, item := range items {
-		item.Path = cloneEntries(item.Path)
-		out[index] = item
 	}
 	return out
 }

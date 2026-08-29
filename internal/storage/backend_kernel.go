@@ -122,9 +122,9 @@ func clonePromptState(state *cache.MemoryStore) (*cache.MemoryStore, error) {
 	return cache.DecodeMemoryState(payload)
 }
 
-// FinishTurn commits the terminal semantic state and the accumulated prompt
-// observations in one checkpoint. Prompt segments and provider diagnostics are
-// memory-resident before this boundary so they never delay provider dispatch.
+// FinishTurn commits the terminal semantic state and accumulated prompt
+// observations in one transaction. Prompt segments and provider diagnostics
+// are memory-resident before this boundary so they never delay provider dispatch.
 func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
@@ -142,7 +142,7 @@ func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree
 }
 
 // CancelTurn commits the user Stop terminal and clears prompt continuation in
-// the same checkpoint. It is the cancellation counterpart of FinishTurn.
+// the same transaction. It is the cancellation counterpart of FinishTurn.
 func (kernel *BackendKernel) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (result sessiontree.CancelTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()

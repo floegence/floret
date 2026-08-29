@@ -17,23 +17,25 @@ must not be decoded into a second Agent model by hosts.
 
 ## Domain migration
 
-Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5
-lineage. Version 5 is current. The v2 -> v3 edge reconstructs the exact
+Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
+lineage. Version 6 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
-entries and metadata. Every edge validates its source authority and the final
-current invariant.
+entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
+validates the complete authority, and splits the monolithic checkpoint into
+thread, entry, artifact, and compact index records. Every edge validates its
+source authority and the final current invariant.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
 schema drift, corrupt state, and future versions roll back or fail closed with
-the prior canonical bytes intact. A current store opens without rewriting its
-canonical envelope. The sole v5 adoption repair accepts a tool-result Raw value
-only when its stored hash is valid and replacing JSON's legacy `\\ufffd` escape
-produces the exact current projection. Floret validates the correspondingly
-repaired root inventory and checkpoints state, inventory, and recovery journal
-atomically. Other representation or authority differences remain corrupt.
-Repeating startup is idempotent.
+the prior canonical records intact. A current store opens without rewriting its
+canonical records. During v5 migration, the exact adoption repair accepts a
+tool-result Raw value only when its stored hash is valid and replacing JSON's
+legacy `\\ufffd` escape produces the exact current projection. Floret validates
+the correspondingly repaired legacy root inventory before writing v6 atomically.
+Other representation or authority differences remain corrupt. Repeating
+startup is idempotent.
 
 This automatic Floret-owned migration is distinct from the explicit legacy
 physical conversion package. Normal startup must not inspect, convert,
@@ -45,14 +47,13 @@ records as opaque.
 The backend kernel coordinates session-tree, prompt-cache, artifact, and todo
 facts under the runtime owner. In-process active execution, drafts,
 subscribers, and short-lived deduplication are not durable projections. Facts
-that survive restart are committed through the canonical journal and domain
-snapshot; a failed transaction never reports a successful live mutation.
+that survive restart are committed as affected canonical records; a failed
+transaction never replaces the validated in-memory authority.
 
-Terminal turn settlement writes the final domain state and prompt state as one
-canonical checkpoint and clears folded recovery frames in the same transaction.
-During an unusually long active turn, Floret checkpoints on the next safe write
-after the recovery journal reaches 128 frames or 32 MiB. The journal remains a
-crash-recovery mechanism, not an unbounded history.
+Terminal turn settlement writes its affected session-tree records and prompt
+state in one transaction. Ordinary mutations do not encode unrelated threads,
+diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
+exists only in the v5 -> v6 migration reader and is deleted after migration.
 
 ## SQLite space maintenance
 

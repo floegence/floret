@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.0.14 - 2026-08-29
+
+- Replace the monolithic session-tree checkpoint, JSON diff journal, and
+  full-path root inventory writes with schema-v6 thread, entry, artifact, and
+  compact index records. Mutations now write only affected records, independent
+  of unrelated conversation history size.
+- Atomically migrate v5 checkpoints and pending recovery frames to v6, then
+  remove legacy records without retaining a dual-read runtime path.
+- Initialize SubAgent titles from their task names and let the caller context
+  control turn admission instead of imposing an internal five-second timeout.
+
 ## v5.0.13 - 2026-08-29
 
 - Add typed SubAgent operation Activity payloads that preserve management

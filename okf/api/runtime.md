@@ -120,15 +120,16 @@ rendering remain host-owned.
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
-bytes. Current-schema startup is byte-preserving and idempotent except for the
-exact v5 tool-result Raw representation produced before UTF-8 normalization was
-enforced. For that released shape, startup verifies the stored hash and matching
-root inventory, then checkpoints the equivalent canonical representation in
-the same transaction. Every other mismatch still fails closed. This automatic
-domain convergence is separate from the explicit legacy physical conversion
+records. Current-schema startup is byte-preserving and idempotent. The v5 -> v6
+edge first replays pending v5 recovery frames and accepts only the exact v5
+tool-result Raw repair produced before UTF-8 normalization was enforced. It then
+writes segmented v6 authority and removes the legacy checkpoint, full-path root
+inventory, and diff journal in the same transaction. Every other mismatch still
+fails closed. This automatic domain convergence is separate from the explicit
+legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.
 
 Startup errors from internal session-tree authority validation are exposed

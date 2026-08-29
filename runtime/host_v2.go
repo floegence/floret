@@ -24,10 +24,12 @@ import (
 const (
 	logicalSchemaNamespace           = "floret.system"
 	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "5"
-	logicalSchemaFingerprint         = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
-	previousLogicalSchemaVersion     = "3"
-	previousLogicalSchemaFingerprint = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
+	logicalSchemaVersion             = "6"
+	logicalSchemaFingerprint         = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
+	previousLogicalSchemaVersion     = "5"
+	previousLogicalSchemaFingerprint = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
+	legacyLogicalSchemaVersion       = "3"
+	legacyLogicalSchemaFingerprint   = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 )
 
 var (
@@ -449,7 +451,8 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
-	logicalSchemaV4      logicalSchemaState = "v4"
+	logicalSchemaV5      logicalSchemaState = "v5"
+	logicalSchemaV3      logicalSchemaState = "v3"
 )
 
 func inspectLogicalSchema(ctx context.Context, backend spi.Backend) (logicalSchemaState, error) {
@@ -486,7 +489,13 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 		if envelope.Fingerprint != previousLogicalSchemaFingerprint {
 			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
 		}
-		return logicalSchemaV4, nil
+		return logicalSchemaV5, nil
+	}
+	if envelope.Version == legacyLogicalSchemaVersion {
+		if envelope.Fingerprint != legacyLogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+		}
+		return logicalSchemaV3, nil
 	}
 	if envelope.Version != logicalSchemaVersion || envelope.Fingerprint != logicalSchemaFingerprint {
 		return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)

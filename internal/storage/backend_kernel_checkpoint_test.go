@@ -12,7 +12,7 @@ import (
 	"github.com/floegence/floret/v5/storage/spi"
 )
 
-func TestFinishTurnCommitsCanonicalCheckpointAndClearsRecoveryJournal(t *testing.T) {
+func TestFinishTurnCommitsCanonicalSegmentedStateWithoutRecoveryJournal(t *testing.T) {
 	ctx := context.Background()
 	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
 	if err != nil {
@@ -34,8 +34,8 @@ func TestFinishTurnCommitsCanonicalCheckpointAndClearsRecoveryJournal(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if count := recoveryJournalRecordCount(t, ctx, backend); count == 0 {
-		t.Fatal("active turn did not leave recovery journal frames")
+	if count := recoveryJournalRecordCount(t, ctx, backend); count != 0 {
+		t.Fatalf("active turn wrote %d obsolete recovery journal frames", count)
 	}
 	if _, err := kernel.FinishTurn(ctx, sessiontree.FinishTurnRequest{
 		ThreadID: "thread", TurnID: "turn", RunID: "run", TerminalEntryID: "terminal",

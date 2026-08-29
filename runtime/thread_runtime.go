@@ -2147,10 +2147,8 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		if actor.state.view.Activity == ThreadActivityActive {
 			return ErrThreadBusy
 		}
-		acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
-		defer cancelAccept()
 		var acceptErr error
-		accepted, acceptErr = service.acceptCanonicalTurn(acceptCtx, threadID, request)
+		accepted, acceptErr = service.acceptCanonicalTurn(ctx, threadID, request)
 		if acceptErr != nil {
 			return acceptErr
 		}
@@ -2204,9 +2202,7 @@ func (service *threadRuntimeService) acceptAndExecutePreparedSend(
 	requestKey string,
 	retry bool,
 ) {
-	acceptCtx, cancelAccept := context.WithTimeout(context.Background(), 5*time.Second)
-	accepted, err := service.acceptCanonicalTurn(acceptCtx, threadID, request)
-	cancelAccept()
+	accepted, err := service.acceptCanonicalTurn(ctx, threadID, request)
 	if err != nil {
 		close(executionDone)
 		if retry {
@@ -3650,10 +3646,8 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 				return ErrRequestConflict
 			}
 		}
-		acceptCtx, cancelAccept := context.WithTimeout(ctx, 5*time.Second)
-		defer cancelAccept()
 		var acceptErr error
-		accepted, acceptErr = service.acceptCanonicalTurn(acceptCtx, threadID, request)
+		accepted, acceptErr = service.acceptCanonicalTurn(ctx, threadID, request)
 		if acceptErr != nil {
 			return acceptErr
 		}

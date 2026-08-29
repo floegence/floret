@@ -319,13 +319,24 @@ func TestHostShutdownWaitsForDeleteCanonicalCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitClosed(t, gateway.started, "provider did not start")
+	actor := service.(*threadRuntimeService).runtime(created.ThreadID)
+	heldDrain := make(chan struct{})
+	actor.mu.Lock()
+	actor.state.effectsDone = heldDrain
+	actor.mu.Unlock()
 	deleteDone := make(chan error, 1)
 	go func() {
 		deleteDone <- service.Delete(context.Background(), DeleteThreadInput{ThreadID: created.ThreadID, RequestKey: "delete-shutdown"})
 	}()
-	waitForDeletingThread(t, service.(*threadRuntimeService).runtime(created.ThreadID))
+	waitForDeletingThread(t, actor)
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- host.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before delete drain completed: %v", err)
+	default:
+	}
+	close(heldDrain)
 	if err := <-deleteDone; err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-08-29
+* **Segmented session-tree authority**: Domain schema v6 replaces monolithic
+  checkpoints, JSON diff frames, and full-path root inventory persistence with
+  affected thread, entry, artifact, and compact index records. Startup atomically
+  replays and removes v5 authority; current runtime has no legacy dual-read path.
 * **Typed SubAgent operation Activity**: Management calls now preserve their
   exact action, ordered child targets, and bounded outcome counts separately
   from the durable single-child fact renderer.

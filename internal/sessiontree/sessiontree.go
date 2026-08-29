@@ -788,6 +788,13 @@ func (r *MemoryRepo) createThreadLocked(meta ThreadMeta) (ThreadMeta, error) {
 	}
 	meta.CreatedAt = now
 	meta.UpdatedAt = now
+	if strings.TrimSpace(meta.ParentThreadID) != "" && meta.TitleStatus == "" && ValidateCanonicalThreadTitle(meta.TaskName) == nil {
+		meta.Title = meta.TaskName
+		meta.TitleStatus = ThreadTitleReady
+		meta.TitleSource = ThreadTitleSourceHost
+		meta.TitleUpdatedAt = now
+		meta.TitleGeneration = 1
+	}
 	if meta.Lifecycle == "" {
 		meta.Lifecycle = ThreadLifecycleOpen
 	}
