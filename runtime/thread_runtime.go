@@ -177,6 +177,8 @@ type ThreadSummary struct {
 	Attention       AttentionSummary   `json:"attention"`
 	LastOutcome     *TurnOutcome       `json:"last_outcome,omitempty"`
 	TurnID          identity.TurnID    `json:"turn_id,omitempty"`
+	RunID           identity.RunID     `json:"run_id,omitempty"`
+	RunProgress     *ThreadRunProgress `json:"run_progress,omitempty"`
 	QueueCount      int                `json:"queue_count,omitempty"`
 	Failure         *ThreadTurnFailure `json:"failure,omitempty"`
 	// Deprecated: use Failure for terminal failures. Error remains a text
@@ -198,13 +200,32 @@ const (
 	ThreadTitleStatusFailed  ThreadTitleStatus = "failed"
 )
 
-// ThreadActivity is the only thread-level execution state exposed to hosts.
+// ThreadActivity reports whether a thread owns an accepted turn. RunProgress
+// separately reports transient progress while its current run is advancing.
 type ThreadActivity string
 
 const (
 	ThreadActivityIdle   ThreadActivity = "idle"
 	ThreadActivityActive ThreadActivity = "active"
 )
+
+// ThreadRunPhase identifies one provider-neutral active-run phase.
+type ThreadRunPhase string
+
+const (
+	ThreadRunPhasePreparing       ThreadRunPhase = "preparing"
+	ThreadRunPhaseWaitingResponse ThreadRunPhase = "waiting_response"
+	ThreadRunPhaseStreaming       ThreadRunPhase = "streaming"
+	ThreadRunPhaseRetrying        ThreadRunPhase = "retrying"
+	ThreadRunPhaseFinalizing      ThreadRunPhase = "finalizing"
+	ThreadRunPhaseToolExecution   ThreadRunPhase = "tool_execution"
+)
+
+// ThreadRunProgress is the process-local presentation of an advancing run.
+// It is absent while the thread is idle, terminal, or waiting for interaction.
+type ThreadRunProgress struct {
+	Phase ThreadRunPhase `json:"phase"`
+}
 
 // TurnOutcome is a terminal outcome rendered on one turn, never as thread failure.
 type TurnOutcome string
@@ -342,6 +363,8 @@ type ThreadView struct {
 	// mirror for v5 wire compatibility and transient runtime diagnostics.
 	Error        string              `json:"error,omitempty"`
 	TurnID       identity.TurnID     `json:"turn_id,omitempty"`
+	RunID        identity.RunID      `json:"run_id,omitempty"`
+	RunProgress  *ThreadRunProgress  `json:"run_progress,omitempty"`
 	Items        []ThreadItem        `json:"items,omitempty"`
 	Queue        []QueuedInput       `json:"queue,omitempty"`
 	Interactions []ThreadInteraction `json:"interactions,omitempty"`
@@ -921,7 +944,7 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 }
 
 func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (ThreadSummary, error) {
-	turnID, _, activity, outcome, failure := threadRuntimeLifecycleFromEntries(meta, path)
+	turnID, runID, activity, outcome, failure := threadRuntimeLifecycleFromEntries(meta, path)
 	queueCount, err := canonicalQueueCountFromEntries(path)
 	if err != nil {
 		return ThreadSummary{}, err
@@ -930,7 +953,7 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
-		Activity: activity, LastOutcome: outcome, TurnID: turnID, QueueCount: queueCount,
+		Activity: activity, LastOutcome: outcome, TurnID: turnID, RunID: runID, QueueCount: queueCount,
 		Failure: cloneThreadTurnFailure(failure), Error: threadTurnFailureMessage(failure),
 	}
 	interactions := make(map[string]ThreadInteraction)
@@ -993,6 +1016,9 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 			}
 		}
 	}
+	if summary.Activity == ThreadActivityActive && summary.Attention.ApprovalCount == 0 && summary.Attention.InputCount == 0 {
+		summary.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
+	}
 	return summary, nil
 }
 
@@ -1054,6 +1080,7 @@ func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadS
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
+		RunID: view.RunID, RunProgress: cloneThreadRunProgress(view.RunProgress),
 		QueueCount: len(view.Queue), Failure: failure, Error: errorText,
 	}
 	for index := len(view.Interactions) - 1; index >= 0; index-- {
@@ -1717,6 +1744,10 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		canonical.ThreadID = threadID
 		var runID identity.RunID
 		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = hydrateThreadRuntimeLifecycle(ctx, service.host.store.repo, meta)
+		canonical.RunID = runID
+		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical) {
+			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
+		}
 		canonical.Error = threadTurnFailureMessage(canonical.Failure)
 		actor.state.view = canonical
 		actor.state.turnID = canonical.TurnID
@@ -2162,6 +2193,8 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		actor.state.view.ViewVersion++
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
+		actor.state.view.RunID = runID
+		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
@@ -2292,6 +2325,8 @@ func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntim
 		delete(actor.state.requestKeys, requestKey)
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.TurnID = ""
+		actor.state.view.RunID = ""
+		actor.state.view.RunProgress = nil
 		actor.state.view.ViewVersion++
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -2396,6 +2431,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.state.view.AssistantDraft = ""
 		actor.state.view.ThinkingDraft = ""
 		actor.state.view.Activity = ThreadActivityIdle
+		actor.state.view.RunProgress = nil
 		outcome = TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
 			actor.state.view.Activity = ThreadActivityActive
@@ -2706,7 +2742,12 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		if !actor.acceptLiveEvent(event) {
 			return nil
 		}
-		if event.Stream != nil {
+		progress, progressEvent := threadRunProgressForEvent(event)
+		progressChanged := progressEvent && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
+		if progressChanged {
+			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
+		}
+		if event.Stream != nil || progressChanged {
 			actor.state.view.ViewVersion++
 			current = cloneThreadRuntimeView(actor.state.view)
 			changed = true
@@ -2728,6 +2769,41 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 	if event.committed != nil || event.Type == observation.EventTypeToolApprovalRequested || event.Type == observation.EventTypeToolApprovalApproved || event.Type == observation.EventTypeToolApprovalRejected || event.Type == observation.EventTypeControlSignal {
 		go sink.service.refreshCanonical(event.ThreadID, event.TurnID)
 	}
+}
+
+func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
+	var phase ThreadRunPhase
+	switch event.Type {
+	case observation.EventTypeStepStart:
+		phase = ThreadRunPhasePreparing
+	case observation.EventTypeProviderRequest:
+		phase = ThreadRunPhaseWaitingResponse
+	case observation.EventTypeProviderDelta,
+		observation.EventTypeProviderReasoning,
+		observation.EventTypeProviderToolCallStart,
+		observation.EventTypeProviderToolCallDelta,
+		observation.EventTypeProviderToolCallEnd:
+		phase = ThreadRunPhaseStreaming
+	case observation.EventTypeProviderRetry:
+		phase = ThreadRunPhaseRetrying
+	case observation.EventTypeProviderFinish:
+		phase = ThreadRunPhaseFinalizing
+	case observation.EventTypeToolDispatchStarted,
+		observation.EventTypeHostedToolCall,
+		observation.EventTypeMCPToolCall:
+		phase = ThreadRunPhaseToolExecution
+	case observation.EventTypeToolApprovalRequested,
+		observation.EventTypeControlSignal,
+		observation.EventTypeRunEnd:
+		return nil, true
+	default:
+		return nil, false
+	}
+	return &ThreadRunProgress{Phase: phase}, true
+}
+
+func sameThreadRunProgress(left, right *ThreadRunProgress) bool {
+	return left == nil && right == nil || left != nil && right != nil && left.Phase == right.Phase
 }
 
 var errCanonicalRefreshDiscarded = errors.New("canonical refresh snapshot discarded")
@@ -3340,6 +3416,8 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		}
 		actor.state.runID = runID
 		actor.state.view.Activity = ThreadActivityActive
+		actor.state.view.RunID = runID
+		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.ViewVersion++
 		actor.state.cancel = cancel
 		actor.state.cancelOwner = "run:" + runID.String()
@@ -3434,6 +3512,8 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		actor.state.view.ViewVersion++
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
+		actor.state.view.RunID = runID
+		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
@@ -3515,6 +3595,8 @@ func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRunti
 		delete(actor.state.requestKeys, requestKey)
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.TurnID = ""
+		actor.state.view.RunID = ""
+		actor.state.view.RunProgress = nil
 		actor.state.view.ViewVersion++
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -3660,6 +3742,8 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		actor.state.view.ViewVersion++
 		actor.state.view.Activity = ThreadActivityActive
 		actor.state.view.TurnID = turnID
+		actor.state.view.RunID = runID
+		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
 		actor.state.view.Error = ""
@@ -3720,7 +3804,28 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	}
 	view.Interactions = cloneThreadInteractions(view.Interactions)
 	view.Failure = cloneThreadTurnFailure(view.Failure)
+	view.RunProgress = cloneThreadRunProgress(view.RunProgress)
 	return view
+}
+
+func cloneThreadRunProgress(progress *ThreadRunProgress) *ThreadRunProgress {
+	if progress == nil {
+		return nil
+	}
+	copy := *progress
+	return &copy
+}
+
+func threadRuntimeViewNeedsAttention(view ThreadView) bool {
+	for _, interaction := range view.Interactions {
+		if interaction.Resolved {
+			continue
+		}
+		if interaction.Kind == ThreadInteractionApproval || interaction.Kind == ThreadInteractionInput {
+			return true
+		}
+	}
+	return false
 }
 
 func liveThreadText(items []ThreadItem, kind ThreadItemKind) string {

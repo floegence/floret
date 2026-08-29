@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-08-29
+* **Typed active-run progress**: `ThreadView` and `ThreadSummary` expose the
+  exact `RunID` plus one actor-owned transient phase. Hosts no longer need to
+  equate turn and run identity or infer provider progress from rendered items.
 * **Segmented session-tree authority**: Domain schema v6 replaces monolithic
   checkpoints, JSON diff frames, and full-path root inventory persistence with
   affected thread, entry, artifact, and compact index records. Startup atomically

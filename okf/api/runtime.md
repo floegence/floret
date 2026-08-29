@@ -74,6 +74,13 @@ is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
 
+`ThreadView.RunID` is the exact current execution identity and never aliases
+`TurnID`. `RunProgress` is the actor-owned, process-local phase for active
+provider and tool work. It is cleared while waiting for approval or user input
+and after terminal settlement; hosts must not reconstruct it from items or
+persist a second progress lifecycle. `ThreadSummary` carries the same bounded
+identity and progress projection for thread lists.
+
 Terminal presentation settles from the canonical ordered journal. The runtime
 publishes a terminal current only after that projection succeeds; a completed
 turn without a visible assistant or terminal tool item is reported as a
@@ -89,7 +96,7 @@ in-memory view version is unchanged since the snapshot read began; this keeps
 an older read from replacing a newer terminal view.
 
 `ThreadService.List` reads root lifecycle facts from one canonical inventory
-snapshot. `ThreadSummary` carries the current turn identity, attention, queue
+snapshot. `ThreadSummary` carries the current turn and run identity, attention, queue
 count, pending input, typed terminal failure, and bounded last-item preview
 needed by a host list. It does not hydrate complete timeline, attachment,
 context, or SubAgent detail for every thread; those remain selected-thread

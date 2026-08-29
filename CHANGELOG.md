@@ -1,5 +1,12 @@
 # Changelog
 
+## v5.0.15 - 2026-08-29
+
+- Expose the exact `RunID` and one transient, provider-neutral run-progress
+  phase on typed thread views and summaries. The thread actor now owns phase
+  changes, rejects stale run and provider-attempt events, and clears progress
+  while waiting for interaction or after terminal settlement.
+
 ## v5.0.14 - 2026-08-29
 
 - Replace the monolithic session-tree checkpoint, JSON diff journal, and

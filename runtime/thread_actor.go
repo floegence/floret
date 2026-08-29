@@ -82,11 +82,15 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if event.TurnID != "" && runtime.state.turnID != "" && event.TurnID != runtime.state.turnID {
 		return false
 	}
+	if event.RunID != "" && runtime.state.runID != "" && event.RunID != runtime.state.runID {
+		return false
+	}
 	if event.TurnID != "" {
 		runtime.state.turnID = event.TurnID
 	}
 	if event.RunID != "" {
 		runtime.state.runID = event.RunID
+		runtime.state.view.RunID = event.RunID
 	}
 	logicalRequestID, attemptID, attemptEpoch, hasAttempt := liveEventAttemptIdentity(event)
 	if hasAttempt {

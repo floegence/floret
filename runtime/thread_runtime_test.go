@@ -1968,8 +1968,15 @@ func TestThreadServiceSubscriptionPublishesReplaceableCurrentViews(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "watch"}, RequestKey: "send-subscription"}); err != nil {
+	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "watch"}, RequestKey: "send-subscription"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if started.TurnID == "" || started.RunID == "" || started.TurnID.String() == started.RunID.String() {
+		t.Fatalf("turn/run identity = (%q,%q), want distinct non-empty identities", started.TurnID, started.RunID)
+	}
+	if started.RunProgress == nil || started.RunProgress.Phase != ThreadRunPhasePreparing {
+		t.Fatalf("initial run progress = %#v, want preparing", started.RunProgress)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -1984,6 +1991,98 @@ func TestThreadServiceSubscriptionPublishesReplaceableCurrentViews(t *testing.T)
 			}
 			break
 		}
+	}
+}
+
+func TestThreadRuntimePublishesRunProgressFromTheActiveRun(t *testing.T) {
+	threadID := identity.ThreadID("thread-progress")
+	turnID := identity.TurnID("turn-progress")
+	runID := identity.RunID("run-progress")
+	actor := &threadRuntimeState{threadID: threadID.String(), state: threadRuntimeData{
+		turnID: turnID,
+		runID:  runID,
+		view: ThreadView{
+			ThreadID: threadID, TurnID: turnID, RunID: runID, ViewVersion: 1,
+			Activity: ThreadActivityActive, RunProgress: &ThreadRunProgress{Phase: ThreadRunPhasePreparing},
+		},
+	}}
+	service := &threadRuntimeService{
+		subscribers: make(map[*WorkspaceSubscription]struct{}),
+		published:   make(map[string]uint64),
+		runtimes:    map[string]*threadRuntimeState{threadID.String(): actor},
+	}
+	sink := threadRuntimeEventSink{service: service}
+	event := func(eventType observation.EventType) Event {
+		return Event{Type: eventType, ThreadID: threadID, TurnID: turnID, RunID: runID}
+	}
+	assertPhase := func(want ThreadRunPhase, wantVersion uint64) {
+		t.Helper()
+		view := service.currentView(actor)
+		if view.RunID != runID || view.RunProgress == nil || view.RunProgress.Phase != want || view.ViewVersion != wantVersion {
+			t.Fatalf("view = %#v, want run %q phase %q version %d", view, runID, want, wantVersion)
+		}
+	}
+
+	sink.EmitEvent(event(observation.EventTypeStepStart))
+	assertPhase(ThreadRunPhasePreparing, 1)
+	for index, transition := range []struct {
+		eventType observation.EventType
+		want      ThreadRunPhase
+	}{
+		{observation.EventTypeProviderRequest, ThreadRunPhaseWaitingResponse},
+		{observation.EventTypeProviderDelta, ThreadRunPhaseStreaming},
+		{observation.EventTypeProviderRetry, ThreadRunPhaseRetrying},
+		{observation.EventTypeProviderFinish, ThreadRunPhaseFinalizing},
+		{observation.EventTypeToolDispatchStarted, ThreadRunPhaseToolExecution},
+	} {
+		sink.EmitEvent(event(transition.eventType))
+		assertPhase(transition.want, uint64(index+2))
+	}
+
+	sink.EmitEvent(event(observation.EventTypeToolApprovalRequested))
+	view := service.currentView(actor)
+	if view.RunProgress != nil || view.ViewVersion != 7 {
+		t.Fatalf("approval wait view = %#v, want cleared progress at version 7", view)
+	}
+	sink.EmitEvent(event(observation.EventTypeToolDispatchStarted))
+	assertPhase(ThreadRunPhaseToolExecution, 8)
+	sink.EmitEvent(event(observation.EventTypeRunEnd))
+	view = service.currentView(actor)
+	if view.RunProgress != nil || view.ViewVersion != 9 {
+		t.Fatalf("terminal view = %#v, want cleared progress at version 9", view)
+	}
+}
+
+func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {
+	threadID := identity.ThreadID("thread-progress-fence")
+	turnID := identity.TurnID("turn-progress-fence")
+	runID := identity.RunID("run-progress-current")
+	actor := &threadRuntimeState{threadID: threadID.String(), state: threadRuntimeData{
+		turnID: turnID,
+		runID:  runID,
+		view: ThreadView{
+			ThreadID: threadID, TurnID: turnID, RunID: runID, ViewVersion: 1,
+			Activity: ThreadActivityActive, RunProgress: &ThreadRunProgress{Phase: ThreadRunPhasePreparing},
+		},
+	}}
+	service := &threadRuntimeService{
+		subscribers: make(map[*WorkspaceSubscription]struct{}),
+		published:   make(map[string]uint64),
+		runtimes:    map[string]*threadRuntimeState{threadID.String(): actor},
+	}
+	sink := threadRuntimeEventSink{service: service}
+	sink.EmitEvent(Event{
+		Type: observation.EventTypeProviderRequest, ThreadID: threadID, TurnID: turnID, RunID: runID,
+		Metadata: map[string]any{"logical_request_id": "logical", "attempt_id": "attempt-2", "attempt_epoch": 2},
+	})
+	sink.EmitEvent(Event{
+		Type: observation.EventTypeProviderDelta, ThreadID: threadID, TurnID: turnID, RunID: runID,
+		Stream: &StreamObservation{Type: StreamObservationAssistantDelta, Text: "stale", LogicalRequestID: "logical", AttemptID: "attempt-1", AttemptEpoch: 1},
+	})
+	sink.EmitEvent(Event{Type: observation.EventTypeProviderFinish, ThreadID: threadID, TurnID: turnID, RunID: "run-progress-stale"})
+	view := service.currentView(actor)
+	if view.RunID != runID || view.RunProgress == nil || view.RunProgress.Phase != ThreadRunPhaseWaitingResponse || view.ViewVersion != 2 || len(view.Items) != 0 {
+		t.Fatalf("stale event changed active progress: %#v", view)
 	}
 }
 

@@ -847,6 +847,15 @@ const ThreadItemUser github.com/floegence/floret/v5/runtime.ThreadItemKind = "us
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v5/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v5/runtime.ThreadPhase = "turn"
+type ThreadRunPhase string
+const ThreadRunPhaseFinalizing github.com/floegence/floret/v5/runtime.ThreadRunPhase = "finalizing"
+const ThreadRunPhasePreparing github.com/floegence/floret/v5/runtime.ThreadRunPhase = "preparing"
+const ThreadRunPhaseRetrying github.com/floegence/floret/v5/runtime.ThreadRunPhase = "retrying"
+const ThreadRunPhaseStreaming github.com/floegence/floret/v5/runtime.ThreadRunPhase = "streaming"
+const ThreadRunPhaseToolExecution github.com/floegence/floret/v5/runtime.ThreadRunPhase = "tool_execution"
+const ThreadRunPhaseWaitingResponse github.com/floegence/floret/v5/runtime.ThreadRunPhase = "waiting_response"
+type ThreadRunProgress struct
+field ThreadRunProgress.Phase github.com/floegence/floret/v5/runtime.ThreadRunPhase tag="json:\"phase\""
 type ThreadScope struct
 field ThreadScope.ParentID *github.com/floegence/floret/v5/identity.ThreadID tag="json:\"parent_id,omitempty\""
 type ThreadService interface interface{Cancel(context.Context, github.com/floegence/floret/v5/runtime.CancelInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Create(context.Context, github.com/floegence/floret/v5/runtime.CreateThreadInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Delete(context.Context, github.com/floegence/floret/v5/runtime.DeleteThreadInput) error; DeleteQueued(context.Context, github.com/floegence/floret/v5/runtime.DeleteQueuedInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Fork(context.Context, github.com/floegence/floret/v5/runtime.ForkThreadInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); History(context.Context, github.com/floegence/floret/v5/identity.ThreadID, string, int) (github.com/floegence/floret/v5/runtime.HistoryPage, error); ImportPendingInputs(context.Context, github.com/floegence/floret/v5/runtime.ImportPendingInputsInput) (github.com/floegence/floret/v5/runtime.ImportResult, error); List(context.Context, github.com/floegence/floret/v5/runtime.ThreadScope) ([]github.com/floegence/floret/v5/runtime.ThreadSummary, error); PromoteQueued(context.Context, github.com/floegence/floret/v5/runtime.PromoteQueuedInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); ReorderQueue(context.Context, github.com/floegence/floret/v5/runtime.ReorderQueueInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Respond(context.Context, github.com/floegence/floret/v5/runtime.RespondInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Retry(context.Context, github.com/floegence/floret/v5/runtime.RetryInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); RetryEffect(context.Context, github.com/floegence/floret/v5/runtime.RetryEffectInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Send(context.Context, github.com/floegence/floret/v5/runtime.SendInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); SetTitle(context.Context, github.com/floegence/floret/v5/runtime.SetTitleInput) (github.com/floegence/floret/v5/runtime.ThreadView, error); Subscribe(context.Context) (*github.com/floegence/floret/v5/runtime.WorkspaceSubscription, error); View(context.Context, github.com/floegence/floret/v5/identity.ThreadID) (github.com/floegence/floret/v5/runtime.ThreadView, error)}
@@ -874,6 +883,8 @@ field ThreadSummary.Activity github.com/floegence/floret/v5/runtime.ThreadActivi
 field ThreadSummary.Attention github.com/floegence/floret/v5/runtime.AttentionSummary tag="json:\"attention\""
 field ThreadSummary.LastOutcome *github.com/floegence/floret/v5/runtime.TurnOutcome tag="json:\"last_outcome,omitempty\""
 field ThreadSummary.TurnID github.com/floegence/floret/v5/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadSummary.RunID github.com/floegence/floret/v5/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadSummary.RunProgress *github.com/floegence/floret/v5/runtime.ThreadRunProgress tag="json:\"run_progress,omitempty\""
 field ThreadSummary.QueueCount int tag="json:\"queue_count,omitempty\""
 field ThreadSummary.Failure *github.com/floegence/floret/v5/runtime.ThreadTurnFailure tag="json:\"failure,omitempty\""
 field ThreadSummary.Error string tag="json:\"error,omitempty\""
@@ -919,6 +930,8 @@ field ThreadView.LastOutcome *github.com/floegence/floret/v5/runtime.TurnOutcome
 field ThreadView.Failure *github.com/floegence/floret/v5/runtime.ThreadTurnFailure tag="json:\"failure,omitempty\""
 field ThreadView.Error string tag="json:\"error,omitempty\""
 field ThreadView.TurnID github.com/floegence/floret/v5/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadView.RunID github.com/floegence/floret/v5/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadView.RunProgress *github.com/floegence/floret/v5/runtime.ThreadRunProgress tag="json:\"run_progress,omitempty\""
 field ThreadView.Items []github.com/floegence/floret/v5/runtime.ThreadItem tag="json:\"items,omitempty\""
 field ThreadView.Queue []github.com/floegence/floret/v5/runtime.QueuedInput tag="json:\"queue,omitempty\""
 field ThreadView.Interactions []github.com/floegence/floret/v5/runtime.ThreadInteraction tag="json:\"interactions,omitempty\""
