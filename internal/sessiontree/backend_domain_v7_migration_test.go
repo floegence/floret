@@ -199,6 +199,173 @@ func TestBackendDomainV6ToV7RejectsFutureRecordWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestBackendDomainV6ToV7RemovesTerminalForkedEffectHistory(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 8, 30, 15, 0, 0, 0, time.UTC)
+	memory := legacyV6ForkEffectFixture(t, now, true)
+	backend := newMigrationTestBackend()
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error { return saveBackendDomainV6Fixture(tx, memory) }); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := NewBackendRepo(ctx, backend, func() time.Time { return now.Add(time.Hour) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, threadID := range []string{"source", "fork-one", "fork-two"} {
+		meta, err := repo.Thread(ctx, threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertForkWithoutEffectAuthority(t, repo.domainMemory, meta)
+	}
+	if _, err := NewBackendRepo(ctx, backend, func() time.Time { return now.Add(2 * time.Hour) }); err != nil {
+		t.Fatalf("idempotent v7 reopen: %v", err)
+	}
+}
+
+func TestBackendDomainV6ToV7RejectsForkedEffectFromNonAncestor(t *testing.T) {
+	now := time.Date(2026, 8, 30, 16, 0, 0, 0, time.UTC)
+	memory := legacyV6ForkEffectFixture(t, now, false)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "unrelated", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	corruptLegacyForkEffectThread(t, memory, "fork-one", "unrelated")
+	assertV6MigrationRejectedWithoutMutation(t, memory)
+}
+
+func TestBackendDomainV6ToV7RejectsActiveForkedEffectHistory(t *testing.T) {
+	now := time.Date(2026, 8, 30, 17, 0, 0, 0, time.UTC)
+	memory := newMemoryRepo(func() time.Time { return now })
+	prepareLegacyEffectTurn(t, memory, now, false)
+	legacyCloneWholeJournal(t, memory, "source", "active-fork", now.Add(time.Minute))
+	assertV6MigrationRejectedWithoutMutation(t, memory)
+}
+
+func legacyV6ForkEffectFixture(t *testing.T, now time.Time, multiLevel bool) *MemoryRepo {
+	t.Helper()
+	memory := newMemoryRepo(func() time.Time { return now })
+	prepareLegacyEffectTurn(t, memory, now, true)
+	legacyCloneWholeJournal(t, memory, "source", "fork-one", now.Add(time.Minute))
+	if multiLevel {
+		legacyCloneWholeJournal(t, memory, "fork-one", "fork-two", now.Add(2*time.Minute))
+	}
+	return memory
+}
+
+func prepareLegacyEffectTurn(t *testing.T, memory *MemoryRepo, now time.Time, terminal bool) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := memory.CreateThread(ctx, ThreadMeta{ID: "source", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AcceptTurn(ctx, AcceptTurnRequest{
+		ThreadID: "source", TurnID: "turn", RunID: "run", LogicalRequestID: "request",
+		RequestFingerprint: "request-fingerprint", InputRequestFingerprint: "input-fingerprint",
+		Input: session.Message{Role: session.User, Content: "delegate"}, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 2; index++ {
+		callID := fmt.Sprintf("call-%d", index)
+		if _, err := memory.AppendRuntimeFacts(ctx, "source", []Entry{{
+			ID: "tool-call:" + callID, ThreadID: "source", TurnID: "turn", RunID: "run", Type: EntryToolCall,
+			Message: session.Message{Role: session.Assistant, ToolCallID: callID, ToolName: "subagents", ToolArgs: `{}`}, CreatedAt: now,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := memory.PrepareEffectAttempt(ctx, PrepareEffectAttemptRequest{
+			Invocation: EffectInvocationIdentity{
+				ThreadID: "source", TurnID: "turn", RunID: "run", ToolCallID: callID, ToolName: "subagents", ArgumentHash: StableHash(`{}`),
+			},
+			RequestFingerprint: "effect-" + callID, Now: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if terminal {
+		if _, err := memory.CancelTurn(ctx, CancelTurnRequest{
+			ThreadID: "source", TurnID: "turn", RunID: "run", CancelEntryID: "cancel", TerminalEntryID: "terminal",
+			RequestKey: "cancel", RequestFingerprint: "cancel-fingerprint", OutcomeFingerprint: "cancelled",
+			InteractionResolutionPayload: json.RawMessage(`{"accepted":false,"outcome":"cancelled"}`),
+			Metadata:                     map[string]string{TurnFailureCodeMetadataKey: TurnFailureCancelled}, Now: now.Add(time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func legacyCloneWholeJournal(t *testing.T, memory *MemoryRepo, sourceThreadID, destinationThreadID string, now time.Time) {
+	t.Helper()
+	sourceMeta := memory.threads[sourceThreadID]
+	sourcePath, err := pathLocked(memory.threads, memory.entries, sourceThreadID, sourceMeta.LeafID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToNew := map[string]string{"": ""}
+	cloned := make([]Entry, 0, len(sourcePath))
+	for _, source := range sourcePath {
+		memory.seq++
+		next := cloneEntry(source)
+		next.ID = fmt.Sprintf("%s-entry-%d", destinationThreadID, memory.seq)
+		next.ThreadID = destinationThreadID
+		next.ParentID = oldToNew[source.ParentID]
+		next.CreatedAt = now
+		next.Raw = rawForEntry(next)
+		next.RawHash = stableHash(next.Raw)
+		oldToNew[source.ID] = next.ID
+		cloned = append(cloned, next)
+	}
+	memory.threads[destinationThreadID] = ThreadMeta{
+		ID: destinationThreadID, LeafID: cloned[len(cloned)-1].ID,
+		ForkedFromThreadID: sourceThreadID, ForkedFromEntryID: sourceMeta.LeafID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := memory.replaceIndexedEntriesLocked(destinationThreadID, cloned); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func corruptLegacyForkEffectThread(t *testing.T, memory *MemoryRepo, threadID, invocationThreadID string) {
+	t.Helper()
+	entries := cloneEntries(memory.entries[threadID])
+	for index := range entries {
+		if entries[index].Type != EntryEffectAttempt {
+			continue
+		}
+		attempt := legacyEffectAttemptV6{}
+		if err := decodeBackendDomainV6ValueRaw(entries[index].Payload, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		attempt.Invocation.ThreadID = invocationThreadID
+		payload, err := json.Marshal(attempt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[index].Payload = payload
+		entries[index].Raw = rawForEntry(entries[index])
+		entries[index].RawHash = stableHash(entries[index].Raw)
+	}
+	if err := memory.replaceIndexedEntriesLocked(threadID, entries); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertV6MigrationRejectedWithoutMutation(t *testing.T, memory *MemoryRepo) {
+	t.Helper()
+	backend := newMigrationTestBackend()
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return saveBackendDomainV6Fixture(tx, memory) }); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	if _, err := NewBackendRepo(t.Context(), backend, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("migration error=%v, want ErrAuthorityCorrupt", err)
+	}
+	if !equalMigrationRecords(backend.records, before) {
+		t.Fatal("rejected migration changed canonical records")
+	}
+}
+
 func saveBackendDomainV6Fixture(tx spi.WriteTx, memory *MemoryRepo) error {
 	put := func(key []byte, kind, id, threadID string, ordinal int, value any) error {
 		payload, err := json.Marshal(value)

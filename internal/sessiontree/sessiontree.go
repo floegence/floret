@@ -1523,6 +1523,10 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	if err := r.validateArtifactClosureLocked(opts.SourceThreadID, newID, path, closure); err != nil {
 		return ThreadMeta{}, err
 	}
+	path, removedEffectParents, err := removeEffectAuthorityEntries(path)
+	if err != nil {
+		return ThreadMeta{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
 	meta := ThreadMeta{
 		ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID,
 		OriginRequestKey: strings.TrimSpace(opts.OriginRequestKey), OriginFingerprint: strings.TrimSpace(opts.OriginFingerprint),
@@ -1542,6 +1546,14 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		}
 	}
 	oldToNew := map[string]string{"": ""}
+	removedEffectAliases := make(map[string][]string)
+	for removedID := range removedEffectParents {
+		retainedID, resolveErr := resolveRemovedEffectEntryID(removedID, removedEffectParents)
+		if resolveErr != nil {
+			return ThreadMeta{}, errors.Join(ErrAuthorityCorrupt, resolveErr)
+		}
+		removedEffectAliases[retainedID] = append(removedEffectAliases[retainedID], removedID)
+	}
 	retryTargetEntryIDs := make(map[string]struct{})
 	for _, entry := range path {
 		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
@@ -1562,6 +1574,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.ID = fmt.Sprintf("%s-entry-%d", newID, r.seq)
 		next.ThreadID = newID
 		next.ParentID = oldToNew[entry.ParentID]
+		next.PathDepth = int64(len(forkedEntries) + 1)
 		next.TurnID = rewriteForkID(next.TurnID, opts.TurnIDMap)
 		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
@@ -1628,6 +1641,9 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
 		oldToNew[entry.ID] = next.ID
+		for _, removedID := range removedEffectAliases[entry.ID] {
+			oldToNew[removedID] = next.ID
+		}
 		forkedEntries = append(forkedEntries, next)
 		meta.LeafID = next.ID
 	}

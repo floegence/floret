@@ -25,8 +25,12 @@ entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
 validates the complete authority, and splits the monolithic checkpoint into
 thread, entry, artifact, and compact index records. The v6 -> v7 edge fills
 exact historical run identity, deletes effect-retry authority, and atomically
-fails active turns whose dispatched effect outcome is unknown. Every edge
-validates its source authority and the final current invariant.
+fails active turns whose dispatched effect outcome is unknown. It also removes
+Effect Attempt entries copied by the released v6 fork implementation only when
+the complete fork ancestry, turn, run, request, and terminal state prove that
+they are historical source-thread authority. Active, unrelated, or conflicting
+records still fail closed. Every edge validates its source authority and the
+final current invariant.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,

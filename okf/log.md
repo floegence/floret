@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-30
+* **Forked effect migration**: The v6 -> v7 migration now recognizes verified
+  terminal Effect Attempt records copied from a fork ancestor and removes them
+  as obsolete source-thread authority. New forks copy conversation history but
+  never execution authority, using the same journal reconnection logic as the
+  migration.
 * **V6 unknown-effect terminal**: Floret now uses semantic import path `/v6`.
   Domain schema v7 permanently fills historical run identity, removes effect
   retry authority, and fails active unknown-effect turns before Host startup.

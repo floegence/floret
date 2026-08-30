@@ -1,5 +1,15 @@
 # Changelog
 
+## v6.0.1 - 2026-08-30
+
+- Migrate the historical v6 fork shape whose copied Effect Attempt still names
+  its verified source-thread ancestor. Terminal copied attempts are removed as
+  obsolete execution authority while unrelated or active identity mismatches
+  continue to fail closed.
+- Stop copying Effect Attempt entries during new forks. Forked journals now
+  retain conversation history only, reconnect parents, recompute depth and
+  leaf identity, and regenerate canonical entry bytes.
+
 ## v6.0.0 - 2026-08-30
 
 - Advance the module to semantic import path `/v6` and freeze the generated v6

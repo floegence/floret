@@ -12,20 +12,24 @@ func migrateBackendDomainV6ToV7(ctx context.Context, memory *MemoryRepo) error {
 	if ctx == nil || memory == nil {
 		return errors.New("session-tree v6 to v7 migration requires context and memory")
 	}
+	forkAncestors, err := legacyForkAncestors(memory)
+	if err != nil {
+		return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("validate session-tree v6 fork lineage: %w", err))
+	}
 	threadIDs := make([]string, 0, len(memory.threads))
 	for threadID := range memory.threads {
 		threadIDs = append(threadIDs, threadID)
 	}
 	sort.Strings(threadIDs)
 	for _, threadID := range threadIDs {
-		if err := migrateBackendDomainV6Thread(memory, threadID); err != nil {
+		if err := migrateBackendDomainV6Thread(memory, threadID, forkAncestors[threadID]); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("migrate session-tree v6 thread %q: %w", threadID, err))
 		}
 	}
 	return convergeUnknownEffectTurns(ctx, memory)
 }
 
-func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string) error {
+func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string, forkAncestors map[string]struct{}) error {
 	entries := memory.entries[threadID]
 	activeTurnID, active := runtimeActiveTurn(entries)
 	activeRunID := ""
@@ -38,53 +42,30 @@ func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string) error {
 	}
 
 	latestAttempts := make(map[string]legacyEffectAttemptV6)
-	droppedParents := make(map[string]string)
-	retained := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Type != EntryEffectAttempt {
-			retained = append(retained, entry)
 			continue
 		}
 		attempt := legacyEffectAttemptV6{}
 		if err := decodeBackendDomainV6ValueRaw(entry.Payload, &attempt); err != nil {
 			return fmt.Errorf("decode legacy effect attempt %q: %w", entry.ID, err)
 		}
-		if strings.TrimSpace(attempt.EffectAttemptID) == "" || attempt.Invocation.ThreadID != threadID || attempt.Invocation.TurnID != entry.TurnID || attempt.Invocation.RunID != entry.RunID || entry.RequestKey != attempt.EffectAttemptID {
+		if strings.TrimSpace(attempt.EffectAttemptID) == "" || attempt.Invocation.TurnID != entry.TurnID || attempt.Invocation.RunID != entry.RunID || entry.RequestKey != attempt.EffectAttemptID || entry.RequestFingerprint != attempt.RequestFingerprint {
 			return fmt.Errorf("legacy effect attempt %q identity does not match its entry", entry.ID)
 		}
+		if attempt.Invocation.ThreadID != threadID {
+			_, ancestor := forkAncestors[attempt.Invocation.ThreadID]
+			terminal, terminalFound := runtimeTurnTerminal(entries, entry.TurnID)
+			if !ancestor || !terminalFound || terminal.RunID != entry.RunID {
+				return fmt.Errorf("legacy effect attempt %q identity does not match a terminal fork ancestor", entry.ID)
+			}
+			continue
+		}
 		latestAttempts[attempt.EffectAttemptID] = attempt
-		droppedParents[entry.ID] = entry.ParentID
 	}
-	resolveParent := func(parentID string) (string, error) {
-		seen := make(map[string]struct{})
-		for {
-			next, dropped := droppedParents[parentID]
-			if !dropped {
-				return parentID, nil
-			}
-			if _, duplicate := seen[parentID]; duplicate {
-				return "", errors.New("legacy effect parent cycle")
-			}
-			seen[parentID] = struct{}{}
-			parentID = next
-		}
-	}
-	depths := make(map[string]int64, len(retained))
-	for index := range retained {
-		parentID, err := resolveParent(retained[index].ParentID)
-		if err != nil {
-			return fmt.Errorf("resolve retained entry parent: %w", err)
-		}
-		retained[index].ParentID = parentID
-		retained[index].PathDepth = 1
-		if parentID != "" {
-			parentDepth, found := depths[parentID]
-			if !found || parentDepth <= 0 {
-				return fmt.Errorf("retained entry %q has missing parent %q", retained[index].ID, parentID)
-			}
-			retained[index].PathDepth = parentDepth + 1
-		}
-		depths[retained[index].ID] = retained[index].PathDepth
+	retained, removedParents, err := removeEffectAuthorityEntries(entries)
+	if err != nil {
+		return fmt.Errorf("remove legacy effect authority: %w", err)
 	}
 	resolved, err := entriesWithExactRunIdentity(retained)
 	if err != nil {
@@ -95,7 +76,7 @@ func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string) error {
 		resolved[index].RawHash = stableHash(resolved[index].Raw)
 	}
 	meta := memory.threads[threadID]
-	leafID, err := resolveParent(meta.LeafID)
+	leafID, err := resolveRemovedEffectEntryID(meta.LeafID, removedParents)
 	if err != nil {
 		return fmt.Errorf("resolve migrated leaf: %w", err)
 	}
@@ -161,6 +142,50 @@ func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string) error {
 		}
 	}
 	return nil
+}
+
+func legacyForkAncestors(memory *MemoryRepo) (map[string]map[string]struct{}, error) {
+	if memory == nil {
+		return nil, errors.New("legacy fork lineage requires memory")
+	}
+	for threadID, meta := range memory.threads {
+		sourceThreadID := strings.TrimSpace(meta.ForkedFromThreadID)
+		sourceEntryID := strings.TrimSpace(meta.ForkedFromEntryID)
+		if (sourceThreadID == "") != (sourceEntryID == "") {
+			return nil, fmt.Errorf("thread %q has incomplete fork lineage", threadID)
+		}
+		if sourceThreadID == "" {
+			continue
+		}
+		if _, found := memory.threads[sourceThreadID]; !found {
+			return nil, fmt.Errorf("thread %q fork source %q is missing", threadID, sourceThreadID)
+		}
+		if _, found := findEntry(memory.entries[sourceThreadID], sourceEntryID); !found {
+			return nil, fmt.Errorf("thread %q fork source entry %q is missing", threadID, sourceEntryID)
+		}
+	}
+
+	ancestors := make(map[string]map[string]struct{}, len(memory.threads))
+	for threadID := range memory.threads {
+		lineage := make(map[string]struct{})
+		currentID := threadID
+		for {
+			sourceThreadID := strings.TrimSpace(memory.threads[currentID].ForkedFromThreadID)
+			if sourceThreadID == "" {
+				break
+			}
+			if sourceThreadID == threadID {
+				return nil, fmt.Errorf("fork lineage cycle includes thread %q", threadID)
+			}
+			if _, duplicate := lineage[sourceThreadID]; duplicate {
+				return nil, fmt.Errorf("fork lineage cycle includes thread %q", sourceThreadID)
+			}
+			lineage[sourceThreadID] = struct{}{}
+			currentID = sourceThreadID
+		}
+		ancestors[threadID] = lineage
+	}
+	return ancestors, nil
 }
 
 func entriesWithExactRunIdentity(entries []Entry) ([]Entry, error) {
