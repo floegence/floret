@@ -347,7 +347,7 @@ func (h *AgentHarness) closeInterruptedTurnToolCalls(ctx context.Context, thread
 		return nil
 	}
 	for _, call := range calls {
-		if _, err := sessiontree.AppendMessage(ctx, h.options.Repo, threadID, turnID, interruptedTurnClosureToolResult(call.Message)); err != nil {
+		if _, err := sessiontree.AppendRunMessage(ctx, h.options.Repo, threadID, turnID, call.RunID, interruptedTurnClosureToolResult(call.Message)); err != nil {
 			return err
 		}
 	}
@@ -1307,7 +1307,7 @@ func (t *Thread) appendMessage(ctx context.Context, turnID string, runID string,
 func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) error {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
-	entry, err := sessiontree.AppendMessageAt(ctx, t.harness.options.Repo, t.id, turnID, msg, observedAt)
+	entry, err := sessiontree.AppendRunMessageAt(ctx, t.harness.options.Repo, t.id, turnID, runID, msg, observedAt)
 	if err != nil {
 		return err
 	}

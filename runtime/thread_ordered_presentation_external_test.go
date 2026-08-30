@@ -9,7 +9,7 @@ import (
 
 func TestThreadItemOrderedPresentationSurface(t *testing.T) {
 	item := runtime.ThreadItem{
-		ID: "thinking:turn-example:1", TurnID: "turn-example", Ordinal: 2,
+		ID: "thinking:turn-example:1", TurnID: "turn-example", RunID: "run-example", Ordinal: 2,
 		Kind: runtime.ThreadItemThinking, Text: "checking", Live: true,
 	}
 	encoded, err := json.Marshal(item)
@@ -20,7 +20,7 @@ func TestThreadItemOrderedPresentationSurface(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.ID != item.ID || decoded.Ordinal != 2 || decoded.Kind != runtime.ThreadItemThinking || !decoded.Live {
+	if decoded.ID != item.ID || decoded.TurnID != item.TurnID || decoded.RunID != item.RunID || decoded.Ordinal != 2 || decoded.Kind != runtime.ThreadItemThinking || !decoded.Live {
 		t.Fatalf("ordered thread item round trip=%#v", decoded)
 	}
 }

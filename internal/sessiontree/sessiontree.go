@@ -2441,6 +2441,14 @@ func AppendMessageAt(ctx context.Context, repo JournalRepo, threadID, turnID str
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: typeForMessage(msg), Message: msg}, AppendOptions{Now: observedAt})
 }
 
+func AppendRunMessage(ctx context.Context, repo JournalRepo, threadID, turnID, runID string, msg session.Message) (Entry, error) {
+	return AppendRunMessageAt(ctx, repo, threadID, turnID, runID, msg, time.Time{})
+}
+
+func AppendRunMessageAt(ctx context.Context, repo JournalRepo, threadID, turnID, runID string, msg session.Message, observedAt time.Time) (Entry, error) {
+	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, RunID: runID, Type: typeForMessage(msg), Message: msg}, AppendOptions{Now: observedAt})
+}
+
 func AppendCompaction(ctx context.Context, repo JournalRepo, threadID, turnID string, result compaction.Result) (Entry, error) {
 	entry, err := CompactionEntry(threadID, turnID, result)
 	if err != nil {

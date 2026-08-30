@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.0.16 - 2026-08-30
+
+- Expose the exact `RunID` on every current-view item and interaction. Canonical
+  reload now preserves each journal entry's `TurnID` and `RunID`, including
+  multi-turn history and same-turn continuation, and rejects incomplete or
+  conflicting execution identity instead of projecting an ambiguous item.
+- Persist run identity on all new message and effect-result entries. Message
+  rows written by v5.0.0-v5.0.15 are repaired only when canonical lifecycle
+  markers identify the run exactly; ambiguous active continuation still fails
+  closed.
+
 ## v5.0.15 - 2026-08-29
 
 - Expose the exact `RunID` and one transient, provider-neutral run-progress

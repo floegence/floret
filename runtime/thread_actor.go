@@ -211,7 +211,7 @@ func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream)
 		Kind: observation.ActivityKindTool, Status: observation.ActivityStatusRunning,
 	}
 	runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-		ID: id, TurnID: runtime.state.turnID, Kind: ThreadItemTool, Live: true, Activity: &activity,
+		ID: id, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: ThreadItemTool, Live: true, Activity: &activity,
 	})
 }
 
@@ -226,7 +226,7 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		runtime.state.openTextSegmentID = nextThreadTextSegmentID(runtime.state.view.Items, runtime.state.turnID, kind)
 		runtime.state.openTextKind = kind
 		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, Kind: kind, Live: true,
+			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true,
 		})
 	}
 	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {

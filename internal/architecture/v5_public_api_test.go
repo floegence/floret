@@ -50,6 +50,7 @@ func TestV5PublicAPIAvoidsRemovedLifecycleFacades(t *testing.T) {
 		"RetryEffect(context.Context", "Subscribe(context.Context", "type ThreadContextReader interface",
 		"Context(context.Context, github.com/floegence/floret/v5/identity.ThreadID)",
 		"const ThreadItemThinking", "Ordinal uint64", "Live bool",
+		"field ThreadItem.RunID", "field ThreadInteraction.RunID",
 		"type ThreadRunProgress struct", "field ThreadView.RunID", "field ThreadSummary.RunProgress",
 	} {
 		if !strings.Contains(content, required) {

@@ -105,7 +105,13 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 			if len(view.Items) != 2 || view.Items[0].Ordinal != 1 || view.Items[1].Ordinal != 2 || view.Items[1].Kind != runtime.ThreadItemAssistant {
 				t.Fatalf("published ordered presentation=%#v", view.Items)
 			}
-			_ = runtime.ThreadItem{ID: "adoption-thinking", Ordinal: 1, Kind: runtime.ThreadItemThinking, Live: true}
+			for _, item := range view.Items {
+				if item.TurnID == "" || item.RunID == "" {
+					t.Fatalf("published item identity=%#v", item)
+				}
+			}
+			_ = runtime.ThreadItem{ID: "adoption-thinking", TurnID: "turn-adoption", RunID: "run-adoption", Ordinal: 1, Kind: runtime.ThreadItemThinking, Live: true}
+			_ = runtime.ThreadInteraction{ID: "adoption-input", TurnID: "turn-adoption", RunID: "run-adoption", Kind: runtime.ThreadInteractionInput}
 			if got := recorder.snapshot(); len(got) != 1 || got[0] != (runtime.ThreadTokenUsageTotals{
 				InputTokens: 80, OutputTokens: 20, CacheReadTokens: 15, CacheWriteTokens: 5,
 			}) {

@@ -74,6 +74,13 @@ is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
 
+Every `ThreadItem` and `ThreadInteraction` carries the exact `TurnID` and
+`RunID` of its canonical journal fact. Historical items retain their original
+run across later turns and same-turn input continuation. Missing or conflicting
+execution identity fails the view read instead of producing an ambiguous item.
+Released v5 message rows that predate durable message `RunID` are projected only
+when surrounding canonical lifecycle markers identify one exact run segment.
+
 `ThreadView.RunID` is the exact current execution identity and never aliases
 `TurnID`. `RunProgress` is the actor-owned, process-local phase for active
 provider and tool work. It is cleared while waiting for approval or user input

@@ -814,6 +814,7 @@ field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty
 type ThreadInteraction struct
 field ThreadInteraction.ID string tag="json:\"id\""
 field ThreadInteraction.TurnID github.com/floegence/floret/v5/identity.TurnID tag="json:\"turn_id\""
+field ThreadInteraction.RunID github.com/floegence/floret/v5/identity.RunID tag="json:\"run_id\""
 field ThreadInteraction.Kind github.com/floegence/floret/v5/runtime.ThreadInteractionKind tag="json:\"kind\""
 field ThreadInteraction.ToolCallID string tag="json:\"tool_call_id,omitempty\""
 field ThreadInteraction.Resolved bool tag="json:\"resolved,omitempty\""
@@ -829,6 +830,7 @@ type ThreadInteractionKind string
 type ThreadItem struct
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v5/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadItem.RunID github.com/floegence/floret/v5/identity.RunID tag="json:\"run_id\""
 field ThreadItem.Ordinal uint64 tag="json:\"ordinal\""
 field ThreadItem.Kind github.com/floegence/floret/v5/runtime.ThreadItemKind tag="json:\"kind\""
 field ThreadItem.Text string tag="json:\"text,omitempty\""

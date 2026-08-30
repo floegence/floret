@@ -980,6 +980,7 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
 	})
+	assertExactThreadItemIdentities(t, completed.Items)
 	if completed.Error != "" || completed.LastOutcome == nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v provider_requests=%d", completed, len(gateway.Requests()))
 	}
@@ -1440,6 +1441,7 @@ func TestHasTerminalPresentationRejectsUserOnlyTurn(t *testing.T) {
 
 func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	turnID := identity.TurnID("turn-activity-merge")
+	runID := identity.RunID("run-activity-merge")
 	callPresentation := &tools.ActivityPresentation{
 		Label:       "Run command",
 		Description: "Fetch the hardware specification",
@@ -1455,11 +1457,11 @@ func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	}
 	items, interactions, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
 		{
-			ID: "tool-call", ThreadID: "thread-activity-merge", TurnID: turnID.String(), Type: sessiontree.EntryToolCall,
+			ID: "tool-call", ThreadID: "thread-activity-merge", TurnID: turnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolCall,
 			Message: session.Message{Role: session.Assistant, ToolCallID: "call-activity-merge", ToolName: "terminal.exec", Activity: session.CloneActivityPresentation(callPresentation)},
 		},
 		{
-			ID: "tool-result", ThreadID: "thread-activity-merge", TurnID: turnID.String(), Type: sessiontree.EntryToolResult,
+			ID: "tool-result", ThreadID: "thread-activity-merge", TurnID: turnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolResult,
 			Message: session.Message{Role: session.Tool, ToolCallID: "call-activity-merge", ToolName: "terminal.exec", ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusSuccess)}, Activity: session.CloneActivityPresentation(resultPresentation)},
 		},
 	})
@@ -1479,6 +1481,104 @@ func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	payload, ok := activity.Presentation.Payload.(tools.TerminalActivityPayload)
 	if !ok || payload.Command != "curl https://example.test/spec" || payload.Stdout != "specification" {
 		t.Fatalf("terminal payload=%#v", activity.Presentation.Payload)
+	}
+}
+
+func TestThreadRuntimeItemsPreserveExactRunIdentityAcrossTurnsAndContinuations(t *testing.T) {
+	entries := []sessiontree.Entry{
+		{ID: "user-1", ThreadID: "thread-runs", TurnID: "turn-1", RunID: "run-1", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "first"}},
+		{ID: "assistant-1", ThreadID: "thread-runs", TurnID: "turn-1", RunID: "run-1", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "before input"}},
+		{ID: "waiting-1", ThreadID: "thread-runs", TurnID: "turn-1", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnWaiting},
+		{ID: "assistant-2", ThreadID: "thread-runs", TurnID: "turn-1", RunID: "run-2", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "after input"}},
+		{ID: "tool-call", ThreadID: "thread-runs", TurnID: "turn-2", RunID: "run-3", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolCallID: "call-1", ToolName: "search"}},
+		{ID: "tool-result", ThreadID: "thread-runs", TurnID: "turn-2", RunID: "run-3", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolCallID: "call-1", ToolName: "search", ToolResult: &session.ToolResultView{Status: "success"}}},
+	}
+
+	items, _, err := threadRuntimeItemsFromEntries(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		kind   ThreadItemKind
+		turnID identity.TurnID
+		runID  identity.RunID
+	}{
+		{ThreadItemUser, "turn-1", "run-1"},
+		{ThreadItemAssistant, "turn-1", "run-1"},
+		{ThreadItemAssistant, "turn-1", "run-2"},
+		{ThreadItemTool, "turn-2", "run-3"},
+	}
+	if len(items) != len(want) {
+		t.Fatalf("items=%#v", items)
+	}
+	for index, expected := range want {
+		if items[index].Kind != expected.kind || items[index].TurnID != expected.turnID || items[index].RunID != expected.runID {
+			t.Fatalf("item[%d]=%#v, want kind=%s turn=%s run=%s", index, items[index], expected.kind, expected.turnID, expected.runID)
+		}
+	}
+}
+
+func TestThreadRuntimeItemsRejectMissingOrConflictingRunIdentity(t *testing.T) {
+	if _, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{{
+		ID: "user", ThreadID: "thread-invalid", TurnID: "turn-invalid", Type: sessiontree.EntryUserMessage,
+		Message: session.Message{Role: session.User, Content: "missing run"},
+	}}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("missing run error=%v, want ErrAuthorityCorrupt", err)
+	}
+
+	payload, err := json.Marshal(ThreadInteraction{ID: "ask", TurnID: "turn-invalid", RunID: "run-other", Kind: ThreadInteractionInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{{
+		ID: "interaction-requested:ask", ThreadID: "thread-invalid", TurnID: "turn-invalid", RunID: "run-entry",
+		Type: sessiontree.EntryInteractionAsked, Payload: payload,
+	}}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("conflicting run error=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
+func TestThreadRuntimeItemsRepairsReleasedV5RunIdentityFromCanonicalBoundaries(t *testing.T) {
+	items, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
+		{ID: "started", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
+		{ID: "user", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "begin"}},
+		{ID: "assistant-before", ThreadID: "thread-v5", TurnID: "turn-v5", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "before"}},
+		{ID: "waiting", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnWaiting},
+		{ID: "interaction-resolved:ask", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryInteractionDone},
+		{ID: "assistant-after", ThreadID: "thread-v5", TurnID: "turn-v5", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "after"}},
+		{ID: "completed", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 || items[1].RunID != "run-1" || items[2].RunID != "run-2" {
+		t.Fatalf("repaired v5 item identity=%#v", items)
+	}
+}
+
+func TestThreadRuntimeItemsRejectAmbiguousReleasedV5ActiveContinuation(t *testing.T) {
+	_, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
+		{ID: "started", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
+		{ID: "waiting", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnWaiting},
+		{ID: "assistant-after", ThreadID: "thread-v5", TurnID: "turn-v5", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "unknown active continuation"}},
+	})
+	if !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("ambiguous active continuation error=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
+func TestThreadInteractionJSONRoundTripPreservesRunIdentity(t *testing.T) {
+	interaction := ThreadInteraction{ID: "ask", TurnID: "turn-json", RunID: "run-json", Kind: ThreadInteractionInput}
+	encoded, err := json.Marshal(interaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ThreadInteraction
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TurnID != interaction.TurnID || decoded.RunID != interaction.RunID {
+		t.Fatalf("interaction round trip=%#v", decoded)
 	}
 }
 
@@ -1875,6 +1975,7 @@ func TestThreadServicePreservesOrderedReasoningAndToolsAcrossApprovalAndReopen(t
 		t.Fatal(err)
 	}
 	assertStableThreadItemPrefix(t, orderedThreadItemIdentity(completed.Items), reopened.Items)
+	assertExactThreadItemIdentities(t, reopened.Items)
 	assertNoLiveThreadItems(t, reopened.Items)
 }
 
@@ -2616,6 +2717,18 @@ func countThreadItems(items []ThreadItem, kind ThreadItemKind) int {
 	return count
 }
 
+func assertExactThreadItemIdentities(t *testing.T, items []ThreadItem) {
+	t.Helper()
+	for index, item := range items {
+		if item.TurnID == "" || item.RunID == "" {
+			t.Fatalf("item[%d] has incomplete execution identity: %#v", index, item)
+		}
+		if item.Interaction != nil && (item.Interaction.TurnID != item.TurnID || item.Interaction.RunID != item.RunID) {
+			t.Fatalf("item[%d] interaction identity conflicts with item: %#v", index, item)
+		}
+	}
+}
+
 type orderedThreadItemExpectation struct {
 	kind   ThreadItemKind
 	text   string
@@ -2624,6 +2737,8 @@ type orderedThreadItemExpectation struct {
 
 type orderedThreadItemIdentitySnapshot struct {
 	ID      string
+	TurnID  identity.TurnID
+	RunID   identity.RunID
 	Ordinal uint64
 }
 
@@ -2666,7 +2781,7 @@ func assertOrderedThreadItems(t *testing.T, items []ThreadItem, expected []order
 func orderedThreadItemIdentity(items []ThreadItem) []orderedThreadItemIdentitySnapshot {
 	out := make([]orderedThreadItemIdentitySnapshot, len(items))
 	for index, item := range items {
-		out[index] = orderedThreadItemIdentitySnapshot{ID: item.ID, Ordinal: item.Ordinal}
+		out[index] = orderedThreadItemIdentitySnapshot{ID: item.ID, TurnID: item.TurnID, RunID: item.RunID, Ordinal: item.Ordinal}
 	}
 	return out
 }
@@ -2677,8 +2792,8 @@ func assertStableThreadItemPrefix(t *testing.T, prefix []orderedThreadItemIdenti
 		t.Fatalf("ordered sequence shrank from %d to %d: %#v", len(prefix), len(items), items)
 	}
 	for index, want := range prefix {
-		if items[index].ID != want.ID || items[index].Ordinal != want.Ordinal {
-			t.Fatalf("ordered prefix changed at %d: got=(%q,%d) want=(%q,%d)", index, items[index].ID, items[index].Ordinal, want.ID, want.Ordinal)
+		if items[index].ID != want.ID || items[index].TurnID != want.TurnID || items[index].RunID != want.RunID || items[index].Ordinal != want.Ordinal {
+			t.Fatalf("ordered prefix changed at %d: got=(%q,%s,%s,%d) want=(%q,%s,%s,%d)", index, items[index].ID, items[index].TurnID, items[index].RunID, items[index].Ordinal, want.ID, want.TurnID, want.RunID, want.Ordinal)
 		}
 	}
 }
@@ -2797,7 +2912,7 @@ func sameThreadItemCheckpoint(items, expected []ThreadItem) bool {
 func TestThreadViewJSONRemainsDetachedFromSubscriptionMutation(t *testing.T) {
 	// Keep the replaceable-current contract honest for host transports.
 	view := ThreadView{
-		ThreadID: "thread-json", Items: []ThreadItem{{ID: "item", Kind: ThreadItemAssistant, Text: "ok"}},
+		ThreadID: "thread-json", Items: []ThreadItem{{ID: "item", TurnID: "turn-json", RunID: "run-json", Kind: ThreadItemAssistant, Text: "ok"}},
 		Failure: &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "failed"}, Error: "failed",
 	}
 	cloned := cloneThreadRuntimeView(view)

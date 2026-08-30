@@ -567,6 +567,7 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 	}
 	meta := r.threads[attempt.Invocation.ThreadID]
 	entry := cloneEntry(req.Result)
+	entry.RunID = attempt.Invocation.RunID
 	if entry.Metadata == nil {
 		entry.Metadata = map[string]string{}
 	}

@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-08-30
+* **Exact current-item run identity**: Every current-view item and interaction
+  now preserves its canonical `TurnID` and `RunID` across multi-turn history,
+  same-turn continuation, live execution, and restart recovery.
+
 ## 2026-08-29
 * **Typed active-run progress**: `ThreadView` and `ThreadSummary` expose the
   exact `RunID` plus one actor-owned transient phase. Hosts no longer need to

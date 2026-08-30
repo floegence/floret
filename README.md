@@ -190,8 +190,10 @@ same item in place, and tool approval, dispatch, and result state update the
 original tool item. Canonical reload derives the same sequence without a
 presentation ledger. `AssistantDraft` and `ThinkingDraft` remain deprecated v5
 wire fields derived from the active item and are not a second ordering source.
-`RunID` is the exact execution identity for the current turn; hosts must never
-derive it from `TurnID`. `RunProgress` is the actor-owned, process-local phase
+Every item and interaction carries its exact `TurnID` and `RunID`, so multi-turn
+history and same-turn continuation never borrow identity from the current run.
+`ThreadView.RunID` identifies only the current execution; hosts must never use
+it to fill historical items. `RunProgress` is the actor-owned, process-local phase
 for an advancing run and is absent while awaiting interaction or after the run
 settles.
 `ViewVersion` is process-local notification ordering, not a durable replay
