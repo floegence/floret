@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/provider/cache"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/internal/storagecodec"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/provider/cache"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/internal/storagecodec"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -133,6 +133,25 @@ func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree
 	}
 	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.FinishTurn(ctx, request)
+		if err != nil {
+			return err
+		}
+		return savePromptState(tx, kernel.prompt)
+	})
+	return result, err
+}
+
+// FailUnknownEffectTurn commits the fixed unknown-effect terminal together
+// with the current prompt-cache checkpoint. Provider continuation is removed
+// by the session-tree mutation in the same transaction.
+func (kernel *BackendKernel) FailUnknownEffectTurn(ctx context.Context, request sessiontree.FailUnknownEffectTurnRequest) (result sessiontree.FailUnknownEffectTurnResult, err error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if kernel.prompt == nil {
+		return sessiontree.FailUnknownEffectTurnResult{}, errors.New("prompt state is missing")
+	}
+	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
+		result, err = memory.FailUnknownEffectTurn(ctx, request)
 		if err != nil {
 			return err
 		}

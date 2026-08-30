@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/v5/config"
-	"github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/config"
+	"github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/tools"
 )
 
 // Agent is an immutable assistant persona and execution-capability snapshot.

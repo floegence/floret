@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/testing/tooltest"
-	"github.com/floegence/floret/v5/internal/tools/skills"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/testing/tooltest"
+	"github.com/floegence/floret/v6/internal/tools/skills"
+	"github.com/floegence/floret/v6/tools"
 )
 
 func TestDiscoverBuildsSkillsAndDiagnostics(t *testing.T) {

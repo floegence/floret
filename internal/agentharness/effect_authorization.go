@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/artifact"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/tools"
 )
 
 var (
@@ -204,19 +204,27 @@ func effectMessageFailed(message session.Message) bool {
 	return message.ToolResult != nil && strings.EqualFold(strings.TrimSpace(message.ToolResult.Status), "error")
 }
 
-func (t *Thread) convergeDispatchedEffect(ctx context.Context, repo sessiontree.EffectAttemptRepo, prepare sessiontree.PrepareEffectAttemptRequest, attempt sessiontree.EffectAttempt, reason string, cause error) error {
+func (t *Thread) convergeDispatchedEffect(ctx context.Context, attempt sessiontree.EffectAttempt, reason string, cause error) error {
 	unknownCtx, cancelUnknown := t.harness.effectFinalizationContext(ctx)
-	_, markErr := repo.MarkEffectUnknown(unknownCtx, sessiontree.MarkEffectUnknownRequest{
-		EffectAttemptID: attempt.EffectAttemptID, RequestFingerprint: prepare.RequestFingerprint,
-		OutcomeFingerprint: sessiontree.StableHash(attempt.EffectAttemptID + "\x00unknown\x00" + strings.TrimSpace(reason)), Now: t.harness.now(),
-	})
+	repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
+	var terminalErr error
+	if !ok {
+		terminalErr = sessiontree.ErrUnsupportedStoreCapability
+	} else {
+		_, terminalErr = repo.FailUnknownEffectTurn(unknownCtx, sessiontree.FailUnknownEffectTurnRequest{
+			ThreadID: attempt.Invocation.ThreadID, TurnID: attempt.Invocation.TurnID, RunID: attempt.Invocation.RunID, Now: t.harness.now(),
+		})
+	}
 	cancelUnknown()
 	unknownErr := error(sessiontree.ErrEffectOutcomeUnknown)
+	if reason = strings.TrimSpace(reason); reason != "" {
+		unknownErr = errors.Join(unknownErr, fmt.Errorf("effect convergence %s", reason))
+	}
 	if cause != nil && !errors.Is(cause, sessiontree.ErrEffectOutcomeUnknown) {
 		unknownErr = errors.Join(unknownErr, cause)
 	}
-	if markErr != nil {
-		unknownErr = errors.Join(unknownErr, markErr)
+	if terminalErr != nil && !errors.Is(terminalErr, sessiontree.ErrStaleAuthority) {
+		unknownErr = errors.Join(unknownErr, terminalErr)
 	}
 	return &CommittedEffectError{EffectAttemptID: attempt.EffectAttemptID, Err: unknownErr}
 }
@@ -318,7 +326,7 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 			OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: len(text) + 1, VisibleMaxLines: strings.Count(text, "\n") + 2, Strategy: tools.OutputStrategy(entry.Message.ToolResult.Strategy), PreserveFullSet: true}}
 	case sessiontree.EffectAttemptRejected:
 		return tools.DeclinedResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName)
-	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptRetrying, sessiontree.EffectAttemptDispatching:
+	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptDispatching:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, sessiontree.ErrEffectOutcomeUnknown)
 	case sessiontree.EffectAttemptCancelled:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, context.Canceled)

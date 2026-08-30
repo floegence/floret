@@ -3,8 +3,8 @@ package webfetch_test
 import (
 	"testing"
 
-	"github.com/floegence/floret/v5/tools"
-	"github.com/floegence/floret/v5/tools/webfetch"
+	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v6/tools/webfetch"
 )
 
 func TestPublicConstructorRegistersWithoutHostInternals(t *testing.T) {

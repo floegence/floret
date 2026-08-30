@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/session"
 )
 
 var ErrProviderStateNotFound = errors.New("provider state not found")
@@ -94,6 +94,26 @@ type FinishTurnResult struct {
 	Replayed bool
 }
 
+const EffectOutcomeUnknownFailureMessage = "Tool side effects could not be confirmed. The turn was stopped to avoid duplicate execution."
+
+// FailUnknownEffectTurnRequest identifies the active turn whose irreversible
+// effect outcome cannot be established. The repository owns the fixed failure
+// presentation and all terminal record identities.
+type FailUnknownEffectTurnRequest struct {
+	ThreadID string
+	TurnID   string
+	RunID    string
+	Now      time.Time
+}
+
+type FailUnknownEffectTurnResult struct {
+	InteractionResolutions []Entry
+	ToolResults            []Entry
+	Failure                Entry
+	Terminal               Entry
+	Replayed               bool
+}
+
 // CancelTurnRequest atomically settles one active turn after an explicit user
 // stop. The cancellation fact, pending interaction resolutions, unfinished
 // tool closures, effect fences, and aborted terminal share one transaction.
@@ -126,6 +146,7 @@ type RuntimeTurnRepo interface {
 	AcceptTurn(context.Context, AcceptTurnRequest) (AcceptTurnResult, error)
 	ReadAcceptedTurn(context.Context, string, string, string) (AcceptTurnResult, bool, error)
 	CancelTurn(context.Context, CancelTurnRequest) (CancelTurnResult, error)
+	FailUnknownEffectTurn(context.Context, FailUnknownEffectTurnRequest) (FailUnknownEffectTurnResult, error)
 	FinishTurn(context.Context, FinishTurnRequest) (FinishTurnResult, error)
 }
 
@@ -307,6 +328,13 @@ func ValidateFinishTurnRequest(req FinishTurnRequest) error {
 			req.ProviderState.CreatedByRunID != strings.TrimSpace(req.RunID) || req.ProviderState.CreatedByTurnID != strings.TrimSpace(req.TurnID) {
 			return ErrInvalidThreadAuthority
 		}
+	}
+	return nil
+}
+
+func ValidateFailUnknownEffectTurnRequest(req FailUnknownEffectTurnRequest) error {
+	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" {
+		return errors.New("unknown effect turn failure requires thread, turn, and run identities")
 	}
 	return nil
 }

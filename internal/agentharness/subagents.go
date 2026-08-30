@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/event"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/artifact"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/event"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/tools"
 )
 
 const (

@@ -13,22 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/activityview"
-	"github.com/floegence/floret/v5/internal/configbridge"
-	"github.com/floegence/floret/v5/internal/engine"
-	enginecompaction "github.com/floegence/floret/v5/internal/engine/compaction"
-	"github.com/floegence/floret/v5/internal/event"
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/provider/cache"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/artifact"
-	"github.com/floegence/floret/v5/internal/session/compaction"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
-	"github.com/floegence/floret/v5/internal/sessionlifecycle"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/activityview"
+	"github.com/floegence/floret/v6/internal/configbridge"
+	"github.com/floegence/floret/v6/internal/engine"
+	enginecompaction "github.com/floegence/floret/v6/internal/engine/compaction"
+	"github.com/floegence/floret/v6/internal/event"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/provider/cache"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/session/compaction"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/sessionlifecycle"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/tools"
 )
 
 var ErrJournalInvariant = errors.New("thread journal invariant violated")
@@ -942,6 +942,24 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		failureCode = sessiontree.TurnFailureEngineContract
 	}
 	result := engine.Result{Status: status, FailureOrigin: origin, Err: err}
+	if failureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
+		repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
+		if !ok {
+			return TurnResult{}, sessiontree.ErrUnsupportedStoreCapability
+		}
+		finalizeCtx, cancel := turnFinalizationContext(ctx)
+		_, finishErr := repo.FailUnknownEffectTurn(finalizeCtx, sessiontree.FailUnknownEffectTurnRequest{
+			ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID), Now: t.harness.now(),
+		})
+		cancel()
+		if finishErr != nil && !errors.Is(finishErr, sessiontree.ErrStaleAuthority) {
+			return TurnResult{}, finishErr
+		}
+		t.harness.emit(HarnessEvent{Type: EventTurnFailed, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(engine.Failed)})
+		turn := t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic})
+		turn.FailureCode = failureCode
+		return turn, err
+	}
 	meta, readErr := t.harness.options.Repo.Thread(ctx, t.id)
 	if readErr != nil {
 		return TurnResult{}, readErr

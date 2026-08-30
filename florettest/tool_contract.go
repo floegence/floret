@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/tools"
 )
 
 // ToolContractInvocation is the product-neutral invocation shape exercised by

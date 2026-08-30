@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type cancellationTrackingGateway struct {
@@ -128,8 +128,8 @@ func TestThreadServicePreparationFailureSettlesCanonicalTurn(t *testing.T) {
 	view := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeFailed
 	})
-	if view.Error != "agent preparation failed" {
-		t.Fatalf("preparation failure view error = %q", view.Error)
+	if view.Failure == nil || view.Failure.Message != "agent preparation failed" {
+		t.Fatalf("preparation failure = %#v", view.Failure)
 	}
 	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
 	if err != nil {
@@ -223,23 +223,6 @@ func TestThreadRuntimePublishRejectsRegressingViewVersion(t *testing.T) {
 		if view.ViewVersion != want {
 			t.Fatalf("published version = %d, want %d", view.ViewVersion, want)
 		}
-	}
-}
-
-func TestThreadRuntimeRetrySourceFenceAllowsOnlyOneLocalDispatcher(t *testing.T) {
-	actor := &threadRuntimeState{threadID: "thread"}
-	claimed, err := actor.claimEffectRetrySource("effect-source")
-	if err != nil || !claimed {
-		t.Fatalf("first source claim=(%v,%v), want true", claimed, err)
-	}
-	claimed, err = actor.claimEffectRetrySource("effect-source")
-	if !errors.Is(err, ErrRequestConflict) || claimed {
-		t.Fatalf("duplicate source claim=(%v,%v), want conflict", claimed, err)
-	}
-	actor.releaseEffectRetrySource("effect-source")
-	claimed, err = actor.claimEffectRetrySource("effect-source")
-	if err != nil || !claimed {
-		t.Fatalf("released source claim=(%v,%v), want true", claimed, err)
 	}
 }
 

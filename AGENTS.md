@@ -147,11 +147,11 @@ Rules:
   - `fix(provider): disable reasoning for title summaries`
   - `docs(repo): document commit message format`
 
-### v5 Semantic Versioning
+### v6 Semantic Versioning
 
-- `v5.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
+- `v6.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
   `storage`, `tools`, `observation`, and the test-only `florettest` package.
-- Within v5, do not delete or rename exported symbols, narrow previously
+- Within v6, do not delete or rename exported symbols, narrow previously
   accepted valid inputs, change established JSON field names or values, or
   change documented `errors.Is` / `errors.As` classifications.
 - Deprecations must remain available for at least one complete minor release
@@ -162,18 +162,20 @@ Rules:
 - Security emergency changes must document their compatibility and migration
   impact explicitly. Do not preserve or replace unsafe behavior through a
   silent fallback, substitute path, or unsupported transitional shape.
-- Run the v5 `go/types` baseline test and published-release adoption gate for
-  every public API change. After `v5.0.0` is published, compatibility checks
+- Run the v6 `go/types` baseline test and published-release adoption gate for
+  every public API change. After `v6.0.0` is published, compatibility checks
   compare the exact published module with `HEAD`; earlier major-version APIs
   remain only in their Git tags and must not return through aliases or facades.
 
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 5 is the current schema. The exact version 2 to version 3
+  lineage. Version 7 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
-  inventory migration, and version 4 to version 5 typed runtime migration are
-  required automatic edges. Future changes
+  inventory migration, version 4 to version 5 typed runtime migration, version
+  5 to version 6 segmented-record migration, and version 6 to version 7 exact
+  run-identity and unknown-effect terminal migration are required automatic
+  edges. Future changes
   must append every contiguous `n -> n+1` edge; they must not reset the lineage,
   raise the minimum version, or remove an already released migration.
 - `runtime.Open` and `NewBackendRepo` must migrate Floret-owned domain state

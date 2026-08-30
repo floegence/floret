@@ -12,15 +12,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v5/config"
-	"github.com/floegence/floret/v5/florettest"
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/config"
+	"github.com/floegence/floret/v6/florettest"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type oneShotThreadContextCompaction struct {
@@ -80,6 +80,10 @@ func (repo rejectingRuntimeTurnRepo) ReadAcceptedTurn(ctx context.Context, threa
 
 func (repo rejectingRuntimeTurnRepo) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (sessiontree.CancelTurnResult, error) {
 	return repo.turns.CancelTurn(ctx, request)
+}
+
+func (repo rejectingRuntimeTurnRepo) FailUnknownEffectTurn(ctx context.Context, request sessiontree.FailUnknownEffectTurnRequest) (sessiontree.FailUnknownEffectTurnResult, error) {
+	return repo.turns.FailUnknownEffectTurn(ctx, request)
 }
 
 func (repo rejectingRuntimeTurnRepo) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
@@ -405,7 +409,7 @@ func TestThreadServiceAcceptedSendOutlivesRequestContext(t *testing.T) {
 	}
 }
 
-func TestThreadServiceStopSealsUnknownEffectAndAcceptsNextSend(t *testing.T) {
+func TestThreadServiceStopFailsUnknownEffectAndAcceptsNextSend(t *testing.T) {
 	gateway := newBlockingThreadGateway()
 	host, typed := testThreadService(t, gateway)
 	service := typed.(*threadRuntimeService)
@@ -454,32 +458,27 @@ func TestThreadServiceStopSealsUnknownEffectAndAcceptsNextSend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cancelled, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-effect"})
+	failed, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-effect"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.Activity != ThreadActivityIdle || cancelled.LastOutcome == nil || *cancelled.LastOutcome != TurnOutcomeCancelled {
-		t.Fatalf("cancelled view=%#v", cancelled)
+	if failed.Activity != ThreadActivityIdle || failed.LastOutcome == nil || *failed.LastOutcome != TurnOutcomeFailed ||
+		failed.Failure == nil || failed.Failure.Code != ThreadTurnFailureEffectOutcomeUnknown {
+		t.Fatalf("failed view=%#v", failed)
 	}
-	var canceledTool bool
-	for _, item := range cancelled.Items {
+	var failedTool bool
+	for _, item := range failed.Items {
 		if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == "slow-call" {
-			canceledTool = item.Activity.Status == observation.ActivityStatusCanceled
+			failedTool = item.Activity.Status == observation.ActivityStatusError
 		}
 	}
-	if !canceledTool {
-		t.Fatalf("cancelled items=%#v, want outer canceled tool status", cancelled.Items)
+	if !failedTool {
+		t.Fatalf("failed items=%#v, want error tool status", failed.Items)
 	}
-	for _, interaction := range cancelled.Interactions {
+	for _, interaction := range failed.Interactions {
 		if !interaction.Resolved {
-			t.Fatalf("cancelled view retained pending interaction: %#v", interaction)
+			t.Fatalf("failed view retained pending interaction: %#v", interaction)
 		}
-	}
-	if _, err := service.RetryEffect(t.Context(), RetryEffectInput{
-		ThreadID: created.ThreadID, EffectAttemptID: prepared.Attempt.EffectAttemptID, ToolCallID: "slow-call",
-		AcknowledgeUnknownRisk: true, RequestKey: "retry-cancelled-effect",
-	}); err == nil {
-		t.Fatal("RetryEffect accepted a canceled turn")
 	}
 	next, err := service.Send(t.Context(), SendInput{
 		ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "send-after-stop",
@@ -558,7 +557,7 @@ func TestThreadServiceReopenSettlesPreviouslyRecordedStop(t *testing.T) {
 	cancelled := waitThreadView(t, secondService, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCancelled
 	})
-	if cancelled.Error != "" {
+	if cancelled.Failure != nil {
 		t.Fatalf("recovered cancelled view=%#v", cancelled)
 	}
 	entries, err := secondHost.store.repo.Entries(t.Context(), created.ThreadID.String())
@@ -981,7 +980,7 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
 	})
 	assertExactThreadItemIdentities(t, completed.Items)
-	if completed.Error != "" || completed.LastOutcome == nil || *completed.LastOutcome != TurnOutcomeCompleted {
+	if completed.Failure != nil || completed.LastOutcome == nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v provider_requests=%d", completed, len(gateway.Requests()))
 	}
 	assertStableThreadItemPrefix(t, waitingPrefix, completed.Items)
@@ -1087,7 +1086,7 @@ func TestThreadServiceApprovedEffectCommitsCanonicalResult(t *testing.T) {
 	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
-	if completed.Error != "" || *completed.LastOutcome != TurnOutcomeCompleted {
+	if completed.Failure != nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v", completed)
 	}
 	for _, item := range completed.Items {
@@ -1270,7 +1269,7 @@ func TestThreadServiceProjectsMixedSchemaCorrectionBatchWithVisibleCardinality(t
 	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
-	if completed.Error != "" || *completed.LastOutcome != TurnOutcomeCompleted {
+	if completed.Failure != nil || *completed.LastOutcome != TurnOutcomeCompleted {
 		t.Fatalf("completed=%#v", completed)
 	}
 	if calls.Load() != 2 {
@@ -1538,25 +1537,7 @@ func TestThreadRuntimeItemsRejectMissingOrConflictingRunIdentity(t *testing.T) {
 	}
 }
 
-func TestThreadRuntimeItemsRepairsReleasedV5RunIdentityFromCanonicalBoundaries(t *testing.T) {
-	items, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
-		{ID: "started", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
-		{ID: "user", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "begin"}},
-		{ID: "assistant-before", ThreadID: "thread-v5", TurnID: "turn-v5", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "before"}},
-		{ID: "waiting", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnWaiting},
-		{ID: "interaction-resolved:ask", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryInteractionDone},
-		{ID: "assistant-after", ThreadID: "thread-v5", TurnID: "turn-v5", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "after"}},
-		{ID: "completed", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 3 || items[1].RunID != "run-1" || items[2].RunID != "run-2" {
-		t.Fatalf("repaired v5 item identity=%#v", items)
-	}
-}
-
-func TestThreadRuntimeItemsRejectAmbiguousReleasedV5ActiveContinuation(t *testing.T) {
+func TestThreadRuntimeItemsRejectMissingActiveRunIdentity(t *testing.T) {
 	_, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
 		{ID: "started", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
 		{ID: "waiting", ThreadID: "thread-v5", TurnID: "turn-v5", RunID: "run-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnWaiting},
@@ -2267,7 +2248,7 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 		cancelled := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCancelled
 		})
-		if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-preparing-again"}); err != nil || cancelled.Error != "" {
+		if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-preparing-again"}); err != nil || cancelled.Failure != nil {
 			t.Fatalf("preparing cancel=%#v err=%v", cancelled, err)
 		}
 	})
@@ -2308,7 +2289,7 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 		before := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 		})
-		if *before.LastOutcome != TurnOutcomeFailed || strings.TrimSpace(before.Error) == "" {
+		if *before.LastOutcome != TurnOutcomeFailed || before.Failure == nil || strings.TrimSpace(before.Failure.Message) == "" {
 			t.Fatalf("empty terminal response=%#v, want failed outcome with an error", before)
 		}
 		after, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-terminal"})
@@ -2459,107 +2440,6 @@ func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 	}
 }
 
-func TestThreadServiceUnknownEffectRequiresExplicitOneShotRetry(t *testing.T) {
-	gateway := newBlockingThreadGateway()
-	var toolRuns atomic.Int32
-	effectTool := tools.Define[map[string]string](
-		tools.Definition{
-			Name: "write", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
-			Effects: []tools.Effect{tools.EffectWrite}, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
-		},
-		nil, nil,
-		func(context.Context, tools.Invocation[map[string]string]) (tools.Result, error) {
-			toolRuns.Add(1)
-			return tools.Result{Text: "written"}, nil
-		},
-	)
-	agent, err := testAgent(gateway, WithAgentTools(effectTool), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
-		return effect(ctx, EffectAuthorizationProof{
-			EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
-			ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
-			PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
-		})
-	})))
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
-	typed, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := typed.(*threadRuntimeService)
-	created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-unknown-effect"})
-	started, _ := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "effect"}, RequestKey: "send-unknown-effect"})
-	select {
-	case <-gateway.started:
-	case <-time.After(time.Second):
-		t.Fatal("provider did not start")
-	}
-	actor := service.runtime(created.ThreadID)
-	var runID identity.RunID
-	_ = actor.apply(t.Context(), func() error { runID = actor.state.runID; return nil })
-	args := `{"value":"x"}`
-	toolEntry := sessiontree.Entry{
-		ID: "tool-call:unknown", ThreadID: created.ThreadID.String(), TurnID: started.TurnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolCall,
-		Message: session.Message{Role: session.Assistant, ToolCallID: "call-unknown", ToolName: "write", ToolArgs: args},
-	}
-	writer := host.store.repo.(sessiontree.RuntimeJournalRepo)
-	if _, err := writer.AppendRuntimeFacts(t.Context(), created.ThreadID.String(), []sessiontree.Entry{toolEntry}); err != nil {
-		t.Fatal(err)
-	}
-	authority := host.store.repo.(sessiontree.EffectAttemptRepo)
-	invocation := sessiontree.EffectInvocationIdentity{
-		ThreadID: created.ThreadID.String(), TurnID: started.TurnID.String(), RunID: runID.String(),
-		ToolCallID: "call-unknown", ToolName: "write", ArgumentHash: sessiontree.StableHash(args),
-	}
-	prepared, err := authority.PrepareEffectAttempt(t.Context(), sessiontree.PrepareEffectAttemptRequest{Invocation: invocation, RequestFingerprint: "effect-fingerprint", Now: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authority.BeginEffectDispatch(t.Context(), sessiontree.BeginEffectDispatchRequest{EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "effect-fingerprint", AuthorizationProofHash: "proof", Now: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authority.MarkEffectUnknown(t.Context(), sessiontree.MarkEffectUnknownRequest{EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "effect-fingerprint", OutcomeFingerprint: "unknown", Now: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	// Unknown work is stable and does not run until the user acknowledges it.
-	time.Sleep(20 * time.Millisecond)
-	if toolRuns.Load() != 0 {
-		t.Fatalf("unknown effect replayed automatically: runs=%d", toolRuns.Load())
-	}
-	first, err := service.RetryEffect(t.Context(), RetryEffectInput{
-		ThreadID: created.ThreadID, EffectAttemptID: prepared.Attempt.EffectAttemptID, ToolCallID: "call-unknown",
-		AcknowledgeUnknownRisk: true, RequestKey: "retry-effect-once",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) && toolRuns.Load() != 1 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if toolRuns.Load() != 1 {
-		entries, _ := host.store.repo.Entries(t.Context(), created.ThreadID.String())
-		t.Fatalf("effect retry did not run: entries=%#v", entries)
-	}
-	_, err = service.RetryEffect(t.Context(), RetryEffectInput{
-		ThreadID: created.ThreadID, EffectAttemptID: prepared.Attempt.EffectAttemptID, ToolCallID: "call-unknown",
-		AcknowledgeUnknownRisk: true, RequestKey: "retry-effect-once",
-	})
-	if err != nil {
-		t.Fatalf("effect retry replay first=%#v err=%v", first, err)
-	}
-	time.Sleep(20 * time.Millisecond)
-	if toolRuns.Load() != 1 {
-		t.Fatalf("effect retry crossed one-shot fence %d times", toolRuns.Load())
-	}
-}
-
 func TestThreadServiceCanonicalEffectResultNormalizesInvalidUTF8Once(t *testing.T) {
 	path := t.TempDir() + "/effect-result-utf8.db"
 	gateway := florettest.NewScriptedGateway(
@@ -2622,7 +2502,7 @@ func TestThreadServiceCanonicalEffectResultNormalizesInvalidUTF8Once(t *testing.
 	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
-	if *completed.LastOutcome != TurnOutcomeCompleted || completed.Error != "" {
+	if *completed.LastOutcome != TurnOutcomeCompleted || completed.Failure != nil {
 		t.Fatalf("completed view=%#v", completed)
 	}
 	if toolRuns.Load() != 1 {
@@ -2913,7 +2793,7 @@ func TestThreadViewJSONRemainsDetachedFromSubscriptionMutation(t *testing.T) {
 	// Keep the replaceable-current contract honest for host transports.
 	view := ThreadView{
 		ThreadID: "thread-json", Items: []ThreadItem{{ID: "item", TurnID: "turn-json", RunID: "run-json", Kind: ThreadItemAssistant, Text: "ok"}},
-		Failure: &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "failed"}, Error: "failed",
+		Failure: &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "failed"},
 	}
 	cloned := cloneThreadRuntimeView(view)
 	cloned.Failure.Message = "changed"
@@ -2956,12 +2836,12 @@ func TestThreadServiceProjectsTypedCanonicalFailureInViewAndSummary(t *testing.T
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
 	if *failed.LastOutcome != TurnOutcomeFailed || failed.Failure == nil ||
-		failed.Failure.Code != ThreadTurnFailureProvider || failed.Failure.Message != "provider unavailable" || failed.Error != failed.Failure.Message {
+		failed.Failure.Code != ThreadTurnFailureProvider || failed.Failure.Message != "provider unavailable" {
 		t.Fatalf("failed view=%#v", failed)
 	}
 	summaries, err := service.List(t.Context(), ThreadScope{})
 	if err != nil || len(summaries) != 1 || summaries[0].Failure == nil ||
-		summaries[0].Failure.Code != ThreadTurnFailureProvider || summaries[0].Error != summaries[0].Failure.Message {
+		summaries[0].Failure.Code != ThreadTurnFailureProvider {
 		t.Fatalf("summaries=%#v err=%v", summaries, err)
 	}
 	if err := host.Shutdown(context.Background()); err != nil {
@@ -2978,7 +2858,7 @@ func TestThreadServiceProjectsTypedCanonicalFailureInViewAndSummary(t *testing.T
 		t.Fatal(err)
 	}
 	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
-	if err != nil || reopened.Failure == nil || reopened.Failure.Code != ThreadTurnFailureProvider || reopened.Error != reopened.Failure.Message {
+	if err != nil || reopened.Failure == nil || reopened.Failure.Code != ThreadTurnFailureProvider {
 		t.Fatalf("reopened=%#v err=%v", reopened, err)
 	}
 }

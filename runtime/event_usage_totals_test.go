@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v5/observation"
+	"github.com/floegence/floret/v6/observation"
 )
 
 func TestEventValidateRequiresCommittedFinalUsageForThreadTotals(t *testing.T) {

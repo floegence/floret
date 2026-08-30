@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type ApprovalRequest struct {

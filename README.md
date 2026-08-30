@@ -15,12 +15,12 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v5@v5.0.7
+go get github.com/floegence/floret/v6@v6.0.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
 `replace`, `go.work`, or sibling repository path. Earlier major versions remain
-available only from their published tags; v5 does not restore retired facades.
+available only from their published tags; v6 does not restore retired facades.
 
 ## Quick Start
 
@@ -36,10 +36,10 @@ import (
     "context"
     "os"
 
-    "github.com/floegence/floret/v5/config"
-    "github.com/floegence/floret/v5/provider"
-    "github.com/floegence/floret/v5/runtime"
-    "github.com/floegence/floret/v5/storage"
+    "github.com/floegence/floret/v6/config"
+    "github.com/floegence/floret/v6/provider"
+    "github.com/floegence/floret/v6/runtime"
+    "github.com/floegence/floret/v6/storage"
 )
 
 func main() {
@@ -160,7 +160,7 @@ rendering remain separate host capabilities.
 
 `runtime.Host` belongs in the composition root. `Host.ThreadService` returns the
 single typed lifecycle boundary. Its `Create`, `Fork`, `Delete`, `SetTitle`,
-`List`, `View`, `History`, `Send`, `Respond`, `Cancel`, `Retry`, `RetryEffect`,
+`List`, `View`, `History`, `Send`, `Respond`, `Cancel`, `Retry`,
 queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent
 identity, so they use the same current-view and command contracts.
@@ -169,13 +169,13 @@ Each thread has one in-memory runtime owner. `Send` first commits canonical turn
 acceptance, then publishes and returns the user item and active current view
 before provider dispatch. The canonical journal is the only durable fact
 source. Provider and tool I/O execute outside the thread lock.
-`Cancel` is idempotent for every known thread. It commits the aborted turn
-before returning, releases pending interactions, prevents retry of uncertain
-effects, and fences late provider or tool output without waiting for those
-goroutines to exit.
-`Respond` resolves the matching approval or input interaction in place. An
-uncertain effect is never replayed automatically; `RetryEffect` requires an
-explicit risk acknowledgement and remains attached to the original tool row.
+`Cancel` is idempotent for every known thread. It commits the terminal turn
+before returning, releases pending interactions, and fences late provider or
+tool output without waiting for those goroutines to exit. If an irreversible
+effect outcome cannot be confirmed, Floret atomically fails the turn with
+`effect_outcome_unknown`, closes every unfinished tool and interaction, clears
+provider continuation, and never replays the effect.
+`Respond` resolves the matching approval or input interaction in place.
 
 `runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
 Gateway, tools, capabilities, reasoning policy, and execution policy. The
@@ -188,8 +188,7 @@ thinking, assistant, tool, and interaction items, plus pending interactions and
 the accepted queue. Each item has a stable ID and ordinal; live deltas grow the
 same item in place, and tool approval, dispatch, and result state update the
 original tool item. Canonical reload derives the same sequence without a
-presentation ledger. `AssistantDraft` and `ThinkingDraft` remain deprecated v5
-wire fields derived from the active item and are not a second ordering source.
+presentation ledger or draft mirror fields.
 Every item and interaction carries its exact `TurnID` and `RunID`, so multi-turn
 history and same-turn continuation never borrow identity from the current run.
 `ThreadView.RunID` identifies only the current execution; hosts must never use

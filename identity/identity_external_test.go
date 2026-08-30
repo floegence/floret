@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/floegence/floret/v5/identity"
+	"github.com/floegence/floret/v6/identity"
 )
 
 func TestExecutionIdentitiesUseOneStrictEncoding(t *testing.T) {

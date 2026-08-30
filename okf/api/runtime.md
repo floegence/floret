@@ -19,7 +19,7 @@ in-process actor for each active thread.
 
 `ThreadService` is the current host-facing lifecycle contract. Its commands
 include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
-`Retry`, `RetryEffect`, queue operations, and `Subscribe`; queries include
+`Retry`, queue operations, and `Subscribe`; queries include
 `View`, `List`, `History`, and `Context`. Every mutation carries a stable
 request key. Replaying the same key and fingerprint returns the committed
 result; changing the input returns `runtime.ErrRequestConflict`.
@@ -46,19 +46,17 @@ Host shutdown are execution cancellation owners.
 
 `Cancel` is the authoritative user Stop boundary. One transaction records the
 cancel request, resolves pending interactions, closes unfinished tool rows,
-seals effect attempts, and appends the aborted terminal. It returns that
-terminal view immediately instead of waiting for provider or tool goroutines.
-An effect that crossed dispatch may remain recorded as outcome-unknown, but it
-cannot be retried after the turn is canceled. Late turn writes are rejected.
+seals effect attempts, and appends the terminal. It returns that terminal view
+immediately instead of waiting for provider or tool goroutines. Late turn
+writes are rejected.
 
 ## Effects and shutdown
 
-Tool effects cross a durable one-shot authorization boundary. An uncertain
-effect is never replayed automatically. `RetryEffect` requires explicit risk
-acknowledgement and atomically claims the original source attempt before a
-handler can run. The claim is keyed by the source effect identity, while the
-command request key provides idempotent transport replay. A terminal turn is a
-hard retry fence.
+Tool effects cross a durable one-shot authorization boundary. If the outcome
+of a dispatched effect cannot be confirmed, Floret atomically closes every
+unfinished tool and interaction, clears provider continuation, and fails the
+turn with `effect_outcome_unknown`. The effect is never replayed and there is
+no retry command. A terminal turn rejects late results.
 
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
@@ -78,8 +76,9 @@ Every `ThreadItem` and `ThreadInteraction` carries the exact `TurnID` and
 `RunID` of its canonical journal fact. Historical items retain their original
 run across later turns and same-turn input continuation. Missing or conflicting
 execution identity fails the view read instead of producing an ambiguous item.
-Released v5 message rows that predate durable message `RunID` are projected only
-when surrounding canonical lifecycle markers identify one exact run segment.
+Domain migration permanently fills released v5 message rows that predate
+durable message `RunID` when canonical lifecycle markers identify one exact
+run segment. Runtime projection never infers a missing identity.
 
 `ThreadView.RunID` is the exact current execution identity and never aliases
 `TurnID`. `RunProgress` is the actor-owned, process-local phase for active
@@ -93,9 +92,8 @@ publishes a terminal current only after that projection succeeds; a completed
 turn without a visible assistant or terminal tool item is reported as a
 failure rather than exposed as a successful user-only transcript.
 `ThreadView.Failure` exposes the canonical terminal failure code and message.
-The deprecated `Error` field remains a text mirror for v5 wire compatibility;
-hosts should classify terminal failures from `Failure.Code` rather than parse
-engine text.
+Hosts classify terminal failures from `Failure.Code`; there is no parallel
+text-error field.
 `TurnResult.Output` remains the run-level aggregate result and is not appended
 as a new assistant item. Different stable assistant IDs remain distinct even
 when their text is equal. A canonical snapshot is applied only if the
@@ -134,15 +132,17 @@ rendering remain host-owned.
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 -> v7 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
 records. Current-schema startup is byte-preserving and idempotent. The v5 -> v6
 edge first replays pending v5 recovery frames and accepts only the exact v5
 tool-result Raw repair produced before UTF-8 normalization was enforced. It then
 writes segmented v6 authority and removes the legacy checkpoint, full-path root
-inventory, and diff journal in the same transaction. Every other mismatch still
-fails closed. This automatic domain convergence is separate from the explicit
+inventory, and diff journal in the same transaction. The v6 -> v7 edge
+permanently fills exact run identity, removes retry authority, and terminates
+active unknown effects before the Host becomes available. Every other mismatch
+still fails closed. This automatic domain convergence is separate from the explicit
 legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.
 

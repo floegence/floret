@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v6/internal/session"
 )
 
-func TestCancelTurnWinsTerminalRaceWithEffectCompletion(t *testing.T) {
+func TestCancelTurnAndEffectCompletionSettleOneTerminal(t *testing.T) {
 	for iteration := 0; iteration < 20; iteration++ {
 		t.Run(fmt.Sprintf("iteration-%02d", iteration), func(t *testing.T) {
 			ctx := context.Background()
@@ -85,7 +85,7 @@ func TestCancelTurnWinsTerminalRaceWithEffectCompletion(t *testing.T) {
 	}
 }
 
-func TestCancelTurnSealsUnknownEffectAndReleasesThread(t *testing.T) {
+func TestCancelTurnFailsWhenEffectOutcomeIsUnknown(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
 	repo := NewMemoryRepo()
@@ -129,11 +129,13 @@ func TestCancelTurnSealsUnknownEffectAndReleasesThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.Terminal.TurnStatus != TurnAborted || len(cancelled.InteractionResolutions) != 1 || len(cancelled.ToolResults) != 1 {
+	if cancelled.Terminal.TurnStatus != TurnFailed ||
+		cancelled.Terminal.Metadata[TurnFailureCodeMetadataKey] != TurnFailureEffectOutcomeUnknown ||
+		len(cancelled.InteractionResolutions) != 1 || len(cancelled.ToolResults) != 1 {
 		t.Fatalf("cancel result=%#v", cancelled)
 	}
-	if got := cancelled.ToolResults[0].Message.ToolResult.Status; got != "canceled" {
-		t.Fatalf("tool status=%q, want canceled", got)
+	if got := cancelled.ToolResults[0].Message.ToolResult.Status; got != "error" {
+		t.Fatalf("tool status=%q, want error", got)
 	}
 	attempt, err := repo.EffectAttempt(ctx, "thread", prepared.Attempt.EffectAttemptID)
 	if err != nil {
@@ -151,11 +153,6 @@ func TestCancelTurnSealsUnknownEffectAndReleasesThread(t *testing.T) {
 	}); !errors.Is(err, ErrStaleAuthority) {
 		t.Fatalf("late effect result error=%v, want stale authority", err)
 	}
-	if _, err := repo.ClaimEffectRetry(ctx, ClaimEffectRetryRequest{
-		EffectAttemptID: attempt.EffectAttemptID, ToolCallID: "call", RequestKey: "retry", RequestFingerprint: "retry", Now: now,
-	}); !errors.Is(err, ErrStaleAuthority) {
-		t.Fatalf("retry after cancel error=%v, want stale authority", err)
-	}
 	if _, err := repo.AppendRuntimeFacts(ctx, "thread", []Entry{{
 		ID: "late-save", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryTurnMarker, TurnStatus: TurnSavePoint,
 	}}); !errors.Is(err, ErrStaleAuthority) {
@@ -167,7 +164,7 @@ func TestCancelTurnSealsUnknownEffectAndReleasesThread(t *testing.T) {
 	}
 	canonical, found, err := repo.CanonicalTurnEntries(ctx, "thread", "turn", "run")
 	if err != nil || !found || len(canonical) == 0 {
-		t.Fatalf("canonical canceled turn found=%v entries=%d err=%v", found, len(canonical), err)
+		t.Fatalf("canonical failed turn found=%v entries=%d err=%v", found, len(canonical), err)
 	}
 	if _, err := repo.AcceptTurn(ctx, AcceptTurnRequest{
 		ThreadID: "thread", TurnID: "turn-2", RunID: "run-2", LogicalRequestID: "send-2",
@@ -196,7 +193,7 @@ func TestCancelTurnRollsBackPartialSettlement(t *testing.T) {
 		ID: "tool-call", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall,
 		Message: session.Message{Role: session.Assistant, ToolCallID: "call", ToolName: "shell", ToolArgs: `{}`},
 	}
-	conflict := Entry{ID: "tool-cancelled:turn:call", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryCustom}
+	conflict := Entry{ID: "tool-effect-unknown:turn:call", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryCustom}
 	if _, err := repo.AppendRuntimeFacts(ctx, "thread", []Entry{toolCall, conflict}); err != nil {
 		t.Fatal(err)
 	}

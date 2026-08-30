@@ -9,25 +9,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/config"
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/agentharness"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	internalstorage "github.com/floegence/floret/v5/internal/storage"
-	"github.com/floegence/floret/v5/internal/storagebridge"
-	"github.com/floegence/floret/v5/provider"
-	publicstorage "github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/storage/spi"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/config"
+	"github.com/floegence/floret/v6/identity"
+	internalstorage "github.com/floegence/floret/v6/internal/storage"
+	"github.com/floegence/floret/v6/internal/storagebridge"
+	"github.com/floegence/floret/v6/provider"
+	publicstorage "github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v6/tools"
 )
 
 const (
 	logicalSchemaNamespace           = "floret.system"
 	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "6"
-	logicalSchemaFingerprint         = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
-	previousLogicalSchemaVersion     = "5"
-	previousLogicalSchemaFingerprint = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
+	logicalSchemaVersion             = "7"
+	logicalSchemaFingerprint         = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
+	previousLogicalSchemaVersion     = "6"
+	previousLogicalSchemaFingerprint = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
+	legacyV5LogicalSchemaVersion     = "5"
+	legacyV5LogicalSchemaFingerprint = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
 	legacyLogicalSchemaVersion       = "3"
 	legacyLogicalSchemaFingerprint   = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 )
@@ -435,22 +435,12 @@ func (runner *turnRunnerHandle) ResumeInput(ctx context.Context, request resumeI
 	return runner.inner.ResumeInput(ctx, request)
 }
 
-func (runner *turnRunnerHandle) RetryUnknownEffect(ctx context.Context, sourceAttemptID, requestKey string) (sessiontree.Entry, error) {
-	if runner == nil || runner.inner == nil || runner.inner.host == nil || runner.inner.host.harness == nil {
-		return sessiontree.Entry{}, errors.New("turn runner is required")
-	}
-	thread, err := runner.inner.host.harness.ResumeThread(ctx, runner.threadID.String(), agentharness.ResumeOptions{})
-	if err != nil {
-		return sessiontree.Entry{}, err
-	}
-	return thread.RetryUnknownEffect(ctx, sourceAttemptID, requestKey)
-}
-
 type logicalSchemaState string
 
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV6      logicalSchemaState = "v6"
 	logicalSchemaV5      logicalSchemaState = "v5"
 	logicalSchemaV3      logicalSchemaState = "v3"
 )
@@ -487,6 +477,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == previousLogicalSchemaVersion {
 		if envelope.Fingerprint != previousLogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+		}
+		return logicalSchemaV6, nil
+	}
+	if envelope.Version == legacyV5LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV5LogicalSchemaFingerprint {
 			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
 		}
 		return logicalSchemaV5, nil

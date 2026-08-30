@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/control"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/artifact"
-	"github.com/floegence/floret/v5/internal/session/compaction"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/control"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/session/compaction"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
 )
 
 type EntryType string
@@ -719,22 +719,19 @@ type AgentTodoStateRepo interface {
 }
 
 type MemoryRepo struct {
-	mu                        sync.Mutex
-	threads                   map[string]ThreadMeta
-	entries                   map[string][]Entry
-	entryOrdinals             map[string]map[string]int
-	entryDepths               map[string]map[string]int64
-	turnEntryOrdinals         map[string]map[string][]int
-	turnEntryCounts           map[string]map[string]int
-	now                       func() time.Time
-	todos                     map[string]AgentTodoState
-	tombstones                map[string]ThreadTombstone
-	effectAttempts            map[string]EffectAttempt
-	effectAttemptByInvocation map[string]string
-	effectAttemptSequence     int64
-	providerStates            map[string]ProviderStateRecord
-	artifacts                 map[string]artifact.Record
-	seq                       int64
+	mu                sync.Mutex
+	threads           map[string]ThreadMeta
+	entries           map[string][]Entry
+	entryOrdinals     map[string]map[string]int
+	entryDepths       map[string]map[string]int64
+	turnEntryOrdinals map[string]map[string][]int
+	turnEntryCounts   map[string]map[string]int
+	now               func() time.Time
+	todos             map[string]AgentTodoState
+	tombstones        map[string]ThreadTombstone
+	providerStates    map[string]ProviderStateRecord
+	artifacts         map[string]artifact.Record
+	seq               int64
 }
 
 func NewMemoryRepo() *MemoryRepo {
@@ -746,19 +743,17 @@ func newMemoryRepo(now func() time.Time) *MemoryRepo {
 		now = time.Now
 	}
 	return &MemoryRepo{
-		threads:                   map[string]ThreadMeta{},
-		entries:                   map[string][]Entry{},
-		entryOrdinals:             map[string]map[string]int{},
-		entryDepths:               map[string]map[string]int64{},
-		turnEntryOrdinals:         map[string]map[string][]int{},
-		turnEntryCounts:           map[string]map[string]int{},
-		now:                       now,
-		todos:                     map[string]AgentTodoState{},
-		tombstones:                map[string]ThreadTombstone{},
-		effectAttempts:            map[string]EffectAttempt{},
-		effectAttemptByInvocation: map[string]string{},
-		providerStates:            map[string]ProviderStateRecord{},
-		artifacts:                 map[string]artifact.Record{},
+		threads:           map[string]ThreadMeta{},
+		entries:           map[string][]Entry{},
+		entryOrdinals:     map[string]map[string]int{},
+		entryDepths:       map[string]map[string]int64{},
+		turnEntryOrdinals: map[string]map[string][]int{},
+		turnEntryCounts:   map[string]map[string]int{},
+		now:               now,
+		todos:             map[string]AgentTodoState{},
+		tombstones:        map[string]ThreadTombstone{},
+		providerStates:    map[string]ProviderStateRecord{},
+		artifacts:         map[string]artifact.Record{},
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/floegence/floret/v5/provider"
+	"github.com/floegence/floret/v6/provider"
 )
 
 func TestOpenAICompatibleGatewayUsesExplicitContract(t *testing.T) {

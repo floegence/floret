@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session"
+	"github.com/floegence/floret/v6/internal/session"
 )
 
 func fallbackThreadTitle(message session.Message) string {

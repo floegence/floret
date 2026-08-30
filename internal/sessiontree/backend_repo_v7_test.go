@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/storagebridge"
-	publicstorage "github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
-func TestBackendDomainV6SubAgentCreateWriteDoesNotGrowWithUnrelatedHistory(t *testing.T) {
+func TestBackendDomainV7SubAgentCreateWriteDoesNotGrowWithUnrelatedHistory(t *testing.T) {
 	measure := func(historyEntries int) (int, int64) {
 		backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 		if err != nil {
@@ -59,35 +59,35 @@ func TestBackendDomainV6SubAgentCreateWriteDoesNotGrowWithUnrelatedHistory(t *te
 	}
 }
 
-func TestBackendDomainV6RejectsFutureRecordWithoutMutation(t *testing.T) {
+func TestBackendDomainV7RejectsFutureRecordWithoutMutation(t *testing.T) {
 	backend := newMigrationTestBackend()
-	manifest, err := encodeBackendDomainV6Record(backendDomainRecordManifest, "", "", 0, backendDomainV6Manifest{
-		Version: backendDomainV6Version + 1,
+	manifest, err := encodeBackendDomainV7Record(backendDomainRecordManifest, "", "", 0, backendDomainV7Manifest{
+		Version: backendDomainV7Version + 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		return tx.Put(backendDomainV6Namespace, backendDomainV6Key(backendDomainRecordManifest), manifest)
+		return tx.Put(backendDomainV7Namespace, backendDomainV7Key(backendDomainRecordManifest), manifest)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	before := cloneMigrationRecords(backend.records)
 	if _, err := NewBackendRepo(t.Context(), backend, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
-		t.Fatalf("future v6 record error=%v, want ErrAuthorityCorrupt", err)
+		t.Fatalf("future v7 record error=%v, want ErrAuthorityCorrupt", err)
 	}
 	if got := cloneMigrationRecords(backend.records); !equalMigrationRecords(got, before) {
-		t.Fatal("future v6 rejection mutated durable records")
+		t.Fatal("future v7 rejection mutated durable records")
 	}
 }
 
-func TestBackendDomainV6WriteFailureDoesNotCommitStagedMemory(t *testing.T) {
+func TestBackendDomainV7WriteFailureDoesNotCommitStagedMemory(t *testing.T) {
 	underlying, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer underlying.Close()
-	injected := errors.New("v6 write failed")
+	injected := errors.New("v7 write failed")
 	backend := &toggleFailBackend{Backend: underlying, err: injected}
 	now := time.Date(2026, 8, 29, 12, 30, 0, 0, time.UTC)
 	repo, err := NewBackendRepo(t.Context(), backend, func() time.Time { return now })
@@ -117,7 +117,7 @@ func TestBackendDomainV6WriteFailureDoesNotCommitStagedMemory(t *testing.T) {
 	}
 }
 
-func TestBackendDomainV6ConcurrentSubAgentCreateSendAndFinalize(t *testing.T) {
+func TestBackendDomainV7ConcurrentSubAgentCreateSendAndFinalize(t *testing.T) {
 	backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
 	if err != nil {
 		t.Fatal(err)
@@ -276,14 +276,14 @@ func (tx toggleFailWriteTx) Put(namespace string, key, value []byte) error {
 	tx.backend.mu.Lock()
 	fail, err := tx.backend.fail, tx.backend.err
 	tx.backend.mu.Unlock()
-	if fail && namespace == backendDomainV6Namespace {
+	if fail && namespace == backendDomainV7Namespace {
 		return err
 	}
 	return tx.WriteTx.Put(namespace, key, value)
 }
 
 func (tx measuringWriteTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV6Namespace {
+	if namespace == backendDomainV7Namespace {
 		tx.backend.mu.Lock()
 		tx.backend.puts++
 		tx.backend.putBytes += int64(len(key) + len(value))

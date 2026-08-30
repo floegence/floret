@@ -7,13 +7,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v5/config"
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/configbridge"
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/session"
-	publicprovider "github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/config"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/configbridge"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/session"
+	publicprovider "github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/tools"
 )
 
 func projectedModelProvider(_ runtimeConfig, gateway modelGateway, identity modelGatewayIdentity, capabilities modelGatewayCapabilities) (provider.Provider, error) {

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	"github.com/floegence/floret/v5/internal/event"
+	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/event"
 )
 
 type Case struct {

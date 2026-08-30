@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/floegence/floret/v5/runtime"
+	"github.com/floegence/floret/v6/runtime"
 )
 
 func TestThreadItemOrderedPresentationSurface(t *testing.T) {

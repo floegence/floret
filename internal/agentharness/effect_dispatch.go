@@ -6,24 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/tools"
 )
-
-type effectRetryContextKey struct{}
-
-type effectRetryIdentity struct {
-	requestKey      string
-	sourceAttemptID string
-}
-
-func withEffectRetry(ctx context.Context, requestKey, sourceAttemptID string) context.Context {
-	return context.WithValue(ctx, effectRetryContextKey{}, effectRetryIdentity{
-		requestKey: strings.TrimSpace(requestKey), sourceAttemptID: strings.TrimSpace(sourceAttemptID),
-	})
-}
 
 // dispatchAuthorizedEffect is the typed runtime effect path. Approval is intentionally
 // absent here: ThreadRuntime exposes it as one journal-backed interaction and
@@ -44,10 +31,6 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	invocation := sessiontree.EffectInvocationIdentity{
 		ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(),
 		ToolCallID: request.CallID, ToolName: request.Name, ArgumentHash: argumentHash,
-	}
-	if retry, ok := ctx.Value(effectRetryContextKey{}).(effectRetryIdentity); ok {
-		invocation.RetryKey = retry.requestKey
-		invocation.SourceEffectAttemptID = retry.sourceAttemptID
 	}
 	prepared, err := repo.PrepareEffectAttempt(ctx, sessiontree.PrepareEffectAttemptRequest{
 		Invocation:         invocation,
@@ -70,9 +53,6 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	gateDone := make(chan effectGateOutcome, 1)
 	dispatchStarted := make(chan struct{})
 	seal := "effect-dispatch:" + sessiontree.StableHash(prepared.Attempt.EffectAttemptID+"\x00"+fingerprint)
-	prepareRequest := sessiontree.PrepareEffectAttemptRequest{
-		RequestFingerprint: fingerprint, Now: t.harness.now(), Invocation: prepared.Attempt.Invocation,
-	}
 	authorizedEffect := func(dispatchCtx context.Context, proof EffectAuthorizationProof) (EffectDispatchResult, error) {
 		if dispatchCtx == nil {
 			return EffectDispatchResult{}, ErrAuthorizationContract
@@ -90,7 +70,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		close(dispatchStarted)
 		handlerResult := invoke(dispatchCtx)
 		if handlerResult.DispatchErr != nil {
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, repo, prepareRequest, prepared.Attempt, "effect_handler_panic", handlerResult.DispatchErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "effect_handler_panic", handlerResult.DispatchErr)
 		}
 		finalizerKey := effectFinalizerKey(request.RunID.String(), request.TurnID.String(), request.CallID)
 		if err := t.registerEffectFinalizer(finalizerKey, func(finalizeCtx context.Context, request engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
@@ -102,7 +82,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			outcome := <-pending.outcome
 			return outcome.result, outcome.err
 		}); err != nil {
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, repo, prepareRequest, prepared.Attempt, "register_effect_finalizer_error", err)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "register_effect_finalizer_error", err)
 		}
 		if t.harness.effectFinalizerRegistration != nil {
 			t.harness.effectFinalizerRegistration(nil)
@@ -117,7 +97,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		outcomeFingerprint, fingerprintErr := t.harness.effectOutcomeFingerprinter(handlerResult, finalization.request.Message, finalization.request.FullOutput)
 		if fingerprintErr != nil {
 			finalizationOutcome.err = fingerprintErr
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, repo, prepareRequest, prepared.Attempt, "outcome_fingerprint_error", fingerprintErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, prepared.Attempt, "outcome_fingerprint_error", fingerprintErr)
 		}
 		finished, finishErr := repo.FinishEffectDispatch(finishCtx, sessiontree.FinishEffectDispatchRequest{
 			EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
@@ -127,7 +107,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		})
 		if finishErr != nil {
 			finalizationOutcome.err = finishErr
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, repo, prepareRequest, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
 		}
 		committed, validateErr := validateCommittedEffectFinalization(finalization.request, prepared.Attempt, finished)
 		if validateErr != nil {
@@ -174,8 +154,9 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		select {
 		case <-dispatchStarted:
 			persistCtx, cancelPersist := t.harness.effectFinalizationContext(ctx)
-			_ = t.convergeDispatchedEffect(persistCtx, repo, prepareRequest, prepared.Attempt, "turn_cancelled_after_dispatch", contextCancellationError(ctx))
+			unknownErr := t.convergeDispatchedEffect(persistCtx, prepared.Attempt, "turn_cancelled_after_dispatch", contextCancellationError(ctx))
 			cancelPersist()
+			return effectDispatchError(request.CallID, request.Name, unknownErr)
 		default:
 			_ = t.rejectEffectAttemptCause(context.Background(), repo, prepared.Attempt, fingerprint, contextCancellationError(ctx))
 		}

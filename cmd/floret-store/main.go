@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const usage = "floret-store offline v2/v3 migration commands were removed in v4; runtime.Open performs the supported v4-to-v5 migration"
+const usage = "floret-store offline migration commands are retired; runtime.Open performs the supported contiguous domain migration"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

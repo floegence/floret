@@ -3,14 +3,15 @@ package sessiontree
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/activityview"
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/observation"
+	"github.com/floegence/floret/v6/internal/activityview"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/observation"
 )
 
 // AcceptTurn records the canonical request boundary before provider dispatch.
@@ -195,10 +196,8 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 		return FinishTurnResult{}, ErrRequestConflict
 	}
 	attempts := canonicalEffectAttemptsForTurn(r.entries[meta.ID], req.TurnID)
-	resolvedUnknown := settledRetrySourcesForTurn(attempts)
 	for _, attempt := range attempts {
-		_, retried := resolvedUnknown[attempt.EffectAttemptID]
-		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptRetrying && !retried || attempt.State == EffectAttemptUnknown && !retried {
+		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
 			return FinishTurnResult{}, ErrEffectOutcomeUnknown
 		}
 	}
@@ -237,9 +236,184 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	return result, nil
 }
 
-// CancelTurn makes user Stop the canonical winner without waiting for provider
-// or tool goroutines. Any late turn-scoped writes are rejected by the terminal
-// authority installed in this transaction.
+func unknownEffectTerminalEntryID(threadID, turnID, runID string) string {
+	hash := StableHash(strings.Join([]string{strings.TrimSpace(threadID), strings.TrimSpace(turnID), strings.TrimSpace(runID), "terminal"}, "\x00"))
+	return "terminal-" + hash[:24]
+}
+
+func unknownEffectOutcomeFingerprint(threadID, turnID, runID string) string {
+	return StableHash(strings.Join([]string{strings.TrimSpace(threadID), strings.TrimSpace(turnID), strings.TrimSpace(runID), TurnFailureEffectOutcomeUnknown}, "\x00"))
+}
+
+// FailUnknownEffectTurn makes one failure terminal the canonical winner for an
+// irreversible effect whose outcome cannot be established. Effect settlement,
+// pending interaction and tool closure, provider-state removal, failure, and
+// terminal records share one transaction.
+func (r *MemoryRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownEffectTurnRequest) (FailUnknownEffectTurnResult, error) {
+	if err := ValidateFailUnknownEffectTurnRequest(req); err != nil {
+		return FailUnknownEffectTurnResult{}, err
+	}
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
+	req.TurnID = strings.TrimSpace(req.TurnID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	terminalID := unknownEffectTerminalEntryID(req.ThreadID, req.TurnID, req.RunID)
+	outcomeFingerprint := unknownEffectOutcomeFingerprint(req.ThreadID, req.TurnID, req.RunID)
+	failureID := "turn-failure:" + req.TurnID
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	previousEntries := cloneEntries(r.entries[req.ThreadID])
+	previousOrdinals := maps.Clone(r.entryOrdinals[req.ThreadID])
+	previousDepths := maps.Clone(r.entryDepths[req.ThreadID])
+	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[req.ThreadID])
+	previousTurnCounts := maps.Clone(r.turnEntryCounts[req.ThreadID])
+	previousMeta, previousMetaFound := r.threads[req.ThreadID]
+	previousProviderState, previousProviderStateFound := r.providerStates[req.ThreadID]
+	previousSequence := r.seq
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		r.entries[req.ThreadID] = previousEntries
+		r.entryOrdinals[req.ThreadID] = previousOrdinals
+		r.entryDepths[req.ThreadID] = previousDepths
+		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
+		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
+		if previousMetaFound {
+			r.threads[req.ThreadID] = previousMeta
+		} else {
+			delete(r.threads, req.ThreadID)
+		}
+		if previousProviderStateFound {
+			r.providerStates[req.ThreadID] = previousProviderState
+		} else {
+			delete(r.providerStates, req.ThreadID)
+		}
+		r.seq = previousSequence
+	}()
+
+	if terminal, found := findEntry(r.entries[req.ThreadID], terminalID); found {
+		failure, failureFound := findEntry(r.entries[req.ThreadID], failureID)
+		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID ||
+			terminal.TurnStatus != TurnFailed || terminal.RequestFingerprint != outcomeFingerprint ||
+			strings.TrimSpace(terminal.Metadata[TurnFailureCodeMetadataKey]) != TurnFailureEffectOutcomeUnknown ||
+			!failureFound || failure.Type != EntryRunFailure || failure.TurnID != req.TurnID || failure.RunID != req.RunID ||
+			strings.TrimSpace(failure.Error) != EffectOutcomeUnknownFailureMessage || terminal.ParentID != failure.ID {
+			return FailUnknownEffectTurnResult{}, ErrRequestConflict
+		}
+		committed = true
+		return FailUnknownEffectTurnResult{Failure: cloneEntry(failure), Terminal: cloneEntry(terminal), Replayed: true}, nil
+	}
+
+	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
+	if !active || activeTurnID != req.TurnID {
+		return FailUnknownEffectTurnResult{}, ErrStaleAuthority
+	}
+	activeRunID, identityErr := activeRunIdentity(r.entries[req.ThreadID], req.TurnID)
+	if identityErr != nil || activeRunID != req.RunID {
+		return FailUnknownEffectTurnResult{}, ErrStaleAuthority
+	}
+	meta, ok := r.threads[req.ThreadID]
+	if !ok {
+		return FailUnknownEffectTurnResult{}, ErrThreadNotFound
+	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
+		return FailUnknownEffectTurnResult{}, err
+	}
+	attempts := canonicalEffectAttemptsForTurn(r.entries[req.ThreadID], req.TurnID)
+	hasUnknownOutcome := false
+	for _, attempt := range attempts {
+		switch attempt.State {
+		case EffectAttemptDispatching, EffectAttemptUnknown:
+			hasUnknownOutcome = true
+		}
+	}
+	if !hasUnknownOutcome {
+		return FailUnknownEffectTurnResult{}, ErrRequestConflict
+	}
+
+	now := canonicalTime(req.Now, r.now)
+	result := FailUnknownEffectTurnResult{}
+	resolutionPayload := json.RawMessage(`{"accepted":false,"outcome":"failed"}`)
+	for _, interaction := range runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID) {
+		entryID := "interaction-resolved:" + interaction.ID
+		resolved, appendErr := r.appendLocked(ctx, Entry{
+			ID: entryID, ThreadID: req.ThreadID, TurnID: interaction.TurnID, RunID: interaction.RunID,
+			Type: EntryInteractionDone, Payload: append(json.RawMessage(nil), resolutionPayload...), CreatedAt: now,
+		}, AppendOptions{ID: entryID, Now: now})
+		if appendErr != nil {
+			return FailUnknownEffectTurnResult{}, appendErr
+		}
+		result.InteractionResolutions = append(result.InteractionResolutions, resolved)
+	}
+
+	meta = r.threads[req.ThreadID]
+	for _, attempt := range attempts {
+		switch attempt.State {
+		case EffectAttemptPrepared:
+			attempt.State = EffectAttemptCancelled
+			attempt.TerminalFingerprint = "turn-failed:" + outcomeFingerprint
+			attempt.UpdatedAt = now
+			if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+				return FailUnknownEffectTurnResult{}, err
+			}
+		case EffectAttemptDispatching:
+			attempt.State = EffectAttemptUnknown
+			attempt.TerminalFingerprint = outcomeFingerprint
+			attempt.UpdatedAt = now
+			if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
+				return FailUnknownEffectTurnResult{}, err
+			}
+		}
+	}
+
+	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+		activity := activityview.WithTerminalStatus(call.Message.Activity, string(observation.ActivityStatusError), EffectOutcomeUnknownFailureMessage)
+		entryID := "tool-effect-unknown:" + req.TurnID + ":" + strings.TrimSpace(call.Message.ToolCallID)
+		closed, appendErr := r.appendLocked(ctx, Entry{
+			ID: entryID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Type: EntryToolResult,
+			Message: session.Message{
+				Role: session.Tool, Content: EffectOutcomeUnknownFailureMessage, ToolCallID: call.Message.ToolCallID, ToolName: call.Message.ToolName,
+				ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusError)}, Activity: activity,
+			},
+			CreatedAt: now,
+		}, AppendOptions{ID: entryID, Now: now})
+		if appendErr != nil {
+			return FailUnknownEffectTurnResult{}, appendErr
+		}
+		result.ToolResults = append(result.ToolResults, closed)
+	}
+
+	meta = r.threads[req.ThreadID]
+	failure := Entry{
+		ID: failureID, ThreadID: req.ThreadID, ParentID: meta.LeafID, Type: EntryRunFailure,
+		TurnID: req.TurnID, RunID: req.RunID, CreatedAt: now, Error: EffectOutcomeUnknownFailureMessage,
+	}
+	failure.Raw, failure.RawHash = rawForEntry(failure), StableHash(rawForEntry(failure))
+	r.appendIndexedEntriesLocked(req.ThreadID, failure)
+	terminal := Entry{
+		ID: terminalID, ThreadID: req.ThreadID, ParentID: failure.ID, Type: EntryTurnMarker,
+		TurnID: req.TurnID, RunID: req.RunID, RequestFingerprint: outcomeFingerprint, CreatedAt: now, TurnStatus: TurnFailed,
+		Metadata: map[string]string{
+			"run_id": req.RunID, "outcome": "failed", "failure_reason": EffectOutcomeUnknownFailureMessage,
+			TurnFailureCodeMetadataKey: TurnFailureEffectOutcomeUnknown,
+		},
+	}
+	terminal.Raw, terminal.RawHash = rawForEntry(terminal), StableHash(rawForEntry(terminal))
+	r.appendIndexedEntriesLocked(req.ThreadID, terminal)
+	meta = r.threads[req.ThreadID]
+	meta.LeafID, meta.UpdatedAt = terminal.ID, now
+	r.threads[req.ThreadID] = meta
+	delete(r.providerStates, req.ThreadID)
+	result.Failure, result.Terminal = cloneEntry(failure), cloneEntry(terminal)
+	committed = true
+	return result, nil
+}
+
+// CancelTurn makes user Stop the canonical winner before an effect crosses the
+// dispatch boundary. Once an effect outcome is unknown, the failure terminal
+// wins so cancellation cannot hide an operation that may have completed.
 func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (CancelTurnResult, error) {
 	if err := ValidateCancelTurnRequest(req); err != nil {
 		return CancelTurnResult{}, err
@@ -252,6 +426,21 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	req.RequestKey = strings.TrimSpace(req.RequestKey)
 	req.RequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
 	req.OutcomeFingerprint = strings.TrimSpace(req.OutcomeFingerprint)
+
+	unknown, unknownErr := r.FailUnknownEffectTurn(ctx, FailUnknownEffectTurnRequest{
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Now: req.Now,
+	})
+	if unknownErr == nil {
+		return CancelTurnResult{
+			InteractionResolutions: unknown.InteractionResolutions,
+			ToolResults:            unknown.ToolResults,
+			Terminal:               unknown.Terminal,
+			Replayed:               unknown.Replayed,
+		}, nil
+	}
+	if !errors.Is(unknownErr, ErrRequestConflict) && !errors.Is(unknownErr, ErrStaleAuthority) {
+		return CancelTurnResult{}, unknownErr
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -478,39 +667,11 @@ func (r *MemoryRepo) cancelTurnEffectsLocked(meta *ThreadMeta, req CancelTurnReq
 			if err := r.appendEffectAttemptLocked(meta, attempt); err != nil {
 				return nil, err
 			}
-		case EffectAttemptUnknown, EffectAttemptRetrying:
+		case EffectAttemptUnknown:
 			unknownToolCalls[attempt.Invocation.ToolCallID] = true
 		}
 	}
 	return unknownToolCalls, nil
-}
-
-func settledRetrySourcesForTurn(attempts []EffectAttempt) map[string]struct{} {
-	resolved := make(map[string]struct{})
-	for {
-		changed := false
-		for _, attempt := range attempts {
-			sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID)
-			if sourceID == "" || (!effectAttemptTerminalSafe(attempt.State) && !hasSettledRetrySource(resolved, attempt.EffectAttemptID)) {
-				continue
-			}
-			if attempt.State == EffectAttemptUnknown {
-				continue
-			}
-			if _, found := resolved[sourceID]; !found {
-				resolved[sourceID] = struct{}{}
-				changed = true
-			}
-		}
-		if !changed {
-			return resolved
-		}
-	}
-}
-
-func hasSettledRetrySource(resolved map[string]struct{}, attemptID string) bool {
-	_, found := resolved[strings.TrimSpace(attemptID)]
-	return found
 }
 
 func runtimeTurnStartedEntryID(turnID string) string {

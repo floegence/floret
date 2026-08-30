@@ -5,11 +5,11 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	internalprovider "github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/testing/harness"
-	publicprovider "github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/engine"
+	internalprovider "github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/testing/harness"
+	publicprovider "github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/tools"
 )
 
 func TestToolDefinitionAdaptersPreserveNilAndExplicitEmpty(t *testing.T) {

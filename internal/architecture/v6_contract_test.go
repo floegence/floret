@@ -11,20 +11,20 @@ import (
 	"strings"
 	"testing"
 
-	floretruntime "github.com/floegence/floret/v5/runtime"
-	"github.com/floegence/floret/v5/storage"
+	floretruntime "github.com/floegence/floret/v6/runtime"
+	"github.com/floegence/floret/v6/storage"
 )
 
-func TestV5ModuleAndIdentityPackageBoundary(t *testing.T) {
+func TestV6ModuleAndIdentityPackageBoundary(t *testing.T) {
 	module, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(module), "module github.com/floegence/floret/v5\n") {
-		t.Fatal("Floret v5 must use the /v5 module path")
+	if !strings.HasPrefix(string(module), "module github.com/floegence/floret/v6\n") {
+		t.Fatal("Floret v6 must use the /v6 module path")
 	}
 	if _, err := os.Stat("identity"); err != nil {
-		t.Fatal("Floret v5 requires the public identity package")
+		t.Fatal("Floret v6 requires the public identity package")
 	}
 }
 
@@ -132,7 +132,7 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				const module = "github.com/floegence/floret/v5/"
+				const module = "github.com/floegence/floret/v6/"
 				if !strings.HasPrefix(value, module) {
 					continue
 				}

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/storage/spi"
 	_ "modernc.org/sqlite"
 )
 

@@ -16,16 +16,16 @@ import (
 )
 
 var publicPackages = []string{
-	"github.com/floegence/floret/v5/identity",
-	"github.com/floegence/floret/v5/config",
-	"github.com/floegence/floret/v5/provider",
-	"github.com/floegence/floret/v5/runtime",
-	"github.com/floegence/floret/v5/storage",
-	"github.com/floegence/floret/v5/storage/spi",
-	"github.com/floegence/floret/v5/tools",
-	"github.com/floegence/floret/v5/tools/webfetch",
-	"github.com/floegence/floret/v5/observation",
-	"github.com/floegence/floret/v5/florettest",
+	"github.com/floegence/floret/v6/identity",
+	"github.com/floegence/floret/v6/config",
+	"github.com/floegence/floret/v6/provider",
+	"github.com/floegence/floret/v6/runtime",
+	"github.com/floegence/floret/v6/storage",
+	"github.com/floegence/floret/v6/storage/spi",
+	"github.com/floegence/floret/v6/tools",
+	"github.com/floegence/floret/v6/tools/webfetch",
+	"github.com/floegence/floret/v6/observation",
+	"github.com/floegence/floret/v6/florettest",
 }
 
 type listedPackage struct {
@@ -86,8 +86,8 @@ func generate(root string) (string, error) {
 		return os.Open(export)
 	})
 	var output strings.Builder
-	output.WriteString("# Floret v5 public API baseline\n")
-	output.WriteString("# Design authority: internal/architecture/testdata/v5-public-api.txt\n\n")
+	output.WriteString("# Floret v6 public API baseline\n")
+	output.WriteString("# Design authority: internal/architecture/testdata/v6-public-api.txt\n\n")
 	for index, path := range publicPackages {
 		pkg, err := compiled.Import(path)
 		if err != nil {

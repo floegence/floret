@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessiontree"
+	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessiontree"
 )
 
 func TestValidateCommittedEffectFinalizationConsumesCanonicalMessage(t *testing.T) {

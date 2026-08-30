@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/provider/catalog"
+	"github.com/floegence/floret/v6/internal/provider/catalog"
 )
 
 const testProvider = "test-provider"

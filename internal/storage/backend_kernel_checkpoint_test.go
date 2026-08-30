@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/internal/storagebridge"
-	publicstorage "github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
 func TestFinishTurnCommitsCanonicalSegmentedStateWithoutRecoveryJournal(t *testing.T) {

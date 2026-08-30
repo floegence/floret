@@ -18,13 +18,15 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
-lineage. Version 6 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 lineage. Version 7 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
 validates the complete authority, and splits the monolithic checkpoint into
-thread, entry, artifact, and compact index records. Every edge validates its
-source authority and the final current invariant.
+thread, entry, artifact, and compact index records. The v6 -> v7 edge fills
+exact historical run identity, deletes effect-retry authority, and atomically
+fails active turns whose dispatched effect outcome is unknown. Every edge
+validates its source authority and the final current invariant.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,

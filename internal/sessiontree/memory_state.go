@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/session/artifact"
 )
 
 // memoryStateVersion identifies the last monolithic checkpoint shape. Schema
@@ -38,7 +38,7 @@ type memoryState struct {
 	Tombstones                     map[string]ThreadTombstone        `json:"tombstones"`
 	TurnAdmissions                 json.RawMessage                   `json:"turn_admissions,omitempty"`
 	TurnFinishes                   json.RawMessage                   `json:"turn_finishes,omitempty"`
-	EffectAttempts                 map[string]EffectAttempt          `json:"effect_attempts"`
+	EffectAttempts                 map[string]legacyEffectAttemptV6  `json:"effect_attempts"`
 	EffectAttemptByInvocation      map[string]string                 `json:"effect_attempt_by_invocation"`
 	EffectAttemptSequence          int64                             `json:"effect_attempt_sequence,omitempty"`
 	ApprovalQueues                 json.RawMessage                   `json:"approval_queues,omitempty"`
@@ -56,8 +56,9 @@ type memoryState struct {
 	Sequence                       int64                             `json:"sequence"`
 }
 
-// EncodeMemoryState returns the detached strict v5 checkpoint representation.
-// Production schema-v6 mutations persist segmented records instead.
+// EncodeMemoryState returns the detached strict v5 checkpoint representation
+// used only by the contiguous legacy migration tests and reader. Production
+// schema-v7 mutations persist segmented records instead.
 func (repo *MemoryRepo) EncodeMemoryState() ([]byte, error) {
 	if repo == nil {
 		return nil, errors.New("memory repo is required")
@@ -73,9 +74,9 @@ func (repo *MemoryRepo) memoryStateLocked() memoryState {
 		EntryOrdinals: repo.entryOrdinals, EntryDepths: repo.entryDepths,
 		TurnEntryOrdinals: repo.turnEntryOrdinals, TurnEntryCounts: repo.turnEntryCounts,
 		Todos: repo.todos, Tombstones: repo.tombstones,
-		EffectAttempts: repo.effectAttempts, EffectAttemptByInvocation: repo.effectAttemptByInvocation,
-		EffectAttemptSequence: repo.effectAttemptSequence, ProviderStates: repo.providerStates,
-		Artifacts: repo.artifacts, Sequence: repo.seq,
+		EffectAttempts: map[string]legacyEffectAttemptV6{}, EffectAttemptByInvocation: map[string]string{},
+		ProviderStates: repo.providerStates,
+		Artifacts:      repo.artifacts, Sequence: repo.seq,
 	}
 }
 
@@ -143,9 +144,7 @@ func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, er
 		threads: state.Threads, entries: state.Entries, entryOrdinals: state.EntryOrdinals,
 		entryDepths: state.EntryDepths, turnEntryOrdinals: state.TurnEntryOrdinals,
 		turnEntryCounts: state.TurnEntryCounts, now: now, todos: state.Todos,
-		tombstones:     state.Tombstones,
-		effectAttempts: state.EffectAttempts, effectAttemptByInvocation: state.EffectAttemptByInvocation,
-		effectAttemptSequence: state.EffectAttemptSequence, providerStates: state.ProviderStates,
+		tombstones: state.Tombstones, providerStates: state.ProviderStates,
 		artifacts: state.Artifacts, seq: state.Sequence,
 	}
 	repo.ensurePersistentMaps()
@@ -179,8 +178,6 @@ func (repo *MemoryRepo) ensurePersistentMaps() {
 	emptyMap(&repo.turnEntryCounts)
 	emptyMap(&repo.todos)
 	emptyMap(&repo.tombstones)
-	emptyMap(&repo.effectAttempts)
-	emptyMap(&repo.effectAttemptByInvocation)
 	emptyMap(&repo.providerStates)
 	emptyMap(&repo.artifacts)
 }

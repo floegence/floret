@@ -1,9 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-08-30
-* **Exact current-item run identity**: Every current-view item and interaction
-  now preserves its canonical `TurnID` and `RunID` across multi-turn history,
-  same-turn continuation, live execution, and restart recovery.
+* **V6 unknown-effect terminal**: Floret now uses semantic import path `/v6`.
+  Domain schema v7 permanently fills historical run identity, removes effect
+  retry authority, and fails active unknown-effect turns before Host startup.
+  Live unknown outcomes use the same atomic terminal path, and current views
+  expose only typed failures and ordered items without error or draft mirrors.
 
 ## 2026-08-29
 * **Typed active-run progress**: `ThreadView` and `ThreadSummary` expose the

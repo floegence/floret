@@ -6,8 +6,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/tools"
 )
 
 func TestSanitizeActivityPresentationPreservesEveryTypedPayload(t *testing.T) {

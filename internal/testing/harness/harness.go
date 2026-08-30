@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/provider"
+	"github.com/floegence/floret/v6/internal/provider"
 )
 
 type ScriptedProvider struct {

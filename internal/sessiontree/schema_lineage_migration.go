@@ -436,7 +436,7 @@ func validateLegacyTerminalSource(state memoryState, legacy decodedLegacyAdmissi
 		if attempt.Invocation.ThreadID != childThreadID || attempt.Invocation.TurnID != input.AdmittedTurnID {
 			continue
 		}
-		if attempt.Invocation.RunID != input.AdmittedRunID || attempt.Generation > finish.Generation || !effectAttemptTerminalSafe(attempt.State) {
+		if attempt.Invocation.RunID != input.AdmittedRunID || attempt.Generation > finish.Generation || !effectAttemptTerminalSafe(EffectAttemptState(attempt.State)) {
 			return errors.New("SubAgent terminal effect authority is invalid")
 		}
 	}

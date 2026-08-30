@@ -1,4 +1,4 @@
-// Package adoption_test exercises the released v5 API from a blank module.
+// Package adoption_test exercises the released v6 API from a blank module.
 package adoption_test
 
 import (
@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/config"
-	"github.com/floegence/floret/v5/florettest"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/provider"
-	"github.com/floegence/floret/v5/runtime"
-	"github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/config"
+	"github.com/floegence/floret/v6/florettest"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/provider"
+	"github.com/floegence/floret/v6/runtime"
+	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type oneShotCompaction struct {

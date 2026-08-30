@@ -22,8 +22,8 @@ identity, following the wrong user, or replaying an irreversible effect.
    the acting host user or rebuild a provider transcript.
 4. Treat waiting approval or input as a pending interaction and surface it
    through the normal view; resolve it with `Respond` using a stable request key.
-5. If an effect is unknown, require explicit `RetryEffect` acknowledgement. Do
-   not automatically replay an irreversible tool call.
+5. If a dispatched effect outcome is unknown, Floret fails the turn during
+   live execution or startup. Show the typed failure and never replay the tool.
 6. If the journal already contains a cancel request without its terminal,
    complete the same canonical cancellation transaction during hydration. Do
    not create a second cancel fact or redispatch the old effect.

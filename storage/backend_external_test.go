@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/storagebridge"
-	"github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/storagebridge"
+	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
 func openStorageBackend(t *testing.T, ctx context.Context, source storage.Source) spi.Backend {

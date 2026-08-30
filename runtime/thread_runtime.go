@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/internal/agentharness"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/sessionlifecycle"
-	"github.com/floegence/floret/v5/internal/sessiontree"
-	"github.com/floegence/floret/v5/observation"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/internal/agentharness"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/sessionlifecycle"
+	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v6/tools"
 )
 
 // AgentRequest identifies one typed execution whose provider and tool surface
@@ -116,14 +116,6 @@ type RetryInput struct {
 	RequestKey   RequestKey        `json:"request_key"`
 }
 
-type RetryEffectInput struct {
-	ThreadID               identity.ThreadID `json:"thread_id"`
-	EffectAttemptID        string            `json:"effect_attempt_id"`
-	ToolCallID             string            `json:"tool_call_id"`
-	AcknowledgeUnknownRisk bool              `json:"acknowledge_unknown_risk"`
-	RequestKey             RequestKey        `json:"request_key"`
-}
-
 type ReorderQueueInput struct {
 	ThreadID       identity.ThreadID `json:"thread_id"`
 	OrderedItemIDs []string          `json:"ordered_item_ids"`
@@ -181,9 +173,6 @@ type ThreadSummary struct {
 	RunProgress     *ThreadRunProgress `json:"run_progress,omitempty"`
 	QueueCount      int                `json:"queue_count,omitempty"`
 	Failure         *ThreadTurnFailure `json:"failure,omitempty"`
-	// Deprecated: use Failure for terminal failures. Error remains a text
-	// mirror for v5 wire compatibility and transient runtime diagnostics.
-	Error           string             `json:"error,omitempty"`
 	PendingInput    *InputPresentation `json:"pending_input,omitempty"`
 	LastItemAt      time.Time          `json:"last_item_at,omitempty"`
 	LastItemPreview string             `json:"last_item_preview,omitempty"`
@@ -275,30 +264,22 @@ type ThreadItem struct {
 type ThreadInteractionKind string
 
 const (
-	ThreadInteractionApproval    ThreadInteractionKind = "approval"
-	ThreadInteractionInput       ThreadInteractionKind = "input"
-	ThreadInteractionEffectRetry ThreadInteractionKind = "effect_retry"
+	ThreadInteractionApproval ThreadInteractionKind = "approval"
+	ThreadInteractionInput    ThreadInteractionKind = "input"
 )
 
 // ThreadInteraction is an unresolved or resolved action embedded in one item.
 type ThreadInteraction struct {
-	ID          string                   `json:"id"`
-	TurnID      identity.TurnID          `json:"turn_id"`
-	RunID       identity.RunID           `json:"run_id"`
-	Kind        ThreadInteractionKind    `json:"kind"`
-	ToolCallID  string                   `json:"tool_call_id,omitempty"`
-	Resolved    bool                     `json:"resolved,omitempty"`
-	Approved    *bool                    `json:"approved,omitempty"`
-	Approval    *ApprovalPresentation    `json:"approval,omitempty"`
-	Input       *InputPresentation       `json:"input,omitempty"`
-	EffectRetry *EffectRetryPresentation `json:"effect_retry,omitempty"`
-	Resolution  *InteractionResolution   `json:"resolution,omitempty"`
-}
-
-type EffectRetryPresentation struct {
-	EffectAttemptID string `json:"effect_attempt_id"`
-	ToolCallID      string `json:"tool_call_id"`
-	ToolName        string `json:"tool_name"`
+	ID         string                 `json:"id"`
+	TurnID     identity.TurnID        `json:"turn_id"`
+	RunID      identity.RunID         `json:"run_id"`
+	Kind       ThreadInteractionKind  `json:"kind"`
+	ToolCallID string                 `json:"tool_call_id,omitempty"`
+	Resolved   bool                   `json:"resolved,omitempty"`
+	Approved   *bool                  `json:"approved,omitempty"`
+	Approval   *ApprovalPresentation  `json:"approval,omitempty"`
+	Input      *InputPresentation     `json:"input,omitempty"`
+	Resolution *InteractionResolution `json:"resolution,omitempty"`
 }
 
 type ApprovalPresentation struct {
@@ -354,27 +335,18 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
-	ThreadID    identity.ThreadID  `json:"thread_id"`
-	ViewVersion uint64             `json:"view_version"`
-	Activity    ThreadActivity     `json:"activity"`
-	Attention   AttentionSummary   `json:"attention"`
-	LastOutcome *TurnOutcome       `json:"last_outcome,omitempty"`
-	Failure     *ThreadTurnFailure `json:"failure,omitempty"`
-	// Deprecated: use Failure for terminal failures. Error remains a text
-	// mirror for v5 wire compatibility and transient runtime diagnostics.
-	Error        string              `json:"error,omitempty"`
+	ThreadID     identity.ThreadID   `json:"thread_id"`
+	ViewVersion  uint64              `json:"view_version"`
+	Activity     ThreadActivity      `json:"activity"`
+	Attention    AttentionSummary    `json:"attention"`
+	LastOutcome  *TurnOutcome        `json:"last_outcome,omitempty"`
+	Failure      *ThreadTurnFailure  `json:"failure,omitempty"`
 	TurnID       identity.TurnID     `json:"turn_id,omitempty"`
 	RunID        identity.RunID      `json:"run_id,omitempty"`
 	RunProgress  *ThreadRunProgress  `json:"run_progress,omitempty"`
 	Items        []ThreadItem        `json:"items,omitempty"`
 	Queue        []QueuedInput       `json:"queue,omitempty"`
 	Interactions []ThreadInteraction `json:"interactions,omitempty"`
-	// Deprecated: derive active assistant content from Items. This field is
-	// retained for v5 wire compatibility and has no independent lifecycle.
-	AssistantDraft string `json:"assistant_draft,omitempty"`
-	// Deprecated: derive active thinking content from Items. This field is
-	// retained for v5 wire compatibility and has no independent lifecycle.
-	ThinkingDraft string `json:"thinking_draft,omitempty"`
 }
 
 // ThreadContextSnapshot is the canonical context and compaction projection for
@@ -445,7 +417,6 @@ type ThreadService interface {
 	Respond(context.Context, RespondInput) (ThreadView, error)
 	Cancel(context.Context, CancelInput) (ThreadView, error)
 	Retry(context.Context, RetryInput) (ThreadView, error)
-	RetryEffect(context.Context, RetryEffectInput) (ThreadView, error)
 	ReorderQueue(context.Context, ReorderQueueInput) (ThreadView, error)
 	DeleteQueued(context.Context, DeleteQueuedInput) (ThreadView, error)
 	PromoteQueued(context.Context, PromoteQueuedInput) (ThreadView, error)
@@ -831,9 +802,6 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 			service.recordCancellation(identity.ThreadID(drain.actor.threadID), drain.actor.state.turnID, drain.actor.state.runID, "thread_delete", "thread deleted")
 			drain.actor.state.cancel()
 		}
-		for _, cancelRetry := range drain.actor.state.effectRetryCancels {
-			cancelRetry()
-		}
 	}
 	for _, drain := range drains {
 		drain.actor.mu.Unlock()
@@ -955,7 +923,7 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: activity, LastOutcome: outcome, TurnID: turnID, RunID: runID, QueueCount: queueCount,
-		Failure: cloneThreadTurnFailure(failure), Error: threadTurnFailureMessage(failure),
+		Failure: cloneThreadTurnFailure(failure),
 	}
 	interactions := make(map[string]ThreadInteraction)
 	interactionOrder := make([]string, 0)
@@ -1072,17 +1040,13 @@ func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
 
 func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {
 	failure := cloneThreadTurnFailure(view.Failure)
-	errorText := strings.TrimSpace(view.Error)
-	if failure != nil {
-		errorText = threadTurnFailureMessage(failure)
-	}
 	summary := ThreadSummary{
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
 		RunID: view.RunID, RunProgress: cloneThreadRunProgress(view.RunProgress),
-		QueueCount: len(view.Queue), Failure: failure, Error: errorText,
+		QueueCount: len(view.Queue), Failure: failure,
 	}
 	for index := len(view.Interactions) - 1; index >= 0; index-- {
 		interaction := view.Interactions[index]
@@ -1448,192 +1412,6 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 	return ImportResult{ThreadID: in.ThreadID, Imported: imported, View: view}, nil
 }
 
-func (service *threadRuntimeService) RetryEffect(ctx context.Context, in RetryEffectInput) (ThreadView, error) {
-	key, err := cleanRequestKey(in.RequestKey)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	if !in.AcknowledgeUnknownRisk || strings.TrimSpace(in.EffectAttemptID) == "" || strings.TrimSpace(in.ToolCallID) == "" {
-		return ThreadView{}, errors.New("retry effect requires an unknown-risk acknowledgement and exact effect identity")
-	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
-		return ThreadView{}, err
-	}
-	reader, ok := service.host.store.repo.(sessiontree.EffectAttemptReader)
-	if !ok {
-		return ThreadView{}, ErrUnsupportedStoreCapability
-	}
-	source, err := reader.EffectAttempt(ctx, in.ThreadID.String(), strings.TrimSpace(in.EffectAttemptID))
-	if err != nil {
-		return ThreadView{}, runtimeHostError(err)
-	}
-	if (source.State != sessiontree.EffectAttemptUnknown && source.State != sessiontree.EffectAttemptRetrying) || source.Invocation.ToolCallID != strings.TrimSpace(in.ToolCallID) {
-		return ThreadView{}, ErrRequestConflict
-	}
-	normalizedInput := in
-	normalizedInput.RequestKey = RequestKey(key)
-	normalizedInput.EffectAttemptID = strings.TrimSpace(normalizedInput.EffectAttemptID)
-	normalizedInput.ToolCallID = strings.TrimSpace(normalizedInput.ToolCallID)
-	fingerprint, _ := stableFingerprint(normalizedInput)
-	actor := service.runtime(in.ThreadID)
-	var result ThreadView
-	var replayed bool
-	// Request-key idempotency is checked before consulting the source
-	// authority. A completed source attempt is still a successful replay of
-	// the original command, not a new conflicting retry.
-	err = actor.apply(ctx, func() error {
-		if existing, found := actor.state.requestKeys[key]; found {
-			if existing.fingerprint != fingerprint {
-				return &RequestConflictError{Operation: "retry effect", RequestID: key, Err: ErrRequestConflict}
-			}
-			replayed = true
-			result = cloneThreadRuntimeView(actor.state.view)
-		}
-		return nil
-	})
-	if err != nil || replayed {
-		return result, err
-	}
-	claimedLocally, err := actor.claimEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
-	if err != nil {
-		return ThreadView{}, err
-	}
-	if !claimedLocally {
-		return ThreadView{}, ErrRequestConflict
-	}
-	if err := actor.claimEffectDispatch(); err != nil {
-		actor.releaseEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
-		return ThreadView{}, err
-	}
-	releaseEffect := func() {
-		actor.releaseEffectDispatch()
-		actor.releaseEffectRetrySource(strings.TrimSpace(in.EffectAttemptID))
-	}
-	operationCtx, finishOperation, err := service.host.store.beginLifetimeOperationContext()
-	if err != nil {
-		releaseEffect()
-		return ThreadView{}, err
-	}
-	retryCtx, retryCancel := context.WithCancel(operationCtx)
-	actor.mu.Lock()
-	if actor.deleting || actor.deleted || actor.closed {
-		actor.mu.Unlock()
-		retryCancel()
-		releaseEffect()
-		finishOperation()
-		return ThreadView{}, ErrThreadDeleted
-	}
-	actor.state.effectRetryEpoch++
-	retryEpoch := actor.state.effectRetryEpoch
-	if actor.state.effectRetryCancels == nil {
-		actor.state.effectRetryCancels = make(map[uint64]context.CancelFunc)
-	}
-	actor.state.effectRetryCancels[retryEpoch] = retryCancel
-	actor.mu.Unlock()
-	finishRetry := func() {
-		actor.mu.Lock()
-		if actor.state.effectRetryCancels != nil {
-			delete(actor.state.effectRetryCancels, retryEpoch)
-		}
-		actor.mu.Unlock()
-		retryCancel()
-		releaseEffect()
-		finishOperation()
-	}
-	claimer, ok := service.host.store.repo.(sessiontree.EffectRetryRepo)
-	if !ok {
-		finishRetry()
-		return ThreadView{}, ErrUnsupportedStoreCapability
-	}
-	claimed, err := claimer.ClaimEffectRetry(ctx, sessiontree.ClaimEffectRetryRequest{
-		EffectAttemptID: strings.TrimSpace(in.EffectAttemptID), ToolCallID: strings.TrimSpace(in.ToolCallID),
-		RequestKey: key, RequestFingerprint: fingerprint, Now: time.Now().UTC(),
-	})
-	if err != nil {
-		finishRetry()
-		return ThreadView{}, runtimeHostError(err)
-	}
-	source = claimed.Attempt
-	err = actor.apply(ctx, func() error {
-		if existing, found := actor.state.requestKeys[key]; found {
-			if existing.fingerprint != fingerprint {
-				return &RequestConflictError{Operation: "retry effect", RequestID: key, Err: ErrRequestConflict}
-			}
-			replayed = true
-			result = cloneThreadRuntimeView(actor.state.view)
-			return nil
-		}
-		if actor.state.requestKeys == nil {
-			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
-		}
-		actor.state.requestKeys[key] = threadRuntimeRequest{fingerprint: fingerprint}
-		actor.state.view.ViewVersion++
-		result = cloneThreadRuntimeView(actor.state.view)
-		return nil
-	})
-	if err != nil || replayed {
-		finishRetry()
-		return result, err
-	}
-	service.publish(result)
-	if claimed.Replayed {
-		// The durable claim predates this process. The in-process source fence
-		// above makes this the sole dispatcher after restart; a concurrent local
-		// request returned before reaching the claim.
-	}
-	go service.runEffectRetry(retryCtx, finishRetry, actor, in.ThreadID, source, key)
-	return result, nil
-}
-
-func (service *threadRuntimeService) runEffectRetry(ctx context.Context, finish func(), actor *threadRuntimeState, threadID identity.ThreadID, source sessiontree.EffectAttempt, requestKey string) {
-	defer finish()
-	agent, err := service.factory.Agent(ctx, AgentRequest{
-		ThreadID: threadID, TurnID: identity.TurnID(source.Invocation.TurnID), RequestKey: requestKey,
-		EffectAttemptID: source.EffectAttemptID,
-	})
-	if err == nil && agent == nil {
-		err = errors.New("Agent factory returned nil")
-	}
-	if err != nil {
-		service.effectRetryFailed(actor, err)
-		return
-	}
-	runner, err := service.host.turnRunner(ctx, threadID, service.executionAgent(actor, agent))
-	if err != nil {
-		service.effectRetryFailed(actor, err)
-		return
-	}
-	if _, err := runner.RetryUnknownEffect(ctx, source.EffectAttemptID, requestKey); err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			service.effectRetryFailed(actor, err)
-		}
-		return
-	}
-	active := false
-	_ = actor.apply(context.Background(), func() error {
-		active = actor.state.view.Activity == ThreadActivityActive &&
-			actor.state.turnID.String() == source.Invocation.TurnID && actor.state.runID.String() == source.Invocation.RunID
-		return nil
-	})
-	if !active {
-		return
-	}
-	service.refreshCanonical(threadID, identity.TurnID(source.Invocation.TurnID))
-	service.redispatchAcceptedTurn(ctx, threadID, identity.TurnID(source.Invocation.TurnID), identity.RunID(source.Invocation.RunID))
-}
-
-func (service *threadRuntimeService) effectRetryFailed(actor *threadRuntimeState, err error) {
-	if service != nil && service.host != nil && service.host.store != nil {
-		service.host.store.reportBackgroundError(err)
-	}
-	_ = actor.apply(context.Background(), func() error {
-		actor.state.view.Error = err.Error()
-		actor.state.view.ViewVersion++
-		service.publish(cloneThreadRuntimeView(actor.state.view))
-		return nil
-	})
-}
-
 func (service *threadRuntimeService) currentView(actor *threadRuntimeState) ThreadView {
 	var view ThreadView
 	_ = actor.apply(context.Background(), func() error { view = cloneThreadRuntimeView(actor.state.view); return nil })
@@ -1700,9 +1478,6 @@ func (service *threadRuntimeService) close() {
 			service.recordCancellation(identity.ThreadID(runtime.threadID), runtime.state.turnID, runtime.state.runID, "runtime_shutdown", "runtime shutdown")
 			runtime.state.cancel()
 		}
-		for _, cancelRetry := range runtime.state.effectRetryCancels {
-			cancelRetry()
-		}
 		runtime.mu.Unlock()
 	}
 	_ = waitThreadRuntimeDrains(context.Background(), drains)
@@ -1749,7 +1524,6 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
-		canonical.Error = threadTurnFailureMessage(canonical.Failure)
 		actor.state.view = canonical
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = runID
@@ -1819,11 +1593,7 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		service.finishUnloadedCancellation(service.runtime(threadID), threadID, turnID, runID)
 		return
 	}
-	if service.recoverClaimedEffectRetries(ctx, threadID, turnID, entries) {
-		return
-	}
-	blockedByUnknown := service.recoverEffectAttempts(ctx, threadID, turnID, entries)
-	if blockedByUnknown {
+	if service.failRecoveredUnknownEffectTurn(ctx, threadID, turnID, runID, entries) {
 		service.refreshCanonical(threadID, turnID)
 		return
 	}
@@ -1850,7 +1620,7 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 	service.redispatchAcceptedTurn(ctx, threadID, turnID, runID)
 }
 
-func (service *threadRuntimeService) recoverClaimedEffectRetries(ctx context.Context, threadID identity.ThreadID, turnID identity.TurnID, entries []sessiontree.Entry) bool {
+func (service *threadRuntimeService) failRecoveredUnknownEffectTurn(ctx context.Context, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, entries []sessiontree.Entry) bool {
 	latest := make(map[string]sessiontree.EffectAttempt)
 	for _, entry := range entries {
 		if entry.TurnID != turnID.String() || entry.Type != sessiontree.EntryEffectAttempt {
@@ -1861,41 +1631,27 @@ func (service *threadRuntimeService) recoverClaimedEffectRetries(ctx context.Con
 			latest[attempt.EffectAttemptID] = attempt
 		}
 	}
-	resolved := settledRetrySources(latest)
-	children := make(map[string][]sessiontree.EffectAttempt)
+	unknown := false
 	for _, attempt := range latest {
-		if sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID); sourceID != "" {
-			children[sourceID] = append(children[sourceID], attempt)
+		switch attempt.State {
+		case sessiontree.EffectAttemptDispatching, sessiontree.EffectAttemptUnknown:
+			unknown = true
 		}
 	}
-	started := false
-	for _, attempt := range latest {
-		if attempt.State != sessiontree.EffectAttemptRetrying || strings.TrimSpace(attempt.RetryRequestKey) == "" {
-			continue
-		}
-		if _, settled := resolved[attempt.EffectAttemptID]; settled {
-			continue
-		}
-		ready := len(children[attempt.EffectAttemptID]) == 0
-		for _, child := range children[attempt.EffectAttemptID] {
-			if child.State == sessiontree.EffectAttemptPrepared {
-				ready = true
-			}
-		}
-		if !ready {
-			continue
-		}
-		started = true
-		_, err := service.RetryEffect(ctx, RetryEffectInput{
-			ThreadID: threadID, EffectAttemptID: attempt.EffectAttemptID,
-			ToolCallID: attempt.Invocation.ToolCallID, AcknowledgeUnknownRisk: true,
-			RequestKey: RequestKey(attempt.RetryRequestKey),
-		})
-		if err != nil && !errors.Is(err, context.Canceled) {
-			service.host.store.reportBackgroundError(err)
-		}
+	if !unknown {
+		return false
 	}
-	return started
+	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
+	if !ok {
+		service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
+		return true
+	}
+	if _, err := repo.FailUnknownEffectTurn(ctx, sessiontree.FailUnknownEffectTurnRequest{
+		ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(), Now: time.Now().UTC(),
+	}); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) {
+		service.host.store.reportBackgroundError(err)
+	}
+	return true
 }
 
 func turnHasCancelRequest(entries []sessiontree.Entry, turnID identity.TurnID) bool {
@@ -1905,68 +1661,6 @@ func turnHasCancelRequest(entries []sessiontree.Entry, turnID identity.TurnID) b
 		}
 	}
 	return false
-}
-
-func (service *threadRuntimeService) recoverEffectAttempts(ctx context.Context, threadID identity.ThreadID, turnID identity.TurnID, entries []sessiontree.Entry) bool {
-	latest := make(map[string]sessiontree.EffectAttempt)
-	for _, entry := range entries {
-		if entry.TurnID != turnID.String() || entry.Type != sessiontree.EntryEffectAttempt {
-			continue
-		}
-		attempt, err := sessiontree.DecodeCanonicalEffectAttempt(entry)
-		if err == nil {
-			latest[attempt.EffectAttemptID] = attempt
-		}
-	}
-	resolved := settledRetrySources(latest)
-	authority, ok := service.host.store.repo.(sessiontree.EffectAttemptRepo)
-	blocked := false
-	for _, attempt := range latest {
-		switch attempt.State {
-		case sessiontree.EffectAttemptDispatching:
-			blocked = true
-			if ok {
-				_, _ = authority.MarkEffectUnknown(ctx, sessiontree.MarkEffectUnknownRequest{
-					EffectAttemptID: attempt.EffectAttemptID, RequestFingerprint: attempt.RequestFingerprint,
-					OutcomeFingerprint: sessiontree.StableHash(attempt.EffectAttemptID + "\x00runtime-restarted"), Now: time.Now().UTC(),
-				})
-			}
-		case sessiontree.EffectAttemptRetrying:
-			if _, settled := resolved[attempt.EffectAttemptID]; !settled {
-				blocked = true
-			}
-		case sessiontree.EffectAttemptUnknown:
-			if _, settled := resolved[attempt.EffectAttemptID]; !settled {
-				blocked = true
-			}
-		}
-	}
-	return blocked
-}
-
-func settledRetrySources(attempts map[string]sessiontree.EffectAttempt) map[string]struct{} {
-	resolved := make(map[string]struct{})
-	for {
-		changed := false
-		for _, attempt := range attempts {
-			sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID)
-			if sourceID == "" || (!effectAttemptSettlesRetry(attempt.State) && !hasResolvedRetrySource(resolved, attempt.EffectAttemptID)) {
-				continue
-			}
-			if _, found := resolved[sourceID]; !found {
-				resolved[sourceID] = struct{}{}
-				changed = true
-			}
-		}
-		if !changed {
-			return resolved
-		}
-	}
-}
-
-func hasResolvedRetrySource(resolved map[string]struct{}, attemptID string) bool {
-	_, found := resolved[strings.TrimSpace(attemptID)]
-	return found
 }
 
 func (service *threadRuntimeService) restoreSecretInteraction(ctx context.Context, threadID identity.ThreadID, source ThreadInteraction, leafID string) {
@@ -1983,8 +1677,8 @@ func (service *threadRuntimeService) restoreSecretInteraction(ctx context.Contex
 		return
 	}
 	_, err = writer.AppendRuntimeFacts(ctx, threadID.String(), []sessiontree.Entry{
-		{ID: "runtime-restarted:" + sessiontree.StableHash(leafID)[:24], ThreadID: threadID.String(), TurnID: source.TurnID.String(), Type: sessiontree.EntryRuntimeRestarted},
-		{ID: "interaction-requested:" + restored.ID, ThreadID: threadID.String(), TurnID: source.TurnID.String(), Type: sessiontree.EntryInteractionAsked, Payload: payload},
+		{ID: "runtime-restarted:" + sessiontree.StableHash(leafID)[:24], ThreadID: threadID.String(), TurnID: source.TurnID.String(), RunID: source.RunID.String(), Type: sessiontree.EntryRuntimeRestarted},
+		{ID: "interaction-requested:" + restored.ID, ThreadID: threadID.String(), TurnID: source.TurnID.String(), RunID: source.RunID.String(), Type: sessiontree.EntryInteractionAsked, Payload: payload},
 	})
 	if err == nil {
 		service.refreshCanonical(threadID, source.TurnID)
@@ -2198,7 +1892,6 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
-		actor.state.view.Error = ""
 		actor.state.openTextSegmentID = ""
 		actor.state.openTextKind = ""
 		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
@@ -2429,8 +2122,6 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		}
 		actor.state.view.ViewVersion++
 		actor.finishLiveTextSegment()
-		actor.state.view.AssistantDraft = ""
-		actor.state.view.ThinkingDraft = ""
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.RunProgress = nil
 		outcome = TurnOutcomeCompleted
@@ -2443,15 +2134,12 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			outcome = TurnOutcomeFailed
 		}
 		actor.state.view.Failure = nil
-		actor.state.view.Error = ""
 		if outcome == TurnOutcomeFailed {
 			if completed.Failure != nil {
 				actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
-				actor.state.view.Error = threadTurnFailureMessage(actor.state.view.Failure)
 			}
-			if actor.state.view.Error == "" && runErr != nil {
+			if actor.state.view.Failure == nil && runErr != nil {
 				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: strings.TrimSpace(runErr.Error())}
-				actor.state.view.Error = threadTurnFailureMessage(actor.state.view.Failure)
 			}
 		}
 		if completed.Status != TurnStatusWaiting {
@@ -2479,7 +2167,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.ViewVersion++
 			failed := TurnOutcomeFailed
 			actor.state.view.LastOutcome = &failed
-			actor.state.view.Error = "The completed response could not be loaded."
+			actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "The completed response could not be loaded."}
 			return nil
 		})
 		current = service.currentView(actor)
@@ -2491,7 +2179,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.ViewVersion++
 			failed := TurnOutcomeFailed
 			actor.state.view.LastOutcome = &failed
-			actor.state.view.Error = "The turn completed without a visible response."
+			actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "The turn completed without a visible response."}
 			return nil
 		})
 		current = service.currentView(actor)
@@ -2928,7 +2616,7 @@ func applyThreadInteractionsToItems(items []ThreadItem, interactions []ThreadInt
 	byTool := make(map[string]ThreadInteraction, len(interactions))
 	for _, interaction := range interactions {
 		byID[interaction.ID] = interaction
-		if interaction.ToolCallID != "" && (interaction.Kind == ThreadInteractionApproval || interaction.Kind == ThreadInteractionEffectRetry) {
+		if interaction.ToolCallID != "" && interaction.Kind == ThreadInteractionApproval {
 			byTool[threadToolKey(interaction.TurnID, interaction.RunID, interaction.ToolCallID)] = interaction
 		}
 	}
@@ -3013,21 +2701,27 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 		return ThreadView{}, err
 	}
 	var runCancel context.CancelFunc
-	var retryCancels []context.CancelFunc
 	var waiters []chan InteractionResolution
+	unknownEffectFailure := false
 	err = actor.apply(ctx, func() error {
 		if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != turnID || actor.state.runID != runID {
 			return nil
 		}
-		if _, err := repo.CancelTurn(ctx, sessiontree.CancelTurnRequest{
+		result, err := repo.CancelTurn(ctx, sessiontree.CancelTurnRequest{
 			ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(),
 			CancelEntryID: request.EntryID, TerminalEntryID: terminalID,
 			RequestKey: request.RequestKey, RequestFingerprint: request.RequestFingerprint,
 			OutcomeFingerprint:           sessiontree.StableHash(string(outcomePayload)),
 			InteractionResolutionPayload: resolutionPayload, Metadata: metadata,
 			ClearProviderState: true, Now: time.Now().UTC(),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		unknownEffectFailure = result.Terminal.TurnStatus == sessiontree.TurnFailed &&
+			strings.TrimSpace(result.Terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey]) == sessiontree.TurnFailureEffectOutcomeUnknown
+		if unknownEffectFailure {
+			resolution = InteractionResolution{Accepted: false, Outcome: "failed"}
 		}
 		for _, interaction := range actor.state.view.Interactions {
 			if interaction.Resolved || interaction.TurnID != turnID {
@@ -3045,25 +2739,31 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 		}
 		actor.state.requestKeys[request.RequestKey] = threadRuntimeRequest{fingerprint: request.RequestFingerprint}
 		runCancel = actor.state.cancel
-		for _, cancelRetry := range actor.state.effectRetryCancels {
-			retryCancels = append(retryCancels, cancelRetry)
-		}
 		return nil
 	})
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
 	if runCancel != nil {
-		service.recordCancellation(threadID, turnID, runID, source, reason)
+		if !unknownEffectFailure {
+			service.recordCancellation(threadID, turnID, runID, source, reason)
+		}
 		runCancel()
-	}
-	for _, cancelRetry := range retryCancels {
-		cancelRetry()
 	}
 	for _, waiter := range waiters {
 		waiter <- resolution
 	}
-	service.finishSend(actor, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+	if unknownEffectFailure {
+		service.finishSend(actor, turnID, runID, TurnResult{
+			Status: TurnStatusFailed,
+			Failure: &ThreadTurnFailure{
+				Code:    ThreadTurnFailureEffectOutcomeUnknown,
+				Message: sessiontree.EffectOutcomeUnknownFailureMessage,
+			},
+		}, ErrEffectOutcomeUnknown)
+	} else {
+		service.finishSend(actor, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+	}
 	return service.currentView(actor), nil
 }
 
@@ -3509,10 +3209,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
-		actor.state.view.Error = ""
 		actor.finishLiveTextSegment()
-		actor.state.view.AssistantDraft = ""
-		actor.state.view.ThinkingDraft = ""
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3739,7 +3436,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		actor.state.view.LastOutcome = nil
 		actor.state.view.Failure = nil
-		actor.state.view.Error = ""
 		if promotedQueueID != "" {
 			for index := range actor.state.view.Queue {
 				if actor.state.view.Queue[index].ID == promotedQueueID {
@@ -3774,8 +3470,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
-	view.AssistantDraft = liveThreadText(view.Items, ThreadItemAssistant)
-	view.ThinkingDraft = liveThreadText(view.Items, ThreadItemThinking)
 	view.Attention = AttentionSummary{}
 	for _, interaction := range view.Interactions {
 		if interaction.Resolved {
@@ -3819,15 +3513,6 @@ func threadRuntimeViewNeedsAttention(view ThreadView) bool {
 		}
 	}
 	return false
-}
-
-func liveThreadText(items []ThreadItem, kind ThreadItemKind) string {
-	for index := len(items) - 1; index >= 0; index-- {
-		if items[index].Kind == kind && items[index].Live {
-			return items[index].Text
-		}
-	}
-	return ""
 }
 
 func cloneThreadItems(items []ThreadItem) []ThreadItem {
@@ -3954,23 +3639,8 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 }
 
 func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, []ThreadInteraction, error) {
-	var err error
-	entries, err = threadRuntimeEntriesWithExactRunIdentity(entries)
-	if err != nil {
-		return nil, nil, err
-	}
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
-	terminalTurns := make(map[string]struct{})
-	for _, entry := range entries {
-		if entry.Type != sessiontree.EntryTurnMarker {
-			continue
-		}
-		switch entry.TurnStatus {
-		case sessiontree.TurnCompleted, sessiontree.TurnFailed, sessiontree.TurnAborted:
-			terminalTurns[entry.TurnID] = struct{}{}
-		}
-	}
 	interactionIndex := make(map[string]int)
 	itemIndex := make(map[string]int)
 	toolItemIndex := make(map[string]int)
@@ -4048,43 +3718,8 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			toolItemIndex[toolKey] = len(items)
 			items = appendThreadItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity})
 		case sessiontree.EntryEffectAttempt:
-			attempt, decodeErr := sessiontree.DecodeCanonicalEffectAttempt(entry)
-			if decodeErr != nil {
+			if _, decodeErr := sessiontree.DecodeCanonicalEffectAttempt(entry); decodeErr != nil {
 				return nil, nil, decodeErr
-			}
-			if sourceID := strings.TrimSpace(attempt.Invocation.SourceEffectAttemptID); sourceID != "" && effectAttemptSettlesRetry(attempt.State) {
-				interactionID := "effect-retry:" + sourceID
-				if index, found := interactionIndex[interactionID]; found {
-					interactions[index].Resolved = true
-					resolution := InteractionResolution{Accepted: true, Outcome: string(attempt.State), At: attempt.UpdatedAt}
-					interactions[index].Resolution = &resolution
-					if item, exists := itemIndex[interactionID]; exists {
-						copy := interactions[index]
-						items[item].Interaction = &copy
-					}
-				}
-			}
-			if attempt.State != sessiontree.EffectAttemptUnknown {
-				continue
-			}
-			if _, terminal := terminalTurns[attempt.Invocation.TurnID]; terminal {
-				continue
-			}
-			interaction := ThreadInteraction{
-				ID: "effect-retry:" + attempt.EffectAttemptID, TurnID: identity.TurnID(attempt.Invocation.TurnID),
-				RunID: identity.RunID(attempt.Invocation.RunID), Kind: ThreadInteractionEffectRetry,
-				ToolCallID:  attempt.Invocation.ToolCallID,
-				EffectRetry: &EffectRetryPresentation{EffectAttemptID: attempt.EffectAttemptID, ToolCallID: attempt.Invocation.ToolCallID, ToolName: attempt.Invocation.ToolName},
-			}
-			if interaction.TurnID == "" || interaction.RunID == "" {
-				return nil, nil, ErrAuthorityCorrupt
-			}
-			interactionIndex[interaction.ID] = len(interactions)
-			interactions = append(interactions, interaction)
-			copy := interaction
-			if toolIndex, exists := toolItemIndex[threadToolKey(interaction.TurnID, interaction.RunID, interaction.ToolCallID)]; exists {
-				itemIndex[interaction.ID] = toolIndex
-				items[toolIndex].Interaction = &copy
 			}
 		case sessiontree.EntryInteractionAsked:
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
@@ -4154,7 +3789,7 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 	}
 	for interactionPosition := range interactions {
 		interaction := interactions[interactionPosition]
-		if interaction.Kind != ThreadInteractionApproval && interaction.Kind != ThreadInteractionEffectRetry {
+		if interaction.Kind != ThreadInteractionApproval {
 			continue
 		}
 		if toolIndex, exists := toolItemIndex[threadToolKey(interaction.TurnID, interaction.RunID, interaction.ToolCallID)]; exists {
@@ -4163,78 +3798,6 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 		}
 	}
 	return items, interactions, nil
-}
-
-// v5.0.0-v5.0.15 message writes omitted Entry.RunID. The surrounding canonical
-// lifecycle markers can repair closed run segments exactly; ambiguous active
-// continuation data fails closed. Delete this v5 compatibility repair in v6.
-func threadRuntimeEntriesWithExactRunIdentity(entries []sessiontree.Entry) ([]sessiontree.Entry, error) {
-	resolved := append([]sessiontree.Entry(nil), entries...)
-	activeInitialRuns := make(map[string]string)
-	latestLifecycleStatus := make(map[string]sessiontree.TurnMarkerStatus)
-	for _, entry := range resolved {
-		if entry.Type != sessiontree.EntryTurnMarker || strings.TrimSpace(entry.TurnID) == "" || strings.TrimSpace(entry.RunID) == "" {
-			continue
-		}
-		switch entry.TurnStatus {
-		case sessiontree.TurnStarted, sessiontree.TurnWaiting, sessiontree.TurnCompleted, sessiontree.TurnFailed, sessiontree.TurnAborted:
-			latestLifecycleStatus[entry.TurnID] = entry.TurnStatus
-			activeInitialRuns[entry.TurnID] = entry.RunID
-		}
-	}
-	currentRuns := make(map[string]string)
-	for turnID, status := range latestLifecycleStatus {
-		if status == sessiontree.TurnStarted {
-			currentRuns[turnID] = activeInitialRuns[turnID]
-		}
-	}
-	for index := len(resolved) - 1; index >= 0; index-- {
-		entry := &resolved[index]
-		turnID := strings.TrimSpace(entry.TurnID)
-		if entry.Type == sessiontree.EntryTurnMarker && turnID != "" {
-			runID := strings.TrimSpace(entry.RunID)
-			switch entry.TurnStatus {
-			case sessiontree.TurnStarted, sessiontree.TurnWaiting, sessiontree.TurnCompleted, sessiontree.TurnFailed, sessiontree.TurnAborted:
-				if runID == "" {
-					return nil, ErrAuthorityCorrupt
-				}
-				currentRuns[turnID] = runID
-			}
-			continue
-		}
-		if !threadRuntimePresentationEntry(entry.Type) {
-			continue
-		}
-		if turnID == "" {
-			return nil, ErrAuthorityCorrupt
-		}
-		runID := strings.TrimSpace(entry.RunID)
-		currentRunID := strings.TrimSpace(currentRuns[turnID])
-		if runID == "" {
-			if currentRunID == "" {
-				return nil, ErrAuthorityCorrupt
-			}
-			entry.RunID = currentRunID
-			continue
-		}
-		if currentRunID == "" {
-			currentRuns[turnID] = runID
-			continue
-		}
-		if currentRunID != runID {
-			return nil, ErrAuthorityCorrupt
-		}
-	}
-	return resolved, nil
-}
-
-func threadRuntimePresentationEntry(entryType sessiontree.EntryType) bool {
-	switch entryType {
-	case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
-		return true
-	default:
-		return false
-	}
 }
 
 func threadRuntimeEntryIdentity(entry sessiontree.Entry) (identity.TurnID, identity.RunID, error) {
@@ -4252,15 +3815,6 @@ func threadExecutionKey(turnID identity.TurnID, runID identity.RunID) string {
 
 func threadToolKey(turnID identity.TurnID, runID identity.RunID, toolCallID string) string {
 	return threadExecutionKey(turnID, runID) + ":" + strings.TrimSpace(toolCallID)
-}
-
-func effectAttemptSettlesRetry(state sessiontree.EffectAttemptState) bool {
-	switch state {
-	case sessiontree.EffectAttemptCompleted, sessiontree.EffectAttemptFailed, sessiontree.EffectAttemptRejected, sessiontree.EffectAttemptCancelled:
-		return true
-	default:
-		return false
-	}
 }
 
 func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.ActivityItem {
@@ -4405,11 +3959,4 @@ func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
 	}
 	cloned := *failure
 	return &cloned
-}
-
-func threadTurnFailureMessage(failure *ThreadTurnFailure) string {
-	if failure == nil {
-		return ""
-	}
-	return strings.TrimSpace(failure.Message)
 }

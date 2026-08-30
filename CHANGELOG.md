@@ -1,5 +1,23 @@
 # Changelog
 
+## v6.0.0 - 2026-08-30
+
+- Advance the module to semantic import path `/v6` and freeze the generated v6
+  public API baseline.
+- Fail a turn atomically with `effect_outcome_unknown` whenever a dispatched
+  tool effect cannot be confirmed. The same terminal path is used during live
+  execution and before `runtime.Open` makes a recovered Host available.
+- Add domain schema v7. Its strict v6 migration permanently fills exact
+  historical `RunID`, removes executable effect-retry authority, closes pending
+  tools and interactions, clears provider continuation, and converges active
+  unknown effects exactly once.
+- Remove `ThreadService.RetryEffect`, effect-retry interactions, retry claims,
+  and retry dispatch state. Unknown irreversible effects can no longer be
+  replayed manually or automatically.
+- Remove the deprecated `ThreadView.Error`, `ThreadSummary.Error`,
+  `AssistantDraft`, and `ThinkingDraft` mirrors. Hosts consume typed `Failure`
+  and ordered `Items` only.
+
 ## v5.0.16 - 2026-08-30
 
 - Expose the exact `RunID` on every current-view item and interaction. Canonical

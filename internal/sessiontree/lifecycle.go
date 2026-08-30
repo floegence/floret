@@ -215,10 +215,6 @@ func (r *MemoryRepo) deleteRootTree(rootThreadID, requestKey, fingerprint string
 		}
 	}
 	now := r.now().UTC()
-	deletedSet := make(map[string]struct{}, len(threadIDs))
-	for _, threadID := range threadIDs {
-		deletedSet[threadID] = struct{}{}
-	}
 	for _, threadID := range threadIDs {
 		meta := r.threads[threadID]
 		rootID := rootThreadID
@@ -237,12 +233,6 @@ func (r *MemoryRepo) deleteRootTree(rootThreadID, requestKey, fingerprint string
 			if record.ThreadID == threadID {
 				delete(r.artifacts, key)
 			}
-		}
-	}
-	for attemptID, attempt := range r.effectAttempts {
-		if _, deleted := deletedSet[attempt.Invocation.ThreadID]; deleted {
-			delete(r.effectAttemptByInvocation, effectInvocationKey(attempt.Invocation))
-			delete(r.effectAttempts, attemptID)
 		}
 	}
 	return DeleteRootTreeResult{ThreadIDs: append([]string(nil), threadIDs...)}, nil

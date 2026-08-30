@@ -5,7 +5,7 @@ package sessiontree
 import (
 	"context"
 
-	"github.com/floegence/floret/v5/internal/session/artifact"
+	"github.com/floegence/floret/v6/internal/session/artifact"
 )
 
 func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
@@ -77,16 +77,6 @@ func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, tur
 		return callErr
 	})
 	return result0, result1, err
-}
-
-func (repo *BackendRepo) ClaimEffectRetry(ctx context.Context, req ClaimEffectRetryRequest) (ClaimEffectRetryResult, error) {
-	var result0 ClaimEffectRetryResult
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.ClaimEffectRetry(ctx, req)
-		return callErr
-	})
-	return result0, err
 }
 
 func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
@@ -197,6 +187,16 @@ func (repo *BackendRepo) FailAutomaticThreadTitle(ctx context.Context, req FailA
 	return result0, err
 }
 
+func (repo *BackendRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownEffectTurnRequest) (FailUnknownEffectTurnResult, error) {
+	var result0 FailUnknownEffectTurnResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.FailUnknownEffectTurn(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEffectDispatchRequest) (FinishEffectDispatchResult, error) {
 	var result0 FinishEffectDispatchResult
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
@@ -253,16 +253,6 @@ func (repo *BackendRepo) ListThreads(ctx context.Context, opts ListThreadsOption
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.ListThreads(ctx, opts)
-		return callErr
-	})
-	return result0, err
-}
-
-func (repo *BackendRepo) MarkEffectUnknown(ctx context.Context, req MarkEffectUnknownRequest) (EffectAttempt, error) {
-	var result0 EffectAttempt
-	err := repo.update(ctx, func(memory *MemoryRepo) error {
-		var callErr error
-		result0, callErr = memory.MarkEffectUnknown(ctx, req)
 		return callErr
 	})
 	return result0, err

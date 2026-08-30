@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v5/identity"
-	"github.com/floegence/floret/v5/observation"
+	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v6/observation"
 )
 
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
@@ -36,9 +36,6 @@ type threadRuntimeData struct {
 	executionDone       <-chan struct{}
 	activeEffects       int
 	effectsDone         chan struct{}
-	effectRetryCancels  map[uint64]context.CancelFunc
-	effectRetryEpoch    uint64
-	effectRetrySources  map[string]struct{}
 	requestKeys         map[string]threadRuntimeRequest
 	agent               *Agent
 	pendingInteractions map[string]*pendingThreadInteraction
@@ -157,41 +154,6 @@ func (runtime *threadRuntimeState) releaseEffectDispatch() {
 		close(runtime.state.effectsDone)
 		runtime.state.effectsDone = nil
 	}
-}
-
-// claimEffectRetrySource fences one in-process dispatcher for a persisted
-// source attempt. The journal claim is the durable authority; this marker
-// distinguishes an active local dispatch from a stale claim recovered after a
-// process restart.
-func (runtime *threadRuntimeState) claimEffectRetrySource(sourceID string) (bool, error) {
-	if runtime == nil || strings.TrimSpace(sourceID) == "" {
-		return false, ErrThreadDeleted
-	}
-	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
-	if runtime.closed {
-		return false, ErrHostClosed
-	}
-	if runtime.deleting || runtime.deleted {
-		return false, ErrThreadDeleted
-	}
-	if runtime.state.effectRetrySources == nil {
-		runtime.state.effectRetrySources = make(map[string]struct{})
-	}
-	if _, exists := runtime.state.effectRetrySources[strings.TrimSpace(sourceID)]; exists {
-		return false, &RequestConflictError{Operation: "retry effect", RequestID: strings.TrimSpace(sourceID), Err: ErrRequestConflict}
-	}
-	runtime.state.effectRetrySources[strings.TrimSpace(sourceID)] = struct{}{}
-	return true, nil
-}
-
-func (runtime *threadRuntimeState) releaseEffectRetrySource(sourceID string) {
-	if runtime == nil {
-		return
-	}
-	runtime.mu.Lock()
-	delete(runtime.state.effectRetrySources, strings.TrimSpace(sourceID))
-	runtime.mu.Unlock()
 }
 
 func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream) {

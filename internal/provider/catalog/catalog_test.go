@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
 )
 
 func TestCatalogContainsFlowerProvidersAndPiStyleMetadata(t *testing.T) {

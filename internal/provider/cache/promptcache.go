@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/tools"
 )
 
 const Version = "cache.v1"

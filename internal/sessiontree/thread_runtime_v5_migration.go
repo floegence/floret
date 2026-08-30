@@ -225,7 +225,7 @@ func migrateMemoryStateV4ToV5(state *memoryState) error {
 	state.SubAgentPendingToolCompletions = nil
 	state.CompactionOperations = nil
 	if state.EffectAttempts == nil {
-		state.EffectAttempts = make(map[string]EffectAttempt)
+		state.EffectAttempts = make(map[string]legacyEffectAttemptV6)
 	}
 	if state.EffectAttemptByInvocation == nil {
 		state.EffectAttemptByInvocation = make(map[string]string)

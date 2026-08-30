@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/provider/catalog"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/provider/catalog"
 )
 
 const (

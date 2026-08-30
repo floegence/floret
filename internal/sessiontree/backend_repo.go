@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/storagecodec"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/storagecodec"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -49,12 +49,39 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
 	}
 	repo := &BackendRepo{backend: backend, now: now}
-	memory, found, err := loadBackendDomainV6(ctx, tx, now)
+	memory, found, err := loadBackendDomainV7(ctx, tx, now)
 	if err != nil {
 		return nil, err
 	}
 	if found {
 		if err := rejectLegacyBackendDomain(ctx, tx); err != nil {
+			return nil, err
+		}
+		before := cloneMemoryRepoForBackendUpdate(memory)
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if _, err := persistBackendDomainV7Changes(tx, before, memory); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		return repo, nil
+	}
+	memory, v6Found, err := loadBackendDomainV6(ctx, tx, now)
+	if err != nil {
+		return nil, err
+	}
+	if v6Found {
+		if err := rejectMonolithicBackendDomain(ctx, tx); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV7(tx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -98,7 +125,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			}
 		}
 	}
-	if err := saveCompleteBackendDomainV6(tx, memory); err != nil {
+	if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
+		return nil, err
+	}
+	if err := saveCompleteBackendDomainV7(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -119,7 +149,7 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	memory, found, err := loadBackendDomainV6(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV7(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
@@ -129,10 +159,21 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := rejectLegacyBackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	return validateBackendDomainV6Memory(memory)
+	return validateBackendDomainV7Memory(memory)
 }
 
 func rejectLegacyBackendDomain(ctx context.Context, tx spi.ReadTx) error {
+	records, err := scanBackendDomainV6(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(records) != 0 {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("current session-tree store retains v6 domain records"))
+	}
+	return rejectMonolithicBackendDomain(ctx, tx)
+}
+
+func rejectMonolithicBackendDomain(ctx context.Context, tx spi.ReadTx) error {
 	for _, key := range [][]byte{backendStateKey, backendRootThreadInventoryKey} {
 		if _, err := tx.Get(backendDomainNamespace, key); err == nil {
 			return errors.Join(ErrAuthorityCorrupt, errors.New("current session-tree store retains legacy domain records"))
@@ -283,7 +324,7 @@ func (repo *BackendRepo) UpdateDomain(ctx context.Context, mutate func(*MemoryRe
 	return repo.updateDomain(ctx, mutate)
 }
 
-// CheckpointDomainUpdate applies one mutation at a semantic checkpoint. In v6
+// CheckpointDomainUpdate applies one mutation at a semantic checkpoint. In v7
 // it shares the same affected-record transaction as every other domain update.
 func (repo *BackendRepo) CheckpointDomainUpdate(ctx context.Context, mutate func(*MemoryRepo, spi.WriteTx) error) error {
 	return repo.updateDomain(ctx, mutate)
@@ -307,10 +348,10 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := mutate(memory, tx); err != nil {
 			return err
 		}
-		if err := validateBackendDomainV6Memory(memory); err != nil {
+		if err := validateBackendDomainV7Memory(memory); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if _, err := persistBackendDomainV6Changes(tx, repo.domainMemory, memory); err != nil {
+		if _, err := persistBackendDomainV7Changes(tx, repo.domainMemory, memory); err != nil {
 			return err
 		}
 		committedMemory = memory

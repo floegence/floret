@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/provider/cache"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/provider/cache"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
 )
 
 var ErrContextWouldOverflow = errors.New("provider request would exceed context window")

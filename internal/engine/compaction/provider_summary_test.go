@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/session"
-	sessioncompaction "github.com/floegence/floret/v5/internal/session/compaction"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
-	"github.com/floegence/floret/v5/internal/testing/harness"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/session"
+	sessioncompaction "github.com/floegence/floret/v6/internal/session/compaction"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/internal/testing/harness"
 )
 
 type neverClosingSummaryProvider struct {

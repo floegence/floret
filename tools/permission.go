@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/floegence/floret/v5/identity"
+import "github.com/floegence/floret/v6/identity"
 
 type Effect string
 

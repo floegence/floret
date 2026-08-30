@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/engine"
-	"github.com/floegence/floret/v5/internal/provider"
-	"github.com/floegence/floret/v5/internal/provider/cache"
-	"github.com/floegence/floret/v5/internal/provider/catalog"
-	"github.com/floegence/floret/v5/internal/searchcap"
-	"github.com/floegence/floret/v5/internal/session"
-	"github.com/floegence/floret/v5/internal/session/contextpolicy"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v6/internal/provider/cache"
+	"github.com/floegence/floret/v6/internal/provider/catalog"
+	"github.com/floegence/floret/v6/internal/searchcap"
+	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v6/tools"
 )
 
 func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testing.T) {

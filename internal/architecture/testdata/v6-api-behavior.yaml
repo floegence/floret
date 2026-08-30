@@ -1,5 +1,5 @@
 version: 1
-scope: github.com/floegence/floret/v5/runtime
+scope: github.com/floegence/floret/v6/runtime
 defaults:
   unknown_error: propagate
   identity_allocation: floret
@@ -123,15 +123,6 @@ methods:
     replay: retry never duplicates the source user item
     concurrency: one retry lineage is accepted per request key
     cancellation: caller cancellation cannot erase accepted retry intent
-    closing: rejects after Host closes
-  - method: ThreadService.RetryEffect
-    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrEffectOutcomeUnknown, ErrRequestConflict]
-    errors_as: [RequestConflictError]
-    retryability: unknown irreversible effects require explicit risk acknowledgement
-    commit: dispatches through the one-shot effect fence and updates the original tool item
-    replay: the same request key cannot execute an effect twice
-    concurrency: authorization and dispatch consumption are atomic
-    cancellation: unknown outcomes remain visible and are not replayed automatically
     closing: rejects after Host closes
   - method: ThreadService.ReorderQueue
     errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted, ErrRequestConflict]

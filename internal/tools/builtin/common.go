@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type WorkspaceOptions struct {

@@ -7,10 +7,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v5/internal/storagebridge"
-	"github.com/floegence/floret/v5/internal/storagecodec"
-	publicstorage "github.com/floegence/floret/v5/storage"
-	"github.com/floegence/floret/v5/storage/spi"
+	"github.com/floegence/floret/v6/internal/storagebridge"
+	"github.com/floegence/floret/v6/internal/storagecodec"
+	publicstorage "github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v6/storage/spi"
 )
 
 func TestOpenRollsBackDomainWhenLogicalSchemaWriteFails(t *testing.T) {
@@ -116,7 +116,7 @@ func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		return tx.Delete("floret.domain.sessiontree.v6", storagecodec.Tuple(storagecodec.TupleString("root_index")))
+		return tx.Delete("floret.domain.sessiontree.v7", storagecodec.Tuple(storagecodec.TupleString("root_index")))
 	}); err != nil {
 		t.Fatal(err)
 	}

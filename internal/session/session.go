@@ -3,8 +3,8 @@ package session
 import (
 	"sync"
 
-	"github.com/floegence/floret/v5/internal/session/artifact"
-	"github.com/floegence/floret/v5/tools"
+	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v6/tools"
 )
 
 type Role string
