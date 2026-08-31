@@ -289,6 +289,61 @@ func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T
 	}
 }
 
+func TestExplicitSignalPreservesNaturalStopOutputBeforeStructuredCompletion(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(provider.StreamEvent{Type: provider.Reasoning, Text: "considering destination"}, harness.Text("Which city should I use?"), harness.Done()),
+		harness.Step(harness.Tool("done", "task_complete", `{"output":"Waiting for a city."}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, rec)
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "plan a trip")
+
+	if got.Status != engine.Completed || got.Output != "Waiting for a city." || got.CompletionReason != engine.CompletionReasonToolSignal {
+		t.Fatalf("result = %#v, want structured completion", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(p.Requests))
+	}
+	second := p.Requests[1].Messages
+	if !slices.ContainsFunc(second, func(message session.Message) bool {
+		return message.Role == session.Assistant && message.Content == "Which city should I use?" && message.Reasoning == "considering destination"
+	}) {
+		t.Fatalf("second request lost the first model response: %#v", second)
+	}
+	if !slices.ContainsFunc(second, func(message session.Message) bool {
+		return message.Role == session.User && strings.Contains(message.Content, "task_complete") && strings.Contains(message.Content, "ask_user")
+	}) {
+		t.Fatalf("second request is missing the structured continuation instruction: %#v", second)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ContextContinue && ev.ContinuationReason == string(engine.ContinueExplicitSignal)
+	}) {
+		t.Fatalf("explicit continuation was not observable: %#v", rec.Events)
+	}
+}
+
+func TestExplicitSignalPreservesReasoningOnlyNaturalStop(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(provider.StreamEvent{Type: provider.Reasoning, Text: "reasoning without final text"}, harness.Done()),
+		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "inspect")
+
+	if got.Status != engine.Completed || len(p.Requests) != 2 {
+		t.Fatalf("result=%#v requests=%d", got, len(p.Requests))
+	}
+	if !slices.ContainsFunc(p.Requests[1].Messages, func(message session.Message) bool {
+		return message.Role == session.Assistant && message.Content == "" && message.Reasoning == "reasoning without final text"
+	}) {
+		t.Fatalf("reasoning-only response was not appended to the next request: %#v", p.Requests[1].Messages)
+	}
+}
+
 func TestTaskCompleteUsesSameStepAssistantTextWhenArgumentsAreEmpty(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(
@@ -565,6 +620,9 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 		if req.RunID != input.RunID {
 			t.Fatalf("request scope = %#v, want run %s", req, input.RunID)
 		}
+		if req.PromptScopeID != input.ThreadID {
+			t.Fatalf("request %s prompt scope = %q, want %q", input.RunID, req.PromptScopeID, input.ThreadID)
+		}
 		if !slices.ContainsFunc(req.Messages, func(msg session.Message) bool {
 			return msg.Role == session.User && msg.Content == input.History[0].Content
 		}) {
@@ -592,7 +650,10 @@ func TestExplicitTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) 
 	if got.Status != engine.Completed {
 		t.Fatalf("first result = %#v", got)
 	}
-	p2 := harness.NewScriptedProvider(harness.Step(harness.Text("second done"), harness.Done()))
+	p2 := harness.NewScriptedProvider(
+		harness.Step(harness.Text("second done"), harness.Done()),
+		harness.Step(harness.Tool("done-2", "task_complete", `{"output":"second done"}`), harness.DoneReason("tool_calls")),
+	)
 	e2 := newTestEngine(p2, &event.Recorder{})
 	e2.Store = store
 	e2.Prompt = promptStore
@@ -639,7 +700,10 @@ func TestEmptyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 		t.Fatalf("first result = %#v", got)
 	}
 
-	p2 := harness.NewScriptedProvider(harness.Step(harness.Text("second done"), harness.Done()))
+	p2 := harness.NewScriptedProvider(
+		harness.Step(harness.Text("second done"), harness.Done()),
+		harness.Step(harness.Tool("done-2", "task_complete", `{"output":"second done"}`), harness.DoneReason("tool_calls")),
+	)
 	e2 := newTestEngine(p2, &event.Recorder{})
 	e2.Store = store
 	e2.Prompt = promptStore
@@ -913,7 +977,7 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	}
 }
 
-func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
+func TestDynamicToolSurfaceChangesThroughCompactionGeneration(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`), harness.DoneReason("tool_calls")),
@@ -931,6 +995,7 @@ func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
 		return "written", nil
 	}))
 	e := newTestEngine(p, rec)
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
 	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{
 		Name: "default_search",
 		Type: "web_search",
@@ -959,8 +1024,8 @@ func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
 
 	got := e.Run(context.Background(), "inspect")
 
-	if got.Status != engine.Completed || got.Output != "done" {
-		t.Fatalf("result = %#v", got)
+	if got.Status != engine.Completed || got.Output != "done" || got.Metrics.Compactions != 1 {
+		t.Fatalf("result = %#v, want one context-generation compaction", got)
 	}
 	if len(p.Requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(p.Requests))
@@ -968,11 +1033,11 @@ func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
 	if names := providerToolNames(p.Requests[0].Tools); !slices.Contains(names, "read") || slices.Contains(names, "write") {
 		t.Fatalf("first request tools = %v, want read without write", names)
 	}
-	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
-		t.Fatalf("second request tools = %v, want read/write", names)
-	}
 	if len(p.Requests[0].HostedTools) != 0 {
 		t.Fatalf("first request hosted tools = %#v, want none", p.Requests[0].HostedTools)
+	}
+	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
+		t.Fatalf("second request tools = %v, want read/write", names)
 	}
 	if len(p.Requests[1].HostedTools) != 1 || p.Requests[1].HostedTools[0].Name != "hosted_search" {
 		t.Fatalf("second request hosted tools = %#v", p.Requests[1].HostedTools)
@@ -983,11 +1048,14 @@ func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
 	if second := p.Requests[1].Messages[0].Content; second != "write tools are available" {
 		t.Fatalf("second system prompt = %q", second)
 	}
+	if p.Requests[1].RawPlan.CompactionGeneration != p.Requests[0].RawPlan.CompactionGeneration+1 {
+		t.Fatalf("tool surface changed without a new context generation: first=%#v second=%#v", p.Requests[0].RawPlan, p.Requests[1].RawPlan)
+	}
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 		meta, _ := ev.Metadata.(map[string]any)
 		return ev.Type == event.ProviderRequest && ev.Step == 2 && meta["tool_surface_epoch"] == "write"
 	}) {
-		t.Fatalf("provider request should include dynamic surface metadata: %#v", rec.Events)
+		t.Fatalf("compacted provider request should include the new surface metadata: %#v", rec.Events)
 	}
 }
 
@@ -1030,7 +1098,7 @@ func TestDynamicToolSurfaceRefreshesBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.T) {
+func TestPromptCacheActivatesNewToolsetThroughCompaction(t *testing.T) {
 	store := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
 	reg := tools.NewRegistry()
@@ -1055,30 +1123,56 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	second.Store = store
 	second.Prompt = promptStore
 	second.Tools = reg
+	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
 	second.Options.RunID = "turn-2"
 	second.Options.ThreadID = "thread"
-	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed {
-		t.Fatalf("second = %#v", got)
+	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed || got.Metrics.Compactions != 1 {
+		t.Fatalf("second = %#v, want one context-generation compaction", got)
 	}
-	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 {
-		t.Fatalf("toolset epochs: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
+	if len(secondProvider.Requests) != 1 {
+		t.Fatalf("second provider requests = %d, want 1", len(secondProvider.Requests))
+	}
+	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 || secondProvider.Requests[0].RawPlan.CompactionGeneration != firstProvider.Requests[0].RawPlan.CompactionGeneration+1 {
+		t.Fatalf("toolset activation did not establish a new generation: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
 	}
 	if !slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "read" }) ||
 		!slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "write" }) {
 		t.Fatalf("second turn should expose updated tools: %#v", secondProvider.Requests[0].Tools)
 	}
-	thirdProvider := harness.NewScriptedProvider(harness.Step(harness.Text("third"), harness.Done()))
-	third := newTestEngine(thirdProvider, &event.Recorder{})
-	third.Store = store
-	third.Prompt = promptStore
-	third.Tools = reg
-	third.Options.RunID = "turn-3"
-	third.Options.ThreadID = "thread"
-	if got := third.Run(context.Background(), "third"); got.Status != engine.Completed {
-		t.Fatalf("third = %#v", got)
+}
+
+func TestLegacyPromptScopeDriftCompactsBeforeProviderDispatch(t *testing.T) {
+	store := session.NewMemoryStore()
+	if err := store.AppendTranscript("run",
+		session.Message{Role: session.User, Content: "old question"},
+		session.Message{Role: session.Assistant, Content: "old answer"},
+	); err != nil {
+		t.Fatal(err)
 	}
-	if thirdProvider.Requests[0].RawPlan.ToolsetEpoch != 2 {
-		t.Fatalf("unchanged toolset should stay on epoch 2, got %#v", thirdProvider.Requests[0].RawPlan)
+	promptStore := cache.NewMemoryStore()
+	if err := promptStore.AppendProviderRequest(context.Background(), cache.ProviderRequestRecord{
+		ID: "legacy-request", PromptScopeID: "run", RunID: "legacy-run", Step: 1,
+		Provider: "test", Model: "scripted", SegmentIDs: []string{"legacy-system", "legacy-message"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("new answer"), harness.Done()))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Store = store
+	e.Prompt = promptStore
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.PreviousProviderState = &provider.State{Kind: "response_id", ID: "legacy-response"}
+
+	got := e.Run(context.Background(), "new question")
+
+	if got.Status != engine.Completed || got.Metrics.Compactions != 1 || len(p.Requests) != 1 {
+		t.Fatalf("legacy migration result=%#v requests=%d", got, len(p.Requests))
+	}
+	if p.Requests[0].RawPlan.CompactionGeneration != 1 || !p.Requests[0].RawPlan.CanonicalLineageReset {
+		t.Fatalf("legacy drift did not establish a compacted context generation: %#v", p.Requests[0].RawPlan)
+	}
+	if p.Requests[0].PreviousState != nil || p.Requests[0].RawPlan.PreviousResponseID != "" {
+		t.Fatalf("provider continuation crossed a context-generation boundary: %#v", p.Requests[0])
 	}
 }
 
@@ -3651,10 +3745,10 @@ func TestProviderRequestKeepsUnsetMaxOutputTokens(t *testing.T) {
 	}
 }
 
-func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
+func TestPreRequestThresholdCompactsWithAppendOnlyStore(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
-	store := &replaceCountingStore{inner: session.NewMemoryStore()}
+	store := session.NewMemoryStore()
 	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: strings.Repeat("old ", 1200)},
 		session.Message{Role: session.User, Content: "new"},
@@ -3670,9 +3764,6 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 
 	if got.Status != engine.Completed {
 		t.Fatalf("result status=%s origin=%s err=%v", got.Status, got.FailureOrigin, got.Err)
-	}
-	if store.replaceCalls != 0 {
-		t.Fatalf("engine compaction must not install with Store.Replace, calls=%d", store.replaceCalls)
 	}
 	if got.Metrics.Compactions != 1 || len(p.Requests) != 1 {
 		t.Fatalf("pre-request compaction not reflected in metrics/request count: result=%#v requests=%d", got, len(p.Requests))
@@ -3804,7 +3895,7 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 			{EstimatedInputTokens: 10, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
 		},
 	}
-	store := &replaceCountingStore{inner: session.NewMemoryStore()}
+	store := session.NewMemoryStore()
 	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: "old request", EntryID: "u1"},
 		session.Message{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
@@ -3822,8 +3913,8 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	if got.Status != engine.Completed {
 		t.Fatalf("result = %#v", got)
 	}
-	if got.Metrics.Compactions != 1 || store.replaceCalls != 0 {
-		t.Fatalf("request-estimate compaction not reflected in metrics/store: result=%#v replace=%d", got, store.replaceCalls)
+	if got.Metrics.Compactions != 1 {
+		t.Fatalf("request-estimate compaction not reflected in metrics: result=%#v", got)
 	}
 	if len(p.Provider.(*harness.ScriptedProvider).Requests) != 1 {
 		t.Fatalf("provider should only receive compacted retry request: %#v", p.Provider.(*harness.ScriptedProvider).Requests)
@@ -4264,11 +4355,6 @@ func TestLocalCompactionManagerRequiresExplicitGenerator(t *testing.T) {
 	}
 }
 
-type replaceCountingStore struct {
-	inner        *session.MemoryStore
-	replaceCalls int
-}
-
 type transcriptErrorStore struct {
 	err error
 }
@@ -4279,23 +4365,6 @@ func (s transcriptErrorStore) AppendTranscript(string, ...session.Message) error
 
 func (s transcriptErrorStore) Transcript(string) ([]session.Message, error) {
 	return nil, s.err
-}
-
-func (s transcriptErrorStore) ReplaceTranscript(string, []session.Message) error {
-	return s.err
-}
-
-func (s *replaceCountingStore) AppendTranscript(runID string, messages ...session.Message) error {
-	return s.inner.AppendTranscript(runID, messages...)
-}
-
-func (s *replaceCountingStore) Transcript(runID string) ([]session.Message, error) {
-	return s.inner.Transcript(runID)
-}
-
-func (s *replaceCountingStore) ReplaceTranscript(runID string, messages []session.Message) error {
-	s.replaceCalls++
-	return s.inner.ReplaceTranscript(runID, messages)
 }
 
 func TestTruncatedProviderOutputContinuesWithoutFullCompactWhenInputPressureIsLow(t *testing.T) {

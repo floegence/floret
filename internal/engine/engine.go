@@ -81,6 +81,7 @@ const (
 	ContinueRetryEmpty        ContinuationReason = "retry_empty"
 	ContinueNoProgress        ContinuationReason = "no_progress"
 	ContinueHook              ContinuationReason = "hook"
+	ContinueExplicitSignal    ContinuationReason = "explicit_signal"
 )
 
 type StopHook func(context.Context, StopHookContext) (StopHookResult, error)
@@ -600,7 +601,7 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 
 func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	store := session.NewMemoryStore()
-	opts := e.options
+	opts := optionsForRunInput(e.options, input)
 	if input.RunID != "" {
 		opts.RunID = input.RunID
 	}
@@ -612,9 +613,6 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	}
 	if input.TraceID != "" {
 		opts.TraceID = input.TraceID
-	}
-	if input.PromptScopeID != "" {
-		opts.PromptScopeID = input.PromptScopeID
 	}
 	if !input.Labels.isZero() {
 		opts.Labels = cloneRunLabels(input.Labels)
@@ -649,7 +647,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 
 func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual ManualCompactionRequest) ContextCompactionResult {
 	store := session.NewMemoryStore()
-	opts := e.options
+	opts := optionsForRunInput(e.options, input)
 	if input.RunID != "" {
 		opts.RunID = input.RunID
 	}
@@ -661,9 +659,6 @@ func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual Manu
 	}
 	if input.TraceID != "" {
 		opts.TraceID = input.TraceID
-	}
-	if input.PromptScopeID != "" {
-		opts.PromptScopeID = input.PromptScopeID
 	}
 	if !input.Labels.isZero() {
 		opts.Labels = cloneRunLabels(input.Labels)
@@ -689,6 +684,23 @@ func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual Manu
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
 	return runner.compactContext(ctx, manual)
+}
+
+func optionsForRunInput(base Options, input RunInput) Options {
+	opts := base
+	previousPromptScopeID := opts.PromptScopeID
+	switch {
+	case strings.TrimSpace(input.PromptScopeID) != "":
+		opts.PromptScopeID = input.PromptScopeID
+	case strings.TrimSpace(input.ThreadID) != "":
+		opts.PromptScopeID = input.ThreadID
+	case strings.TrimSpace(input.RunID) != "" && strings.TrimSpace(opts.ThreadID) == "":
+		opts.PromptScopeID = input.RunID
+	}
+	if opts.PromptScopeID != previousPromptScopeID && opts.CacheNamespace == cache.DefaultNamespace(previousPromptScopeID, opts.ProviderName, opts.Model) {
+		opts.CacheNamespace = ""
+	}
+	return opts
 }
 
 func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, error) {
@@ -891,6 +903,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepText != "" {
 			output += stepText
 			noProgress = 0
+		}
+		if stepText != "" || (stepReasoning != "" && len(calls) == 0) {
 			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
@@ -928,13 +942,22 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 		}
 		if len(calls) == 0 {
-			if stepText != "" && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
+			if (stepText != "" || (opts.CompletionPolicy == CompletionExplicitSignal && stepReasoning != "")) && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
 				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
 					if isContextCancellation(err) {
 						return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 					}
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
+				}
+				continuationReason := ContinueHook
+				if !hook.Continue && opts.CompletionPolicy == CompletionExplicitSignal {
+					hook = StopHookResult{
+						Continue: true,
+						Prompt:   explicitSignalContinuationPrompt(opts.ControlSpec),
+						Reason:   "explicit_signal_required",
+					}
+					continuationReason = ContinueExplicitSignal
 				}
 				if hook.Continue {
 					stopHookContinuations++
@@ -951,9 +974,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					}
 					activeHistory = append(activeHistory, msg)
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
-					decision.ContinuationReason = ContinueHook
+					decision.ContinuationReason = continuationReason
 					decision.Detail = strings.TrimSpace(hook.Reason)
-					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
+					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(continuationReason), Result: decision.Detail})
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 					continue
 				}
@@ -981,6 +1004,21 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		callActivities := map[string]*tools.ActivityPresentation{}
 		internalValidationCorrections := state.internalValidationCorrections
 		projectedCallBatchMetadata := map[string]map[string]any{}
+		var projectedSignal *ControlSignal
+		var projectedSignalErr error
+		if len(classifiedCalls.Ordinary) == 0 && len(controlCalls) > 0 {
+			signal, ok, signalErr := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{StepText: stepText})
+			if signalErr != nil {
+				failed := failedControlSignal(controlCalls[0])
+				projectedSignal = &failed
+				projectedSignalErr = signalErr
+			} else if ok {
+				if len(signal.Labels) == 0 {
+					signal.Labels = observabilityLabels(opts.Labels)
+				}
+				projectedSignal = signal
+			}
+		}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
 			if err != nil {
@@ -1068,6 +1106,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				kind = session.MessageKindControlSignal
 			}
 			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
+			if projectedSignal != nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
+				msg.ControlSignal = sessionControlSignalView(projectedSignal)
+			}
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				state.activeMessages = append([]session.Message(nil), activeHistory...)
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
@@ -1096,32 +1137,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			duplicateCount = 0
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
-			if signal, ok, err := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{
-				StepText: stepText,
-			}); err != nil {
-				if len(controlCalls) > 0 {
-					failed := failedControlSignal(controlCalls[0])
-					if !attachProjectedControlSignal(activeHistory, &failed) {
-						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginControl), metrics, started, decision)
-					}
-					if replaceErr := e.store.ReplaceTranscript(opts.RunID, activeHistory); replaceErr != nil {
-						return e.end(state, opts, step, Failed, output, withFailureOrigin(replaceErr, FailureOriginStorage), metrics, started, decision)
-					}
-					state.activeMessages = session.CloneMessages(activeHistory)
-					e.emitControlSignalError(opts, step, &failed, err)
-				}
-				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginControl), metrics, started, decision)
-			} else if ok {
-				if len(signal.Labels) == 0 {
-					signal.Labels = observabilityLabels(opts.Labels)
-				}
-				if !attachProjectedControlSignal(activeHistory, signal) {
-					return e.end(state, opts, step, Failed, output, fmt.Errorf("projected control signal %q has no matching call %q", signal.Name, signal.CallID), metrics, started, decision)
-				}
-				if err := e.store.ReplaceTranscript(opts.RunID, activeHistory); err != nil {
-					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
-				}
-				state.activeMessages = session.CloneMessages(activeHistory)
+			if projectedSignalErr != nil {
+				e.emitControlSignalError(opts, step, projectedSignal, projectedSignalErr)
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(projectedSignalErr, FailureOriginControl), metrics, started, decision)
+			}
+			if signal := projectedSignal; signal != nil {
 				decision.ControlSignal = signal
 				e.emitControlSignal(opts, step, signal)
 				switch signal.Disposition {
@@ -1289,6 +1309,16 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
+}
+
+func explicitSignalContinuationPrompt(spec ControlSpec) string {
+	names := make([]string, 0, len(spec.Definitions))
+	for _, definition := range spec.Definitions {
+		if name := strings.TrimSpace(definition.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return fmt.Sprintf("This turn requires an explicit control signal before it can stop. Call one of these declared control tools: %s.", strings.Join(names, ", "))
 }
 
 func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequest) ContextCompactionResult {
@@ -2026,6 +2056,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err != nil {
 		return provider.Request{}, err
 	}
+	canonicalHistory := providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec)
 	plan, messages, err := cache.BuildPlan(ctx, e.prompt, cache.BuildInput{
 		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
@@ -2036,7 +2067,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   systemPrompt,
-		History:        providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec),
+		History:        canonicalHistory,
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.provider),
@@ -2044,6 +2075,19 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	})
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
+	}
+	if err := cache.ValidateCanonicalLineage(ctx, e.prompt, opts.PromptScopeID, &plan, systemPrompt, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), map[string]any{
+		"provider": opts.ProviderName, "model": opts.Model,
+		"reasoning": opts.Reasoning, "completion_policy": opts.CompletionPolicy,
+		"context_policy": opts.ContextPolicy,
+	}, canonicalHistory); err != nil {
+		if errors.Is(err, cache.ErrContextLineageMigrationNeeded) || errors.Is(err, cache.ErrContextEnvelopeChanged) {
+			return provider.Request{}, err
+		}
+		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
+	}
+	if plan.CanonicalLineageReset {
+		plan.PreviousResponseID = ""
 	}
 	activeTools := cloneProviderToolDefinitions(toolset.Tools)
 	activeHostedTools := hostedToolDefinitions(toolset.HostedTools)
@@ -2101,6 +2145,9 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Labels:          providerRequestLabels(opts.Labels),
 	}
 	if ephemeralUser != nil {
+		req.PreviousState = nil
+	}
+	if plan.CanonicalLineageReset {
 		req.PreviousState = nil
 	}
 	return req, nil
@@ -2351,6 +2398,18 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
+		if errors.Is(err, cache.ErrContextLineageMigrationNeeded) || errors.Is(err, cache.ErrContextEnvelopeChanged) {
+			usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
+			pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
+			next, migrated, _, compactErr := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonContextLineage, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)
+			if compactErr != nil {
+				return provider.Request{}, history, false, compactErr
+			}
+			if metrics != nil {
+				metrics.Compactions++
+			}
+			return migrated, next, true, nil
+		}
 		return provider.Request{}, history, compacted, err
 	}
 	if !req.ContextPressure.HardLimitExceeded {
@@ -3629,27 +3688,19 @@ func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (Co
 	return spec.project(call, controlProjectionContext{})
 }
 
-func attachProjectedControlSignal(messages []session.Message, signal *ControlSignal) bool {
+func sessionControlSignalView(signal *ControlSignal) *session.ControlSignalView {
 	if signal == nil {
-		return false
+		return nil
 	}
-	for index := len(messages) - 1; index >= 0; index-- {
-		message := &messages[index]
-		if message.Role != session.Assistant || strings.TrimSpace(message.ToolCallID) != strings.TrimSpace(signal.CallID) {
-			continue
-		}
-		message.ControlSignal = &session.ControlSignalView{
-			Name:        strings.TrimSpace(signal.Name),
-			CallID:      strings.TrimSpace(signal.CallID),
-			Disposition: string(signal.Disposition),
-			ErrorCode:   strings.TrimSpace(signal.ErrorCode),
-			OutputText:  strings.TrimSpace(signal.OutputText),
-			ArgsHash:    strings.TrimSpace(signal.ArgsHash),
-			Payload:     cloneControlPayload(signal.Payload),
-		}
-		return true
+	return &session.ControlSignalView{
+		Name:        strings.TrimSpace(signal.Name),
+		CallID:      strings.TrimSpace(signal.CallID),
+		Disposition: string(signal.Disposition),
+		ErrorCode:   strings.TrimSpace(signal.ErrorCode),
+		OutputText:  strings.TrimSpace(signal.OutputText),
+		ArgsHash:    strings.TrimSpace(signal.ArgsHash),
+		Payload:     cloneControlPayload(signal.Payload),
 	}
-	return false
 }
 
 func providerSafeControlText(signal ControlSignal) string {

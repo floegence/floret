@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,89 @@ import (
 	"github.com/floegence/floret/v6/internal/session"
 	"github.com/floegence/floret/v6/internal/session/contextpolicy"
 )
+
+func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	envelopeTools := []ToolDefinition{{Name: "read", Description: "Read"}}
+	firstHistory := []session.Message{
+		{Role: session.User, Content: "inspect"},
+		{Role: session.Assistant, Content: "checking", Reasoning: "reasoning-1"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: `{"path":"README.md"}`},
+		{Role: session.Tool, Content: "contents", ToolCallID: "call-1", ToolName: "read"},
+	}
+	first := RawPlan{CompactionGeneration: 0}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, firstHistory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
+		t.Fatal(err)
+	}
+
+	appended := append(append([]session.Message(nil), firstHistory...), session.Message{Role: session.Assistant, Content: "done", Reasoning: "reasoning-2"})
+	next := RawPlan{CompactionGeneration: 0}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, appended); err != nil {
+		t.Fatalf("append-only suffix rejected: %v", err)
+	}
+	if next.CanonicalMessageCount != len(appended) || next.CanonicalPrefixHash == first.CanonicalPrefixHash {
+		t.Fatalf("canonical lineage did not advance: first=%#v next=%#v", first, next)
+	}
+
+	mutated := append([]session.Message(nil), appended...)
+	mutated[1].Reasoning = "rewritten reasoning"
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, mutated); !errors.Is(err, ErrContextPrefixDrift) {
+		t.Fatalf("mutated prefix error = %v, want ErrContextPrefixDrift", err)
+	}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
+		t.Fatalf("rewritten envelope error = %v, want ErrContextEnvelopeChanged", err)
+	}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
+		t.Fatalf("rewritten fixed config error = %v, want ErrContextEnvelopeChanged", err)
+	}
+}
+
+func TestValidateCanonicalLineageRequiresCommittedCompactionForNewGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	history := []session.Message{{Role: session.User, Content: "first"}}
+	first := RawPlan{}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
+		t.Fatal(err)
+	}
+	invalid := RawPlan{CompactionGeneration: 1}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &invalid, "new system", nil, nil, nil, history); !errors.Is(err, ErrContextPrefixDrift) {
+		t.Fatalf("uncommitted generation error = %v, want ErrContextPrefixDrift", err)
+	}
+	valid := RawPlan{CompactionGeneration: 1, CompactionWindowID: "window-1", CompactionEntryID: "compaction-1"}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &valid, "new system", nil, nil, nil, []session.Message{{Role: session.System, Kind: session.MessageKindCompactionSummary, Content: "summary"}}); err != nil {
+		t.Fatalf("committed compaction generation rejected: %v", err)
+	}
+	if !valid.CanonicalLineageReset {
+		t.Fatal("new compaction generation did not fence provider continuation state")
+	}
+}
+
+func TestValidateCanonicalLineageMigratesOnlyLegacyDrift(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "legacy", PromptScopeID: "thread", RunID: "run-legacy", Step: 1,
+		Provider: "test", Model: "model", SegmentIDs: []string{"system-old", "message-old"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exact := RawPlan{SegmentIDs: []string{"system-old", "message-old", "message-new"}}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &exact, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); err != nil {
+		t.Fatalf("stable legacy prefix should establish the first canonical baseline: %v", err)
+	}
+	drifted := RawPlan{SegmentIDs: []string{"system-new", "message-old", "message-new"}}
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &drifted, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); !errors.Is(err, ErrContextLineageMigrationNeeded) {
+		t.Fatalf("legacy drift error = %v, want migration", err)
+	}
+}
 
 func TestBuildPlanReusesPersistedSegmentsAcrossStores(t *testing.T) {
 	root := t.TempDir()

@@ -112,7 +112,6 @@ type Message struct {
 type TranscriptStore interface {
 	AppendTranscript(runID string, messages ...Message) error
 	Transcript(runID string) ([]Message, error)
-	ReplaceTranscript(runID string, messages []Message) error
 }
 
 type MemoryStore struct {
@@ -137,13 +136,6 @@ func (s *MemoryStore) Transcript(runID string) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return CloneMessages(s.runs[runID]), nil
-}
-
-func (s *MemoryStore) ReplaceTranscript(runID string, messages []Message) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.runs[runID] = CloneMessages(messages)
-	return nil
 }
 
 func CloneMessages(messages []Message) []Message {

@@ -2,7 +2,7 @@ package session
 
 import "testing"
 
-func TestMemoryStoreAppendMessagesReplaceAndIsolation(t *testing.T) {
+func TestMemoryStoreAppendMessagesAndIsolation(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.AppendTranscript("a", Message{Role: User, Content: "one"}); err != nil {
 		t.Fatal(err)
@@ -22,13 +22,10 @@ func TestMemoryStoreAppendMessagesReplaceAndIsolation(t *testing.T) {
 	if again[0].Content != "one" {
 		t.Fatalf("messages returned internal slice: %#v", again)
 	}
-	if err := store.ReplaceTranscript("a", []Message{{Role: Assistant, Content: "new"}}); err != nil {
-		t.Fatal(err)
-	}
 	a, _ := store.Transcript("a")
 	b, _ := store.Transcript("b")
-	if len(a) != 1 || a[0].Content != "new" {
-		t.Fatalf("replace failed: %#v", a)
+	if len(a) != 1 || a[0].Content != "one" {
+		t.Fatalf("append failed: %#v", a)
 	}
 	if len(b) != 1 || b[0].Content != "other" {
 		t.Fatalf("runs are not isolated: %#v", b)

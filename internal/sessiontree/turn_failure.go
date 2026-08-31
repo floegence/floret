@@ -13,6 +13,7 @@ const (
 	TurnFailureAuthorizationContract    = "authorization_contract"
 	TurnFailureStorage                  = "storage"
 	TurnFailureEngineContract           = "engine_contract"
+	TurnFailureContextPrefixDrift       = "context_prefix_drift"
 	TurnFailureLegacyUnclassified       = "legacy_unclassified"
 )
 
@@ -28,6 +29,7 @@ func ValidTurnFailureCode(code string) bool {
 		TurnFailureAuthorizationContract,
 		TurnFailureStorage,
 		TurnFailureEngineContract,
+		TurnFailureContextPrefixDrift,
 		TurnFailureLegacyUnclassified:
 		return true
 	default:

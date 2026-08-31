@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v6/internal/provider/cache"
 	"github.com/floegence/floret/v6/internal/sessiontree"
 )
 
@@ -56,6 +57,9 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 	}
 	if errors.Is(err, sessiontree.ErrEffectOutcomeUnknown) {
 		return sessiontree.TurnFailureEffectOutcomeUnknown, nil
+	}
+	if errors.Is(err, cache.ErrContextPrefixDrift) {
+		return sessiontree.TurnFailureContextPrefixDrift, nil
 	}
 	if status == engine.Cancelled || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return sessiontree.TurnFailureCancelled, nil

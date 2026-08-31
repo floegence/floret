@@ -66,6 +66,7 @@ const (
 	ReasonFollowUpPressure   Reason = "follow_up_pressure"
 	ReasonManual             Reason = "manual"
 	ReasonOutputContinuation Reason = "output_continuation"
+	ReasonContextLineage     Reason = "context_lineage"
 )
 
 type Phase string
