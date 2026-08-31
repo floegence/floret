@@ -38,6 +38,12 @@ storage write returns an error without a successful live projection. The
 journal is the only durable lifecycle authority; hosts must not persist a
 second transcript or rebuild a Floret view from audit records.
 
+`AgentRequest.Input` is the input for the execution being created. For an
+Ask User continuation it is the accepted interaction answer;
+`AgentRequest.CanonicalTurnInput` remains the original canonical user input of
+that Turn. Agent factories use the latter when resolving stable task identity
+and must not reinterpret an interaction answer as a replacement objective.
+
 After `Send` returns an accepted turn, provider execution uses a runtime-owned
 background context. The request context only controls admission and response
 waiting; closing an HTTP request, changing the selected thread, or reconnecting
@@ -87,6 +93,13 @@ and after terminal settlement; hosts must not reconstruct it from items or
 persist a second progress lifecycle. `ThreadSummary` carries the same bounded
 identity and progress projection for thread lists.
 
+Every new Run enters the actor through one atomic transition. It closes the
+old live segment, installs the new Turn, Run, and logical-request identities,
+resets the attempt epoch, and publishes `preparing` before provider work. The
+first attempt is epoch 1. Later events must match the active Run and logical
+request; only a higher epoch of that same request may replace the active
+attempt. Late events from a waiting or completed Run remain rejected.
+
 Terminal presentation settles from the canonical ordered journal. The runtime
 publishes a terminal current only after that projection succeeds; a completed
 turn without a visible assistant or terminal tool item is reported as a
@@ -128,6 +141,13 @@ tools, effect policy, capabilities, context policy, and execution limits. The
 provider gateway is the only model transport boundary. Provider credentials,
 editable profiles, endpoint authorization, uploads before admission, and UI
 rendering remain host-owned.
+
+`WithAgentTurnCompletionPolicy` makes completion part of that immutable Agent
+snapshot. Under `TurnCompletionExplicitSignal`, both `ask_user` and
+`task_complete` are exposed for the whole context generation. A natural stop
+preserves the complete model output and appends one structured continuation
+instruction; it cannot complete the Turn by itself. Exhausting the bounded
+continuation limit fails the Turn instead of reporting success.
 
 ## Durable schema
 

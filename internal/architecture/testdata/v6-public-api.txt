@@ -372,6 +372,7 @@ field AgentRequest.ThreadID github.com/floegence/floret/v6/identity.ThreadID
 field AgentRequest.TurnID github.com/floegence/floret/v6/identity.TurnID
 field AgentRequest.RequestKey string
 field AgentRequest.Input github.com/floegence/floret/v6/runtime.UserInput
+field AgentRequest.CanonicalTurnInput github.com/floegence/floret/v6/runtime.UserInput
 field AgentRequest.RetrySource github.com/floegence/floret/v6/identity.TurnID
 field AgentRequest.InteractionID string
 field AgentRequest.EffectAttemptID string
@@ -902,6 +903,7 @@ const ThreadTurnFailureAuthorizationUnavailable github.com/floegence/floret/v6/r
 const ThreadTurnFailureCancelled github.com/floegence/floret/v6/runtime.ThreadTurnFailureCode = "cancelled"
 type ThreadTurnFailureCode string
 method ThreadTurnFailureCode.Valid func() bool
+const ThreadTurnFailureContextPrefixDrift github.com/floegence/floret/v6/runtime.ThreadTurnFailureCode = "context_prefix_drift"
 const ThreadTurnFailureControlError github.com/floegence/floret/v6/runtime.ThreadTurnFailureCode = "control_error"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v6/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v6/runtime.ThreadTurnFailureCode = "engine_contract"
@@ -1023,6 +1025,7 @@ func WithAgentManualCompactions func(source github.com/floegence/floret/v6/runti
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v6/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v6/runtime.ThreadTitleMode) github.com/floegence/floret/v6/runtime.AgentOption
 func WithAgentTools func(items ...github.com/floegence/floret/v6/tools.Tool) github.com/floegence/floret/v6/runtime.AgentOption
+func WithAgentTurnCompletionPolicy func(policy github.com/floegence/floret/v6/runtime.TurnCompletionPolicy) github.com/floegence/floret/v6/runtime.AgentOption
 type WorkspaceSubscription struct
 method *WorkspaceSubscription.Next func(ctx context.Context) (github.com/floegence/floret/v6/runtime.ThreadView, error)
 method *WorkspaceSubscription.Close func()
@@ -1756,6 +1759,7 @@ func ContextStatusesFromRequests func(requests []github.com/floegence/floret/v6/
 type ContinuationReason string
 method ContinuationReason.Valid func() bool
 const ContinuationReasonCompaction github.com/floegence/floret/v6/observation.ContinuationReason = "compaction"
+const ContinuationReasonExplicitSignal github.com/floegence/floret/v6/observation.ContinuationReason = "explicit_signal"
 const ContinuationReasonHook github.com/floegence/floret/v6/observation.ContinuationReason = "hook"
 const ContinuationReasonNoProgress github.com/floegence/floret/v6/observation.ContinuationReason = "no_progress"
 const ContinuationReasonProviderTruncated github.com/floegence/floret/v6/observation.ContinuationReason = "provider_truncated"

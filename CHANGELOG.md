@@ -1,5 +1,20 @@
 # Changelog
 
+## v6.1.0 - 2026-08-31
+
+- Preserve one append-only provider context lineage within each prompt scope and
+  compaction generation. Previously admitted reasoning, assistant text, tool
+  calls, tool results, and control results cannot be replaced or reordered;
+  capability changes establish a new audited compaction generation.
+- Add `AgentRequest.CanonicalTurnInput` and
+  `WithAgentTurnCompletionPolicy`. Explicit-signal Agents retain natural-stop
+  output, then continue until `ask_user` or `task_complete` declares the
+  lifecycle result.
+- Reset provider-attempt and live-segment ownership atomically for every new
+  Run. Ask User continuation now publishes `preparing` before provider work,
+  preserves exact attempt identity, and streams reasoning and assistant deltas
+  before terminal settlement.
+
 ## v6.0.1 - 2026-08-30
 
 - Migrate the historical v6 fork shape whose copied Effect Attempt still names

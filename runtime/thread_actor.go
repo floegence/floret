@@ -42,6 +42,46 @@ type threadRuntimeData struct {
 	hydrationStarted    bool
 }
 
+type beginThreadRunInput struct {
+	turnID           identity.TurnID
+	runID            identity.RunID
+	logicalRequestID identity.LogicalRequestID
+	cancel           context.CancelFunc
+	executionDone    <-chan struct{}
+	clearOutcome     bool
+}
+
+// beginRun is the only in-memory transition that installs a new provider Run
+// on an existing thread actor. Attempt and live-segment identities are scoped
+// to one Run and must never leak into its successor.
+func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan struct{}, error) {
+	if runtime == nil || input.turnID == "" || input.runID == "" || input.logicalRequestID == "" || input.cancel == nil || input.executionDone == nil {
+		return nil, errors.New("new thread run identity and ownership are required")
+	}
+	runtime.finishLiveTextSegment()
+	previousExecution := runtime.state.executionDone
+	runtime.state.turnID = input.turnID
+	runtime.state.runID = input.runID
+	runtime.state.logicalRequestID = input.logicalRequestID
+	runtime.state.attemptID = ""
+	runtime.state.attemptEpoch = 0
+	runtime.state.openTextSegmentID = ""
+	runtime.state.openTextKind = ""
+	runtime.state.cancel = input.cancel
+	runtime.state.cancelOwner = "run:" + input.runID.String()
+	runtime.state.executionDone = input.executionDone
+	runtime.state.view.Activity = ThreadActivityActive
+	runtime.state.view.TurnID = input.turnID
+	runtime.state.view.RunID = input.runID
+	runtime.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
+	if input.clearOutcome {
+		runtime.state.view.LastOutcome = nil
+		runtime.state.view.Failure = nil
+	}
+	runtime.state.view.ViewVersion++
+	return previousExecution, nil
+}
+
 type pendingThreadInteraction struct {
 	resolution chan InteractionResolution
 }
@@ -91,7 +131,12 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	}
 	logicalRequestID, attemptID, attemptEpoch, hasAttempt := liveEventAttemptIdentity(event)
 	if hasAttempt {
+		if logicalRequestID == "" || logicalRequestID != runtime.state.logicalRequestID {
+			return false
+		}
 		switch {
+		case runtime.state.attemptEpoch == 0 && attemptEpoch != 1:
+			return false
 		case attemptEpoch < runtime.state.attemptEpoch:
 			return false
 		case attemptEpoch == runtime.state.attemptEpoch && runtime.state.attemptID != "" && attemptID != runtime.state.attemptID:
@@ -99,7 +144,6 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		case attemptEpoch > runtime.state.attemptEpoch:
 			runtime.finishLiveTextSegment()
 		}
-		runtime.state.logicalRequestID = logicalRequestID
 		runtime.state.attemptID = attemptID
 		runtime.state.attemptEpoch = attemptEpoch
 	}
@@ -245,6 +289,9 @@ func nextThreadTextSegmentID(items []ThreadItem, turnID identity.TurnID, kind Th
 }
 
 func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, int, bool) {
+	if event.attemptEpoch > 0 && strings.TrimSpace(event.attemptID) != "" {
+		return event.attemptLogicalID, strings.TrimSpace(event.attemptID), event.attemptEpoch, true
+	}
 	if event.Stream != nil && event.Stream.AttemptEpoch > 0 && strings.TrimSpace(event.Stream.AttemptID) != "" {
 		return event.Stream.LogicalRequestID, strings.TrimSpace(event.Stream.AttemptID), event.Stream.AttemptEpoch, true
 	}

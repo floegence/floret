@@ -54,6 +54,8 @@ func TestV6PublicAPIAvoidsRemovedLifecycleFacades(t *testing.T) {
 		"const ThreadItemThinking", "Ordinal uint64", "Live bool",
 		"field ThreadItem.RunID", "field ThreadInteraction.RunID",
 		"type ThreadRunProgress struct", "field ThreadView.RunID", "field ThreadSummary.RunProgress",
+		"field AgentRequest.CanonicalTurnInput", "func WithAgentTurnCompletionPolicy",
+		"const ContinuationReasonExplicitSignal",
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("V6 public API is missing typed runtime contract %q", required)

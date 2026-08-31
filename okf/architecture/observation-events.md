@@ -86,6 +86,8 @@ or validation failures require a canonical reload rather than event replay.
   Model tool-call stream facts identify the call through public
   `runtime.ToolCallStream` but do not expose argument text; local tool execution
   remains a separate activity timeline concern.
+  These identity fields keep their exact engine-issued values through the
+  runtime mailbox; descriptive metadata remains sanitized independently.
   Provider request/finish/retry and tool outcome metadata retain the same attempt
   identity, so a host can reset only its transient draft on a newer activation
   while keeping Floret's canonical projection as the authority. Final provider
@@ -96,6 +98,10 @@ or validation failures require a canonical reload rather than event replay.
   projections therefore cannot diverge or accept usage with incomplete attempt
   identity. Reconnect reloads `ThreadContextReader.Context` instead of replaying
   or locally accumulating events.
+* Explicit-signal natural stops emit `ContinuationReasonExplicitSignal` after
+  the complete model response is appended. The following request therefore
+  extends the existing prefix and asks for a structured `ask_user` or
+  `task_complete` decision; observers never need to infer completion from text.
 * The public runtime event sink contains only finite `observation.EventType`
   values. Agent-harness lifecycle notifications such as thread resume, turn
   start, and entry append remain on the internal harness sink and are not

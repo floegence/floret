@@ -665,6 +665,9 @@ type Event struct {
 	Metadata          map[string]any                    `json:"metadata,omitempty"`
 	Timestamp         time.Time                         `json:"timestamp,omitempty"`
 	committed         *agentharness.ThreadDetailEvent
+	attemptLogicalID  identity.LogicalRequestID
+	attemptID         string
+	attemptEpoch      int
 }
 
 func (e Event) Validate() error {
@@ -861,6 +864,7 @@ const (
 	ThreadTurnFailureAuthorizationContract    ThreadTurnFailureCode = "authorization_contract"
 	ThreadTurnFailureStorage                  ThreadTurnFailureCode = "storage"
 	ThreadTurnFailureEngineContract           ThreadTurnFailureCode = "engine_contract"
+	ThreadTurnFailureContextPrefixDrift       ThreadTurnFailureCode = "context_prefix_drift"
 	ThreadTurnFailureLegacyUnclassified       ThreadTurnFailureCode = "legacy_unclassified"
 )
 
@@ -876,6 +880,7 @@ func (c ThreadTurnFailureCode) Valid() bool {
 		ThreadTurnFailureAuthorizationContract,
 		ThreadTurnFailureStorage,
 		ThreadTurnFailureEngineContract,
+		ThreadTurnFailureContextPrefixDrift,
 		ThreadTurnFailureLegacyUnclassified:
 		return true
 	default:
@@ -1934,11 +1939,15 @@ func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *obs
 
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
+	attemptLogicalID, attemptID, attemptEpoch := runtimeAttemptIdentity(ev.Metadata)
 	sanitized := event.Sanitize(ev)
 	committed := runtimeCommittedEvent(ev)
 	compactionEvent := runtimeCompactionEventWithError(ev, sanitized, sanitized.Err)
 	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err)
-	stream := runtimeStreamObservation(ev, sanitized.Metadata)
+	// Attempt identity is an execution fence, not descriptive metadata. Keep the
+	// exact engine-issued values so the thread actor can reject stale runs and
+	// attempts without comparing redacted aliases.
+	stream := runtimeStreamObservation(ev, ev.Metadata)
 	ev = sanitized
 	return Event{
 		Type:               ev.Type,
@@ -1972,7 +1981,18 @@ func runtimeEvent(ev event.Event) Event {
 		Metadata:           safeMetadata(ev.Metadata),
 		Timestamp:          ev.Timestamp,
 		committed:          committed,
+		attemptLogicalID:   attemptLogicalID,
+		attemptID:          attemptID,
+		attemptEpoch:       attemptEpoch,
 	}
+}
+
+func runtimeAttemptIdentity(metadata any) (identity.LogicalRequestID, string, int) {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return "", "", 0
+	}
+	return identity.LogicalRequestID(stringFromMetadata(values, "logical_request_id")), strings.TrimSpace(stringFromMetadata(values, "attempt_id")), intFromMetadata(values, "attempt_epoch")
 }
 
 func runtimeThreadUsageTotals(in *event.ThreadUsageTotals) *ThreadTokenUsageTotals {

@@ -50,11 +50,12 @@ const (
 	ContinuationReasonRetryEmpty        ContinuationReason = "retry_empty"
 	ContinuationReasonNoProgress        ContinuationReason = "no_progress"
 	ContinuationReasonHook              ContinuationReason = "hook"
+	ContinuationReasonExplicitSignal    ContinuationReason = "explicit_signal"
 )
 
 func (r ContinuationReason) Valid() bool {
 	switch r {
-	case ContinuationReasonToolResults, ContinuationReasonCompaction, ContinuationReasonProviderTruncated, ContinuationReasonRetryEmpty, ContinuationReasonNoProgress, ContinuationReasonHook:
+	case ContinuationReasonToolResults, ContinuationReasonCompaction, ContinuationReasonProviderTruncated, ContinuationReasonRetryEmpty, ContinuationReasonNoProgress, ContinuationReasonHook, ContinuationReasonExplicitSignal:
 		return true
 	default:
 		return false

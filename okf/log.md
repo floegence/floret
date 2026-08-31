@@ -1,5 +1,17 @@
 # Floret OKF Update Log
 
+## 2026-08-31
+* **Append-only context lineage**: Provider requests now verify one stable
+  envelope and exact historical prefix per compaction generation. Model output,
+  tool/control facts, and interaction results only append; capability changes
+  use an audited compaction generation and prefix drift fails closed.
+* **Explicit Agent completion**: Immutable Agents can require `ask_user` or
+  `task_complete`. Natural-stop output is retained and followed by one bounded,
+  observable structured continuation instead of being misreported as success.
+* **Atomic Run activation**: All new provider Runs reset attempt/live ownership
+  through one actor transition. Ask User continuation publishes `preparing`
+  immediately and exact Run-attempt fencing preserves live reasoning and text.
+
 ## 2026-08-30
 * **Forked effect migration**: The v6 -> v7 migration now recognizes verified
   terminal Effect Attempt records copied from a fork ancestor and removes them

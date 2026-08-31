@@ -26,13 +26,14 @@ import (
 // AgentRequest identifies one typed execution whose provider and tool surface
 // must be resolved outside the thread lock. Run identities remain internal.
 type AgentRequest struct {
-	ThreadID        identity.ThreadID
-	TurnID          identity.TurnID
-	RequestKey      string
-	Input           UserInput
-	RetrySource     identity.TurnID
-	InteractionID   string
-	EffectAttemptID string
+	ThreadID           identity.ThreadID
+	TurnID             identity.TurnID
+	RequestKey         string
+	Input              UserInput
+	CanonicalTurnInput UserInput
+	RetrySource        identity.TurnID
+	InteractionID      string
+	EffectAttemptID    string
 }
 
 // AgentFactory resolves provider and tool capability outside the thread lock.
@@ -1708,8 +1709,16 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 			retrySourceEntryID = strings.TrimSpace(read.Turn.RetrySource.EntryID)
 		}
 	}
+	canonicalInput := input
+	if retrySourceEntryID != "" {
+		entry, entryErr := service.host.store.repo.Entry(ctx, threadID.String(), retrySourceEntryID)
+		if entryErr != nil || entry.Type != sessiontree.EntryUserMessage || entry.Message.Role != session.User {
+			return
+		}
+		canonicalInput = turnInputFromSessionMessage(entry.Message)
+	}
 	agent, err := service.factory.Agent(ctx, AgentRequest{
-		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
+		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: canonicalInput,
 		RetrySource: retrySourceTurnID,
 	})
 	if err != nil || agent == nil {
@@ -1722,18 +1731,28 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	executionCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	actor := service.runtime(threadID)
-	_ = actor.apply(ctx, func() error {
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		actor.state.executionDone = done
+	var current ThreadView
+	if err := actor.apply(ctx, func() error {
+		if _, beginErr := actor.beginRun(beginThreadRunInput{
+			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
+			cancel: cancel, executionDone: done,
+		}); beginErr != nil {
+			return beginErr
+		}
 		actor.state.agent = agent
+		current = cloneThreadRuntimeView(actor.state.view)
 		return nil
-	})
+	}); err != nil {
+		cancel()
+		close(done)
+		return
+	}
+	service.publish(current)
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
 		RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
-		Signals: TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
+	applyAgentExecutionPolicy(&request, agent)
 	accepted := acceptedTurn{ThreadID: threadID, TurnID: turnID, RunID: runID, UserEntryID: canonical.UserMessage.ID, BaseLeafID: canonical.BaseLeafID, Replayed: true}
 	go service.executeAcceptedSend(executionCtx, actor, runner, accepted, request, nil, done)
 }
@@ -1855,7 +1874,6 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
 		SupplementalContext: cloneTurnSupplementalContext(supplemental),
 		InputFingerprint:    fingerprint,
-		Signals:             TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
 	var result ThreadView
 	var accepted acceptedTurn
@@ -1879,21 +1897,13 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 			return acceptErr
 		}
 		_ = canonical
-		actor.state.turnID, actor.state.runID = turnID, runID
-		actor.state.logicalRequestID = identity.LogicalRequestID(requestKey)
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		previousExecution = actor.state.executionDone
-		actor.state.executionDone = executionDone
-		actor.state.view.ViewVersion++
-		actor.state.view.Activity = ThreadActivityActive
-		actor.state.view.TurnID = turnID
-		actor.state.view.RunID = runID
-		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-		actor.state.view.LastOutcome = nil
-		actor.state.view.Failure = nil
-		actor.state.openTextSegmentID = ""
-		actor.state.openTextKind = ""
+		previousExecution, acceptErr = actor.beginRun(beginThreadRunInput{
+			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
+			cancel: cancel, executionDone: executionDone, clearOutcome: true,
+		})
+		if acceptErr != nil {
+			return acceptErr
+		}
 		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
 		result = cloneThreadRuntimeView(actor.state.view)
 		if actor.state.requestKeys == nil {
@@ -1912,7 +1922,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	}
 	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
-		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
+		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input,
 	})
 	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
@@ -2005,6 +2015,21 @@ func agentManualCompactions(agent *Agent) ManualCompactionSource {
 	return agent.manualCompactions
 }
 
+func applyAgentExecutionPolicy(request *turnExecutionRequest, agent *Agent) {
+	if request == nil {
+		return
+	}
+	policy := TurnCompletionNaturalStop
+	if agent != nil && agent.turnCompletion != "" {
+		policy = agent.turnCompletion
+	}
+	request.Completion = policy
+	request.Signals = TurnSignalSpec{
+		Definitions: CoreControlDefinitions(policy == TurnCompletionExplicitSignal),
+		Project:     ProjectCoreControlSignal,
+	}
+}
+
 func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey string) {
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != turnID || actor.state.runID != runID {
@@ -2076,6 +2101,7 @@ func (service *threadRuntimeService) executePreparedSend(
 			return
 		}
 		request.ManualCompactions = agentManualCompactions(execution.agent)
+		applyAgentExecutionPolicy(&request, execution.agent)
 		_ = actor.apply(context.Background(), func() error {
 			if actor.state.turnID == request.TurnID && actor.state.runID == request.RunID {
 				actor.state.agent = execution.agent
@@ -3095,6 +3121,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		return
 	}
 	waitingRunID := interaction.RunID
+	continuationKey := "continue-input:" + interaction.ID
 	runID, err := service.host.idSource.NewRunID()
 	if err != nil {
 		return
@@ -3102,20 +3129,21 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	executionCtx, cancel := context.WithCancel(context.Background())
 	executionDone := make(chan struct{})
 	var previousExecution <-chan struct{}
+	var preparing ThreadView
 	claimed := false
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive {
 			return nil
 		}
-		actor.state.runID = runID
-		actor.state.view.Activity = ThreadActivityActive
-		actor.state.view.RunID = runID
-		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-		actor.state.view.ViewVersion++
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		previousExecution = actor.state.executionDone
-		actor.state.executionDone = executionDone
+		var beginErr error
+		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
+			turnID: interaction.TurnID, runID: runID, logicalRequestID: identity.LogicalRequestID(continuationKey),
+			cancel: cancel, executionDone: executionDone,
+		})
+		if beginErr != nil {
+			return beginErr
+		}
+		preparing = cloneThreadRuntimeView(actor.state.view)
 		claimed = true
 		return nil
 	})
@@ -3124,6 +3152,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		close(executionDone)
 		return
 	}
+	service.publish(preparing)
 	defer cancel()
 	defer close(executionDone)
 	if previousExecution != nil {
@@ -3133,10 +3162,14 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		case <-previousExecution:
 		}
 	}
-	continuationKey := "continue-input:" + interaction.ID
+	_, canonicalInput, canonicalErr := service.retrySource(executionCtx, threadID, interaction.TurnID)
+	if canonicalErr != nil {
+		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, canonicalErr)
+		return
+	}
 	agent, err := service.factory.Agent(executionCtx, AgentRequest{
 		ThreadID: threadID, TurnID: interaction.TurnID, RequestKey: continuationKey,
-		Input: UserInput{Text: string(payload)}, InteractionID: interaction.ID,
+		Input: UserInput{Text: string(payload)}, CanonicalTurnInput: canonicalInput, InteractionID: interaction.ID,
 	})
 	if err != nil || agent == nil {
 		if err == nil {
@@ -3150,13 +3183,14 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
 		return
 	}
+	request := turnExecutionRequest{
+		LogicalRequestID: identity.LogicalRequestID(continuationKey), TurnID: interaction.TurnID, RunID: runID,
+		ManualCompactions: agent.manualCompactions,
+	}
+	applyAgentExecutionPolicy(&request, agent)
 	result, runErr := runner.ResumeInput(executionCtx, resumeInputRequest{
 		TurnID: interaction.TurnID, WaitingRunID: waitingRunID, RunID: runID, Answer: string(payload),
-		Options: turnExecutionRequest{
-			LogicalRequestID: identity.LogicalRequestID(continuationKey), TurnID: interaction.TurnID, RunID: runID,
-			Signals:           TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
-			ManualCompactions: agent.manualCompactions,
-		},
+		Options: request,
 	})
 	service.finishSend(actor, interaction.TurnID, runID, result, runErr)
 }
@@ -3195,21 +3229,14 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		if actor.state.view.Activity == ThreadActivityActive {
 			return ErrThreadBusy
 		}
-		actor.state.turnID = turnID
-		actor.state.runID = runID
-		actor.state.logicalRequestID = identity.LogicalRequestID(requestKey)
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		previousExecution = actor.state.executionDone
-		actor.state.executionDone = executionDone
-		actor.state.view.ViewVersion++
-		actor.state.view.Activity = ThreadActivityActive
-		actor.state.view.TurnID = turnID
-		actor.state.view.RunID = runID
-		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-		actor.state.view.LastOutcome = nil
-		actor.state.view.Failure = nil
-		actor.finishLiveTextSegment()
+		var beginErr error
+		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
+			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
+			cancel: cancel, executionDone: executionDone, clearOutcome: true,
+		})
+		if beginErr != nil {
+			return beginErr
+		}
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3226,11 +3253,10 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		return result, nil
 	}
 	service.publish(result)
-	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: sourceInput, RetrySource: sourceTurnID})
+	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: sourceInput, CanonicalTurnInput: sourceInput, RetrySource: sourceTurnID})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID,
 		Input: sourceInput, RetrySourceTurnID: sourceTurnID, RetrySourceEntryID: sourceEntryID,
-		Signals: TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
 	go service.acceptAndExecutePreparedSend(executionCtx, actor, prepared, threadID, request, previousExecution, executionDone, requestKey, true)
 	return result, nil
@@ -3397,7 +3423,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		PromotedQueueID:             promotedQueueID,
 		PromotionRequestKey:         promotionRequestKey,
 		PromotionRequestFingerprint: promotionFingerprint,
-		Signals:                     TurnSignalSpec{Definitions: CoreControlDefinitions(false), Project: ProjectCoreControlSignal},
 	}
 	var accepted acceptedTurn
 	var result ThreadView
@@ -3423,19 +3448,14 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		if acceptErr != nil {
 			return acceptErr
 		}
-		actor.state.turnID, actor.state.runID = turnID, runID
-		actor.state.logicalRequestID = identity.LogicalRequestID(requestKey)
-		actor.state.cancel = cancel
-		actor.state.cancelOwner = "run:" + runID.String()
-		previousExecution = actor.state.executionDone
-		actor.state.executionDone = executionDone
-		actor.state.view.ViewVersion++
-		actor.state.view.Activity = ThreadActivityActive
-		actor.state.view.TurnID = turnID
-		actor.state.view.RunID = runID
-		actor.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-		actor.state.view.LastOutcome = nil
-		actor.state.view.Failure = nil
+		var beginErr error
+		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
+			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
+			cancel: cancel, executionDone: executionDone, clearOutcome: true,
+		})
+		if beginErr != nil {
+			return beginErr
+		}
 		if promotedQueueID != "" {
 			for index := range actor.state.view.Queue {
 				if actor.state.view.Queue[index].ID == promotedQueueID {
@@ -3444,8 +3464,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 				}
 			}
 		}
-		actor.state.openTextSegmentID = ""
-		actor.state.openTextKind = ""
 		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -3463,7 +3481,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 	}
 	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
-		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input,
+		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input,
 	})
 	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil

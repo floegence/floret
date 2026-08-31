@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,15 @@ type blockingThreadGateway struct {
 	release  chan struct{}
 	once     sync.Once
 	requests atomic.Int32
+}
+
+type continuationLiveGateway struct {
+	requests             atomic.Int32
+	secondStarted        chan struct{}
+	allowFirstReasoning  chan struct{}
+	allowSecondReasoning chan struct{}
+	allowFirstAssistant  chan struct{}
+	allowSecondAssistant chan struct{}
 }
 
 type automaticTitleGateway struct {
@@ -221,6 +231,67 @@ func (gateway *automaticTitleGateway) Stream(_ context.Context, request provider
 
 func newBlockingThreadGateway() *blockingThreadGateway {
 	return &blockingThreadGateway{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func newContinuationLiveGateway() *continuationLiveGateway {
+	return &continuationLiveGateway{
+		secondStarted:        make(chan struct{}),
+		allowFirstReasoning:  make(chan struct{}),
+		allowSecondReasoning: make(chan struct{}),
+		allowFirstAssistant:  make(chan struct{}),
+		allowSecondAssistant: make(chan struct{}),
+	}
+}
+
+func (*continuationLiveGateway) Identity() provider.Identity {
+	return provider.Identity{Provider: "test", Model: "continuation-live", StateCompatibilityKey: "test:continuation-live:v1"}
+}
+
+func (*continuationLiveGateway) Capabilities() provider.Capabilities {
+	return provider.Capabilities{Reasoning: provider.ReasoningSupported, ReasoningCapability: config.ReasoningCapability{Kind: config.ReasoningKindNone}}
+}
+
+func (gateway *continuationLiveGateway) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	request := gateway.requests.Add(1)
+	events := make(chan provider.Event)
+	if request == 1 {
+		go func() {
+			defer close(events)
+			events <- provider.Event{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-live", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}}}
+			events <- provider.Event{Type: provider.EventDone, Reason: "tool_calls"}
+		}()
+		return events, nil
+	}
+	if request != 2 {
+		close(events)
+		return events, nil
+	}
+	close(gateway.secondStarted)
+	go func() {
+		defer close(events)
+		emit := func(release <-chan struct{}, event provider.Event) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case <-release:
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case events <- event:
+				return true
+			}
+		}
+		if !emit(gateway.allowFirstReasoning, provider.Event{Type: provider.EventReasoning, Text: "reasoning-1"}) ||
+			!emit(gateway.allowSecondReasoning, provider.Event{Type: provider.EventReasoning, Text: "reasoning-2"}) ||
+			!emit(gateway.allowFirstAssistant, provider.Event{Type: provider.EventDelta, Text: "answer-1"}) ||
+			!emit(gateway.allowSecondAssistant, provider.Event{Type: provider.EventDelta, Text: "answer-2"}) {
+			return
+		}
+		events <- provider.Event{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "complete-live", Name: "task_complete", Args: `{"output":"answer-1answer-2"}`}}}
+		events <- provider.Event{Type: provider.EventDone, Reason: "tool_calls"}
+	}()
+	return events, nil
 }
 
 func (*blockingThreadGateway) Identity() provider.Identity {
@@ -1010,6 +1081,132 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	}
 	if contextSnapshot.Usage == nil || contextSnapshot.Usage.TurnID != completed.TurnID {
 		t.Fatalf("context after input resume=%#v, want latest canonical usage for turn %q", contextSnapshot, completed.TurnID)
+	}
+}
+
+func TestThreadServiceRespondPublishesNewRunProgressAndLiveContinuation(t *testing.T) {
+	gateway := newContinuationLiveGateway()
+	agent, err := NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, WithAgentTurnCompletionPolicy(TurnCompletionExplicitSignal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var factoryMu sync.Mutex
+	var factoryRequests []AgentRequest
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	service, err := host.ThreadService(AgentFactoryFunc(func(_ context.Context, request AgentRequest) (*Agent, error) {
+		factoryMu.Lock()
+		factoryRequests = append(factoryRequests, request)
+		factoryMu.Unlock()
+		return agent, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-live-input-resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "begin"}, RequestKey: "send-live-input-resume"}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 1 && view.Interactions[0].Kind == ThreadInteractionInput && !view.Interactions[0].Resolved
+	})
+	waitingRunID := waiting.RunID
+	subscription, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(subscription.Close)
+	if _, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID,
+		Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "respond-live-input-resume",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	resolvedSeen := false
+	preparingSeen := false
+	waitingResponseSeen := false
+	var continuationRunID identity.RunID
+	for !waitingResponseSeen {
+		view, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			current, _ := service.View(t.Context(), created.ThreadID)
+			t.Fatalf("waiting for continuation progress: %v current=%#v resolved=%t preparing=%t", nextErr, current, resolvedSeen, preparingSeen)
+		}
+		if view.ThreadID != created.ThreadID {
+			continue
+		}
+		if len(view.Interactions) == 1 && view.Interactions[0].Resolved {
+			resolvedSeen = true
+		}
+		if view.RunID != "" && view.RunID != waitingRunID && view.RunProgress != nil {
+			continuationRunID = view.RunID
+			switch view.RunProgress.Phase {
+			case ThreadRunPhasePreparing:
+				if !resolvedSeen {
+					t.Fatal("new Run preparing was published before the interaction resolution")
+				}
+				preparingSeen = true
+			case ThreadRunPhaseWaitingResponse:
+				if !preparingSeen {
+					t.Fatal("waiting_response was published before preparing")
+				}
+				waitingResponseSeen = true
+			}
+		}
+	}
+	if continuationRunID == "" {
+		t.Fatal("continuation RunID was not published")
+	}
+	select {
+	case <-gateway.secondStarted:
+	case <-ctx.Done():
+		t.Fatal("continuation provider request did not start")
+	}
+
+	close(gateway.allowFirstReasoning)
+	firstReasoning := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.RunID == continuationRunID && view.RunProgress != nil && view.RunProgress.Phase == ThreadRunPhaseStreaming &&
+			len(view.Items) > 0 && view.Items[len(view.Items)-1].Kind == ThreadItemThinking && view.Items[len(view.Items)-1].Text == "reasoning-1"
+	})
+	if !firstReasoning.Items[len(firstReasoning.Items)-1].Live {
+		t.Fatalf("first reasoning item is not live: %#v", firstReasoning.Items)
+	}
+	close(gateway.allowSecondReasoning)
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Items) > 0 && view.Items[len(view.Items)-1].Kind == ThreadItemThinking && view.Items[len(view.Items)-1].Text == "reasoning-1reasoning-2"
+	})
+	close(gateway.allowFirstAssistant)
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Items) > 0 && view.Items[len(view.Items)-1].Kind == ThreadItemAssistant && view.Items[len(view.Items)-1].Text == "answer-1" && view.Items[len(view.Items)-1].Live
+	})
+	close(gateway.allowSecondAssistant)
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+	})
+	if completed.RunProgress != nil || !slices.ContainsFunc(completed.Items, func(item ThreadItem) bool {
+		return item.Kind == ThreadItemThinking && item.Text == "reasoning-1reasoning-2" && !item.Live
+	}) || !slices.ContainsFunc(completed.Items, func(item ThreadItem) bool {
+		return item.Kind == ThreadItemAssistant && item.Text == "answer-1answer-2" && !item.Live
+	}) {
+		t.Fatalf("terminal canonical content does not match live content: %#v", completed)
+	}
+	factoryMu.Lock()
+	requests := append([]AgentRequest(nil), factoryRequests...)
+	factoryMu.Unlock()
+	if len(requests) != 2 || requests[1].CanonicalTurnInput.Text != "begin" || requests[1].Input.Text == "begin" {
+		t.Fatalf("continuation agent requests = %#v", requests)
 	}
 }
 
@@ -2081,8 +2278,11 @@ func TestThreadRuntimePublishesRunProgressFromTheActiveRun(t *testing.T) {
 	turnID := identity.TurnID("turn-progress")
 	runID := identity.RunID("run-progress")
 	actor := &threadRuntimeState{threadID: threadID.String(), state: threadRuntimeData{
-		turnID: turnID,
-		runID:  runID,
+		turnID:           turnID,
+		runID:            runID,
+		logicalRequestID: "logical",
+		attemptID:        "attempt-2",
+		attemptEpoch:     2,
 		view: ThreadView{
 			ThreadID: threadID, TurnID: turnID, RunID: runID, ViewVersion: 1,
 			Activity: ThreadActivityActive, RunProgress: &ThreadRunProgress{Phase: ThreadRunPhasePreparing},
@@ -2140,8 +2340,11 @@ func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {
 	turnID := identity.TurnID("turn-progress-fence")
 	runID := identity.RunID("run-progress-current")
 	actor := &threadRuntimeState{threadID: threadID.String(), state: threadRuntimeData{
-		turnID: turnID,
-		runID:  runID,
+		turnID:           turnID,
+		runID:            runID,
+		logicalRequestID: "logical",
+		attemptID:        "attempt-2",
+		attemptEpoch:     2,
 		view: ThreadView{
 			ThreadID: threadID, TurnID: turnID, RunID: runID, ViewVersion: 1,
 			Activity: ThreadActivityActive, RunProgress: &ThreadRunProgress{Phase: ThreadRunPhasePreparing},
@@ -2169,27 +2372,68 @@ func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {
 }
 
 func TestThreadRuntimeFencesLateAndDuplicateProviderAttempts(t *testing.T) {
-	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-current", runID: "run-current", view: ThreadView{ThreadID: "thread-current", TurnID: "turn-current"}}}
+	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-current", runID: "run-current", logicalRequestID: "request", view: ThreadView{ThreadID: "thread-current", TurnID: "turn-current"}}}
 	current := Event{ThreadID: "thread-current", TurnID: "turn-current", RunID: "run-current", Stream: &StreamObservation{
-		Type: StreamObservationAssistantDelta, Text: "new", LogicalRequestID: "request", AttemptID: "attempt-2", AttemptEpoch: 2,
+		Type: StreamObservationAssistantDelta, Text: "first", LogicalRequestID: "request", AttemptID: "attempt-1", AttemptEpoch: 1,
 	}}
-	if !actor.acceptLiveEvent(current) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
+	if !actor.acceptLiveEvent(current) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "first" {
 		t.Fatalf("current attempt was not accepted: %#v", actor.state)
+	}
+	newer := current
+	newer.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "new", LogicalRequestID: "request", AttemptID: "attempt-2", AttemptEpoch: 2}
+	if !actor.acceptLiveEvent(newer) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
+		t.Fatalf("new attempt was not accepted: %#v", actor.state)
 	}
 	late := current
 	late.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "stale", LogicalRequestID: "request", AttemptID: "attempt-1", AttemptEpoch: 1}
-	if actor.acceptLiveEvent(late) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
+	if actor.acceptLiveEvent(late) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
 		t.Fatalf("late attempt changed draft: %#v", actor.state)
 	}
-	duplicateIdentity := current
+	duplicateIdentity := newer
 	duplicateIdentity.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "other", LogicalRequestID: "request", AttemptID: "attempt-other", AttemptEpoch: 2}
-	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
+	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
 		t.Fatalf("conflicting attempt changed draft: %#v", actor.state)
 	}
 }
 
+func TestThreadRuntimeBeginRunResetsAttemptAndLiveOwnership(t *testing.T) {
+	previousDone := make(chan struct{})
+	nextDone := make(chan struct{})
+	_, cancel := context.WithCancel(context.Background())
+	actor := &threadRuntimeState{state: threadRuntimeData{
+		turnID: "turn-old", runID: "run-old", logicalRequestID: "request-old",
+		attemptID: "attempt-old-3", attemptEpoch: 3,
+		openTextSegmentID: "assistant:turn-old:1", openTextKind: ThreadItemAssistant,
+		executionDone: previousDone,
+		view: ThreadView{
+			ThreadID: "thread", TurnID: "turn-old", RunID: "run-old", Activity: ThreadActivityActive, ViewVersion: 4,
+			Items: []ThreadItem{{ID: "assistant:turn-old:1", TurnID: "turn-old", RunID: "run-old", Kind: ThreadItemAssistant, Text: "partial", Live: true}},
+		},
+	}}
+	previous, err := actor.beginRun(beginThreadRunInput{
+		turnID: "turn-new", runID: "run-new", logicalRequestID: "request-new", cancel: cancel, executionDone: nextDone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous != previousDone || actor.state.attemptID != "" || actor.state.attemptEpoch != 0 || actor.state.openTextSegmentID != "" || actor.state.openTextKind != "" {
+		t.Fatalf("new Run retained old attempt/live ownership: %#v", actor.state)
+	}
+	if actor.state.view.RunID != "run-new" || actor.state.view.TurnID != "turn-new" || actor.state.view.RunProgress == nil || actor.state.view.RunProgress.Phase != ThreadRunPhasePreparing || actor.state.view.ViewVersion != 5 {
+		t.Fatalf("new Run view = %#v", actor.state.view)
+	}
+	if actor.state.view.Items[0].Live {
+		t.Fatalf("old live segment remained open: %#v", actor.state.view.Items)
+	}
+	if !actor.acceptLiveEvent(Event{ThreadID: "thread", TurnID: "turn-new", RunID: "run-new", Stream: &StreamObservation{
+		Type: StreamObservationReasoningDelta, Text: "new", LogicalRequestID: "request-new", AttemptID: "attempt-new-1", AttemptEpoch: 1,
+	}}) {
+		t.Fatal("first attempt of the new Run was rejected")
+	}
+}
+
 func TestThreadRuntimeDuplicateStreamEventKeepsOneAssistantIdentity(t *testing.T) {
-	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-duplicate", runID: "run-duplicate", view: ThreadView{ThreadID: "thread-duplicate", TurnID: "turn-duplicate"}}}
+	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-duplicate", runID: "run-duplicate", logicalRequestID: "request-duplicate", view: ThreadView{ThreadID: "thread-duplicate", TurnID: "turn-duplicate"}}}
 	event := Event{ThreadID: "thread-duplicate", TurnID: "turn-duplicate", RunID: "run-duplicate", Stream: &StreamObservation{
 		Type: StreamObservationAssistantDelta, Text: "same", LogicalRequestID: "request-duplicate", AttemptID: "attempt-duplicate", AttemptEpoch: 1,
 	}}

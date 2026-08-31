@@ -23,6 +23,7 @@ type Agent struct {
 	loopLimits          LoopLimits
 	capabilities        CapabilityOptions
 	threadTitleMode     ThreadTitleMode
+	turnCompletion      TurnCompletionPolicy
 	subAgentRunTimeout  time.Duration
 	manualCompactions   ManualCompactionSource
 }
@@ -194,6 +195,16 @@ func WithAgentThreadTitleMode(mode ThreadTitleMode) AgentOption {
 	}}
 }
 
+// WithAgentTurnCompletionPolicy configures how an Agent declares that one
+// provider turn is complete. Explicit-signal agents expose task_complete and
+// must not terminate on an unstructured natural stop.
+func WithAgentTurnCompletionPolicy(policy TurnCompletionPolicy) AgentOption {
+	return AgentOption{category: "turn_completion", apply: func(builder *agentBuilder) error {
+		builder.agent.turnCompletion = policy
+		return nil
+	}}
+}
+
 // WithAgentSubAgentTimeout bounds one child execution.
 func WithAgentSubAgentTimeout(timeout time.Duration) AgentOption {
 	return AgentOption{category: "subagent_timeout", apply: func(builder *agentBuilder) error {
@@ -226,6 +237,9 @@ func validateAgentPolicies(agent *Agent) error {
 		return err
 	}
 	agent.threadTitleMode = mode
+	if _, err := engineTurnCompletionPolicy(agent.turnCompletion); err != nil {
+		return err
+	}
 	return nil
 }
 

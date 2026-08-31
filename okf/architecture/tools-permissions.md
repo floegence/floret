@@ -64,6 +64,13 @@ host context, and audit metadata. Floret refreshes that surface before provider
 requests and again before local tool dispatch, so provider-visible capabilities
 and executable local capabilities converge at safe points.
 
+Provider-visible system text and tool definitions are part of the stable
+context envelope. They cannot change inside one compaction generation. A real
+capability change first commits a normal context compaction and only then
+activates the new envelope in the next generation. History-prefix mutation or
+reordering still fails with `context_prefix_drift`; it is never repaired by
+rewriting an earlier request.
+
 An omitted (`nil`) local definition list derives provider definitions from the
 returned registry; an explicit empty list clears them. Hosted definitions use
 the same omitted-versus-explicit-empty contract against their configured
