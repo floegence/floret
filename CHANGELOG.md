@@ -1,5 +1,15 @@
 # Changelog
 
+## v6.1.1 - 2026-08-31
+
+- Persist public Ask User answers as canonical user messages. Secret answers
+  remain ephemeral and leave only a redacted marker in later context.
+- Separate provider-neutral conversation lineage from provider/model render
+  lineage. New Turns may switch models without rewriting history or forcing
+  compaction; same-Turn drift and canonical prefix mutation fail closed.
+- Checkpoint raw segments, toolsets, and provider request lineage before model
+  dispatch so restart preserves the exact validated prefix.
+
 ## v6.1.0 - 2026-08-31
 
 - Preserve one append-only provider context lineage within each prompt scope and

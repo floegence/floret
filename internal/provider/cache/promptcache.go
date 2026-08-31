@@ -20,12 +20,17 @@ import (
 	"github.com/floegence/floret/v6/tools"
 )
 
-const Version = "cache.v1"
+const (
+	Version                   = "cache.v1"
+	ContextProjectionRevision = "provider-context.v2"
+)
 
 var (
 	ErrContextPrefixDrift            = errors.New("context prefix drift")
 	ErrContextEnvelopeChanged        = fmt.Errorf("%w: stable envelope changed", ErrContextPrefixDrift)
 	ErrContextLineageMigrationNeeded = errors.New("context lineage migration is required")
+	ErrContextRenderLineageChanged   = errors.New("context render lineage prefix changed")
+	ErrTurnModelDrift                = fmt.Errorf("%w: provider or model changed within one turn", ErrContextPrefixDrift)
 )
 
 type SegmentKind string
@@ -85,29 +90,32 @@ func (r PromptScopeRef) validate() error {
 }
 
 type RawPlan struct {
-	Version               string                        `json:"version"`
-	SegmentIDs            []string                      `json:"segment_ids"`
-	Segments              []Segment                     `json:"segments"`
-	ToolsetID             string                        `json:"toolset_id,omitempty"`
-	ToolsetEpoch          int                           `json:"toolset_epoch,omitempty"`
-	HostedToolsetHash     string                        `json:"hosted_toolset_hash,omitempty"`
-	PrefixHash            string                        `json:"prefix_hash"`
-	PayloadHash           string                        `json:"payload_hash"`
-	CacheNamespace        string                        `json:"cache_namespace,omitempty"`
-	PreviousResponseID    string                        `json:"previous_response_id,omitempty"`
-	CompactionGeneration  int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID    string                        `json:"compaction_window_id,omitempty"`
-	CompactionEntryID     string                        `json:"compaction_entry_id,omitempty"`
-	CanonicalEnvelopeHash string                        `json:"canonical_envelope_hash,omitempty"`
-	CanonicalMessageCount int                           `json:"canonical_message_count,omitempty"`
-	CanonicalPrefixHash   string                        `json:"canonical_prefix_hash,omitempty"`
-	CanonicalLineageReset bool                          `json:"-"`
-	RequestEstimate       contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ProjectedPressure     contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
-	RequestShape          RequestShapeHashes            `json:"request_shape,omitempty"`
-	ReusedSegments        int                           `json:"reused_segments"`
-	NewSegments           int                           `json:"new_segments"`
-	SegmentStates         []string                      `json:"segment_states,omitempty"`
+	Version                    string                        `json:"version"`
+	SegmentIDs                 []string                      `json:"segment_ids"`
+	Segments                   []Segment                     `json:"segments"`
+	ToolsetID                  string                        `json:"toolset_id,omitempty"`
+	ToolsetEpoch               int                           `json:"toolset_epoch,omitempty"`
+	HostedToolsetHash          string                        `json:"hosted_toolset_hash,omitempty"`
+	PrefixHash                 string                        `json:"prefix_hash"`
+	PayloadHash                string                        `json:"payload_hash"`
+	CacheNamespace             string                        `json:"cache_namespace,omitempty"`
+	PreviousResponseID         string                        `json:"previous_response_id,omitempty"`
+	CompactionGeneration       int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID         string                        `json:"compaction_window_id,omitempty"`
+	CompactionEntryID          string                        `json:"compaction_entry_id,omitempty"`
+	CanonicalEnvelopeHash      string                        `json:"canonical_envelope_hash,omitempty"`
+	CanonicalMessageCount      int                           `json:"canonical_message_count,omitempty"`
+	CanonicalPrefixHash        string                        `json:"canonical_prefix_hash,omitempty"`
+	CanonicalHistoryPrefixHash string                        `json:"canonical_history_prefix_hash,omitempty"`
+	RenderLineageKey           string                        `json:"render_lineage_key,omitempty"`
+	ContextProjectionRevision  string                        `json:"context_projection_revision,omitempty"`
+	CanonicalLineageReset      bool                          `json:"-"`
+	RequestEstimate            contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
+	ProjectedPressure          contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
+	RequestShape               RequestShapeHashes            `json:"request_shape,omitempty"`
+	ReusedSegments             int                           `json:"reused_segments"`
+	NewSegments                int                           `json:"new_segments"`
+	SegmentStates              []string                      `json:"segment_states,omitempty"`
 }
 
 type Segment struct {
@@ -181,35 +189,38 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
-	ID                    string                        `json:"id"`
-	PromptScopeID         string                        `json:"prompt_scope_id"`
-	RunID                 string                        `json:"run_id"`
-	ThreadID              string                        `json:"thread_id,omitempty"`
-	TurnID                string                        `json:"turn_id,omitempty"`
-	Step                  int                           `json:"step"`
-	LogicalRequestID      string                        `json:"logical_request_id,omitempty"`
-	AttemptID             string                        `json:"attempt_id,omitempty"`
-	AttemptEpoch          int                           `json:"attempt_epoch,omitempty"`
-	Attempt               int                           `json:"attempt,omitempty"`
-	OverflowRetried       bool                          `json:"overflow_retried,omitempty"`
-	Provider              string                        `json:"provider"`
-	Model                 string                        `json:"model"`
-	CacheNamespace        string                        `json:"cache_namespace,omitempty"`
-	CacheRetention        Retention                     `json:"cache_retention,omitempty"`
-	SegmentIDs            []string                      `json:"segment_ids"`
-	ProviderPayloadHash   string                        `json:"provider_payload_hash"`
-	PrefixRawHash         string                        `json:"prefix_raw_hash"`
-	PreviousResponseID    string                        `json:"previous_response_id,omitempty"`
-	CompactionGeneration  int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID    string                        `json:"compaction_window_id,omitempty"`
-	CompactionEntryID     string                        `json:"compaction_entry_id,omitempty"`
-	CanonicalEnvelopeHash string                        `json:"canonical_envelope_hash,omitempty"`
-	CanonicalMessageCount int                           `json:"canonical_message_count,omitempty"`
-	CanonicalPrefixHash   string                        `json:"canonical_prefix_hash,omitempty"`
-	RequestEstimate       contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ProjectedPressure     contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
-	RequestShape          RequestShapeHashes            `json:"request_shape,omitempty"`
-	CreatedAt             time.Time                     `json:"created_at"`
+	ID                         string                        `json:"id"`
+	PromptScopeID              string                        `json:"prompt_scope_id"`
+	RunID                      string                        `json:"run_id"`
+	ThreadID                   string                        `json:"thread_id,omitempty"`
+	TurnID                     string                        `json:"turn_id,omitempty"`
+	Step                       int                           `json:"step"`
+	LogicalRequestID           string                        `json:"logical_request_id,omitempty"`
+	AttemptID                  string                        `json:"attempt_id,omitempty"`
+	AttemptEpoch               int                           `json:"attempt_epoch,omitempty"`
+	Attempt                    int                           `json:"attempt,omitempty"`
+	OverflowRetried            bool                          `json:"overflow_retried,omitempty"`
+	Provider                   string                        `json:"provider"`
+	Model                      string                        `json:"model"`
+	CacheNamespace             string                        `json:"cache_namespace,omitempty"`
+	CacheRetention             Retention                     `json:"cache_retention,omitempty"`
+	SegmentIDs                 []string                      `json:"segment_ids"`
+	ProviderPayloadHash        string                        `json:"provider_payload_hash"`
+	PrefixRawHash              string                        `json:"prefix_raw_hash"`
+	PreviousResponseID         string                        `json:"previous_response_id,omitempty"`
+	CompactionGeneration       int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID         string                        `json:"compaction_window_id,omitempty"`
+	CompactionEntryID          string                        `json:"compaction_entry_id,omitempty"`
+	CanonicalEnvelopeHash      string                        `json:"canonical_envelope_hash,omitempty"`
+	CanonicalMessageCount      int                           `json:"canonical_message_count,omitempty"`
+	CanonicalPrefixHash        string                        `json:"canonical_prefix_hash,omitempty"`
+	CanonicalHistoryPrefixHash string                        `json:"canonical_history_prefix_hash,omitempty"`
+	RenderLineageKey           string                        `json:"render_lineage_key,omitempty"`
+	ContextProjectionRevision  string                        `json:"context_projection_revision,omitempty"`
+	RequestEstimate            contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
+	ProjectedPressure          contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
+	RequestShape               RequestShapeHashes            `json:"request_shape,omitempty"`
+	CreatedAt                  time.Time                     `json:"created_at"`
 }
 
 type ProviderResponseRecord struct {
@@ -688,6 +699,8 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	plan.ToolsetEpoch = input.Toolset.Epoch
 	plan.HostedToolsetHash = StableHash(mustCanonical(input.HostedTools))
 	plan.CacheNamespace = input.CacheNamespace
+	plan.ContextProjectionRevision = ContextProjectionRevision
+	plan.RenderLineageKey = renderLineageKey(input.Provider, input.Model, input.AdapterVersion, input.CacheNamespace)
 	plan.CompactionGeneration, plan.CompactionWindowID, plan.CompactionEntryID = activeCompactionWindow(input.History)
 	var requestMessages []session.Message
 	sequence := nextSequence(existing)
@@ -794,6 +807,13 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	plan.CanonicalEnvelopeHash = envelopeHash
 	plan.CanonicalMessageCount = len(messageHashes)
 	plan.CanonicalPrefixHash = canonicalPrefixHash(envelopeHash, messageHashes)
+	plan.CanonicalHistoryPrefixHash = HashStrings(messageHashes...)
+	if strings.TrimSpace(plan.ContextProjectionRevision) == "" {
+		plan.ContextProjectionRevision = ContextProjectionRevision
+	}
+	if strings.TrimSpace(plan.RenderLineageKey) == "" {
+		return errors.New("render lineage key is required")
+	}
 	if store == nil {
 		return nil
 	}
@@ -815,22 +835,67 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		plan.CanonicalLineageReset = true
 		return nil
 	}
-	if previous.CanonicalPrefixHash == "" || previous.CanonicalEnvelopeHash == "" {
-		if len(previous.SegmentIDs) <= len(plan.SegmentIDs) && slices.Equal(previous.SegmentIDs, plan.SegmentIDs[:len(previous.SegmentIDs)]) {
-			return nil
-		}
+	if previous.ContextProjectionRevision != ContextProjectionRevision || previous.CanonicalHistoryPrefixHash == "" {
 		return ErrContextLineageMigrationNeeded
-	}
-	if previous.CanonicalEnvelopeHash != envelopeHash {
-		return ErrContextEnvelopeChanged
 	}
 	if previous.CanonicalMessageCount < 0 || previous.CanonicalMessageCount > len(messageHashes) {
 		return fmt.Errorf("%w: canonical history was shortened", ErrContextPrefixDrift)
 	}
-	if canonicalPrefixHash(envelopeHash, messageHashes[:previous.CanonicalMessageCount]) != previous.CanonicalPrefixHash {
+	if HashStrings(messageHashes[:previous.CanonicalMessageCount]...) != previous.CanonicalHistoryPrefixHash {
 		return fmt.Errorf("%w: canonical history prefix changed", ErrContextPrefixDrift)
 	}
+	var previousRender *ProviderRequestRecord
+	for index := len(requests) - 1; index >= 0; index-- {
+		candidate := &requests[index]
+		if candidate.CompactionGeneration == plan.CompactionGeneration && candidate.RenderLineageKey == plan.RenderLineageKey {
+			previousRender = candidate
+			break
+		}
+	}
+	if previousRender == nil {
+		return nil
+	}
+	if previousRender.ContextProjectionRevision != ContextProjectionRevision || previousRender.CanonicalEnvelopeHash == "" {
+		return ErrContextLineageMigrationNeeded
+	}
+	if previousRender.CanonicalEnvelopeHash != envelopeHash {
+		return ErrContextEnvelopeChanged
+	}
+	if len(previousRender.SegmentIDs) > len(plan.SegmentIDs) || !slices.Equal(previousRender.SegmentIDs, plan.SegmentIDs[:len(previousRender.SegmentIDs)]) {
+		return ErrContextRenderLineageChanged
+	}
 	return nil
+}
+
+func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, providerName, model string) error {
+	if store == nil || strings.TrimSpace(turnID) == "" {
+		return nil
+	}
+	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	if err != nil {
+		return err
+	}
+	for _, request := range requests {
+		if request.TurnID == turnID && (request.Provider != providerName || request.Model != model) {
+			return ErrTurnModelDrift
+		}
+	}
+	return nil
+}
+
+func ProviderModelChanged(ctx context.Context, store Store, promptScopeID, providerName, model string) (bool, error) {
+	if store == nil {
+		return false, nil
+	}
+	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	if err != nil {
+		return false, err
+	}
+	if len(requests) == 0 {
+		return false, nil
+	}
+	previous := requests[len(requests)-1]
+	return previous.Provider != providerName || previous.Model != model, nil
 }
 
 func canonicalMessageHash(message session.Message) string {
@@ -852,6 +917,10 @@ func canonicalPrefixHash(envelopeHash string, messageHashes []string) string {
 	parts = append(parts, envelopeHash)
 	parts = append(parts, messageHashes...)
 	return HashStrings(parts...)
+}
+
+func renderLineageKey(providerName, model, adapterVersion, cacheNamespace string) string {
+	return HashStrings(providerName, model, adapterVersion, cacheNamespace)
 }
 
 func segmentForCurrentRef(existing, current Segment) Segment {
@@ -1189,30 +1258,33 @@ func RecordRequest(ctx context.Context, store Store, ref PromptScopeRef, step in
 		return ProviderRequestRecord{}, err
 	}
 	record := ProviderRequestRecord{
-		ID:                    fmt.Sprintf("%s:req:%d", ref.RunID, step),
-		PromptScopeID:         ref.PromptScopeID,
-		RunID:                 ref.RunID,
-		ThreadID:              ref.ThreadID,
-		TurnID:                ref.TurnID,
-		Step:                  step,
-		Provider:              providerName,
-		Model:                 model,
-		CacheNamespace:        policy.Namespace,
-		CacheRetention:        policy.Retention,
-		SegmentIDs:            append([]string(nil), plan.SegmentIDs...),
-		ProviderPayloadHash:   plan.PayloadHash,
-		PrefixRawHash:         plan.PrefixHash,
-		PreviousResponseID:    plan.PreviousResponseID,
-		CompactionGeneration:  plan.CompactionGeneration,
-		CompactionWindowID:    plan.CompactionWindowID,
-		CompactionEntryID:     plan.CompactionEntryID,
-		CanonicalEnvelopeHash: plan.CanonicalEnvelopeHash,
-		CanonicalMessageCount: plan.CanonicalMessageCount,
-		CanonicalPrefixHash:   plan.CanonicalPrefixHash,
-		RequestEstimate:       plan.RequestEstimate,
-		ProjectedPressure:     plan.ProjectedPressure,
-		RequestShape:          plan.RequestShape,
-		CreatedAt:             time.Now(),
+		ID:                         fmt.Sprintf("%s:req:%d", ref.RunID, step),
+		PromptScopeID:              ref.PromptScopeID,
+		RunID:                      ref.RunID,
+		ThreadID:                   ref.ThreadID,
+		TurnID:                     ref.TurnID,
+		Step:                       step,
+		Provider:                   providerName,
+		Model:                      model,
+		CacheNamespace:             policy.Namespace,
+		CacheRetention:             policy.Retention,
+		SegmentIDs:                 append([]string(nil), plan.SegmentIDs...),
+		ProviderPayloadHash:        plan.PayloadHash,
+		PrefixRawHash:              plan.PrefixHash,
+		PreviousResponseID:         plan.PreviousResponseID,
+		CompactionGeneration:       plan.CompactionGeneration,
+		CompactionWindowID:         plan.CompactionWindowID,
+		CompactionEntryID:          plan.CompactionEntryID,
+		CanonicalEnvelopeHash:      plan.CanonicalEnvelopeHash,
+		CanonicalMessageCount:      plan.CanonicalMessageCount,
+		CanonicalPrefixHash:        plan.CanonicalPrefixHash,
+		CanonicalHistoryPrefixHash: plan.CanonicalHistoryPrefixHash,
+		RenderLineageKey:           plan.RenderLineageKey,
+		ContextProjectionRevision:  plan.ContextProjectionRevision,
+		RequestEstimate:            plan.RequestEstimate,
+		ProjectedPressure:          plan.ProjectedPressure,
+		RequestShape:               plan.RequestShape,
+		CreatedAt:                  time.Now(),
 	}
 	if store == nil {
 		return record, nil
@@ -1246,35 +1318,38 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		return ProviderRequestRecord{}, err
 	}
 	record := ProviderRequestRecord{
-		ID:                    fmt.Sprintf("%s:req:%d", ref.RunID, req.Step),
-		PromptScopeID:         ref.PromptScopeID,
-		RunID:                 ref.RunID,
-		ThreadID:              ref.ThreadID,
-		TurnID:                ref.TurnID,
-		Step:                  req.Step,
-		LogicalRequestID:      req.LogicalRequestID,
-		AttemptID:             req.AttemptID,
-		AttemptEpoch:          req.AttemptEpoch,
-		Attempt:               req.Attempt,
-		OverflowRetried:       req.OverflowRetried,
-		Provider:              req.Provider,
-		Model:                 req.Model,
-		CacheNamespace:        req.Cache.Namespace,
-		CacheRetention:        req.Cache.Retention,
-		SegmentIDs:            append([]string(nil), req.RawPlan.SegmentIDs...),
-		ProviderPayloadHash:   req.RawPlan.PayloadHash,
-		PrefixRawHash:         req.RawPlan.PrefixHash,
-		PreviousResponseID:    req.RawPlan.PreviousResponseID,
-		CompactionGeneration:  req.RawPlan.CompactionGeneration,
-		CompactionWindowID:    req.RawPlan.CompactionWindowID,
-		CompactionEntryID:     req.RawPlan.CompactionEntryID,
-		CanonicalEnvelopeHash: req.RawPlan.CanonicalEnvelopeHash,
-		CanonicalMessageCount: req.RawPlan.CanonicalMessageCount,
-		CanonicalPrefixHash:   req.RawPlan.CanonicalPrefixHash,
-		RequestEstimate:       req.RawPlan.RequestEstimate,
-		ProjectedPressure:     req.RawPlan.ProjectedPressure,
-		RequestShape:          req.RawPlan.RequestShape,
-		CreatedAt:             time.Now(),
+		ID:                         fmt.Sprintf("%s:req:%d", ref.RunID, req.Step),
+		PromptScopeID:              ref.PromptScopeID,
+		RunID:                      ref.RunID,
+		ThreadID:                   ref.ThreadID,
+		TurnID:                     ref.TurnID,
+		Step:                       req.Step,
+		LogicalRequestID:           req.LogicalRequestID,
+		AttemptID:                  req.AttemptID,
+		AttemptEpoch:               req.AttemptEpoch,
+		Attempt:                    req.Attempt,
+		OverflowRetried:            req.OverflowRetried,
+		Provider:                   req.Provider,
+		Model:                      req.Model,
+		CacheNamespace:             req.Cache.Namespace,
+		CacheRetention:             req.Cache.Retention,
+		SegmentIDs:                 append([]string(nil), req.RawPlan.SegmentIDs...),
+		ProviderPayloadHash:        req.RawPlan.PayloadHash,
+		PrefixRawHash:              req.RawPlan.PrefixHash,
+		PreviousResponseID:         req.RawPlan.PreviousResponseID,
+		CompactionGeneration:       req.RawPlan.CompactionGeneration,
+		CompactionWindowID:         req.RawPlan.CompactionWindowID,
+		CompactionEntryID:          req.RawPlan.CompactionEntryID,
+		CanonicalEnvelopeHash:      req.RawPlan.CanonicalEnvelopeHash,
+		CanonicalMessageCount:      req.RawPlan.CanonicalMessageCount,
+		CanonicalPrefixHash:        req.RawPlan.CanonicalPrefixHash,
+		CanonicalHistoryPrefixHash: req.RawPlan.CanonicalHistoryPrefixHash,
+		RenderLineageKey:           req.RawPlan.RenderLineageKey,
+		ContextProjectionRevision:  req.RawPlan.ContextProjectionRevision,
+		RequestEstimate:            req.RawPlan.RequestEstimate,
+		ProjectedPressure:          req.RawPlan.ProjectedPressure,
+		RequestShape:               req.RawPlan.RequestShape,
+		CreatedAt:                  time.Now(),
 	}
 	if store == nil {
 		return record, nil

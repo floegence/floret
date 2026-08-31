@@ -25,3 +25,15 @@ provider request.
 
 Tests use `florettest.ScriptedGateway`. Production has no fake response field or
 provider-name selection branch.
+
+Provider request context has two invariants. The canonical message lineage is
+provider-neutral and append-only for one prompt scope and compaction generation.
+Rendered system, tool, and message segments use an independent lineage keyed by
+provider, model, adapter revision, and cache namespace. Switching models on a
+new Turn keeps the complete canonical path without treating the new envelope as
+drift. Switching back reuses that model's earlier raw prefix and renders the
+intervening canonical messages as a suffix.
+
+Opaque provider state, response IDs, and native continuation metadata never
+cross a provider/model change. A smaller target model triggers normal
+pre-request compaction only when its own context policy reports pressure.

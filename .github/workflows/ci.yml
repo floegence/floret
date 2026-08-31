@@ -62,10 +62,10 @@ jobs:
       - name: Exercise public conformance helpers
         run: go test ./florettest
 
-      - name: Enforce the v5 public API baseline
-        run: scripts/check_v5_api_compatibility.sh
+      - name: Enforce the v6 public API baseline
+        run: scripts/check_v6_api_compatibility.sh
 
-      - name: Compile a blank downstream module from the proposed v5 module zip
+      - name: Compile a blank downstream module from the proposed v6 module zip
         run: scripts/check_candidate_release_adoption.sh
 
       - name: Compile and run public examples

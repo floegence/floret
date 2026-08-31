@@ -39,10 +39,13 @@ journal is the only durable lifecycle authority; hosts must not persist a
 second transcript or rebuild a Floret view from audit records.
 
 `AgentRequest.Input` is the input for the execution being created. For an
-Ask User continuation it is the accepted interaction answer;
+Ask User continuation it is the accepted, secret-free interaction resolution;
 `AgentRequest.CanonicalTurnInput` remains the original canonical user input of
 that Turn. Agent factories use the latter when resolving stable task identity
 and must not reinterpret an interaction answer as a replacement objective.
+Public answers are also projected once as a canonical user message, so the
+continuation and later Turns see the same durable fact. Secret values are
+ephemeral; only a redacted marker remains in the journal and provider history.
 
 After `Send` returns an accepted turn, provider execution uses a runtime-owned
 background context. The request context only controls admission and response
@@ -141,6 +144,12 @@ tools, effect policy, capabilities, context policy, and execution limits. The
 provider gateway is the only model transport boundary. Provider credentials,
 editable profiles, endpoint authorization, uploads before admission, and UI
 rendering remain host-owned.
+
+The host may return an Agent with a different provider or model for a new Turn.
+Floret keeps the canonical thread path intact, starts or resumes that model's
+independent render lineage, and clears provider-native continuation state across
+the switch. Every Run that continues an existing Turn must use the provider and
+model recorded by its first request; drift fails before dispatch.
 
 `WithAgentTurnCompletionPolicy` makes completion part of that immutable Agent
 snapshot. Under `TurnCompletionExplicitSignal`, both `ask_user` and

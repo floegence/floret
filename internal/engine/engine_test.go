@@ -1112,8 +1112,9 @@ func TestPromptCacheActivatesNewToolsetThroughCompaction(t *testing.T) {
 	first.Tools = reg
 	first.Options.RunID = "turn-1"
 	first.Options.ThreadID = "thread"
-	if got := first.Run(context.Background(), "first"); got.Status != engine.Completed {
-		t.Fatalf("first = %#v", got)
+	firstResult := first.Run(context.Background(), "first")
+	if firstResult.Status != engine.Completed {
+		t.Fatalf("first = %#v", firstResult)
 	}
 	mustRegister(t, reg, stringTool("write", "Write", false, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
 		return "written", nil
@@ -1126,6 +1127,9 @@ func TestPromptCacheActivatesNewToolsetThroughCompaction(t *testing.T) {
 	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
 	second.Options.RunID = "turn-2"
 	second.Options.ThreadID = "thread"
+	if err := store.AppendTranscript("turn-2", firstResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
 	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed || got.Metrics.Compactions != 1 {
 		t.Fatalf("second = %#v, want one context-generation compaction", got)
 	}
@@ -1174,6 +1178,246 @@ func TestLegacyPromptScopeDriftCompactsBeforeProviderDispatch(t *testing.T) {
 	if p.Requests[0].PreviousState != nil || p.Requests[0].RawPlan.PreviousResponseID != "" {
 		t.Fatalf("provider continuation crossed a context-generation boundary: %#v", p.Requests[0])
 	}
+}
+
+func TestPromptCacheSwitchesModelsOnlyAtTurnBoundaryWithoutCompaction(t *testing.T) {
+	transcripts := session.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
+	stateA := &provider.State{Kind: "response_id", ID: "state-a"}
+	providerA1 := harness.NewScriptedProvider(harness.Step(
+		harness.Text("answer-a1"), provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: stateA},
+	))
+	first := newTestEngine(providerA1, &event.Recorder{})
+	first.Store = transcripts
+	first.Prompt = promptStore
+	first.Options.RunID = "run-a1"
+	first.Options.TurnID = "turn-a1"
+	first.Options.ThreadID = "thread"
+	first.Options.PromptScopeID = "thread"
+	first.Options.ProviderName = "deepseek"
+	first.Options.Model = "flash"
+	firstResult := first.Run(context.Background(), "one")
+	if firstResult.Status != engine.Completed || firstResult.Metrics.Compactions != 0 {
+		t.Fatalf("first result=%#v", firstResult)
+	}
+
+	if err := transcripts.AppendTranscript("run-b", firstResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
+	stateB := &provider.State{Kind: "response_id", ID: "state-b"}
+	providerB := harness.NewScriptedProvider(harness.Step(
+		harness.Text("answer-b"), provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: stateB},
+	))
+	second := newTestEngine(providerB, &event.Recorder{})
+	second.Store = transcripts
+	second.Prompt = promptStore
+	second.Options.RunID = "run-b"
+	second.Options.TurnID = "turn-b"
+	second.Options.ThreadID = "thread"
+	second.Options.PromptScopeID = "thread"
+	second.Options.ProviderName = "deepseek"
+	second.Options.Model = "pro"
+	second.Options.PreviousProviderState = stateA
+	secondResult := second.Run(context.Background(), "two")
+	if secondResult.Status != engine.Completed || secondResult.Metrics.Compactions != 0 || len(providerB.Requests) != 1 {
+		t.Fatalf("A to B result=%#v requests=%d", secondResult, len(providerB.Requests))
+	}
+	if providerB.Requests[0].PreviousState != nil || providerB.Requests[0].RawPlan.CanonicalLineageReset {
+		t.Fatalf("A continuation crossed into B or model switch compacted: %#v", providerB.Requests[0])
+	}
+	if !providerMessagePrefixForTest(providerA1.Requests[0].Messages, providerB.Requests[0].Messages) {
+		t.Fatalf("B request lost canonical A prefix: A=%#v B=%#v", providerA1.Requests[0].Messages, providerB.Requests[0].Messages)
+	}
+
+	if err := transcripts.AppendTranscript("run-a2", secondResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
+	providerA2 := harness.NewScriptedProvider(harness.Step(harness.Text("answer-a2"), harness.Done()))
+	third := newTestEngine(providerA2, &event.Recorder{})
+	third.Store = transcripts
+	third.Prompt = promptStore
+	third.Options.RunID = "run-a2"
+	third.Options.TurnID = "turn-a2"
+	third.Options.ThreadID = "thread"
+	third.Options.PromptScopeID = "thread"
+	third.Options.ProviderName = "deepseek"
+	third.Options.Model = "flash"
+	third.Options.PreviousProviderState = stateA
+	thirdResult := third.Run(context.Background(), "three")
+	if thirdResult.Status != engine.Completed || thirdResult.Metrics.Compactions != 0 || len(providerA2.Requests) != 1 {
+		t.Fatalf("A to B to A result=%#v requests=%d", thirdResult, len(providerA2.Requests))
+	}
+	if providerA2.Requests[0].PreviousState != nil {
+		t.Fatalf("old A continuation state was restored after B: %#v", providerA2.Requests[0].PreviousState)
+	}
+	firstAPlan := providerA1.Requests[0].RawPlan
+	secondAPlan := providerA2.Requests[0].RawPlan
+	if len(secondAPlan.SegmentIDs) < len(firstAPlan.SegmentIDs) || !slices.Equal(firstAPlan.SegmentIDs, secondAPlan.SegmentIDs[:len(firstAPlan.SegmentIDs)]) {
+		t.Fatalf("A raw prefix changed across A-B-A: first=%#v second=%#v", firstAPlan.SegmentIDs, secondAPlan.SegmentIDs)
+	}
+	if !providerMessagePrefixForTest(providerB.Requests[0].Messages, providerA2.Requests[0].Messages) {
+		t.Fatalf("returning A request lost B canonical history: B=%#v A2=%#v", providerB.Requests[0].Messages, providerA2.Requests[0].Messages)
+	}
+	if firstAPlan.RenderLineageKey == providerB.Requests[0].RawPlan.RenderLineageKey || firstAPlan.RenderLineageKey != secondAPlan.RenderLineageKey {
+		t.Fatalf("render lineage keys A1=%q B=%q A2=%q", firstAPlan.RenderLineageKey, providerB.Requests[0].RawPlan.RenderLineageKey, secondAPlan.RenderLineageKey)
+	}
+}
+
+func TestPromptCacheRejectsModelSwitchWithinTurnBeforeProviderDispatch(t *testing.T) {
+	transcripts := session.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
+	providerA := harness.NewScriptedProvider(harness.Step(harness.Text("answer-a"), harness.Done()))
+	first := newTestEngine(providerA, &event.Recorder{})
+	first.Store = transcripts
+	first.Prompt = promptStore
+	first.Options.RunID = "run-a"
+	first.Options.TurnID = "turn"
+	first.Options.ThreadID = "thread"
+	first.Options.PromptScopeID = "thread"
+	first.Options.ProviderName = "deepseek"
+	first.Options.Model = "flash"
+	firstResult := first.Run(context.Background(), "one")
+	if firstResult.Status != engine.Completed {
+		t.Fatalf("first result=%#v", firstResult)
+	}
+	if err := transcripts.AppendTranscript("run-b", firstResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
+	providerB := harness.NewScriptedProvider(harness.Step(harness.Text("must not run"), harness.Done()))
+	second := newTestEngine(providerB, &event.Recorder{})
+	second.Store = transcripts
+	second.Prompt = promptStore
+	second.Options.RunID = "run-b"
+	second.Options.TurnID = "turn"
+	second.Options.ThreadID = "thread"
+	second.Options.PromptScopeID = "thread"
+	second.Options.ProviderName = "deepseek"
+	second.Options.Model = "pro"
+	result := second.Run(context.Background(), "resume")
+	if result.Status != engine.Failed || !errors.Is(result.Err, cache.ErrTurnModelDrift) || len(providerB.Requests) != 0 {
+		t.Fatalf("same-turn model drift result=%#v provider_requests=%d", result, len(providerB.Requests))
+	}
+}
+
+func TestPromptCacheSwitchToSmallerModelCompactsOnlyForTargetPressure(t *testing.T) {
+	transcripts := session.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
+	providerA := harness.NewScriptedProvider(harness.Step(harness.Text("answer-a"), harness.Done()))
+	first := newTestEngine(providerA, &event.Recorder{})
+	first.Store = transcripts
+	first.Prompt = promptStore
+	first.Options.RunID = "run-a"
+	first.Options.TurnID = "turn-a"
+	first.Options.ThreadID = "thread"
+	first.Options.PromptScopeID = "thread"
+	first.Options.ProviderName = "deepseek"
+	first.Options.Model = "large"
+	first.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 10000, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+	firstResult := first.Run(context.Background(), strings.Repeat("old ", 1200))
+	if firstResult.Status != engine.Completed || firstResult.Metrics.Compactions != 0 {
+		t.Fatalf("large-model result=%#v", firstResult)
+	}
+	if err := transcripts.AppendTranscript("run-b", firstResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
+	providerB := harness.NewScriptedProvider(harness.Step(harness.Text("answer-b"), harness.Done()))
+	second := newTestEngine(providerB, &event.Recorder{})
+	second.Store = transcripts
+	second.Prompt = promptStore
+	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	second.Options.RunID = "run-b"
+	second.Options.TurnID = "turn-b"
+	second.Options.ThreadID = "thread"
+	second.Options.PromptScopeID = "thread"
+	second.Options.ProviderName = "deepseek"
+	second.Options.Model = "small"
+	second.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1400, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+	secondResult := second.Run(context.Background(), "incoming-once")
+	if secondResult.Status != engine.Completed || secondResult.Metrics.Compactions != 1 || len(providerB.Requests) != 1 {
+		t.Fatalf("small-model result=%#v requests=%d", secondResult, len(providerB.Requests))
+	}
+	if providerB.Requests[0].RawPlan.CompactionGeneration != providerA.Requests[0].RawPlan.CompactionGeneration+1 {
+		t.Fatalf("small-model compaction generation A=%d B=%d", providerA.Requests[0].RawPlan.CompactionGeneration, providerB.Requests[0].RawPlan.CompactionGeneration)
+	}
+	incomingCount := 0
+	for _, message := range providerB.Requests[0].Messages {
+		if message.Role == session.User && message.Content == "incoming-once" {
+			incomingCount++
+		}
+	}
+	if incomingCount != 1 {
+		t.Fatalf("incoming user message appeared %d times after compaction: %#v", incomingCount, providerB.Requests[0].Messages)
+	}
+}
+
+func TestPromptCacheRendererRawDriftCommitsOneLineageCompaction(t *testing.T) {
+	transcripts := session.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
+	firstScript := harness.NewScriptedProvider(harness.Step(harness.Text("answer-one"), harness.Done()))
+	firstProvider := renderedScriptedProvider{Provider: firstScript, revision: "one"}
+	first := newTestEngine(firstProvider, &event.Recorder{})
+	first.Store = transcripts
+	first.Prompt = promptStore
+	first.Options.RunID = "run-one"
+	first.Options.TurnID = "turn-one"
+	first.Options.ThreadID = "thread"
+	first.Options.PromptScopeID = "thread"
+	first.Options.ProviderName = "test"
+	first.Options.Model = "model"
+	firstResult := first.Run(context.Background(), "one")
+	if firstResult.Status != engine.Completed {
+		t.Fatalf("first result=%#v", firstResult)
+	}
+	if err := transcripts.AppendTranscript("run-two", firstResult.Messages...); err != nil {
+		t.Fatal(err)
+	}
+	secondScript := harness.NewScriptedProvider(harness.Step(harness.Text("answer-two"), harness.Done()))
+	secondProvider := renderedScriptedProvider{Provider: secondScript, revision: "two"}
+	second := newTestEngine(secondProvider, &event.Recorder{})
+	second.Store = transcripts
+	second.Prompt = promptStore
+	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	second.Options.RunID = "run-two"
+	second.Options.TurnID = "turn-two"
+	second.Options.ThreadID = "thread"
+	second.Options.PromptScopeID = "thread"
+	second.Options.ProviderName = "test"
+	second.Options.Model = "model"
+	result := second.Run(context.Background(), "two")
+	if result.Status != engine.Completed || result.Metrics.Compactions != 1 || len(secondScript.Requests) != 1 {
+		t.Fatalf("renderer drift result=%#v requests=%d", result, len(secondScript.Requests))
+	}
+	if secondScript.Requests[0].RawPlan.CompactionGeneration != firstScript.Requests[0].RawPlan.CompactionGeneration+1 || !secondScript.Requests[0].RawPlan.CanonicalLineageReset {
+		t.Fatalf("renderer drift did not establish one committed generation: first=%#v second=%#v", firstScript.Requests[0].RawPlan, secondScript.Requests[0].RawPlan)
+	}
+}
+
+func providerMessagePrefixForTest(prefix, messages []session.Message) bool {
+	if len(prefix) > len(messages) {
+		return false
+	}
+	return slices.EqualFunc(prefix, messages[:len(prefix)], func(left, right session.Message) bool {
+		return left.Role == right.Role && left.Content == right.Content && left.Reasoning == right.Reasoning &&
+			left.ToolCallID == right.ToolCallID && left.ToolName == right.ToolName && left.ToolArgs == right.ToolArgs
+	})
+}
+
+type renderedScriptedProvider struct {
+	provider.Provider
+	revision string
+}
+
+func (rendered renderedScriptedProvider) MessageRaw(kind cache.SegmentKind, message session.Message) (string, string, error) {
+	raw, err := cache.CanonicalJSON(map[string]any{
+		"revision": rendered.revision, "kind": kind, "role": message.Role, "content": message.Content,
+		"reasoning": message.Reasoning, "tool_call_id": message.ToolCallID, "tool_name": message.ToolName, "tool_args": message.ToolArgs,
+	})
+	return raw, cache.FragmentGenericMessage, err
+}
+
+func (rendered renderedScriptedProvider) ToolRaw(tool tools.ToolDefinition) (string, string, error) {
+	raw, err := cache.CanonicalJSON(map[string]any{"revision": rendered.revision, "tool": tool})
+	return raw, cache.FragmentGenericToolset, err
 }
 
 func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) {

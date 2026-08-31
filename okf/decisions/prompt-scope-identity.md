@@ -4,7 +4,7 @@ title: Prompt Scope Identity
 description: Prompt cache and provider ledgers use PromptScopeID as their reuse boundary rather than RunID.
 resource: /internal/provider/cache/promptcache.go
 tags: [decision, identity, prompt-cache]
-timestamp: 2026-06-20T00:00:00Z
+timestamp: 2026-08-31T00:00:00Z
 ---
 
 # Decision
@@ -23,6 +23,12 @@ on incidental equality between other IDs.
 
 Storage, ledgers, events, and public request shapes must carry explicit
 identity fields. Code must not infer prompt-cache ownership from `RunID`.
+
+Within one prompt scope, the canonical message lineage is shared by every
+model. Raw render lineage is narrower and keyed by provider, model, adapter
+revision, and cache namespace. This lets a new Turn switch models without
+changing canonical history while preserving an exact raw prefix when it later
+returns to a previously used model.
 
 # Related
 

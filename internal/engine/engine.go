@@ -2040,6 +2040,13 @@ func normalizeAndValidateTurnSupplementalContextItem(item TurnSupplementalContex
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
+	if err := cache.ValidateTurnModel(ctx, e.prompt, opts.PromptScopeID, opts.TurnID, opts.ProviderName, opts.Model); err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
+	}
+	providerModelChanged, err := cache.ProviderModelChanged(ctx, e.prompt, opts.PromptScopeID, opts.ProviderName, opts.Model)
+	if err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
+	}
 	toolDefinitions := appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
 	if err := validateConfiguredTools(toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
 		return provider.Request{}, err
@@ -2081,12 +2088,15 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		"reasoning": opts.Reasoning, "completion_policy": opts.CompletionPolicy,
 		"context_policy": opts.ContextPolicy,
 	}, canonicalHistory); err != nil {
-		if errors.Is(err, cache.ErrContextLineageMigrationNeeded) || errors.Is(err, cache.ErrContextEnvelopeChanged) {
+		if contextLineageCompactionRequired(err) {
 			return provider.Request{}, err
 		}
 		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
 	}
 	if plan.CanonicalLineageReset {
+		plan.PreviousResponseID = ""
+	}
+	if providerModelChanged {
 		plan.PreviousResponseID = ""
 	}
 	activeTools := cloneProviderToolDefinitions(toolset.Tools)
@@ -2150,7 +2160,16 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if plan.CanonicalLineageReset {
 		req.PreviousState = nil
 	}
+	if providerModelChanged {
+		req.PreviousState = nil
+	}
 	return req, nil
+}
+
+func contextLineageCompactionRequired(err error) bool {
+	return errors.Is(err, cache.ErrContextLineageMigrationNeeded) ||
+		errors.Is(err, cache.ErrContextEnvelopeChanged) ||
+		errors.Is(err, cache.ErrContextRenderLineageChanged)
 }
 
 func assembleMessages(systemPrompt string, history []session.Message) []session.Message {
@@ -2398,7 +2417,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
-		if errors.Is(err, cache.ErrContextLineageMigrationNeeded) || errors.Is(err, cache.ErrContextEnvelopeChanged) {
+		if contextLineageCompactionRequired(err) {
 			usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 			pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 			next, migrated, _, compactErr := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonContextLineage, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)

@@ -1,6 +1,16 @@
 # Floret OKF Update Log
 
 ## 2026-08-31
+* **Turn-bound model switching**: Canonical messages now remain append-only
+  across providers and models while each provider/model render lineage keeps
+  its own exact raw prefix. New Turns may switch without automatic compaction;
+  same-Turn drift and cross-model continuation state fail closed.
+* **Canonical interaction answers**: Public Ask User answers now enter provider
+  history exactly once and remain visible in later Turns. Secret values stay
+  ephemeral and only a redacted marker is durable.
+* **Pre-dispatch prompt checkpoint**: Ordinary provider requests atomically
+  persist their segments, toolsets, and lineage before dispatch. Failed or
+  cancelled checkpoints leave both durable and in-memory prompt state intact.
 * **Append-only context lineage**: Provider requests now verify one stable
   envelope and exact historical prefix per compaction generation. Model output,
   tool/control facts, and interaction results only append; capability changes

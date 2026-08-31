@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v6@v6.1.0
+go get github.com/floegence/floret/v6@v6.1.1
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -176,12 +176,22 @@ effect outcome cannot be confirmed, Floret atomically fails the turn with
 `effect_outcome_unknown`, closes every unfinished tool and interaction, clears
 provider continuation, and never replays the effect.
 `Respond` resolves the matching approval or input interaction in place.
+Public Ask User answers become one canonical user message and remain in every
+later provider request. Secret answers are sent only to the current continuation;
+the journal and later context retain a redacted marker, never the secret value.
 
 `runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
 Gateway, tools, capabilities, reasoning policy, and execution policy. The
 effective snapshot and continuation state used by each run are Floret-owned
 durable facts. Provider credentials and editable profile sources remain in the
 host.
+
+An `AgentFactory` may select a different provider or model for a new Turn. The
+canonical conversation remains unchanged. Floret maintains a separate rendered
+prefix for each provider/model line, clears opaque continuation state when the
+line changes, and compacts only when the selected model's context window needs
+it. A waiting interaction, tool continuation, or retry remains frozen to the
+provider and model already recorded for that Turn.
 
 Current views contain one Floret-ordered sequence of directly renderable user,
 thinking, assistant, tool, and interaction items, plus pending interactions and

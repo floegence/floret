@@ -15,7 +15,7 @@ cannot accidentally resolve an unpublished sibling module:
 ```bash
 GOWORK=off go test ./...
 GOWORK=off go vet ./...
-GOWORK=off go test -race ./internal/engine ./internal/agentharness ./internal/sessiontree ./internal/storage/sqlite ./runtime ./tools
+GOWORK=off go test -race ./internal/engine ./internal/agentharness ./internal/sessiontree ./storage ./runtime ./tools
 GOWORK=off go test ./florettest ./cmd/examples/...
 for example in cmd/examples/*; do GOWORK=off go run "./${example}"; done
 GOWORK=off govulncheck ./...
@@ -61,15 +61,6 @@ Before a tag exists, validate the embedded consumer and verifier templates with:
 
 ```bash
 ./scripts/check_published_release_adoption.sh --check
-```
-
-For context compaction runtime, observation, or Test UI changes, also exercise
-the focused scenario target:
-
-```bash
-GOWORK=off go test ./runtime ./internal/testui
-GOWORK=off go run ./cmd/floret-test-ui -addr 127.0.0.1:8765
-# In the Test UI, run the "context compaction" check.
 ```
 
 # What It Protects

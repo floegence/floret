@@ -123,8 +123,8 @@ func clonePromptState(state *cache.MemoryStore) (*cache.MemoryStore, error) {
 }
 
 // FinishTurn commits the terminal semantic state and accumulated prompt
-// observations in one transaction. Prompt segments and provider diagnostics
-// are memory-resident before this boundary so they never delay provider dispatch.
+// observations in one transaction. Provider request checkpoints are already
+// durable; this boundary adds response diagnostics and terminal state.
 func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
@@ -216,7 +216,25 @@ func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scopeID, provide
 }
 
 func (kernel *BackendKernel) AppendProviderRequest(ctx context.Context, value cache.ProviderRequestRecord) error {
-	return kernel.updatePrompt(ctx, func(state *cache.MemoryStore) error { return state.AppendProviderRequest(ctx, value) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	nextPrompt, err := clonePromptState(kernel.prompt)
+	if err != nil {
+		return err
+	}
+	if err := nextPrompt.AppendProviderRequest(ctx, value); err != nil {
+		return err
+	}
+	if err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
+		return savePromptState(tx, nextPrompt)
+	}); err != nil {
+		return err
+	}
+	kernel.prompt = nextPrompt
+	return nil
 }
 
 func (kernel *BackendKernel) ProviderRequests(ctx context.Context, scopeID string) (result []cache.ProviderRequestRecord, err error) {

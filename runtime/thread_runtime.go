@@ -1613,9 +1613,7 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 			service.restoreSecretInteraction(ctx, threadID, interaction, meta.LeafID)
 			return
 		}
-		service.continueCanonicalInput(service.runtime(threadID), threadID, interaction, InteractionAnswer{
-			InteractionID: interaction.ID, Input: maps.Clone(interaction.Resolution.Input),
-		})
+		service.continueCanonicalInput(service.runtime(threadID), threadID, interaction, *interaction.Resolution, nil)
 		return
 	}
 	service.redispatchAcceptedTurn(ctx, threadID, turnID, runID)
@@ -2904,6 +2902,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 	}
 	entries := make([]sessiontree.Entry, 0, len(answers))
 	resolutions := make(map[string]InteractionResolution, len(answers))
+	secretInputs := make(map[string]map[string]string, len(answers))
 	pendingAnswers := make([]InteractionAnswer, 0, len(answers))
 	for _, answer := range answers {
 		id := strings.TrimSpace(answer.InteractionID)
@@ -2917,7 +2916,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		if interaction.Kind == ThreadInteractionInput && len(answer.Input) == 0 {
 			return ThreadView{}, errors.New("input answer is required")
 		}
-		resolution, resolutionErr := canonicalInteractionResolution(interaction, answer)
+		resolution, secretInput, resolutionErr := canonicalInteractionResolution(interaction, answer)
 		if resolutionErr != nil {
 			return ThreadView{}, resolutionErr
 		}
@@ -2928,6 +2927,9 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 			continue
 		}
 		resolutions[id] = resolution
+		if len(secretInput) != 0 {
+			secretInputs[id] = secretInput
+		}
 		pendingAnswers = append(pendingAnswers, answer)
 		payload, marshalErr := json.Marshal(resolution)
 		if marshalErr != nil {
@@ -3000,7 +3002,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 	}
 	view := service.currentView(actor)
 	service.publish(view)
-	go service.resumeCanonicalInteractions(actor, threadID, resolutions, pendingAnswers, byID)
+	go service.resumeCanonicalInteractions(actor, threadID, resolutions, secretInputs, pendingAnswers, byID)
 	return view, nil
 }
 
@@ -3022,7 +3024,7 @@ func (service *threadRuntimeService) appendRuntimeFactsError(ctx context.Context
 	return nil
 }
 
-func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRuntimeState, threadID identity.ThreadID, resolutions map[string]InteractionResolution, answers []InteractionAnswer, interactions map[string]ThreadInteraction) {
+func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRuntimeState, threadID identity.ThreadID, resolutions map[string]InteractionResolution, secretInputs map[string]map[string]string, answers []InteractionAnswer, interactions map[string]ThreadInteraction) {
 	resumedLocally := make(map[string]bool, len(resolutions))
 	_ = actor.apply(context.Background(), func() error {
 		for id, resolution := range resolutions {
@@ -3036,9 +3038,10 @@ func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRu
 	})
 	recoverApproval := false
 	for _, answer := range answers {
-		interaction := interactions[answer.InteractionID]
+		interactionID := strings.TrimSpace(answer.InteractionID)
+		interaction := interactions[interactionID]
 		if interaction.Kind == ThreadInteractionInput {
-			service.continueCanonicalInput(actor, threadID, interaction, answer)
+			service.continueCanonicalInput(actor, threadID, interaction, resolutions[interactionID], secretInputs[interactionID])
 		} else if interaction.Kind == ThreadInteractionApproval && !resumedLocally[interaction.ID] {
 			recoverApproval = true
 		}
@@ -3048,27 +3051,29 @@ func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRu
 	}
 }
 
-func canonicalInteractionResolution(interaction ThreadInteraction, answer InteractionAnswer) (InteractionResolution, error) {
+func canonicalInteractionResolution(interaction ThreadInteraction, answer InteractionAnswer) (InteractionResolution, map[string]string, error) {
 	resolution := InteractionResolution{Accepted: true, Approved: answer.Approved}
 	if interaction.Kind != ThreadInteractionInput {
-		return resolution, nil
+		return resolution, nil, nil
 	}
 	if interaction.Input == nil {
-		return InteractionResolution{}, ErrAuthorityCorrupt
+		return InteractionResolution{}, nil, ErrAuthorityCorrupt
 	}
 	questions := make(map[string]InputQuestion, len(interaction.Input.Questions))
 	for _, question := range interaction.Input.Questions {
 		questions[strings.TrimSpace(question.ID)] = question
 	}
 	public := make(map[string]string)
+	secret := make(map[string]string)
 	for rawID, value := range answer.Input {
 		id := strings.TrimSpace(rawID)
 		question, ok := questions[id]
 		if !ok || id == "" {
-			return InteractionResolution{}, fmt.Errorf("%w: input answer targets unknown question %q", ErrRequestConflict, rawID)
+			return InteractionResolution{}, nil, fmt.Errorf("%w: input answer targets unknown question %q", ErrRequestConflict, rawID)
 		}
 		if question.Secret {
 			resolution.Redacted = true
+			secret[id] = value
 			continue
 		}
 		public[id] = value
@@ -3076,7 +3081,7 @@ func canonicalInteractionResolution(interaction ThreadInteraction, answer Intera
 	if len(public) != 0 {
 		resolution.Input = public
 	}
-	return resolution, nil
+	return resolution, secret, nil
 }
 
 func sameInteractionResolution(left, right InteractionResolution) bool {
@@ -3115,10 +3120,20 @@ func resolveThreadInteractionCanonical(view *ThreadView, interactionID string, r
 	}
 }
 
-func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntimeState, threadID identity.ThreadID, interaction ThreadInteraction, answer InteractionAnswer) {
-	payload, err := json.Marshal(answer.Input)
+func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntimeState, threadID identity.ThreadID, interaction ThreadInteraction, resolution InteractionResolution, secretInput map[string]string) {
+	payload, err := json.Marshal(resolution)
 	if err != nil {
 		return
+	}
+	var supplemental []TurnSupplementalContextItem
+	if len(secretInput) != 0 {
+		secretPayload, marshalErr := json.Marshal(secretInput)
+		if marshalErr != nil {
+			return
+		}
+		supplemental = []TurnSupplementalContextItem{{
+			Kind: "user_answer", Title: "Secret answers to the pending question", Text: string(secretPayload), Sensitive: true,
+		}}
 	}
 	waitingRunID := interaction.RunID
 	continuationKey := "continue-input:" + interaction.ID
@@ -3185,7 +3200,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(continuationKey), TurnID: interaction.TurnID, RunID: runID,
-		ManualCompactions: agent.manualCompactions,
+		ManualCompactions: agent.manualCompactions, SupplementalContext: supplemental,
 	}
 	applyAgentExecutionPolicy(&request, agent)
 	result, runErr := runner.ResumeInput(executionCtx, resumeInputRequest{

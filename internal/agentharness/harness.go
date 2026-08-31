@@ -569,11 +569,6 @@ func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer s
 	if turnID == "" || waitingRunID == "" || runID == "" || answer == "" {
 		return TurnResult{}, errors.New("waiting turn resume requires turn, run, and answer")
 	}
-	if opts.SupplementalContext == nil {
-		opts.SupplementalContext = []engine.TurnSupplementalContextItem{{
-			Kind: "user_answer", Title: "User response to the pending question", Text: answer,
-		}}
-	}
 	opts.TurnID = turnID
 	opts.RunID = runID
 	opts.AdmissionCommitted = true

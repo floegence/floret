@@ -2263,7 +2263,10 @@ func BuildContextProjectionChecked(path []Entry, opts ContextProjectionOptions) 
 	if err != nil {
 		return ContextProjection{}, err
 	}
-	messages := buildContextMessages(contextPath)
+	messages, err := buildContextMessages(contextPath)
+	if err != nil {
+		return ContextProjection{}, err
+	}
 	return ContextProjection{Messages: messages, Segments: projectedSegments(contextPath, messages, opts.Purpose)}, nil
 }
 
@@ -2306,7 +2309,7 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 	return projected, nil
 }
 
-func buildContextMessages(path []Entry) []session.Message {
+func buildContextMessages(path []Entry) ([]session.Message, error) {
 	compactionIndex := -1
 	firstKeptIndex := -1
 	for i, entry := range path {
@@ -2336,11 +2339,19 @@ func buildContextMessages(path []Entry) []session.Message {
 		var tail []session.Message
 		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
 			for _, entry := range path[firstKeptIndex:compactionIndex] {
-				tail = appendProviderVisible(tail, entry)
+				var err error
+				tail, err = appendProviderVisible(tail, entry)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		for _, entry := range path[compactionIndex+1:] {
-			tail = appendProviderVisible(tail, entry)
+			var err error
+			tail, err = appendProviderVisible(tail, entry)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if compactionEntry.Summary != "" {
 			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
@@ -2353,12 +2364,16 @@ func buildContextMessages(path []Entry) []session.Message {
 			messages = append(messages, msg)
 		}
 		messages = append(messages, tail...)
-		return messages
+		return messages, nil
 	}
 	for _, entry := range path {
-		messages = appendProviderVisible(messages, entry)
+		var err error
+		messages, err = appendProviderVisible(messages, entry)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return messages
+	return messages, nil
 }
 
 func projectedSegments(path []Entry, messages []session.Message, purpose ProjectionPurpose) []ProjectedSegment {
@@ -2421,7 +2436,22 @@ func messagesForEntries(entries []Entry) []session.Message {
 	return out
 }
 
-func appendProviderVisible(messages []session.Message, entry Entry) []session.Message {
+type interactionResolutionProjection struct {
+	Accepted bool              `json:"accepted"`
+	Redacted bool              `json:"redacted,omitempty"`
+	Outcome  string            `json:"outcome,omitempty"`
+	Approved *bool             `json:"approved,omitempty"`
+	Input    map[string]string `json:"input,omitempty"`
+	At       time.Time         `json:"at"`
+}
+
+type interactionResponseMessage struct {
+	Type                  string            `json:"type"`
+	Answers               map[string]string `json:"answers,omitempty"`
+	SecretAnswersRedacted bool              `json:"secret_answers_redacted,omitempty"`
+}
+
+func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
 		if entry.Message.Role != "" {
@@ -2436,12 +2466,36 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 			msg.Activity = nil
 			messages = append(messages, msg)
 		}
+	case EntryInteractionDone:
+		var resolution interactionResolutionProjection
+		decoder := json.NewDecoder(bytes.NewReader(entry.Payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&resolution); err != nil {
+			return nil, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
+		}
+		if len(resolution.Input) != 0 || resolution.Redacted {
+			content, err := json.Marshal(interactionResponseMessage{
+				Type:                  "interaction_response",
+				Answers:               resolution.Input,
+				SecretAnswersRedacted: resolution.Redacted,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("%w: encode interaction response: %v", ErrAuthorityCorrupt, err)
+			}
+			messages = append(messages, session.Message{
+				Role: session.User, Content: string(content), EntryID: entry.ID, ParentEntryID: entry.ParentID,
+			})
+		}
 	case EntryBranchSummary:
 		if entry.Summary != "" {
 			messages = append(messages, session.Message{Role: session.Assistant, Content: entry.Summary, EntryID: entry.ID, ParentEntryID: entry.ParentID})
 		}
 	}
-	return messages
+	return messages, nil
 }
 
 func AppendMessage(ctx context.Context, repo JournalRepo, threadID, turnID string, msg session.Message) (Entry, error) {

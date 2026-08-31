@@ -61,6 +61,13 @@ state in one transaction. Ordinary mutations do not encode unrelated threads,
 diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
 exists only in the v5 -> v6 migration reader and is deleted after migration.
 
+Immediately before an ordinary provider dispatch, the backend kernel commits
+the current raw segments, toolsets, and provider request lineage in one prompt
+checkpoint. The in-memory prompt authority advances only after that transaction
+succeeds. Restart can therefore validate the same provider/model render prefix
+even when no terminal turn was written; write failure or cancellation leaves
+both memory and storage unchanged.
+
 ## SQLite space maintenance
 
 Fresh SQLite stores select `auto_vacuum=INCREMENTAL` before creating tables.

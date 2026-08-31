@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +23,7 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: `{"path":"README.md"}`},
 		{Role: session.Tool, Content: "contents", ToolCallID: "call-1", ToolName: "read"},
 	}
-	first := RawPlan{CompactionGeneration: 0}
+	first := lineagePlan("test", "model", "ns", "tool", "system", "user", "assistant", "call", "result")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, firstHistory); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +32,7 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 	}
 
 	appended := append(append([]session.Message(nil), firstHistory...), session.Message{Role: session.Assistant, Content: "done", Reasoning: "reasoning-2"})
-	next := RawPlan{CompactionGeneration: 0}
+	next := lineagePlan("test", "model", "ns", "tool", "system", "user", "assistant", "call", "result", "done")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, appended); err != nil {
 		t.Fatalf("append-only suffix rejected: %v", err)
 	}
@@ -41,14 +42,75 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 
 	mutated := append([]session.Message(nil), appended...)
 	mutated[1].Reasoning = "rewritten reasoning"
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, mutated); !errors.Is(err, ErrContextPrefixDrift) {
+	mutatedPlan := lineagePlan("test", "model", "ns", "tool", "system", "user-mutated")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &mutatedPlan, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, mutated); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("mutated prefix error = %v, want ErrContextPrefixDrift", err)
 	}
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
+	rewrittenEnvelope := lineagePlan("test", "model", "ns", "tool", "new-system")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &rewrittenEnvelope, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
 		t.Fatalf("rewritten envelope error = %v, want ErrContextEnvelopeChanged", err)
 	}
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &RawPlan{}, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
-		t.Fatalf("rewritten fixed config error = %v, want ErrContextEnvelopeChanged", err)
+	newModel := lineagePlan("test", "other", "other-ns", "other-tool", "other-system", "other-user")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &newModel, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended); err != nil {
+		t.Fatalf("new model render lineage rejected: %v", err)
+	}
+}
+
+func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	firstHistory := []session.Message{{Role: session.User, Content: "one"}, {Role: session.Assistant, Content: "a-one"}}
+	firstA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools", "flash-system", "flash-one", "flash-a-one")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstA, "system", nil, nil, map[string]any{"model": "flash"}, firstHistory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-a1", ThreadID: "thread", TurnID: "turn-a1"}, 1, "deepseek", "flash", CachePolicy{Namespace: "flash-ns"}, firstA); err != nil {
+		t.Fatal(err)
+	}
+
+	secondHistory := append(append([]session.Message(nil), firstHistory...), session.Message{Role: session.User, Content: "two"}, session.Message{Role: session.Assistant, Content: "a-two"})
+	firstB := lineagePlan("deepseek", "pro", "pro-ns", "pro-tools", "pro-system", "pro-one", "pro-a-one", "pro-two", "pro-a-two")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &firstB, "system", nil, nil, map[string]any{"model": "pro"}, secondHistory); err != nil {
+		t.Fatalf("A to B switch rejected: %v", err)
+	}
+	if firstB.CanonicalLineageReset {
+		t.Fatal("model switch unexpectedly reset canonical lineage")
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-b", ThreadID: "thread", TurnID: "turn-b"}, 1, "deepseek", "pro", CachePolicy{Namespace: "pro-ns"}, firstB); err != nil {
+		t.Fatal(err)
+	}
+
+	thirdHistory := append(append([]session.Message(nil), secondHistory...), session.Message{Role: session.User, Content: "three"})
+	secondA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools", "flash-system", "flash-one", "flash-a-one", "flash-two", "flash-a-two", "flash-three")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &secondA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory); err != nil {
+		t.Fatalf("A to B to A switch rejected: %v", err)
+	}
+	if !slices.Equal(firstA.SegmentIDs, secondA.SegmentIDs[:len(firstA.SegmentIDs)]) {
+		t.Fatalf("returning A render prefix changed: first=%#v second=%#v", firstA.SegmentIDs, secondA.SegmentIDs)
+	}
+
+	driftedA := lineagePlan("deepseek", "flash", "flash-ns", "flash-tools-changed", "flash-system", "flash-one")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &driftedA, "system", nil, nil, map[string]any{"model": "flash"}, thirdHistory); !errors.Is(err, ErrContextRenderLineageChanged) {
+		t.Fatalf("render prefix drift error = %v, want ErrContextRenderLineageChanged", err)
+	}
+}
+
+func TestValidateTurnModelFreezesProviderAndModelWithinTurn(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "request", PromptScopeID: "thread", RunID: "run", TurnID: "turn", Provider: "deepseek", Model: "flash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTurnModel(ctx, store, "thread", "turn", "deepseek", "flash"); err != nil {
+		t.Fatalf("same turn model rejected: %v", err)
+	}
+	if err := ValidateTurnModel(ctx, store, "thread", "turn", "deepseek", "pro"); !errors.Is(err, ErrTurnModelDrift) {
+		t.Fatalf("same turn model drift error = %v, want ErrTurnModelDrift", err)
+	}
+	if err := ValidateTurnModel(ctx, store, "thread", "next-turn", "deepseek", "pro"); err != nil {
+		t.Fatalf("new turn model switch rejected: %v", err)
 	}
 }
 
@@ -56,18 +118,22 @@ func TestValidateCanonicalLineageRequiresCommittedCompactionForNewGeneration(t *
 	ctx := context.Background()
 	store := NewMemoryStore()
 	history := []session.Message{{Role: session.User, Content: "first"}}
-	first := RawPlan{}
+	first := lineagePlan("test", "model", "ns", "system", "first")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, history); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
 		t.Fatal(err)
 	}
-	invalid := RawPlan{CompactionGeneration: 1}
+	invalid := lineagePlan("test", "model", "ns", "system", "first")
+	invalid.CompactionGeneration = 1
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &invalid, "new system", nil, nil, nil, history); !errors.Is(err, ErrContextPrefixDrift) {
 		t.Fatalf("uncommitted generation error = %v, want ErrContextPrefixDrift", err)
 	}
-	valid := RawPlan{CompactionGeneration: 1, CompactionWindowID: "window-1", CompactionEntryID: "compaction-1"}
+	valid := lineagePlan("test", "model", "ns", "system", "summary")
+	valid.CompactionGeneration = 1
+	valid.CompactionWindowID = "window-1"
+	valid.CompactionEntryID = "compaction-1"
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &valid, "new system", nil, nil, nil, []session.Message{{Role: session.System, Kind: session.MessageKindCompactionSummary, Content: "summary"}}); err != nil {
 		t.Fatalf("committed compaction generation rejected: %v", err)
 	}
@@ -76,7 +142,7 @@ func TestValidateCanonicalLineageRequiresCommittedCompactionForNewGeneration(t *
 	}
 }
 
-func TestValidateCanonicalLineageMigratesOnlyLegacyDrift(t *testing.T) {
+func TestValidateCanonicalLineageMigratesLegacyProjection(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
@@ -85,13 +151,17 @@ func TestValidateCanonicalLineageMigratesOnlyLegacyDrift(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	exact := RawPlan{SegmentIDs: []string{"system-old", "message-old", "message-new"}}
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &exact, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); err != nil {
-		t.Fatalf("stable legacy prefix should establish the first canonical baseline: %v", err)
-	}
-	drifted := RawPlan{SegmentIDs: []string{"system-new", "message-old", "message-new"}}
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &drifted, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); !errors.Is(err, ErrContextLineageMigrationNeeded) {
+	exact := lineagePlan("test", "model", "ns", "system-old", "message-old", "message-new")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &exact, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); !errors.Is(err, ErrContextLineageMigrationNeeded) {
 		t.Fatalf("legacy drift error = %v, want migration", err)
+	}
+}
+
+func lineagePlan(providerName, model, namespace string, segmentIDs ...string) RawPlan {
+	return RawPlan{
+		Version: Version, CacheNamespace: namespace, SegmentIDs: append([]string(nil), segmentIDs...),
+		ContextProjectionRevision: ContextProjectionRevision,
+		RenderLineageKey:          renderLineageKey(providerName, model, Version, namespace),
 	}
 }
 

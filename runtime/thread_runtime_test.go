@@ -1004,6 +1004,7 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 			{Type: provider.EventDone, Reason: "tool_calls"},
 		}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "next answer"}, {Type: provider.EventDone, Reason: "stop"}}},
 	)
 	agent, err := NewAgent(config.AgentConfig{
 		Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.",
@@ -1081,6 +1082,108 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	}
 	if contextSnapshot.Usage == nil || contextSnapshot.Usage.TurnID != completed.TurnID {
 		t.Fatalf("context after input resume=%#v, want latest canonical usage for turn %q", contextSnapshot, completed.TurnID)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "next"}, RequestKey: "send-after-input-resume"}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && view.TurnID != completed.TurnID
+	})
+	requests := gateway.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests=%d, want 3", len(requests))
+	}
+	answerCount := 0
+	for _, message := range requests[2].Messages {
+		if strings.Contains(message.Text, `"answers":{"q":"yes"}`) {
+			answerCount++
+		}
+	}
+	if answerCount != 1 {
+		t.Fatalf("next turn saw canonical answer %d times: %#v", answerCount, requests[2].Messages)
+	}
+}
+
+func TestThreadServiceSecretInputIsEphemeralAndCanonicallyRedacted(t *testing.T) {
+	const secret = "secret-sentinel-never-persist"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-secret", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["token"],"evidence_refs":[],"questions":[{"id":"token","header":"Token","question":"Enter token","response_mode":"write","is_secret":true}]}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "used secret"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	recorder := &runtimeEventRecorder{}
+	agent, err := NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, WithAgentEventSink(recorder))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-secret-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "begin"}, RequestKey: "send-secret-input"}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 1 && !view.Interactions[0].Resolved
+	})
+	if _, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID,
+		Answers: []InteractionAnswer{{Input: map[string]string{"token": secret}}}, RequestKey: "respond-secret-input",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+	})
+	requests := gateway.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(requests))
+	}
+	secretCount := 0
+	redactedCount := 0
+	for _, message := range requests[1].Messages {
+		if strings.Contains(message.Text, secret) {
+			secretCount++
+		}
+		if strings.Contains(message.Text, `"secret_answers_redacted":true`) {
+			redactedCount++
+		}
+	}
+	if secretCount != 1 || redactedCount != 1 {
+		t.Fatalf("continuation secret_count=%d redacted_count=%d messages=%#v", secretCount, redactedCount, requests[1].Messages)
+	}
+	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments, err := host.store.prompt.Segments(t.Context(), created.ThreadID.String(), "test", "scripted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]any{"journal": entries, "prompt_state": segments, "events": recorder.snapshot()} {
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("secret leaked into %s", name)
+		}
 	}
 }
 
