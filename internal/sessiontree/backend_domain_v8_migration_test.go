@@ -112,6 +112,79 @@ func TestBackendDomainV7ToV8MigrationIsAtomicAndRestartIdempotent(t *testing.T) 
 	}
 }
 
+func TestBackendDomainV7ToV8FinalVerificationRollsBackCorruptWrite(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 18, 0, 0, time.UTC)
+	memory, _ := v7ContextContinueFixture(t, now)
+	backend := newMigrationTestBackend()
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error { return saveCompleteBackendDomainV7(tx, memory) }); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	if _, err := NewBackendRepo(ctx, migrationCorruptingBackend{Backend: backend}, func() time.Time { return now }); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("corrupt write error = %v, want authority corruption", err)
+	}
+	if !equalMigrationRecords(before, backend.records) {
+		t.Fatal("final verification failure committed partial migration")
+	}
+}
+
+func TestBackendDomainV7ToV8ReportsMigrationThenVerification(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 20, 0, 0, time.UTC)
+	memory, _ := v7ContextContinueFixture(t, now)
+	backend := newMigrationTestBackend()
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error { return saveCompleteBackendDomainV7(tx, memory) }); err != nil {
+		t.Fatal(err)
+	}
+
+	var phases []StartupPhase
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		repo, err := NewBackendRepoInTransaction(ctx, backend, tx, func() time.Time { return now }, func(phase StartupPhase) {
+			phases = append(phases, phase)
+		})
+		if err != nil {
+			return err
+		}
+		return repo.VerifyCurrentStateInTransaction(ctx, tx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 2 || phases[0] != StartupPhaseMigrating || phases[1] != StartupPhaseVerifying {
+		t.Fatalf("startup phases = %v, want [%s %s]", phases, StartupPhaseMigrating, StartupPhaseVerifying)
+	}
+}
+
+func TestBackendDomainDetectionRejectsMixedFormatsWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 25, 0, 0, time.UTC)
+	memory, _ := v7ContextContinueFixture(t, now)
+	backend := newMigrationTestBackend()
+	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		if err := saveCompleteBackendDomainV7(tx, memory); err != nil {
+			return err
+		}
+		return putBackendDomainV8Record(
+			tx,
+			backendDomainV8Key(backendDomainRecordManifest),
+			backendDomainRecordManifest,
+			"",
+			"",
+			0,
+			backendDomainV8Manifest{Version: backendDomainV8Version, Sequence: memory.seq},
+		)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	if _, err := NewBackendRepo(ctx, backend, func() time.Time { return now }); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("mixed domain error = %v, want authority corruption", err)
+	}
+	if !equalMigrationRecords(before, backend.records) {
+		t.Fatal("mixed domain rejection mutated durable records")
+	}
+}
+
 func TestBackendDomainV7ToV8RejectsMalformedContextContinueAtomically(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
@@ -176,4 +249,25 @@ func v7ContextContinueFixture(t *testing.T, now time.Time) (*MemoryRepo, string)
 		t.Fatal(err)
 	}
 	return memory, continuation.ID
+}
+
+type migrationCorruptingBackend struct {
+	spi.Backend
+}
+
+func (backend migrationCorruptingBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
+	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
+		return mutate(migrationCorruptingWriteTx{WriteTx: tx})
+	})
+}
+
+type migrationCorruptingWriteTx struct {
+	spi.WriteTx
+}
+
+func (tx migrationCorruptingWriteTx) Put(namespace string, key, value []byte) error {
+	if namespace == backendDomainV8Namespace && string(key) == string(backendDomainV8Key(backendDomainRecordRootIndex)) {
+		value = []byte("corrupt")
+	}
+	return tx.WriteTx.Put(namespace, key, value)
 }

@@ -62,10 +62,36 @@ func (failure *MigrationRequiredError) Is(target error) bool {
 // Options configures one runtime Host.
 type Options struct {
 	Storage publicstorage.Source
+	// StartupProgress observes product-neutral storage startup phases. The
+	// callback runs synchronously and must return promptly.
+	StartupProgress StartupProgress
 	// IDSource exists only for v3 source compatibility.
 	// Deprecated: production hosts must leave this nil; tests should use
 	// florettest.NewIDSource.
 	IDSource IDSource
+}
+
+// StartupPhase identifies storage startup work performed by Open.
+type StartupPhase string
+
+const (
+	StartupPhaseMigrating StartupPhase = "migrating"
+	StartupPhaseVerifying StartupPhase = "verifying"
+)
+
+// StartupProgress observes changes in the storage startup phase.
+type StartupProgress interface {
+	OnStartupPhase(StartupPhase)
+}
+
+// StartupProgressFunc adapts a function to StartupProgress.
+type StartupProgressFunc func(StartupPhase)
+
+// OnStartupPhase reports one startup phase when the function is non-nil.
+func (progress StartupProgressFunc) OnStartupPhase(phase StartupPhase) {
+	if progress != nil {
+		progress(phase)
+	}
 }
 
 // Host is the composition-root owner of Floret storage and narrow capability
@@ -200,12 +226,18 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	}
 	coordinatedBackend := &serializedBackend{backend: backend}
 	var kernel *internalstorage.BackendKernel
+	var startupProgress internalstorage.StartupProgress
+	if options.StartupProgress != nil {
+		startupProgress = func(phase internalstorage.StartupPhase) {
+			options.StartupProgress.OnStartupPhase(StartupPhase(phase))
+		}
+	}
 	err = coordinatedBackend.Update(ctx, func(tx spi.WriteTx) error {
 		logicalState, inspectErr := inspectLogicalSchemaTransaction(tx)
 		if inspectErr != nil {
 			return inspectErr
 		}
-		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now)
+		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, startupProgress)
 		if inspectErr != nil {
 			return inspectErr
 		}

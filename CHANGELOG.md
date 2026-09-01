@@ -1,5 +1,19 @@
 # Changelog
 
+## v7.0.2 - 2026-09-01
+
+- Report product-neutral `migrating` and `verifying` phases from
+  `runtime.Open` so hosts can explain long first-start upgrades without
+  inspecting Floret-owned records.
+- Detect one exact session-tree source format before migration, reject mixed
+  authority without mutation, and avoid a second persistent decode for an
+  unchanged current-v8 store.
+- Reuse SQLite write and delete statements within each transaction and skip
+  no-op unknown-effect cloning during startup while preserving atomic final
+  verification after every startup write.
+- Add large-store and real-thread copy qualifications that leave source
+  databases untouched.
+
 ## v7.0.1 - 2026-09-01
 
 - Treat the exact v6.1.1 and v7.0.0 provider-context revisions as a one-time

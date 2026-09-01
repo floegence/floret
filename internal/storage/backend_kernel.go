@@ -23,13 +23,24 @@ type BackendKernel struct {
 	prompt   *cache.MemoryStore
 }
 
+type StartupPhase = sessiontree.StartupPhase
+type StartupProgress = sessiontree.StartupProgress
+
+const (
+	StartupPhaseMigrating = sessiontree.StartupPhaseMigrating
+	StartupPhaseVerifying = sessiontree.StartupPhaseVerifying
+)
+
 // NewBackendKernel opens all canonical Floret domain state.
 func NewBackendKernel(ctx context.Context, backend spi.Backend, now func() time.Time) (*BackendKernel, error) {
 	var kernel *BackendKernel
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 		var err error
-		kernel, err = NewBackendKernelInTransaction(ctx, backend, tx, now)
-		return err
+		kernel, err = NewBackendKernelInTransaction(ctx, backend, tx, now, nil)
+		if err != nil {
+			return err
+		}
+		return kernel.VerifyCurrentStateInTransaction(ctx, tx)
 	}); err != nil {
 		return nil, err
 	}
@@ -38,8 +49,8 @@ func NewBackendKernel(ctx context.Context, backend spi.Backend, now func() time.
 
 // NewBackendKernelInTransaction opens all canonical Floret domain state in
 // the caller's startup transaction.
-func NewBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time) (*BackendKernel, error) {
-	repo, err := sessiontree.NewBackendRepoInTransaction(ctx, backend, tx, now)
+func NewBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendKernel, error) {
+	repo, err := sessiontree.NewBackendRepoInTransaction(ctx, backend, tx, now, progress)
 	if err != nil {
 		return nil, err
 	}

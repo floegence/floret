@@ -32,3 +32,8 @@ Public additions require external-package tests, API baseline review, README
 and OKF updates, changelog entry, backend conformance where relevant, and the
 published-release adoption gate. Green compatibility tooling is not design
 approval.
+
+`runtime.Options.StartupProgress` is the sole startup-presentation addition in
+v7. It reports product-neutral migration and verification phases
+synchronously. Storage rows, counts, schema versions, and downstream UI policy
+remain outside the public API.

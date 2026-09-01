@@ -18,11 +18,36 @@ var backendStateKey = storagecodec.Tuple(storagecodec.TupleString("sessiontree")
 // BackendRepo owns the validated in-memory session tree and commits each
 // affected durable record inside one serializable Backend transaction.
 type BackendRepo struct {
-	backend      spi.Backend
-	now          func() time.Time
-	mu           sync.Mutex
-	domainMemory *MemoryRepo
+	backend                              spi.Backend
+	now                                  func() time.Time
+	mu                                   sync.Mutex
+	domainMemory                         *MemoryRepo
+	startupProgress                      StartupProgress
+	startupPhase                         StartupPhase
+	requiresPersistedStartupVerification bool
 }
+
+// StartupPhase identifies product-neutral work performed while opening the
+// canonical session-tree authority.
+type StartupPhase string
+
+const (
+	StartupPhaseMigrating StartupPhase = "migrating"
+	StartupPhaseVerifying StartupPhase = "verifying"
+)
+
+// StartupProgress observes startup phase changes synchronously.
+type StartupProgress func(StartupPhase)
+
+type backendDomainSource uint8
+
+const (
+	backendDomainSourceFresh backendDomainSource = iota
+	backendDomainSourceV8
+	backendDomainSourceV7
+	backendDomainSourceV6
+	backendDomainSourceLegacy
+)
 
 // NewBackendRepo initializes or validates the canonical session-tree state.
 func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Time) (*BackendRepo, error) {
@@ -32,8 +57,11 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 	var repo *BackendRepo
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 		var err error
-		repo, err = NewBackendRepoInTransaction(ctx, backend, tx, now)
-		return err
+		repo, err = NewBackendRepoInTransaction(ctx, backend, tx, now, nil)
+		if err != nil {
+			return err
+		}
+		return repo.VerifyCurrentStateInTransaction(ctx, tx)
 	}); err != nil {
 		return nil, err
 	}
@@ -44,34 +72,48 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 // session-tree state using the caller's startup transaction. The returned
 // repository retains backend for ordinary operations after that transaction
 // commits.
-func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time) (*BackendRepo, error) {
+func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendRepo, error) {
 	if ctx == nil || backend == nil || tx == nil || now == nil {
 		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
 	}
-	repo := &BackendRepo{backend: backend, now: now}
-	memory, found, err := loadBackendDomainV8(ctx, tx, now)
+	repo := &BackendRepo{backend: backend, now: now, startupProgress: progress}
+	source, err := detectBackendDomainSource(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	if found {
-		if err := rejectPreV8BackendDomain(ctx, tx); err != nil {
+	if source == backendDomainSourceV8 {
+		repo.reportStartupPhase(StartupPhaseVerifying)
+		memory, found, err := loadBackendDomainV8(ctx, tx, now)
+		if err != nil {
 			return nil, err
 		}
-		before := cloneMemoryRepoForBackendUpdate(memory)
-		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
-			return nil, err
+		if !found {
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v8 authority is missing"))
 		}
-		if _, err := persistBackendDomainV8Changes(tx, before, memory); err != nil {
-			return nil, err
+		if hasUnknownEffectTurns(memory) {
+			before := memory
+			memory = cloneMemoryRepoForBackendUpdate(before)
+			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+				return nil, err
+			}
+			changed, err := persistBackendDomainV8Changes(tx, before, memory)
+			if err != nil {
+				return nil, err
+			}
+			repo.requiresPersistedStartupVerification = changed
 		}
 		repo.domainMemory = memory
 		return repo, nil
 	}
-	memory, v7Found, err := loadBackendDomainV7(ctx, tx, now)
-	if err != nil {
-		return nil, err
-	}
-	if v7Found {
+	if source == backendDomainSourceV7 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV7(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v7 authority is missing"))
+		}
 		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
 			return nil, err
 		}
@@ -82,15 +124,17 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			return nil, err
 		}
 		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
 		return repo, nil
 	}
-	memory, v6Found, err := loadBackendDomainV6(ctx, tx, now)
-	if err != nil {
-		return nil, err
-	}
-	if v6Found {
-		if err := rejectMonolithicBackendDomain(ctx, tx); err != nil {
+	if source == backendDomainSourceV6 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV6(ctx, tx, now)
+		if err != nil {
 			return nil, err
+		}
+		if !found {
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v6 authority is missing"))
 		}
 		if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
 			return nil, err
@@ -105,15 +149,21 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			return nil, err
 		}
 		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
 		return repo, nil
 	}
-	memory, legacyFound, migrated, err := repo.load(tx)
-	if err != nil {
-		return nil, err
-	}
-	if !legacyFound {
-		memory = newMemoryRepo(now)
-	} else {
+	legacyFound := source == backendDomainSourceLegacy
+	var memory *MemoryRepo
+	if legacyFound {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		var migrated bool
+		memory, legacyFound, migrated, err = repo.load(tx)
+		if err != nil {
+			return nil, err
+		}
+		if !legacyFound {
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("legacy session-tree fragments are missing canonical state"))
+		}
 		records, scanErr := scanBackendDomainJournal(ctx, tx)
 		if scanErr != nil {
 			return nil, scanErr
@@ -144,6 +194,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 				return nil, err
 			}
 		}
+	} else {
+		repo.reportStartupPhase(StartupPhaseVerifying)
+		memory = newMemoryRepo(now)
 	}
 	if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
 		return nil, err
@@ -160,6 +213,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		}
 	}
 	repo.domainMemory = memory
+	repo.requiresPersistedStartupVerification = true
 	return repo, nil
 }
 
@@ -172,6 +226,10 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !repo.requiresPersistedStartupVerification {
+		return nil
+	}
+	repo.reportStartupPhase(StartupPhaseVerifying)
 	memory, found, err := loadBackendDomainV8(ctx, tx, repo.now)
 	if err != nil {
 		return err
@@ -182,7 +240,77 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := rejectPreV8BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	return validateBackendDomainV8Memory(memory)
+	if err := validateBackendDomainV8Memory(memory); err != nil {
+		return err
+	}
+	repo.requiresPersistedStartupVerification = false
+	return nil
+}
+
+func (repo *BackendRepo) reportStartupPhase(phase StartupPhase) {
+	if repo.startupPhase == phase {
+		return
+	}
+	repo.startupPhase = phase
+	if repo.startupProgress != nil {
+		repo.startupProgress(phase)
+	}
+}
+
+func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomainSource, error) {
+	if err := ctx.Err(); err != nil {
+		return backendDomainSourceFresh, err
+	}
+	present := make([]backendDomainSource, 0, 4)
+	for _, candidate := range []struct {
+		source    backendDomainSource
+		namespace string
+	}{
+		{source: backendDomainSourceV8, namespace: backendDomainV8Namespace},
+		{source: backendDomainSourceV7, namespace: backendDomainV7Namespace},
+		{source: backendDomainSourceV6, namespace: backendDomainV6Namespace},
+	} {
+		found, err := backendNamespaceHasRecords(tx, candidate.namespace)
+		if err != nil {
+			return backendDomainSourceFresh, err
+		}
+		if found {
+			present = append(present, candidate.source)
+		}
+	}
+	legacy, err := legacyBackendDomainHasRecords(tx)
+	if err != nil {
+		return backendDomainSourceFresh, err
+	}
+	if legacy {
+		present = append(present, backendDomainSourceLegacy)
+	}
+	if len(present) > 1 {
+		return backendDomainSourceFresh, errors.Join(ErrAuthorityCorrupt, errors.New("session-tree store contains mixed domain formats"))
+	}
+	if len(present) == 0 {
+		return backendDomainSourceFresh, nil
+	}
+	return present[0], nil
+}
+
+func backendNamespaceHasRecords(tx spi.ReadTx, namespace string) (bool, error) {
+	page, err := tx.Scan(spi.ScanRequest{Namespace: namespace, Limit: 1})
+	if err != nil {
+		return false, err
+	}
+	return len(page.Records) != 0, nil
+}
+
+func legacyBackendDomainHasRecords(tx spi.ReadTx) (bool, error) {
+	for _, key := range [][]byte{backendStateKey, backendRootThreadInventoryKey} {
+		if _, err := tx.Get(backendDomainNamespace, key); err == nil {
+			return true, nil
+		} else if !errors.Is(err, spi.ErrNotFound) {
+			return false, err
+		}
+	}
+	return backendNamespaceHasRecords(tx, backendDomainJournalNamespace)
 }
 
 func rejectPreV8BackendDomain(ctx context.Context, tx spi.ReadTx) error {

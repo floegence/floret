@@ -169,7 +169,12 @@ The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
 v5 -> v6 -> v7 -> v8 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
-records. Current-schema startup is byte-preserving and idempotent. The v5 -> v6
+records. `runtime.Options.StartupProgress` reports only the product-neutral
+`migrating` and `verifying` phases; it exposes no record counts or content.
+Startup selects one exact source format, rejects mixed authority, decodes an
+unchanged current-v8 store once, and performs a persisted final verification
+after every startup write. Current-schema startup is byte-preserving and
+idempotent. The v5 -> v6
 edge first replays pending v5 recovery frames and accepts only the exact v5
 tool-result Raw repair produced before UTF-8 normalization was enforced. It then
 writes segmented v6 authority and removes the legacy checkpoint, full-path root

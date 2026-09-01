@@ -125,6 +125,51 @@ func TestV8TargetThreadCopyAcceptsNewTurnAfterProjectionMigration(t *testing.T) 
 	}
 }
 
+func TestLargeV7RuntimeStartupQualification(t *testing.T) {
+	sourcePath := os.Getenv("FLORET_V7_LARGE_SOURCE_DB")
+	if sourcePath == "" {
+		t.Skip("set FLORET_V7_LARGE_SOURCE_DB for the opt-in large-store runtime qualification")
+	}
+	sourceHash, err := qualificationFileSHA256(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(t.TempDir(), "floret-v7-large-runtime-qualification.sqlite")
+	if err := copyQualificationFile(sourcePath, copyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var phases []runtime.StartupPhase
+	started := time.Now()
+	host, err := runtime.Open(t.Context(), runtime.Options{
+		Storage: storage.SQLite(copyPath),
+		StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
+			phases = append(phases, phase)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("large v7 runtime startup took %s, want at most 15s", elapsed)
+	}
+	if len(phases) != 2 || phases[0] != runtime.StartupPhaseMigrating || phases[1] != runtime.StartupPhaseVerifying {
+		t.Fatalf("startup phases = %v, want [%s %s]", phases, runtime.StartupPhaseMigrating, runtime.StartupPhaseVerifying)
+	}
+	afterSourceHash, err := qualificationFileSHA256(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceHash != afterSourceHash {
+		t.Fatal("source database changed while qualifying its copy")
+	}
+	t.Logf("large v7 runtime startup completed in %s", elapsed)
+}
+
 func copyQualificationFile(sourcePath, destinationPath string) error {
 	source, err := os.Open(sourcePath)
 	if err != nil {

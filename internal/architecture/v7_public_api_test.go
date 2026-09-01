@@ -55,6 +55,8 @@ func TestV7PublicAPIAvoidsRemovedLifecycleFacades(t *testing.T) {
 		"field ThreadItem.RunID", "field ThreadInteraction.RunID",
 		"type ThreadRunProgress struct", "field ThreadView.RunID", "field ThreadSummary.RunProgress",
 		"field AgentRequest.CanonicalTurnInput",
+		"type StartupPhase string", "type StartupProgress interface", "type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)",
+		"field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress",
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("V7 public API is missing typed runtime contract %q", required)

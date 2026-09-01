@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v7@v7.0.1
+go get github.com/floegence/floret/v7@v7.0.2
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -240,6 +240,22 @@ For ordinary hosts, `storage.Source` is an opaque value consumed exclusively by
 runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
 runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("agent.db")})
 ```
+
+Hosts that present startup readiness may observe Floret's product-neutral
+storage phases without reading physical records:
+
+```go
+host, err := runtime.Open(ctx, runtime.Options{
+    Storage: storage.SQLite("agent.db"),
+    StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
+        // Present migrating or verifying without exposing stored content.
+    }),
+})
+```
+
+The callback is synchronous and must return promptly. Legacy stores report
+`migrating` followed by `verifying`; fresh and current stores report only
+`verifying`. A returned `Host` is ready, and a failed migration remains atomic.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their

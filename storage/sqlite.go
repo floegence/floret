@@ -280,11 +280,13 @@ func (backend *sqliteBackend) isClosed() bool {
 }
 
 type sqliteTx struct {
-	mu       sync.Mutex
-	ctx      context.Context
-	tx       *sql.Tx
-	active   bool
-	readOnly bool
+	mu              sync.Mutex
+	ctx             context.Context
+	tx              *sql.Tx
+	active          bool
+	readOnly        bool
+	putStatement    *sql.Stmt
+	deleteStatement *sql.Stmt
 }
 
 func (tx *sqliteTx) Get(namespace string, key []byte) ([]byte, error) {
@@ -368,10 +370,17 @@ func (tx *sqliteTx) Put(namespace string, key, value []byte) error {
 	if err := tx.validateWrite(namespace, key); err != nil {
 		return err
 	}
-	_, err := tx.tx.ExecContext(tx.ctx, `
+	if tx.putStatement == nil {
+		statement, err := tx.tx.PrepareContext(tx.ctx, `
 		INSERT INTO floret_backend_records(namespace, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value
-	`, namespace, bytes.Clone(key), bytes.Clone(value))
+	`)
+		if err != nil {
+			return classifySQLiteError(tx.ctx, err)
+		}
+		tx.putStatement = statement
+	}
+	_, err := tx.putStatement.ExecContext(tx.ctx, namespace, bytes.Clone(key), bytes.Clone(value))
 	return classifySQLiteError(tx.ctx, err)
 }
 
@@ -381,9 +390,16 @@ func (tx *sqliteTx) Delete(namespace string, key []byte) error {
 	if err := tx.validateWrite(namespace, key); err != nil {
 		return err
 	}
-	result, err := tx.tx.ExecContext(tx.ctx, `
+	if tx.deleteStatement == nil {
+		statement, err := tx.tx.PrepareContext(tx.ctx, `
 		DELETE FROM floret_backend_records WHERE namespace = ? AND key = ?
-	`, namespace, key)
+	`)
+		if err != nil {
+			return classifySQLiteError(tx.ctx, err)
+		}
+		tx.deleteStatement = statement
+	}
+	result, err := tx.deleteStatement.ExecContext(tx.ctx, namespace, key)
 	if err != nil {
 		return classifySQLiteError(tx.ctx, err)
 	}

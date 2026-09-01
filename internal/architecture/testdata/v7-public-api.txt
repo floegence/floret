@@ -671,6 +671,7 @@ func NewAgent func(configuration github.com/floegence/floret/v7/config.AgentConf
 func Open func(ctx context.Context, options github.com/floegence/floret/v7/runtime.Options) (*github.com/floegence/floret/v7/runtime.Host, error)
 type Options struct
 field Options.Storage github.com/floegence/floret/v7/storage.Source
+field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress
 field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v7/tools.ToolCall) (github.com/floegence/floret/v7/runtime.TurnSignal, bool, error)
@@ -727,6 +728,12 @@ field SetTitleInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey
 const SignalContinue github.com/floegence/floret/v7/runtime.SignalDisposition = "continue"
 type SignalDisposition string
 const SignalWaiting github.com/floegence/floret/v7/runtime.SignalDisposition = "waiting"
+type StartupPhase string
+const StartupPhaseMigrating github.com/floegence/floret/v7/runtime.StartupPhase = "migrating"
+const StartupPhaseVerifying github.com/floegence/floret/v7/runtime.StartupPhase = "verifying"
+type StartupProgress interface interface{OnStartupPhase(github.com/floegence/floret/v7/runtime.StartupPhase)}
+type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)
+method StartupProgressFunc.OnStartupPhase func(phase github.com/floegence/floret/v7/runtime.StartupPhase)
 type StorageResetPreflight struct
 field StorageResetPreflight.EnvironmentID string
 field StorageResetPreflight.OperationID string

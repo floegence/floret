@@ -80,9 +80,18 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	}
 	factory := runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil })
 
-	firstHost, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(databasePath)})
+	var firstStartup []runtime.StartupPhase
+	firstHost, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.SQLite(databasePath),
+		StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
+			firstStartup = append(firstStartup, phase)
+		}),
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(firstStartup) != 1 || firstStartup[0] != runtime.StartupPhaseVerifying {
+		t.Fatalf("fresh startup phases=%v", firstStartup)
 	}
 	firstService, err := firstHost.ThreadService(factory)
 	if err != nil {
@@ -137,9 +146,18 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 		t.Fatalf("unexpected maintenance action: %#v", maintenance)
 	}
 
-	secondHost, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(databasePath)})
+	var secondStartup []runtime.StartupPhase
+	secondHost, err := runtime.Open(ctx, runtime.Options{
+		Storage: storage.SQLite(databasePath),
+		StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
+			secondStartup = append(secondStartup, phase)
+		}),
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(secondStartup) != 1 || secondStartup[0] != runtime.StartupPhaseVerifying {
+		t.Fatalf("current startup phases=%v", secondStartup)
 	}
 	defer func() { _ = secondHost.Shutdown(context.Background()) }()
 	secondService, err := secondHost.ThreadService(factory)

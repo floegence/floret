@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-09-01
+* **Observable bounded startup**: `runtime.Open` now reports only migration and
+  verification phases, selects one exact domain source, reuses SQLite mutation
+  statements, and avoids a second persistent decode for unchanged v8 stores.
+  Startup writes still receive final persisted verification in the same
+  transaction.
 * **Projection migration boundary**: Threads carrying the exact v6.1.1 or
   v7.0.0 provider-context revision start one new render lineage after schema v8
   repairs an Engine continuation message. The repaired canonical history is

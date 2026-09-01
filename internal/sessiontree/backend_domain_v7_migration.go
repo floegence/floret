@@ -304,3 +304,19 @@ func convergeUnknownEffectTurns(ctx context.Context, memory *MemoryRepo) error {
 	}
 	return nil
 }
+
+func hasUnknownEffectTurns(memory *MemoryRepo) bool {
+	for threadID := range memory.threads {
+		entries := memory.entries[threadID]
+		turnID, active := runtimeActiveTurn(entries)
+		if !active {
+			continue
+		}
+		for _, attempt := range canonicalEffectAttemptsForTurn(entries, turnID) {
+			if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
+				return true
+			}
+		}
+	}
+	return false
+}

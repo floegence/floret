@@ -20,8 +20,8 @@ methods:
     errors_is: [context.Canceled, context.DeadlineExceeded, storage/spi.ErrMigrationRequired]
     errors_as: [MigrationRequiredError, UnsupportedLegacyContentError]
     retryability: retry only after the classified storage cause is corrected
-    commit: returns a Host only after contiguous schema migration and canonical journal validation
-    replay: reopening the same source hydrates accepted inputs, queue items, and unresolved interactions
+    commit: returns a Host only after contiguous schema migration and canonical journal validation; optional progress reports migrating and verifying without exposing records
+    replay: reopening the same current source hydrates accepted inputs, queue items, and unresolved interactions and reports verifying only
     concurrency: one Host owns the storage source
     cancellation: cancellation releases partial resources without publishing a Host
     closing: not applicable before a Host is returned

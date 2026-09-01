@@ -87,6 +87,61 @@ func TestV8MigrationAgainstSQLiteCopy(t *testing.T) {
 	}
 }
 
+func TestLargeV7SQLiteStartupQualification(t *testing.T) {
+	sourcePath := os.Getenv("FLORET_V7_LARGE_SOURCE_DB")
+	if sourcePath == "" {
+		t.Skip("set FLORET_V7_LARGE_SOURCE_DB for the opt-in large-store startup qualification")
+	}
+	before, err := fileSHA256(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(t.TempDir(), "floret-v7-large-qualification.sqlite")
+	if err := copyFile(sourcePath, copyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	backend, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.SQLite(copyPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
+		_ = backend.Close()
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	if elapsed > 15*time.Second {
+		_ = backend.Close()
+		t.Fatalf("large v7 startup took %s, want at most 15s", elapsed)
+	}
+	if err := backend.View(ctx, func(tx spi.ReadTx) error {
+		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
+			return errors.Join(err, errors.New("v7 records remain after large-store qualification"))
+		}
+		_, found, err := loadBackendDomainV8(ctx, tx, time.Now)
+		if err != nil || !found {
+			return errors.Join(err, errors.New("v8 records are missing after large-store qualification"))
+		}
+		return nil
+	}); err != nil {
+		_ = backend.Close()
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := fileSHA256(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("source database changed while qualifying its copy")
+	}
+	t.Logf("large v7 startup completed in %s", elapsed)
+}
+
 func copyFile(sourcePath, destinationPath string) error {
 	source, err := os.Open(sourcePath)
 	if err != nil {

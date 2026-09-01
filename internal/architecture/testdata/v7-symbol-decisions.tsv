@@ -17,6 +17,10 @@ runtime.RetryInput	keep	ThreadService.Retry	canonical retry lineage without dupl
 runtime.RetryEffectInput	remove	ThreadTurnFailureEffectOutcomeUnknown	unknown irreversible effects terminate the turn and cannot be replayed
 runtime.WorkspaceSubscription	keep	ThreadService.Subscribe	one workspace current-view stream without replay metadata
 runtime.Event.ThreadUsageTotals	add	runtime.Event	live cumulative usage is published only after the canonical final usage append succeeds
+runtime.StartupPhase	add	runtime.Options.StartupProgress	hosts need product-neutral migration and verification presentation without storage inspection
+runtime.StartupProgress	add	runtime.Options.StartupProgress	one comparable observation contract avoids a second startup lifecycle
+runtime.StartupProgressFunc	add	runtime.StartupProgress	a function adapter keeps host integration concise without making Options non-comparable
+runtime.Options.StartupProgress	add	runtime.Open	startup presentation remains optional and cannot become durable authority
 tools.StructuredActivityRow	add	StructuredActivityPayload.Rows	bounded product-neutral structured display content
 tools.StructuredActivityRowFormat	add	StructuredActivityPayload.Rows	closed text markdown and code presentation formats
 tools.ActivityRendererSubAgentOperation	add	ActivityPresentation	distinguishes management operations from one durable child fact
