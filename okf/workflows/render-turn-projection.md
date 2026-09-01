@@ -14,7 +14,7 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 
 # Steps
 
-For the typed v6 `ThreadService`, render `ThreadView.Items` exactly in supplied
+For the typed v7 `ThreadService`, render `ThreadView.Items` exactly in supplied
 ordinal order. Use `ThreadItem.ID` as the row key, update matching items in
 place, and treat thinking segments like any other ordered item. Do not append
 draft fields after the item list or sort by timestamps, kind, tool identity, or

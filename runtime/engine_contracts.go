@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	publicprovider "github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	publicprovider "github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // IDSource supplies deterministic identities to tests. Production uses the
@@ -300,13 +300,6 @@ type RunMetrics struct {
 	WallTimeMS    int64                `json:"wall_time_ms,omitempty"`
 }
 
-type TurnCompletionPolicy string
-
-const (
-	TurnCompletionNaturalStop    TurnCompletionPolicy = "natural_stop"
-	TurnCompletionExplicitSignal TurnCompletionPolicy = "explicit_signal"
-)
-
 type TurnLimits struct {
 	MaxInputTokens           int64
 	MaxTotalTokens           int64
@@ -321,7 +314,6 @@ type SignalDisposition string
 const (
 	SignalContinue SignalDisposition = "continue"
 	SignalWaiting  SignalDisposition = "waiting"
-	SignalTerminal SignalDisposition = "terminal"
 )
 
 type TurnSignal struct {
@@ -475,22 +467,8 @@ func providerHostedToolDefinitions(definitions []publicprovider.HostedToolDefini
 	return result
 }
 
-func engineTurnCompletionPolicy(policy TurnCompletionPolicy) (engine.CompletionPolicy, error) {
-	switch policy {
-	case "", TurnCompletionNaturalStop:
-		return engine.CompletionNaturalStop, nil
-	case TurnCompletionExplicitSignal:
-		return engine.CompletionExplicitSignal, nil
-	default:
-		return "", fmt.Errorf("unsupported completion policy %q", policy)
-	}
-}
-
-func engineTurnSignalSpec(spec TurnSignalSpec, policy engine.CompletionPolicy) (engine.ControlSpec, error) {
+func engineTurnSignalSpec(spec TurnSignalSpec) (engine.ControlSpec, error) {
 	if len(spec.Definitions) == 0 && spec.Project == nil {
-		if policy == engine.CompletionExplicitSignal {
-			return engine.ControlSpec{}, errors.New("signal spec is required when completion policy is explicit_signal")
-		}
 		return engine.ControlSpec{Definitions: []tools.ToolDefinition{}, Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) {
 			return engine.ControlSignal{}, false, nil
 		}}, nil

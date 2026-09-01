@@ -1,6 +1,6 @@
 package catalog
 
-import "github.com/floegence/floret/v6/internal/provider"
+import "github.com/floegence/floret/v7/internal/provider"
 
 var text = []string{"text"}
 var vision = []string{"text", "image"}

@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/catalog"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type deepSeekDiagnosticTransport struct {

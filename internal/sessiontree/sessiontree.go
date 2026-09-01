@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/control"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/artifact"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 type EntryType string
@@ -175,6 +175,10 @@ func terminalTurnMarker(status TurnMarkerStatus) bool {
 	default:
 		return false
 	}
+}
+
+func isCanonicalUserEntry(entry Entry) bool {
+	return entry.Type == EntryUserMessage && entry.Message.Role == session.User && entry.Message.Kind != session.MessageKindControlSignal
 }
 
 func unfinishedTurnIDs(path []Entry) ([]string, error) {
@@ -1325,7 +1329,7 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 			return ErrAuthorityCorrupt
 		}
 		seenIDs[entry.ID] = index
-		if entry.Type == EntryUserMessage {
+		if isCanonicalUserEntry(entry) {
 			userEntries++
 		}
 		if entry.Type != EntryTurnMarker {

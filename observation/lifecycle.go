@@ -27,13 +27,12 @@ type CompletionReason string
 
 const (
 	CompletionReasonNaturalStop CompletionReason = "natural_stop"
-	CompletionReasonToolSignal  CompletionReason = "tool_signal"
 	CompletionReasonHookStop    CompletionReason = "hook_stop"
 )
 
 func (r CompletionReason) Valid() bool {
 	switch r {
-	case CompletionReasonNaturalStop, CompletionReasonToolSignal, CompletionReasonHookStop:
+	case CompletionReasonNaturalStop, CompletionReasonHookStop:
 		return true
 	default:
 		return false
@@ -50,12 +49,11 @@ const (
 	ContinuationReasonRetryEmpty        ContinuationReason = "retry_empty"
 	ContinuationReasonNoProgress        ContinuationReason = "no_progress"
 	ContinuationReasonHook              ContinuationReason = "hook"
-	ContinuationReasonExplicitSignal    ContinuationReason = "explicit_signal"
 )
 
 func (r ContinuationReason) Valid() bool {
 	switch r {
-	case ContinuationReasonToolResults, ContinuationReasonCompaction, ContinuationReasonProviderTruncated, ContinuationReasonRetryEmpty, ContinuationReasonNoProgress, ContinuationReasonHook, ContinuationReasonExplicitSignal:
+	case ContinuationReasonToolResults, ContinuationReasonCompaction, ContinuationReasonProviderTruncated, ContinuationReasonRetryEmpty, ContinuationReasonNoProgress, ContinuationReasonHook:
 		return true
 	default:
 		return false

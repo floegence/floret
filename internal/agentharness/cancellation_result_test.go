@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/engine"
+	"github.com/floegence/floret/v7/internal/engine"
 )
 
 func TestNormalizeCancelledEngineResultOverridesLateProviderFailure(t *testing.T) {

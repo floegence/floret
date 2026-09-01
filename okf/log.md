@@ -1,5 +1,20 @@
 # Floret OKF Update Log
 
+## 2026-09-01
+* **V7 Turn surface lifecycle**: Floret now freezes provider, model, reasoning,
+  system prompt, tools, adapter, context policy, and continuation compatibility
+  at the first provider checkpoint of each Turn. New Turns use the current
+  surface without rewriting canonical history or forcing compaction.
+* **Single completion rule**: Terminal provider natural stop completes a Turn.
+  Ordinary tools continue and `ask_user` waits; the retired structured
+  completion protocol and its public policy surface are removed.
+* **Historical tool independence**: Durable tool call, result, Activity, and
+  control facts no longer depend on the current registry. Missing current tools
+  render neutrally, and new unavailable calls return a safe ordinary result.
+* **Schema v8 continuation repair**: The exact Engine continuation message
+  paired with a `context_continue` save point becomes a control signal through
+  the atomic v7 -> v8 migration, restoring canonical user identity.
+
 ## 2026-08-31
 * **Turn-bound model switching**: Canonical messages now remain append-only
   across providers and models while each provider/model render lineage keeps
@@ -15,9 +30,9 @@
   envelope and exact historical prefix per compaction generation. Model output,
   tool/control facts, and interaction results only append; capability changes
   use an audited compaction generation and prefix drift fails closed.
-* **Explicit Agent completion**: Immutable Agents can require `ask_user` or
-  `task_complete`. Natural-stop output is retained and followed by one bounded,
-  observable structured continuation instead of being misreported as success.
+* **Retired completion experiment**: v6 briefly required a structured control
+  completion after natural stop. v7 removes that protocol and its runtime/API
+  paths completely.
 * **Atomic Run activation**: All new provider Runs reset attempt/live ownership
   through one actor transition. Ask User continuation publishes `preparing`
   immediately and exact Run-attempt fencing preserves live reasoning and text.

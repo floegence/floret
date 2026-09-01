@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/observation"
 )
 
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
@@ -205,7 +205,7 @@ func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream)
 		return
 	}
 	name := strings.TrimSpace(stream.Name)
-	if name == CoreControlAskUser || name == CoreControlTaskComplete {
+	if name == CoreControlAskUser {
 		return
 	}
 	id := threadToolSegmentID(runtime.state.turnID, stream.ID)

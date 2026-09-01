@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	internalstorage "github.com/floegence/floret/v6/internal/storagebridge"
-	publicstorage "github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/storage/spi"
+	internalstorage "github.com/floegence/floret/v7/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 var (

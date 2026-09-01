@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/floegence/floret/v6/identity"
+import "github.com/floegence/floret/v7/identity"
 
 type ToolCall struct {
 	ID        string

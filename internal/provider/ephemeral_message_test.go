@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 func TestMessagesWithEphemeralUserRejectsInvalidIdentityAndIndex(t *testing.T) {

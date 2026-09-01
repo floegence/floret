@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/session/artifact"
 )
 
 // memoryStateVersion identifies the last monolithic checkpoint shape. Schema

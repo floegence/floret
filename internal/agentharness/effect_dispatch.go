@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // dispatchAuthorizedEffect is the typed runtime effect path. Approval is intentionally

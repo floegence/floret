@@ -201,8 +201,8 @@ func TestRegisterValidatesRepeatIdentityIgnoredArguments(t *testing.T) {
 
 func TestUnknownToolFailsClearly(t *testing.T) {
 	got := NewRegistry().Run(context.Background(), ToolCall{Name: "missing"}, nil)
-	if !got.IsError || got.Text != `unknown tool "missing"` {
-		t.Fatalf("result = %#v, want unknown tool name", got)
+	if !got.IsError || got.Text != `tool "missing" is unavailable in the current version` {
+		t.Fatalf("result = %#v, want unavailable tool result", got)
 	}
 }
 

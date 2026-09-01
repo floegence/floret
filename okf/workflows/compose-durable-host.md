@@ -1,7 +1,7 @@
 ---
 type: Workflow
 title: Compose A Durable Host
-description: Open one v6 Host and expose only the typed thread service.
+description: Open one v7 Host and expose only the typed thread service.
 resource: /runtime/host_v2.go
 tags: [workflow, host, composition]
 timestamp: 2026-08-18T00:00:00Z

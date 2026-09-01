@@ -15,12 +15,12 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v6@v6.1.1
+go get github.com/floegence/floret/v7@v7.0.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
 `replace`, `go.work`, or sibling repository path. Earlier major versions remain
-available only from their published tags; v6 does not restore retired facades.
+available only from their published tags; v7 does not restore retired facades.
 
 ## Quick Start
 
@@ -36,10 +36,10 @@ import (
     "context"
     "os"
 
-    "github.com/floegence/floret/v6/config"
-    "github.com/floegence/floret/v6/provider"
-    "github.com/floegence/floret/v6/runtime"
-    "github.com/floegence/floret/v6/storage"
+    "github.com/floegence/floret/v7/config"
+    "github.com/floegence/floret/v7/provider"
+    "github.com/floegence/floret/v7/runtime"
+    "github.com/floegence/floret/v7/storage"
 )
 
 func main() {
@@ -180,18 +180,23 @@ Public Ask User answers become one canonical user message and remain in every
 later provider request. Secret answers are sent only to the current continuation;
 the journal and later context retain a redacted marker, never the secret value.
 
-`runtime.NewAgent` snapshots the resolved Agent profile, system prompt,
-Gateway, tools, capabilities, reasoning policy, and execution policy. The
-effective snapshot and continuation state used by each run are Floret-owned
-durable facts. Provider credentials and editable profile sources remain in the
-host.
+`runtime.NewAgent` resolves the Agent profile, system prompt, Gateway, tools,
+capabilities, reasoning policy, and execution policy. The first provider
+checkpoint freezes that complete execution surface for one Turn. Ask User,
+ordinary tool loops, retries, and restart recovery reuse it exactly. Provider
+natural stop completes the Turn; there is no second completion protocol.
+Provider credentials and editable profile sources remain in the host.
 
-An `AgentFactory` may select a different provider or model for a new Turn. The
-canonical conversation remains unchanged. Floret maintains a separate rendered
-prefix for each provider/model line, clears opaque continuation state when the
-line changes, and compacts only when the selected model's context window needs
-it. A waiting interaction, tool continuation, or retry remains frozen to the
-provider and model already recorded for that Turn.
+An `AgentFactory` may select a new system prompt, tool surface, provider, model,
+or reasoning policy for each new Turn. The canonical conversation remains
+append-only. Floret maintains a content-addressed render lineage for each exact
+execution surface, clears opaque continuation state when the surface changes,
+and compacts only when explicitly requested or when the selected model's
+context window needs it. A waiting interaction, tool continuation, retry, or
+restart remains frozen to the surface recorded for that Turn. Historical tool
+calls remain readable when their definitions are removed; a new call to an
+unavailable tool returns a safe ordinary tool result and the model loop
+continues.
 
 Current views contain one Floret-ordered sequence of directly renderable user,
 thinking, assistant, tool, and interaction items, plus pending interactions and

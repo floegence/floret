@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/provider/catalog"
-	"github.com/floegence/floret/v6/internal/searchcap"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/searchcap"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testing.T) {
@@ -873,7 +873,7 @@ func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
 			{Role: session.System, Content: "system"},
 			{Role: session.User, Content: "hello"},
 		},
-		Tools: []tools.ToolDefinition{{Name: "task_complete"}},
+		Tools: []tools.ToolDefinition{{Name: "finish_task"}},
 		Cache: cache.CachePolicy{Enabled: true, Retention: cache.RetentionLong},
 	})
 	if err != nil {
@@ -1280,7 +1280,7 @@ func TestAnthropicProviderCacheControlCapabilityAndRetentionValidation(t *testin
 func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"done\",\"type\":\"function\",\"function\":{\"name\":\"task_complete\",\"arguments\":\"{\\\"summary\\\"\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"done\",\"type\":\"function\",\"function\":{\"name\":\"finish_task\",\"arguments\":\"{\\\"summary\\\"\"}}]}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"streamed\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
 	}))
 	defer server.Close()
@@ -1303,7 +1303,7 @@ func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 			doneReason = ev.Reason
 		}
 	}
-	if len(calls) != 1 || calls[0].Name != "task_complete" || calls[0].Args != `{"summary":"streamed"}` {
+	if len(calls) != 1 || calls[0].Name != "finish_task" || calls[0].Args != `{"summary":"streamed"}` {
 		t.Fatalf("streamed tool calls = %#v", calls)
 	}
 	if usage.TotalTokens != 15 || doneReason != "tool_calls" {
@@ -1518,7 +1518,7 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"finish_task","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
 	}))
 	defer server.Close()
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}

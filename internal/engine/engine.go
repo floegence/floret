@@ -12,19 +12,19 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/activityview"
-	"github.com/floegence/floret/v6/internal/control"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/memory"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/artifact"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/memory"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/tools"
 )
 
 var (
@@ -51,13 +51,6 @@ const (
 	Cancelled Status = "cancelled"
 )
 
-type CompletionPolicy string
-
-const (
-	CompletionNaturalStop    CompletionPolicy = "natural_stop"
-	CompletionExplicitSignal CompletionPolicy = "explicit_signal"
-)
-
 const (
 	terminalCloseGrace                = 250 * time.Millisecond
 	maxCompactionConvergenceAttempts  = 4
@@ -68,7 +61,6 @@ type CompletionReason string
 
 const (
 	CompletionReasonNaturalStop CompletionReason = "natural_stop"
-	CompletionReasonToolSignal  CompletionReason = "tool_signal"
 	CompletionReasonHookStop    CompletionReason = "hook_stop"
 )
 
@@ -81,7 +73,6 @@ const (
 	ContinueRetryEmpty        ContinuationReason = "retry_empty"
 	ContinueNoProgress        ContinuationReason = "no_progress"
 	ContinueHook              ContinuationReason = "hook"
-	ContinueExplicitSignal    ContinuationReason = "explicit_signal"
 )
 
 type StopHook func(context.Context, StopHookContext) (StopHookResult, error)
@@ -167,6 +158,7 @@ type Options struct {
 	PromptScopeID            string
 	ProviderName             string
 	Model                    string
+	StateCompatibilityKey    string
 	Labels                   RunLabels
 	CacheNamespace           string
 	CacheRetention           cache.Retention
@@ -181,7 +173,6 @@ type Options struct {
 	MaxCostUSD               float64
 	MaxToolCalls             int
 	HostedToolDefinitions    []provider.HostedToolDefinition
-	CompletionPolicy         CompletionPolicy
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
 	MaxLengthContinuations   int
@@ -942,22 +933,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 		}
 		if len(calls) == 0 {
-			if (stepText != "" || (opts.CompletionPolicy == CompletionExplicitSignal && stepReasoning != "")) && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
+			if (stepText != "" || stepReasoning != "") && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
 				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
 					if isContextCancellation(err) {
 						return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 					}
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
-				}
-				continuationReason := ContinueHook
-				if !hook.Continue && opts.CompletionPolicy == CompletionExplicitSignal {
-					hook = StopHookResult{
-						Continue: true,
-						Prompt:   explicitSignalContinuationPrompt(opts.ControlSpec),
-						Reason:   "explicit_signal_required",
-					}
-					continuationReason = ContinueExplicitSignal
 				}
 				if hook.Continue {
 					stopHookContinuations++
@@ -974,9 +956,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					}
 					activeHistory = append(activeHistory, msg)
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
-					decision.ContinuationReason = continuationReason
+					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
-					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(continuationReason), Result: decision.Detail})
+					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 					continue
 				}
@@ -1145,12 +1127,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				decision.ControlSignal = signal
 				e.emitControlSignal(opts, step, signal)
 				switch signal.Disposition {
-				case ControlTerminal:
-					decision.CompletionReason = CompletionReasonToolSignal
-					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
-					return e.end(state, opts, step, Completed, signal.OutputText, nil, metrics, started, decision)
 				case ControlWaiting:
-					decision.CompletionReason = CompletionReasonToolSignal
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
 					return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
 				case ControlContinue:
@@ -1309,16 +1286,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
-}
-
-func explicitSignalContinuationPrompt(spec ControlSpec) string {
-	names := make([]string, 0, len(spec.Definitions))
-	for _, definition := range spec.Definitions {
-		if name := strings.TrimSpace(definition.Name); name != "" {
-			names = append(names, name)
-		}
-	}
-	return fmt.Sprintf("This turn requires an explicit control signal before it can stop. Call one of these declared control tools: %s.", strings.Join(names, ", "))
 }
 
 func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequest) ContextCompactionResult {
@@ -1781,6 +1748,9 @@ func normalizeOptions(o Options) Options {
 	if o.CacheNamespace == "" {
 		o.CacheNamespace = cache.DefaultNamespace(o.PromptScopeID, o.ProviderName, o.Model)
 	}
+	if o.StateCompatibilityKey == "" {
+		o.StateCompatibilityKey = strings.Join([]string{o.ProviderName, o.Model, cache.Version}, ":")
+	}
 	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
 	if o.MaxEmptyProviderRetries <= 0 {
 		o.MaxEmptyProviderRetries = 1
@@ -1791,9 +1761,6 @@ func normalizeOptions(o Options) Options {
 	if o.DuplicateToolLimit <= 0 {
 		o.DuplicateToolLimit = 3
 	}
-	if o.CompletionPolicy == "" {
-		o.CompletionPolicy = CompletionNaturalStop
-	}
 	if o.MaxLengthContinuations <= 0 {
 		o.MaxLengthContinuations = 2
 	}
@@ -1801,7 +1768,7 @@ func normalizeOptions(o Options) Options {
 		o.MaxStopHookContinuations = 2
 	}
 	o.Labels = cloneRunLabels(o.Labels)
-	o.ControlSpec = normalizeControlSpec(o.ControlSpec, o.CompletionPolicy)
+	o.ControlSpec = normalizeControlSpec(o.ControlSpec)
 	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
 	o.SupplementalContext = cloneTurnSupplementalContext(o.SupplementalContext)
 	return o
@@ -2039,14 +2006,7 @@ func normalizeAndValidateTurnSupplementalContextItem(item TurnSupplementalContex
 	return item, nil
 }
 
-func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	if err := cache.ValidateTurnModel(ctx, e.prompt, opts.PromptScopeID, opts.TurnID, opts.ProviderName, opts.Model); err != nil {
-		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
-	}
-	providerModelChanged, err := cache.ProviderModelChanged(ctx, e.prompt, opts.PromptScopeID, opts.ProviderName, opts.Model)
-	if err != nil {
-		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
-	}
+func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, opts Options, step int, history []session.Message) (provider.Request, error) {
 	toolDefinitions := appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
 	if err := validateConfiguredTools(toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
 		return provider.Request{}, err
@@ -2055,7 +2015,41 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if systemPrompt == "" {
 		systemPrompt = e.memory.SystemPrompt
 	}
-	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
+	turnSurfaceID := strings.TrimSpace(opts.TurnID)
+	if turnSurfaceID == "" {
+		turnSurfaceID = strings.TrimSpace(opts.RunID)
+	}
+	turnSurface, frozen, err := cache.ResolveTurnSurface(ctx, promptStore, opts.PromptScopeID, turnSurfaceID, cache.TurnSurfaceSnapshot{
+		Provider:              opts.ProviderName,
+		Model:                 opts.Model,
+		ReasoningLevel:        string(opts.Reasoning.Level),
+		ReasoningBudgetTokens: opts.Reasoning.BudgetTokens,
+		SystemPrompt:          systemPrompt,
+		Tools:                 toolDefinitions,
+		HostedTools:           convertHostedToolDefinitions(opts.HostedToolDefinitions),
+		ContextPolicy:         opts.ContextPolicy,
+		AdapterVersion:        cache.Version,
+		CacheNamespace:        opts.CacheNamespace,
+		StateCompatibilityKey: opts.StateCompatibilityKey,
+	})
+	if err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
+	}
+	if frozen {
+		opts.ProviderName = turnSurface.Provider
+		opts.Model = turnSurface.Model
+		opts.Reasoning = provider.ReasoningSelection{Level: provider.ReasoningLevel(turnSurface.ReasoningLevel), BudgetTokens: turnSurface.ReasoningBudgetTokens}
+		opts.ContextPolicy = turnSurface.ContextPolicy
+		opts.CacheNamespace = turnSurface.CacheNamespace
+		opts.StateCompatibilityKey = turnSurface.StateCompatibilityKey
+		systemPrompt = turnSurface.SystemPrompt
+		toolDefinitions = cloneProviderToolDefinitions(turnSurface.Tools)
+		opts.HostedToolDefinitions = hostedToolDefinitions(turnSurface.HostedTools)
+	}
+	if err := cache.ValidateTurnModel(ctx, promptStore, opts.PromptScopeID, opts.TurnID, opts.ProviderName, opts.Model); err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
+	}
+	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, promptStore, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
@@ -2063,8 +2057,8 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err != nil {
 		return provider.Request{}, err
 	}
-	canonicalHistory := providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec)
-	plan, messages, err := cache.BuildPlan(ctx, e.prompt, cache.BuildInput{
+	canonicalHistory := providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):])
+	plan, messages, err := cache.BuildPlan(ctx, promptStore, cache.BuildInput{
 		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
 		ThreadID:       opts.ThreadID,
@@ -2083,10 +2077,10 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
-	if err := cache.ValidateCanonicalLineage(ctx, e.prompt, opts.PromptScopeID, &plan, systemPrompt, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), map[string]any{
+	if err := cache.ValidateCanonicalLineage(ctx, promptStore, opts.PromptScopeID, &plan, systemPrompt, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), map[string]any{
 		"provider": opts.ProviderName, "model": opts.Model,
-		"reasoning": opts.Reasoning, "completion_policy": opts.CompletionPolicy,
-		"context_policy": opts.ContextPolicy,
+		"reasoning": opts.Reasoning, "adapter_version": cache.Version,
+		"state_compatibility_key": opts.StateCompatibilityKey,
 	}, canonicalHistory); err != nil {
 		if contextLineageCompactionRequired(err) {
 			return provider.Request{}, err
@@ -2096,7 +2090,11 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if plan.CanonicalLineageReset {
 		plan.PreviousResponseID = ""
 	}
-	if providerModelChanged {
+	surfaceChanged, err := cache.ProviderSurfaceChanged(ctx, promptStore, opts.PromptScopeID, plan.RenderLineageKey)
+	if err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
+	}
+	if surfaceChanged {
 		plan.PreviousResponseID = ""
 	}
 	activeTools := cloneProviderToolDefinitions(toolset.Tools)
@@ -2151,6 +2149,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		ContextPolicy:   opts.ContextPolicy,
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 		Reasoning:       opts.Reasoning,
+		TurnSurface:     turnSurface,
 		PreviousState:   provider.CloneState(opts.PreviousProviderState),
 		Labels:          providerRequestLabels(opts.Labels),
 	}
@@ -2160,16 +2159,14 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if plan.CanonicalLineageReset {
 		req.PreviousState = nil
 	}
-	if providerModelChanged {
+	if surfaceChanged {
 		req.PreviousState = nil
 	}
 	return req, nil
 }
 
 func contextLineageCompactionRequired(err error) bool {
-	return errors.Is(err, cache.ErrContextLineageMigrationNeeded) ||
-		errors.Is(err, cache.ErrContextEnvelopeChanged) ||
-		errors.Is(err, cache.ErrContextRenderLineageChanged)
+	return errors.Is(err, cache.ErrContextLineageMigrationNeeded)
 }
 
 func assembleMessages(systemPrompt string, history []session.Message) []session.Message {
@@ -2461,10 +2458,12 @@ func (e *Engine) emitManualCompactionPollDebug(opts Options, step int, usage con
 }
 
 func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool) (provider.Request, error) {
-	req, err := e.providerRequest(ctx, opts, step, history)
+	promptStore := cache.NewPreparedStore(e.prompt)
+	req, err := e.providerRequest(ctx, promptStore, opts, step, history)
 	if err != nil {
 		return provider.Request{}, err
 	}
+	req.PromptStore = promptStore
 	req.Attempt = attempt
 	req.OverflowRetried = overflowRetried
 	req.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
@@ -2541,7 +2540,11 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 		}
 	}
 	if req.EphemeralUser == nil {
-		if _, err := cache.RecordProviderRequest(ctx, e.prompt, providerRequestSnapshot(req)); err != nil {
+		promptStore := e.prompt
+		if req.PromptStore != nil {
+			promptStore = req.PromptStore
+		}
+		if _, err := cache.RecordProviderRequest(ctx, promptStore, providerRequestSnapshot(req)); err != nil {
 			releaseProviderGate()
 			return StepOutput{}, 0, false, withFailureOrigin(err, FailureOriginStorage)
 		}
@@ -2647,6 +2650,7 @@ func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot
 		Model:            req.Model,
 		Cache:            req.Cache,
 		RawPlan:          req.RawPlan,
+		TurnSurface:      req.TurnSurface,
 	}
 }
 
@@ -3664,11 +3668,11 @@ func validateHostedToolEvent(call provider.ToolCall, allowed map[string]struct{}
 	return nil
 }
 
-func providerSafeHistory(history []session.Message, spec ControlSpec) []session.Message {
+func providerSafeHistory(history []session.Message) []session.Message {
 	out := make([]session.Message, 0, len(history))
 	for _, msg := range history {
-		if msg.Role == session.Assistant && msg.ToolName != "" && spec.isControlTool(msg.ToolName) {
-			out = append(out, providerSafeControlMessage(msg, spec))
+		if msg.Role == session.Assistant && msg.ToolName != "" && (msg.Kind == session.MessageKindControlSignal || msg.ControlSignal != nil) {
+			out = append(out, providerSafeControlMessage(msg))
 			continue
 		}
 		msg.Activity = nil
@@ -3677,9 +3681,9 @@ func providerSafeHistory(history []session.Message, spec ControlSpec) []session.
 	return out
 }
 
-func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.Message {
+func providerSafeControlMessage(msg session.Message) session.Message {
 	content := providerSafeControlText(ControlSignal{Name: strings.TrimSpace(msg.ToolName)})
-	if signal, ok, err := projectProviderSafeControlSignal(msg, spec); err == nil && ok {
+	if signal, ok := persistedControlSignal(msg); ok {
 		content = providerSafeControlText(signal)
 	}
 	return session.Message{
@@ -3691,7 +3695,7 @@ func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.M
 	}
 }
 
-func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (ControlSignal, bool, error) {
+func persistedControlSignal(msg session.Message) (ControlSignal, bool) {
 	if view := msg.ControlSignal; view != nil {
 		return ControlSignal{
 			Disposition: ControlDisposition(view.Disposition),
@@ -3701,10 +3705,9 @@ func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (Co
 			Payload:     cloneControlPayload(view.Payload),
 			OutputText:  view.OutputText,
 			ArgsHash:    view.ArgsHash,
-		}, true, nil
+		}, true
 	}
-	call := provider.ToolCall{ID: msg.ToolCallID, Name: msg.ToolName, Args: msg.ToolArgs}
-	return spec.project(call, controlProjectionContext{})
+	return ControlSignal{}, false
 }
 
 func sessionControlSignalView(signal *ControlSignal) *session.ControlSignalView {
@@ -3730,11 +3733,6 @@ func providerSafeControlText(signal ControlSignal) string {
 			return "Agent requested user input: " + text
 		}
 		return "Agent requested user input."
-	case control.TaskCompleteTool:
-		if text != "" {
-			return "Agent completed the task: " + text
-		}
-		return "Agent completed the task."
 	default:
 		if text != "" {
 			return fmt.Sprintf("Agent control signal %q: %s", signal.Name, text)

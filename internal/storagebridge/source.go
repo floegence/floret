@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // Source intentionally exposes no methods. The public storage.Source is a

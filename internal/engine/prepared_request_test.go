@@ -10,13 +10,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 func TestPreparedProviderRequestLifecycle(t *testing.T) {
@@ -255,6 +255,10 @@ type failingProviderRequestStore struct {
 }
 
 func (s *failingProviderRequestStore) AppendProviderRequest(context.Context, cache.ProviderRequestRecord) error {
+	return s.err
+}
+
+func (s *failingProviderRequestStore) CheckpointProviderRequest(context.Context, []cache.Segment, []cache.ToolsetSnapshot, cache.ProviderRequestRecord) error {
 	return s.err
 }
 

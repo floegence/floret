@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/internal/storagecodec"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -216,6 +216,10 @@ func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scopeID, provide
 }
 
 func (kernel *BackendKernel) AppendProviderRequest(ctx context.Context, value cache.ProviderRequestRecord) error {
+	return kernel.CheckpointProviderRequest(ctx, nil, nil, value)
+}
+
+func (kernel *BackendKernel) CheckpointProviderRequest(ctx context.Context, segments []cache.Segment, toolsets []cache.ToolsetSnapshot, value cache.ProviderRequestRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -224,6 +228,16 @@ func (kernel *BackendKernel) AppendProviderRequest(ctx context.Context, value ca
 	nextPrompt, err := clonePromptState(kernel.prompt)
 	if err != nil {
 		return err
+	}
+	for _, segment := range segments {
+		if err := nextPrompt.AppendSegment(ctx, segment); err != nil {
+			return err
+		}
+	}
+	for _, toolset := range toolsets {
+		if err := nextPrompt.AppendToolset(ctx, toolset); err != nil {
+			return err
+		}
 	}
 	if err := nextPrompt.AppendProviderRequest(ctx, value); err != nil {
 		return err

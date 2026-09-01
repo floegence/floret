@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 type memorySource struct{}

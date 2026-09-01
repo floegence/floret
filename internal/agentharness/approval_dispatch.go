@@ -3,8 +3,8 @@ package agentharness
 import (
 	"context"
 
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // Approval is represented by one canonical interaction requested by the

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/tools"
 )
 
 var ErrContextOverflow = errors.New("provider context overflow")
@@ -42,9 +42,11 @@ type Request struct {
 	ContextPressure  contextpolicy.ContextPressure
 	MaxOutputTokens  int64
 	Reasoning        ReasoningSelection
+	TurnSurface      cache.TurnSurfaceSnapshot
 	PreviousState    *State
 	Labels           RequestLabels
 	Prepared         PreparedRequest `json:"-"`
+	PromptStore      cache.Store     `json:"-"`
 }
 
 // EphemeralUserMessage is inserted into one provider request in memory. Its

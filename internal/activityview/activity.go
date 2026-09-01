@@ -5,7 +5,7 @@ package activityview
 import (
 	"strings"
 
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // WithTerminalStatus returns a detached presentation with a terminal status.

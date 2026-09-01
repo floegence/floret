@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/runtime"
-	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
 )
 
 type gateway struct{}

@@ -6,12 +6,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/testing/harness"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/testing/harness"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestToolBatchDoesNotReloadTranscriptPerMessage(t *testing.T) {

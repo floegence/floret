@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/storagebridge"
-	publicstorage "github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func TestBackendDomainV7SubAgentCreateWriteDoesNotGrowWithUnrelatedHistory(t *testing.T) {
@@ -276,14 +276,14 @@ func (tx toggleFailWriteTx) Put(namespace string, key, value []byte) error {
 	tx.backend.mu.Lock()
 	fail, err := tx.backend.fail, tx.backend.err
 	tx.backend.mu.Unlock()
-	if fail && namespace == backendDomainV7Namespace {
+	if fail && namespace == backendDomainV8Namespace {
 		return err
 	}
 	return tx.WriteTx.Put(namespace, key, value)
 }
 
 func (tx measuringWriteTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV7Namespace {
+	if namespace == backendDomainV8Namespace {
 		tx.backend.mu.Lock()
 		tx.backend.puts++
 		tx.backend.putBytes += int64(len(key) + len(value))

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/storagecodec"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func TestBackendDomainV6ToV7BackfillsRunIdentityAndTerminatesUnknownEffects(t *testing.T) {
@@ -138,9 +138,9 @@ func TestBackendDomainV6ToV7BackfillsRunIdentityAndTerminatesUnknownEffects(t *t
 		if records, err := scanBackendDomainV6(ctx, tx); err != nil || len(records) != 0 {
 			return fmt.Errorf("v6 records=%d err=%w", len(records), err)
 		}
-		_, found, err := loadBackendDomainV7(ctx, tx, time.Now)
+		_, found, err := loadBackendDomainV8(ctx, tx, time.Now)
 		if err != nil || !found {
-			return fmt.Errorf("v7 found=%v err=%w", found, err)
+			return fmt.Errorf("v8 found=%v err=%w", found, err)
 		}
 		return nil
 	}); err != nil {

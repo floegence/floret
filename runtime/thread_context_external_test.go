@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/florettest"
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/runtime"
-	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
 )
 
 func TestThreadContextReaderAccumulatesFinalProviderUsageFromEngineEvents(t *testing.T) {

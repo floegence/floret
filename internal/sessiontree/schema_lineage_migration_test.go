@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/storagebridge"
-	"github.com/floegence/floret/v6/internal/storagecodec"
-	publicstorage "github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	publicstorage "github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func TestMemoryStateMigrationLineageReachesV5(t *testing.T) {
@@ -301,11 +301,11 @@ func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV7Namespace)
+			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV8Namespace)
 			if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV7Namespace), stateAfterFirstOpen) {
+			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV8Namespace), stateAfterFirstOpen) {
 				t.Fatal("repaired state was rewritten during idempotent reopen")
 			}
 		})
@@ -664,7 +664,7 @@ type migrationFailingTx struct {
 }
 
 func (tx migrationFailingTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV7Namespace && bytes.Equal(key, backendDomainV7Key(backendDomainRecordRootIndex)) {
+	if namespace == backendDomainV8Namespace && bytes.Equal(key, backendDomainV8Key(backendDomainRecordRootIndex)) {
 		return tx.err
 	}
 	return tx.WriteTx.Put(namespace, key, value)

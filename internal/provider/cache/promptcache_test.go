@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) {
@@ -47,8 +47,11 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 		t.Fatalf("mutated prefix error = %v, want ErrContextPrefixDrift", err)
 	}
 	rewrittenEnvelope := lineagePlan("test", "model", "ns", "tool", "new-system")
-	if err := ValidateCanonicalLineage(ctx, store, "thread", &rewrittenEnvelope, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); !errors.Is(err, ErrContextEnvelopeChanged) {
-		t.Fatalf("rewritten envelope error = %v, want ErrContextEnvelopeChanged", err)
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &rewrittenEnvelope, "rewritten system", envelopeTools, nil, map[string]any{"model": "test"}, appended); err != nil {
+		t.Fatalf("rewritten envelope should create a new render lineage: %v", err)
+	}
+	if rewrittenEnvelope.RenderLineageKey == first.RenderLineageKey {
+		t.Fatal("rewritten envelope reused the previous render lineage")
 	}
 	newModel := lineagePlan("test", "other", "other-ns", "other-tool", "other-system", "other-user")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &newModel, "stable system", envelopeTools, nil, map[string]any{"model": "other"}, appended); err != nil {
@@ -111,6 +114,56 @@ func TestValidateTurnModelFreezesProviderAndModelWithinTurn(t *testing.T) {
 	}
 	if err := ValidateTurnModel(ctx, store, "thread", "next-turn", "deepseek", "pro"); err != nil {
 		t.Fatalf("new turn model switch rejected: %v", err)
+	}
+}
+
+func TestResolveTurnSurfaceFreezesCompleteSurfaceAndStoreDetachesCopies(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	first := TurnSurfaceSnapshot{
+		Provider: "deepseek", Model: "flash", ReasoningLevel: "medium", ReasoningBudgetTokens: 1024,
+		SystemPrompt: "system-v1", Tools: []ToolDefinition{{Name: "read", InputSchema: map[string]any{"type": "object"}}},
+		HostedTools:    []HostedToolDefinition{{Name: "search", Type: "web", Options: map[string]any{"region": "global"}}},
+		ContextPolicy:  contextpolicy.Policy{ContextWindowTokens: 128000, MaxOutputTokens: 8192},
+		AdapterVersion: Version, CacheNamespace: "flash-cache", StateCompatibilityKey: "deepseek:flash:v1",
+	}
+	frozen, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", first)
+	if err != nil || found || frozen.Hash == "" {
+		t.Fatalf("first surface = %#v found=%v err=%v", frozen, found, err)
+	}
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "request", PromptScopeID: "thread", RunID: "run", TurnID: "turn", Provider: frozen.Provider, Model: frozen.Model, TurnSurface: frozen,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := first
+	changed.Model = "pro"
+	changed.SystemPrompt = "system-v2"
+	changed.Tools = []ToolDefinition{{Name: "write"}}
+	restored, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", changed)
+	if err != nil || !found || restored.Hash != frozen.Hash || restored.Model != "flash" || restored.SystemPrompt != "system-v1" || len(restored.Tools) != 1 || restored.Tools[0].Name != "read" {
+		t.Fatalf("restored surface = %#v found=%v err=%v", restored, found, err)
+	}
+
+	requests, err := store.ProviderRequests(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests[0].SegmentIDs = append(requests[0].SegmentIDs, "mutated")
+	requests[0].TurnSurface.Tools[0].Name = "mutated"
+	requests[0].TurnSurface.HostedTools[0].Options["region"] = "mutated"
+	again, err := store.ProviderRequests(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again[0].SegmentIDs) != 0 || again[0].TurnSurface.Tools[0].Name != "read" || again[0].TurnSurface.HostedTools[0].Options["region"] != "global" {
+		t.Fatalf("stored execution surface was mutated through a read: %#v", again[0])
+	}
+
+	next, found, err := ResolveTurnSurface(ctx, store, "thread", "next-turn", changed)
+	if err != nil || found || next.Model != "pro" || next.SystemPrompt != "system-v2" || next.Hash == frozen.Hash {
+		t.Fatalf("next turn surface = %#v found=%v err=%v", next, found, err)
 	}
 }
 
@@ -670,7 +723,6 @@ func TestEnsureToolsetRejectsInvalidToolDefinitions(t *testing.T) {
 		{name: "empty hosted name", hosted: []HostedToolDefinition{{Type: "web_search"}}, want: "name is required"},
 		{name: "empty hosted type", hosted: []HostedToolDefinition{{Name: "web_search"}}, want: "type is required"},
 		{name: "duplicate hosted name", hosted: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}, {Name: "web_search", Type: "search"}}, want: "duplicate hosted tool name"},
-		{name: "reserved hosted", hosted: []HostedToolDefinition{{Name: "task_complete", Type: "control"}}, want: "reserved"},
 		{name: "local hosted conflict", tools: []ToolDefinition{{Name: "web_search"}}, hosted: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}}, want: "both a local tool and a provider-hosted tool"},
 	}
 	for _, tt := range cases {

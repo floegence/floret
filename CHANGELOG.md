@@ -1,5 +1,25 @@
 # Changelog
 
+## v7.0.0 - 2026-09-01
+
+- Complete a Turn on terminal provider natural stop and remove the explicit
+  completion policy, reserved completion tool, forced continuation, and public
+  lifecycle contracts from the v7 module.
+- Freeze provider, model, reasoning, system prompt, local and hosted tools,
+  adapter, context policy, and continuation compatibility in one durable Turn
+  surface checkpoint before provider dispatch. Ask User, tool loops, retries,
+  and restart recovery reuse the same surface; a new Turn uses current settings.
+- Separate append-only canonical history from content-addressed render
+  lineages. Execution-surface changes preserve full history without compaction,
+  and provider-native continuation is reused only for an immediately adjacent,
+  exactly matching surface.
+- Add domain schema v8. Its strict v7 migration reclassifies only the historical
+  Engine continuation message paired with an exact `context_continue` save
+  point, restoring canonical user identity without mutating ambiguous data.
+- Preserve historical tool activity independently of the current registry.
+  Removed tools render neutrally, while new unavailable calls return a safe
+  ordinary tool result and continue the provider loop.
+
 ## v6.1.1 - 2026-08-31
 
 - Persist public Ask User answers as canonical user messages. Secret answers

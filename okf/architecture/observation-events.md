@@ -98,10 +98,9 @@ or validation failures require a canonical reload rather than event replay.
   projections therefore cannot diverge or accept usage with incomplete attempt
   identity. Reconnect reloads `ThreadContextReader.Context` instead of replaying
   or locally accumulating events.
-* Explicit-signal natural stops emit `ContinuationReasonExplicitSignal` after
-  the complete model response is appended. The following request therefore
-  extends the existing prefix and asks for a structured `ask_user` or
-  `task_complete` decision; observers never need to infer completion from text.
+* A terminal provider natural stop completes the Turn after its assistant output
+  is appended. Ordinary tool results continue the loop, while `ask_user` enters
+  a durable wait and resumes the same frozen Turn surface after resolution.
 * The public runtime event sink contains only finite `observation.EventType`
   values. Agent-harness lifecycle notifications such as thread resume, turn
   start, and entry append remain on the internal harness sink and are not

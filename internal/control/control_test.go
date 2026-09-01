@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider"
 )
 
 func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {
@@ -16,7 +16,6 @@ func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {
 		{name: "ask missing questions", call: provider.ToolCall{Name: AskUserTool, Args: `{}`}, want: "is required"},
 		{name: "ask unknown field", call: provider.ToolCall{Name: AskUserTool, Args: `{"questions":[],"reason_code":"missing_external_input","required_from_user":[],"evidence_refs":[],"extra":true}`}, want: "$.extra is not allowed"},
 		{name: "ask trailing json", call: provider.ToolCall{Name: AskUserTool, Args: `{"questions":[]} {"questions":[]}`}, want: "expected exactly one JSON value"},
-		{name: "complete wrong type", call: provider.ToolCall{Name: TaskCompleteTool, Args: `{"output":1}`}, want: "$.output must be a string"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -36,17 +35,5 @@ func TestProjectReturnsSignalsForValidControlToolArgs(t *testing.T) {
 	structuredAsk, ok, err := Project(provider.ToolCall{Name: AskUserTool, Args: `{"questions":[{"id":"branch","header":"Branch","question":"Which branch?","is_secret":false,"response_mode":"write"}],"reason_code":"missing_external_input","required_from_user":["branch"],"evidence_refs":["message:latest"]}`})
 	if err != nil || !ok || structuredAsk.Kind != SignalAskUser || structuredAsk.Prompt != "Which branch?" || structuredAsk.Payload["reason_code"] != "missing_external_input" {
 		t.Fatalf("structured ask signal = %#v ok=%v err=%v", structuredAsk, ok, err)
-	}
-	done, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{"output":"done"}`})
-	if err != nil || !ok || done.Kind != SignalTaskComplete || done.Output != "done" {
-		t.Fatalf("done signal = %#v ok=%v err=%v", done, ok, err)
-	}
-	emptyDone, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{}`})
-	if err != nil || !ok || emptyDone.Kind != SignalTaskComplete || emptyDone.Output != "" {
-		t.Fatalf("empty done signal = %#v ok=%v err=%v", emptyDone, ok, err)
-	}
-	resultDone, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{"result":"done","evidence_refs":["https://example.test"]}`})
-	if err != nil || !ok || resultDone.Kind != SignalTaskComplete || resultDone.Output != "done" || resultDone.Payload["result"] != "done" {
-		t.Fatalf("result done signal = %#v ok=%v err=%v", resultDone, ok, err)
 	}
 }

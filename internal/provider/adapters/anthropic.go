@@ -9,12 +9,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/provider/catalog"
-	"github.com/floegence/floret/v6/internal/searchcap"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/searchcap"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type AnthropicProvider struct {

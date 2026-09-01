@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/storagebridge"
-	"github.com/floegence/floret/v6/storage"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/storage"
 	_ "modernc.org/sqlite"
 )
 

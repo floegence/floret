@@ -10,25 +10,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/agentharness"
-	"github.com/floegence/floret/v6/internal/configbridge"
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/provider/catalog"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/internal/storage"
-	"github.com/floegence/floret/v6/internal/tools/skills"
-	"github.com/floegence/floret/v6/observation"
-	publicprovider "github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/storage/spi"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/agentharness"
+	"github.com/floegence/floret/v7/internal/configbridge"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storage"
+	"github.com/floegence/floret/v7/internal/tools/skills"
+	"github.com/floegence/floret/v7/observation"
+	publicprovider "github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/tools"
 )
 
 var (
@@ -548,7 +548,6 @@ type runTurnRequest struct {
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
 	Labels                      RunLabels
-	Completion                  TurnCompletionPolicy
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -1410,21 +1409,16 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 	if err != nil {
 		return TurnResult{}, runtimeHostError(err)
 	}
-	completion, err := engineTurnCompletionPolicy(req.Options.Completion)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	signals, err := engineTurnSignalSpec(req.Options.Signals, completion)
+	signals, err := engineTurnSignalSpec(req.Options.Signals)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	result, runErr := thread.ResumeInput(ctx, string(req.TurnID), string(req.WaitingRunID), req.Answer, agentharness.RunOptions{
 		LogicalRequestID: string(req.Options.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
-		CompletionPolicy: completion,
-		ControlSpec:      signals,
-		Reasoning:        projectedReasoningSelection(req.Options.Reasoning, h.cfg.Reasoning),
-		MaxInputTokens:   req.Options.Limits.MaxInputTokens, MaxTotalTokens: req.Options.Limits.MaxTotalTokens,
+		ControlSpec:    signals,
+		Reasoning:      projectedReasoningSelection(req.Options.Reasoning, h.cfg.Reasoning),
+		MaxInputTokens: req.Options.Limits.MaxInputTokens, MaxTotalTokens: req.Options.Limits.MaxTotalTokens,
 		MaxCostUSD: req.Options.Limits.MaxCostUSD, MaxToolCalls: req.Options.Limits.MaxToolCalls,
 		MaxLengthContinuations: req.Options.Limits.MaxLengthContinuations, MaxStopHookContinuations: req.Options.Limits.MaxStopHookContinuations,
 		ManualCompactions:   projectedManualCompactionSource(req.Options.ManualCompactions),
@@ -1473,7 +1467,6 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
 		},
-		CompletionPolicy:         validated.completionPolicy,
 		ControlSpec:              validated.signalSpec,
 		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
 		MaxInputTokens:           req.Limits.MaxInputTokens,
@@ -1502,7 +1495,6 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 type validatedRunTurnRequest struct {
 	input               TurnInput
 	supplementalContext []TurnSupplementalContextItem
-	completionPolicy    engine.CompletionPolicy
 	signalSpec          engine.ControlSpec
 }
 
@@ -1524,17 +1516,13 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 	if err != nil {
 		return validatedRunTurnRequest{}, err
 	}
-	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
-	if err != nil {
-		return validatedRunTurnRequest{}, err
-	}
-	signalSpec, err := engineTurnSignalSpec(req.Signals, completionPolicy)
+	signalSpec, err := engineTurnSignalSpec(req.Signals)
 	if err != nil {
 		return validatedRunTurnRequest{}, err
 	}
 	return validatedRunTurnRequest{
 		input: input, supplementalContext: supplementalContext,
-		completionPolicy: completionPolicy, signalSpec: signalSpec,
+		signalSpec: signalSpec,
 	}, nil
 }
 

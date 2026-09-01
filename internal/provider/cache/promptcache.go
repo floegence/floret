@@ -15,22 +15,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v2"
+	ContextProjectionRevision = "provider-context.v3"
 )
 
 var (
 	ErrContextPrefixDrift            = errors.New("context prefix drift")
-	ErrContextEnvelopeChanged        = fmt.Errorf("%w: stable envelope changed", ErrContextPrefixDrift)
 	ErrContextLineageMigrationNeeded = errors.New("context lineage migration is required")
 	ErrContextRenderLineageChanged   = errors.New("context render lineage prefix changed")
 	ErrTurnModelDrift                = fmt.Errorf("%w: provider or model changed within one turn", ErrContextPrefixDrift)
+	ErrTurnSurfaceDrift              = fmt.Errorf("%w: execution surface changed within one turn", ErrContextPrefixDrift)
 )
 
 type SegmentKind string
@@ -217,10 +217,29 @@ type ProviderRequestRecord struct {
 	CanonicalHistoryPrefixHash string                        `json:"canonical_history_prefix_hash,omitempty"`
 	RenderLineageKey           string                        `json:"render_lineage_key,omitempty"`
 	ContextProjectionRevision  string                        `json:"context_projection_revision,omitempty"`
+	TurnSurface                TurnSurfaceSnapshot           `json:"turn_surface,omitempty"`
 	RequestEstimate            contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
 	ProjectedPressure          contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
 	RequestShape               RequestShapeHashes            `json:"request_shape,omitempty"`
 	CreatedAt                  time.Time                     `json:"created_at"`
+}
+
+// TurnSurfaceSnapshot is the immutable provider execution surface selected by
+// the first dispatched request of a turn. It is stored on the same atomic
+// request checkpoint and reused by every continuation of that turn.
+type TurnSurfaceSnapshot struct {
+	Provider              string                 `json:"provider"`
+	Model                 string                 `json:"model"`
+	ReasoningLevel        string                 `json:"reasoning_level,omitempty"`
+	ReasoningBudgetTokens int64                  `json:"reasoning_budget_tokens,omitempty"`
+	SystemPrompt          string                 `json:"system_prompt,omitempty"`
+	Tools                 []ToolDefinition       `json:"tools,omitempty"`
+	HostedTools           []HostedToolDefinition `json:"hosted_tools,omitempty"`
+	ContextPolicy         contextpolicy.Policy   `json:"context_policy,omitempty"`
+	AdapterVersion        string                 `json:"adapter_version"`
+	CacheNamespace        string                 `json:"cache_namespace,omitempty"`
+	StateCompatibilityKey string                 `json:"state_compatibility_key"`
+	Hash                  string                 `json:"hash"`
 }
 
 type ProviderResponseRecord struct {
@@ -292,6 +311,114 @@ type Store interface {
 	LatestPressureAnchor(context.Context, string, string, string) (PressureAnchorState, bool, error)
 }
 
+// ProviderRequestCheckpointer atomically publishes every prompt fact required
+// by one provider dispatch. Production durable stores implement this boundary;
+// request construction itself remains side-effect free.
+type ProviderRequestCheckpointer interface {
+	CheckpointProviderRequest(context.Context, []Segment, []ToolsetSnapshot, ProviderRequestRecord) error
+}
+
+// PreparedStore stages prompt segments and toolsets until the provider request
+// record is ready. Reads combine durable and staged facts so request validation
+// observes the exact candidate without publishing partial cache state.
+type PreparedStore struct {
+	base     Store
+	segments []Segment
+	toolsets []ToolsetSnapshot
+}
+
+func NewPreparedStore(base Store) *PreparedStore {
+	if base == nil {
+		base = NewMemoryStore()
+	}
+	return &PreparedStore{base: base}
+}
+
+func (s *PreparedStore) AppendSegment(_ context.Context, segment Segment) error {
+	s.segments = append(s.segments, segment)
+	return nil
+}
+
+func (s *PreparedStore) Segments(ctx context.Context, promptScopeID, providerName, model string) ([]Segment, error) {
+	base, err := s.base.Segments(ctx, promptScopeID, providerName, model)
+	if err != nil {
+		return nil, err
+	}
+	return append(base, filterSegments(s.segments, promptScopeID, providerName, model)...), nil
+}
+
+func (s *PreparedStore) AppendToolset(_ context.Context, snapshot ToolsetSnapshot) error {
+	s.toolsets = append(s.toolsets, cloneToolset(snapshot))
+	return nil
+}
+
+func (s *PreparedStore) ActiveToolset(ctx context.Context, promptScopeID, providerName, model string) (ToolsetSnapshot, bool, error) {
+	for index := len(s.toolsets) - 1; index >= 0; index-- {
+		item := s.toolsets[index]
+		if item.PromptScopeID == promptScopeID && item.Provider == providerName && item.Model == model {
+			return cloneToolset(item), true, nil
+		}
+	}
+	return s.base.ActiveToolset(ctx, promptScopeID, providerName, model)
+}
+
+func (s *PreparedStore) AppendProviderRequest(ctx context.Context, request ProviderRequestRecord) error {
+	segments := append([]Segment(nil), s.segments...)
+	toolsets := make([]ToolsetSnapshot, len(s.toolsets))
+	for index := range s.toolsets {
+		toolsets[index] = cloneToolset(s.toolsets[index])
+	}
+	if checkpointer, ok := s.base.(ProviderRequestCheckpointer); ok {
+		return checkpointer.CheckpointProviderRequest(ctx, segments, toolsets, request)
+	}
+	for _, segment := range segments {
+		if err := s.base.AppendSegment(ctx, segment); err != nil {
+			return err
+		}
+	}
+	for _, toolset := range toolsets {
+		if err := s.base.AppendToolset(ctx, toolset); err != nil {
+			return err
+		}
+	}
+	return s.base.AppendProviderRequest(ctx, request)
+}
+
+func (s *PreparedStore) ProviderRequests(ctx context.Context, promptScopeID string) ([]ProviderRequestRecord, error) {
+	return s.base.ProviderRequests(ctx, promptScopeID)
+}
+
+func (s *PreparedStore) AppendProviderResponse(ctx context.Context, response ProviderResponseRecord) error {
+	return s.base.AppendProviderResponse(ctx, response)
+}
+
+func (s *PreparedStore) ProviderResponses(ctx context.Context, promptScopeID string) ([]ProviderResponseRecord, error) {
+	return s.base.ProviderResponses(ctx, promptScopeID)
+}
+
+func (s *PreparedStore) LatestPressureAnchor(ctx context.Context, promptScopeID, providerName, model string) (PressureAnchorState, bool, error) {
+	return s.base.LatestPressureAnchor(ctx, promptScopeID, providerName, model)
+}
+
+func (s *PreparedStore) DeletePromptScopes(ctx context.Context, promptScopeIDs ...string) error {
+	requested := make(map[string]struct{}, len(promptScopeIDs))
+	for _, promptScopeID := range promptScopeIDs {
+		requested[strings.TrimSpace(promptScopeID)] = struct{}{}
+	}
+	s.segments = slices.DeleteFunc(s.segments, func(segment Segment) bool {
+		_, found := requested[segment.PromptScopeID]
+		return found
+	})
+	s.toolsets = slices.DeleteFunc(s.toolsets, func(toolset ToolsetSnapshot) bool {
+		_, found := requested[toolset.PromptScopeID]
+		return found
+	})
+	if deleter, ok := s.base.(Deleter); ok {
+		return deleter.DeletePromptScopes(ctx, promptScopeIDs...)
+	}
+	return nil
+}
+
 type Deleter interface {
 	DeletePromptScopes(context.Context, ...string) error
 }
@@ -343,7 +470,18 @@ func (s *MemoryStore) ActiveToolset(_ context.Context, promptScopeID, provider, 
 func (s *MemoryStore) AppendProviderRequest(_ context.Context, req ProviderRequestRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, req)
+	s.requests = append(s.requests, cloneProviderRequestRecord(req))
+	return nil
+}
+
+func (s *MemoryStore) CheckpointProviderRequest(_ context.Context, segments []Segment, toolsets []ToolsetSnapshot, request ProviderRequestRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.segments = append(s.segments, segments...)
+	for _, toolset := range toolsets {
+		s.toolsets = append(s.toolsets, cloneToolset(toolset))
+	}
+	s.requests = append(s.requests, cloneProviderRequestRecord(request))
 	return nil
 }
 
@@ -353,7 +491,7 @@ func (s *MemoryStore) ProviderRequests(_ context.Context, promptScopeID string) 
 	var out []ProviderRequestRecord
 	for _, req := range s.requests {
 		if req.PromptScopeID == promptScopeID {
-			out = append(out, req)
+			out = append(out, cloneProviderRequestRecord(req))
 		}
 	}
 	return out, nil
@@ -805,6 +943,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		messageHashes = append(messageHashes, canonicalMessageHash(message))
 	}
 	plan.CanonicalEnvelopeHash = envelopeHash
+	plan.RenderLineageKey = HashStrings(plan.RenderLineageKey, envelopeHash)
 	plan.CanonicalMessageCount = len(messageHashes)
 	plan.CanonicalPrefixHash = canonicalPrefixHash(envelopeHash, messageHashes)
 	plan.CanonicalHistoryPrefixHash = HashStrings(messageHashes...)
@@ -835,7 +974,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		plan.CanonicalLineageReset = true
 		return nil
 	}
-	if previous.ContextProjectionRevision != ContextProjectionRevision || previous.CanonicalHistoryPrefixHash == "" {
+	if previous.CanonicalHistoryPrefixHash == "" {
 		return ErrContextLineageMigrationNeeded
 	}
 	if previous.CanonicalMessageCount < 0 || previous.CanonicalMessageCount > len(messageHashes) {
@@ -855,16 +994,83 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	if previousRender == nil {
 		return nil
 	}
-	if previousRender.ContextProjectionRevision != ContextProjectionRevision || previousRender.CanonicalEnvelopeHash == "" {
+	if previousRender.CanonicalEnvelopeHash == "" {
 		return ErrContextLineageMigrationNeeded
 	}
 	if previousRender.CanonicalEnvelopeHash != envelopeHash {
-		return ErrContextEnvelopeChanged
+		return fmt.Errorf("%w: render lineage key reused with a different execution surface", ErrContextPrefixDrift)
 	}
 	if len(previousRender.SegmentIDs) > len(plan.SegmentIDs) || !slices.Equal(previousRender.SegmentIDs, plan.SegmentIDs[:len(previousRender.SegmentIDs)]) {
 		return ErrContextRenderLineageChanged
 	}
 	return nil
+}
+
+// ResolveTurnSurface returns the first checkpointed surface for a turn. A
+// turn without a provider checkpoint adopts current; callers persist it as
+// part of RecordProviderRequest before dispatch.
+func ResolveTurnSurface(ctx context.Context, store Store, promptScopeID, turnID string, current TurnSurfaceSnapshot) (TurnSurfaceSnapshot, bool, error) {
+	normalized, err := normalizeTurnSurface(current)
+	if err != nil {
+		return TurnSurfaceSnapshot{}, false, err
+	}
+	if store == nil || strings.TrimSpace(turnID) == "" {
+		return normalized, false, nil
+	}
+	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	if err != nil {
+		return TurnSurfaceSnapshot{}, false, err
+	}
+	for index := range requests {
+		request := requests[index]
+		requestSurfaceID := strings.TrimSpace(request.TurnID)
+		if requestSurfaceID == "" {
+			requestSurfaceID = strings.TrimSpace(request.RunID)
+		}
+		if requestSurfaceID != turnID {
+			continue
+		}
+		if strings.TrimSpace(request.TurnSurface.Hash) == "" {
+			return TurnSurfaceSnapshot{}, false, errors.New("turn provider checkpoint is missing its execution surface")
+		}
+		frozen, err := normalizeTurnSurface(request.TurnSurface)
+		if err != nil {
+			return TurnSurfaceSnapshot{}, false, err
+		}
+		return frozen, true, nil
+	}
+	return normalized, false, nil
+}
+
+func normalizeTurnSurface(surface TurnSurfaceSnapshot) (TurnSurfaceSnapshot, error) {
+	surface.Provider = strings.TrimSpace(surface.Provider)
+	surface.Model = strings.TrimSpace(surface.Model)
+	surface.ReasoningLevel = strings.TrimSpace(surface.ReasoningLevel)
+	surface.AdapterVersion = strings.TrimSpace(surface.AdapterVersion)
+	surface.CacheNamespace = strings.TrimSpace(surface.CacheNamespace)
+	surface.StateCompatibilityKey = strings.TrimSpace(surface.StateCompatibilityKey)
+	if surface.AdapterVersion == "" || surface.StateCompatibilityKey == "" {
+		return TurnSurfaceSnapshot{}, errors.New("turn execution surface requires adapter version and state compatibility key")
+	}
+	if surface.ReasoningBudgetTokens < 0 {
+		return TurnSurfaceSnapshot{}, errors.New("turn execution surface reasoning budget cannot be negative")
+	}
+	cloned := cloneToolset(ToolsetSnapshot{Tools: surface.Tools, HostedTools: surface.HostedTools})
+	surface.Tools = cloned.Tools
+	surface.HostedTools = cloned.HostedTools
+	hash := StableHash(mustCanonical(map[string]any{
+		"provider": surface.Provider, "model": surface.Model,
+		"reasoning_level": surface.ReasoningLevel, "reasoning_budget_tokens": surface.ReasoningBudgetTokens,
+		"system_prompt": surface.SystemPrompt, "tools": surface.Tools, "hosted_tools": surface.HostedTools,
+		"context_policy":  surface.ContextPolicy,
+		"adapter_version": surface.AdapterVersion, "cache_namespace": surface.CacheNamespace,
+		"state_compatibility_key": surface.StateCompatibilityKey,
+	}))
+	if surface.Hash != "" && surface.Hash != hash {
+		return TurnSurfaceSnapshot{}, ErrTurnSurfaceDrift
+	}
+	surface.Hash = hash
+	return surface, nil
 }
 
 func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, providerName, model string) error {
@@ -883,7 +1089,7 @@ func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, 
 	return nil
 }
 
-func ProviderModelChanged(ctx context.Context, store Store, promptScopeID, providerName, model string) (bool, error) {
+func ProviderSurfaceChanged(ctx context.Context, store Store, promptScopeID, renderLineageKey string) (bool, error) {
 	if store == nil {
 		return false, nil
 	}
@@ -894,8 +1100,20 @@ func ProviderModelChanged(ctx context.Context, store Store, promptScopeID, provi
 	if len(requests) == 0 {
 		return false, nil
 	}
-	previous := requests[len(requests)-1]
-	return previous.Provider != providerName || previous.Model != model, nil
+	return requests[len(requests)-1].RenderLineageKey != renderLineageKey, nil
+}
+
+func cloneProviderRequestRecord(record ProviderRequestRecord) ProviderRequestRecord {
+	record.SegmentIDs = append([]string(nil), record.SegmentIDs...)
+	record.TurnSurface = cloneTurnSurface(record.TurnSurface)
+	return record
+}
+
+func cloneTurnSurface(surface TurnSurfaceSnapshot) TurnSurfaceSnapshot {
+	cloned := cloneToolset(ToolsetSnapshot{Tools: surface.Tools, HostedTools: surface.HostedTools})
+	surface.Tools = cloned.Tools
+	surface.HostedTools = cloned.HostedTools
+	return surface
 }
 
 func canonicalMessageHash(message session.Message) string {
@@ -1056,7 +1274,7 @@ func ActivateToolsetWithOptions(ctx context.Context, store Store, promptScopeID,
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
-		ID:              fmt.Sprintf("%s:%s:%d:%s", ref.PromptScopeID, SegmentToolset, epoch, fingerprint[:12]),
+		ID:              fmt.Sprintf("%s:%s:%s", ref.PromptScopeID, SegmentToolset, fingerprint[:12]),
 		PromptScopeID:   ref.PromptScopeID,
 		CreatedByRunID:  ref.RunID,
 		CreatedByTurnID: ref.TurnID,
@@ -1078,7 +1296,7 @@ func ActivateToolsetWithOptions(ctx context.Context, store Store, promptScopeID,
 		return ToolsetSnapshot{}, err
 	}
 	snap := ToolsetSnapshot{
-		ID:              fmt.Sprintf("%s:toolset:%d", ref.PromptScopeID, epoch),
+		ID:              fmt.Sprintf("%s:toolset:%s", ref.PromptScopeID, fingerprint[:12]),
 		PromptScopeID:   ref.PromptScopeID,
 		CreatedByRunID:  ref.RunID,
 		CreatedByTurnID: ref.TurnID,
@@ -1191,7 +1409,7 @@ func NormalizeTools(defs []ToolDefinition) []ToolDefinition {
 
 func isReservedToolName(name string) bool {
 	name = strings.TrimSpace(name)
-	return name == "ask_user" || name == "task_complete"
+	return name == "ask_user"
 }
 
 func isControlToolDefinition(def ToolDefinition) bool {
@@ -1307,6 +1525,7 @@ type ProviderRequestSnapshot struct {
 	Model            string
 	Cache            CachePolicy
 	RawPlan          RawPlan
+	TurnSurface      TurnSurfaceSnapshot
 }
 
 func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequestSnapshot) (ProviderRequestRecord, error) {
@@ -1346,6 +1565,7 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		CanonicalHistoryPrefixHash: req.RawPlan.CanonicalHistoryPrefixHash,
 		RenderLineageKey:           req.RawPlan.RenderLineageKey,
 		ContextProjectionRevision:  req.RawPlan.ContextProjectionRevision,
+		TurnSurface:                req.TurnSurface,
 		RequestEstimate:            req.RawPlan.RequestEstimate,
 		ProjectedPressure:          req.RawPlan.ProjectedPressure,
 		RequestShape:               req.RawPlan.RequestShape,
@@ -1573,8 +1793,43 @@ func segmentRaws(segments []Segment) []string {
 
 func cloneToolset(snap ToolsetSnapshot) ToolsetSnapshot {
 	snap.Tools = append([]ToolDefinition(nil), snap.Tools...)
+	for index := range snap.Tools {
+		snap.Tools[index].InputSchema = cloneAnyMap(snap.Tools[index].InputSchema)
+		snap.Tools[index].OutputSchema = cloneAnyMap(snap.Tools[index].OutputSchema)
+		snap.Tools[index].Annotations = cloneAnyMap(snap.Tools[index].Annotations)
+	}
 	snap.HostedTools = append([]HostedToolDefinition(nil), snap.HostedTools...)
+	for index := range snap.HostedTools {
+		snap.HostedTools[index].Parameters = cloneAnyMap(snap.HostedTools[index].Parameters)
+		snap.HostedTools[index].Options = cloneAnyMap(snap.HostedTools[index].Options)
+	}
 	return snap
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		output[key] = cloneAnyValue(value)
+	}
+	return output
+}
+
+func cloneAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		output := make([]any, len(typed))
+		for index := range typed {
+			output[index] = cloneAnyValue(typed[index])
+		}
+		return output
+	default:
+		return value
+	}
 }
 
 func mustCanonical(value any) string {

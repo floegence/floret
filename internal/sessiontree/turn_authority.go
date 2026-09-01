@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 var ErrProviderStateNotFound = errors.New("provider state not found")
@@ -260,11 +260,8 @@ func RetrySourceHasRetryEligibleDurableInput(path []Entry, sourceTurnID, sourceE
 func RetryPathHasRetryEligibleDurableInput(path []Entry) (bool, error) {
 	for index := len(path) - 1; index >= 0; index-- {
 		entry := path[index]
-		if entry.Type != EntryUserMessage {
+		if !isCanonicalUserEntry(entry) {
 			continue
-		}
-		if entry.Message.Role != session.User {
-			return false, ErrInvalidThreadAuthority
 		}
 		return session.HasRetryEligibleDurableInput(entry.Message), nil
 	}
@@ -279,7 +276,7 @@ func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceE
 	if entry.ID != sourceEntryID || strings.TrimSpace(entry.TurnID) != sourceTurnID {
 		return ErrInvalidThreadAuthority
 	}
-	if entry.Type == EntryUserMessage && entry.Message.Role == session.User {
+	if isCanonicalUserEntry(entry) {
 		return nil
 	}
 	if index+1 < len(path) {

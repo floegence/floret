@@ -13,22 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/activityview"
-	"github.com/floegence/floret/v6/internal/configbridge"
-	"github.com/floegence/floret/v6/internal/engine"
-	enginecompaction "github.com/floegence/floret/v6/internal/engine/compaction"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/artifact"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/internal/sessionlifecycle"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/configbridge"
+	"github.com/floegence/floret/v7/internal/engine"
+	enginecompaction "github.com/floegence/floret/v7/internal/engine/compaction"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/sessionlifecycle"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/tools"
 )
 
 var ErrJournalInvariant = errors.New("thread journal invariant violated")
@@ -105,7 +105,6 @@ type TurnPolicy struct {
 	Reasoning             provider.ReasoningSelection
 	CacheRetention        cache.Retention
 	HostedToolDefinitions []provider.HostedToolDefinition
-	CompletionPolicy      engine.CompletionPolicy
 }
 
 type LoopLimits struct {
@@ -146,7 +145,6 @@ type RunOptions struct {
 	Labels                      engine.RunLabels
 	TerminalMetadata            map[string]string
 	DeadlineMetadata            map[string]string
-	CompletionPolicy            engine.CompletionPolicy
 	ControlSpec                 engine.ControlSpec
 	Reasoning                   provider.ReasoningSelection
 	MaxInputTokens              int64
@@ -199,8 +197,9 @@ type TurnResult struct {
 	AdmissionRunning   bool
 }
 
-func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID string) (*provider.State, error) {
-	if strings.TrimSpace(h.options.StateCompatibilityKey) == "" {
+func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID, compatibilityKey string) (*provider.State, error) {
+	compatibilityKey = strings.TrimSpace(compatibilityKey)
+	if compatibilityKey == "" {
 		return nil, nil
 	}
 	providerStates, ok := h.options.Repo.(sessiontree.ProviderStateReader)
@@ -214,13 +213,31 @@ func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID 
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(record.LeafEntryID) != strings.TrimSpace(leafEntryID) || strings.TrimSpace(record.CompatibilityKey) != strings.TrimSpace(h.options.StateCompatibilityKey) {
+	if strings.TrimSpace(record.LeafEntryID) != strings.TrimSpace(leafEntryID) || strings.TrimSpace(record.CompatibilityKey) != compatibilityKey {
 		return nil, nil
 	}
 	if strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
 		return nil, errors.New("stored provider state is incomplete")
 	}
 	return provider.CloneState(&record.State), nil
+}
+
+func (h *AgentHarness) turnStateCompatibilityKey(ctx context.Context, threadID, turnID string) (string, error) {
+	current := strings.TrimSpace(h.options.StateCompatibilityKey)
+	requests, err := h.options.PromptStore.ProviderRequests(ctx, threadID)
+	if err != nil {
+		return "", err
+	}
+	for _, request := range requests {
+		if request.TurnID != turnID {
+			continue
+		}
+		if strings.TrimSpace(request.TurnSurface.Hash) == "" {
+			return "", errors.New("turn provider checkpoint is missing its execution surface")
+		}
+		return strings.TrimSpace(request.TurnSurface.StateCompatibilityKey), nil
+	}
+	return current, nil
 }
 
 type Thread struct {
@@ -687,7 +704,13 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "thread_read_error", engine.FailureOriginStorage)
 	}
 	providerStateLeafID := strings.TrimSpace(opts.AdmissionBaseLeafID)
-	previousProviderState, err := t.harness.providerState(ctx, t.id, providerStateLeafID)
+	stateCompatibilityKey, err := t.harness.turnStateCompatibilityKey(ctx, t.id, turnID)
+	if err != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_surface_load_error", engine.FailureOriginStorage)
+	}
+	previousProviderState, err := t.harness.providerState(ctx, t.id, providerStateLeafID, stateCompatibilityKey)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
@@ -729,6 +752,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.PromptScopeID = t.id
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
+	engineOptions.StateCompatibilityKey = stateCompatibilityKey
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
@@ -834,7 +858,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if result.Err != nil {
 		failureMessage = result.Err.Error()
 	}
-	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave); err != nil {
+	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave, stateCompatibilityKey); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error", engine.FailureOriginStorage)
 	}
 	eventType := EventTurnCompleted
@@ -859,25 +883,27 @@ func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) e
 	return result
 }
 
-func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State) (sessiontree.FinishTurnResult, error) {
+func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State, stateCompatibilityKey string) (sessiontree.FinishTurnResult, error) {
 	repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return sessiontree.FinishTurnResult{}, errors.New("session tree repo does not support canonical turn finish")
 	}
 	payload, err := json.Marshal(struct {
-		ThreadID        string                       `json:"thread_id"`
-		TurnID          string                       `json:"turn_id"`
-		RunID           string                       `json:"run_id"`
-		TerminalEntryID string                       `json:"terminal_entry_id"`
-		Status          sessiontree.TurnMarkerStatus `json:"status"`
-		Metadata        map[string]string            `json:"metadata,omitempty"`
-		FailureMessage  string                       `json:"failure_message,omitempty"`
-		ProviderState   *provider.State              `json:"provider_state,omitempty"`
+		ThreadID         string                       `json:"thread_id"`
+		TurnID           string                       `json:"turn_id"`
+		RunID            string                       `json:"run_id"`
+		TerminalEntryID  string                       `json:"terminal_entry_id"`
+		Status           sessiontree.TurnMarkerStatus `json:"status"`
+		Metadata         map[string]string            `json:"metadata,omitempty"`
+		FailureMessage   string                       `json:"failure_message,omitempty"`
+		ProviderState    *provider.State              `json:"provider_state,omitempty"`
+		CompatibilityKey string                       `json:"compatibility_key,omitempty"`
 	}{
 		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID),
 		TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status, Metadata: cloneStringMap(metadata),
-		FailureMessage: strings.TrimSpace(failureMessage),
-		ProviderState:  provider.CloneState(providerState),
+		FailureMessage:   strings.TrimSpace(failureMessage),
+		ProviderState:    provider.CloneState(providerState),
+		CompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
 	})
 	if err != nil {
 		return sessiontree.FinishTurnResult{}, err
@@ -886,14 +912,14 @@ func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID 
 		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID), TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status,
 		Metadata: cloneStringMap(metadata), FailureMessage: strings.TrimSpace(failureMessage),
 		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: t.harness.now(),
-		ClearProviderState: providerState == nil && strings.TrimSpace(t.harness.options.StateCompatibilityKey) != "",
+		ClearProviderState: providerState == nil && strings.TrimSpace(stateCompatibilityKey) != "",
 	}
 	if providerState != nil {
-		if strings.TrimSpace(t.harness.options.StateCompatibilityKey) == "" {
+		if strings.TrimSpace(stateCompatibilityKey) == "" {
 			return sessiontree.FinishTurnResult{}, errors.New("provider state compatibility key is required")
 		}
 		request.ProviderState = &sessiontree.ProviderStateRecord{
-			ThreadID: t.id, LeafEntryID: strings.TrimSpace(terminalEntryID), CompatibilityKey: strings.TrimSpace(t.harness.options.StateCompatibilityKey),
+			ThreadID: t.id, LeafEntryID: strings.TrimSpace(terminalEntryID), CompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
 			State: *provider.CloneState(providerState), CreatedByRunID: strings.TrimSpace(runID), CreatedByTurnID: strings.TrimSpace(turnID), UpdatedAt: t.harness.now(),
 		}
 	}
@@ -978,7 +1004,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if err != nil {
 		failureMessage = err.Error()
 	}
-	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, nil); finishErr != nil {
+	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, nil, t.harness.options.StateCompatibilityKey); finishErr != nil {
 		return TurnResult{}, finishErr
 	}
 	eventType := EventTurnFailed
@@ -999,7 +1025,7 @@ func statusForError(err error) engine.Status {
 }
 
 func (h *AgentHarness) engineOptions() engine.Options {
-	engineOptions := engine.Options{}
+	engineOptions := engine.Options{StateCompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey)}
 	policy := h.options.TurnPolicy
 	limits := h.options.LoopLimits
 	if policy.ContextPolicy.ContextWindowTokens > 0 ||
@@ -1020,9 +1046,6 @@ func (h *AgentHarness) engineOptions() engine.Options {
 	}
 	if len(policy.HostedToolDefinitions) > 0 {
 		engineOptions.HostedToolDefinitions = append([]provider.HostedToolDefinition(nil), policy.HostedToolDefinitions...)
-	}
-	if policy.CompletionPolicy != "" {
-		engineOptions.CompletionPolicy = policy.CompletionPolicy
 	}
 	if limits.MaxEmptyProviderRetries > 0 {
 		engineOptions.MaxEmptyProviderRetries = limits.MaxEmptyProviderRetries
@@ -1063,9 +1086,6 @@ func (h *AgentHarness) engineOptions() engine.Options {
 func applyRunOptions(dst *engine.Options, opts RunOptions) {
 	if dst == nil {
 		return
-	}
-	if opts.CompletionPolicy != "" {
-		dst.CompletionPolicy = opts.CompletionPolicy
 	}
 	if len(opts.ControlSpec.Definitions) > 0 || opts.ControlSpec.Project != nil {
 		dst.ControlSpec = opts.ControlSpec

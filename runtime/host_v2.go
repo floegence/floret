@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/identity"
-	internalstorage "github.com/floegence/floret/v6/internal/storage"
-	"github.com/floegence/floret/v6/internal/storagebridge"
-	"github.com/floegence/floret/v6/provider"
-	publicstorage "github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/storage/spi"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/identity"
+	internalstorage "github.com/floegence/floret/v7/internal/storage"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	"github.com/floegence/floret/v7/provider"
+	publicstorage "github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
@@ -360,7 +360,6 @@ type turnExecutionRequest struct {
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
 	Labels                      RunLabels
-	Completion                  TurnCompletionPolicy
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -392,7 +391,6 @@ type acceptedTurnExecutionRequest struct {
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
 	Labels                      RunLabels
-	Completion                  TurnCompletionPolicy
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -418,7 +416,7 @@ func (runner *turnRunnerHandle) ExecuteAccepted(ctx context.Context, request acc
 	return runner.inner.ExecuteAcceptedTurn(ctx, request.Accepted, runTurnRequest{
 		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
-		Labels: request.Labels, Completion: request.Completion, Signals: request.Signals,
+		Labels: request.Labels, Signals: request.Signals,
 		Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 		PromotedQueueID:             request.PromotedQueueID,

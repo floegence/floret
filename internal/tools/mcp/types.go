@@ -3,7 +3,7 @@ package mcp
 import (
 	"time"
 
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const ProtocolVersion = "2025-06-18"

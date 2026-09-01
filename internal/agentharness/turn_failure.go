@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
 func validateTurnTerminalOutcome(threadID, turnID, runID string, outcome *sessiontree.TurnTerminalOutcome) error {

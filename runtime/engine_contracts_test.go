@@ -5,11 +5,11 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/engine"
-	internalprovider "github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/testing/harness"
-	publicprovider "github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/engine"
+	internalprovider "github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/testing/harness"
+	publicprovider "github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestToolDefinitionAdaptersPreserveNilAndExplicitEmpty(t *testing.T) {
@@ -49,9 +49,9 @@ func TestRuntimeToolSurfaceProviderPreservesRegistryDefinitionInheritance(t *tes
 func runToolSurfaceEngine(t *testing.T, registry *tools.Registry, definitions []tools.ToolDefinition) internalprovider.Request {
 	t.Helper()
 	signals, err := engineTurnSignalSpec(TurnSignalSpec{
-		Definitions: CoreControlDefinitions(false),
+		Definitions: CoreControlDefinitions(),
 		Project:     ProjectCoreControlSignal,
-	}, engine.CompletionNaturalStop)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

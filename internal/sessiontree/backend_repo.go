@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/storagecodec"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
@@ -49,19 +49,36 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
 	}
 	repo := &BackendRepo{backend: backend, now: now}
-	memory, found, err := loadBackendDomainV7(ctx, tx, now)
+	memory, found, err := loadBackendDomainV8(ctx, tx, now)
 	if err != nil {
 		return nil, err
 	}
 	if found {
-		if err := rejectLegacyBackendDomain(ctx, tx); err != nil {
+		if err := rejectPreV8BackendDomain(ctx, tx); err != nil {
 			return nil, err
 		}
 		before := cloneMemoryRepoForBackendUpdate(memory)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if _, err := persistBackendDomainV7Changes(tx, before, memory); err != nil {
+		if _, err := persistBackendDomainV8Changes(tx, before, memory); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		return repo, nil
+	}
+	memory, v7Found, err := loadBackendDomainV7(ctx, tx, now)
+	if err != nil {
+		return nil, err
+	}
+	if v7Found {
+		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -78,7 +95,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV7(tx, memory); err != nil {
+		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -128,7 +148,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
 		return nil, err
 	}
-	if err := saveCompleteBackendDomainV7(tx, memory); err != nil {
+	if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
+		return nil, err
+	}
+	if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -149,17 +172,28 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	memory, found, err := loadBackendDomainV7(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV8(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return errors.Join(ErrAuthorityCorrupt, errors.New("session-tree state is not current after migration"))
 	}
-	if err := rejectLegacyBackendDomain(ctx, tx); err != nil {
+	if err := rejectPreV8BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	return validateBackendDomainV7Memory(memory)
+	return validateBackendDomainV8Memory(memory)
+}
+
+func rejectPreV8BackendDomain(ctx context.Context, tx spi.ReadTx) error {
+	records, err := scanBackendDomainV7(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(records) != 0 {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("current session-tree store retains v7 domain records"))
+	}
+	return rejectLegacyBackendDomain(ctx, tx)
 }
 
 func rejectLegacyBackendDomain(ctx context.Context, tx spi.ReadTx) error {
@@ -351,7 +385,7 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := validateBackendDomainV7Memory(memory); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if _, err := persistBackendDomainV7Changes(tx, repo.domainMemory, memory); err != nil {
+		if _, err := persistBackendDomainV8Changes(tx, repo.domainMemory, memory); err != nil {
 			return err
 		}
 		committedMemory = memory

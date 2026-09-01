@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 func TestScriptedProviderRecordsRequestsAndReplaysTranscript(t *testing.T) {

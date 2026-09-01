@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 lineage. Version 7 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 lineage. Version 8 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -30,7 +30,10 @@ Effect Attempt entries copied by the released v6 fork implementation only when
 the complete fork ancestry, turn, run, request, and terminal state prove that
 they are historical source-thread authority. Active, unrelated, or conflicting
 records still fail closed. Every edge validates its source authority and the
-final current invariant.
+final current invariant. The v7 -> v8 edge identifies only an Engine-generated
+continuation message immediately paired with its exact `context_continue` save
+point and classifies it as a control signal. Malformed or ambiguous pairs fail
+closed without changing the store.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
@@ -62,11 +65,11 @@ diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
 exists only in the v5 -> v6 migration reader and is deleted after migration.
 
 Immediately before an ordinary provider dispatch, the backend kernel commits
-the current raw segments, toolsets, and provider request lineage in one prompt
-checkpoint. The in-memory prompt authority advances only after that transaction
-succeeds. Restart can therefore validate the same provider/model render prefix
-even when no terminal turn was written; write failure or cancellation leaves
-both memory and storage unchanged.
+the current raw segments, toolsets, immutable Turn surface, and request lineage
+in one prompt checkpoint. The in-memory prompt authority advances only after
+that transaction succeeds. Restart can therefore restore the exact execution
+surface and render prefix even when no terminal turn was written; write failure
+or cancellation leaves both memory and storage unchanged.
 
 ## SQLite space maintenance
 

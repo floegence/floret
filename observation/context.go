@@ -6,9 +6,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (

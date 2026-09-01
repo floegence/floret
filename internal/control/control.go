@@ -4,22 +4,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
-	AskUserTool      = "ask_user"
-	TaskCompleteTool = "task_complete"
+	AskUserTool = "ask_user"
 )
 
 type SignalKind string
 
 const (
-	SignalNone         SignalKind = ""
-	SignalAskUser      SignalKind = "ask_user"
-	SignalTaskComplete SignalKind = "task_complete"
+	SignalNone    SignalKind = ""
+	SignalAskUser SignalKind = "ask_user"
 )
 
 type Signal struct {
@@ -29,8 +27,8 @@ type Signal struct {
 	Payload map[string]any
 }
 
-func ToolDefinitions(includeTaskComplete bool) []tools.ToolDefinition {
-	defs := []tools.ToolDefinition{{
+func ToolDefinitions() []tools.ToolDefinition {
+	return []tools.ToolDefinition{{
 		Name:        AskUserTool,
 		Title:       "Ask user",
 		Description: "Ask the user for missing information and wait for their response.",
@@ -40,24 +38,11 @@ func ToolDefinitions(includeTaskComplete bool) []tools.ToolDefinition {
 			"kind": "control",
 		},
 	}}
-	if includeTaskComplete {
-		defs = append(defs, tools.ToolDefinition{
-			Name:        TaskCompleteTool,
-			Title:       "Task complete",
-			Description: "Signal that the requested task is complete. Include output or result when the same assistant response does not already contain the final answer.",
-			InputSchema: taskCompleteInputSchema(),
-			Strict:      true,
-			Annotations: map[string]any{
-				"kind": "control",
-			},
-		})
-	}
-	return defs
 }
 
 func IsControlTool(name string) bool {
 	name = strings.TrimSpace(name)
-	return name == AskUserTool || name == TaskCompleteTool
+	return name == AskUserTool
 }
 
 func Project(call provider.ToolCall) (Signal, bool, error) {
@@ -72,13 +57,6 @@ func Project(call provider.ToolCall) (Signal, bool, error) {
 			return Signal{}, true, fmt.Errorf("question or questions[0].question is required")
 		}
 		return Signal{Kind: SignalAskUser, Prompt: question, Payload: cloneControlMap(payload)}, true, nil
-	case TaskCompleteTool:
-		payload, err := tools.Validate(taskCompleteInputSchema(), []byte(strings.TrimSpace(call.Args)))
-		if err != nil {
-			return Signal{}, true, fmt.Errorf("%s", tools.InvalidArgumentsText(TaskCompleteTool, err))
-		}
-		output := firstNonEmptyString(controlString(payload["output"]), controlString(payload["result"]))
-		return Signal{Kind: SignalTaskComplete, Output: output, Payload: cloneControlMap(payload)}, true, nil
 	default:
 		return Signal{}, false, nil
 	}
@@ -101,18 +79,6 @@ func ProjectMessage(msg session.Message) (session.Message, bool) {
 			ParentEntryID: msg.ParentEntryID,
 			Kind:          session.MessageKindControlSignal,
 		}, true
-	case TaskCompleteTool:
-		content := msg.ToolArgs
-		if signal, ok, err := Project(provider.ToolCall{Name: msg.ToolName, Args: msg.ToolArgs}); ok && err == nil {
-			content = signal.Output
-		}
-		return session.Message{
-			Role:          session.Assistant,
-			Content:       "Agent completed the task: " + content,
-			EntryID:       msg.EntryID,
-			ParentEntryID: msg.ParentEntryID,
-			Kind:          session.MessageKindControlSignal,
-		}, true
 	default:
 		return msg, false
 	}
@@ -128,15 +94,6 @@ func ProjectHistory(history []session.Message) []session.Message {
 		out = append(out, msg)
 	}
 	return out
-}
-
-func Completion(calls []provider.ToolCall) (Signal, bool) {
-	for _, call := range calls {
-		if signal, ok, err := Project(call); ok && err == nil && signal.Kind == SignalTaskComplete {
-			return signal, true
-		}
-	}
-	return Signal{}, false
 }
 
 func AskUser(calls []provider.ToolCall) (Signal, bool) {
@@ -193,16 +150,6 @@ func askUserInputSchema() map[string]any {
 			"type": "array", "maxItems": 12, "items": map[string]any{"type": "string", "maxLength": 120},
 		},
 	}, []string{"questions", "reason_code", "required_from_user", "evidence_refs"})
-}
-
-func taskCompleteInputSchema() map[string]any {
-	return tools.StrictObject(map[string]any{
-		"output":          tools.String("Final answer or completion summary when not already present in the same assistant response."),
-		"result":          tools.String("Final answer or completion summary when not already present in the same assistant response."),
-		"evidence_refs":   tools.Array(tools.String("Evidence reference."), "Relevant evidence references."),
-		"remaining_risks": tools.Array(tools.String("Remaining risk."), "Remaining risks."),
-		"next_actions":    tools.Array(tools.String("Next action."), "Suggested next actions."),
-	}, []string{})
 }
 
 func controlString(value any) string {

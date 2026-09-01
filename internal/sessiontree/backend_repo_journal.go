@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const (

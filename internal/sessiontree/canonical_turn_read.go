@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 var ErrCanonicalTurnNotFound = errors.New("session tree canonical turn not found")
@@ -211,7 +211,7 @@ func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (strin
 			return "", err
 		}
 		turnID := strings.TrimSpace(entry.TurnID)
-		if entry.Type == EntryUserMessage && turnID != "" {
+		if isCanonicalUserEntry(entry) && turnID != "" {
 			userTurns[turnID] = struct{}{}
 		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
@@ -243,7 +243,7 @@ func (r *MemoryRepo) canonicalTurnRetryEligibilityLocked(threadID string, turn C
 	}
 	for index := len(turn.Entries) - 1; index >= 0; index-- {
 		entry := turn.Entries[index].Entry
-		if entry.Type == EntryUserMessage {
+		if isCanonicalUserEntry(entry) {
 			return session.HasRetryEligibleDurableInput(entry.Message), nil
 		}
 	}
@@ -253,7 +253,7 @@ func (r *MemoryRepo) canonicalTurnRetryEligibilityLocked(threadID string, turn C
 func canonicalTurnUserEntryCount(entries []CanonicalTurnPathEntry) int {
 	count := 0
 	for _, item := range entries {
-		if item.Entry.Type == EntryUserMessage {
+		if isCanonicalUserEntry(item.Entry) {
 			count++
 		}
 	}

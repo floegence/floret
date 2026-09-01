@@ -145,23 +145,22 @@ provider gateway is the only model transport boundary. Provider credentials,
 editable profiles, endpoint authorization, uploads before admission, and UI
 rendering remain host-owned.
 
-The host may return an Agent with a different provider or model for a new Turn.
-Floret keeps the canonical thread path intact, starts or resumes that model's
-independent render lineage, and clears provider-native continuation state across
-the switch. Every Run that continues an existing Turn must use the provider and
-model recorded by its first request; drift fails before dispatch.
+The host may return an Agent with a different provider, model, system prompt,
+tool surface, or reasoning policy for a new Turn. The first provider checkpoint
+freezes that complete surface for the Turn. Ask User, tool loops, retries, and
+restart recovery reuse it exactly. Floret keeps the canonical path intact,
+starts or resumes the surface's independent render lineage, and clears
+provider-native continuation state across a surface switch.
 
-`WithAgentTurnCompletionPolicy` makes completion part of that immutable Agent
-snapshot. Under `TurnCompletionExplicitSignal`, both `ask_user` and
-`task_complete` are exposed for the whole context generation. A natural stop
-preserves the complete model output and appends one structured continuation
-instruction; it cannot complete the Turn by itself. Exhausting the bounded
-continuation limit fails the Turn instead of reporting success.
+A provider natural stop completes the Turn. Ordinary tool results continue the
+provider loop, while `ask_user` waits and resumes the same frozen Turn. A tool
+call whose definition is unavailable returns a safe ordinary error result and
+continues; historical tool facts never depend on the current registry.
 
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 -> v7 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 -> v7 -> v8 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
 records. Current-schema startup is byte-preserving and idempotent. The v5 -> v6
@@ -170,7 +169,10 @@ tool-result Raw repair produced before UTF-8 normalization was enforced. It then
 writes segmented v6 authority and removes the legacy checkpoint, full-path root
 inventory, and diff journal in the same transaction. The v6 -> v7 edge
 permanently fills exact run identity, removes retry authority, and terminates
-active unknown effects before the Host becomes available. Every other mismatch
+active unknown effects before the Host becomes available. The v7 -> v8 edge
+classifies only the exact Engine continuation user message paired with its
+`context_continue` save point as a control signal, restoring one canonical user
+input per Turn. Every other mismatch
 still fails closed. This automatic domain convergence is separate from the explicit
 legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.

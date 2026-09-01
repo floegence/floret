@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/control"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type ControlDisposition string
@@ -19,7 +19,6 @@ const (
 	// synthetic tool result and continue the run.
 	ControlContinue ControlDisposition = "continue"
 	ControlWaiting  ControlDisposition = "waiting"
-	ControlTerminal ControlDisposition = "terminal"
 )
 
 type ControlSignal struct {
@@ -40,8 +39,6 @@ func failedControlSignal(call provider.ToolCall) ControlSignal {
 	disposition := ControlContinue
 	if strings.TrimSpace(call.Name) == control.AskUserTool {
 		disposition = ControlWaiting
-	} else if strings.TrimSpace(call.Name) == control.TaskCompleteTool {
-		disposition = ControlTerminal
 	}
 	return ControlSignal{
 		Disposition: disposition,
@@ -61,9 +58,9 @@ type controlProjectionContext struct {
 	StepText string
 }
 
-func DefaultControlSpec(policy CompletionPolicy) ControlSpec {
+func DefaultControlSpec() ControlSpec {
 	return ControlSpec{
-		Definitions: control.ToolDefinitions(policy == CompletionExplicitSignal),
+		Definitions: control.ToolDefinitions(),
 		Project: func(call provider.ToolCall) (ControlSignal, bool, error) {
 			sig, ok, err := control.Project(call)
 			if err != nil || !ok {
@@ -80,11 +77,6 @@ func DefaultControlSpec(policy CompletionPolicy) ControlSpec {
 			case control.SignalAskUser:
 				out.Disposition = ControlWaiting
 				out.OutputText = sig.Prompt
-			case control.SignalTaskComplete:
-				if policy != CompletionExplicitSignal {
-					return ControlSignal{}, false, nil
-				}
-				out.Disposition = ControlTerminal
 			default:
 				out.Disposition = ControlContinue
 			}
@@ -119,9 +111,9 @@ func cloneControlPayload(in map[string]any) map[string]any {
 	return out
 }
 
-func normalizeControlSpec(spec ControlSpec, policy CompletionPolicy) ControlSpec {
+func normalizeControlSpec(spec ControlSpec) ControlSpec {
 	if spec.Project == nil && len(spec.Definitions) == 0 {
-		spec = DefaultControlSpec(policy)
+		spec = DefaultControlSpec()
 	}
 	defs := make([]tools.ToolDefinition, 0, len(spec.Definitions))
 	for _, def := range spec.Definitions {
@@ -191,14 +183,6 @@ func (s ControlSpec) project(call provider.ToolCall, ctx controlProjectionContex
 		}
 		return signal, true, nil
 	case ControlWaiting:
-		return signal, true, nil
-	case ControlTerminal:
-		if strings.TrimSpace(signal.OutputText) == "" {
-			signal.OutputText = strings.TrimSpace(ctx.StepText)
-		}
-		if strings.TrimSpace(signal.OutputText) == "" {
-			return ControlSignal{}, true, fmt.Errorf("control signal %q terminal disposition requires output text or assistant text", signal.Name)
-		}
 		return signal, true, nil
 	default:
 		return ControlSignal{}, true, fmt.Errorf("control signal %q returned invalid disposition %q", signal.Name, signal.Disposition)

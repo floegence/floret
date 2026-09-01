@@ -1,5 +1,5 @@
 version: 1
-scope: github.com/floegence/floret/v6/runtime
+scope: github.com/floegence/floret/v7/runtime
 defaults:
   unknown_error: propagate
   identity_allocation: floret

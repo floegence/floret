@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/agentharness"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/sessionlifecycle"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/agentharness"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessionlifecycle"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // AgentRequest identifies one typed execution whose provider and tool surface
@@ -2017,13 +2017,8 @@ func applyAgentExecutionPolicy(request *turnExecutionRequest, agent *Agent) {
 	if request == nil {
 		return
 	}
-	policy := TurnCompletionNaturalStop
-	if agent != nil && agent.turnCompletion != "" {
-		policy = agent.turnCompletion
-	}
-	request.Completion = policy
 	request.Signals = TurnSignalSpec{
-		Definitions: CoreControlDefinitions(policy == TurnCompletionExplicitSignal),
+		Definitions: CoreControlDefinitions(),
 		Project:     ProjectCoreControlSignal,
 	}
 }
@@ -2124,7 +2119,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 	completed, err := runner.ExecuteAccepted(ctx, acceptedTurnExecutionRequest{
 		Accepted: accepted, LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext, Labels: request.Labels,
-		Completion: request.Completion, Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
+		Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 	})
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -3697,6 +3692,9 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 	for _, entry := range entries {
 		switch entry.Type {
 		case sessiontree.EntryUserMessage:
+			if entry.Message.Kind == "control_signal" {
+				continue
+			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return nil, nil, identityErr
@@ -3733,6 +3731,13 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 					copy := interaction
 					itemIndex[interaction.ID] = len(items)
 					items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: &copy})
+				} else {
+					text := strings.TrimSpace(signal.OutputText)
+					if text == "" {
+						text = "The agent emitted a historical control signal."
+					}
+					assistantCounts[turnID]++
+					items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: entry.CreatedAt})
 				}
 				continue
 			}
@@ -3865,7 +3870,24 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.Activit
 			}
 		}
 	}
-	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: tools.CloneActivityPresentation(entry.Message.Activity)}
+	presentation := tools.CloneActivityPresentation(entry.Message.Activity)
+	if presentation == nil {
+		label := strings.TrimSpace(entry.Message.ToolName)
+		if label == "" {
+			label = "Tool activity"
+		}
+		presentation = &tools.ActivityPresentation{
+			Label:    label,
+			Renderer: tools.ActivityRendererStructured,
+			Payload: tools.StructuredActivityPayload{
+				Status:      string(status),
+				Operation:   "tool",
+				DisplayName: label,
+				Summary:     "Historical tool activity",
+			},
+		}
+	}
+	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation}
 }
 
 func threadToolSegmentID(turnID identity.TurnID, toolCallID string) string {

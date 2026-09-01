@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/observation"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/observation"
 )
 
 func TestThreadDetailContextUsesEntryRunIdentityAndReadsLegacyStatus(t *testing.T) {

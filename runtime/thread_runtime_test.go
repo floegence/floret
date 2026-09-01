@@ -13,15 +13,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/florettest"
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/sessiontree"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/provider"
-	"github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type oneShotThreadContextCompaction struct {
@@ -288,8 +288,7 @@ func (gateway *continuationLiveGateway) Stream(ctx context.Context, _ provider.R
 			!emit(gateway.allowSecondAssistant, provider.Event{Type: provider.EventDelta, Text: "answer-2"}) {
 			return
 		}
-		events <- provider.Event{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "complete-live", Name: "task_complete", Args: `{"output":"answer-1answer-2"}`}}}
-		events <- provider.Event{Type: provider.EventDone, Reason: "tool_calls"}
+		events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
 	}()
 	return events, nil
 }
@@ -1192,7 +1191,7 @@ func TestThreadServiceRespondPublishesNewRunProgressAndLiveContinuation(t *testi
 	agent, err := NewAgent(config.AgentConfig{
 		Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.",
 		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
-	}, gateway, WithAgentTurnCompletionPolicy(TurnCompletionExplicitSignal))
+	}, gateway)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1780,6 +1779,38 @@ func TestThreadRuntimeItemsMergeCanonicalToolPresentation(t *testing.T) {
 	payload, ok := activity.Presentation.Payload.(tools.TerminalActivityPayload)
 	if !ok || payload.Command != "curl https://example.test/spec" || payload.Stdout != "specification" {
 		t.Fatalf("terminal payload=%#v", activity.Presentation.Payload)
+	}
+}
+
+func TestThreadRuntimeItemsRenderRemovedToolWithoutDefinitionOrRawData(t *testing.T) {
+	turnID := identity.TurnID("turn-removed-tool")
+	runID := identity.RunID("run-removed-tool")
+	items, interactions, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{
+		{
+			ID: "removed-tool-call", ThreadID: "thread-removed-tool", TurnID: turnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolCall,
+			Message: session.Message{Role: session.Assistant, ToolCallID: "call-removed-tool", ToolName: "retired_write", ToolArgs: `{"secret":"must-not-render"}`},
+		},
+		{
+			ID: "removed-tool-result", ThreadID: "thread-removed-tool", TurnID: turnID.String(), RunID: runID.String(), Type: sessiontree.EntryToolResult,
+			Message: session.Message{Role: session.Tool, ToolCallID: "call-removed-tool", ToolName: "retired_write", Content: "sensitive raw result", ToolResult: &session.ToolResultView{Status: "error"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interactions) != 0 || len(items) != 1 || items[0].Activity == nil || items[0].Activity.Presentation == nil {
+		t.Fatalf("projection=(items=%#v interactions=%#v), want one neutral tool item", items, interactions)
+	}
+	activity := items[0].Activity
+	if activity.ToolName != "retired_write" || activity.Status != observation.ActivityStatusError || activity.Presentation.Label != "retired_write" || activity.Presentation.Renderer != tools.ActivityRendererStructured {
+		t.Fatalf("neutral activity=%#v", activity)
+	}
+	encoded, err := json.Marshal(activity.Presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "must-not-render") || strings.Contains(string(encoded), "sensitive raw result") {
+		t.Fatalf("neutral activity leaked historical raw data: %s", encoded)
 	}
 }
 

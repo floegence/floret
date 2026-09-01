@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/session/artifact"
-	"github.com/floegence/floret/v6/internal/storagecodec"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const (

@@ -3,7 +3,7 @@ package tools_test
 import (
 	"testing"
 
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestQuestionActivityAnswerIsAvailableToExternalHosts(t *testing.T) {

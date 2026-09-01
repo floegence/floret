@@ -4,20 +4,18 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/control"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
-	CoreControlAskUser      = tools.ControlAskUser
-	CoreControlTaskComplete = tools.ControlTaskComplete
+	CoreControlAskUser = tools.ControlAskUser
 )
 
-// CoreControlDefinitions returns product-neutral control signal tools for hosts
-// that want Floret to own common ask-user/task-complete schema validation.
-func CoreControlDefinitions(includeTaskComplete bool) []tools.ToolDefinition {
-	defs := control.ToolDefinitions(includeTaskComplete)
+// CoreControlDefinitions returns Floret's product-neutral ask-user control tool.
+func CoreControlDefinitions() []tools.ToolDefinition {
+	defs := control.ToolDefinitions()
 	out := make([]tools.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		out = append(out, tools.ToolDefinition{
@@ -33,9 +31,7 @@ func CoreControlDefinitions(includeTaskComplete bool) []tools.ToolDefinition {
 	return out
 }
 
-// ProjectCoreControlSignal projects ask_user/task_complete tool calls into
-// Floret control signals. Host-specific modes and UI payloads stay outside this
-// helper.
+// ProjectCoreControlSignal projects ask_user calls into Floret control signals.
 func ProjectCoreControlSignal(call tools.ToolCall) (TurnSignal, bool, error) {
 	signal, ok, err := control.Project(provider.ToolCall{
 		ID:        call.ID,
@@ -60,19 +56,6 @@ func ProjectCoreControlSignal(call tools.ToolCall) (TurnSignal, bool, error) {
 			OutputText:  strings.TrimSpace(signal.Prompt),
 			Payload:     payload,
 		}, true, nil
-	case control.SignalTaskComplete:
-		payload := cloneAnyMap(signal.Payload)
-		if payload == nil {
-			payload = map[string]any{}
-		}
-		payload["output"] = strings.TrimSpace(signal.Output)
-		return TurnSignal{
-			Disposition: SignalTerminal,
-			Name:        control.TaskCompleteTool,
-			CallID:      call.ID,
-			OutputText:  strings.TrimSpace(signal.Output),
-			Payload:     payload,
-		}, true, nil
 	default:
 		return TurnSignal{}, false, nil
 	}
@@ -88,11 +71,6 @@ func ProviderSafeCoreControlText(signal TurnSignal) string {
 			return "Agent requested user input: " + text
 		}
 		return "Agent requested user input."
-	case control.TaskCompleteTool:
-		if text != "" {
-			return "Agent completed the task: " + text
-		}
-		return "Agent completed the task."
 	default:
 		if text != "" {
 			return fmt.Sprintf("Agent control signal %q: %s", signal.Name, text)

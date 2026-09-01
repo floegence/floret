@@ -7,7 +7,7 @@ import (
 )
 
 func TestCoreControlDefinitionsPreserveRequiredArrays(t *testing.T) {
-	definitions := CoreControlDefinitions(false)
+	definitions := CoreControlDefinitions()
 	if len(definitions) != 1 || definitions[0].Name != CoreControlAskUser {
 		t.Fatalf("control definitions = %#v", definitions)
 	}

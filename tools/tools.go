@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/floegence/floret/v6/identity"
+	"github.com/floegence/floret/v7/identity"
 )
 
 var ErrRejected = errors.New("tool call rejected")
@@ -18,10 +18,7 @@ var ErrDuplicate = errors.New("duplicate tool name")
 var ErrInvalid = errors.New("invalid tool")
 var ErrEffectDispatcherRequired = errors.New("tool effect authority dispatcher is required")
 
-const (
-	ControlAskUser      = "ask_user"
-	ControlTaskComplete = "task_complete"
-)
+const ControlAskUser = "ask_user"
 
 const (
 	AnnotationRepeatPolicy                   = "repeat_policy"
@@ -431,7 +428,7 @@ func safeReadOnlyDefault(def Definition, effects map[Effect]bool) bool {
 
 func IsReservedName(name string) bool {
 	name = strings.TrimSpace(name)
-	return name == ControlAskUser || name == ControlTaskComplete
+	return name == ControlAskUser
 }
 
 func (r *Registry) Definition(name string) (Definition, bool) {
@@ -658,7 +655,7 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
 	if !ok {
-		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("unknown tool %q", call.Name)), false
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q is unavailable in the current version", call.Name)), false
 	}
 	raw := strings.TrimSpace(call.Args)
 	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {

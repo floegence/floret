@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floegence/floret/v6/config"
-	"github.com/floegence/floret/v6/storage"
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const testOwnershipManifestSHA256 = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -18,19 +18,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/identity"
-	"github.com/floegence/floret/v6/internal/engine"
-	"github.com/floegence/floret/v6/internal/event"
-	"github.com/floegence/floret/v6/internal/provider"
-	"github.com/floegence/floret/v6/internal/provider/cache"
-	"github.com/floegence/floret/v6/internal/session"
-	"github.com/floegence/floret/v6/internal/session/artifact"
-	"github.com/floegence/floret/v6/internal/session/compaction"
-	"github.com/floegence/floret/v6/internal/session/contextpolicy"
-	"github.com/floegence/floret/v6/internal/testing/harness"
-	"github.com/floegence/floret/v6/internal/testing/tooltest"
-	"github.com/floegence/floret/v6/observation"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/artifact"
+	"github.com/floegence/floret/v7/internal/session/compaction"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/testing/harness"
+	"github.com/floegence/floret/v7/internal/testing/tooltest"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
@@ -275,147 +275,6 @@ func TestEmptyDoneRetriesThenCompletes(t *testing.T) {
 	}
 }
 
-func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "do the thing")
-
-	if got.Status != engine.Completed || got.Output != "done" || got.CompletionReason != engine.CompletionReasonToolSignal {
-		t.Fatalf("result = %#v, want explicit tool-signal completion", got)
-	}
-}
-
-func TestExplicitSignalPreservesNaturalStopOutputBeforeStructuredCompletion(t *testing.T) {
-	rec := &event.Recorder{}
-	p := harness.NewScriptedProvider(
-		harness.Step(provider.StreamEvent{Type: provider.Reasoning, Text: "considering destination"}, harness.Text("Which city should I use?"), harness.Done()),
-		harness.Step(harness.Tool("done", "task_complete", `{"output":"Waiting for a city."}`), harness.DoneReason("tool_calls")),
-	)
-	e := newTestEngine(p, rec)
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "plan a trip")
-
-	if got.Status != engine.Completed || got.Output != "Waiting for a city." || got.CompletionReason != engine.CompletionReasonToolSignal {
-		t.Fatalf("result = %#v, want structured completion", got)
-	}
-	if len(p.Requests) != 2 {
-		t.Fatalf("provider requests = %d, want 2", len(p.Requests))
-	}
-	second := p.Requests[1].Messages
-	if !slices.ContainsFunc(second, func(message session.Message) bool {
-		return message.Role == session.Assistant && message.Content == "Which city should I use?" && message.Reasoning == "considering destination"
-	}) {
-		t.Fatalf("second request lost the first model response: %#v", second)
-	}
-	if !slices.ContainsFunc(second, func(message session.Message) bool {
-		return message.Role == session.User && strings.Contains(message.Content, "task_complete") && strings.Contains(message.Content, "ask_user")
-	}) {
-		t.Fatalf("second request is missing the structured continuation instruction: %#v", second)
-	}
-	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
-		return ev.Type == event.ContextContinue && ev.ContinuationReason == string(engine.ContinueExplicitSignal)
-	}) {
-		t.Fatalf("explicit continuation was not observable: %#v", rec.Events)
-	}
-}
-
-func TestExplicitSignalPreservesReasoningOnlyNaturalStop(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(provider.StreamEvent{Type: provider.Reasoning, Text: "reasoning without final text"}, harness.Done()),
-		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "inspect")
-
-	if got.Status != engine.Completed || len(p.Requests) != 2 {
-		t.Fatalf("result=%#v requests=%d", got, len(p.Requests))
-	}
-	if !slices.ContainsFunc(p.Requests[1].Messages, func(message session.Message) bool {
-		return message.Role == session.Assistant && message.Content == "" && message.Reasoning == "reasoning without final text"
-	}) {
-		t.Fatalf("reasoning-only response was not appended to the next request: %#v", p.Requests[1].Messages)
-	}
-}
-
-func TestTaskCompleteUsesSameStepAssistantTextWhenArgumentsAreEmpty(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(
-			harness.Text("OK, work can continue."),
-			harness.Tool("done", "task_complete", `{}`),
-			harness.DoneReason("tool_calls"),
-		),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "verify")
-
-	if got.Status != engine.Completed || got.Output != "OK, work can continue." || got.CompletionReason != engine.CompletionReasonToolSignal {
-		t.Fatalf("result = %#v, want terminal control completion from same-step assistant text", got)
-	}
-	if got.ControlSignal == nil || got.ControlSignal.OutputText != "OK, work can continue." {
-		t.Fatalf("control signal = %#v, want assistant text output", got.ControlSignal)
-	}
-}
-
-func TestTaskCompleteWithoutArgumentsOrAssistantTextFails(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("done", "task_complete", `{}`), harness.DoneReason("tool_calls")),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "verify")
-
-	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "terminal disposition requires output text or assistant text") {
-		t.Fatalf("result = %#v, want missing terminal output failure", got)
-	}
-}
-
-func TestTaskCompleteWithoutArgumentsDoesNotReusePriorStepAssistantText(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(
-			harness.Text("Earlier progress."),
-			harness.Tool("read-1", "read", `{"value":"README.md"}`),
-			harness.DoneReason("tool_calls"),
-		),
-		harness.Step(harness.Tool("done", "task_complete", `{}`), harness.DoneReason("tool_calls")),
-	)
-	reg := tools.NewRegistry()
-	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
-		return "file contents", nil
-	}))
-	e := newTestEngine(p, &event.Recorder{})
-	e.Tools = reg
-	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
-
-	got := e.Run(context.Background(), "verify")
-
-	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "terminal disposition requires output text or assistant text") {
-		t.Fatalf("result = %#v, want missing same-step terminal output failure", got)
-	}
-}
-
-func TestTaskCompleteIsNormalToolUnderNaturalStopPolicy(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
-		harness.Step(harness.Empty()),
-		harness.Step(harness.Empty()),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	got := e.Run(context.Background(), "do the thing")
-	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "provider returned empty output") {
-		t.Fatalf("result = %#v, want ordinary unknown-tool path to fail without explicit-signal policy", got)
-	}
-}
-
 func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	e := newTestEngine(p, &event.Recorder{})
@@ -635,92 +494,6 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 		if slices.ContainsFunc(req.Messages, func(msg session.Message) bool { return msg.Content == other }) {
 			t.Fatalf("request %s leaked other session history: %#v", input.RunID, req.Messages)
 		}
-	}
-}
-
-func TestExplicitTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
-	store := session.NewMemoryStore()
-	promptStore := cache.NewMemoryStore()
-	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", `{"output":"first done"}`), harness.DoneReason("tool_calls")))
-	e1 := newTestEngine(p1, &event.Recorder{})
-	e1.Store = store
-	e1.Prompt = promptStore
-	e1.Options.CompletionPolicy = engine.CompletionExplicitSignal
-	got := e1.Run(context.Background(), "finish")
-	if got.Status != engine.Completed {
-		t.Fatalf("first result = %#v", got)
-	}
-	p2 := harness.NewScriptedProvider(
-		harness.Step(harness.Text("second done"), harness.Done()),
-		harness.Step(harness.Tool("done-2", "task_complete", `{"output":"second done"}`), harness.DoneReason("tool_calls")),
-	)
-	e2 := newTestEngine(p2, &event.Recorder{})
-	e2.Store = store
-	e2.Prompt = promptStore
-	e2.Options.CompletionPolicy = engine.CompletionExplicitSignal
-	got = e2.Run(context.Background(), "continue anyway")
-	if got.Status != engine.Completed {
-		t.Fatalf("second result = %#v", got)
-	}
-	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
-		return seg.Kind == cache.SegmentToolCall && seg.Message.ToolName == "task_complete"
-	}) {
-		t.Fatalf("continued run should not send orphan task_complete tool call: %#v", p2.Requests[0].RawPlan.Segments)
-	}
-	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
-		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task: first done"
-	}) {
-		t.Fatalf("continued run missing provider-safe task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
-	}
-	messages, err := store.Transcript("run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.ToolName == "task_complete" && msg.ToolCallID == "done"
-	}) {
-		t.Fatalf("raw session should still retain signal tool call for audit: %#v", messages)
-	}
-}
-
-func TestEmptyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
-	store := session.NewMemoryStore()
-	promptStore := cache.NewMemoryStore()
-	p1 := harness.NewScriptedProvider(harness.Step(
-		harness.Text("First run done."),
-		harness.Tool("done", "task_complete", `{}`),
-		harness.DoneReason("tool_calls"),
-	))
-	e1 := newTestEngine(p1, &event.Recorder{})
-	e1.Store = store
-	e1.Prompt = promptStore
-	e1.Options.CompletionPolicy = engine.CompletionExplicitSignal
-	got := e1.Run(context.Background(), "finish")
-	if got.Status != engine.Completed {
-		t.Fatalf("first result = %#v", got)
-	}
-
-	p2 := harness.NewScriptedProvider(
-		harness.Step(harness.Text("second done"), harness.Done()),
-		harness.Step(harness.Tool("done-2", "task_complete", `{"output":"second done"}`), harness.DoneReason("tool_calls")),
-	)
-	e2 := newTestEngine(p2, &event.Recorder{})
-	e2.Store = store
-	e2.Prompt = promptStore
-	e2.Options.CompletionPolicy = engine.CompletionExplicitSignal
-	got = e2.Run(context.Background(), "continue anyway")
-	if got.Status != engine.Completed {
-		t.Fatalf("second result = %#v", got)
-	}
-	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
-		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task: First run done."
-	}) {
-		t.Fatalf("continued run missing canonical task_complete display text: %#v", p2.Requests[0].RawPlan.Segments)
-	}
-	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
-		return strings.Contains(seg.Message.Content, "Agent control signal")
-	}) {
-		t.Fatalf("continued run used generic control fallback: %#v", p2.Requests[0].RawPlan.Segments)
 	}
 }
 
@@ -977,7 +750,7 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	}
 }
 
-func TestDynamicToolSurfaceChangesThroughCompactionGeneration(t *testing.T) {
+func TestDynamicToolSurfaceIsFrozenForTheTurn(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`), harness.DoneReason("tool_calls")),
@@ -1024,8 +797,8 @@ func TestDynamicToolSurfaceChangesThroughCompactionGeneration(t *testing.T) {
 
 	got := e.Run(context.Background(), "inspect")
 
-	if got.Status != engine.Completed || got.Output != "done" || got.Metrics.Compactions != 1 {
-		t.Fatalf("result = %#v, want one context-generation compaction", got)
+	if got.Status != engine.Completed || got.Output != "done" || got.Metrics.Compactions != 0 {
+		t.Fatalf("result = %#v, want frozen surface without compaction", got)
 	}
 	if len(p.Requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(p.Requests))
@@ -1036,26 +809,20 @@ func TestDynamicToolSurfaceChangesThroughCompactionGeneration(t *testing.T) {
 	if len(p.Requests[0].HostedTools) != 0 {
 		t.Fatalf("first request hosted tools = %#v, want none", p.Requests[0].HostedTools)
 	}
-	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
-		t.Fatalf("second request tools = %v, want read/write", names)
+	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || slices.Contains(names, "write") {
+		t.Fatalf("second request tools = %v, want frozen read-only surface", names)
 	}
-	if len(p.Requests[1].HostedTools) != 1 || p.Requests[1].HostedTools[0].Name != "hosted_search" {
-		t.Fatalf("second request hosted tools = %#v", p.Requests[1].HostedTools)
+	if len(p.Requests[1].HostedTools) != 0 {
+		t.Fatalf("second request hosted tools = %#v, want frozen empty surface", p.Requests[1].HostedTools)
 	}
 	if first := p.Requests[0].Messages[0].Content; first != "read only tools are available" {
 		t.Fatalf("first system prompt = %q", first)
 	}
-	if second := p.Requests[1].Messages[0].Content; second != "write tools are available" {
+	if second := p.Requests[1].Messages[0].Content; second != "read only tools are available" {
 		t.Fatalf("second system prompt = %q", second)
 	}
-	if p.Requests[1].RawPlan.CompactionGeneration != p.Requests[0].RawPlan.CompactionGeneration+1 {
-		t.Fatalf("tool surface changed without a new context generation: first=%#v second=%#v", p.Requests[0].RawPlan, p.Requests[1].RawPlan)
-	}
-	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
-		meta, _ := ev.Metadata.(map[string]any)
-		return ev.Type == event.ProviderRequest && ev.Step == 2 && meta["tool_surface_epoch"] == "write"
-	}) {
-		t.Fatalf("compacted provider request should include the new surface metadata: %#v", rec.Events)
+	if p.Requests[1].RawPlan.CompactionGeneration != p.Requests[0].RawPlan.CompactionGeneration || p.Requests[1].TurnSurface.Hash != p.Requests[0].TurnSurface.Hash {
+		t.Fatalf("turn surface was not frozen: first=%#v second=%#v", p.Requests[0].TurnSurface, p.Requests[1].TurnSurface)
 	}
 }
 
@@ -1092,13 +859,13 @@ func TestDynamicToolSurfaceRefreshesBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
-		return msg.Role == session.Tool && msg.ToolName == "write" && strings.Contains(msg.Content, `unknown tool "write"`)
+		return msg.Role == session.Tool && msg.ToolName == "write" && strings.Contains(msg.Content, `tool "write" is unavailable in the current version`)
 	}) {
 		t.Fatalf("stale tool call should be rejected in transcript: %#v", messages)
 	}
 }
 
-func TestPromptCacheActivatesNewToolsetThroughCompaction(t *testing.T) {
+func TestPromptCacheActivatesNewToolsetWithoutCompaction(t *testing.T) {
 	store := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
 	reg := tools.NewRegistry()
@@ -1130,14 +897,14 @@ func TestPromptCacheActivatesNewToolsetThroughCompaction(t *testing.T) {
 	if err := store.AppendTranscript("turn-2", firstResult.Messages...); err != nil {
 		t.Fatal(err)
 	}
-	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed || got.Metrics.Compactions != 1 {
-		t.Fatalf("second = %#v, want one context-generation compaction", got)
+	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed || got.Metrics.Compactions != 0 {
+		t.Fatalf("second = %#v, want new render lineage without compaction", got)
 	}
 	if len(secondProvider.Requests) != 1 {
 		t.Fatalf("second provider requests = %d, want 1", len(secondProvider.Requests))
 	}
-	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 || secondProvider.Requests[0].RawPlan.CompactionGeneration != firstProvider.Requests[0].RawPlan.CompactionGeneration+1 {
-		t.Fatalf("toolset activation did not establish a new generation: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
+	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 || secondProvider.Requests[0].RawPlan.CompactionGeneration != firstProvider.Requests[0].RawPlan.CompactionGeneration || secondProvider.Requests[0].RawPlan.RenderLineageKey == firstProvider.Requests[0].RawPlan.RenderLineageKey {
+		t.Fatalf("toolset activation did not establish a new render lineage: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
 	}
 	if !slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "read" }) ||
 		!slices.ContainsFunc(secondProvider.Requests[0].Tools, func(tool tools.ToolDefinition) bool { return tool.Name == "write" }) {
@@ -1263,7 +1030,7 @@ func TestPromptCacheSwitchesModelsOnlyAtTurnBoundaryWithoutCompaction(t *testing
 	}
 }
 
-func TestPromptCacheRejectsModelSwitchWithinTurnBeforeProviderDispatch(t *testing.T) {
+func TestPromptCacheRestoresFrozenModelWithinTurn(t *testing.T) {
 	transcripts := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
 	providerA := harness.NewScriptedProvider(harness.Step(harness.Text("answer-a"), harness.Done()))
@@ -1283,7 +1050,7 @@ func TestPromptCacheRejectsModelSwitchWithinTurnBeforeProviderDispatch(t *testin
 	if err := transcripts.AppendTranscript("run-b", firstResult.Messages...); err != nil {
 		t.Fatal(err)
 	}
-	providerB := harness.NewScriptedProvider(harness.Step(harness.Text("must not run"), harness.Done()))
+	providerB := harness.NewScriptedProvider(harness.Step(harness.Text("resumed"), harness.Done()))
 	second := newTestEngine(providerB, &event.Recorder{})
 	second.Store = transcripts
 	second.Prompt = promptStore
@@ -1294,8 +1061,8 @@ func TestPromptCacheRejectsModelSwitchWithinTurnBeforeProviderDispatch(t *testin
 	second.Options.ProviderName = "deepseek"
 	second.Options.Model = "pro"
 	result := second.Run(context.Background(), "resume")
-	if result.Status != engine.Failed || !errors.Is(result.Err, cache.ErrTurnModelDrift) || len(providerB.Requests) != 0 {
-		t.Fatalf("same-turn model drift result=%#v provider_requests=%d", result, len(providerB.Requests))
+	if result.Status != engine.Completed || len(providerB.Requests) != 1 || providerB.Requests[0].Model != "flash" || providerB.Requests[0].TurnSurface.Hash != providerA.Requests[0].TurnSurface.Hash {
+		t.Fatalf("same-turn frozen surface result=%#v requests=%#v", result, providerB.Requests)
 	}
 }
 
@@ -1350,7 +1117,7 @@ func TestPromptCacheSwitchToSmallerModelCompactsOnlyForTargetPressure(t *testing
 	}
 }
 
-func TestPromptCacheRendererRawDriftCommitsOneLineageCompaction(t *testing.T) {
+func TestPromptCacheRendererRawDriftFailsWithoutHidingItBehindCompaction(t *testing.T) {
 	transcripts := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
 	firstScript := harness.NewScriptedProvider(harness.Step(harness.Text("answer-one"), harness.Done()))
@@ -1376,7 +1143,6 @@ func TestPromptCacheRendererRawDriftCommitsOneLineageCompaction(t *testing.T) {
 	second := newTestEngine(secondProvider, &event.Recorder{})
 	second.Store = transcripts
 	second.Prompt = promptStore
-	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
 	second.Options.RunID = "run-two"
 	second.Options.TurnID = "turn-two"
 	second.Options.ThreadID = "thread"
@@ -1384,11 +1150,11 @@ func TestPromptCacheRendererRawDriftCommitsOneLineageCompaction(t *testing.T) {
 	second.Options.ProviderName = "test"
 	second.Options.Model = "model"
 	result := second.Run(context.Background(), "two")
-	if result.Status != engine.Completed || result.Metrics.Compactions != 1 || len(secondScript.Requests) != 1 {
+	if result.Status != engine.Failed || result.FailureOrigin != engine.FailureOriginContract || result.Metrics.Compactions != 0 || len(secondScript.Requests) != 0 {
 		t.Fatalf("renderer drift result=%#v requests=%d", result, len(secondScript.Requests))
 	}
-	if secondScript.Requests[0].RawPlan.CompactionGeneration != firstScript.Requests[0].RawPlan.CompactionGeneration+1 || !secondScript.Requests[0].RawPlan.CanonicalLineageReset {
-		t.Fatalf("renderer drift did not establish one committed generation: first=%#v second=%#v", firstScript.Requests[0].RawPlan, secondScript.Requests[0].RawPlan)
+	if !errors.Is(result.Err, cache.ErrContextRenderLineageChanged) {
+		t.Fatalf("renderer drift error = %v, want render lineage drift", result.Err)
 	}
 }
 
@@ -2212,34 +1978,6 @@ func TestMalformedControlPreservesAssistantTextAndUsesControlFailure(t *testing.
 	}
 }
 
-func TestCustomControlSpecTerminalSignalCompletes(t *testing.T) {
-	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("done-rich", "host_complete", `{"summary":"finished"}`), harness.DoneReason("tool_calls")),
-	)
-	e := newTestEngine(p, &event.Recorder{})
-	e.Options.ControlSpec = engine.ControlSpec{
-		Definitions: []tools.ToolDefinition{{
-			Name:        "host_complete",
-			Description: "Complete the task.",
-			InputSchema: tools.StrictObject(map[string]any{"summary": tools.String("summary")}, []string{"summary"}),
-			Strict:      true,
-			Annotations: map[string]any{"kind": "control"},
-		}},
-		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
-			return engine.ControlSignal{Disposition: engine.ControlTerminal, Name: call.Name, CallID: call.ID, OutputText: "finished"}, true, nil
-		},
-	}
-
-	got := e.Run(context.Background(), "finish")
-
-	if got.Status != engine.Completed || got.Output != "finished" || got.CompletionReason != engine.CompletionReasonToolSignal {
-		t.Fatalf("result = %#v, want terminal control completion", got)
-	}
-	if got.ControlSignal == nil || got.ControlSignal.Disposition != engine.ControlTerminal || got.ControlSignal.Name != "host_complete" {
-		t.Fatalf("control signal = %#v", got.ControlSignal)
-	}
-}
-
 func TestCustomControlContinueRequiresProviderVisibleText(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("continue-rich", "host_continue", `{"secret":"token abc"}`), harness.DoneReason("tool_calls")),
@@ -2388,7 +2126,7 @@ func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(
 	}
 }
 
-func TestProviderSafeHistoryProjectsCustomControlSignals(t *testing.T) {
+func TestProviderSafeHistoryProjectsRemovedControlWithoutCurrentDefinition(t *testing.T) {
 	store := session.NewMemoryStore()
 	controlSpec := engine.ControlSpec{
 		Definitions: []tools.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "secret": tools.String("secret")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
@@ -2406,7 +2144,6 @@ func TestProviderSafeHistoryProjectsCustomControlSignals(t *testing.T) {
 	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("resumed"), harness.Done()))
 	second := newTestEngine(secondProvider, &event.Recorder{})
 	second.Store = store
-	second.Options.ControlSpec = controlSpec
 	got := second.Run(context.Background(), "answer")
 	if got.Status != engine.Completed {
 		t.Fatalf("second result = %#v", got)

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/testing/tooltest"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/testing/tooltest"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type fakeResolver struct {

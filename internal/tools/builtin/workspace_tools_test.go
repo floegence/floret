@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/internal/testing/tooltest"
-	"github.com/floegence/floret/v6/tools"
+	"github.com/floegence/floret/v7/internal/testing/tooltest"
+	"github.com/floegence/floret/v7/tools"
 )
 
 func TestReadListGlobAndGrepWorkspaceTools(t *testing.T) {
@@ -229,7 +229,7 @@ func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
 	} else {
 		t.Fatalf("expected missing API key registration error")
 	}
-	if got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll); !got.IsError || !strings.Contains(got.Text, "unknown tool") {
+	if got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll); !got.IsError || !strings.Contains(got.Text, "is unavailable in the current version") {
 		t.Fatalf("unregistered web_search = %#v", got)
 	}
 
@@ -797,7 +797,7 @@ func TestEditToolIsNotRegistered(t *testing.T) {
 		t.Fatalf("edit tool should not be registered: %#v", reg.Definitions())
 	}
 	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":false}`}, allowAll)
-	if !got.IsError || !strings.Contains(got.Text, `unknown tool "edit"`) {
+	if !got.IsError || !strings.Contains(got.Text, `tool "edit" is unavailable in the current version`) {
 		t.Fatalf("edit call = %#v", got)
 	}
 	if err := RegisterSelected(reg, SelectedOptions{Workspace: WorkspaceOptions{Root: t.TempDir()}}, "edit"); err == nil || !strings.Contains(err.Error(), `unknown built-in tool "edit"`) {

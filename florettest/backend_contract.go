@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/v6/storage/spi"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // RunBackendContract verifies the transactional, ownership, ordering, rollback,

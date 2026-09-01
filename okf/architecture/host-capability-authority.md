@@ -1,7 +1,7 @@
 ---
 type: Architecture
 title: Host Capability Authority
-description: The v6 host owns one typed thread service and validates every durable mutation.
+description: The v7 host owns one typed thread service and validates every durable mutation.
 resource: /runtime/host_v2.go
 tags: [architecture, authority, capabilities]
 timestamp: 2026-08-18T00:00:00Z

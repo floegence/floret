@@ -11,20 +11,20 @@ import (
 	"strings"
 	"testing"
 
-	floretruntime "github.com/floegence/floret/v6/runtime"
-	"github.com/floegence/floret/v6/storage"
+	floretruntime "github.com/floegence/floret/v7/runtime"
+	"github.com/floegence/floret/v7/storage"
 )
 
-func TestV6ModuleAndIdentityPackageBoundary(t *testing.T) {
+func TestV7ModuleAndIdentityPackageBoundary(t *testing.T) {
 	module, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(module), "module github.com/floegence/floret/v6\n") {
-		t.Fatal("Floret v6 must use the /v6 module path")
+	if !strings.HasPrefix(string(module), "module github.com/floegence/floret/v7\n") {
+		t.Fatal("Floret v7 must use the /v7 module path")
 	}
 	if _, err := os.Stat("identity"); err != nil {
-		t.Fatal("Floret v6 requires the public identity package")
+		t.Fatal("Floret v7 requires the public identity package")
 	}
 }
 
@@ -102,6 +102,38 @@ func TestNoV2ImportsRemain(t *testing.T) {
 	}
 }
 
+func TestRetiredCompletionToolExistsOnlyInMigrationFixtureAndChangeLog(t *testing.T) {
+	needle := "task_" + "complete"
+	allowed := map[string]bool{
+		"CHANGELOG.md": true,
+		"internal/sessiontree/backend_domain_v8_migration_test.go": true,
+	}
+	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		path = filepath.ToSlash(strings.TrimPrefix(path, "./"))
+		if allowed[path] {
+			return nil
+		}
+		extension := filepath.Ext(path)
+		if extension != ".go" && extension != ".md" && extension != ".yaml" && extension != ".yml" && extension != ".tsv" && extension != ".sh" && path != "go.mod" {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(content), needle) {
+			t.Fatalf("%s retains the retired completion tool", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestApplicationStorageSourceIsOpaque(t *testing.T) {
 	sourceType := reflect.TypeOf((*storage.Source)(nil)).Elem()
 	if sourceType.NumMethod() != 0 {
@@ -132,7 +164,7 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				const module = "github.com/floegence/floret/v6/"
+				const module = "github.com/floegence/floret/v7/"
 				if !strings.HasPrefix(value, module) {
 					continue
 				}

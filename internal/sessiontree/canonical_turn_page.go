@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/v6/internal/session"
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 type CanonicalTurnBeforeCursor struct {
@@ -180,7 +180,7 @@ func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID str
 		expectedDepth--
 		windowNewestFirst = append(windowNewestFirst, CanonicalTurnPathEntry{Entry: entry, Ordinal: depth})
 		turnID := strings.TrimSpace(entry.TurnID)
-		if entry.Type == EntryUserMessage && turnID != "" {
+		if isCanonicalUserEntry(entry) && turnID != "" {
 			userTurns[turnID] = struct{}{}
 		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
@@ -318,7 +318,7 @@ func (r *MemoryRepo) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchor
 			}
 			continue
 		}
-		if entry.Type == EntryUserMessage && turnID != "" {
+		if isCanonicalUserEntry(entry) && turnID != "" {
 			state := pending[turnID]
 			if state == nil {
 				continue
@@ -406,7 +406,7 @@ func (r *MemoryRepo) canonicalTurnPrefixLocked(threadID string, anchor Entry, an
 			slices.Reverse(prefix)
 			visible := retrySource != nil
 			for _, item := range prefix {
-				if item.Entry.Type == EntryUserMessage && strings.TrimSpace(item.Entry.TurnID) == turnID {
+				if isCanonicalUserEntry(item.Entry) && strings.TrimSpace(item.Entry.TurnID) == turnID {
 					visible = true
 					break
 				}
@@ -491,11 +491,8 @@ func (r *MemoryRepo) withCanonicalPageRetryEligibilityLocked(threadID string, pa
 	if latest.RetrySource == nil {
 		for index := len(latest.Entries) - 1; index >= 0; index-- {
 			entry := latest.Entries[index].Entry
-			if entry.Type != EntryUserMessage {
+			if !isCanonicalUserEntry(entry) {
 				continue
-			}
-			if entry.Message.Role != session.User {
-				return CanonicalTurnsPage{}, ErrAuthorityCorrupt
 			}
 			page.HasRetryTarget = session.HasRetryEligibleDurableInput(entry.Message)
 			return page, nil
@@ -643,7 +640,7 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 			}
 			sourceIndex = index
 		}
-		if entry.Type == EntryUserMessage {
+		if isCanonicalUserEntry(entry) {
 			if userIndex >= 0 || entry.Message.Role != session.User {
 				return false, nil, "", "", ErrAuthorityCorrupt
 			}
@@ -654,7 +651,7 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		return false, nil, "", "", ErrAuthorityCorrupt
 	}
 	sourceEntry := entries[sourceIndex]
-	if sourceEntry.Type == EntryUserMessage {
+	if isCanonicalUserEntry(sourceEntry) {
 		if userIndex != sourceIndex || retrySource != nil {
 			return false, nil, "", "", ErrAuthorityCorrupt
 		}
