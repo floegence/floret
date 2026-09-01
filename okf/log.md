@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-09-01
+* **Projection migration boundary**: Threads carrying the exact v6.1.1 or
+  v7.0.0 provider-context revision start one new render lineage after schema v8
+  repairs an Engine continuation message. The repaired canonical history is
+  sent in full without compaction or provider continuation state.
 * **V7 Turn surface lifecycle**: Floret now freezes provider, model, reasoning,
   system prompt, tools, adapter, context policy, and continuation compatibility
   at the first provider checkpoint of each Turn. New Turns use the current

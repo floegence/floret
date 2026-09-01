@@ -1,5 +1,15 @@
 # Changelog
 
+## v7.0.1 - 2026-09-01
+
+- Treat the exact v6.1.1 and v7.0.0 provider-context revisions as a one-time
+  render-lineage boundary after the v8 continuation-message repair. The first
+  later request sends the complete repaired canonical history without compacting
+  it or carrying provider continuation state.
+- Add a runtime qualification that opens a copy of a real migrated thread,
+  preserves its historical item prefix, and completes a new Turn while proving
+  the source database is untouched.
+
 ## v7.0.0 - 2026-09-01
 
 - Complete a Turn on terminal provider natural stop and remove the explicit

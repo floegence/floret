@@ -22,7 +22,9 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v3"
+	ContextProjectionRevision = "provider-context.v4"
+	contextProjectionV2       = "provider-context.v2"
+	contextProjectionV3       = "provider-context.v3"
 )
 
 var (
@@ -974,6 +976,16 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		plan.CanonicalLineageReset = true
 		return nil
 	}
+	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3) && plan.ContextProjectionRevision == ContextProjectionRevision {
+			plan.CanonicalLineageReset = true
+			return nil
+		}
+		if strings.TrimSpace(previous.ContextProjectionRevision) == "" {
+			return ErrContextLineageMigrationNeeded
+		}
+		return fmt.Errorf("%w: unsupported context projection revision change %q -> %q", ErrContextPrefixDrift, previous.ContextProjectionRevision, plan.ContextProjectionRevision)
+	}
 	if previous.CanonicalHistoryPrefixHash == "" {
 		return ErrContextLineageMigrationNeeded
 	}
@@ -1138,7 +1150,7 @@ func canonicalPrefixHash(envelopeHash string, messageHashes []string) string {
 }
 
 func renderLineageKey(providerName, model, adapterVersion, cacheNamespace string) string {
-	return HashStrings(providerName, model, adapterVersion, cacheNamespace)
+	return HashStrings(providerName, model, adapterVersion, cacheNamespace, ContextProjectionRevision)
 }
 
 func segmentForCurrentRef(existing, current Segment) Segment {

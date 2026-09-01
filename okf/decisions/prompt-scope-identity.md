@@ -26,9 +26,10 @@ identity fields. Code must not infer prompt-cache ownership from `RunID`.
 
 Within one prompt scope, the canonical message lineage is shared by every
 model. Raw render lineage is narrower and keyed by provider, model, adapter
-revision, and cache namespace. This lets a new Turn switch models without
-changing canonical history while preserving an exact raw prefix when it later
-returns to a previously used model.
+revision, provider-context projection revision, and cache namespace. This lets
+a new Turn switch models or adopt a corrected projection without changing
+canonical history while preserving an exact raw prefix whenever the same
+rendering surface is used again.
 
 # Related
 

@@ -210,6 +210,82 @@ func TestValidateCanonicalLineageMigratesLegacyProjection(t *testing.T) {
 	}
 }
 
+func TestValidateCanonicalLineageResetsExactV2ProjectionWithoutCompaction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	legacyHistory := []session.Message{
+		{Role: session.User, Content: "hello"},
+		{Role: session.User, Content: "Continue working."},
+	}
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "v3", PromptScopeID: "thread", RunID: "run-v3", Step: 1,
+		Provider: "test", Model: "model", SegmentIDs: []string{"system-v3", "message-1", "message-control"},
+		CanonicalMessageCount:      len(legacyHistory),
+		CanonicalHistoryPrefixHash: HashStrings(canonicalMessageHash(legacyHistory[0]), canonicalMessageHash(legacyHistory[1])),
+		ContextProjectionRevision:  contextProjectionV2,
+		CreatedAt:                  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	currentHistory := legacyHistory[:1]
+	first := lineagePlan("test", "model", "ns", "system-v4", "message-1")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, currentHistory); err != nil {
+		t.Fatalf("exact v2 to v4 projection reset failed: %v", err)
+	}
+	if !first.CanonicalLineageReset || first.CompactionGeneration != 0 {
+		t.Fatalf("projection reset=%v generation=%d", first.CanonicalLineageReset, first.CompactionGeneration)
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{
+		PromptScopeID: "thread", RunID: "run-v4", ThreadID: "thread", TurnID: "turn-v4",
+	}, 1, "test", "model", CachePolicy{}, first); err != nil {
+		t.Fatal(err)
+	}
+
+	appendedHistory := append(append([]session.Message(nil), currentHistory...), session.Message{Role: session.User, Content: "next"})
+	second := lineagePlan("test", "model", "ns", "system-v4", "message-1", "message-2")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &second, "system", nil, nil, nil, appendedHistory); err != nil {
+		t.Fatalf("append after projection reset failed: %v", err)
+	}
+	if second.CanonicalLineageReset {
+		t.Fatal("current projection reset more than once")
+	}
+}
+
+func TestValidateCanonicalLineageResetsExactV3ProjectionWithoutCompaction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "v3", PromptScopeID: "thread", RunID: "run-v3", Step: 1,
+		Provider: "test", Model: "model", ContextProjectionRevision: contextProjectionV3, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := lineagePlan("test", "model", "ns", "system", "message")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); err != nil {
+		t.Fatalf("exact v3 to v4 projection reset failed: %v", err)
+	}
+	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
+		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)
+	}
+}
+
+func TestValidateCanonicalLineageRejectsUnknownProjectionChange(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "unknown", PromptScopeID: "thread", RunID: "run-unknown", Step: 1,
+		Provider: "test", Model: "model", ContextProjectionRevision: "provider-context.unknown", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := lineagePlan("test", "model", "ns", "system", "message")
+	err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}})
+	if !errors.Is(err, ErrContextPrefixDrift) {
+		t.Fatalf("unknown projection error=%v, want ErrContextPrefixDrift", err)
+	}
+}
+
 func lineagePlan(providerName, model, namespace string, segmentIDs ...string) RawPlan {
 	return RawPlan{
 		Version: Version, CacheNamespace: namespace, SegmentIDs: append([]string(nil), segmentIDs...),
