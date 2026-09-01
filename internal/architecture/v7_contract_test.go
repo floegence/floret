@@ -28,6 +28,17 @@ func TestV7ModuleAndIdentityPackageBoundary(t *testing.T) {
 	}
 }
 
+func TestCIGatesUseCurrentMajor(t *testing.T) {
+	workflow, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(workflow)
+	if !strings.Contains(content, "scripts/check_v7_api_compatibility.sh") || strings.Contains(content, "scripts/check_v6_api_compatibility.sh") {
+		t.Fatal("CI must run only the v7 API compatibility gate")
+	}
+}
+
 func TestSemanticIdentityFieldsDoNotUseString(t *testing.T) {
 	semantic := map[string]bool{
 		"ThreadID": true, "TurnID": true, "RunID": true, "PromptScopeID": true,
