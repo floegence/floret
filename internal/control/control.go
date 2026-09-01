@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/provider"
-	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -31,7 +30,7 @@ func ToolDefinitions() []tools.ToolDefinition {
 	return []tools.ToolDefinition{{
 		Name:        AskUserTool,
 		Title:       "Ask user",
-		Description: "Ask the user for missing information and wait for their response.",
+		Description: "Ask the user for information and wait for their response. You MUST use this tool whenever another user answer is required to continue; do not end the turn with a prose question.",
 		InputSchema: askUserInputSchema(),
 		Strict:      true,
 		Annotations: map[string]any{
@@ -60,40 +59,6 @@ func Project(call provider.ToolCall) (Signal, bool, error) {
 	default:
 		return Signal{}, false, nil
 	}
-}
-
-func ProjectMessage(msg session.Message) (session.Message, bool) {
-	if msg.Role != session.Assistant {
-		return msg, false
-	}
-	switch msg.ToolName {
-	case AskUserTool:
-		content := msg.ToolArgs
-		if signal, ok, err := Project(provider.ToolCall{Name: msg.ToolName, Args: msg.ToolArgs}); ok && err == nil {
-			content = signal.Prompt
-		}
-		return session.Message{
-			Role:          session.Assistant,
-			Content:       "Agent requested user input: " + content,
-			EntryID:       msg.EntryID,
-			ParentEntryID: msg.ParentEntryID,
-			Kind:          session.MessageKindControlSignal,
-		}, true
-	default:
-		return msg, false
-	}
-}
-
-func ProjectHistory(history []session.Message) []session.Message {
-	out := make([]session.Message, 0, len(history))
-	for _, msg := range history {
-		if projected, ok := ProjectMessage(msg); ok {
-			out = append(out, projected)
-			continue
-		}
-		out = append(out, msg)
-	}
-	return out
 }
 
 func AskUser(calls []provider.ToolCall) (Signal, bool) {

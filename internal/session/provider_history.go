@@ -35,6 +35,8 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 		}
 		message := CloneMessage(original)
 		message.References = nil
+		message.Activity = nil
+		message.ControlSignal = nil
 		out = append(out, message)
 		if isAnchor {
 			insertAt = len(out)

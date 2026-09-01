@@ -1643,6 +1643,46 @@ func TestOpenAICompatibleProviderReordersToolResultsToMatchToolCalls(t *testing.
 	}
 }
 
+func TestOpenAICompatibleProviderAcceptsHistoricalToolMissingFromCurrentDefinitions(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+		Tools    []map[string]any `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
+		{Role: session.User, Content: "start"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "retired-1", ToolName: "retired_tool", ToolArgs: `{"value":"old"}`},
+		{Role: session.Tool, Content: "old result", ToolCallID: "retired-1", ToolName: "retired_tool"},
+		{Role: session.User, Content: "continue"},
+	}, Tools: []tools.ToolDefinition{{Name: "current_tool"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 4 || len(body.Tools) != 1 {
+		t.Fatalf("request body=%#v", body)
+	}
+	toolCalls, _ := body.Messages[1]["tool_calls"].([]any)
+	if len(toolCalls) != 1 || body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "retired-1" {
+		t.Fatalf("historical removed tool pair=%#v", body.Messages)
+	}
+	encodedTools, err := json.Marshal(body.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedTools), "retired_tool") {
+		t.Fatalf("removed tool was restored to current definitions: %s", encodedTools)
+	}
+}
+
 func TestOpenAICompatibleProviderPayloadHashUsesReorderedToolResults(t *testing.T) {
 	messages := []session.Message{
 		{Role: session.User, Content: "weather"},

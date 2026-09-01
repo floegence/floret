@@ -14,7 +14,6 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
-	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/memory"
 	"github.com/floegence/floret/v7/internal/provider"
@@ -756,11 +755,22 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		latestProviderState = nil
 	}
 	providerStateFresh := false
+	activeHistory, err := e.store.Transcript(opts.RunID)
+	if err != nil {
+		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
+	}
 	if userText != "" {
 		msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: userText})
+		if waitingCall, ok := trailingWaitingControlCall(activeHistory); ok {
+			msg = e.stableMessage(opts.RunID, session.Message{
+				Role: session.Tool, Content: userText, ToolCallID: waitingCall.ToolCallID, ToolName: waitingCall.ToolName,
+				ToolResult: &session.ToolResultView{Status: "success"},
+			})
+		}
 		if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 		}
+		activeHistory = append(activeHistory, msg)
 	}
 	var output string
 	emptyRetries := 0
@@ -774,10 +784,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	duplicateCount := 0
 	started := time.Now()
 	metrics := RunMetrics{}
-	activeHistory, err := e.store.Transcript(opts.RunID)
-	if err != nil {
-		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
-	}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
 	if supplementalTurn {
 		opts.supplementalAnchorEntryID = currentTurnUserEntryID(activeHistory)
@@ -2057,7 +2063,7 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 	if err != nil {
 		return provider.Request{}, err
 	}
-	canonicalHistory := providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):])
+	canonicalHistory := assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):]
 	plan, messages, err := cache.BuildPlan(ctx, promptStore, cache.BuildInput{
 		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
@@ -2254,8 +2260,12 @@ func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Reques
 	}
 	if req.EphemeralUser == nil {
 		req.RawPlan.RequestEstimate = req.RequestEstimate
+		req.RawPlan.RequestShape = requestShapeHashes(req)
+	} else {
+		req.RawPlan.PayloadHash = ""
+		req.RawPlan.RequestEstimate = contextpolicy.RequestEstimate{}
+		req.RawPlan.RequestShape = cache.RequestShapeHashes{}
 	}
-	req.RawPlan.RequestShape = requestShapeHashes(req)
 	return req, nil
 }
 
@@ -2323,6 +2333,23 @@ func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy c
 }
 
 func providerRequestMetadata(req provider.Request) map[string]any {
+	if req.EphemeralUser != nil {
+		return map[string]any{
+			"request_id":              requestID(req.RunID, req.Step),
+			"logical_request_id":      req.LogicalRequestID,
+			"attempt_id":              req.AttemptID,
+			"attempt_epoch":           req.AttemptEpoch,
+			"attempt":                 req.Attempt,
+			"has_ephemeral_overlay":   true,
+			"compaction_generation":   req.RawPlan.CompactionGeneration,
+			"compaction_window_id":    req.RawPlan.CompactionWindowID,
+			"canonical_message_count": len(req.Messages),
+			"raw_segment_count":       len(req.RawPlan.Segments),
+			"local_tool_count":        len(req.Tools),
+			"hosted_tool_count":       len(req.HostedTools),
+			"prefix_hash":             shortHash(req.RawPlan.PrefixHash),
+		}
+	}
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
 	pressure := req.ContextPressure
 	return map[string]any{
@@ -2492,8 +2519,11 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	req.ContextPressure = tracker.Project(req, providerHistory)
 	if req.EphemeralUser == nil {
 		req.RawPlan.ProjectedPressure = req.ContextPressure
+		req.RawPlan.RequestShape = requestShapeHashes(req)
+	} else {
+		req.RawPlan.ProjectedPressure = contextpolicy.ContextPressure{}
+		req.RawPlan.RequestShape = cache.RequestShapeHashes{}
 	}
-	req.RawPlan.RequestShape = requestShapeHashes(req)
 	return req, nil
 }
 
@@ -2539,15 +2569,13 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 			releaseProviderStart = nil
 		}
 	}
-	if req.EphemeralUser == nil {
-		promptStore := e.prompt
-		if req.PromptStore != nil {
-			promptStore = req.PromptStore
-		}
-		if _, err := cache.RecordProviderRequest(ctx, promptStore, providerRequestSnapshot(req)); err != nil {
-			releaseProviderGate()
-			return StepOutput{}, 0, false, withFailureOrigin(err, FailureOriginStorage)
-		}
+	promptStore := e.prompt
+	if req.PromptStore != nil {
+		promptStore = req.PromptStore
+	}
+	if _, err := cache.RecordProviderRequest(ctx, promptStore, providerRequestSnapshot(req)); err != nil {
+		releaseProviderGate()
+		return StepOutput{}, 0, false, withFailureOrigin(err, FailureOriginStorage)
 	}
 	if metrics != nil {
 		metrics.LLMRequests++
@@ -2635,22 +2663,32 @@ func pollManualCompaction(ctx context.Context, opts Options, step int) (ManualCo
 }
 
 func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot {
+	plan := req.RawPlan
+	hasEphemeralOverlay := req.EphemeralUser != nil
+	if hasEphemeralOverlay {
+		plan.PayloadHash = ""
+		plan.PreviousResponseID = ""
+		plan.RequestEstimate = contextpolicy.RequestEstimate{}
+		plan.ProjectedPressure = contextpolicy.ContextPressure{}
+		plan.RequestShape = cache.RequestShapeHashes{}
+	}
 	return cache.ProviderRequestSnapshot{
-		PromptScopeID:    req.PromptScopeID,
-		RunID:            req.RunID,
-		ThreadID:         req.ThreadID,
-		TurnID:           req.TurnID,
-		Step:             req.Step,
-		LogicalRequestID: req.LogicalRequestID,
-		AttemptID:        req.AttemptID,
-		AttemptEpoch:     req.AttemptEpoch,
-		Attempt:          req.Attempt,
-		OverflowRetried:  req.OverflowRetried,
-		Provider:         req.Provider,
-		Model:            req.Model,
-		Cache:            req.Cache,
-		RawPlan:          req.RawPlan,
-		TurnSurface:      req.TurnSurface,
+		PromptScopeID:       req.PromptScopeID,
+		RunID:               req.RunID,
+		ThreadID:            req.ThreadID,
+		TurnID:              req.TurnID,
+		Step:                req.Step,
+		LogicalRequestID:    req.LogicalRequestID,
+		AttemptID:           req.AttemptID,
+		AttemptEpoch:        req.AttemptEpoch,
+		Attempt:             req.Attempt,
+		OverflowRetried:     req.OverflowRetried,
+		Provider:            req.Provider,
+		Model:               req.Model,
+		Cache:               req.Cache,
+		RawPlan:             plan,
+		TurnSurface:         req.TurnSurface,
+		HasEphemeralOverlay: hasEphemeralOverlay,
 	}
 }
 
@@ -3206,9 +3244,16 @@ func providerRequestWithCommittedCompaction(req provider.Request, committed comm
 	req.RawPlan.CompactionGeneration = result.CompactionGeneration
 	req.RawPlan.CompactionWindowID = result.CompactionWindowID
 	req.RawPlan.CompactionEntryID = result.CompactionID
-	req.RawPlan.RequestEstimate = req.RequestEstimate
-	req.RawPlan.ProjectedPressure = req.ContextPressure
-	req.RawPlan.RequestShape = requestShapeHashes(req)
+	if req.EphemeralUser == nil {
+		req.RawPlan.RequestEstimate = req.RequestEstimate
+		req.RawPlan.ProjectedPressure = req.ContextPressure
+		req.RawPlan.RequestShape = requestShapeHashes(req)
+	} else {
+		req.RawPlan.PayloadHash = ""
+		req.RawPlan.RequestEstimate = contextpolicy.RequestEstimate{}
+		req.RawPlan.ProjectedPressure = contextpolicy.ContextPressure{}
+		req.RawPlan.RequestShape = cache.RequestShapeHashes{}
+	}
 	return req
 }
 
@@ -3668,33 +3713,6 @@ func validateHostedToolEvent(call provider.ToolCall, allowed map[string]struct{}
 	return nil
 }
 
-func providerSafeHistory(history []session.Message) []session.Message {
-	out := make([]session.Message, 0, len(history))
-	for _, msg := range history {
-		if msg.Role == session.Assistant && msg.ToolName != "" && (msg.Kind == session.MessageKindControlSignal || msg.ControlSignal != nil) {
-			out = append(out, providerSafeControlMessage(msg))
-			continue
-		}
-		msg.Activity = nil
-		out = append(out, msg)
-	}
-	return out
-}
-
-func providerSafeControlMessage(msg session.Message) session.Message {
-	content := providerSafeControlText(ControlSignal{Name: strings.TrimSpace(msg.ToolName)})
-	if signal, ok := persistedControlSignal(msg); ok {
-		content = providerSafeControlText(signal)
-	}
-	return session.Message{
-		Role:          session.Assistant,
-		Content:       content,
-		EntryID:       msg.EntryID,
-		ParentEntryID: msg.ParentEntryID,
-		Kind:          session.MessageKindControlSignal,
-	}
-}
-
 func persistedControlSignal(msg session.Message) (ControlSignal, bool) {
 	if view := msg.ControlSignal; view != nil {
 		return ControlSignal{
@@ -3710,6 +3728,21 @@ func persistedControlSignal(msg session.Message) (ControlSignal, bool) {
 	return ControlSignal{}, false
 }
 
+func trailingWaitingControlCall(history []session.Message) (session.Message, bool) {
+	if len(history) == 0 {
+		return session.Message{}, false
+	}
+	message := history[len(history)-1]
+	if message.Role != session.Assistant || message.Kind != session.MessageKindControlSignal || strings.TrimSpace(message.ToolCallID) == "" || strings.TrimSpace(message.ToolName) == "" {
+		return session.Message{}, false
+	}
+	signal, ok := persistedControlSignal(message)
+	if !ok || signal.Disposition != ControlWaiting {
+		return session.Message{}, false
+	}
+	return message, true
+}
+
 func sessionControlSignalView(signal *ControlSignal) *session.ControlSignalView {
 	if signal == nil {
 		return nil
@@ -3722,22 +3755,6 @@ func sessionControlSignalView(signal *ControlSignal) *session.ControlSignalView 
 		OutputText:  strings.TrimSpace(signal.OutputText),
 		ArgsHash:    strings.TrimSpace(signal.ArgsHash),
 		Payload:     cloneControlPayload(signal.Payload),
-	}
-}
-
-func providerSafeControlText(signal ControlSignal) string {
-	text := strings.TrimSpace(signal.OutputText)
-	switch signal.Name {
-	case control.AskUserTool:
-		if text != "" {
-			return "Agent requested user input: " + text
-		}
-		return "Agent requested user input."
-	default:
-		if text != "" {
-			return fmt.Sprintf("Agent control signal %q: %s", signal.Name, text)
-		}
-		return fmt.Sprintf("Agent control signal %q was emitted.", signal.Name)
 	}
 }
 

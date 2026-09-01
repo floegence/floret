@@ -22,9 +22,10 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v4"
+	ContextProjectionRevision = "provider-context.v5"
 	contextProjectionV2       = "provider-context.v2"
 	contextProjectionV3       = "provider-context.v3"
+	contextProjectionV4       = "provider-context.v4"
 )
 
 var (
@@ -208,6 +209,7 @@ type ProviderRequestRecord struct {
 	CacheRetention             Retention                     `json:"cache_retention,omitempty"`
 	SegmentIDs                 []string                      `json:"segment_ids"`
 	ProviderPayloadHash        string                        `json:"provider_payload_hash"`
+	HasEphemeralOverlay        bool                          `json:"has_ephemeral_overlay,omitempty"`
 	PrefixRawHash              string                        `json:"prefix_raw_hash"`
 	PreviousResponseID         string                        `json:"previous_response_id,omitempty"`
 	CompactionGeneration       int                           `json:"compaction_generation,omitempty"`
@@ -977,7 +979,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
-		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3) && plan.ContextProjectionRevision == ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			plan.CanonicalLineageReset = true
 			return nil
 		}
@@ -1130,15 +1132,21 @@ func cloneTurnSurface(surface TurnSurfaceSnapshot) TurnSurfaceSnapshot {
 
 func canonicalMessageHash(message session.Message) string {
 	return StableHash(mustCanonical(map[string]any{
-		"role":         message.Role,
-		"content":      message.Content,
-		"attachments":  message.Attachments,
-		"references":   message.References,
-		"reasoning":    message.Reasoning,
-		"tool_call_id": message.ToolCallID,
-		"tool_name":    message.ToolName,
-		"tool_args":    message.ToolArgs,
-		"kind":         message.Kind,
+		"entry_id":              message.EntryID,
+		"parent_entry_id":       message.ParentEntryID,
+		"role":                  message.Role,
+		"content":               message.Content,
+		"attachments":           message.Attachments,
+		"references":            message.References,
+		"reasoning":             message.Reasoning,
+		"tool_call_id":          message.ToolCallID,
+		"tool_name":             message.ToolName,
+		"tool_args":             message.ToolArgs,
+		"tool_result":           message.ToolResult,
+		"kind":                  message.Kind,
+		"compaction_id":         message.CompactionID,
+		"compaction_generation": message.CompactionGeneration,
+		"compaction_window_id":  message.CompactionWindowID,
 	}))
 }
 
@@ -1523,21 +1531,22 @@ func RecordRequest(ctx context.Context, store Store, ref PromptScopeRef, step in
 }
 
 type ProviderRequestSnapshot struct {
-	PromptScopeID    string
-	RunID            string
-	ThreadID         string
-	TurnID           string
-	Step             int
-	LogicalRequestID string
-	AttemptID        string
-	AttemptEpoch     int
-	Attempt          int
-	OverflowRetried  bool
-	Provider         string
-	Model            string
-	Cache            CachePolicy
-	RawPlan          RawPlan
-	TurnSurface      TurnSurfaceSnapshot
+	PromptScopeID       string
+	RunID               string
+	ThreadID            string
+	TurnID              string
+	Step                int
+	LogicalRequestID    string
+	AttemptID           string
+	AttemptEpoch        int
+	Attempt             int
+	OverflowRetried     bool
+	Provider            string
+	Model               string
+	Cache               CachePolicy
+	RawPlan             RawPlan
+	TurnSurface         TurnSurfaceSnapshot
+	HasEphemeralOverlay bool
 }
 
 func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequestSnapshot) (ProviderRequestRecord, error) {
@@ -1566,6 +1575,7 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		CacheRetention:             req.Cache.Retention,
 		SegmentIDs:                 append([]string(nil), req.RawPlan.SegmentIDs...),
 		ProviderPayloadHash:        req.RawPlan.PayloadHash,
+		HasEphemeralOverlay:        req.HasEphemeralOverlay,
 		PrefixRawHash:              req.RawPlan.PrefixHash,
 		PreviousResponseID:         req.RawPlan.PreviousResponseID,
 		CompactionGeneration:       req.RawPlan.CompactionGeneration,

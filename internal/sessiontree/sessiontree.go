@@ -2453,6 +2453,7 @@ type interactionResponseMessage struct {
 	Type                  string            `json:"type"`
 	Answers               map[string]string `json:"answers,omitempty"`
 	SecretAnswersRedacted bool              `json:"secret_answers_redacted,omitempty"`
+	Outcome               string            `json:"outcome,omitempty"`
 }
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
@@ -2460,15 +2461,20 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)
-			if entry.Type == EntryToolCall {
-				if projected, ok := control.ProjectMessage(msg); ok {
-					msg = projected
-				}
-			}
 			msg.EntryID = entry.ID
 			msg.ParentEntryID = entry.ParentID
 			msg.Activity = nil
 			messages = append(messages, msg)
+			if entry.Type == EntryToolCall && msg.Kind == session.MessageKindControlSignal && msg.ControlSignal != nil && strings.TrimSpace(msg.ControlSignal.Disposition) == "terminal" {
+				content, err := json.Marshal(interactionResponseMessage{Type: "control_result", Outcome: "completed"})
+				if err != nil {
+					return nil, fmt.Errorf("%w: encode terminal control result: %v", ErrAuthorityCorrupt, err)
+				}
+				messages = append(messages, session.Message{
+					Role: session.Tool, Content: string(content), ToolCallID: msg.ToolCallID, ToolName: msg.ToolName,
+					EntryID: entry.ID + ":result", ParentEntryID: entry.ID, ToolResult: &session.ToolResultView{Status: "success"},
+				})
+			}
 		}
 	case EntryInteractionDone:
 		var resolution interactionResolutionProjection
@@ -2481,17 +2487,38 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
 		}
-		if len(resolution.Input) != 0 || resolution.Redacted {
+		interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
+		if interactionID == entry.ID || strings.TrimSpace(interactionID) == "" {
+			return nil, fmt.Errorf("%w: invalid interaction resolution id %q", ErrAuthorityCorrupt, entry.ID)
+		}
+		toolName := providerToolNameForCall(messages, interactionID)
+		if (len(resolution.Input) != 0 || resolution.Redacted) && toolName != control.AskUserTool {
+			return nil, fmt.Errorf("%w: interaction resolution %q has no matching ask_user call", ErrAuthorityCorrupt, entry.ID)
+		}
+		if toolName == control.AskUserTool && (len(resolution.Input) != 0 || resolution.Redacted || resolution.Outcome != "") {
 			content, err := json.Marshal(interactionResponseMessage{
 				Type:                  "interaction_response",
 				Answers:               resolution.Input,
 				SecretAnswersRedacted: resolution.Redacted,
+				Outcome:               resolution.Outcome,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("%w: encode interaction response: %v", ErrAuthorityCorrupt, err)
 			}
+			status := "success"
+			if !resolution.Accepted {
+				switch strings.ToLower(strings.TrimSpace(resolution.Outcome)) {
+				case "cancelled", "canceled":
+					status = "canceled"
+				case "failed", "error":
+					status = "error"
+				default:
+					status = "declined"
+				}
+			}
 			messages = append(messages, session.Message{
-				Role: session.User, Content: string(content), EntryID: entry.ID, ParentEntryID: entry.ParentID,
+				Role: session.Tool, Content: string(content), ToolCallID: interactionID, ToolName: toolName,
+				EntryID: entry.ID, ParentEntryID: entry.ParentID, ToolResult: &session.ToolResultView{Status: status},
 			})
 		}
 	case EntryBranchSummary:
@@ -2500,6 +2527,17 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 		}
 	}
 	return messages, nil
+}
+
+func providerToolNameForCall(messages []session.Message, callID string) string {
+	callID = strings.TrimSpace(callID)
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Role == session.Assistant && strings.TrimSpace(message.ToolCallID) == callID {
+			return strings.TrimSpace(message.ToolName)
+		}
+	}
+	return ""
 }
 
 func AppendMessage(ctx context.Context, repo JournalRepo, threadID, turnID string, msg session.Message) (Entry, error) {

@@ -57,21 +57,25 @@ by the local tool runtime and must not be treated as ordinary local handlers.
 
 # Dynamic Tool Surfaces
 
-`runtime.ToolSurfaceProvider` is the public host hook for changing the active
-tool surface during a run. The hook returns product-neutral data: a registry or
-explicit local tool definitions, hosted tool definitions, system prompt text,
-host context, and audit metadata. Floret refreshes that surface before provider
-requests and again before local tool dispatch, so provider-visible capabilities
-and executable local capabilities converge at safe points.
+`runtime.ToolSurfaceProvider` is the public host hook for resolving the active
+tool surface at safe execution boundaries. The hook returns product-neutral
+data: a registry or explicit local tool definitions, hosted tool definitions,
+system prompt text, host context, and audit metadata. The first provider
+checkpoint freezes the complete surface for the Turn; later tool loops, Ask
+User resume, retries, and restart recovery use that same snapshot.
 
-Provider-visible system text and tool definitions are part of one model render
-lineage's stable envelope. They cannot change inside that lineage and
-compaction generation. A real capability change first commits a normal context
-compaction and only then activates the new envelope in the next generation. A
-different provider/model starts its own render lineage without rewriting or
-compacting the provider-neutral history. History-prefix mutation or reordering
-still fails with `context_prefix_drift`; it is never repaired by rewriting an
-earlier request.
+Provider-visible system text and tool definitions are part of one render
+lineage's stable envelope. A new Turn may use a changed surface, which starts a
+new render lineage and sends the complete canonical history without compaction
+or journal mutation. History-prefix mutation or reordering still fails with
+`context_prefix_drift`; it is never repaired by rewriting an earlier request.
+
+Provider history comes only from durable typed facts. Ordinary and control tool
+calls keep their paired tool results even after their definition is removed.
+Removed definitions are not re-registered, and a new unavailable call receives
+a safe ordinary result. `ask_user` follows the same rule: the assistant call is
+preserved, its durable resolution becomes the matching tool result, and secret
+values stay outside canonical history.
 
 An omitted (`nil`) local definition list derives provider definitions from the
 returned registry; an explicit empty list clears them. Hosted definitions use

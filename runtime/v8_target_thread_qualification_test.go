@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +117,38 @@ func TestV8TargetThreadCopyAcceptsNewTurnAfterProjectionMigration(t *testing.T) 
 	requests := gateway.Requests()
 	if len(requests) != 1 || requests[0].PreviousState != nil {
 		t.Fatalf("projection migration request=%#v", requests)
+	}
+	askCalls := make(map[string]struct{})
+	askResults := make(map[string]struct{})
+	for _, message := range requests[0].Messages {
+		for _, call := range message.ToolCalls {
+			if call.Name == "ask_user" {
+				askCalls[call.ID] = struct{}{}
+			}
+		}
+		if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" {
+			askResults[message.ToolResult.CallID] = struct{}{}
+		}
+		if message.Role == provider.RoleUser && (strings.Contains(message.Text, "interaction_response") || strings.Contains(message.Text, "Agent requested user input")) {
+			t.Fatalf("target thread contains textified Ask User history: %#v", message)
+		}
+	}
+	if len(askCalls) != len(askResults) {
+		t.Fatalf("target thread Ask User calls=%d results=%d", len(askCalls), len(askResults))
+	}
+	for callID := range askCalls {
+		if _, ok := askResults[callID]; !ok {
+			t.Fatalf("target thread Ask User call %q has no paired result", callID)
+		}
+	}
+	if rawExpected := os.Getenv("FLORET_V8_EXPECT_ASK_USER_PAIRS"); rawExpected != "" {
+		expected, parseErr := strconv.Atoi(rawExpected)
+		if parseErr != nil || expected < 0 {
+			t.Fatalf("invalid FLORET_V8_EXPECT_ASK_USER_PAIRS=%q", rawExpected)
+		}
+		if len(askCalls) != expected {
+			t.Fatalf("target thread Ask User pairs=%d, want %d", len(askCalls), expected)
+		}
 	}
 	afterSourceHash, err := qualificationFileSHA256(sourcePath)
 	if err != nil {

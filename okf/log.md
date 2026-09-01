@@ -1,6 +1,14 @@
 # Floret OKF Update Log
 
 ## 2026-09-01
+* **Typed provider tool history**: Provider-context v5 preserves durable
+  ordinary and control tool pairs. Ask User resolutions become matching tool
+  results, removed definitions stay absent from the current surface, and
+  malformed orphan resolutions fail closed.
+* **Ephemeral request checkpoint**: Every provider dispatch now checkpoints the
+  canonical lineage and frozen Turn surface. Supplemental requests record only
+  the presence of an overlay and omit overlay-derived hashes, continuation, and
+  request measurements.
 * **Observable bounded startup**: `runtime.Open` now reports only migration and
   verification phases, selects one exact domain source, reuses SQLite mutation
   statements, and avoids a second persistent decode for unchanged v8 stores.

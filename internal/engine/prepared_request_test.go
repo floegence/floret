@@ -57,6 +57,21 @@ func TestPreparedProviderRequestLifecycle(t *testing.T) {
 		assertPreparedHandlesTerminated(t, p, []int{0})
 	})
 
+	t.Run("supplemental request checkpoint failure discards", func(t *testing.T) {
+		p := newPreparedLifecycleProvider(preparedBehavior{events: preparedDone("unused")})
+		e := newTestEngine(p, &event.Recorder{})
+		e.Prompt = &failingProviderRequestStore{Store: cache.NewMemoryStore(), err: errors.New("checkpoint request failed")}
+		got := e.RunTurn(context.Background(), engine.RunInput{
+			RunID: "supplemental-checkpoint-failure", ThreadID: "thread", TurnID: "turn", PromptScopeID: "thread",
+			History:             []session.Message{{Role: session.User, Content: "work", EntryID: "user"}},
+			SupplementalContext: []engine.TurnSupplementalContextItem{{Kind: "private", Text: "secret"}},
+		})
+		if got.Status != engine.Failed || got.Err == nil {
+			t.Fatalf("result = %#v", got)
+		}
+		assertPreparedHandlesTerminated(t, p, []int{0})
+	})
+
 	t.Run("input limit discards before stream", func(t *testing.T) {
 		p := newPreparedLifecycleProvider(preparedBehavior{
 			estimate: preparedEstimate(500), events: preparedDone("unused"), enforceInputLimit: true,

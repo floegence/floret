@@ -368,8 +368,21 @@ func TestSupplementalContextIsEphemeralProviderOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 0 || len(responses) != 0 {
-		t.Fatalf("supplemental request entered durable provider ledger: requests=%#v responses=%#v", requests, responses)
+	if len(requests) != 1 || !requests[0].HasEphemeralOverlay || len(responses) != 0 {
+		t.Fatalf("supplemental checkpoint=%#v responses=%#v, want one redacted request and no response", requests, responses)
+	}
+	if requests[0].ProviderPayloadHash != "" || requests[0].PreviousResponseID != "" || requests[0].RequestEstimate != (contextpolicy.RequestEstimate{}) || requests[0].ProjectedPressure != (contextpolicy.ContextPressure{}) || requests[0].RequestShape != (cache.RequestShapeHashes{}) {
+		t.Fatalf("supplemental checkpoint retained overlay-derived metadata: %#v", requests[0])
+	}
+	requestEvent := firstEvent(rec.Snapshot(), event.ProviderRequest)
+	requestMetadata, ok := requestEvent.Metadata.(map[string]any)
+	if !ok || requestMetadata["has_ephemeral_overlay"] != true {
+		t.Fatalf("supplemental request event metadata=%#v", requestEvent.Metadata)
+	}
+	for _, key := range []string{"request_estimate", "context_pressure", "prefix_tokens", "message_tokens", "tool_definition_tokens", "estimated_input_tokens", "projected_input_tokens", "request_safe_limit"} {
+		if _, ok := requestMetadata[key]; ok {
+			t.Fatalf("supplemental request event retained %q: %#v", key, requestEvent.Metadata)
+		}
 	}
 	assertJSONExcludesString(t, "result messages", result.Messages, sentinel)
 	assertJSONExcludesString(t, "events", rec.Snapshot(), sentinel)
@@ -1033,7 +1046,7 @@ func TestPromptCacheSwitchesModelsOnlyAtTurnBoundaryWithoutCompaction(t *testing
 func TestPromptCacheRestoresFrozenModelWithinTurn(t *testing.T) {
 	transcripts := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
-	providerA := harness.NewScriptedProvider(harness.Step(harness.Text("answer-a"), harness.Done()))
+	providerA := harness.NewScriptedProvider(harness.Step(harness.Tool("ask-surface", "ask_user", `{"reason_code":"missing_external_input","required_from_user":["answer"],"evidence_refs":[],"questions":[{"id":"answer","header":"Answer","question":"Continue?","response_mode":"write","is_secret":false}]}`), harness.DoneReason("tool_calls")))
 	first := newTestEngine(providerA, &event.Recorder{})
 	first.Store = transcripts
 	first.Prompt = promptStore
@@ -1043,9 +1056,14 @@ func TestPromptCacheRestoresFrozenModelWithinTurn(t *testing.T) {
 	first.Options.PromptScopeID = "thread"
 	first.Options.ProviderName = "deepseek"
 	first.Options.Model = "flash"
+	first.Options.SupplementalContext = []engine.TurnSupplementalContextItem{{Kind: "linked_context", Text: "ephemeral surface input"}}
 	firstResult := first.Run(context.Background(), "one")
-	if firstResult.Status != engine.Completed {
+	if firstResult.Status != engine.Waiting {
 		t.Fatalf("first result=%#v", firstResult)
+	}
+	checkpoint, err := promptStore.ProviderRequests(context.Background(), "thread")
+	if err != nil || len(checkpoint) != 1 || !checkpoint[0].HasEphemeralOverlay {
+		t.Fatalf("supplemental surface checkpoint=%#v err=%v", checkpoint, err)
 	}
 	if err := transcripts.AppendTranscript("run-b", firstResult.Messages...); err != nil {
 		t.Fatal(err)
@@ -2008,9 +2026,9 @@ func TestCustomControlContinueRequiresProviderVisibleText(t *testing.T) {
 	}
 }
 
-func TestCustomControlContinueAddsOnlyOutputTextToProviderTranscript(t *testing.T) {
+func TestCustomControlContinuePreservesTypedPairWithoutHostPayload(t *testing.T) {
 	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("continue-rich", "host_continue", `{"secret":"token abc"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("continue-rich", "host_continue", `{"mode":"accepted"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
 	e := newTestEngine(p, &event.Recorder{})
@@ -2018,7 +2036,7 @@ func TestCustomControlContinueAddsOnlyOutputTextToProviderTranscript(t *testing.
 		Definitions: []tools.ToolDefinition{{
 			Name:        "host_continue",
 			Description: "Continue after host-side handling.",
-			InputSchema: tools.StrictObject(map[string]any{"secret": tools.String("secret")}, nil),
+			InputSchema: tools.StrictObject(map[string]any{"mode": tools.String("mode")}, nil),
 			Strict:      true,
 			Annotations: map[string]any{"kind": "control"},
 		}},
@@ -2044,6 +2062,11 @@ func TestCustomControlContinueAddsOnlyOutputTextToProviderTranscript(t *testing.
 	second := p.Requests[1].Messages
 	if strings.Contains(fmt.Sprint(second), "token abc") {
 		t.Fatalf("provider request leaked host-only payload: %#v", second)
+	}
+	if !slices.ContainsFunc(second, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.ToolName == "host_continue" && msg.ToolCallID == "continue-rich" && msg.ToolArgs == `{"mode":"accepted"}`
+	}) {
+		t.Fatalf("provider request missing typed control call: %#v", second)
 	}
 	if !slices.ContainsFunc(second, func(msg session.Message) bool {
 		return msg.Role == session.Tool && msg.ToolName == "host_continue" && msg.Content == "Host accepted the continuation."
@@ -2126,15 +2149,15 @@ func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(
 	}
 }
 
-func TestProviderSafeHistoryProjectsRemovedControlWithoutCurrentDefinition(t *testing.T) {
+func TestProviderHistoryPreservesRemovedControlWithoutCurrentDefinition(t *testing.T) {
 	store := session.NewMemoryStore()
 	controlSpec := engine.ControlSpec{
-		Definitions: []tools.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "secret": tools.String("secret")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Definitions: []tools.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "context": tools.String("context")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
 		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
 			return engine.ControlSignal{Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID, OutputText: "Need input"}, true, nil
 		},
 	}
-	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("control", "host_wait", `{"question":"Need input","secret":"token abc"}`), harness.DoneReason("tool_calls")))
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("control", "host_wait", `{"question":"Need input","context":"legacy"}`), harness.DoneReason("tool_calls")))
 	first := newTestEngine(firstProvider, &event.Recorder{})
 	first.Store = store
 	first.Options.ControlSpec = controlSpec
@@ -2151,15 +2174,12 @@ func TestProviderSafeHistoryProjectsRemovedControlWithoutCurrentDefinition(t *te
 	if len(secondProvider.Requests) != 1 {
 		t.Fatalf("requests = %#v", secondProvider.Requests)
 	}
-	if slices.ContainsFunc(secondProvider.Requests[0].Messages, func(msg session.Message) bool {
-		return msg.ToolName == "host_wait" || strings.Contains(msg.Content, "token abc")
-	}) {
-		t.Fatalf("provider request leaked raw custom control call: %#v", secondProvider.Requests[0].Messages)
-	}
 	if !slices.ContainsFunc(secondProvider.Requests[0].Messages, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.Kind == session.MessageKindControlSignal && msg.Content == `Agent control signal "host_wait": Need input`
+		return msg.Role == session.Assistant && msg.ToolName == "host_wait" && msg.ToolCallID == "control" && msg.ToolArgs == `{"question":"Need input","context":"legacy"}`
+	}) || !slices.ContainsFunc(secondProvider.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool && msg.ToolName == "host_wait" && msg.ToolCallID == "control" && msg.Content == "answer"
 	}) {
-		t.Fatalf("provider request missing safe custom control projection: %#v", secondProvider.Requests[0].Messages)
+		t.Fatalf("provider request missing removed control pair: %#v", secondProvider.Requests[0].Messages)
 	}
 }
 
@@ -2243,22 +2263,24 @@ func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 		if msg.Role == session.User && msg.Content == "continue" {
 			sawOriginal = true
 		}
-		if msg.Role == session.User && msg.Content == "main.go" {
+		if msg.Role == session.Tool && msg.ToolName == "ask_user" && msg.ToolCallID == "ask" && msg.Content == "main.go" {
 			sawAnswer = true
 		}
 	}
 	if !sawOriginal || !sawAnswer {
 		t.Fatalf("resume request missing context: %#v", p2.Requests[0].Messages)
 	}
-	if slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
-		return msg.ToolName == "ask_user"
-	}) {
-		t.Fatalf("resume request should not include orphan ask_user tool call: %#v", p2.Requests[0].Messages)
-	}
 	if !slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.Content == "Agent requested user input: Which file?"
+		return msg.Role == session.Assistant && msg.ToolName == "ask_user" && msg.ToolCallID == "ask"
+	}) || !slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool && msg.ToolName == "ask_user" && msg.ToolCallID == "ask" && msg.Content == "main.go"
 	}) {
-		t.Fatalf("resume request missing provider-safe ask_user text: %#v", p2.Requests[0].Messages)
+		t.Fatalf("resume request missing typed ask_user pair: %#v", p2.Requests[0].Messages)
+	}
+	if slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
+		return strings.Contains(msg.Content, "Agent requested user input")
+	}) {
+		t.Fatalf("resume request textified ask_user history: %#v", p2.Requests[0].Messages)
 	}
 }
 

@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v7@v7.0.2
+go get github.com/floegence/floret/v7@v7.0.3
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -93,7 +93,9 @@ func main() {
 Hosts may also set `runtime.SendInput.SupplementalContext` for material that is
 needed only by the current provider turn. Floret validates and renders that
 context for the provider without adding a second canonical conversation
-message.
+message. The pre-dispatch checkpoint records only that an ephemeral overlay was
+present; it never stores the overlay, its payload hash, provider continuation,
+or overlay-derived request measurements.
 
 Run it with `OPENAI_API_KEY=... go run ./cmd/examples/openai-sqlite`. The complete
 example also reads the authoritative assistant projection. `florettest` remains

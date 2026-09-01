@@ -1,5 +1,21 @@
 # Changelog
 
+## v7.0.3 - 2026-09-01
+
+- Preserve durable tool calls and results as typed provider history, including
+  strict `ask_user` call/result pairs. Public answers occur once in the result;
+  secret answers remain ephemeral and leave only a redacted result.
+- Keep removed ordinary and control tools valid in historical context without
+  restoring obsolete definitions. New calls to unavailable tools still return
+  a safe ordinary result and continue the provider loop.
+- Advance the internal provider-context projection to v5. Existing v4 threads
+  start one new render lineage with their full canonical history and no
+  compaction or journal rewrite.
+- Checkpoint every provider dispatch, including requests with supplemental
+  context. Ephemeral checkpoints preserve the Turn surface and canonical
+  lineage while omitting payload hashes, continuation state, and request
+  measurements derived from private overlay content.
+
 ## v7.0.2 - 2026-09-01
 
 - Report product-neutral `migrating` and `verifying` phases from

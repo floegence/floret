@@ -1067,7 +1067,7 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 		t.Fatalf("provider requests=%d, want 2", len(requests))
 	} else {
 		messages := requests[1].Messages
-		if len(messages) < 2 || messages[len(messages)-1].Role != provider.RoleUser || !strings.Contains(messages[len(messages)-1].Text, `{"q":"yes"}`) {
+		if len(messages) < 2 || messages[len(messages)-1].Role != provider.RoleTool || messages[len(messages)-1].ToolResult == nil || messages[len(messages)-1].ToolResult.ToolName != "ask_user" || !strings.Contains(messages[len(messages)-1].ToolResult.Text, `{"q":"yes"}`) {
 			t.Fatalf("continuation answer is not the final provider message: %#v", messages)
 		}
 	}
@@ -1094,7 +1094,7 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	}
 	answerCount := 0
 	for _, message := range requests[2].Messages {
-		if strings.Contains(message.Text, `"answers":{"q":"yes"}`) {
+		if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && strings.Contains(message.ToolResult.Text, `"answers":{"q":"yes"}`) {
 			answerCount++
 		}
 	}
@@ -1160,7 +1160,7 @@ func TestThreadServiceSecretInputIsEphemeralAndCanonicallyRedacted(t *testing.T)
 		if strings.Contains(message.Text, secret) {
 			secretCount++
 		}
-		if strings.Contains(message.Text, `"secret_answers_redacted":true`) {
+		if message.ToolResult != nil && strings.Contains(message.ToolResult.Text, `"secret_answers_redacted":true`) {
 			redactedCount++
 		}
 	}
@@ -1175,13 +1175,90 @@ func TestThreadServiceSecretInputIsEphemeralAndCanonicallyRedacted(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]any{"journal": entries, "prompt_state": segments, "events": recorder.snapshot()} {
+	requestCheckpoints, err := host.store.prompt.ProviderRequests(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requestCheckpoints) != 2 || !requestCheckpoints[1].HasEphemeralOverlay {
+		t.Fatalf("secret continuation checkpoints=%#v", requestCheckpoints)
+	}
+	for name, value := range map[string]any{"journal": entries, "prompt_state": segments, "request_checkpoints": requestCheckpoints, "events": recorder.snapshot()} {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
 		if bytes.Contains(encoded, []byte(secret)) {
 			t.Fatalf("secret leaked into %s", name)
+		}
+	}
+}
+
+func TestThreadServiceMultipleAskUserResolutionsRemainTypedAndPaired(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-first", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["first"],"evidence_refs":[],"questions":[{"id":"first","header":"First","question":"First answer?","response_mode":"write","is_secret":false}]}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-second", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["second"],"evidence_refs":[],"questions":[{"id":"second","header":"Second","question":"Second answer?","response_mode":"write","is_secret":false}]}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "complete"}, {Type: provider.EventDone, Reason: "stop"}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "next"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	_, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-multiple-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "begin"}, RequestKey: "send-multiple-input"}); err != nil {
+		t.Fatal(err)
+	}
+	first := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 1 && !view.Interactions[0].Resolved
+	})
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: first.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"first": "one"}}}, RequestKey: "respond-first"}); err != nil {
+		t.Fatal(err)
+	}
+	second := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 2 && view.Interactions[0].Resolved && !view.Interactions[1].Resolved
+	})
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: second.Interactions[1].ID, Answers: []InteractionAnswer{{Input: map[string]string{"second": "two"}}}, RequestKey: "respond-second"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+	})
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "next"}, RequestKey: "send-after-multiple-input"}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.TurnID != completed.TurnID
+	})
+	requests := gateway.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("provider requests=%d, want 4", len(requests))
+	}
+	for requestIndex, wantPairs := range []int{0, 1, 2, 2} {
+		calls := 0
+		results := 0
+		for _, message := range requests[requestIndex].Messages {
+			for _, call := range message.ToolCalls {
+				if call.Name == "ask_user" {
+					calls++
+				}
+			}
+			if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" {
+				results++
+			}
+			if message.Role == provider.RoleUser && strings.Contains(message.Text, "interaction_response") {
+				t.Fatalf("request %d textified interaction response: %#v", requestIndex, message)
+			}
+		}
+		if calls != wantPairs || results != wantPairs {
+			t.Fatalf("request %d ask_user calls=%d results=%d, want %d pairs: %#v", requestIndex, calls, results, wantPairs, requests[requestIndex].Messages)
 		}
 	}
 }
@@ -2639,6 +2716,7 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 				{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-cancel", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}}},
 				{Type: provider.EventDone, Reason: "tool_calls"},
 			}},
+			florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "after cancel"}, {Type: provider.EventDone, Reason: "stop"}}},
 		)
 		_, service := testThreadService(t, gateway)
 		created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-waiting-cancel"})
@@ -2652,6 +2730,31 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 		})
 		if len(view.Interactions) != 1 || !view.Interactions[0].Resolved || view.Interactions[0].Resolution == nil || view.Interactions[0].Resolution.Outcome != "cancelled" {
 			t.Fatalf("waiting cancel=%#v", view)
+		}
+		if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue after cancel"}, RequestKey: "send-after-waiting-cancel"}); err != nil {
+			t.Fatal(err)
+		}
+		waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+		})
+		requests := gateway.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("provider requests=%d, want 2", len(requests))
+		}
+		calls := 0
+		results := 0
+		for _, message := range requests[1].Messages {
+			for _, call := range message.ToolCalls {
+				if call.Name == "ask_user" && call.ID == "ask-cancel" {
+					calls++
+				}
+			}
+			if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && message.ToolResult.CallID == "ask-cancel" && strings.Contains(message.ToolResult.Text, `"outcome":"cancelled"`) {
+				results++
+			}
+		}
+		if calls != 1 || results != 1 {
+			t.Fatalf("cancelled ask_user calls=%d results=%d messages=%#v", calls, results, requests[1].Messages)
 		}
 	})
 

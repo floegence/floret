@@ -152,16 +152,20 @@ restart recovery reuse it exactly. Floret keeps the canonical path intact,
 starts or resumes the surface's independent render lineage, and clears
 provider-native continuation state across a surface switch.
 
-The v8 continuation repair also establishes one explicit provider-context
-projection boundary for prompt scopes last written by v6.1.1 or v7.0.0. The
-first later request uses a new render lineage and the complete repaired
-canonical history. It does not create a compaction, and it cannot reuse the old
+The provider-context v5 projection establishes one explicit render boundary
+for prompt scopes last written by v6.1.1, v7.0.0, or the v4 projector. The first
+later request uses a new render lineage and the complete typed canonical
+history. It does not create a compaction, rewrite the journal, or reuse the old
 provider continuation state.
 
 A provider natural stop completes the Turn. Ordinary tool results continue the
 provider loop, while `ask_user` waits and resumes the same frozen Turn. A tool
 call whose definition is unavailable returns a safe ordinary error result and
-continues; historical tool facts never depend on the current registry.
+continues. Historical tool calls and results remain typed and paired even when
+their definition was removed; only current definitions are exposed for new
+calls. Public Ask User answers appear once in the paired tool result. Secret
+answers leave a redacted result and reach only the current resume request as an
+ephemeral overlay.
 
 ## Durable schema
 

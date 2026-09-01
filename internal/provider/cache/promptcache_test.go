@@ -18,10 +18,10 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 	store := NewMemoryStore()
 	envelopeTools := []ToolDefinition{{Name: "read", Description: "Read"}}
 	firstHistory := []session.Message{
-		{Role: session.User, Content: "inspect"},
-		{Role: session.Assistant, Content: "checking", Reasoning: "reasoning-1"},
-		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: `{"path":"README.md"}`},
-		{Role: session.Tool, Content: "contents", ToolCallID: "call-1", ToolName: "read"},
+		{Role: session.User, Content: "inspect", EntryID: "user"},
+		{Role: session.Assistant, Content: "checking", Reasoning: "reasoning-1", EntryID: "assistant"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: `{"path":"README.md"}`, EntryID: "call"},
+		{Role: session.Tool, Content: "contents", ToolCallID: "call-1", ToolName: "read", EntryID: "result", ToolResult: &session.ToolResultView{Status: "success"}},
 	}
 	first := lineagePlan("test", "model", "ns", "tool", "system", "user", "assistant", "call", "result")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "stable system", envelopeTools, nil, map[string]any{"model": "test"}, firstHistory); err != nil {
@@ -264,6 +264,24 @@ func TestValidateCanonicalLineageResetsExactV3ProjectionWithoutCompaction(t *tes
 	plan := lineagePlan("test", "model", "ns", "system", "message")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello"}}); err != nil {
 		t.Fatalf("exact v3 to v4 projection reset failed: %v", err)
+	}
+	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
+		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)
+	}
+}
+
+func TestValidateCanonicalLineageResetsExactV4ProjectionWithoutCompaction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "v4", PromptScopeID: "thread", RunID: "run-v4", Step: 1,
+		Provider: "test", Model: "model", ContextProjectionRevision: contextProjectionV4, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := lineagePlan("test", "model", "ns", "system", "message")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "user"}}); err != nil {
+		t.Fatalf("exact v4 to v5 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
 		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)
