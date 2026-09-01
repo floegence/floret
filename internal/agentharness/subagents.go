@@ -320,6 +320,7 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			out.Model.Provider = providerName
 			out.Model.Model = modelName
 			out.Policy = policy
+			out.Usage = nil
 			hasPolicy = true
 			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
 		case entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == subAgentContextStatusEntryKind:

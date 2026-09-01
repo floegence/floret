@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-09-01
+* **Context policy usage boundary**: A new Turn policy clears the previous
+  Turn's latest usage sample before a provider or model switch is projected,
+  while canonical whole-thread token totals remain cumulative.
 * **Typed-fact lineage identity**: Provider-context v6 excludes journal entry
   and parent identities from canonical conversation hashes. Active tool-loop
   facts and their later journal reconstruction now compare identically, so an

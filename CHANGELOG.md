@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.0.5 - 2026-09-01
+
+- Reset the latest per-request context usage when a new canonical Turn policy
+  is committed, so model switches do not compare the previous model's usage
+  against the new model identity before its first usage arrives.
+- Preserve canonical whole-thread token totals across that policy boundary.
+
 ## v7.0.4 - 2026-09-01
 
 - Hash canonical lineage from durable typed conversation facts, excluding

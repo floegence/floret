@@ -160,6 +160,12 @@ reconstruction. The first request after a projector change uses a new render
 lineage and the complete typed canonical history. It does not create a
 compaction, rewrite the journal, or reuse old provider continuation state.
 
+`ThreadContextReader` treats each committed Turn policy as the boundary for the
+latest context-usage sample. Until that Turn records its first request status,
+the snapshot exposes the new provider, model, and policy without carrying the
+previous Turn's usage. Canonical whole-thread token totals remain cumulative
+across the boundary.
+
 A provider natural stop completes the Turn. Ordinary tool results continue the
 provider loop, while `ask_user` waits and resumes the same frozen Turn. A tool
 call whose definition is unavailable returns a safe ordinary error result and

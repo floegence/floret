@@ -95,3 +95,55 @@ func TestThreadDetailContextAccumulatesCanonicalProviderUsageOnly(t *testing.T) 
 		t.Fatalf("latest usage=%#v", snapshot.Usage)
 	}
 }
+
+func TestThreadDetailContextStartsNewPolicyWithoutPreviousModelUsage(t *testing.T) {
+	policyEntry := func(turnID, providerName, modelName string) sessiontree.Entry {
+		return sessiontree.Entry{
+			ThreadID: "thread-context", TurnID: turnID, Type: sessiontree.EntryCustom,
+			Metadata: subAgentContextPolicyMetadata(providerName, modelName, contextpolicy.Policy{ContextWindowTokens: 128_000}),
+		}
+	}
+	statusEntry := func(turnID, runID, providerName, modelName string, inputTokens int) sessiontree.Entry {
+		status := observation.ContextStatus{
+			RunID: identity.RunID(runID), ThreadID: "thread-context", TurnID: identity.TurnID(turnID),
+			Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable,
+			Provider: providerName, Model: modelName, Usage: observation.ProviderUsage{InputTokens: int64(inputTokens)},
+		}
+		return sessiontree.Entry{
+			ThreadID: "thread-context", TurnID: turnID, RunID: runID, Type: sessiontree.EntryCustom,
+			Metadata: map[string]string{
+				threadDetailKindKey:      subAgentContextStatusEntryKind,
+				subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
+			},
+		}
+	}
+	flashStatus := statusEntry("turn-flash", "run-flash", "deepseek", "flash", 80)
+	entries := []sessiontree.Entry{
+		policyEntry("turn-flash", "deepseek", "flash"),
+		flashStatus,
+		policyEntry("turn-pro", "deepseek", "pro"),
+	}
+
+	between, err := (&AgentHarness{}).threadDetailContext(entries, 1, newThreadDetailActivityContext(entries), time.Now())
+	if err != nil {
+		t.Fatalf("read context between new policy and first usage: %v", err)
+	}
+	if between.Model.Model != "pro" || between.Usage != nil {
+		t.Fatalf("between-model context=%#v, want Pro policy without stale Flash usage", between)
+	}
+	if between.UsageTotals == nil || between.UsageTotals.InputTokens != 80 {
+		t.Fatalf("between-model totals=%#v, want prior committed usage retained", between.UsageTotals)
+	}
+
+	entries = append(entries, statusEntry("turn-pro", "run-pro", "deepseek", "pro", 40))
+	after, err := (&AgentHarness{}).threadDetailContext(entries, 1, newThreadDetailActivityContext(entries), time.Now())
+	if err != nil {
+		t.Fatalf("read context after Pro usage: %v", err)
+	}
+	if after.Usage == nil || after.Usage.Model != "pro" || after.Usage.RunID != "run-pro" {
+		t.Fatalf("latest Pro usage=%#v", after.Usage)
+	}
+	if after.UsageTotals == nil || after.UsageTotals.InputTokens != 120 {
+		t.Fatalf("cross-model totals=%#v, want 120 input tokens", after.UsageTotals)
+	}
+}
