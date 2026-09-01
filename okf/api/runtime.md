@@ -152,11 +152,13 @@ restart recovery reuse it exactly. Floret keeps the canonical path intact,
 starts or resumes the surface's independent render lineage, and clears
 provider-native continuation state across a surface switch.
 
-The provider-context v5 projection establishes one explicit render boundary
-for prompt scopes last written by v6.1.1, v7.0.0, or the v4 projector. The first
-later request uses a new render lineage and the complete typed canonical
-history. It does not create a compaction, rewrite the journal, or reuse the old
-provider continuation state.
+The provider-context v6 projection establishes one explicit render boundary
+for earlier projectors, including v5. Canonical lineage hashes durable typed
+conversation facts rather than journal entry and parent identities, which may
+be assigned differently during an active tool loop and later canonical
+reconstruction. The first request after a projector change uses a new render
+lineage and the complete typed canonical history. It does not create a
+compaction, rewrite the journal, or reuse old provider continuation state.
 
 A provider natural stop completes the Turn. Ordinary tool results continue the
 provider loop, while `ask_user` waits and resumes the same frozen Turn. A tool

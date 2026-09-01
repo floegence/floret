@@ -59,6 +59,34 @@ func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) 
 	}
 }
 
+func TestValidateCanonicalLineageUsesTypedFactsInsteadOfJournalEntryIDs(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	firstHistory := []session.Message{
+		{Role: session.User, Content: "inspect", EntryID: "run:entry:user"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "retired_tool", ToolArgs: `{"value":"one"}`, EntryID: "run:entry:call"},
+		{Role: session.Tool, Content: `ERROR: tool "retired_tool" is unavailable in the current version`, ToolCallID: "call-1", ToolName: "retired_tool", EntryID: "run:entry:result", ToolResult: &session.ToolResultView{Status: "error"}},
+	}
+	first := lineagePlan("test", "model", "ns", "system", "user", "call", "result")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &first, "system", nil, nil, nil, firstHistory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "run-1", ThreadID: "thread", TurnID: "turn-1"}, 1, "test", "model", CachePolicy{}, first); err != nil {
+		t.Fatal(err)
+	}
+
+	rebuilt := session.CloneMessages(firstHistory)
+	for index := range rebuilt {
+		rebuilt[index].ParentEntryID = "journal-parent"
+		rebuilt[index].EntryID = "journal-entry-" + string(rune('a'+index))
+	}
+	rebuilt = append(rebuilt, session.Message{Role: session.Assistant, Content: "done", EntryID: "journal-assistant"})
+	next := lineagePlan("test", "model", "ns", "system", "user", "call", "result", "assistant")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, rebuilt); err != nil {
+		t.Fatalf("canonical journal reconstruction changed typed history: %v", err)
+	}
+}
+
 func TestValidateCanonicalLineageKeepsIndependentModelRenderPrefixes(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
@@ -281,7 +309,25 @@ func TestValidateCanonicalLineageResetsExactV4ProjectionWithoutCompaction(t *tes
 	}
 	plan := lineagePlan("test", "model", "ns", "system", "message")
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "user"}}); err != nil {
-		t.Fatalf("exact v4 to v5 projection reset failed: %v", err)
+		t.Fatalf("exact v4 to v6 projection reset failed: %v", err)
+	}
+	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
+		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)
+	}
+}
+
+func TestValidateCanonicalLineageResetsExactV5ProjectionWithoutCompaction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "v5", PromptScopeID: "thread", RunID: "run-v5", Step: 1,
+		Provider: "test", Model: "model", ContextProjectionRevision: contextProjectionV5, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := lineagePlan("test", "model", "ns", "system", "message")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}); err != nil {
+		t.Fatalf("exact v5 to v6 projection reset failed: %v", err)
 	}
 	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
 		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)

@@ -22,10 +22,11 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v5"
+	ContextProjectionRevision = "provider-context.v6"
 	contextProjectionV2       = "provider-context.v2"
 	contextProjectionV3       = "provider-context.v3"
 	contextProjectionV4       = "provider-context.v4"
+	contextProjectionV5       = "provider-context.v5"
 )
 
 var (
@@ -979,7 +980,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
-		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4) && plan.ContextProjectionRevision == ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			plan.CanonicalLineageReset = true
 			return nil
 		}
@@ -1132,8 +1133,6 @@ func cloneTurnSurface(surface TurnSurfaceSnapshot) TurnSurfaceSnapshot {
 
 func canonicalMessageHash(message session.Message) string {
 	return StableHash(mustCanonical(map[string]any{
-		"entry_id":              message.EntryID,
-		"parent_entry_id":       message.ParentEntryID,
 		"role":                  message.Role,
 		"content":               message.Content,
 		"attachments":           message.Attachments,

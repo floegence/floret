@@ -75,7 +75,9 @@ calls keep their paired tool results even after their definition is removed.
 Removed definitions are not re-registered, and a new unavailable call receives
 a safe ordinary result. `ask_user` follows the same rule: the assistant call is
 preserved, its durable resolution becomes the matching tool result, and secret
-values stay outside canonical history.
+values stay outside canonical history. Canonical lineage hashes those typed
+facts without journal entry identities, so the same unavailable-tool pair
+remains append-only after an active loop is reconstructed for a later Turn.
 
 An omitted (`nil`) local definition list derives provider definitions from the
 returned registry; an explicit empty list clears them. Hosted definitions use

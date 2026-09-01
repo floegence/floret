@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly module_path="github.com/floegence/floret/v7"
-readonly version="v7.0.3-candidate"
+readonly version="v7.0.4-candidate"
 readonly repository_root=$(git rev-parse --show-toplevel)
 
 if [[ -n $(git status --porcelain --untracked-files=all) ]]; then

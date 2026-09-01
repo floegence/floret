@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-09-01
+* **Typed-fact lineage identity**: Provider-context v6 excludes journal entry
+  and parent identities from canonical conversation hashes. Active tool-loop
+  facts and their later journal reconstruction now compare identically, so an
+  unavailable historical tool remains valid in subsequent Turns without
+  restoring its definition.
 * **Typed provider tool history**: Provider-context v5 preserves durable
   ordinary and control tool pairs. Ask User resolutions become matching tool
   results, removed definitions stay absent from the current surface, and

@@ -1,5 +1,16 @@
 # Changelog
 
+## v7.0.4 - 2026-09-01
+
+- Hash canonical lineage from durable typed conversation facts, excluding
+  journal entry and parent identities that are assigned differently during an
+  active tool loop and later canonical reconstruction.
+- Keep unavailable-tool call/result pairs append-only across later Turns
+  without restoring removed definitions or weakening journal integrity checks.
+- Advance the internal provider-context projection to v6. Existing v5 threads
+  start one new render lineage with full canonical history, no compaction, and
+  no journal rewrite.
+
 ## v7.0.3 - 2026-09-01
 
 - Preserve durable tool calls and results as typed provider history, including

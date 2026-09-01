@@ -1263,6 +1263,64 @@ func TestThreadServiceMultipleAskUserResolutionsRemainTypedAndPaired(t *testing.
 	}
 }
 
+func TestThreadServiceUnavailableToolHistoryRemainsAppendOnlyAcrossTurns(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "retired-call", Name: "retired_tool", Args: `{"secret":"must-not-render"}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "recovered"}, {Type: provider.EventDone, Reason: "stop"}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	_, service := testThreadService(t, gateway)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-unavailable-history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "use the retired tool"}, RequestKey: "send-unavailable-history"}); err != nil {
+		t.Fatal(err)
+	}
+	first := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if first.LastOutcome == nil || *first.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("first turn=%#v", first)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "send-after-unavailable-history"}); err != nil {
+		t.Fatal(err)
+	}
+	second := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && view.TurnID != first.TurnID
+	})
+	if second.LastOutcome == nil || *second.LastOutcome != TurnOutcomeCompleted || second.Failure != nil {
+		t.Fatalf("second turn=%#v", second)
+	}
+	requests := gateway.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests=%d, want 3", len(requests))
+	}
+	retiredCalls := 0
+	retiredResults := 0
+	for _, message := range requests[2].Messages {
+		for _, call := range message.ToolCalls {
+			if call.Name == "retired_tool" && call.ID == "retired-call" {
+				retiredCalls++
+			}
+		}
+		if message.ToolResult != nil && message.ToolResult.ToolName == "retired_tool" && message.ToolResult.CallID == "retired-call" && strings.Contains(message.ToolResult.Text, "unavailable in the current version") {
+			retiredResults++
+		}
+	}
+	if retiredCalls != 1 || retiredResults != 1 {
+		t.Fatalf("historical unavailable tool pair=(calls:%d results:%d) messages=%#v", retiredCalls, retiredResults, requests[2].Messages)
+	}
+	if slices.ContainsFunc(requests[2].Tools, func(definition tools.ToolDefinition) bool { return definition.Name == "retired_tool" }) {
+		t.Fatalf("removed tool definition was restored: %#v", requests[2].Tools)
+	}
+}
+
 func TestThreadServiceRespondPublishesNewRunProgressAndLiveContinuation(t *testing.T) {
 	gateway := newContinuationLiveGateway()
 	agent, err := NewAgent(config.AgentConfig{
