@@ -472,11 +472,8 @@ type ForkOptions struct {
 	OriginRequestKey     string
 	OriginFingerprint    string
 	Now                  time.Time
-	TurnIDMap            map[string]string
-	RunIDMap             map[string]string
 	DestinationMeta      *ForkDestinationMeta
 	ArtifactClosure      artifact.Closure
-	RewriteEntry         func(Entry, ForkEntryIdentity) (Entry, error)
 }
 
 // ForkDestinationMeta is the child ownership metadata written atomically with
@@ -490,13 +487,6 @@ type ForkDestinationMeta struct {
 	HostProfileRef  string          `json:"host_profile_ref,omitempty"`
 	ForkMode        string          `json:"fork_mode,omitempty"`
 	Lifecycle       ThreadLifecycle `json:"lifecycle,omitempty"`
-}
-
-type ForkEntryIdentity struct {
-	SourceThreadID      string
-	DestinationThreadID string
-	TurnIDMap           map[string]string
-	RunIDMap            map[string]string
 }
 
 type ContextOptions struct{}
@@ -1465,7 +1455,6 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 }
 
 func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMeta, error) {
-	opts = snapshotForkIdentityMaps(opts)
 	if opts.Position == "" {
 		opts.Position = ForkAt
 	}
@@ -1558,19 +1547,6 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		}
 		removedEffectAliases[retainedID] = append(removedEffectAliases[retainedID], removedID)
 	}
-	retryTargetEntryIDs := make(map[string]struct{})
-	for _, entry := range path {
-		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
-			continue
-		}
-		retrySource, err := CanonicalTurnRetrySourceForStartedEntry(entry)
-		if err != nil {
-			return ThreadMeta{}, err
-		}
-		if retrySource != nil {
-			retryTargetEntryIDs[retrySource.EntryID] = struct{}{}
-		}
-	}
 	forkedEntries := make([]Entry, 0, len(path))
 	for _, entry := range path {
 		r.seq++
@@ -1579,68 +1555,10 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.ThreadID = newID
 		next.ParentID = oldToNew[entry.ParentID]
 		next.PathDepth = int64(len(forkedEntries) + 1)
-		next.TurnID = rewriteForkID(next.TurnID, opts.TurnIDMap)
 		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
-		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
-		expectedID := next.ID
-		expectedThreadID := next.ThreadID
-		expectedParentID := next.ParentID
-		expectedTurnID := next.TurnID
-		expectedRunID := next.Metadata["run_id"]
-		expectedRetrySourceTurnID := next.Metadata[RetrySourceTurnIDMetadataKey]
-		expectedRetrySourceEntryID := next.Metadata[RetrySourceEntryIDMetadataKey]
-		sourceStarted := entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted
-		_, sourceTarget := retryTargetEntryIDs[entry.ID]
-		if opts.RewriteEntry != nil {
-			next, err = opts.RewriteEntry(next, ForkEntryIdentity{
-				SourceThreadID:      opts.SourceThreadID,
-				DestinationThreadID: newID,
-				TurnIDMap:           cloneStringMap(opts.TurnIDMap),
-				RunIDMap:            cloneStringMap(opts.RunIDMap),
-			})
-			if err != nil {
-				return ThreadMeta{}, err
-			}
-		}
-		destinationStarted := next.Type == EntryTurnMarker && next.TurnStatus == TurnStarted
-		if sourceStarted != destinationStarted {
-			return ThreadMeta{}, ErrAuthorityCorrupt
-		}
-		if (sourceStarted || sourceTarget) &&
-			(next.ID != expectedID || next.ThreadID != expectedThreadID || next.ParentID != expectedParentID || next.TurnID != expectedTurnID) {
-			return ThreadMeta{}, ErrAuthorityCorrupt
-		}
-		if sourceTarget && (next.Type != entry.Type || next.TurnStatus != entry.TurnStatus ||
-			next.Metadata["run_id"] != expectedRunID ||
-			next.Metadata[RetrySourceTurnIDMetadataKey] != expectedRetrySourceTurnID ||
-			next.Metadata[RetrySourceEntryIDMetadataKey] != expectedRetrySourceEntryID) {
-			return ThreadMeta{}, ErrAuthorityCorrupt
-		}
-		if sourceStarted {
-			if next.Type != EntryTurnMarker || next.TurnStatus != TurnStarted {
-				return ThreadMeta{}, ErrAuthorityCorrupt
-			}
-			sourceRetry, err := CanonicalTurnRetrySourceForStartedEntry(entry)
-			if err != nil {
-				return ThreadMeta{}, err
-			}
-			destinationRetry, err := CanonicalTurnRetrySourceForStartedEntry(next)
-			if err != nil {
-				return ThreadMeta{}, err
-			}
-			if (sourceRetry == nil) != (destinationRetry == nil) {
-				return ThreadMeta{}, ErrAuthorityCorrupt
-			}
-			if sourceRetry != nil && (destinationRetry.EntryID != oldToNew[sourceRetry.EntryID] ||
-				destinationRetry.TurnID != rewriteForkID(sourceRetry.TurnID, opts.TurnIDMap)) {
-				return ThreadMeta{}, ErrAuthorityCorrupt
-			}
-			if expectedRunID == "" || next.Metadata["run_id"] != expectedRunID {
-				return ThreadMeta{}, ErrAuthorityCorrupt
-			}
-		}
+		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew)
 		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
@@ -1679,8 +1597,6 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	hasForkedTodo := false
 	if todo, ok := r.todos[opts.SourceThreadID]; ok {
 		todo.ThreadID = newID
-		todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
-		todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
 		forkedTodo = cloneAgentTodoState(todo)
 		hasForkedTodo = true
 	}
@@ -1721,12 +1637,6 @@ func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions,
 		return ThreadMeta{}, Entry{}, err
 	}
 	return r.threads[forked.ID], saved, nil
-}
-
-func snapshotForkIdentityMaps(opts ForkOptions) ForkOptions {
-	opts.TurnIDMap = cloneStringMap(opts.TurnIDMap)
-	opts.RunIDMap = cloneStringMap(opts.RunIDMap)
-	return opts
 }
 
 func applyForkDestinationMeta(meta *ThreadMeta, destination *ForkDestinationMeta) {
@@ -2681,18 +2591,7 @@ func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
 	return out
 }
 
-func rewriteForkID(value string, ids map[string]string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || len(ids) == 0 {
-		return value
-	}
-	if next := strings.TrimSpace(ids[value]); next != "" {
-		return next
-	}
-	return value
-}
-
-func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string, turnIDs map[string]string, runIDs map[string]string) map[string]string {
+func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string) map[string]string {
 	if len(metadata) == 0 {
 		return nil
 	}
@@ -2700,16 +2599,14 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 	for key, value := range metadata {
 		next := value
 		switch strings.TrimSpace(key) {
-		case "run_id", "trace_id":
-			next = rewriteForkID(value, runIDs)
-		case "turn_id":
-			next = rewriteForkID(value, turnIDs)
-		case RetrySourceTurnIDMetadataKey:
-			next = rewriteForkID(value, turnIDs)
 		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
-			next = rewriteForkID(value, entryIDs)
+			if rewritten := strings.TrimSpace(entryIDs[strings.TrimSpace(value)]); rewritten != "" {
+				next = rewritten
+			}
 		case RetrySourceEntryIDMetadataKey:
-			next = rewriteForkID(value, entryIDs)
+			if rewritten := strings.TrimSpace(entryIDs[strings.TrimSpace(value)]); rewritten != "" {
+				next = rewritten
+			}
 		}
 		out[key] = next
 	}

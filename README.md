@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v7@v7.1.0
+go get github.com/floegence/floret/v7@v7.1.1
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -230,6 +230,9 @@ usage, and one latest lifecycle record per compaction operation, including
 terminal state restored after runtime restart. The snapshot also exposes
 conversation-wide disjoint input, output, cache-read, and cache-write totals
 folded from canonical final provider usage records.
+Forked snapshots retain historical Turn and Run identity while reporting the
+destination Thread identity. Floret owns this projection and automatically
+migrates affected v8 stores; hosts do not patch context records.
 Each successfully committed final `provider_usage` runtime event also carries
 `ThreadUsageTotals`. It is the live form of the same canonical fold; projected
 requests, stream-only usage, rejected attempts, and failed writes omit it.

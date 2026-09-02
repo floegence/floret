@@ -1,5 +1,18 @@
 # Changelog
 
+## v7.1.1 - 2026-09-02
+
+- Make canonical context entries the sole source of Thread, Turn, and Run
+  identity. Context payloads no longer duplicate execution identity, and
+  direct or nested forks rebuild snapshots with the destination Thread ID.
+- Add atomic domain schema v9 migration. Exact v8 context records are renamed
+  and normalized; the released fork mismatch is repaired only when canonical
+  ancestry and copied-entry evidence prove its source. Drifted, malformed,
+  mixed, or future authority fails closed without mutation.
+- Remove the unused fork identity-map and entry-rewrite extension path. Forks
+  retain historical Turn and Run identity while remapping only destination
+  Thread and entry references.
+
 ## v7.1.0 - 2026-09-02
 
 - Add `runtime.WithAgentRunLabels` so immutable Agents carry correlation and

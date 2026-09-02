@@ -15,7 +15,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func TestV8MigrationAgainstSQLiteCopy(t *testing.T) {
+func TestV9MigrationAgainstV8SQLiteCopy(t *testing.T) {
 	sourcePath := os.Getenv("FLORET_V8_SOURCE_DB")
 	threadID := os.Getenv("FLORET_V8_THREAD_ID")
 	if sourcePath == "" || threadID == "" {
@@ -70,9 +70,9 @@ func TestV8MigrationAgainstSQLiteCopy(t *testing.T) {
 		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
 			return errors.Join(err, errors.New("v7 records remain after qualification"))
 		}
-		_, found, err := loadBackendDomainV8(ctx, tx, time.Now)
+		_, found, err := loadBackendDomainV9(ctx, tx, time.Now)
 		if err != nil || !found {
-			return errors.Join(err, errors.New("v8 records are missing after qualification"))
+			return errors.Join(err, errors.New("v9 records are missing after qualification"))
 		}
 		return nil
 	}); err != nil {
@@ -120,9 +120,9 @@ func TestLargeV7SQLiteStartupQualification(t *testing.T) {
 		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
 			return errors.Join(err, errors.New("v7 records remain after large-store qualification"))
 		}
-		_, found, err := loadBackendDomainV8(ctx, tx, time.Now)
+		_, found, err := loadBackendDomainV9(ctx, tx, time.Now)
 		if err != nil || !found {
-			return errors.Join(err, errors.New("v8 records are missing after large-store qualification"))
+			return errors.Join(err, errors.New("v9 records are missing after large-store qualification"))
 		}
 		return nil
 	}); err != nil {

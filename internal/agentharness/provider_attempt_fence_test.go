@@ -227,7 +227,7 @@ type failingContextStatusRepo struct {
 }
 
 func (repo failingContextStatusRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
-	if entry.Metadata[threadDetailKindKey] == subAgentContextStatusEntryKind {
+	if entry.Metadata[threadDetailKindKey] == sessiontree.ThreadContextStatusEntryKind {
 		return sessiontree.Entry{}, repo.err
 	}
 	return repo.JournalRepo.Append(ctx, entry, opts)

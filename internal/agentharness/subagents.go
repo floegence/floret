@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
-	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
@@ -63,15 +60,6 @@ const (
 	subAgentLifecycleEntryKind = "subagent_lifecycle"
 	subAgentLifecycleActionKey = "action"
 	subAgentLifecycleReasonKey = "reason"
-
-	subAgentContextPolicyEntryKind     = "subagent_context_policy"
-	subAgentContextStatusEntryKind     = "subagent_context_status"
-	subAgentContextCompactionEntryKind = "subagent_context_compaction"
-	subAgentContextProviderKey         = "provider"
-	subAgentContextModelKey            = "model"
-	subAgentContextPolicyKey           = "context_policy_json"
-	subAgentContextStatusKey           = "context_status_json"
-	subAgentContextCompactionKey       = "context_compaction_json"
 
 	subAgentTerminalReasonKey = "terminal_reason"
 	subAgentRunTimeoutReason  = "child_run_timeout"
@@ -123,29 +111,9 @@ type ThreadContextModel struct {
 	Model    string `json:"model,omitempty"`
 }
 
-type ThreadContextPolicy struct {
-	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
-}
+type ThreadContextPolicy = sessiontree.ThreadContextPolicy
 
-type ThreadContextCompaction struct {
-	RunID               string    `json:"run_id,omitempty"`
-	ThreadID            string    `json:"thread_id,omitempty"`
-	TurnID              string    `json:"turn_id,omitempty"`
-	Step                int       `json:"step,omitempty"`
-	OperationID         string    `json:"operation_id,omitempty"`
-	RequestID           string    `json:"request_id,omitempty"`
-	Phase               string    `json:"phase,omitempty"`
-	Status              string    `json:"status,omitempty"`
-	Trigger             string    `json:"trigger,omitempty"`
-	Reason              string    `json:"reason,omitempty"`
-	Source              string    `json:"source,omitempty"`
-	TokensBefore        int64     `json:"tokens_before,omitempty"`
-	TokensAfterEstimate int64     `json:"tokens_after_estimate,omitempty"`
-	Error               string    `json:"error,omitempty"`
-	ObservedAt          time.Time `json:"observed_at,omitempty"`
-}
+type ThreadContextCompaction = sessiontree.ThreadContextCompaction
 
 type ThreadDetailEvents struct {
 	Events       []ThreadDetailEvent `json:"events"`
@@ -307,32 +275,21 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			continue
 		}
 		switch {
-		case entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == subAgentContextPolicyEntryKind:
-			providerName := strings.TrimSpace(entry.Metadata[subAgentContextProviderKey])
-			modelName := strings.TrimSpace(entry.Metadata[subAgentContextModelKey])
-			if providerName == "" || modelName == "" {
-				return ThreadContextSnapshot{}, errors.New("thread context policy requires provider and model")
-			}
-			policy, err := threadDetailContextPolicy(entry.Metadata)
+		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextPolicyEntryKind:
+			record, err := sessiontree.DecodeThreadContextPolicyEntry(entry)
 			if err != nil {
 				return ThreadContextSnapshot{}, err
 			}
-			out.Model.Provider = providerName
-			out.Model.Model = modelName
-			out.Policy = policy
+			out.Model.Provider = record.Provider
+			out.Model.Model = record.Model
+			out.Policy = record.Policy
 			out.Usage = nil
 			hasPolicy = true
 			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
-		case entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == subAgentContextStatusEntryKind:
-			status, err := threadDetailContextStatus(entry.Metadata)
+		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextStatusEntryKind:
+			status, err := sessiontree.DecodeThreadContextStatusEntry(entry)
 			if err != nil {
 				return ThreadContextSnapshot{}, err
-			}
-			if status.ThreadID.String() != entry.ThreadID || status.TurnID.String() != entry.TurnID {
-				return ThreadContextSnapshot{}, errors.New("thread context status identity mismatch")
-			}
-			if entry.RunID != "" && status.RunID.String() != entry.RunID {
-				return ThreadContextSnapshot{}, errors.New("thread context status run identity mismatch")
 			}
 			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
 				return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
@@ -345,13 +302,10 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			}
 			out.Usage = &status
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
-		case entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == subAgentContextCompactionEntryKind:
-			compact, err := threadDetailContextCompaction(entry.Metadata)
+		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind:
+			compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
 			if err != nil {
 				return ThreadContextSnapshot{}, err
-			}
-			if compact.ThreadID != entry.ThreadID || compact.TurnID != entry.TurnID {
-				return ThreadContextSnapshot{}, errors.New("thread context compaction identity mismatch")
 			}
 			compactions = upsertThreadDetailCompaction(compactions, seenCompactions, compact)
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
@@ -372,57 +326,6 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 	return out, nil
 }
 
-func threadDetailContextPolicy(metadata map[string]string) (ThreadContextPolicy, error) {
-	raw := strings.TrimSpace(metadata[subAgentContextPolicyKey])
-	if raw == "" {
-		return ThreadContextPolicy{}, errors.New("thread context policy payload is required")
-	}
-	var policy ThreadContextPolicy
-	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
-		return ThreadContextPolicy{}, fmt.Errorf("decode thread context policy: %w", err)
-	}
-	if policy.ContextWindowTokens <= 0 {
-		return ThreadContextPolicy{}, errors.New("thread context policy requires context window tokens")
-	}
-	return policy, nil
-}
-
-func threadDetailContextStatus(metadata map[string]string) (observation.ContextStatus, error) {
-	raw := strings.TrimSpace(metadata[subAgentContextStatusKey])
-	if raw == "" {
-		return observation.ContextStatus{}, errors.New("thread context status payload is required")
-	}
-	var status observation.ContextStatus
-	if err := json.Unmarshal([]byte(raw), &status); err != nil {
-		return observation.ContextStatus{}, fmt.Errorf("decode thread context status: %w", err)
-	}
-	if err := status.Validate(); err != nil {
-		return observation.ContextStatus{}, err
-	}
-	return status, nil
-}
-
-func threadDetailContextCompaction(metadata map[string]string) (ThreadContextCompaction, error) {
-	raw := strings.TrimSpace(metadata[subAgentContextCompactionKey])
-	if raw == "" {
-		return ThreadContextCompaction{}, errors.New("thread context compaction payload is required")
-	}
-	var compact ThreadContextCompaction
-	if err := json.Unmarshal([]byte(raw), &compact); err != nil {
-		return ThreadContextCompaction{}, fmt.Errorf("decode thread context compaction: %w", err)
-	}
-	if strings.TrimSpace(compact.OperationID) == "" {
-		return ThreadContextCompaction{}, errors.New("thread context compaction requires operation id")
-	}
-	if strings.TrimSpace(compact.RunID) == "" || strings.TrimSpace(compact.ThreadID) == "" || strings.TrimSpace(compact.RequestID) == "" {
-		return ThreadContextCompaction{}, errors.New("thread context compaction requires run, thread, and request identities")
-	}
-	if err := (observation.CompactionEvent{Phase: observation.CompactionPhase(compact.Phase), Status: observation.CompactionStatus(compact.Status)}).Validate(); err != nil {
-		return ThreadContextCompaction{}, err
-	}
-	return compact, nil
-}
-
 func upsertThreadDetailCompaction(compactions []ThreadContextCompaction, seen map[string]int, compact ThreadContextCompaction) []ThreadContextCompaction {
 	key := threadDetailContextCompactionKey(compact)
 	if key == "" {
@@ -439,34 +342,6 @@ func upsertThreadDetailCompaction(compactions []ThreadContextCompaction, seen ma
 
 func threadDetailContextCompactionKey(compact ThreadContextCompaction) string {
 	return strings.TrimSpace(compact.OperationID)
-}
-
-func subAgentPublicContextPolicy(policy contextpolicy.Policy) ThreadContextPolicy {
-	normalized := contextpolicy.Normalize(policy)
-	return ThreadContextPolicy{
-		ContextWindowTokens:  normalized.ContextWindowTokens,
-		MaxOutputTokens:      normalized.MaxOutputTokens,
-		ReservedOutputTokens: normalized.ReservedOutputTokens,
-	}
-}
-
-func subAgentContextPolicyMetadata(providerName, modelName string, policy contextpolicy.Policy) map[string]string {
-	metadata := map[string]string{
-		threadDetailKindKey:        subAgentContextPolicyEntryKind,
-		threadDetailTypeKey:        subAgentContextPolicyEntryKind,
-		subAgentContextProviderKey: strings.TrimSpace(providerName),
-		subAgentContextModelKey:    strings.TrimSpace(modelName),
-		subAgentContextPolicyKey:   mustSubAgentMetadataJSON(subAgentPublicContextPolicy(policy)),
-	}
-	return metadata
-}
-
-func mustSubAgentMetadataJSON(value any) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 func nonZeroTime(values ...time.Time) time.Time {
@@ -833,7 +708,7 @@ func (h *AgentHarness) threadDetailEvent(entry sessiontree.Entry, ordinal int64,
 			if event.Type == "" {
 				event.Type = subAgentLifecycleEntryKind
 			}
-		case subAgentContextPolicyEntryKind, subAgentContextStatusEntryKind, subAgentContextCompactionEntryKind:
+		case sessiontree.ThreadContextPolicyEntryKind, sessiontree.ThreadContextStatusEntryKind, sessiontree.ThreadContextCompactionEntryKind:
 			return ThreadDetailEvent{}, false
 		}
 		event.Metadata = cloneStringMap(entry.Metadata)

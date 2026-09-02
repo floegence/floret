@@ -43,6 +43,7 @@ type backendDomainSource uint8
 
 const (
 	backendDomainSourceFresh backendDomainSource = iota
+	backendDomainSourceV9
 	backendDomainSourceV8
 	backendDomainSourceV7
 	backendDomainSourceV6
@@ -81,14 +82,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV8 {
+	if source == backendDomainSourceV9 {
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomainV8(ctx, tx, now)
+		memory, found, err := loadBackendDomainV9(ctx, tx, now)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
-			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v8 authority is missing"))
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v9 authority is missing"))
 		}
 		if hasUnknownEffectTurns(memory) {
 			before := memory
@@ -96,13 +97,38 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainV8Changes(tx, before, memory)
+			changed, err := persistBackendDomainV9Changes(tx, before, memory)
 			if err != nil {
 				return nil, err
 			}
 			repo.requiresPersistedStartupVerification = changed
 		}
 		repo.domainMemory = memory
+		return repo, nil
+	}
+	if source == backendDomainSourceV8 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV8(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v8 authority is missing"))
+		}
+		if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV9(tx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomainV8(ctx, tx); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
 		return repo, nil
 	}
 	if source == backendDomainSourceV7 {
@@ -117,7 +143,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
+		if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV9(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
@@ -142,7 +171,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
+		if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV9(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -204,7 +236,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
 		return nil, err
 	}
-	if err := saveCompleteBackendDomainV8(tx, memory); err != nil {
+	if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
+		return nil, err
+	}
+	if err := saveCompleteBackendDomainV9(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -230,17 +265,17 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV8(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV9(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return errors.Join(ErrAuthorityCorrupt, errors.New("session-tree state is not current after migration"))
 	}
-	if err := rejectPreV8BackendDomain(ctx, tx); err != nil {
+	if err := rejectPreV9BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateBackendDomainV8Memory(memory); err != nil {
+	if err := validateBackendDomainV9Memory(memory); err != nil {
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
@@ -266,6 +301,7 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 		source    backendDomainSource
 		namespace string
 	}{
+		{source: backendDomainSourceV9, namespace: backendDomainV9Namespace},
 		{source: backendDomainSourceV8, namespace: backendDomainV8Namespace},
 		{source: backendDomainSourceV7, namespace: backendDomainV7Namespace},
 		{source: backendDomainSourceV6, namespace: backendDomainV6Namespace},
@@ -311,6 +347,17 @@ func legacyBackendDomainHasRecords(tx spi.ReadTx) (bool, error) {
 		}
 	}
 	return backendNamespaceHasRecords(tx, backendDomainJournalNamespace)
+}
+
+func rejectPreV9BackendDomain(ctx context.Context, tx spi.ReadTx) error {
+	records, err := scanBackendDomainV8(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(records) != 0 {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("current session-tree store retains v8 domain records"))
+	}
+	return rejectPreV8BackendDomain(ctx, tx)
 }
 
 func rejectPreV8BackendDomain(ctx context.Context, tx spi.ReadTx) error {
@@ -510,10 +557,10 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := mutate(memory, tx); err != nil {
 			return err
 		}
-		if err := validateBackendDomainV7Memory(memory); err != nil {
+		if err := validateBackendDomainV9Memory(memory); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if _, err := persistBackendDomainV8Changes(tx, repo.domainMemory, memory); err != nil {
+		if _, err := persistBackendDomainV9Changes(tx, repo.domainMemory, memory); err != nil {
 			return err
 		}
 		committedMemory = memory

@@ -30,6 +30,10 @@ product audit stream. A fork copies visible conversation history, but never
 copies `EntryEffectAttempt`: effect authority remains bound to the source
 thread. Removing those entries reconnects retained parents and recomputes the
 destination journal depth and leaf before the fork commits.
+Historical Turn and Run identities remain unchanged. Only the destination
+Thread identity and entry references are remapped. Context payloads carry no
+second execution identity; context snapshots reconstruct identity from their
+canonical entries, including direct forks and forks of forks.
 
 # Related
 

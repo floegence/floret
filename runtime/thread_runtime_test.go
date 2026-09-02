@@ -789,6 +789,90 @@ func TestThreadContextReaderRestoresOneTerminalCompactionPerOperation(t *testing
 	assertContext("reopened", secondReader)
 }
 
+func TestThreadContextReaderPreservesCanonicalIdentityAcrossNestedForksAndRestart(t *testing.T) {
+	path := t.TempDir() + "/thread-context-fork.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventUsage, Usage: provider.Usage{InputTokens: 80, OutputTokens: 20, Available: true, Source: "native"}},
+			{Type: provider.EventDelta, Text: "after compact"},
+			{Type: provider.EventDone, Reason: "stop"},
+		}},
+	)
+	agent, err := testAgent(gateway, WithAgentManualCompactions(&oneShotThreadContextCompaction{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	openService := func(t *testing.T) (*Host, ThreadService) {
+		t.Helper()
+		host, openErr := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		service, serviceErr := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+		if serviceErr != nil {
+			_ = host.Shutdown(context.Background())
+			t.Fatal(serviceErr)
+		}
+		return host, service
+	}
+
+	firstHost, firstService := openService(t)
+	created, err := firstService.Create(t.Context(), CreateThreadInput{RequestKey: "create-context-fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstService.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "compact context"}, RequestKey: "send-context-fork"}); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, firstService, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	direct, err := firstService.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork-context-direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested, err := firstService.Fork(t.Context(), ForkThreadInput{SourceThreadID: direct.ThreadID, RequestKey: "fork-context-nested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertContexts := func(label string, reader ThreadContextReader) {
+		t.Helper()
+		source, readErr := reader.Context(t.Context(), created.ThreadID)
+		if readErr != nil {
+			t.Fatalf("%s source context: %v", label, readErr)
+		}
+		if source.Usage == nil || source.UsageTotals == nil || source.UsageTotals.InputTokens != 80 || len(source.Compactions) != 1 {
+			t.Fatalf("%s source context=%#v", label, source)
+		}
+		for _, threadID := range []identity.ThreadID{direct.ThreadID, nested.ThreadID} {
+			forked, forkErr := reader.Context(t.Context(), threadID)
+			if forkErr != nil {
+				t.Fatalf("%s fork %q context: %v", label, threadID, forkErr)
+			}
+			if forked.Usage == nil || forked.Usage.ThreadID != threadID || forked.Usage.TurnID != source.Usage.TurnID || forked.Usage.RunID != source.Usage.RunID {
+				t.Fatalf("%s fork %q usage=%#v, source=%#v", label, threadID, forked.Usage, source.Usage)
+			}
+			if forked.UsageTotals == nil || *forked.UsageTotals != *source.UsageTotals {
+				t.Fatalf("%s fork %q totals=%#v, source=%#v", label, threadID, forked.UsageTotals, source.UsageTotals)
+			}
+			if len(forked.Compactions) != 1 || forked.Compactions[0].ThreadID != threadID || forked.Compactions[0].TurnID != source.Compactions[0].TurnID || forked.Compactions[0].RunID != source.Compactions[0].RunID {
+				t.Fatalf("%s fork %q compactions=%#v, source=%#v", label, threadID, forked.Compactions, source.Compactions)
+			}
+		}
+	}
+
+	assertContexts("live", firstService.(ThreadContextReader))
+	if err := firstHost.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	secondHost, secondService := openService(t)
+	t.Cleanup(func() { _ = secondHost.Shutdown(context.Background()) })
+	assertContexts("reopened", secondService.(ThreadContextReader))
+}
+
 func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.T) {
 	for _, test := range []struct {
 		name      string

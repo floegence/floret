@@ -1469,17 +1469,16 @@ func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, run
 }
 
 func (t *Thread) appendContextPolicyEvent(ctx context.Context, turnID string, runID string, providerName string, modelName string, policy contextpolicy.Policy) error {
-	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: t.id,
-		TurnID:   turnID,
-		Type:     sessiontree.EntryCustom,
-		Metadata: subAgentContextPolicyMetadata(providerName, modelName, policy),
-	}, sessiontree.AppendOptions{})
+	pending, err := sessiontree.NewThreadContextPolicyEntry(t.id, turnID, runID, providerName, modelName, policy)
+	if err != nil {
+		return err
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, pending, sessiontree.AppendOptions{})
 	if err != nil {
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextPolicyEntryKind})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: sessiontree.ThreadContextPolicyEntryKind})
 	return nil
 }
 
@@ -1488,23 +1487,19 @@ func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, ru
 	if !ok {
 		return observation.ContextStatus{}, false, nil
 	}
-	metadata := map[string]string{
-		threadDetailKindKey:      subAgentContextStatusEntryKind,
-		threadDetailTypeKey:      subAgentContextStatusEntryKind,
-		subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
+	if status.ThreadID.String() != strings.TrimSpace(t.id) || status.TurnID.String() != strings.TrimSpace(turnID) || status.RunID.String() != strings.TrimSpace(runID) {
+		return observation.ContextStatus{}, false, errors.New("context status event identity does not match its canonical run")
 	}
-	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: t.id,
-		TurnID:   turnID,
-		RunID:    runID,
-		Type:     sessiontree.EntryCustom,
-		Metadata: metadata,
-	}, sessiontree.AppendOptions{Now: status.ObservedAt})
+	pending, err := sessiontree.NewThreadContextStatusEntry(status)
+	if err != nil {
+		return observation.ContextStatus{}, false, err
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, pending, sessiontree.AppendOptions{Now: status.ObservedAt})
 	if err != nil {
 		return observation.ContextStatus{}, false, err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextStatusEntryKind})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: sessiontree.ThreadContextStatusEntryKind})
 	return status, true, nil
 }
 
@@ -1516,22 +1511,19 @@ func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string
 	if !ok {
 		return nil
 	}
-	metadata := map[string]string{
-		threadDetailKindKey:          subAgentContextCompactionEntryKind,
-		threadDetailTypeKey:          subAgentContextCompactionEntryKind,
-		subAgentContextCompactionKey: mustSubAgentMetadataJSON(compact),
+	if compact.ThreadID != strings.TrimSpace(t.id) || compact.TurnID != strings.TrimSpace(turnID) || compact.RunID != strings.TrimSpace(runID) {
+		return errors.New("context compaction event identity does not match its canonical run")
 	}
-	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: t.id,
-		TurnID:   turnID,
-		Type:     sessiontree.EntryCustom,
-		Metadata: metadata,
-	}, sessiontree.AppendOptions{Now: compact.ObservedAt})
+	pending, err := sessiontree.NewThreadContextCompactionEntry(compact)
+	if err != nil {
+		return err
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, pending, sessiontree.AppendOptions{Now: compact.ObservedAt})
 	if err != nil {
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextCompactionEntryKind})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: sessiontree.ThreadContextCompactionEntryKind})
 	return nil
 }
 

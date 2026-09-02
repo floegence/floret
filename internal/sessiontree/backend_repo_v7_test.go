@@ -276,14 +276,14 @@ func (tx toggleFailWriteTx) Put(namespace string, key, value []byte) error {
 	tx.backend.mu.Lock()
 	fail, err := tx.backend.fail, tx.backend.err
 	tx.backend.mu.Unlock()
-	if fail && namespace == backendDomainV8Namespace {
+	if fail && namespace == backendDomainV9Namespace {
 		return err
 	}
 	return tx.WriteTx.Put(namespace, key, value)
 }
 
 func (tx measuringWriteTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV8Namespace {
+	if namespace == backendDomainV9Namespace {
 		tx.backend.mu.Lock()
 		tx.backend.puts++
 		tx.backend.putBytes += int64(len(key) + len(value))

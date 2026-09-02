@@ -178,13 +178,13 @@ ephemeral overlay.
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 -> v7 -> v8 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 -> v7 -> v8 -> v9 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
 records. `runtime.Options.StartupProgress` reports only the product-neutral
 `migrating` and `verifying` phases; it exposes no record counts or content.
 Startup selects one exact source format, rejects mixed authority, decodes an
-unchanged current-v8 store once, and performs a persisted final verification
+unchanged current-v9 store once, and performs a persisted final verification
 after every startup write. Current-schema startup is byte-preserving and
 idempotent. The v5 -> v6
 edge first replays pending v5 recovery frames and accepts only the exact v5
@@ -196,7 +196,11 @@ active unknown effects before the Host becomes available. The v7 -> v8 edge
 classifies only the exact Engine continuation user message paired with its
 `context_continue` save point as a control signal, restoring one canonical user
 input per Turn. Every other mismatch
-still fails closed. This automatic domain convergence is separate from the explicit
+still fails closed. The v8 -> v9 edge moves context execution identity to the
+canonical entry and renames current context kinds. A historical mismatch is
+repaired only when the payload Thread is a verified fork ancestor and the
+entry exactly matches the canonical fork source copy; other drift fails closed.
+This automatic domain convergence is separate from the explicit
 legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.
 

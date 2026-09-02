@@ -34,7 +34,7 @@ func TestOpenReportsVerifyingForFreshAndCurrentStores(t *testing.T) {
 	}
 }
 
-func TestOpenCurrentStoreDecodesV8Once(t *testing.T) {
+func TestOpenCurrentStoreDecodesV9Once(t *testing.T) {
 	path := t.TempDir() + "/floret.sqlite"
 	first, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
 	if err != nil {
@@ -53,8 +53,8 @@ func TestOpenCurrentStoreDecodesV8Once(t *testing.T) {
 	if err := second.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := counts.fullV8Scans(); got != 1 {
-		t.Fatalf("full v8 scans = %d, want 1", got)
+	if got := counts.fullV9Scans(); got != 1 {
+		t.Fatalf("full v9 scans = %d, want 1", got)
 	}
 }
 
@@ -90,22 +90,22 @@ func (backend startupCountingBackend) Update(ctx context.Context, mutate func(sp
 
 type startupScanCounts struct {
 	mu     sync.Mutex
-	fullV8 int
+	fullV9 int
 }
 
 func (counts *startupScanCounts) record(request spi.ScanRequest) {
-	if request.Namespace != "floret.domain.sessiontree.v8" || request.Limit != 256 {
+	if request.Namespace != "floret.domain.sessiontree.v9" || request.Limit != 256 {
 		return
 	}
 	counts.mu.Lock()
-	counts.fullV8++
+	counts.fullV9++
 	counts.mu.Unlock()
 }
 
-func (counts *startupScanCounts) fullV8Scans() int {
+func (counts *startupScanCounts) fullV9Scans() int {
 	counts.mu.Lock()
 	defer counts.mu.Unlock()
-	return counts.fullV8
+	return counts.fullV9
 }
 
 type startupCountingReadTx struct {

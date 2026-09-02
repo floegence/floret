@@ -116,7 +116,7 @@ func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		return tx.Delete("floret.domain.sessiontree.v8", storagecodec.Tuple(storagecodec.TupleString("root_index")))
+		return tx.Delete("floret.domain.sessiontree.v9", storagecodec.Tuple(storagecodec.TupleString("root_index")))
 	}); err != nil {
 		t.Fatal(err)
 	}

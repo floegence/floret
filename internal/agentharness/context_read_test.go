@@ -1,7 +1,6 @@
 package agentharness
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -11,52 +10,41 @@ import (
 	"github.com/floegence/floret/v7/observation"
 )
 
-func TestThreadDetailContextUsesEntryRunIdentityAndReadsLegacyStatus(t *testing.T) {
+func TestThreadDetailContextUsesCanonicalEntryIdentity(t *testing.T) {
 	status := observation.ContextStatus{
-		RunID: "run-payload", ThreadID: "thread-context", TurnID: "turn-context",
+		RunID: "run-context", ThreadID: "thread-source", TurnID: "turn-context",
 		Phase: observation.ContextPhaseProjectedRequest, Status: observation.ContextStatusStable,
 		Provider: "test", Model: "scripted", ObservedAt: time.Unix(1_723_800_000, 0).UTC(),
 	}
-	policy := sessiontree.Entry{
-		ThreadID: "thread-context", TurnID: "turn-context", Type: sessiontree.EntryCustom,
-		Metadata: subAgentContextPolicyMetadata("test", "scripted", contextpolicy.Policy{}),
+	policy, err := sessiontree.NewThreadContextPolicyEntry("thread-fork", "turn-context", "run-context", "test", "scripted", contextpolicy.Policy{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	statusEntry := sessiontree.Entry{
-		ThreadID: "thread-context", TurnID: "turn-context", Type: sessiontree.EntryCustom,
-		Metadata: map[string]string{
-			threadDetailKindKey:      subAgentContextStatusEntryKind,
-			subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
-		},
+	statusEntry, err := sessiontree.NewThreadContextStatusEntry(status)
+	if err != nil {
+		t.Fatal(err)
 	}
+	statusEntry.ThreadID = "thread-fork"
 
 	harness := &AgentHarness{}
-	legacyEntries := []sessiontree.Entry{policy, statusEntry}
-	legacy, err := harness.threadDetailContext(legacyEntries, 1, newThreadDetailActivityContext(legacyEntries), time.Now())
-	if err != nil || legacy.Usage == nil || legacy.Usage.RunID != identity.RunID("run-payload") {
-		t.Fatalf("legacy context=%#v err=%v", legacy, err)
-	}
-
-	statusEntry.RunID = "run-entry"
 	entries := []sessiontree.Entry{policy, statusEntry}
-	_, err = harness.threadDetailContext(entries, 1, newThreadDetailActivityContext(entries), time.Now())
-	if err == nil || !strings.Contains(err.Error(), "run identity mismatch") {
-		t.Fatalf("mismatched canonical entry run error=%v", err)
+	snapshot, err := harness.threadDetailContext(entries, 1, newThreadDetailActivityContext(entries), time.Now())
+	if err != nil || snapshot.Usage == nil || snapshot.Usage.ThreadID != identity.ThreadID("thread-fork") || snapshot.Usage.RunID != identity.RunID("run-context") {
+		t.Fatalf("context=%#v err=%v", snapshot, err)
 	}
 }
 
 func TestThreadDetailContextAccumulatesCanonicalProviderUsageOnly(t *testing.T) {
-	policy := sessiontree.Entry{
-		ThreadID: "thread-context", TurnID: "turn-one", Type: sessiontree.EntryCustom,
-		Metadata: subAgentContextPolicyMetadata("test", "scripted", contextpolicy.Policy{}),
+	policy, err := sessiontree.NewThreadContextPolicyEntry("thread-context", "turn-one", "run-one", "test", "scripted", contextpolicy.Policy{})
+	if err != nil {
+		t.Fatal(err)
 	}
 	statusEntry := func(turnID, runID string, status observation.ContextStatus) sessiontree.Entry {
-		return sessiontree.Entry{
-			ThreadID: "thread-context", TurnID: turnID, RunID: runID, Type: sessiontree.EntryCustom,
-			Metadata: map[string]string{
-				threadDetailKindKey:      subAgentContextStatusEntryKind,
-				subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
-			},
+		entry, buildErr := sessiontree.NewThreadContextStatusEntry(status)
+		if buildErr != nil {
+			t.Fatal(buildErr)
 		}
+		return entry
 	}
 	projected := observation.ContextStatus{
 		RunID: "run-one", ThreadID: "thread-context", TurnID: "turn-one",
@@ -98,10 +86,11 @@ func TestThreadDetailContextAccumulatesCanonicalProviderUsageOnly(t *testing.T) 
 
 func TestThreadDetailContextStartsNewPolicyWithoutPreviousModelUsage(t *testing.T) {
 	policyEntry := func(turnID, providerName, modelName string) sessiontree.Entry {
-		return sessiontree.Entry{
-			ThreadID: "thread-context", TurnID: turnID, Type: sessiontree.EntryCustom,
-			Metadata: subAgentContextPolicyMetadata(providerName, modelName, contextpolicy.Policy{ContextWindowTokens: 128_000}),
+		entry, err := sessiontree.NewThreadContextPolicyEntry("thread-context", turnID, "run-"+turnID, providerName, modelName, contextpolicy.Policy{ContextWindowTokens: 128_000})
+		if err != nil {
+			t.Fatal(err)
 		}
+		return entry
 	}
 	statusEntry := func(turnID, runID, providerName, modelName string, inputTokens int) sessiontree.Entry {
 		status := observation.ContextStatus{
@@ -109,13 +98,11 @@ func TestThreadDetailContextStartsNewPolicyWithoutPreviousModelUsage(t *testing.
 			Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable,
 			Provider: providerName, Model: modelName, Usage: observation.ProviderUsage{InputTokens: int64(inputTokens)},
 		}
-		return sessiontree.Entry{
-			ThreadID: "thread-context", TurnID: turnID, RunID: runID, Type: sessiontree.EntryCustom,
-			Metadata: map[string]string{
-				threadDetailKindKey:      subAgentContextStatusEntryKind,
-				subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
-			},
+		entry, err := sessiontree.NewThreadContextStatusEntry(status)
+		if err != nil {
+			t.Fatal(err)
 		}
+		return entry
 	}
 	flashStatus := statusEntry("turn-flash", "run-flash", "deepseek", "flash", 80)
 	entries := []sessiontree.Entry{

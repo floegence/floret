@@ -12,7 +12,7 @@ func migrateBackendDomainV6ToV7(ctx context.Context, memory *MemoryRepo) error {
 	if ctx == nil || memory == nil {
 		return errors.New("session-tree v6 to v7 migration requires context and memory")
 	}
-	forkAncestors, err := legacyForkAncestors(memory)
+	forkAncestors, err := validatedForkAncestors(memory)
 	if err != nil {
 		return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("validate session-tree v6 fork lineage: %w", err))
 	}
@@ -144,7 +144,7 @@ func migrateBackendDomainV6Thread(memory *MemoryRepo, threadID string, forkAnces
 	return nil
 }
 
-func legacyForkAncestors(memory *MemoryRepo) (map[string]map[string]struct{}, error) {
+func validatedForkAncestors(memory *MemoryRepo) (map[string]map[string]struct{}, error) {
 	if memory == nil {
 		return nil, errors.New("legacy fork lineage requires memory")
 	}

@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-09-02
+* **Schema v9 fork-context repair**: Context entries now own Thread, Turn, and
+  Run identity without duplicating it in JSON payloads. The atomic v8 -> v9
+  migration repairs only canonical fork copies whose payload Thread is a
+  verified ancestor, and rejects all other drift without mutation.
 * **Immutable Agent run labels**: `runtime.WithAgentRunLabels` snapshots
   correlation and opaque host context, and one provider-host boundary applies
   it to fresh and resumed execution without persisting a second authority.
