@@ -142,7 +142,7 @@ func validateLegacyThreadContextIdentity(original *MemoryRepo, ancestors map[str
 		return errors.New("legacy thread context turn identity drifted")
 	}
 	if payloadRunID != strings.TrimSpace(canonicalRunID) {
-		return errors.New("legacy thread context run identity does not match canonical turn authority")
+		return errors.New("legacy thread context run identity does not match canonical entry lineage")
 	}
 	if entryRunID := strings.TrimSpace(entry.RunID); entryRunID != "" && entryRunID != payloadRunID {
 		return errors.New("legacy thread context run identity drifted")
@@ -159,6 +159,7 @@ func validateLegacyThreadContextIdentity(original *MemoryRepo, ancestors map[str
 func legacyThreadContextRunIDs(entries []Entry) ([]string, error) {
 	runIDs := make([]string, len(entries))
 	active := make(map[string]string)
+	started := make(map[string]struct{})
 	for index, entry := range entries {
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
 			turnID := strings.TrimSpace(entry.TurnID)
@@ -166,13 +167,20 @@ func legacyThreadContextRunIDs(entries []Entry) ([]string, error) {
 			if turnID == "" || runID == "" {
 				return nil, fmt.Errorf("started entry %q has incomplete run identity", entry.ID)
 			}
+			started[turnID] = struct{}{}
+		}
+		// A waiting Turn resumes in a new Run without another started marker.
+		// Each canonical entry that carries RunID advances the active lineage.
+		turnID := strings.TrimSpace(entry.TurnID)
+		_, turnStarted := started[turnID]
+		if runID := strings.TrimSpace(entry.RunID); turnStarted && runID != "" {
 			active[turnID] = runID
 		}
 		kind := ThreadContextEntryKind(entry)
 		if kind != legacyThreadContextPolicyEntryKind && kind != legacyThreadContextStatusEntryKind && kind != legacyThreadContextCompactionEntryKind {
 			continue
 		}
-		runID := active[strings.TrimSpace(entry.TurnID)]
+		runID := active[turnID]
 		if runID == "" {
 			return nil, fmt.Errorf("context entry %q has no preceding canonical started run", entry.ID)
 		}

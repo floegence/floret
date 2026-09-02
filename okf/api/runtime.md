@@ -197,9 +197,11 @@ classifies only the exact Engine continuation user message paired with its
 `context_continue` save point as a control signal, restoring one canonical user
 input per Turn. Every other mismatch
 still fails closed. The v8 -> v9 edge moves context execution identity to the
-canonical entry and renames current context kinds. A historical mismatch is
-repaired only when the payload Thread is a verified fork ancestor and the
-entry exactly matches the canonical fork source copy; other drift fails closed.
+canonical entry and renames current context kinds. A Turn resumed after an
+interaction follows the latest canonical entry Run instead of the Turn's
+initial Run. A historical mismatch is repaired only when the payload Thread is
+a verified fork ancestor and the entry exactly matches the canonical fork
+source copy; other drift fails closed.
 This automatic domain convergence is separate from the explicit
 legacy physical conversion
 surface; normal startup never dual-reads or converts that external schema.

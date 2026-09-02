@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.1.2 - 2026-09-02
+
+- Migrate context records from Turns resumed after interaction boundaries by
+  following the Run identity on each canonical entry. A resumed Run no longer
+  gets mistaken for corruption merely because its Turn started under an older
+  Run.
+
 ## v7.1.1 - 2026-09-02
 
 - Make canonical context entries the sole source of Thread, Turn, and Run

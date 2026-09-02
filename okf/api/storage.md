@@ -35,8 +35,10 @@ continuation message immediately paired with its exact `context_continue` save
 point and classifies it as a control signal. Malformed or ambiguous pairs fail
 closed without changing the store. The v8 -> v9 edge removes duplicate
 Thread, Turn, and Run identity from context payloads and makes each canonical
-entry authoritative. It repairs the released fork mismatch only with exact
-fork ancestry and copied-entry evidence.
+entry authoritative. Within one Turn, a post-interaction Run advances from the
+latest canonical entry carrying `RunID`; it does not reuse the initial Run.
+The migration repairs the released fork mismatch only with exact fork ancestry
+and copied-entry evidence.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,

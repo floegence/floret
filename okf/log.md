@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-09-02
+* **Resumed-Run migration**: The v8 -> v9 context migration now follows Run
+  identity on canonical entries across interaction resumes within one Turn,
+  while continuing to reject payload and fork-lineage drift atomically.
 * **Schema v9 fork-context repair**: Context entries now own Thread, Turn, and
   Run identity without duplicating it in JSON payloads. The atomic v8 -> v9
   migration repairs only canonical fork copies whose payload Thread is a

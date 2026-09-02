@@ -14,7 +14,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func TestBackendDomainV8ToV9MigratesNormalAndNestedForkContext(t *testing.T) {
+func TestBackendDomainV8ToV9MigratesResumedAndNestedForkContext(t *testing.T) {
 	backend := newMigrationTestBackend()
 	fixture := installV8ThreadContextStore(t, backend, nil)
 
@@ -23,7 +23,7 @@ func TestBackendDomainV8ToV9MigratesNormalAndNestedForkContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, threadID := range []string{fixture.rootThreadID, fixture.directThreadID, fixture.nestedThreadID} {
-		assertV9ThreadContext(t, repo, threadID, fixture.turnID, fixture.runID)
+		assertV9ThreadContext(t, repo, threadID, fixture.turnID, fixture.runID, fixture.resumedRunID)
 	}
 	if got := migrationTestNamespaceRecords(t, backend, backendDomainV8Namespace); len(got) != 0 {
 		t.Fatalf("v8 records survived migration: %d", len(got))
@@ -193,6 +193,7 @@ type v8ThreadContextFixture struct {
 	nestedThreadID string
 	turnID         string
 	runID          string
+	resumedRunID   string
 }
 
 func installV8ThreadContextStore(t *testing.T, backend spi.Backend, mutate func(*MemoryRepo, v8ThreadContextFixture)) v8ThreadContextFixture {
@@ -204,6 +205,7 @@ func installV8ThreadContextStore(t *testing.T, backend spi.Backend, mutate func(
 		nestedThreadID: "thread-nested",
 		turnID:         "turn-context",
 		runID:          "run-context",
+		resumedRunID:   "run-context-resumed",
 	}
 	memory := newMemoryRepo(func() time.Time { return fixture.now })
 	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: fixture.rootThreadID, CreatedAt: fixture.now, UpdatedAt: fixture.now}); err != nil {
@@ -271,9 +273,46 @@ func installV8ThreadContextStore(t *testing.T, backend spi.Backend, mutate func(
 	}, AppendOptions{ID: "context-compaction", Now: compaction.ObservedAt}); err != nil {
 		t.Fatal(err)
 	}
+	resumedStatus := status
+	resumedStatus.RunID = identity.RunID(fixture.resumedRunID)
+	resumedStatus.RequestID = "request-context-resumed"
+	resumedStatus.ObservedAt = fixture.now.Add(4500 * time.Millisecond)
+	resumedStatusJSON, err := json.Marshal(resumedStatus)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := memory.Append(t.Context(), Entry{
-		ThreadID: fixture.rootThreadID, TurnID: fixture.turnID, RunID: fixture.runID,
-		Type: EntryTurnMarker, TurnStatus: TurnCompleted, Metadata: map[string]string{"run_id": fixture.runID},
+		ThreadID: fixture.rootThreadID, TurnID: fixture.turnID, RunID: fixture.resumedRunID, Type: EntryCustom,
+		Metadata: map[string]string{
+			threadContextKindKey:   legacyThreadContextStatusEntryKind,
+			threadContextTypeKey:   legacyThreadContextStatusEntryKind,
+			threadContextStatusKey: string(resumedStatusJSON),
+		},
+	}, AppendOptions{ID: "context-status-resumed", Now: resumedStatus.ObservedAt}); err != nil {
+		t.Fatal(err)
+	}
+	resumedCompaction := compaction
+	resumedCompaction.RunID = fixture.resumedRunID
+	resumedCompaction.OperationID = "compact-context-resumed"
+	resumedCompaction.RequestID = "compact-request-resumed"
+	resumedCompaction.ObservedAt = fixture.now.Add(4750 * time.Millisecond)
+	resumedCompactionJSON, err := json.Marshal(resumedCompaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.Append(t.Context(), Entry{
+		ThreadID: fixture.rootThreadID, TurnID: fixture.turnID, Type: EntryCustom,
+		Metadata: map[string]string{
+			threadContextKindKey:       legacyThreadContextCompactionEntryKind,
+			threadContextTypeKey:       legacyThreadContextCompactionEntryKind,
+			threadContextCompactionKey: string(resumedCompactionJSON),
+		},
+	}, AppendOptions{ID: "context-compaction-resumed", Now: resumedCompaction.ObservedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.Append(t.Context(), Entry{
+		ThreadID: fixture.rootThreadID, TurnID: fixture.turnID, RunID: fixture.resumedRunID,
+		Type: EntryTurnMarker, TurnStatus: TurnCompleted, Metadata: map[string]string{"run_id": fixture.resumedRunID},
 	}, AppendOptions{ID: "turn-completed", Now: fixture.now.Add(5 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +335,7 @@ func installV8ThreadContextStore(t *testing.T, backend spi.Backend, mutate func(
 	return fixture
 }
 
-func assertV9ThreadContext(t *testing.T, repo *BackendRepo, threadID, turnID, runID string) {
+func assertV9ThreadContext(t *testing.T, repo *BackendRepo, threadID, turnID string, runIDs ...string) {
 	t.Helper()
 	meta, err := repo.Thread(t.Context(), threadID)
 	if err != nil {
@@ -306,6 +345,12 @@ func assertV9ThreadContext(t *testing.T, repo *BackendRepo, threadID, turnID, ru
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantRunIDs := make(map[string]struct{}, len(runIDs))
+	for _, runID := range runIDs {
+		wantRunIDs[runID] = struct{}{}
+	}
+	statusRunIDs := make(map[string]struct{}, len(runIDs))
+	compactionRunIDs := make(map[string]struct{}, len(runIDs))
 	var policyCount, statusCount, compactionCount int
 	for _, entry := range entries {
 		switch ThreadContextEntryKind(entry) {
@@ -320,9 +365,10 @@ func assertV9ThreadContext(t *testing.T, repo *BackendRepo, threadID, turnID, ru
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status.ThreadID.String() != threadID || status.TurnID.String() != turnID || status.RunID.String() != runID {
+			if status.ThreadID.String() != threadID || status.TurnID.String() != turnID {
 				t.Fatalf("thread %q status identity=%#v", threadID, status)
 			}
+			statusRunIDs[status.RunID.String()] = struct{}{}
 			assertContextPayloadHasNoIdentity(t, entry.Metadata[threadContextStatusKey])
 		case ThreadContextCompactionEntryKind:
 			compactionCount++
@@ -330,16 +376,20 @@ func assertV9ThreadContext(t *testing.T, repo *BackendRepo, threadID, turnID, ru
 			if err != nil {
 				t.Fatal(err)
 			}
-			if compaction.ThreadID != threadID || compaction.TurnID != turnID || compaction.RunID != runID {
+			if compaction.ThreadID != threadID || compaction.TurnID != turnID {
 				t.Fatalf("thread %q compaction identity=%#v", threadID, compaction)
 			}
+			compactionRunIDs[compaction.RunID] = struct{}{}
 			assertContextPayloadHasNoIdentity(t, entry.Metadata[threadContextCompactionKey])
 		case legacyThreadContextPolicyEntryKind, legacyThreadContextStatusEntryKind, legacyThreadContextCompactionEntryKind:
 			t.Fatalf("thread %q retained legacy context entry %q", threadID, entry.ID)
 		}
 	}
-	if policyCount != 1 || statusCount != 1 || compactionCount != 1 {
+	if policyCount != 1 || statusCount != len(runIDs) || compactionCount != len(runIDs) {
 		t.Fatalf("thread %q context counts policy=%d status=%d compaction=%d", threadID, policyCount, statusCount, compactionCount)
+	}
+	if !reflect.DeepEqual(statusRunIDs, wantRunIDs) || !reflect.DeepEqual(compactionRunIDs, wantRunIDs) {
+		t.Fatalf("thread %q context run identities status=%v compaction=%v, want %v", threadID, statusRunIDs, compactionRunIDs, wantRunIDs)
 	}
 }
 
