@@ -2118,7 +2118,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 	}
 	completed, err := runner.ExecuteAccepted(ctx, acceptedTurnExecutionRequest{
 		Accepted: accepted, LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, TurnID: request.TurnID,
-		Input: request.Input, SupplementalContext: request.SupplementalContext, Labels: request.Labels,
+		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 	})

@@ -262,6 +262,7 @@ func (e *CommittedEffectError) Unwrap() error {
 
 type providerHost struct {
 	cfg                       runtimeConfig
+	runLabels                 RunLabels
 	store                     *runtimeStore
 	sink                      runtimeEventSink
 	harness                   *agentharness.AgentHarness
@@ -316,6 +317,7 @@ type providerHostOptions struct {
 	ToolSurfaceProvider      ToolSurfaceProvider
 	IDGenerator              func(string) string
 	LoopLimits               LoopLimits
+	RunLabels                RunLabels
 	SubAgentRunTimeout       time.Duration
 	Capabilities             CapabilityOptions
 	ThreadTitleMode          ThreadTitleMode
@@ -547,7 +549,6 @@ type runTurnRequest struct {
 	TurnID                      identity.TurnID
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
-	Labels                      RunLabels
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -570,6 +571,13 @@ func (r runTurnRequest) Validate() error {
 type RunLabels struct {
 	Correlation map[string]string `json:"correlation,omitempty"`
 	Host        map[string]string `json:"host,omitempty"`
+}
+
+func cloneRunLabels(labels RunLabels) RunLabels {
+	return RunLabels{
+		Correlation: cloneStringMap(labels.Correlation),
+		Host:        cloneStringMap(labels.Host),
+	}
 }
 
 type TurnResult struct {
@@ -1277,6 +1285,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	}
 	return &providerHost{
 		cfg:                       cfg,
+		runLabels:                 cloneRunLabels(opts.RunLabels),
 		store:                     store,
 		sink:                      runtimeSink,
 		harness:                   harness,
@@ -1416,6 +1425,10 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 	result, runErr := thread.ResumeInput(ctx, string(req.TurnID), string(req.WaitingRunID), req.Answer, agentharness.RunOptions{
 		LogicalRequestID: string(req.Options.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
+		Labels: engine.RunLabels{
+			Correlation: cloneStringMap(h.runLabels.Correlation),
+			Host:        cloneStringMap(h.runLabels.Host),
+		},
 		ControlSpec:    signals,
 		Reasoning:      projectedReasoningSelection(req.Options.Reasoning, h.cfg.Reasoning),
 		MaxInputTokens: req.Options.Limits.MaxInputTokens, MaxTotalTokens: req.Options.Limits.MaxTotalTokens,
@@ -1464,8 +1477,8 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		LogicalRequestID: string(req.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
-			Correlation: cloneStringMap(req.Labels.Correlation),
-			Host:        cloneStringMap(req.Labels.Host),
+			Correlation: cloneStringMap(h.runLabels.Correlation),
+			Host:        cloneStringMap(h.runLabels.Host),
 		},
 		ControlSpec:              validated.signalSpec,
 		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),

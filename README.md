@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v7@v7.0.5
+go get github.com/floegence/floret/v7@v7.1.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -96,6 +96,11 @@ context for the provider without adding a second canonical conversation
 message. The pre-dispatch checkpoint records only that an ephemeral overlay was
 present; it never stores the overlay, its payload hash, provider continuation,
 or overlay-derived request measurements.
+
+Hosts that need immutable execution metadata may construct an Agent with
+`runtime.WithAgentRunLabels`. Correlation labels remain observable, while the
+opaque Host map reaches provider requests, permission checks, and local tool
+invocations without becoming durable conversation state.
 
 Run it with `OPENAI_API_KEY=... go run ./cmd/examples/openai-sqlite`. The complete
 example also reads the authoritative assistant projection. `florettest` remains

@@ -1024,6 +1024,7 @@ func WithAgentEventSink func(sink github.com/floegence/floret/v7/runtime.EventSi
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v7/runtime.LoopLimits) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentManualCompactions func(source github.com/floegence/floret/v7/runtime.ManualCompactionSource) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentRunLabels func(labels github.com/floegence/floret/v7/runtime.RunLabels) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v7/runtime.ThreadTitleMode) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentTools func(items ...github.com/floegence/floret/v7/tools.Tool) github.com/floegence/floret/v7/runtime.AgentOption

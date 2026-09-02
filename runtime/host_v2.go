@@ -284,7 +284,7 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
 		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
 		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
-		LoopLimits: opts.loopLimits, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
+		LoopLimits: opts.loopLimits, RunLabels: opts.runLabels, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
 	})
 	if err != nil {
 		return nil, err
@@ -391,7 +391,6 @@ type turnExecutionRequest struct {
 	TurnID                      identity.TurnID
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
-	Labels                      RunLabels
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -422,7 +421,6 @@ type acceptedTurnExecutionRequest struct {
 	TurnID                      identity.TurnID
 	Input                       TurnInput
 	SupplementalContext         []TurnSupplementalContextItem
-	Labels                      RunLabels
 	Signals                     TurnSignalSpec
 	Limits                      TurnLimits
 	Reasoning                   config.ReasoningSelection
@@ -448,8 +446,8 @@ func (runner *turnRunnerHandle) ExecuteAccepted(ctx context.Context, request acc
 	return runner.inner.ExecuteAcceptedTurn(ctx, request.Accepted, runTurnRequest{
 		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
-		Labels: request.Labels, Signals: request.Signals,
-		Limits: request.Limits, Reasoning: request.Reasoning,
+		Signals: request.Signals,
+		Limits:  request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 		PromotedQueueID:             request.PromotedQueueID,
 		PromotionRequestKey:         request.PromotionRequestKey,
@@ -571,6 +569,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
 		loopLimits: agent.loopLimits, capabilities: agent.capabilities,
+		runLabels:       cloneRunLabels(agent.runLabels),
 		threadTitleMode: agent.threadTitleMode, initialized: true,
 	}
 }

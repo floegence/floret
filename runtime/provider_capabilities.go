@@ -43,6 +43,7 @@ type turnExecutionOptions struct {
 	toolSurfaceProvider      ToolSurfaceProvider
 	idGenerator              func(string) string
 	loopLimits               LoopLimits
+	runLabels                RunLabels
 	capabilities             CapabilityOptions
 	threadTitleMode          ThreadTitleMode
 	initialized              bool

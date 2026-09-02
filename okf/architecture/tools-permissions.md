@@ -55,6 +55,11 @@ execution path without moving product modes or approval UI into Floret.
 Hosted provider tools are provider-native capabilities. They are not dispatched
 by the local tool runtime and must not be treated as ordinary local handlers.
 
+`runtime.WithAgentRunLabels` carries immutable correlation and opaque host
+context through provider requests, permission gates, and local tool
+invocations. The maps are execution metadata, not authorization evidence;
+effect gates still validate current host policy before dispatch.
+
 # Dynamic Tool Surfaces
 
 `runtime.ToolSurfaceProvider` is the public host hook for resolving the active

@@ -20,7 +20,9 @@ host composition root
 ```
 
 `Host` owns backend lifetime and capability issuance. `Agent` owns immutable
-execution configuration without durable conversation identity. `AgentHarness`
+execution configuration and run labels without durable conversation identity.
+The provider host applies those labels at its fresh and resumed execution
+entry points, so command paths cannot create competing metadata flows. `AgentHarness`
 owns journals, turns, retries, forks, titles, approvals, todos, SubAgents, and
 projection. `Engine` owns one run's provider loop, tool dispatch, compaction
 decision, control signals, and events. Gateway owns transport and provider

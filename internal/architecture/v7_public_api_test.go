@@ -55,6 +55,7 @@ func TestV7PublicAPIAvoidsRemovedLifecycleFacades(t *testing.T) {
 		"field ThreadItem.RunID", "field ThreadInteraction.RunID",
 		"type ThreadRunProgress struct", "field ThreadView.RunID", "field ThreadSummary.RunProgress",
 		"field AgentRequest.CanonicalTurnInput",
+		"func WithAgentRunLabels func(labels github.com/floegence/floret/v7/runtime.RunLabels) github.com/floegence/floret/v7/runtime.AgentOption",
 		"type StartupPhase string", "type StartupProgress interface", "type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)",
 		"field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress",
 	} {

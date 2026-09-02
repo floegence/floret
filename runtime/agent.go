@@ -21,6 +21,7 @@ type Agent struct {
 	toolSurface         ToolSurfaceProvider
 	idGenerator         func(string) string
 	loopLimits          LoopLimits
+	runLabels           RunLabels
 	capabilities        CapabilityOptions
 	threadTitleMode     ThreadTitleMode
 	subAgentRunTimeout  time.Duration
@@ -173,6 +174,15 @@ func WithAgentIDGenerator(generator func(string) string) AgentOption {
 func WithAgentLoopLimits(limits LoopLimits) AgentOption {
 	return AgentOption{category: "loop_limits", apply: func(builder *agentBuilder) error {
 		builder.agent.loopLimits = limits
+		return nil
+	}}
+}
+
+// WithAgentRunLabels snapshots provider-neutral correlation labels and opaque
+// host execution context for every run executed by the Agent.
+func WithAgentRunLabels(labels RunLabels) AgentOption {
+	return AgentOption{category: "run_labels", apply: func(builder *agentBuilder) error {
+		builder.agent.runLabels = cloneRunLabels(labels)
 		return nil
 	}}
 }

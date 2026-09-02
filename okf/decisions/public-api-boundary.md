@@ -37,3 +37,9 @@ approval.
 v7. It reports product-neutral migration and verification phases
 synchronously. Storage rows, counts, schema versions, and downstream UI policy
 remain outside the public API.
+
+`runtime.WithAgentRunLabels` is the v7.1 execution-metadata addition. It
+snapshots correlation and opaque host maps on an immutable Agent. One
+provider-host boundary applies those labels to fresh and resumed execution;
+they do not become conversation identity, durable state, or authorization by
+themselves.

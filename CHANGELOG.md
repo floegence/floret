@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.1.0 - 2026-09-02
+
+- Add `runtime.WithAgentRunLabels` so immutable Agents carry correlation and
+  opaque host execution context through provider, permission, and tool calls.
+- Apply Agent labels at the single provider-host execution boundary for fresh
+  Turns and Ask User continuation, preventing command-specific paths from
+  dropping effect authorization context.
+
 ## v7.0.5 - 2026-09-01
 
 - Reset the latest per-request context usage when a new canonical Turn policy
