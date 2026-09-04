@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.1.3 - 2026-09-04
+
+- Treat every failed control projection as a terminal control failure. Invalid
+  `ask_user` calls no longer create pending input, including when reading
+  historical `waiting + control_error` records.
+- Pair failed control calls with a safe provider-visible error result so a
+  later Turn can continue without exposing arguments or validation details.
+
 ## v7.1.2 - 2026-09-02
 
 - Migrate context records from Turns resumed after interaction boundaries by

@@ -1187,6 +1187,98 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	}
 }
 
+func TestThreadServiceFailedAskUserRecoversAfterRestartWithPairedHistory(t *testing.T) {
+	path := t.TempDir() + "/failed-control-recovery.db"
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "invalid-ask", Name: "ask_user", Args: `{"required_from_user":"city"}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "recovered"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	agent, err := NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.",
+		Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstService, err := firstHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := firstService.Create(t.Context(), CreateThreadInput{RequestKey: "create-failed-control-recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstService.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "begin"}, RequestKey: "send-invalid-control"}); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitThreadView(t, firstService, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+	})
+	if *failed.LastOutcome != TurnOutcomeFailed || failed.Failure == nil || failed.Failure.Code != ThreadTurnFailureControlError || len(failed.Interactions) != 0 {
+		t.Fatalf("failed view=%#v", failed)
+	}
+	encodedFailed, err := json.Marshal(failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encodedFailed, []byte(`"questions":null`)) {
+		t.Fatalf("failed view exposed null questions: %s", encodedFailed)
+	}
+	if err := firstHost.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedHost, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedHost.Shutdown(context.Background()) })
+	reopenedService, err := reopenedHost.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := reopenedService.View(t.Context(), created.ThreadID)
+	if err != nil || reopened.LastOutcome == nil || *reopened.LastOutcome != TurnOutcomeFailed || len(reopened.Interactions) != 0 {
+		t.Fatalf("reopened failed view=%#v err=%v", reopened, err)
+	}
+	if _, err := reopenedService.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "send-after-failed-control"}); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitThreadView(t, reopenedService, created.ThreadID, func(view ThreadView) bool {
+		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && view.TurnID != failed.TurnID
+	})
+	if *completed.LastOutcome != TurnOutcomeCompleted || completed.Failure != nil {
+		t.Fatalf("recovered view=%#v", completed)
+	}
+	requests := gateway.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(requests))
+	}
+	calls, results := 0, 0
+	for _, message := range requests[1].Messages {
+		for _, call := range message.ToolCalls {
+			if call.ID == "invalid-ask" && call.Name == "ask_user" {
+				calls++
+			}
+		}
+		if message.ToolResult != nil && message.ToolResult.CallID == "invalid-ask" && message.ToolResult.ToolName == "ask_user" && message.ToolResult.Text == `{"type":"control_result","outcome":"failed"}` {
+			results++
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("failed control provider pair=(calls:%d results:%d) messages=%#v", calls, results, requests[1].Messages)
+	}
+}
+
 func TestThreadServiceSecretInputIsEphemeralAndCanonicallyRedacted(t *testing.T) {
 	const secret = "secret-sentinel-never-persist"
 	gateway := florettest.NewScriptedGateway(
@@ -2084,6 +2176,36 @@ func TestThreadRuntimeItemsRejectMissingOrConflictingRunIdentity(t *testing.T) {
 		Type: sessiontree.EntryInteractionAsked, Payload: payload,
 	}}); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatalf("conflicting run error=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
+func TestThreadRuntimeIgnoresHistoricalInteractionForFailedControl(t *testing.T) {
+	failed := sessiontree.Entry{
+		ID: "failed-control", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall,
+		Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolCallID: "invalid-ask", ToolName: "ask_user", ControlSignal: &session.ControlSignalView{
+			Name: "ask_user", CallID: "invalid-ask", Disposition: string(SignalWaiting), ErrorCode: session.ControlSignalErrorCodeControlError,
+		}},
+	}
+	late := sessiontree.Entry{ID: "interaction-requested:invalid-ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryInteractionAsked, Payload: json.RawMessage(`null`)}
+	items, interactions, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{failed, late})
+	if err != nil || len(items) != 0 || len(interactions) != 0 {
+		t.Fatalf("historical failed projection=(items=%#v interactions=%#v err=%v)", items, interactions, err)
+	}
+	summary, err := threadSummaryFromCanonicalPath(sessiontree.ThreadMeta{ID: "thread"}, []sessiontree.Entry{failed, late})
+	if err != nil || summary.Attention.InputCount != 0 || summary.PendingInput != nil {
+		t.Fatalf("historical failed summary=%#v err=%v", summary, err)
+	}
+}
+
+func TestThreadRuntimeRejectsMalformedWaitingControlWithoutError(t *testing.T) {
+	_, _, err := threadRuntimeItemsFromEntries([]sessiontree.Entry{{
+		ID: "invalid-wait", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall,
+		Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolCallID: "invalid-ask", ToolName: "ask_user", ControlSignal: &session.ControlSignalView{
+			Name: "ask_user", CallID: "invalid-ask", Disposition: string(SignalWaiting), Payload: map[string]any{"questions": nil},
+		}},
+	}})
+	if !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("malformed waiting error=%v, want ErrAuthorityCorrupt", err)
 	}
 }
 

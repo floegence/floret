@@ -1981,7 +1981,7 @@ func TestMalformedControlPreservesAssistantTextAndUsesControlFailure(t *testing.
 	}
 	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
 		return msg.Role == session.Assistant && msg.Kind == session.MessageKindControlSignal && msg.ToolName == "ask_user" && msg.ToolCallID == "ask-invalid" &&
-			msg.ControlSignal != nil && msg.ControlSignal.Disposition == string(engine.ControlWaiting) &&
+			msg.ControlSignal != nil && msg.ControlSignal.Disposition == "failed" &&
 			msg.ControlSignal.ErrorCode == session.ControlSignalErrorCodeControlError
 	}) {
 		t.Fatalf("malformed control identity missing from transcript: %#v", got.Messages)
@@ -1989,7 +1989,7 @@ func TestMalformedControlPreservesAssistantTextAndUsesControlFailure(t *testing.
 	if !slices.ContainsFunc(rec.Snapshot(), func(ev event.Event) bool {
 		metadata, _ := ev.Metadata.(map[string]any)
 		return ev.Type == event.ControlSignal && ev.ToolName == "ask_user" && ev.ToolID == "ask-invalid" &&
-			ev.Err != "" && metadata["control_disposition"] == string(engine.ControlWaiting) &&
+			ev.Err != "" && metadata["control_disposition"] == "failed" &&
 			metadata["control_error_code"] == session.ControlSignalErrorCodeControlError
 	}) {
 		t.Fatalf("malformed control event missing typed identity and error: %#v", rec.Snapshot())

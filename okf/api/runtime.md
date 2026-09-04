@@ -175,6 +175,12 @@ calls. Public Ask User answers appear once in the paired tool result. Secret
 answers leave a redacted result and reach only the current resume request as an
 ephemeral overlay.
 
+Pending Ask User input requires a validated, non-error control signal with at
+least one complete question. A failed projection terminates the Turn and never
+creates an interaction. Current views, summaries, live events, and restart
+recovery apply the same classification; historical `waiting + control_error`
+facts are read as failures and receive a safe paired provider error result.
+
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->

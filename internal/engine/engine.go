@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/memory"
 	"github.com/floegence/floret/v7/internal/provider"
@@ -3738,6 +3739,10 @@ func trailingWaitingControlCall(history []session.Message) (session.Message, boo
 	}
 	signal, ok := persistedControlSignal(message)
 	if !ok || signal.Disposition != ControlWaiting {
+		return session.Message{}, false
+	}
+	switch controlstate.Classify(message.ControlSignal) {
+	case controlstate.Failed, controlstate.Invalid:
 		return session.Message{}, false
 	}
 	return message, true

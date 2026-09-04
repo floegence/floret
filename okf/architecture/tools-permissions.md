@@ -84,6 +84,13 @@ values stay outside canonical history. Canonical lineage hashes those typed
 facts without journal entry identities, so the same unavailable-tool pair
 remains append-only after an active loop is reconstructed for a later Turn.
 
+Only a successfully validated `ask_user` signal with at least one complete
+question creates pending input. A projection carrying `control_error` is a
+terminal control failure even when an older record says `waiting`; a matching
+late interaction is ignored. Provider history pairs that failed call with one
+safe error result containing only the failed outcome, so later Turns remain
+valid without exposing arguments or validation details.
+
 An omitted (`nil`) local definition list derives provider definitions from the
 returned registry; an explicit empty list clears them. Hosted definitions use
 the same omitted-versus-explicit-empty contract against their configured

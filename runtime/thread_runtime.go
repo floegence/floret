@@ -16,6 +16,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/agentharness"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessionlifecycle"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -928,21 +929,38 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 	}
 	interactions := make(map[string]ThreadInteraction)
 	interactionOrder := make([]string, 0)
+	failedControls := make(map[string]threadControlIdentity)
 	for _, entry := range path {
 		switch entry.Type {
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
-			if entry.Message.Kind != "control_signal" || entry.Message.ControlSignal == nil || entry.Message.ControlSignal.Disposition != string(SignalWaiting) {
+			if entry.Message.Kind != session.MessageKindControlSignal || entry.Message.ControlSignal == nil {
 				continue
 			}
 			signal := entry.Message.ControlSignal
+			input, classification, inputErr := waitingInputFromControlSignal(signal)
+			if inputErr != nil {
+				return ThreadSummary{}, inputErr
+			}
+			if classification == controlstate.Failed {
+				failedControls[signal.CallID] = threadControlIdentity{turnID: entry.TurnID, runID: entry.RunID}
+				delete(interactions, signal.CallID)
+				continue
+			}
+			if classification != controlstate.WaitingInput {
+				continue
+			}
 			if _, found := interactions[signal.CallID]; !found {
 				interactionOrder = append(interactionOrder, signal.CallID)
 			}
 			interactions[signal.CallID] = ThreadInteraction{
 				ID: signal.CallID, TurnID: identity.TurnID(entry.TurnID), Kind: ThreadInteractionInput,
-				Input: inputPresentationFromControlSignal(signal.OutputText, signal.Payload),
+				Input: input,
 			}
 		case sessiontree.EntryInteractionAsked:
+			interactionID := strings.TrimPrefix(entry.ID, "interaction-requested:")
+			if failed, ok := failedControls[interactionID]; ok && failed.turnID == entry.TurnID && failed.runID == entry.RunID {
+				continue
+			}
 			var interaction ThreadInteraction
 			if err := json.Unmarshal(entry.Payload, &interaction); err != nil {
 				return ThreadSummary{}, fmt.Errorf("decode interaction %q: %w", entry.ID, err)
@@ -2467,8 +2485,10 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 	}
 	if event.Type == observation.EventTypeThreadEntryCommitted && event.committed != nil && event.committed.ToolCall != nil && event.committed.ToolCall.ControlSignal != nil {
 		signal := event.committed.ToolCall.ControlSignal
-		if signal.Disposition == string(SignalWaiting) && strings.TrimSpace(signal.CallID) != "" {
-			interaction := ThreadInteraction{ID: signal.CallID, TurnID: event.TurnID, RunID: event.RunID, Kind: ThreadInteractionInput, Input: inputPresentationFromControlSignal(signal.Text, signal.Payload)}
+		view := &session.ControlSignalView{Name: signal.Name, CallID: signal.CallID, Disposition: signal.Disposition, ErrorCode: signal.ErrorCode, OutputText: signal.Text, Payload: signal.Payload}
+		input, classification, _ := waitingInputFromControlSignal(view)
+		if classification == controlstate.WaitingInput && strings.TrimSpace(signal.CallID) != "" {
+			interaction := ThreadInteraction{ID: signal.CallID, TurnID: event.TurnID, RunID: event.RunID, Kind: ThreadInteractionInput, Input: input}
 			go func() {
 				_, _ = sink.service.requestInteraction(context.Background(), actor, event.ThreadID, interaction)
 			}()
@@ -3676,6 +3696,7 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 	assistantCounts := make(map[identity.TurnID]int)
 	reasoningOpen := make(map[string]bool)
 	lastReasoning := make(map[string]string)
+	failedControls := make(map[string]threadControlIdentity)
 	appendReasoning := func(turnID identity.TurnID, runID identity.RunID, text string, createdAt time.Time) {
 		executionKey := threadExecutionKey(turnID, runID)
 		if text == "" || reasoningOpen[executionKey] && lastReasoning[executionKey] == text {
@@ -3724,8 +3745,16 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			}
 			if entry.Message.Kind == "control_signal" && entry.Message.ControlSignal != nil {
 				signal := entry.Message.ControlSignal
-				if signal.Disposition == string(SignalWaiting) {
-					interaction := ThreadInteraction{ID: signal.CallID, TurnID: turnID, RunID: runID, Kind: ThreadInteractionInput, Input: inputPresentationFromControlSignal(signal.OutputText, signal.Payload)}
+				input, classification, inputErr := waitingInputFromControlSignal(signal)
+				if inputErr != nil {
+					return nil, nil, inputErr
+				}
+				if classification == controlstate.Failed {
+					failedControls[signal.CallID] = threadControlIdentity{turnID: entry.TurnID, runID: entry.RunID}
+					continue
+				}
+				if classification == controlstate.WaitingInput {
+					interaction := ThreadInteraction{ID: signal.CallID, TurnID: turnID, RunID: runID, Kind: ThreadInteractionInput, Input: input}
 					interactionIndex[interaction.ID] = len(interactions)
 					interactions = append(interactions, interaction)
 					copy := interaction
@@ -3760,6 +3789,10 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				return nil, nil, decodeErr
 			}
 		case sessiontree.EntryInteractionAsked:
+			interactionID := strings.TrimPrefix(entry.ID, "interaction-requested:")
+			if failed, ok := failedControls[interactionID]; ok && failed.turnID == entry.TurnID && failed.runID == entry.RunID {
+				continue
+			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return nil, nil, identityErr
@@ -3892,6 +3925,27 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.Activit
 
 func threadToolSegmentID(turnID identity.TurnID, toolCallID string) string {
 	return "tool:" + turnID.String() + ":" + strings.TrimSpace(toolCallID)
+}
+
+type threadControlIdentity struct {
+	turnID string
+	runID  string
+}
+
+func waitingInputFromControlSignal(signal *session.ControlSignalView) (*InputPresentation, controlstate.Classification, error) {
+	classification := controlstate.Classify(signal)
+	switch classification {
+	case controlstate.WaitingInput:
+		presentation := inputPresentationFromControlSignal(signal.OutputText, signal.Payload)
+		if len(presentation.Questions) == 0 {
+			return nil, controlstate.Invalid, ErrAuthorityCorrupt
+		}
+		return presentation, classification, nil
+	case controlstate.Invalid:
+		return nil, classification, fmt.Errorf("%w: invalid waiting ask_user control signal %q", ErrAuthorityCorrupt, strings.TrimSpace(signal.CallID))
+	default:
+		return nil, classification, nil
+	}
 }
 
 func inputPresentationFromControlSignal(text string, payload map[string]any) *InputPresentation {

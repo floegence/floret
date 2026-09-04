@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
@@ -584,6 +585,16 @@ type runtimePendingInteraction struct {
 }
 
 func runtimePendingInteractions(entries []Entry, turnID string) []runtimePendingInteraction {
+	failedControls := make(map[string]runtimePendingInteraction)
+	for _, entry := range entries {
+		if entry.TurnID != turnID || entry.Type != EntryToolCall || entry.Message.Kind != session.MessageKindControlSignal || controlstate.Classify(entry.Message.ControlSignal) != controlstate.Failed {
+			continue
+		}
+		callID := strings.TrimSpace(entry.Message.ControlSignal.CallID)
+		if callID != "" {
+			failedControls[callID] = runtimePendingInteraction{ID: callID, TurnID: entry.TurnID, RunID: entry.RunID}
+		}
+	}
 	pending := make(map[string]runtimePendingInteraction)
 	order := make([]string, 0)
 	for _, entry := range entries {
@@ -593,6 +604,9 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 		switch entry.Type {
 		case EntryInteractionAsked:
 			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
+			if failed, ok := failedControls[id]; ok && failed.TurnID == entry.TurnID && failed.RunID == entry.RunID {
+				continue
+			}
 			if _, exists := pending[id]; !exists {
 				order = append(order, id)
 			}
@@ -712,19 +726,7 @@ func runtimeActiveTurn(entries []Entry) (string, bool) {
 }
 
 func runtimeTurnHasPendingInteraction(entries []Entry, turnID string) bool {
-	pending := make(map[string]struct{})
-	for _, entry := range entries {
-		if entry.TurnID != turnID {
-			continue
-		}
-		switch entry.Type {
-		case EntryInteractionAsked:
-			pending[strings.TrimPrefix(entry.ID, "interaction-requested:")] = struct{}{}
-		case EntryInteractionDone:
-			delete(pending, strings.TrimPrefix(entry.ID, "interaction-resolved:"))
-		}
-	}
-	return len(pending) != 0
+	return len(runtimePendingInteractions(entries, turnID)) != 0
 }
 
 func runtimeQueueContains(entries []Entry, queueID string) bool {

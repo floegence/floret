@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
@@ -2375,15 +2376,25 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 			msg.ParentEntryID = entry.ParentID
 			msg.Activity = nil
 			messages = append(messages, msg)
-			if entry.Type == EntryToolCall && msg.Kind == session.MessageKindControlSignal && msg.ControlSignal != nil && strings.TrimSpace(msg.ControlSignal.Disposition) == "terminal" {
-				content, err := json.Marshal(interactionResponseMessage{Type: "control_result", Outcome: "completed"})
-				if err != nil {
-					return nil, fmt.Errorf("%w: encode terminal control result: %v", ErrAuthorityCorrupt, err)
+			if entry.Type == EntryToolCall && msg.Kind == session.MessageKindControlSignal && msg.ControlSignal != nil {
+				outcome := ""
+				status := ""
+				switch {
+				case controlstate.Classify(msg.ControlSignal) == controlstate.Failed:
+					outcome, status = "failed", "error"
+				case strings.TrimSpace(msg.ControlSignal.Disposition) == "terminal":
+					outcome, status = "completed", "success"
 				}
-				messages = append(messages, session.Message{
-					Role: session.Tool, Content: string(content), ToolCallID: msg.ToolCallID, ToolName: msg.ToolName,
-					EntryID: entry.ID + ":result", ParentEntryID: entry.ID, ToolResult: &session.ToolResultView{Status: "success"},
-				})
+				if outcome != "" {
+					content, err := json.Marshal(interactionResponseMessage{Type: "control_result", Outcome: outcome})
+					if err != nil {
+						return nil, fmt.Errorf("%w: encode terminal control result: %v", ErrAuthorityCorrupt, err)
+					}
+					messages = append(messages, session.Message{
+						Role: session.Tool, Content: string(content), ToolCallID: msg.ToolCallID, ToolName: msg.ToolName,
+						EntryID: entry.ID + ":result", ParentEntryID: entry.ID, ToolResult: &session.ToolResultView{Status: status},
+					})
+				}
 			}
 		}
 	case EntryInteractionDone:

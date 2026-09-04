@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-04
+* **Failed control recovery**: Invalid Ask User projections now terminate
+  without pending input. Runtime views and provider history classify historical
+  `waiting + control_error` facts as failures, ignore only their matching late
+  interactions, and pair each failed call with one safe error result.
+
 ## 2026-09-02
 * **Resumed-Run migration**: The v8 -> v9 context migration now follows Run
   identity on canonical entries across interaction resumes within one Turn,

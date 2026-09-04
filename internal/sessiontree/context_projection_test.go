@@ -86,6 +86,48 @@ func TestBuildContextPairsRetiredTerminalControlWithoutDefinition(t *testing.T) 
 	}
 }
 
+func TestBuildContextPairsFailedControlWithoutLeakingValidationDetails(t *testing.T) {
+	for _, disposition := range []string{"failed", "waiting"} {
+		t.Run(disposition, func(t *testing.T) {
+			path := []Entry{{
+				ID: "failed-control", Type: EntryToolCall,
+				Message: session.Message{
+					Role: session.Assistant, Content: "tool_call", Kind: session.MessageKindControlSignal,
+					ToolCallID: "invalid-ask", ToolName: "ask_user", ToolArgs: `{"secret":"must-not-leak"}`,
+					ControlSignal: &session.ControlSignalView{Name: "ask_user", CallID: "invalid-ask", Disposition: disposition, ErrorCode: session.ControlSignalErrorCodeControlError},
+				},
+			}}
+			messages, err := BuildContextChecked(path, ContextOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(messages) != 2 || messages[1].Role != session.Tool || messages[1].ToolCallID != "invalid-ask" || messages[1].ToolName != "ask_user" || messages[1].ToolResult == nil || messages[1].ToolResult.Status != "error" {
+				t.Fatalf("failed control pair=%#v", messages)
+			}
+			if messages[1].Content != `{"type":"control_result","outcome":"failed"}` || strings.Contains(messages[1].Content, "must-not-leak") {
+				t.Fatalf("failed control result=%q", messages[1].Content)
+			}
+		})
+	}
+}
+
+func TestRuntimePendingInteractionsIgnoreOnlyMatchingFailedControl(t *testing.T) {
+	failed := Entry{
+		ID: "failed-control", TurnID: "turn", RunID: "run", Type: EntryToolCall,
+		Message: session.Message{Kind: session.MessageKindControlSignal, ControlSignal: &session.ControlSignalView{
+			Name: "ask_user", CallID: "invalid-ask", Disposition: "waiting", ErrorCode: session.ControlSignalErrorCodeControlError,
+		}},
+	}
+	matching := Entry{ID: "interaction-requested:invalid-ask", TurnID: "turn", RunID: "run", Type: EntryInteractionAsked}
+	if got := runtimePendingInteractions([]Entry{failed, matching}, "turn"); len(got) != 0 {
+		t.Fatalf("matching failed interaction remained pending: %#v", got)
+	}
+	unrelated := Entry{ID: "interaction-requested:other", TurnID: "turn", RunID: "run", Type: EntryInteractionAsked}
+	if got := runtimePendingInteractions([]Entry{failed, unrelated}, "turn"); len(got) != 1 || got[0].ID != "other" {
+		t.Fatalf("unrelated interaction=%#v, want one pending interaction", got)
+	}
+}
+
 func TestBuildContextRejectsInteractionAnswerWithoutAskUserCall(t *testing.T) {
 	_, err := BuildContextChecked([]Entry{{
 		ID: "interaction-resolved:missing", Type: EntryInteractionDone,

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/control"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
@@ -19,6 +20,7 @@ const (
 	// synthetic tool result and continue the run.
 	ControlContinue ControlDisposition = "continue"
 	ControlWaiting  ControlDisposition = "waiting"
+	controlFailed   ControlDisposition = controlstate.FailedDisposition
 )
 
 type ControlSignal struct {
@@ -36,12 +38,8 @@ type ControlSignal struct {
 }
 
 func failedControlSignal(call provider.ToolCall) ControlSignal {
-	disposition := ControlContinue
-	if strings.TrimSpace(call.Name) == control.AskUserTool {
-		disposition = ControlWaiting
-	}
 	return ControlSignal{
-		Disposition: disposition,
+		Disposition: controlFailed,
 		Name:        strings.TrimSpace(call.Name),
 		CallID:      strings.TrimSpace(call.ID),
 		ArgsHash:    providerStableHash(call.Args),
