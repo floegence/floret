@@ -3109,8 +3109,28 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 
 func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.T) {
 	gateway := newBlockingThreadGateway()
-	host, typed := testThreadService(t, gateway)
-	service := typed.(*threadRuntimeService)
+	agent, err := testAgent(gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var factoryCalls atomic.Int32
+	secondFactory := make(chan struct{})
+	var secondFactoryOnce sync.Once
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	serviceValue, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) {
+		if factoryCalls.Add(1) == 2 {
+			secondFactoryOnce.Do(func() { close(secondFactory) })
+		}
+		return agent, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := serviceValue.(*threadRuntimeService)
 	subscription, err := service.Subscribe(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -3129,6 +3149,7 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	case <-time.After(3 * time.Second):
 		t.Fatal("provider did not start")
 	}
+	waitForAtomic(t, &factoryCalls, 1)
 	actor := service.runtime(created.ThreadID)
 	var runID identity.RunID
 	if err := actor.apply(t.Context(), func() error { runID = actor.state.runID; return nil }); err != nil {
@@ -3219,7 +3240,15 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 		if got := gateway.requests.Load(); got != 1 {
 			t.Fatalf("provider requests=%d, want one dispatch", got)
 		}
+		select {
+		case <-secondFactory:
+			t.Fatalf("agent factory calls=%d, want one dispatch", factoryCalls.Load())
+		default:
+		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if got := factoryCalls.Load(); got != 1 {
+		t.Fatalf("agent factory calls=%d, want one dispatch", got)
 	}
 }
 
