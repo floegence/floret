@@ -3017,6 +3017,12 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 	}
 	now := time.Now().UTC()
 	replayedRespond := false
+	resumedLocally := make(map[string]bool, len(resolutions))
+	type waiterDelivery struct {
+		waiter     chan InteractionResolution
+		resolution InteractionResolution
+	}
+	waiters := make([]waiterDelivery, 0, len(resolutions))
 	if err := actor.apply(ctx, func() error {
 		if existing, found := actor.state.requestKeys[requestKey]; found {
 			if existing.fingerprint != answerFingerprint {
@@ -3041,6 +3047,11 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		for id, resolution := range resolutions {
 			resolution.At = now
 			resolveThreadInteractionCanonical(&actor.state.view, id, resolution)
+			if pending := actor.state.pendingInteractions[id]; pending != nil {
+				delete(actor.state.pendingInteractions, id)
+				resumedLocally[id] = true
+				waiters = append(waiters, waiterDelivery{waiter: pending.resolution, resolution: resolution})
+			}
 		}
 		normalizeActiveThreadRunProgress(&actor.state.view)
 		if actor.state.requestKeys == nil {
@@ -3055,9 +3066,12 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 	if replayedRespond {
 		return service.currentView(actor), nil
 	}
+	for _, delivery := range waiters {
+		delivery.waiter <- delivery.resolution
+	}
 	view := service.currentView(actor)
 	service.publish(view)
-	go service.resumeCanonicalInteractions(actor, threadID, resolutions, secretInputs, pendingAnswers, byID)
+	go service.resumeCanonicalInteractions(actor, threadID, resolutions, secretInputs, pendingAnswers, byID, resumedLocally)
 	return view, nil
 }
 
@@ -3079,18 +3093,7 @@ func (service *threadRuntimeService) appendRuntimeFactsError(ctx context.Context
 	return nil
 }
 
-func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRuntimeState, threadID identity.ThreadID, resolutions map[string]InteractionResolution, secretInputs map[string]map[string]string, answers []InteractionAnswer, interactions map[string]ThreadInteraction) {
-	resumedLocally := make(map[string]bool, len(resolutions))
-	_ = actor.apply(context.Background(), func() error {
-		for id, resolution := range resolutions {
-			if pending := actor.state.pendingInteractions[id]; pending != nil {
-				pending.resolution <- resolution
-				delete(actor.state.pendingInteractions, id)
-				resumedLocally[id] = true
-			}
-		}
-		return nil
-	})
+func (service *threadRuntimeService) resumeCanonicalInteractions(actor *threadRuntimeState, threadID identity.ThreadID, resolutions map[string]InteractionResolution, secretInputs map[string]map[string]string, answers []InteractionAnswer, interactions map[string]ThreadInteraction, resumedLocally map[string]bool) {
 	recoverApproval := false
 	for _, answer := range answers {
 		interactionID := strings.TrimSpace(answer.InteractionID)

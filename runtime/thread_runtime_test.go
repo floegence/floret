@@ -36,10 +36,11 @@ func (source *oneShotThreadContextCompaction) PollManualCompaction(context.Conte
 }
 
 type blockingThreadGateway struct {
-	started  chan struct{}
-	release  chan struct{}
-	once     sync.Once
-	requests atomic.Int32
+	started       chan struct{}
+	secondStarted chan struct{}
+	release       chan struct{}
+	once          sync.Once
+	requests      atomic.Int32
 }
 
 type continuationLiveGateway struct {
@@ -254,7 +255,7 @@ func (gateway *automaticTitleGateway) Stream(_ context.Context, request provider
 }
 
 func newBlockingThreadGateway() *blockingThreadGateway {
-	return &blockingThreadGateway{started: make(chan struct{}), release: make(chan struct{})}
+	return &blockingThreadGateway{started: make(chan struct{}), secondStarted: make(chan struct{}), release: make(chan struct{})}
 }
 
 func newContinuationLiveGateway() *continuationLiveGateway {
@@ -326,7 +327,9 @@ func (*blockingThreadGateway) Capabilities() provider.Capabilities {
 }
 
 func (gateway *blockingThreadGateway) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
-	gateway.requests.Add(1)
+	if gateway.requests.Add(1) == 2 {
+		close(gateway.secondStarted)
+	}
 	gateway.once.Do(func() { close(gateway.started) })
 	events := make(chan provider.Event, 2)
 	go func() {
@@ -3018,7 +3021,6 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(releaseAppend) })
-		host.store.repo = originalRepo
 	})
 	type interactionRequestResult struct {
 		waiter *pendingThreadInteraction
@@ -3066,6 +3068,11 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 	case <-time.After(3 * time.Second):
 		t.Fatal("approval waiter was not resumed")
 	}
+	select {
+	case <-gateway.secondStarted:
+		t.Fatal("responding to a locally waiting approval redispatched the provider")
+	case <-time.After(250 * time.Millisecond):
+	}
 	pendingInteractions := 0
 	if err := actor.apply(t.Context(), func() error {
 		pendingInteractions = len(actor.state.pendingInteractions)
@@ -3076,8 +3083,118 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 	if pendingInteractions != 0 {
 		t.Fatalf("pending interactions after response = %d", pendingInteractions)
 	}
-	host.store.repo = originalRepo
 	_, _ = service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-approval-view"})
+}
+
+func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	subscription, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-approval-claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "approve"}, RequestKey: "send-approval-claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gateway.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	actor := service.runtime(created.ThreadID)
+	var runID identity.RunID
+	if err := actor.apply(t.Context(), func() error { runID = actor.state.runID; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	interaction := ThreadInteraction{ID: "approval:claim", TurnID: started.TurnID, RunID: runID, Kind: ThreadInteractionApproval, ToolCallID: "call-claim"}
+	originalRepo := host.store.repo
+	releaseAppend := make(chan struct{})
+	var releaseOnce sync.Once
+	host.store.repo = &blockingInteractionAppendRepo{
+		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo),
+		committed: make(chan struct{}), release: releaseAppend,
+	}
+	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
+	defer func() {
+		releaseOnce.Do(func() { close(releaseAppend) })
+		host.store.repo = originalRepo
+		select {
+		case gateway.release <- struct{}{}:
+		default:
+		}
+	}()
+	requestDone := make(chan error, 1)
+	go func() {
+		_, requestErr := service.requestInteraction(t.Context(), actor, created.ThreadID, interaction)
+		requestDone <- requestErr
+	}()
+	select {
+	case <-blockingRepo.committed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("interaction was not committed")
+	}
+	if err := service.refreshCanonical(created.ThreadID, started.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	// Hold publication so the response continuation cannot be scheduled until
+	// the interaction request's final actor transition has had a chance to run.
+	subscription.mu.Lock()
+	respondDone := make(chan error, 1)
+	approved := true
+	go func() {
+		_, respondErr := service.Respond(t.Context(), RespondInput{
+			ThreadID: created.ThreadID, InteractionID: interaction.ID,
+			Answers: []InteractionAnswer{{Approved: &approved}}, RequestKey: "approve-claim",
+		})
+		respondDone <- respondErr
+	}()
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+		return len(view.Interactions) == 1 && view.Interactions[0].Resolved
+	})
+	releaseOnce.Do(func() { close(releaseAppend) })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		pending := 0
+		if err := actor.apply(t.Context(), func() error { pending = len(actor.state.pendingInteractions); return nil }); err != nil {
+			subscription.mu.Unlock()
+			t.Fatal(err)
+		}
+		if pending == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	subscription.mu.Unlock()
+	select {
+	case respondErr := <-respondDone:
+		if respondErr != nil {
+			t.Fatal(respondErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("response did not finish")
+	}
+	select {
+	case requestErr := <-requestDone:
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("interaction request did not finish")
+	}
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := gateway.requests.Load(); got != 1 {
+			t.Fatalf("provider requests=%d, want one dispatch", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {
