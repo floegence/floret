@@ -3159,6 +3159,8 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	originalRepo := host.store.repo
 	releaseAppend := make(chan struct{})
 	var releaseOnce sync.Once
+	var releaseGatewayOnce sync.Once
+	releaseGateway := func() { releaseGatewayOnce.Do(func() { close(gateway.release) }) }
 	host.store.repo = &blockingInteractionAppendRepo{
 		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo), turns: originalRepo.(sessiontree.RuntimeTurnRepo),
 		committed: make(chan struct{}), release: releaseAppend,
@@ -3166,10 +3168,7 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
 	defer func() {
 		releaseOnce.Do(func() { close(releaseAppend) })
-		select {
-		case gateway.release <- struct{}{}:
-		default:
-		}
+		releaseGateway()
 	}()
 	requestDone := make(chan error, 1)
 	go func() {
@@ -3234,6 +3233,15 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("interaction request did not finish")
+	}
+	// Let the original provider execution drain. The pre-fix recovery path
+	// redispatches only after that execution releases, so this makes the
+	// duplicate factory call observable within the test window.
+	releaseGateway()
+	select {
+	case <-secondFactory:
+		t.Fatalf("agent factory calls=%d, want one dispatch", factoryCalls.Load())
+	case <-time.After(1 * time.Second):
 	}
 	deadline = time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
