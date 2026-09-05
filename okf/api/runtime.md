@@ -91,10 +91,13 @@ run segment. Runtime projection never infers a missing identity.
 
 `ThreadView.RunID` is the exact current execution identity and never aliases
 `TurnID`. `RunProgress` is the actor-owned, process-local phase for active
-provider and tool work. It is cleared while waiting for approval or user input
-and after terminal settlement; hosts must not reconstruct it from items or
-persist a second progress lifecycle. `ThreadSummary` carries the same bounded
-identity and progress projection for thread lists.
+provider and tool work. An active view with no unresolved interaction always
+carries progress; the transition into or out of approval/user-input waiting
+publishes the progress and interaction state together. Progress is cleared
+while waiting for approval or user input and after terminal settlement; hosts
+must not reconstruct it from items or persist a second progress lifecycle.
+`ThreadSummary` carries the same bounded identity and progress projection for
+thread lists.
 
 Every new Run enters the actor through one atomic transition. It closes the
 old live segment, installs the new Turn, Run, and logical-request identities,

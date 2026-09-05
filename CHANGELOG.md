@@ -1,5 +1,15 @@
 # Changelog
 
+## v7.1.4 - 2026-09-06
+
+- Keep active thread views and summaries contract-complete while an approval or
+  user-input interaction is being installed: `run_progress` is cleared only
+  with the published unresolved interaction and remains present for other
+  active snapshots.
+- Reserve local interaction waiters before durable admission and claim them
+  atomically when a response arrives, preventing duplicate provider recovery
+  after an approval is answered.
+
 ## v7.1.3 - 2026-09-04
 
 - Treat every failed control projection as a terminal control failure. Invalid

@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-09-06
+* **Complete interaction transitions**: Active thread views and summaries now
+  publish `run_progress` and unresolved approval/input state as one coherent
+  transition. Local interaction waiters are reserved before durable admission
+  and claimed atomically on response, so a locally waiting approval cannot
+  trigger duplicate provider recovery.
+
 ## 2026-09-04
 * **Failed control recovery**: Invalid Ask User projections now terminate
   without pending input. Runtime views and provider history classify historical
