@@ -74,9 +74,30 @@ type blockingCanonicalPathRepo struct {
 type blockingInteractionAppendRepo struct {
 	sessiontree.Repo
 	writer    sessiontree.RuntimeJournalRepo
+	turns     sessiontree.RuntimeTurnRepo
 	committed chan struct{}
 	release   chan struct{}
 	once      sync.Once
+}
+
+func (repo *blockingInteractionAppendRepo) AcceptTurn(ctx context.Context, request sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
+	return repo.turns.AcceptTurn(ctx, request)
+}
+
+func (repo *blockingInteractionAppendRepo) ReadAcceptedTurn(ctx context.Context, threadID, turnID, runID string) (sessiontree.AcceptTurnResult, bool, error) {
+	return repo.turns.ReadAcceptedTurn(ctx, threadID, turnID, runID)
+}
+
+func (repo *blockingInteractionAppendRepo) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (sessiontree.CancelTurnResult, error) {
+	return repo.turns.CancelTurn(ctx, request)
+}
+
+func (repo *blockingInteractionAppendRepo) FailUnknownEffectTurn(ctx context.Context, request sessiontree.FailUnknownEffectTurnRequest) (sessiontree.FailUnknownEffectTurnResult, error) {
+	return repo.turns.FailUnknownEffectTurn(ctx, request)
+}
+
+func (repo *blockingInteractionAppendRepo) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	return repo.turns.FinishTurn(ctx, request)
 }
 
 func (repo *blockingCanonicalPathRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
@@ -3015,7 +3036,7 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 	releaseAppend := make(chan struct{})
 	var releaseOnce sync.Once
 	host.store.repo = &blockingInteractionAppendRepo{
-		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo),
+		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo), turns: originalRepo.(sessiontree.RuntimeTurnRepo),
 		committed: make(chan struct{}), release: releaseAppend,
 	}
 	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
@@ -3118,13 +3139,12 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	releaseAppend := make(chan struct{})
 	var releaseOnce sync.Once
 	host.store.repo = &blockingInteractionAppendRepo{
-		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo),
+		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo), turns: originalRepo.(sessiontree.RuntimeTurnRepo),
 		committed: make(chan struct{}), release: releaseAppend,
 	}
 	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
 	defer func() {
 		releaseOnce.Do(func() { close(releaseAppend) })
-		host.store.repo = originalRepo
 		select {
 		case gateway.release <- struct{}{}:
 		default:
@@ -3146,6 +3166,12 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	// Hold publication so the response continuation cannot be scheduled until
 	// the interaction request's final actor transition has had a chance to run.
 	subscription.mu.Lock()
+	publicationLocked := true
+	defer func() {
+		if publicationLocked {
+			subscription.mu.Unlock()
+		}
+	}()
 	respondDone := make(chan error, 1)
 	approved := true
 	go func() {
@@ -3163,7 +3189,6 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 	for time.Now().Before(deadline) {
 		pending := 0
 		if err := actor.apply(t.Context(), func() error { pending = len(actor.state.pendingInteractions); return nil }); err != nil {
-			subscription.mu.Unlock()
 			t.Fatal(err)
 		}
 		if pending == 0 {
@@ -3172,6 +3197,7 @@ func TestThreadServiceApprovalResponseDoesNotRedispatchClaimedWaiter(t *testing.
 		time.Sleep(5 * time.Millisecond)
 	}
 	subscription.mu.Unlock()
+	publicationLocked = false
 	select {
 	case respondErr := <-respondDone:
 		if respondErr != nil {
