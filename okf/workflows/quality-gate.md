@@ -57,12 +57,6 @@ Redeven must pin the published tag and run its own notice, module-boundary, and
 focused integration checks in a dedicated Redeven feature worktree before that
 downstream upgrade is integrated.
 
-Before a tag exists, validate the embedded consumer and verifier templates with:
-
-```bash
-./scripts/check_published_release_adoption.sh --check
-```
-
 # What It Protects
 
 The test suite includes unit behavior, provider contracts, storage behavior,
