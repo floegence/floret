@@ -70,6 +70,14 @@ type blockingCanonicalPathRepo struct {
 	once    sync.Once
 }
 
+type blockingInteractionAppendRepo struct {
+	sessiontree.Repo
+	writer    sessiontree.RuntimeJournalRepo
+	committed chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
 func (repo *blockingCanonicalPathRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
 	repo.once.Do(func() { close(repo.started) })
 	select {
@@ -78,6 +86,22 @@ func (repo *blockingCanonicalPathRepo) Path(ctx context.Context, threadID, leafI
 		return nil, ctx.Err()
 	}
 	return repo.Repo.Path(ctx, threadID, leafID)
+}
+
+func (repo *blockingInteractionAppendRepo) AppendRuntimeFacts(ctx context.Context, threadID string, entries []sessiontree.Entry) ([]sessiontree.Entry, error) {
+	appended, err := repo.writer.AppendRuntimeFacts(ctx, threadID, entries)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool { return entry.Type == sessiontree.EntryInteractionAsked }) {
+		repo.once.Do(func() { close(repo.committed) })
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-repo.release:
+		}
+	}
+	return appended, nil
 }
 
 func (repo rejectingRuntimeTurnRepo) AcceptTurn(context.Context, sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
@@ -1016,6 +1040,147 @@ func TestThreadServiceApprovalRejectAndAcceptStayOnInteraction(t *testing.T) {
 		t.Fatalf("downstream calls=%d, want 1", downstreamCalls.Load())
 	}
 	_, _ = service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-approval"})
+}
+
+func TestThreadServiceApprovalSubscriptionPublishesOnlyCompleteActiveViews(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	_, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	subscription, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(subscription.Close)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-approval-subscription"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "approve"}, RequestKey: "send-approval-subscription"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := service.runtime(created.ThreadID)
+	var runID identity.RunID
+	_ = actor.apply(t.Context(), func() error { runID = actor.state.runID; return nil })
+	gate := threadRuntimeEffectGate{service: service}
+	done := make(chan error, 1)
+	go func() {
+		_, dispatchErr := gate.Dispatch(context.Background(), EffectAuthorizationRequest{
+			EffectAttemptID: "effect-subscription", ThreadID: created.ThreadID, TurnID: started.TurnID, RunID: runID,
+			ToolCallID: "call-subscription", ToolName: "write", Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		}, func(context.Context, EffectAuthorizationProof) (EffectDispatchResult, error) {
+			return EffectDispatchResult{}, nil
+		})
+		done <- dispatchErr
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	var waiting ThreadView
+	for len(waiting.Interactions) == 0 {
+		view, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		assertCompleteActiveThreadView(t, view)
+		if view.ThreadID == created.ThreadID && threadRuntimeViewNeedsAttention(view) {
+			waiting = view
+		}
+	}
+	rejected := false
+	responded, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID,
+		Answers: []InteractionAnswer{{Approved: &rejected}}, RequestKey: "reject-approval-subscription",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompleteActiveThreadView(t, responded)
+	if dispatchErr := <-done; !errors.Is(dispatchErr, ErrEffectUnauthorized) {
+		t.Fatalf("dispatch error=%v", dispatchErr)
+	}
+	if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-approval-subscription"}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		view, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		assertCompleteActiveThreadView(t, view)
+		if view.ThreadID == created.ThreadID && view.Activity == ThreadActivityIdle && view.LastOutcome != nil {
+			return
+		}
+	}
+}
+
+func assertCompleteActiveThreadView(t *testing.T, view ThreadView) {
+	t.Helper()
+	needsAttention := threadRuntimeViewNeedsAttention(view)
+	if view.Activity == ThreadActivityActive && (view.RunProgress == nil) != needsAttention {
+		t.Fatalf("published active view has inconsistent progress and interaction state: %#v", view)
+	}
+	if view.Activity == ThreadActivityIdle && view.RunProgress != nil {
+		t.Fatalf("published idle view has run progress: %#v", view)
+	}
+}
+
+func TestThreadServiceInputSubscriptionPublishesOnlyCompleteActiveViews(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(
+		provider.Identity{Provider: "test", Model: "input-subscription", StateCompatibilityKey: "test:input-subscription:v1"},
+		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-subscription", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}}},
+			{Type: provider.EventDone, Reason: "tool_calls"},
+		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	_, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	subscription, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(subscription.Close)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-input-subscription"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send-input-subscription"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	var waiting ThreadView
+	for !threadRuntimeViewNeedsAttention(waiting) {
+		view, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		assertCompleteActiveThreadView(t, view)
+		if view.ThreadID == created.ThreadID && threadRuntimeViewNeedsAttention(view) {
+			waiting = view
+		}
+	}
+	responded, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID,
+		Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "respond-input-subscription",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompleteActiveThreadView(t, responded)
+	for {
+		view, nextErr := subscription.Next(ctx)
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		assertCompleteActiveThreadView(t, view)
+		if view.ThreadID == created.ThreadID && view.Activity == ThreadActivityIdle && view.LastOutcome != nil {
+			return
+		}
+	}
 }
 
 func TestThreadServiceApprovalPresentsTerminalCommand(t *testing.T) {
@@ -2797,17 +2962,122 @@ func TestThreadRuntimePublishesRunProgressFromTheActiveRun(t *testing.T) {
 	}
 
 	sink.EmitEvent(event(observation.EventTypeToolApprovalRequested))
-	view := service.currentView(actor)
-	if view.RunProgress != nil || view.ViewVersion != 7 {
-		t.Fatalf("approval wait view = %#v, want cleared progress at version 7", view)
-	}
-	sink.EmitEvent(event(observation.EventTypeToolDispatchStarted))
-	assertPhase(ThreadRunPhaseToolExecution, 8)
+	assertPhase(ThreadRunPhaseToolExecution, 6)
+	sink.EmitEvent(event(observation.EventTypeControlSignal))
+	assertPhase(ThreadRunPhaseToolExecution, 6)
 	sink.EmitEvent(event(observation.EventTypeRunEnd))
-	view = service.currentView(actor)
-	if view.RunProgress != nil || view.ViewVersion != 9 {
-		t.Fatalf("terminal view = %#v, want cleared progress at version 9", view)
+	assertPhase(ThreadRunPhaseToolExecution, 6)
+	sink.EmitEvent(event(observation.EventTypeToolDispatchStarted))
+	assertPhase(ThreadRunPhaseToolExecution, 6)
+}
+
+func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, typed := testThreadService(t, gateway)
+	service := typed.(*threadRuntimeService)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-approval-view"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "approve"}, RequestKey: "send-approval-view"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gateway.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	actor := service.runtime(created.ThreadID)
+	sink := threadRuntimeEventSink{service: service}
+	beforeEvent := service.currentView(actor)
+	sink.EmitEvent(Event{Type: observation.EventTypeToolApprovalRequested, ThreadID: created.ThreadID, TurnID: started.TurnID, RunID: started.RunID})
+
+	between := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.ViewVersion > beforeEvent.ViewVersion })
+	if between.Activity != ThreadActivityActive || between.RunProgress == nil || threadRuntimeViewNeedsAttention(between) {
+		t.Fatalf("view between approval event and interaction = %#v", between)
+	}
+	summaries, err := service.List(t.Context(), ThreadScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].Activity != ThreadActivityActive || summaries[0].RunProgress == nil || summaries[0].Attention.ApprovalCount != 0 {
+		t.Fatalf("summary between approval event and interaction = %#v", summaries)
+	}
+	interaction := ThreadInteraction{
+		ID: "approval:view", TurnID: started.TurnID, RunID: started.RunID,
+		Kind: ThreadInteractionApproval, ToolCallID: "call-view",
+	}
+	originalRepo := host.store.repo
+	releaseAppend := make(chan struct{})
+	var releaseOnce sync.Once
+	host.store.repo = &blockingInteractionAppendRepo{
+		Repo: originalRepo, writer: originalRepo.(sessiontree.RuntimeJournalRepo),
+		committed: make(chan struct{}), release: releaseAppend,
+	}
+	blockingRepo := host.store.repo.(*blockingInteractionAppendRepo)
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseAppend) })
+		host.store.repo = originalRepo
+	})
+	type interactionRequestResult struct {
+		waiter *pendingThreadInteraction
+		err    error
+	}
+	requestDone := make(chan interactionRequestResult, 1)
+	go func() {
+		waiter, requestErr := service.requestInteraction(t.Context(), actor, created.ThreadID, interaction)
+		requestDone <- interactionRequestResult{waiter: waiter, err: requestErr}
+	}()
+	select {
+	case <-blockingRepo.committed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("interaction was not committed")
+	}
+	if err := service.refreshCanonical(created.ThreadID, started.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.Activity != ThreadActivityActive || waiting.RunProgress != nil || !threadRuntimeViewNeedsAttention(waiting) {
+		t.Fatalf("view after approval interaction = %#v", waiting)
+	}
+	rejected := false
+	responded, err := service.Respond(t.Context(), RespondInput{
+		ThreadID: created.ThreadID, InteractionID: interaction.ID,
+		Answers: []InteractionAnswer{{Approved: &rejected}}, RequestKey: "reject-approval-view",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCompleteActiveThreadView(t, responded)
+	releaseOnce.Do(func() { close(releaseAppend) })
+	requested := <-requestDone
+	if requested.err != nil {
+		t.Fatal(requested.err)
+	}
+	select {
+	case resolution := <-requested.waiter.resolution:
+		if resolution.Approved == nil || *resolution.Approved {
+			t.Fatalf("approval resolution = %#v, want rejection", resolution)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval waiter was not resumed")
+	}
+	pendingInteractions := 0
+	if err := actor.apply(t.Context(), func() error {
+		pendingInteractions = len(actor.state.pendingInteractions)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pendingInteractions != 0 {
+		t.Fatalf("pending interactions after response = %d", pendingInteractions)
+	}
+	host.store.repo = originalRepo
+	_, _ = service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-approval-view"})
 }
 
 func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {

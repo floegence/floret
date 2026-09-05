@@ -2165,6 +2165,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		if completed.Status == TurnStatusWaiting {
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
+			normalizeActiveThreadRunProgress(&actor.state.view)
 		} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted || errors.Is(runErr, context.Canceled) {
 			outcome = TurnOutcomeCancelled
 		} else if runErr != nil || completed.Status == TurnStatusFailed {
@@ -2402,20 +2403,11 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 	if !ok {
 		return nil, ErrUnsupportedStoreCapability
 	}
-	if _, err := writer.AppendRuntimeFacts(ctx, threadID.String(), []sessiontree.Entry{entry}); err != nil {
-		existing, readErr := service.host.store.repo.Entry(ctx, threadID.String(), entry.ID)
-		if readErr != nil || existing.RequestFingerprint != fingerprint || string(existing.Payload) != string(payload) {
-			return nil, runtimeHostError(err)
-		}
-	}
-	canonicalItems, _, canonicalErr := hydrateThreadRuntimeItems(ctx, service.host.store.repo, threadID)
+	// Reserve before the durable write so a canonical refresh and response
+	// cannot overtake the local caller that is waiting for the resolution.
 	waiter := &pendingThreadInteraction{resolution: make(chan InteractionResolution, 1)}
-	err = actor.apply(ctx, func() error {
-		if canonicalErr == nil {
-			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false); ok {
-				actor.state.view.Items = reconciled
-			}
-		}
+	reservedWaiter := false
+	if err := actor.apply(ctx, func() error {
 		if actor.state.pendingInteractions == nil {
 			actor.state.pendingInteractions = make(map[string]*pendingThreadInteraction)
 		}
@@ -2424,9 +2416,56 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 			return nil
 		}
 		actor.state.pendingInteractions[interaction.ID] = waiter
+		reservedWaiter = true
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	releaseReservedWaiter := func() {
+		if !reservedWaiter {
+			return
+		}
+		_ = actor.apply(context.Background(), func() error {
+			if actor.state.pendingInteractions[interaction.ID] == waiter {
+				delete(actor.state.pendingInteractions, interaction.ID)
+			}
+			return nil
+		})
+	}
+	if _, err := writer.AppendRuntimeFacts(ctx, threadID.String(), []sessiontree.Entry{entry}); err != nil {
+		existing, readErr := service.host.store.repo.Entry(ctx, threadID.String(), entry.ID)
+		if readErr != nil || existing.RequestFingerprint != fingerprint || string(existing.Payload) != string(payload) {
+			releaseReservedWaiter()
+			return nil, runtimeHostError(err)
+		}
+	}
+	canonicalItems, _, canonicalErr := hydrateThreadRuntimeItems(ctx, service.host.store.repo, threadID)
+	err = actor.apply(ctx, func() error {
 		for _, current := range actor.state.view.Interactions {
 			if current.ID == interaction.ID {
+				if current.Resolved {
+					if current.Resolution == nil {
+						return ErrAuthorityCorrupt
+					}
+					progress := cloneThreadRunProgress(actor.state.view.RunProgress)
+					normalizeActiveThreadRunProgress(&actor.state.view)
+					if !sameThreadRunProgress(progress, actor.state.view.RunProgress) {
+						actor.state.view.ViewVersion++
+					}
+					if reservedWaiter && actor.state.pendingInteractions[interaction.ID] == waiter {
+						delete(actor.state.pendingInteractions, interaction.ID)
+						waiter.resolution <- *current.Resolution
+					}
+				} else if actor.state.view.RunProgress != nil {
+					actor.state.view.RunProgress = nil
+					actor.state.view.ViewVersion++
+				}
 				return nil
+			}
+		}
+		if canonicalErr == nil {
+			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false); ok {
+				actor.state.view.Items = reconciled
 			}
 		}
 		actor.state.view.Interactions = append(actor.state.view.Interactions, interaction)
@@ -2447,10 +2486,12 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: itemID, TurnID: interaction.TurnID, RunID: interaction.RunID, Kind: ThreadItemInteraction, Interaction: &copy})
 			}
 		}
+		actor.state.view.RunProgress = nil
 		actor.state.view.ViewVersion++
 		return nil
 	})
 	if err != nil {
+		releaseReservedWaiter()
 		return nil, err
 	}
 	service.publish(service.currentView(actor))
@@ -2469,7 +2510,7 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 			return nil
 		}
 		progress, progressEvent := threadRunProgressForEvent(event)
-		progressChanged := progressEvent && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
+		progressChanged := progressEvent && !threadRuntimeViewNeedsAttention(actor.state.view) && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
 		if progressChanged {
 			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
 		}
@@ -2520,10 +2561,6 @@ func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
 		observation.EventTypeHostedToolCall,
 		observation.EventTypeMCPToolCall:
 		phase = ThreadRunPhaseToolExecution
-	case observation.EventTypeToolApprovalRequested,
-		observation.EventTypeControlSignal,
-		observation.EventTypeRunEnd:
-		return nil, true
 	default:
 		return nil, false
 	}
@@ -2568,6 +2605,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		actor.state.view.Items = reconciled
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, interactions)
 		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
+		normalizeActiveThreadRunProgress(&actor.state.view)
 		current = cloneThreadRuntimeView(actor.state.view)
 		changed = true
 		return nil
@@ -2772,6 +2810,7 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 				delete(actor.state.pendingInteractions, interaction.ID)
 			}
 		}
+		normalizeActiveThreadRunProgress(&actor.state.view)
 		actor.state.view.ViewVersion++
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -3003,6 +3042,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 			resolution.At = now
 			resolveThreadInteractionCanonical(&actor.state.view, id, resolution)
 		}
+		normalizeActiveThreadRunProgress(&actor.state.view)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3561,6 +3601,19 @@ func threadRuntimeViewNeedsAttention(view ThreadView) bool {
 		}
 	}
 	return false
+}
+
+func normalizeActiveThreadRunProgress(view *ThreadView) {
+	if view == nil || view.Activity != ThreadActivityActive {
+		return
+	}
+	if threadRuntimeViewNeedsAttention(*view) {
+		view.RunProgress = nil
+		return
+	}
+	if view.RunProgress == nil {
+		view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
+	}
 }
 
 func cloneThreadItems(items []ThreadItem) []ThreadItem {
