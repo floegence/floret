@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.1.5 - 2026-09-07
+
+- Preserve complete local tool exchanges after canceled control interactions so provider requests never contain orphaned tool results.
+
+
 ## v7.1.4 - 2026-09-06
 
 - Keep active thread views and summaries contract-complete while an approval or
