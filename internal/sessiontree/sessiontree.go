@@ -1553,6 +1553,10 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		r.seq++
 		next := cloneEntry(entry)
 		next.ID = fmt.Sprintf("%s-entry-%d", newID, r.seq)
+		if entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone {
+			// Interaction IDs encode their call identity and are scoped to a thread.
+			next.ID = entry.ID
+		}
 		next.ThreadID = newID
 		next.ParentID = oldToNew[entry.ParentID]
 		next.PathDepth = int64(len(forkedEntries) + 1)
@@ -2225,6 +2229,10 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 }
 
 func buildContextMessages(path []Entry) ([]session.Message, error) {
+	redundant, err := RedundantControlResultIDs(path)
+	if err != nil {
+		return nil, err
+	}
 	compactionIndex := -1
 	firstKeptIndex := -1
 	for i, entry := range path {
@@ -2254,6 +2262,9 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 		var tail []session.Message
 		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
 			for _, entry := range path[firstKeptIndex:compactionIndex] {
+				if redundant[entry.ID] {
+					continue
+				}
 				var err error
 				tail, err = appendProviderVisible(tail, entry)
 				if err != nil {
@@ -2262,6 +2273,9 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 			}
 		}
 		for _, entry := range path[compactionIndex+1:] {
+			if redundant[entry.ID] {
+				continue
+			}
 			var err error
 			tail, err = appendProviderVisible(tail, entry)
 			if err != nil {
@@ -2282,6 +2296,9 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 		return messages, nil
 	}
 	for _, entry := range path {
+		if redundant[entry.ID] {
+			continue
+		}
 		var err error
 		messages, err = appendProviderVisible(messages, entry)
 		if err != nil {
@@ -2367,6 +2384,20 @@ type interactionResponseMessage struct {
 	Outcome               string            `json:"outcome,omitempty"`
 }
 
+func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, error) {
+	var resolution interactionResolutionProjection
+	decoder := json.NewDecoder(bytes.NewReader(entry.Payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&resolution); err != nil {
+		return resolution, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return resolution, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
+	}
+	return resolution, nil
+}
+
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
@@ -2398,15 +2429,9 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 			}
 		}
 	case EntryInteractionDone:
-		var resolution interactionResolutionProjection
-		decoder := json.NewDecoder(bytes.NewReader(entry.Payload))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&resolution); err != nil {
-			return nil, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("%w: invalid interaction resolution: %v", ErrAuthorityCorrupt, err)
+		resolution, err := decodeInteractionResolution(entry)
+		if err != nil {
+			return nil, err
 		}
 		interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
 		if interactionID == entry.ID || strings.TrimSpace(interactionID) == "" {

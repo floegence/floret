@@ -111,6 +111,35 @@ func TestBuildContextPairsFailedControlWithoutLeakingValidationDetails(t *testin
 	}
 }
 
+func TestBuildContextDoesNotDuplicateCanceledControlResult(t *testing.T) {
+	path := []Entry{
+		{ID: "ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{
+			Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolCallID: "ask-cancel", ToolName: "ask_user",
+			Content: "tool_call", ControlSignal: &session.ControlSignalView{Name: "ask_user", CallID: "ask-cancel", Disposition: "waiting", Payload: controlResultTestPayload()},
+		}},
+		{ID: "interaction-resolved:ask-cancel", ParentID: "ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryInteractionDone, Payload: json.RawMessage(`{"accepted":false,"outcome":"cancelled"}`)},
+		{ID: "tool-cancelled:turn:ask-cancel", ParentID: "interaction-resolved:ask-cancel", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolResult, Message: session.Message{
+			Role: session.Tool, ToolCallID: "ask-cancel", ToolName: "ask_user", Content: "Tool call was canceled before completion.", ToolResult: &session.ToolResultView{Status: "canceled"},
+		}},
+	}
+	messages, err := BuildContextChecked(path, ContextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := 0
+	for _, message := range messages {
+		if message.Role == session.Tool && message.ToolCallID == "ask-cancel" {
+			results++
+			if message.Content != `{"type":"interaction_response","outcome":"cancelled"}` {
+				t.Fatalf("control result=%#v", message)
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatalf("ask_user result count=%d, want 1: %#v", results, messages)
+	}
+}
+
 func TestRuntimePendingInteractionsIgnoreOnlyMatchingFailedControl(t *testing.T) {
 	failed := Entry{
 		ID: "failed-control", TurnID: "turn", RunID: "run", Type: EntryToolCall,

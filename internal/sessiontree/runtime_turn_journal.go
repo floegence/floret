@@ -631,6 +631,9 @@ func runtimePendingToolCalls(entries []Entry, turnID string) []Entry {
 		if entry.TurnID != turnID || strings.TrimSpace(entry.Message.ToolCallID) == "" {
 			continue
 		}
+		if entry.Type == EntryToolCall && controlstate.OwnsResult(entry.Message) {
+			continue
+		}
 		callID := strings.TrimSpace(entry.Message.ToolCallID)
 		switch entry.Type {
 		case EntryToolCall:
