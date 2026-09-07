@@ -96,19 +96,28 @@ func (StructuredActivityPayload) activityRenderer() ActivityRenderer {
 }
 
 type TerminalActivityPayload struct {
-	Command       string         `json:"command,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	ProcessID     string         `json:"process_id,omitempty"`
-	LatestOutput  string         `json:"latest_output,omitempty"`
-	Output        string         `json:"output,omitempty"`
-	Stdout        string         `json:"stdout,omitempty"`
-	Stderr        string         `json:"stderr,omitempty"`
-	ExitCode      *int           `json:"exit_code,omitempty"`
-	DurationMS    int64          `json:"duration_ms,omitempty"`
-	Truncated     bool           `json:"truncated,omitempty"`
-	PendingResult string         `json:"pending_result,omitempty"`
-	Terminated    bool           `json:"terminated,omitempty"`
-	Error         *ActivityError `json:"error,omitempty"`
+	Operation         string         `json:"operation,omitempty"`
+	Command           string         `json:"command,omitempty"`
+	Status            string         `json:"status,omitempty"`
+	ProcessID         string         `json:"process_id,omitempty"`
+	InputBytes        int64          `json:"input_bytes,omitempty"`
+	LatestOutput      string         `json:"latest_output,omitempty"`
+	Output            string         `json:"output,omitempty"`
+	Stdout            string         `json:"stdout,omitempty"`
+	Stderr            string         `json:"stderr,omitempty"`
+	ExitCode          *int           `json:"exit_code,omitempty"`
+	DurationMS        int64          `json:"duration_ms,omitempty"`
+	FirstSeq          int64          `json:"first_seq,omitempty"`
+	LastSeq           int64          `json:"last_seq,omitempty"`
+	LatestSeq         int64          `json:"latest_seq,omitempty"`
+	HasMore           bool           `json:"has_more,omitempty"`
+	TotalBytes        int64          `json:"total_bytes,omitempty"`
+	ExecutionLocation string         `json:"execution_location,omitempty"`
+	Truncated         bool           `json:"truncated,omitempty"`
+	PendingResult     string         `json:"pending_result,omitempty"`
+	Terminated        bool           `json:"terminated,omitempty"`
+	TimedOut          bool           `json:"timed_out,omitempty"`
+	Error             *ActivityError `json:"error,omitempty"`
 }
 
 func (TerminalActivityPayload) activityRenderer() ActivityRenderer {
@@ -724,11 +733,17 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.Command != "" {
 			l.Command = r.Command
 		}
+		if r.Operation != "" {
+			l.Operation = r.Operation
+		}
 		if r.Status != "" {
 			l.Status = r.Status
 		}
 		if r.ProcessID != "" {
 			l.ProcessID = r.ProcessID
+		}
+		if r.InputBytes != 0 {
+			l.InputBytes = r.InputBytes
 		}
 		if r.LatestOutput != "" {
 			l.LatestOutput = r.LatestOutput
@@ -749,11 +764,28 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.DurationMS != 0 {
 			l.DurationMS = r.DurationMS
 		}
+		if r.FirstSeq != 0 {
+			l.FirstSeq = r.FirstSeq
+		}
+		if r.LastSeq != 0 {
+			l.LastSeq = r.LastSeq
+		}
+		if r.LatestSeq != 0 {
+			l.LatestSeq = r.LatestSeq
+		}
+		l.HasMore = l.HasMore || r.HasMore
+		if r.TotalBytes != 0 {
+			l.TotalBytes = r.TotalBytes
+		}
+		if r.ExecutionLocation != "" {
+			l.ExecutionLocation = r.ExecutionLocation
+		}
 		l.Truncated = l.Truncated || r.Truncated
 		if r.PendingResult != "" {
 			l.PendingResult = r.PendingResult
 		}
 		l.Terminated = l.Terminated || r.Terminated
+		l.TimedOut = l.TimedOut || r.TimedOut
 		if r.Error != nil {
 			l.Error = cloneActivityError(r.Error)
 		}
@@ -1108,7 +1140,10 @@ func validateActivityPayload(payload ActivityPayload) error {
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
 		}
-		return validatePayloadTextAndError([]string{typed.Command, typed.Status, typed.ProcessID, typed.LatestOutput, typed.Output, typed.Stdout, typed.Stderr, typed.PendingResult}, typed.Error)
+		if typed.InputBytes < 0 || typed.FirstSeq < 0 || typed.LastSeq < 0 || typed.LatestSeq < 0 || typed.TotalBytes < 0 {
+			return errors.New("terminal activity counters must be non-negative")
+		}
+		return validatePayloadTextAndError([]string{typed.Operation, typed.Command, typed.Status, typed.ProcessID, typed.LatestOutput, typed.Output, typed.Stdout, typed.Stderr, typed.ExecutionLocation, typed.PendingResult}, typed.Error)
 	case FileActivityPayload:
 		if typed.SizeBytes < 0 || typed.LineOffset < 0 || typed.LineCount < 0 || typed.TotalLines < 0 || typed.Additions < 0 || typed.Deletions < 0 {
 			return errors.New("file activity sizes, lines, and change counts must be non-negative")
