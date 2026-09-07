@@ -3463,8 +3463,11 @@ func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t 
 					calls++
 				}
 			}
-			if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && message.ToolResult.CallID == "ask-cancel" && strings.Contains(message.ToolResult.Text, `"outcome":"cancelled"`) {
+			if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && message.ToolResult.CallID == "ask-cancel" {
 				results++
+				if !strings.Contains(message.ToolResult.Text, `"outcome":"cancelled"`) {
+					t.Errorf("unexpected ask_user cancellation result: %q", message.ToolResult.Text)
+				}
 			}
 		}
 		if calls != 1 || results != 1 {

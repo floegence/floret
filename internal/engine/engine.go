@@ -2065,6 +2065,9 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 		return provider.Request{}, err
 	}
 	canonicalHistory := assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):]
+	if err := session.ValidateToolHistory(canonicalHistory); err != nil {
+		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
+	}
 	plan, messages, err := cache.BuildPlan(ctx, promptStore, cache.BuildInput{
 		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,

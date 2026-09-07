@@ -21,6 +21,18 @@ const (
 	Invalid
 )
 
+// OwnsResult reports whether a control signal or its interaction resolution
+// supplies the call's result, independently of ordinary tool execution.
+func OwnsResult(message session.Message) bool {
+	signal := message.ControlSignal
+	if message.Kind != session.MessageKindControlSignal || signal == nil ||
+		message.ToolCallID == "" || message.ToolCallID != signal.CallID || message.ToolName != signal.Name {
+		return false
+	}
+	classification := Classify(signal)
+	return classification == Failed || classification == WaitingInput || strings.TrimSpace(signal.Disposition) == "terminal"
+}
+
 // Classify is the single authority for persisted control-signal state.
 func Classify(signal *session.ControlSignalView) Classification {
 	if signal == nil {

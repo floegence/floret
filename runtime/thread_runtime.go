@@ -3743,6 +3743,10 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 }
 
 func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, []ThreadInteraction, error) {
+	redundant, err := sessiontree.RedundantControlResultIDs(entries)
+	if err != nil {
+		return nil, nil, runtimeHostError(err)
+	}
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
 	interactionIndex := make(map[string]int)
@@ -3767,6 +3771,9 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 		lastReasoning[executionKey] = text
 	}
 	for _, entry := range entries {
+		if redundant[entry.ID] {
+			continue
+		}
 		switch entry.Type {
 		case sessiontree.EntryUserMessage:
 			if entry.Message.Kind == "control_signal" {

@@ -334,6 +334,24 @@ func TestValidateCanonicalLineageResetsExactV5ProjectionWithoutCompaction(t *tes
 	}
 }
 
+func TestValidateCanonicalLineageResetsExactV6ProjectionWithoutCompaction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{
+		ID: "v6", PromptScopeID: "thread", RunID: "run-v6", Step: 1,
+		Provider: "test", Model: "model", ContextProjectionRevision: contextProjectionV6, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan := lineagePlan("test", "model", "ns", "system", "message")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &plan, "system", nil, nil, nil, []session.Message{{Role: session.User, Content: "hello", EntryID: "journal-user"}}); err != nil {
+		t.Fatalf("exact v6 to v7 projection reset failed: %v", err)
+	}
+	if !plan.CanonicalLineageReset || plan.CompactionGeneration != 0 {
+		t.Fatalf("projection reset=%v generation=%d", plan.CanonicalLineageReset, plan.CompactionGeneration)
+	}
+}
+
 func TestValidateCanonicalLineageRejectsUnknownProjectionChange(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
