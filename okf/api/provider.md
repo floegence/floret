@@ -58,3 +58,7 @@ See [the implementation](../../provider/deepseek.go),
 [wire tests](../../provider/deepseek_test.go),
 [runtime restart test](../../runtime/deepseek_test.go), and
 [DeepSeek's compatibility contract](https://api-docs.deepseek.com/guides/responses_api/).
+
+Static hosted tools are frozen with `runtime.WithAgentHostedTools`; it is
+mutually exclusive with the per-step dynamic tool surface option. Engine
+admission and provider requests consume that same immutable Agent surface.

@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/config"
@@ -120,6 +123,33 @@ func WithAgentTools(items ...tools.Tool) AgentOption {
 			return err
 		}
 		builder.agent.tools = registry
+		return nil
+	}}
+}
+
+// WithAgentHostedTools freezes provider-native tools for every execution by the
+// Agent. It is mutually exclusive with WithAgentDynamicToolSurface. Hosted tools
+// are never dispatched through the local tool registry.
+func WithAgentHostedTools(definitions ...provider.HostedToolDefinition) AgentOption {
+	return AgentOption{category: "dynamic_tool_surface", apply: func(builder *agentBuilder) error {
+		seen := make(map[string]bool, len(definitions))
+		for _, definition := range definitions {
+			if strings.TrimSpace(definition.Name) == "" || strings.TrimSpace(definition.Type) == "" || seen[definition.Name] {
+				return errors.New("hosted tool names and types must be nonempty and names unique")
+			}
+			seen[definition.Name] = true
+		}
+		raw, err := json.Marshal(definitions)
+		if err != nil {
+			return fmt.Errorf("hosted tools must contain JSON values: %w", err)
+		}
+		builder.agent.toolSurface = func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
+			var snapshot []provider.HostedToolDefinition
+			if err := json.Unmarshal(raw, &snapshot); err != nil {
+				return ToolSurface{}, err
+			}
+			return ToolSurface{HostedToolDefinitions: snapshot}, nil
+		}
 		return nil
 	}}
 }

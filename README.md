@@ -310,8 +310,8 @@ and Flash. Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey
 and an explicit `StateCompatibilityKey`. The gateway always calls `/responses`,
 streams text and reasoning, and accepts the native hosted tool
 `provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}`.
-For durable Agents, declare it through `runtime.WithAgentDynamicToolSurface`
-in `ToolSurface.HostedToolDefinitions` so Engine admission and provider requests
+For durable Agents, declare it through `runtime.WithAgentHostedTools`
+so Engine admission and provider requests
 share the same tool surface. Short requests without that surface do not search.
 
 DeepSeek is stateless. Floret retains provider-native response items in opaque

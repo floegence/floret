@@ -5,6 +5,7 @@
 - Release an effect finalizer when cancellation seals a dispatched tool before its result is finalized, preventing shutdown from waiting on an abandoned callback.
 
 - Add `provider.NewDeepSeek` for DeepSeek V4 Pro/Flash using the stateless Responses API, with streamed reasoning and local tool calls, provider-native web search and citations, complete request estimates, and opaque history replay across runtime restarts.
+- Add `runtime.WithAgentHostedTools` to freeze provider-native capabilities on an immutable Agent without a host dynamic tool callback.
 - Advertise DeepSeek Responses and hosted search in the provider catalog. Preserve the explicit OpenAI-compatible Chat Completions constructor.
 
 ## v7.1.5 - 2026-09-07

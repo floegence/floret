@@ -43,9 +43,7 @@ func TestDeepSeekResponsesHistorySurvivesRuntimeRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, WithAgentDynamicToolSurface(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
-		return ToolSurface{HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}, nil
-	}))
+	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, WithAgentHostedTools(provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}))
 	if err != nil {
 		t.Fatal(err)
 	}
