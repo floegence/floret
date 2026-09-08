@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
@@ -171,12 +172,18 @@ func TestAnsweredAskUserThenToolStopPreservesSingleAnswer(t *testing.T) {
 			)
 			started := make(chan struct{})
 			var startedOnce sync.Once
-			slow := tools.Define[map[string]any](tools.Definition{Name: "slow", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
+			slow := tools.Define[map[string]any](tools.Definition{Name: "slow", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
 				startedOnce.Do(func() { close(started) })
 				<-ctx.Done()
 				return tools.Result{}, ctx.Err()
 			})
-			agent, err := testAgent(gateway, WithAgentTools(slow))
+			agent, err := testAgent(gateway, WithAgentTools(slow), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+				return effect(ctx, EffectAuthorizationProof{
+					EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+					ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+					PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+				})
+			})))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -188,17 +195,20 @@ func TestAnsweredAskUserThenToolStopPreservesSingleAnswer(t *testing.T) {
 			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
 				t.Fatal(err)
 			}
-			waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
+			waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
 			var respondErr error
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, respondErr = service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: "ask", Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"})
+				_, respondErr = service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"})
 			}()
 			if !race {
 				select {
 				case <-started:
+				case <-time.After(5 * time.Second):
+					view, _ := service.View(t.Context(), created.ThreadID)
+					t.Fatalf("slow tool did not start after the answer was accepted: failure=%+v activity=%+v", view.Failure, view.Items[len(view.Items)-1].Activity)
 				case <-t.Context().Done():
 					t.Fatal(t.Context().Err())
 				}
