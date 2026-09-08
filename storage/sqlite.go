@@ -103,11 +103,12 @@ func (source sqliteSource) Open(ctx context.Context) (spi.Backend, error) {
 }
 
 type sqliteBackend struct {
-	maintenance bool
-	db          *sql.DB
-	ownedPath   string
-	closeMu     sync.Mutex
-	closed      bool
+	maintenanceSidecars []string
+	maintenance         bool
+	db                  *sql.DB
+	ownedPath           string
+	closeMu             sync.Mutex
+	closed              bool
 }
 
 func (backend *sqliteBackend) initialize(ctx context.Context) error {
@@ -245,6 +246,13 @@ func (backend *sqliteBackend) Close() error {
 	}
 	backend.closed = true
 	err := backend.db.Close()
+	if err == nil {
+		for _, path := range backend.maintenanceSidecars {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, removeErr)
+			}
+		}
+	}
 	if backend.ownedPath != "" {
 		sqliteOwnership.Lock()
 		if backend.maintenance {

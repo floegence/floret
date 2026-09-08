@@ -125,6 +125,14 @@ func openSQLiteReadOnly(ctx context.Context, path string) (*sqliteBackend, error
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: SQLite source is not a regular file", spi.ErrInvalidArgument)
 	}
+	var absentSidecars []string
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if _, err := os.Lstat(path + suffix); errors.Is(err, os.ErrNotExist) {
+			absentSidecars = append(absentSidecars, path+suffix)
+		} else if err != nil {
+			return nil, err
+		}
+	}
 	sqliteOwnership.Lock()
 	if sqliteOwnership.open[path] > 0 {
 		sqliteOwnership.Unlock()
@@ -135,7 +143,7 @@ func openSQLiteReadOnly(ctx context.Context, path string) (*sqliteBackend, error
 	sqliteOwnership.Unlock()
 	u := &url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
 	db, err := sql.Open(sqliteDriverName, u.String())
-	backend := &sqliteBackend{db: db, ownedPath: path, maintenance: true}
+	backend := &sqliteBackend{db: db, ownedPath: path, maintenance: true, maintenanceSidecars: absentSidecars}
 	if err != nil {
 		sqliteOwnership.Lock()
 		delete(sqliteOwnership.open, path)
