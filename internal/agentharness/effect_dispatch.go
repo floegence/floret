@@ -72,26 +72,48 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		if handlerResult.DispatchErr != nil {
 			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "effect_handler_panic", handlerResult.DispatchErr)
 		}
+		effectDone := make(chan struct{})
+		defer close(effectDone)
 		finalizerKey := effectFinalizerKey(request.RunID.String(), request.TurnID.String(), request.CallID)
 		if err := t.registerEffectFinalizer(finalizerKey, func(finalizeCtx context.Context, request engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
 			pending := effectFinalizeRequest{
 				ctx: finalizeCtx, request: cloneEffectFinalizationRequest(request),
 				outcome: make(chan effectFinalizeOutcome, 1),
 			}
-			finalize <- pending
-			outcome := <-pending.outcome
-			return outcome.result, outcome.err
+			select {
+			case finalize <- pending:
+			case <-effectDone:
+				return engine.EffectResultFinalizationResult{}, contextCancellationError(dispatchCtx)
+			}
+			select {
+			case outcome := <-pending.outcome:
+				return outcome.result, outcome.err
+			case <-effectDone:
+				select {
+				case outcome := <-pending.outcome:
+					return outcome.result, outcome.err
+				default:
+					return engine.EffectResultFinalizationResult{}, contextCancellationError(dispatchCtx)
+				}
+			}
 		}); err != nil {
 			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "register_effect_finalizer_error", err)
 		}
 		if t.harness.effectFinalizerRegistration != nil {
 			t.harness.effectFinalizerRegistration(nil)
 		}
+		defer t.removeEffectFinalizer(finalizerKey)
 		ready <- handlerResult
-		finalization := <-finalize
+		var finalization effectFinalizeRequest
+		select {
+		case finalization = <-finalize:
+		case <-dispatchCtx.Done():
+			persistCtx, cancelPersist := t.harness.effectFinalizationContext(dispatchCtx)
+			defer cancelPersist()
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(persistCtx, prepared.Attempt, "turn_cancelled_before_finalization", contextCancellationError(dispatchCtx))
+		}
 		var finalizationOutcome effectFinalizeOutcome
 		defer func() { finalization.outcome <- finalizationOutcome }()
-		defer t.removeEffectFinalizer(finalizerKey)
 		finishCtx, cancelFinish := t.harness.effectFinalizationContext(finalization.ctx)
 		defer cancelFinish()
 		outcomeFingerprint, fingerprintErr := t.harness.effectOutcomeFingerprinter(handlerResult, finalization.request.Message, finalization.request.FullOutput)
