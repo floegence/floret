@@ -3772,6 +3772,25 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 		if redundant[entry.ID] {
 			continue
 		}
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind {
+			observed, err := sessiontree.HostedToolObservation(entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			turnID, runID := observed.TurnID, observed.RunID
+			activity := observation.BuildActivityTimeline(observation.ActivityRunMeta{}, []observation.Event{observed}, entry.CreatedAt.UnixMilli()).Items[0]
+			toolKey := "hosted:" + threadToolKey(turnID, runID, observed.ToolID)
+			if previous, found := toolItemIndex[toolKey]; found {
+				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
+				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
+				items[previous].Activity = &activity
+			} else {
+				toolItemIndex[toolKey] = len(items)
+				items = appendThreadItem(items, ThreadItem{ID: toolKey, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, CreatedAt: entry.CreatedAt, Activity: &activity})
+			}
+			reasoningOpen[threadExecutionKey(turnID, runID)] = false
+			continue
+		}
 		switch entry.Type {
 		case sessiontree.EntryUserMessage:
 			if entry.Message.Kind == "control_signal" {
@@ -3789,6 +3808,9 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			}
 			if entry.Message.Kind != "control_signal" {
 				appendReasoning(turnID, runID, entry.Message.Reasoning, entry.CreatedAt)
+				if entry.Message.Content == "" {
+					continue
+				}
 				if len(items) > 0 {
 					previous := &items[len(items)-1]
 					if previous.Kind == ThreadItemAssistant && previous.TurnID == turnID && previous.RunID == runID {
@@ -3798,6 +3820,20 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				}
 				assistantCounts[turnID]++
 				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: entry.CreatedAt})
+			}
+		case sessiontree.EntryTurnMarker:
+			if entry.TurnStatus != sessiontree.TurnCompleted && entry.TurnStatus != sessiontree.TurnFailed && entry.TurnStatus != sessiontree.TurnAborted {
+				continue
+			}
+			for index := range items {
+				item := &items[index]
+				if item.TurnID.String() != entry.TurnID || item.RunID.String() != entry.RunID || item.Activity == nil || item.Activity.Kind != observation.ActivityKindHosted || item.Activity.Status != observation.ActivityStatusRunning {
+					continue
+				}
+				item.Activity.Status = observation.ActivityStatusCanceled
+				item.Activity.Severity = observation.ActivitySeverityWarning
+				item.Activity.EndedAtUnixMS = entry.CreatedAt.UnixMilli()
+				item.Activity.Presentation = tools.FinalizeActivityPresentation(item.Activity.Presentation, "canceled")
 			}
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)

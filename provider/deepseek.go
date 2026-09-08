@@ -135,11 +135,25 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 	}
 }
 func renderDeepSeekMessages(messages []Message) (deepSeekRendered, []json.RawMessage, error) {
+	// Canonical conversation may split one provider answer around hosted activity.
+	// Adjacent assistant segments still represent one Responses message boundary.
+	merged := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if len(merged) > 0 && message.Role == RoleAssistant && len(message.ToolCalls) == 0 && message.ToolResult == nil && len(message.Attachments) == 0 {
+			previous := &merged[len(merged)-1]
+			if previous.Role == RoleAssistant && len(previous.ToolCalls) == 0 && previous.ToolResult == nil && len(previous.Attachments) == 0 {
+				previous.Text += message.Text
+				previous.Reasoning += message.Reasoning
+				continue
+			}
+		}
+		merged = append(merged, message)
+	}
 	var out deepSeekRendered
 	var system []json.RawMessage
 	pending := map[string]bool{}
 	seen := map[string]bool{}
-	for _, m := range messages {
+	for _, m := range merged {
 		if len(m.Attachments) > 0 {
 			return out, nil, errors.New("DeepSeek text models do not accept attachments")
 		}
@@ -313,13 +327,14 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 }
 
 type deepSeekOutput struct {
-	Type      string `json:"type"`
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	Role      string `json:"role"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Type      string                 `json:"type"`
+	ID        string                 `json:"id"`
+	Status    string                 `json:"status"`
+	Role      string                 `json:"role"`
+	CallID    string                 `json:"call_id"`
+	Name      string                 `json:"name"`
+	Arguments string                 `json:"arguments"`
+	Error     *HostedToolResultError `json:"error"`
 	Content   []struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
@@ -332,6 +347,7 @@ type deepSeekOutput struct {
 	Action struct {
 		Type    string   `json:"type"`
 		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
 		Sources []Source `json:"sources"`
 	} `json:"action"`
 }
@@ -377,7 +393,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 	search := func(item deepSeekOutput) {
 		if !searches[item.ID] {
 			searches[item.ID] = true
-			args, _ := json.Marshal(map[string]string{"query": item.Action.Query})
+			args, _ := json.Marshal(item.Action)
 			emit(Event{Type: EventHostedToolCall, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}})
 		}
 	}
@@ -388,10 +404,18 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		}
 		searchDone[item.ID] = true
 		result := &HostedToolResult{Text: "Web search completed", Metadata: map[string]any{"status": item.Status}}
+		if item.Status == "failed" || item.Error != nil {
+			result.Text = "Web search failed"
+			result.Error = item.Error
+			if result.Error == nil {
+				result.Error = &HostedToolResultError{Code: "search_failed", Message: result.Text}
+			}
+		}
 		for _, source := range item.Action.Sources {
 			result.Results = append(result.Results, HostedToolResultItem{Title: source.Title, URL: source.URL})
 		}
-		emit(Event{Type: EventHostedToolResult, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search"}, HostedResult: result})
+		args, _ := json.Marshal(item.Action)
+		emit(Event{Type: EventHostedToolResult, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}, HostedResult: result})
 	}
 	finishCall := func(item deepSeekOutput) error {
 		if item.ID == "" || item.CallID == "" || item.Name == "" || !json.Valid([]byte(item.Arguments)) {

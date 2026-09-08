@@ -1,6 +1,6 @@
 module github.com/floegence/floret/v7
 
-go 1.26.5
+go 1.27.1
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2

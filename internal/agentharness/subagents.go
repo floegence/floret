@@ -861,6 +861,10 @@ func threadDetailActivityTimeline(detail ThreadDetailEvent, entry sessiontree.En
 }
 
 func threadDetailObservationEvent(detail ThreadDetailEvent, entry sessiontree.Entry, activityContext threadDetailActivityContext) (observation.Event, bool) {
+	if entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == sessiontree.HostedToolEntryKind {
+		observed, err := sessiontree.HostedToolObservation(entry)
+		return observed, err == nil
+	}
 	base := observation.Event{
 		RunID:      identity.RunID(threadDetailRunID(detail, activityContext)),
 		ThreadID:   identity.ThreadID(detail.ThreadID),

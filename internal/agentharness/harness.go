@@ -2078,6 +2078,34 @@ func (p *turnProjection) Emit(ev event.Event) {
 		p.text += ev.Message
 	case event.ProviderReasoning:
 		p.reasoning += ev.Message
+	case event.HostedToolCall, event.HostedToolResult:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
+		if p.text == "" && p.reasoning != "" {
+			if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Reasoning: p.reasoning}); err != nil {
+				p.err = err
+				return
+			}
+		}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
+		}
+		safe := event.Sanitize(ev)
+		metadata, _ := safe.Metadata.(map[string]any)
+		entry, err := sessiontree.NewHostedToolEntry(observation.Event{
+			Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID),
+			ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: safe.Activity, Metadata: metadata,
+		})
+		if err == nil {
+			entry, err = p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
+		}
+		p.err = err
+		if err == nil {
+			p.thread.harness.emitEntryCommitted(entry, p.runID)
+		}
 	case event.ToolCall:
 		if err := p.flushPendingAssistantText(false); err != nil {
 			p.err = err

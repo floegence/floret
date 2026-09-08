@@ -147,6 +147,9 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		runtime.state.attemptID = attemptID
 		runtime.state.attemptEpoch = attemptEpoch
 	}
+	if event.Type == observation.EventTypeHostedToolCall || event.Type == observation.EventTypeHostedToolResult {
+		runtime.finishLiveTextSegment()
+	}
 	if event.Stream != nil {
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:

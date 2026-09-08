@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-08
+* **Native search activity**: Persist safe provider-hosted call/result facts in
+  the canonical journal, preserving failed outcomes and restart presentation
+  without local tool dispatch or model-history tool messages.
+* **Go toolchain**: Align module builds and all CI jobs to Go 1.27.1.
+
 ## 2026-09-06
 * **Complete interaction transitions**: Active thread views and summaries now
   publish `run_progress` and unresolved approval/input state as one coherent
