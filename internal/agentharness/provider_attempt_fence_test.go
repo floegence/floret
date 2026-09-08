@@ -78,7 +78,8 @@ func TestTurnProjectionFailsClosedWhenNextAttemptCrossesIncompletePublicToolBatc
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-1", 1, ""))
 	projection.Emit(event.Event{
 		Type: event.ToolCall, ToolID: "tool-1", ToolName: "read", Args: `{}`,
-		Metadata: map[string]any{"batch_index": 0, "batch_size": 2},
+		ToolCallMessage: &session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "tool-1", ToolName: "read", ToolArgs: `{}`},
+		Metadata:        map[string]any{"batch_index": 0, "batch_size": 2},
 	})
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-2", 2, ""))
 	if projection.err == nil || !strings.Contains(projection.err.Error(), "pending canonical tool batch") {

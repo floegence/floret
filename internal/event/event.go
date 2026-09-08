@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -78,6 +79,9 @@ type Event struct {
 	ToolID        string `json:"tool_id,omitempty"`
 	ToolName      string `json:"tool_name,omitempty"`
 	ToolKind      string `json:"tool_kind,omitempty"`
+	// ToolCallMessage is the Engine's authoritative local call for journal projection.
+	// It never crosses an observation boundary.
+	ToolCallMessage *session.Message `json:"-"`
 	// CanonicalEntryID links an effect result event to the journal entry that
 	// the effect authority already committed. It is internal projection state.
 	CanonicalEntryID   string                      `json:"-"`
@@ -241,6 +245,7 @@ func withoutMetadataKey(value any, key string) any {
 }
 
 func sanitizePathRefs(e Event) Event {
+	e.ToolCallMessage = nil
 	e.Message = SafePathRefsText(e.Message)
 	e.Args = SafePathRefsText(e.Args)
 	e.Result = SafePathRefsText(e.Result)

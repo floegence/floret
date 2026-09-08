@@ -1,5 +1,17 @@
 # Changelog
 
+## v7.3.4 - 2026-09-08
+
+- Persist the Engine's canonical local tool-call messages in live thread
+  projection, preserving complete reasoning across hosted search boundaries
+  without appending duplicate calls during turn finalization.
+- Keep assistant fragment boundaries consistent between execution and durable
+  history so source threads and ordinary or nested forks can continue after
+  restart without context-prefix drift. Internal call messages remain private
+  to projection and are stripped from every observation boundary.
+- Preserve strict tool-history validation and occurrence-aware reconciliation.
+  This prevents new corruption; existing invalid histories are not rewritten.
+
 ## v7.3.3 - 2026-09-08
 
 - Install an independent canonical fallback title when a fork copies user

@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-09-08
+* **Fork continuation**: Engine-authored internal call messages now preserve
+  complete reasoning in live persistence; hosted assistant fragment boundaries
+  match execution history. New source and nested fork histories survive
+  restart and continuation without duplicate tool calls or prefix drift.
 * **Fork titles**: Copying user history now installs an independent canonical
   fallback title atomically, including nested forks and attachment-only input.
 * **Native search activity**: Persist safe provider-hosted call/result facts in
