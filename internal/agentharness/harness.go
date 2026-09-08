@@ -2107,12 +2107,17 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	case event.ToolCall:
+		message, err := canonicalToolCallMessage(ev)
+		if err != nil {
+			p.err = err
+			return
+		}
 		if err := p.flushPendingAssistantText(false); err != nil {
 			p.err = err
 			return
 		}
 		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{
-			message:    session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args, Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			message:    message,
 			observedAt: ev.Timestamp,
 		})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
@@ -2294,6 +2299,15 @@ func (p *turnProjection) failCompactionFinalization(cause error) error {
 	last.Timestamp = p.thread.harness.now()
 	p.Emit(last)
 	return p.Flush()
+}
+
+func canonicalToolCallMessage(ev event.Event) (session.Message, error) {
+	msg := ev.ToolCallMessage
+	if msg == nil || msg.Role != session.Assistant || msg.Content != "tool_call" || msg.Kind != session.MessageKindNormal ||
+		msg.ToolCallID == "" || msg.ToolCallID != ev.ToolID || msg.ToolName == "" || msg.ToolName != ev.ToolName || msg.ToolArgs != ev.Args {
+		return session.Message{}, newTurnProjectionContractError("tool call event requires a matching canonical call message")
+	}
+	return session.CloneMessage(*msg), nil
 }
 
 func (p *turnProjection) Flush() error {

@@ -28,4 +28,18 @@ projection. `Engine` owns one run's provider loop, tool dispatch, compaction
 decision, control signals, and events. Gateway owns transport and provider
 rendering.
 
+Engine constructs each canonical local tool-call message once. Its execution
+history and the internal ToolCall event carry detached copies of that same
+message; AgentHarness validates the event identity and saves a deep copy rather
+than reconstructing reasoning from stream fragments. This internal payload is
+not serialized and is removed at observation boundaries, including raw sinks.
+Missing or conflicting messages fail as contract errors.
+
+Hosted-tool events flush preceding assistant text and reasoning into the
+journal. Engine preserves these same fragment boundaries in execution history
+so the next turn sees the same canonical context prefix. Final reconciliation
+still compares complete messages by occurrence: later legitimate reuse of a
+tool-call ID is a new exchange. Forks retain strict history and effect isolation;
+this write-path correction does not migrate existing invalid histories.
+
 Testing harnesses remain outside production control flow.

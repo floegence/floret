@@ -334,17 +334,42 @@ type RunDecision struct {
 }
 
 type StepOutput struct {
-	Text            string
-	Reasoning       string
-	Calls           []provider.ToolCall
-	Usage           provider.Usage
-	ResponseID      string
-	Retry           bool
-	Truncated       bool
-	FinishReason    provider.FinishReason
-	RawFinishReason string
-	FinishInferred  bool
-	ResponseState   *provider.State
+	Text                string
+	Reasoning           string
+	Calls               []provider.ToolCall
+	Usage               provider.Usage
+	ResponseID          string
+	Retry               bool
+	Truncated           bool
+	FinishReason        provider.FinishReason
+	RawFinishReason     string
+	FinishInferred      bool
+	ResponseState       *provider.State
+	assistantBoundaries []assistantBoundary
+}
+
+type assistantBoundary struct {
+	textEnd      int
+	reasoningEnd int
+}
+
+// Hosted tool events commit preceding assistant fragments to the journal.
+// Keep those same boundaries in execution history so its cached prefix survives reopening.
+func (output StepOutput) assistantMessages() []session.Message {
+	var messages []session.Message
+	textStart, reasoningStart := 0, 0
+	appendFragment := func(boundary assistantBoundary, keepReasoningOnly bool) {
+		text, reasoning := output.Text[textStart:boundary.textEnd], output.Reasoning[reasoningStart:boundary.reasoningEnd]
+		if text != "" || (reasoning != "" && keepReasoningOnly) {
+			messages = append(messages, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning})
+		}
+		textStart, reasoningStart = boundary.textEnd, boundary.reasoningEnd
+	}
+	for _, boundary := range output.assistantBoundaries {
+		appendFragment(boundary, true)
+	}
+	appendFragment(assistantBoundary{len(output.Text), len(output.Reasoning)}, len(output.Calls) == 0)
+	return messages
 }
 
 type RunInput struct {
@@ -902,8 +927,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			output += stepText
 			noProgress = 0
 		}
-		if stepText != "" || (stepReasoning != "" && len(calls) == 0) {
-			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning})
+		for _, assistantMessage := range stepOutput.assistantMessages() {
+			msg := stableMessageAt(opts.RunID, len(activeHistory), assistantMessage)
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
@@ -1085,7 +1110,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				projectedCallBatchMetadata[callID] = map[string]any{"batch_index": index, "batch_size": len(projectedCallIDs)}
 			}
 		}
-		for _, call := range calls {
+		callMessages := make([]session.Message, len(calls))
+		for index, call := range calls {
 			reasoning := call.Reasoning
 			if reasoning == "" {
 				reasoning = stepReasoning
@@ -1098,6 +1124,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if projectedSignal != nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
 				msg.ControlSignal = sessionControlSignalView(projectedSignal)
 			}
+			callMessages[index] = msg
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				state.activeMessages = append([]session.Message(nil), activeHistory...)
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
@@ -1154,7 +1181,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		for _, call := range calls {
+		for index, call := range calls {
 			if internalValidationCorrections[call.ID] {
 				continue
 			}
@@ -1163,7 +1190,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if metadata == nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(fmt.Errorf("projected tool call %q is missing batch metadata", call.ID), FailureOriginContract), metrics, started, decision)
 			}
-			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
+			callMessage := session.CloneMessage(callMessages[index])
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", ToolCallMessage: &callMessage, Args: call.Args, Activity: activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 		}
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
@@ -3559,11 +3587,13 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
+				out.assistantBoundaries = append(out.assistantBoundaries, assistantBoundary{len(out.Text), len(out.Reasoning)})
 				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args, Activity: hostedToolActivity(ev)})
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
+				out.assistantBoundaries = append(out.assistantBoundaries, assistantBoundary{len(out.Text), len(out.Reasoning)})
 				var errorText string
 				if ev.HostedResult.Error != nil {
 					errorText = "Provider-hosted tool failed"
