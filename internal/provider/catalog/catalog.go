@@ -24,6 +24,7 @@ const (
 )
 
 const (
+	APIOpenAIResponses   = "openai-responses"
 	APIOpenAIChat        = "openai-chat-completions"
 	APIAnthropicMessages = "anthropic-messages"
 )

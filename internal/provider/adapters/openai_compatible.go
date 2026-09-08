@@ -360,7 +360,7 @@ func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req p
 		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
 	case "kimi_thinking_type":
 		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": thinkingType(selection)}})
-	case "deepseek_reasoning_effort":
+	case "deepseek_reasoning_effort", "deepseek_responses_reasoning_effort":
 		if selection.Level == provider.ReasoningLevelOff {
 			chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": "disabled"}})
 			return nil

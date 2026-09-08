@@ -204,7 +204,6 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 	}
 	for _, providerID := range []string{
 		catalog.ProviderOpenAI,
-		catalog.ProviderDeepSeek,
 		catalog.ProviderOpenRouter,
 		catalog.ProviderOpenAICompatible,
 		catalog.ProviderGoogle,
@@ -258,5 +257,16 @@ func TestCapabilityUnmarshalUsesCanonicalFields(t *testing.T) {
 	}
 	if nullCapability != (Capability{}) {
 		t.Fatalf("null capability = %#v", nullCapability)
+	}
+}
+
+func TestDeepSeekPresetUsesResponsesHostedSearch(t *testing.T) {
+	capability := ProviderPresetCapability(catalog.ProviderDeepSeek)
+	resolved, err := Resolve(ResolveInput{Provider: catalog.ProviderDeepSeek, Capability: capability})
+	if err != nil || !resolved.Available || resolved.WireShape != WireShapeDeepSeekResponsesWebSearch || len(resolved.LocalToolNames) != 0 || len(resolved.HostedTools) != 1 {
+		t.Fatalf("resolved = %+v, error = %v", resolved, err)
+	}
+	if catalog.APIKind(catalog.ProviderDeepSeek) != catalog.APIOpenAIResponses {
+		t.Fatal("DeepSeek must use Responses")
 	}
 }

@@ -12,6 +12,8 @@ import (
 const (
 	ToolWebSearch = "web_search"
 
+	WireShapeDeepSeekResponsesWebSearch HostedWireShape = "deepseek_responses_web_search"
+
 	WireShapeAnthropicServerWebSearch HostedWireShape = "anthropic_server_web_search"
 
 	ExternalProviderBrave = "brave"
@@ -69,6 +71,7 @@ type Resolved struct {
 func AvailableWireShapes() []HostedWireShape {
 	return []HostedWireShape{
 		WireShapeAnthropicServerWebSearch,
+		WireShapeDeepSeekResponsesWebSearch,
 	}
 }
 
@@ -237,7 +240,7 @@ func ValidateRawCapability(providerID string, capability Capability) error {
 
 func ValidateWireShape(shape HostedWireShape) error {
 	switch shape {
-	case WireShapeAnthropicServerWebSearch:
+	case WireShapeAnthropicServerWebSearch, WireShapeDeepSeekResponsesWebSearch:
 		return nil
 	default:
 		return fmt.Errorf("unsupported hosted web_search wire shape %q", shape)
