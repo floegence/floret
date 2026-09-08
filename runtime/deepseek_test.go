@@ -20,22 +20,32 @@ func TestDeepSeekResponsesHistorySurvivesRuntimeRestart(t *testing.T) {
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Input json.RawMessage `json:"input"`
+			Input json.RawMessage                 `json:"input"`
+			Tools []provider.HostedToolDefinition `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if count.Add(1) == 2 && !strings.Contains(string(body.Input), `"provider_receipt":"opaque"`) {
+		searchDeclared := false
+		for _, tool := range body.Tools {
+			searchDeclared = searchDeclared || tool.Type == "web_search"
+		}
+		if !searchDeclared {
+			t.Errorf("search not declared: %+v", body.Tools)
+		}
+		if count.Add(1) == 2 && !strings.Contains(string(body.Input), `"search_receipt":"opaque"`) {
 			t.Errorf("opaque replay missing after restart: %s", body.Input)
 		}
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"provider_receipt\":\"opaque\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"consider\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"web_search_call\",\"id\":\"ws1\",\"status\":\"completed\",\"search_receipt\":\"opaque\",\"action\":{\"type\":\"search\",\"query\":\"docs\"}},{\"type\":\"reasoning\",\"provider_receipt\":\"opaque\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"consider\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n")
 	}))
 	defer server.Close()
 	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-pro", BaseURL: server.URL, APIKey: "secret", StateCompatibilityKey: "restart:test", HTTPClient: server.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway)
+	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, WithAgentDynamicToolSurface(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
+		return ToolSurface{HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}, nil
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
