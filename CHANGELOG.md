@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.3.1 - 2026-09-08
+
+- Bind a user stop to the selected Turn's current Run under the cancellation
+  lock, so answering a question concurrently cannot turn the stop into a no-op.
+  Execution-context cancellation remains bound to its exact Run.
+
 ## v7.3.0 - 2026-09-08
 
 - Add compatible terminal Activity facts for exec/read/write/terminate, sent
