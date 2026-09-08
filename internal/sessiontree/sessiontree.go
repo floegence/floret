@@ -1599,6 +1599,16 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		meta.LeafID = boundary.ID
 	}
 	var forkedTodo AgentTodoState
+	for _, entry := range forkedEntries {
+		if entry.Type != EntryUserMessage || fallbackThreadTitle(entry.Message) == "" {
+			continue
+		}
+		meta, _, err = installFallbackThreadTitle(meta, entry.Message, now)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+		break
+	}
 	hasForkedTodo := false
 	if todo, ok := r.todos[opts.SourceThreadID]; ok {
 		todo.ThreadID = newID

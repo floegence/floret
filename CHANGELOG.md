@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.3.3 - 2026-09-08
+
+- Install an independent canonical fallback title when a fork copies user
+  history, so list-only consumers can display the destination immediately.
+  Empty boundaries remain untitled; source title generation is never copied.
+
 ## v7.3.2 - 2026-09-08
 
 - Preserve provider-native search activity in canonical thread views, history,
