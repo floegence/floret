@@ -1163,3 +1163,8 @@
 ## 2026-09-08
 
 - Document the additive DeepSeek Responses gateway, stateless opaque replay, native search, and the Redeven consumption boundary.
+
+* **Terminal Activity facts**: Extend the public typed payload with operation,
+  safe input-byte metadata, output cursor snapshots, public execution location,
+  and timeout facts. Hosts own semantic labels and credential suppression;
+  Floret owns validation, sanitization, cumulative projection, and history.

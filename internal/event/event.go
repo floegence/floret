@@ -338,6 +338,8 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		}
 		return payload
 	case tools.TerminalActivityPayload:
+		payload.Operation = sanitizeText(payload.Operation)
+		payload.ExecutionLocation = sanitizeText(payload.ExecutionLocation)
 		payload.Command = sanitizeText(payload.Command)
 		payload.Status = sanitizeText(payload.Status)
 		payload.ProcessID = sanitizeText(payload.ProcessID)

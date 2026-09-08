@@ -1630,3 +1630,35 @@ func activityTestStructuredPayload(t *testing.T, item ActivityItem) tools.Struct
 func activityTestInt(value int) *int {
 	return &value
 }
+
+func TestTerminalInteractionActivitySurvivesLifecycleAndHistoryJSON(t *testing.T) {
+	for _, operation := range []string{"read", "write", "terminate"} {
+		events := []Event{}
+		for index, kind := range []EventType{EventTypeToolCall, EventTypeToolActivityUpdated, EventTypeToolResult} {
+			payload := tools.TerminalActivityPayload{Operation: operation, ProcessID: "tp_1", InputBytes: 12, FirstSeq: 1, LastSeq: int64(index + 1), LatestSeq: 3, HasMore: index < 2, TotalBytes: 128, ExecutionLocation: "local", TimedOut: true}
+			label := ""
+			if index == 0 {
+				payload.Command = "ssh host"
+				label = "Check SSH session"
+			}
+			events = append(events, Event{Type: kind, RunID: "run", ThreadID: "thread", TurnID: "turn", Step: 1, ToolID: "tool-1", ToolName: "terminal." + operation, ToolKind: "local", ObservedAt: time.UnixMilli(1000 + int64(index)), Activity: activityTestTerminalPresentation(label, payload)})
+		}
+		timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run", ThreadID: "thread", TurnID: "turn"}, events, 1004)
+		raw, err := json.Marshal(timeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored ActivityTimeline
+		if err := json.Unmarshal(raw, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if len(restored.Items) != 1 {
+			t.Fatalf("history duplicated activity: %s", raw)
+		}
+		item := restored.Items[0]
+		got := activityTestTerminalPayload(t, item)
+		if got.Operation != operation || got.Command != "ssh host" || got.HasMore || got.LastSeq != 3 || got.InputBytes != 12 || !got.TimedOut || activityTestPresentation(t, item).Label != "Check SSH session" {
+			t.Fatalf("history lost facts: %#v", got)
+		}
+	}
+}
