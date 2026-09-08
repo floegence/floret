@@ -86,16 +86,16 @@ var deepSeekReasoning = provider.ReasoningCapability{
 	SupportedLevels:  []provider.ReasoningLevel{provider.ReasoningLevelHigh, provider.ReasoningLevelMax},
 	DefaultLevel:     provider.ReasoningLevelHigh,
 	DisableSupported: true,
-	WireShape:        "deepseek_reasoning_effort",
-	DisableShape:     "deepseek_thinking_disabled",
+	WireShape:        "deepseek_responses_reasoning_effort",
+	DisableShape:     "responses_reasoning_none",
 	ResponseReasoningFields: []string{
-		"reasoning_content",
-		"completion_tokens_details.reasoning_tokens",
+		"reasoning.content",
+		"output_tokens_details.reasoning_tokens",
 	},
-	HistoryReplayRequirements: []string{"reasoning_content"},
-	SourceURLs:                []string{"https://api-docs.deepseek.com/guides/thinking_mode", "https://api-docs.deepseek.com/api/create-chat-completion"},
-	SourceCheckedAt:           "2026-06-23",
-	Fixture:                   "deepseek_reasoning_effort",
+	HistoryReplayRequirements: []string{"reasoning.content"},
+	SourceURLs:                []string{"https://api-docs.deepseek.com/guides/thinking_mode", "https://api-docs.deepseek.com/guides/responses_api/"},
+	SourceCheckedAt:           "2026-09-08",
+	Fixture:                   "deepseek_responses_reasoning_effort",
 }
 
 var qwenThinkingBudgetReasoning = provider.ReasoningCapability{
@@ -266,7 +266,8 @@ var providers = []Provider{
 	{
 		ID:             ProviderDeepSeek,
 		Name:           "DeepSeek",
-		API:            APIOpenAIChat,
+		API:            APIOpenAIResponses,
+		WebSearch:      WebSearchCapability{DefaultSource: "provider_hosted", HostedWireShape: "deepseek_responses_web_search", HostedWireShapes: []string{"deepseek_responses_web_search"}},
 		DefaultBaseURL: "https://api.deepseek.com",
 		DefaultModel:   "deepseek-v4-pro",
 		EnvKeys:        []string{"DEEPSEEK_API_KEY"},

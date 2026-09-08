@@ -181,3 +181,19 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 		t.Fatalf("published canonical usage totals=%#v", snapshot.UsageTotals)
 	}
 }
+
+func TestDeepSeekResponsesConstructor(t *testing.T) {
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{
+		Model: "deepseek-v4-pro", BaseURL: "https://api.deepseek.com", APIKey: "not-used",
+		StateCompatibilityKey: "adoption:deepseek:responses:v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateway.Identity().Provider != "deepseek" {
+		t.Fatal("incorrect DeepSeek identity")
+	}
+	if _, ok := gateway.(provider.RequestPreparer); !ok {
+		t.Fatal("DeepSeek must estimate the complete rendered request")
+	}
+}

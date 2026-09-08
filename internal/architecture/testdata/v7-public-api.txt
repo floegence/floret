@@ -214,6 +214,15 @@ field Capabilities.Reasoning github.com/floegence/floret/v7/provider.ReasoningSu
 field Capabilities.ReasoningCapability github.com/floegence/floret/v7/config.ReasoningCapability tag="json:\"reasoning_capability,omitempty\""
 field Capabilities.AttachmentPayload github.com/floegence/floret/v7/provider.AttachmentPayloadMode tag="json:\"attachment_payload\""
 method Capabilities.Validate func() error
+type DeepSeekOptions struct
+field DeepSeekOptions.Model string
+field DeepSeekOptions.BaseURL string
+field DeepSeekOptions.APIKey string
+field DeepSeekOptions.StateCompatibilityKey string
+field DeepSeekOptions.HTTPClient *net/http.Client
+field DeepSeekOptions.Temperature *float64
+field DeepSeekOptions.TopP *float64
+field DeepSeekOptions.ResponseFormat string
 var ErrContextOverflow error
 type Event struct
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""
@@ -282,6 +291,7 @@ field Message.ToolResult *github.com/floegence/floret/v7/provider.ToolResult tag
 method Message.Validate func() error
 type MessageRole string
 func NewAnthropic func(options github.com/floegence/floret/v7/provider.AnthropicOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
+func NewDeepSeek func(options github.com/floegence/floret/v7/provider.DeepSeekOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewOpenAICompatible func(options github.com/floegence/floret/v7/provider.OpenAICompatibleOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 type OpenAICompatibleOptions struct
 field OpenAICompatibleOptions.Provider string

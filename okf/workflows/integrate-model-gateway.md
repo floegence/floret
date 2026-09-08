@@ -11,7 +11,7 @@ timestamp: 2026-07-29T00:00:00Z
 
 Implement `provider.Gateway` with explicit Identity, Capabilities, and Stream.
 Keep credentials, base URL, HTTP client, and provider routing in the host. Use
-`provider.NewOpenAICompatible` or `provider.NewAnthropic` when their wire format
+`provider.NewOpenAICompatible`, `provider.NewDeepSeek`, or `provider.NewAnthropic` when their wire format
 fits.
 
 If attachments are expanded, also implement `provider.RequestPreparer` and

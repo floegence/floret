@@ -38,7 +38,11 @@ func TestReasoningCapabilitiesHaveOfficialProvenance(t *testing.T) {
 			if strings.TrimSpace(capability.Fixture) == "" {
 				t.Fatalf("%s/%s reasoning capability missing fixture", p.ID, model.ID)
 			}
-			if capability.SourceCheckedAt != "2026-06-23" {
+			checkedAt := "2026-06-23"
+			if p.ID == ProviderDeepSeek {
+				checkedAt = "2026-09-08"
+			}
+			if capability.SourceCheckedAt != checkedAt {
 				t.Fatalf("%s/%s source_checked_at = %q", p.ID, model.ID, capability.SourceCheckedAt)
 			}
 			if len(capability.SourceURLs) == 0 {

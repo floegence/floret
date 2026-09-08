@@ -1159,3 +1159,7 @@
 ## 2026-06-23
 * **Update**: Documented parent-managed durable child threads in the runtime API,
   runtime layers, and execution identity concepts.
+
+## 2026-09-08
+
+- Document the additive DeepSeek Responses gateway, stateless opaque replay, native search, and the Redeven consumption boundary.

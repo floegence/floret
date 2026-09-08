@@ -303,6 +303,23 @@ expires, Shutdown returns `ctx.Err()` and Host remains closing; a later call
 continues waiting. After completion, every retained handle returns
 `ErrHostClosed`.
 
+## DeepSeek Responses
+
+Use `provider.NewDeepSeek(provider.DeepSeekOptions{...})` for DeepSeek V4 Pro
+and Flash. Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`,
+and an explicit `StateCompatibilityKey`. The gateway always calls `/responses`,
+streams text and reasoning, and accepts the native hosted tool
+`provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}`.
+
+DeepSeek is stateless. Floret retains provider-native response items in opaque
+state, validates them against the canonical conversation, and returns the full
+input history on each call, including search receipts and reasoning. Hosts must
+not inspect or rebuild this state. Supplemental-context Turns retain their
+existing no-continuation-state privacy boundary. Prepared estimates include the complete wire
+payload. Missing terminal events fail; truncated responses continue through the
+normal runtime limit policy. The existing `NewOpenAICompatible` constructor
+continues to select Chat Completions explicitly.
+
 ## Development
 
 ```bash
