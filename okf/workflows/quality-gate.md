@@ -9,6 +9,9 @@ timestamp: 2026-06-20T00:00:00Z
 
 # Required Checks
 
+`go.mod` pins Go 1.27.1. Every CI job reads the same module version,
+including vulnerability scanning. Local release checks use that toolchain.
+
 Run before integration with workspace discovery disabled so repository checks
 cannot accidentally resolve an unpublished sibling module:
 

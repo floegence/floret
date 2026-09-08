@@ -201,3 +201,44 @@ func TestDeepSeekCancellationClosesStream(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepSeekHostedSearchFailureIsNotSuccess(t *testing.T) {
+	for _, streamed := range []bool{false, true} {
+		t.Run(fmt.Sprint(streamed), func(t *testing.T) {
+			item := `{"type":"web_search_call","id":"search-1","status":"failed","error":{"code":"search_unavailable","message":"upstream search unavailable"},"action":{"type":"search","queries":["Go release"]}}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if streamed {
+					fmt.Fprintf(w, "data: {\"type\":\"response.output_item.done\",\"item\":%s}\n\n", item)
+				}
+				fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-1\",\"status\":\"completed\",\"output\":[%s,{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Search unavailable.\"}]}]}}\n\n", item)
+			}))
+			defer server.Close()
+			gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-flash", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "test", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := collectDeepSeek(t, gateway, provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "Search."}}, HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}})
+			calls, results, done := 0, 0, false
+			for _, event := range events {
+				if event.Err != nil {
+					t.Fatal(event.Err)
+				}
+				switch event.Type {
+				case provider.EventHostedToolCall:
+					calls++
+				case provider.EventHostedToolResult:
+					results++
+					if event.HostedResult == nil || event.HostedResult.Error == nil || event.HostedResult.Error.Code != "search_unavailable" || strings.Contains(event.HostedResult.Text, "completed") {
+						t.Fatalf("failed search reported as success: %+v", event.HostedResult)
+					}
+				case provider.EventDone:
+					done = true
+				}
+			}
+			if calls != 1 || results != 1 || !done {
+				t.Fatalf("calls=%d results=%d done=%v", calls, results, done)
+			}
+		})
+	}
+}

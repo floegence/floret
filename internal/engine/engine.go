@@ -3559,12 +3559,16 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
+				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args, Activity: hostedToolActivity(ev)})
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				emitAttemptEvent(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
+				var errorText string
+				if ev.HostedResult.Error != nil {
+					errorText = "Provider-hosted tool failed"
+				}
+				emitAttemptEvent(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Err: errorText, Activity: hostedToolActivity(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
 				emitAttemptEvent(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})

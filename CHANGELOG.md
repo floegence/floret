@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.3.2 - 2026-09-08
+
+- Preserve provider-native search activity in canonical thread views, history,
+  and restarts without creating local tool exchanges or retaining raw results.
+- Report failed DeepSeek searches as errors, display multi-query searches, and
+  normalize answer segments around hosted activity for stateless continuation.
+- Require Go 1.27.1 consistently for module builds and CI.
+
 ## v7.3.1 - 2026-09-08
 
 - Bind a user stop to the selected Turn's current Run under the cancellation

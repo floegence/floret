@@ -60,7 +60,16 @@ or validation failures require a canonical reload rather than event replay.
   item becomes running only when the ordered `tool_dispatch_started` observation
   is emitted after permission and approval gates pass. Hosted provider tools are
   separate provider-native activity and may be running when their hosted call is
-  observed. A running local tool can later emit `tool_activity_updated` to merge
+  observed. Canonical custom hosted-activity entries retain only the tool identity,
+  safe presentation, and outcome, with Thread, Turn, and Run identity on the
+  entry. They never create a local tool exchange or enter provider message
+  projection. Thread views merge call/result facts into one hosted item, retain
+  failures after restart, and settle unfinished searches at a terminal Turn.
+  DeepSeek multi-query search uses the typed web-search presentation; raw
+  provider search receipts remain only in opaque provider state. These optional
+  custom entries use the existing schema v9 envelope and do not rewrite older
+  journals or alter the automatic migration lineage.
+  A running local tool can later emit `tool_activity_updated` to merge
   public presentation payload changes into the same activity item, for example
   a host-owned read handle or latest output summary. This observation is not a
   result and cannot reopen a terminal item. Schema-invalid calls remain internal
