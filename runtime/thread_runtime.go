@@ -2727,13 +2727,7 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	if current.Activity != ThreadActivityActive {
 		return current, nil
 	}
-	turnID, runID := current.TurnID, identity.RunID("")
-	if err := actor.apply(ctx, func() error {
-		turnID, runID = actor.state.turnID, actor.state.runID
-		return nil
-	}); err != nil {
-		return ThreadView{}, err
-	}
+	turnID := current.TurnID
 	fingerprint, err := stableFingerprint(struct {
 		ThreadID identity.ThreadID `json:"thread_id"`
 		TurnID   identity.TurnID   `json:"turn_id"`
@@ -2741,7 +2735,7 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.settleCancellation(ctx, actor, threadID, turnID, runID, cancellationRequest{
+	return service.settleCancellation(ctx, actor, threadID, turnID, "", cancellationRequest{
 		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint,
 	}, "user_stop", "user requested stop")
 }
@@ -2762,27 +2756,31 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 	if err != nil {
 		return ThreadView{}, err
 	}
-	terminalID := stableCancellationEntryID(threadID, turnID, runID)
-	metadata := map[string]string{
-		"run_id": runID.String(), "outcome": "cancelled",
-		sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled,
-	}
-	outcomePayload, err := json.Marshal(struct {
-		ThreadID identity.ThreadID `json:"thread_id"`
-		TurnID   identity.TurnID   `json:"turn_id"`
-		RunID    identity.RunID    `json:"run_id"`
-		Terminal string            `json:"terminal"`
-		Status   string            `json:"status"`
-	}{ThreadID: threadID, TurnID: turnID, RunID: runID, Terminal: terminalID, Status: "cancelled"})
-	if err != nil {
-		return ThreadView{}, err
-	}
 	var runCancel context.CancelFunc
 	var waiters []chan InteractionResolution
 	unknownEffectFailure := false
 	err = actor.apply(ctx, func() error {
-		if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != turnID || actor.state.runID != runID {
+		if actor.state.view.Activity != ThreadActivityActive || actor.state.turnID != turnID || runID != "" && actor.state.runID != runID {
 			return nil
+		}
+		// A user stop binds the current run of the selected turn under the same
+		// lock as cancellation. An answered interaction may have advanced it.
+		// Execution-context cancellation still supplies an exact run identity.
+		runID = actor.state.runID
+		terminalID := stableCancellationEntryID(threadID, turnID, runID)
+		metadata := map[string]string{
+			"run_id": runID.String(), "outcome": "cancelled",
+			sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled,
+		}
+		outcomePayload, err := json.Marshal(struct {
+			ThreadID identity.ThreadID `json:"thread_id"`
+			TurnID   identity.TurnID   `json:"turn_id"`
+			RunID    identity.RunID    `json:"run_id"`
+			Terminal string            `json:"terminal"`
+			Status   string            `json:"status"`
+		}{ThreadID: threadID, TurnID: turnID, RunID: runID, Terminal: terminalID, Status: "cancelled"})
+		if err != nil {
+			return err
 		}
 		result, err := repo.CancelTurn(ctx, sessiontree.CancelTurnRequest{
 			ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(),

@@ -45,3 +45,9 @@ Cancellation closes in-process effect-finalization waiters even when the engine
 has already stopped consuming tool results. Uncertain dispatched effects retain
 the existing terminal classification; shutdown must not wait for an abandoned
 finalization callback. See [effect dispatch](../../internal/agentharness/effect_dispatch.go).
+
+A user stop selects the current Turn and binds its latest Run under the same
+runtime lock that commits cancellation. A concurrent Ask User response may
+advance the Run within that Turn, but cannot invalidate the user's stop.
+Execution-context cancellation retains the exact Run fence, so a late context
+callback cannot cancel a later continuation.
