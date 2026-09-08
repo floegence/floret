@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-09-08: Canonical title ordering
+
+* **Public runtime**: Expose existing title generation with title text and status
+  so hosts can reject stale snapshots without using runtime or activity versions.
+  See [title snapshots](api/runtime.md#title-snapshots). No storage migration.
+
+
 ## 2026-09-08
 * **Web operation facts**: Preserve search/open/find targets, result availability,
   and snippets through canonical Activity; hosts render one shared public shape.
