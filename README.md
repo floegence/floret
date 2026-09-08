@@ -15,7 +15,7 @@ product persistence layer.
 ## Install
 
 ```bash
-go get github.com/floegence/floret/v7@v7.1.5
+go get github.com/floegence/floret/v7@v7.3.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
