@@ -345,10 +345,12 @@ type deepSeekOutput struct {
 		} `json:"annotations"`
 	} `json:"content"`
 	Action struct {
-		Type    string   `json:"type"`
-		Query   string   `json:"query"`
-		Queries []string `json:"queries"`
-		Sources []Source `json:"sources"`
+		Type    string                 `json:"type"`
+		URL     string                 `json:"url,omitempty"`
+		Pattern string                 `json:"pattern,omitempty"`
+		Query   string                 `json:"query"`
+		Queries []string               `json:"queries"`
+		Sources []HostedToolResultItem `json:"sources,omitempty"`
 	} `json:"action"`
 }
 type deepSeekResponse struct {
@@ -388,23 +390,43 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 	var text, reasoning strings.Builder
 	calls := map[string]*ToolCall{}
 	ended := map[string]bool{}
-	searches := map[string]bool{}
+	searches := map[string]deepSeekOutput{}
 	searchDone := map[string]bool{}
-	search := func(item deepSeekOutput) {
-		if !searches[item.ID] {
-			searches[item.ID] = true
+	search := func(item deepSeekOutput) deepSeekOutput {
+		previous, exists := searches[item.ID]
+		if item.Action.Type == "" {
+			item.Action.Type = previous.Action.Type
+		}
+		if item.Action.Query == "" {
+			item.Action.Query = previous.Action.Query
+		}
+		if item.Action.Queries == nil {
+			item.Action.Queries = previous.Action.Queries
+		}
+		if item.Action.URL == "" {
+			item.Action.URL = previous.Action.URL
+		}
+		if item.Action.Pattern == "" {
+			item.Action.Pattern = previous.Action.Pattern
+		}
+		if item.Action.Sources == nil {
+			item.Action.Sources = previous.Action.Sources
+		}
+		searches[item.ID] = item
+		if !exists {
 			args, _ := json.Marshal(item.Action)
 			emit(Event{Type: EventHostedToolCall, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}})
 		}
+		return item
 	}
 	finishSearch := func(item deepSeekOutput) {
-		search(item)
+		item = search(item)
 		if searchDone[item.ID] {
 			return
 		}
 		searchDone[item.ID] = true
-		result := &HostedToolResult{Text: "Web search completed", Metadata: map[string]any{"status": item.Status}}
-		if item.Status == "failed" || item.Error != nil {
+		result := &HostedToolResult{ResultsProvided: item.Action.Sources != nil, Text: "Web search completed", Metadata: map[string]any{"status": item.Status}}
+		if item.Status == "failed" || item.Status == "incomplete" || item.Error != nil {
 			result.Text = "Web search failed"
 			result.Error = item.Error
 			if result.Error == nil {
@@ -412,7 +434,13 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 			}
 		}
 		for _, source := range item.Action.Sources {
-			result.Results = append(result.Results, HostedToolResultItem{Title: source.Title, URL: source.URL})
+			title := source.Title
+			if title == "" {
+				title = source.URL
+			}
+			if source.URL != "" {
+				result.Results = append(result.Results, HostedToolResultItem{Title: title, URL: source.URL, Snippet: source.Snippet})
+			}
 		}
 		args, _ := json.Marshal(item.Action)
 		emit(Event{Type: EventHostedToolResult, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}, HostedResult: result})

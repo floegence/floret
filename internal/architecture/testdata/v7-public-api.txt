@@ -260,6 +260,7 @@ field HostedToolDefinition.Description string tag="json:\"description,omitempty\
 field HostedToolDefinition.Parameters map[string]any tag="json:\"parameters,omitempty\""
 field HostedToolDefinition.Options map[string]any tag="json:\"options,omitempty\""
 type HostedToolResult struct
+field HostedToolResult.ResultsProvided bool tag="json:\"results_provided,omitempty\""
 field HostedToolResult.Text string tag="json:\"text,omitempty\""
 field HostedToolResult.Results []github.com/floegence/floret/v7/provider.HostedToolResultItem tag="json:\"results,omitempty\""
 field HostedToolResult.Error *github.com/floegence/floret/v7/provider.HostedToolResultError tag="json:\"error,omitempty\""
@@ -1551,11 +1552,16 @@ field WebFetchActivityPayload.BytesRead int64 tag="json:\"bytes_read,omitempty\"
 field WebFetchActivityPayload.Truncated bool tag="json:\"truncated,omitempty\""
 field WebFetchActivityPayload.Error *github.com/floegence/floret/v7/tools.ActivityError tag="json:\"error,omitempty\""
 type WebSearchActivityPayload struct
+field WebSearchActivityPayload.Operation string tag="json:\"operation,omitempty\""
+field WebSearchActivityPayload.URL string tag="json:\"url,omitempty\""
+field WebSearchActivityPayload.Pattern string tag="json:\"pattern,omitempty\""
+field WebSearchActivityPayload.ResultsProvided bool tag="json:\"results_provided,omitempty\""
 field WebSearchActivityPayload.Query string tag="json:\"query,omitempty\""
 field WebSearchActivityPayload.Status string tag="json:\"status,omitempty\""
 field WebSearchActivityPayload.Results []github.com/floegence/floret/v7/tools.WebSearchActivityResult tag="json:\"results,omitempty\""
 field WebSearchActivityPayload.Error *github.com/floegence/floret/v7/tools.ActivityError tag="json:\"error,omitempty\""
 type WebSearchActivityResult struct
+field WebSearchActivityResult.Snippet string tag="json:\"snippet,omitempty\""
 field WebSearchActivityResult.Title string tag="json:\"title\""
 field WebSearchActivityResult.URL string tag="json:\"url\""
 

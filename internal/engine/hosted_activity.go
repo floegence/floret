@@ -13,6 +13,9 @@ func hostedToolActivity(ev provider.StreamEvent) *tools.ActivityPresentation {
 		return nil
 	}
 	var action struct {
+		Type    string   `json:"type"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
 		Query   string   `json:"query"`
 		Queries []string `json:"queries"`
 	}
@@ -21,11 +24,12 @@ func hostedToolActivity(ev provider.StreamEvent) *tools.ActivityPresentation {
 	if query == "" {
 		query = strings.Join(action.Queries, "\n")
 	}
-	payload := tools.WebSearchActivityPayload{Query: query, Status: "running"}
+	payload := tools.WebSearchActivityPayload{Operation: action.Type, URL: action.URL, Pattern: action.Pattern, Query: query, Status: "running"}
 	if ev.Type == provider.HostedToolResult {
 		payload.Status = "success"
+		payload.ResultsProvided = ev.HostedResult.ResultsProvided || len(ev.HostedResult.Results) > 0
 		for _, result := range ev.HostedResult.Results {
-			payload.Results = append(payload.Results, tools.WebSearchActivityResult{Title: result.Title, URL: result.URL})
+			payload.Results = append(payload.Results, tools.WebSearchActivityResult{Title: result.Title, URL: result.URL, Snippet: result.Snippet})
 		}
 		if ev.HostedResult.Error != nil {
 			payload.Status = "error"

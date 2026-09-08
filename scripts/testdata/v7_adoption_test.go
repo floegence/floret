@@ -213,3 +213,14 @@ func TestPublishedTerminalActivityContract(t *testing.T) {
 		t.Fatalf("terminal facts: %#v", got)
 	}
 }
+
+func TestWebSearchActivityPublicFacts(t *testing.T) {
+	presentation := &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{Operation: "find_in_page", URL: "https://example.com", Pattern: "forecast", ResultsProvided: true, Results: []tools.WebSearchActivityResult{{Title: "Weather", URL: "https://example.com", Snippet: "Sunny"}}}}
+	if err := presentation.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	result := provider.HostedToolResult{ResultsProvided: true}
+	if !result.ResultsProvided {
+		t.Fatal("explicit empty list lost")
+	}
+}

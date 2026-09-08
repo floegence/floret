@@ -323,6 +323,14 @@ For durable Agents, declare it through `runtime.WithAgentHostedTools`
 so Engine admission and provider requests
 share the same tool surface. Short requests without that surface do not search.
 
+Web Activity preserves `Operation` (`search`, `open_page`, `find_in_page`),
+`Query` (ordered queries separated by newlines), `URL`, `Pattern`, and source
+`Title`, `URL`, and `Snippet`. `ResultsProvided` distinguishes an explicitly
+returned empty list from unavailable details. An empty operation remains
+unknown. Hosts render these facts from canonical Activity, including after
+restart; answer citations are not per-call search results. These additive v7.4
+contracts serve Redeven's shared Flower UI and other public Activity consumers.
+
 DeepSeek is stateless. Floret retains provider-native response items in opaque
 state, validates them against the canonical conversation, and returns the full
 input history on each call, including search receipts and reasoning. Hosts must

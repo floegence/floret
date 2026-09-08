@@ -190,15 +190,25 @@ type PatchActivityPayload struct {
 func (PatchActivityPayload) activityRenderer() ActivityRenderer { return ActivityRendererPatch }
 
 type WebSearchActivityResult struct {
-	Title string `json:"title"`
-	URL   string `json:"url"`
+	Snippet string `json:"snippet,omitempty"`
+	Title   string `json:"title"`
+	URL     string `json:"url"`
 }
 
+// WebSearchActivityPayload describes public web operations. Empty Operation
+// means the provider did not identify the operation. ResultsProvided distinguishes
+// an explicitly empty result list from unavailable details; nonempty Results
+// remain displayable for presentations written by earlier v7 releases.
+// Query retains ordered queries separated by newlines.
 type WebSearchActivityPayload struct {
-	Query   string                    `json:"query,omitempty"`
-	Status  string                    `json:"status,omitempty"`
-	Results []WebSearchActivityResult `json:"results,omitempty"`
-	Error   *ActivityError            `json:"error,omitempty"`
+	Operation       string                    `json:"operation,omitempty"`
+	URL             string                    `json:"url,omitempty"`
+	Pattern         string                    `json:"pattern,omitempty"`
+	ResultsProvided bool                      `json:"results_provided,omitempty"`
+	Query           string                    `json:"query,omitempty"`
+	Status          string                    `json:"status,omitempty"`
+	Results         []WebSearchActivityResult `json:"results,omitempty"`
+	Error           *ActivityError            `json:"error,omitempty"`
 }
 
 func (WebSearchActivityPayload) activityRenderer() ActivityRenderer {
@@ -922,6 +932,34 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.Error = cloneActivityError(r.Error)
 		}
 		return l
+	case WebSearchActivityPayload:
+		l, ok := left.(WebSearchActivityPayload)
+		if !ok {
+			return cloneActivityPayload(r)
+		}
+		if r.Operation != "" {
+			l.Operation = r.Operation
+		}
+		if r.URL != "" {
+			l.URL = r.URL
+		}
+		if r.Pattern != "" {
+			l.Pattern = r.Pattern
+		}
+		if r.Query != "" {
+			l.Query = r.Query
+		}
+		if r.Status != "" {
+			l.Status = r.Status
+		}
+		if r.ResultsProvided || len(r.Results) > 0 {
+			l.Results = append([]WebSearchActivityResult(nil), r.Results...)
+			l.ResultsProvided = true
+		}
+		if r.Error != nil {
+			l.Error = cloneActivityError(r.Error)
+		}
+		return l
 	case QuestionActivityPayload:
 		l, ok := left.(QuestionActivityPayload)
 		if !ok {
@@ -1184,12 +1222,15 @@ func validateActivityPayload(payload ActivityPayload) error {
 		if len(typed.Results) > maxActivityPayloadItems {
 			return errors.New("too many search results")
 		}
-		values := []string{typed.Query, typed.Status}
+		if typed.Operation != "" && typed.Operation != "search" && typed.Operation != "open_page" && typed.Operation != "find_in_page" {
+			return errors.New("unsupported web search operation")
+		}
+		values := []string{typed.Query, typed.Status, typed.Operation, typed.URL, typed.Pattern}
 		for _, result := range typed.Results {
 			if strings.TrimSpace(result.Title) == "" || strings.TrimSpace(result.URL) == "" {
 				return errors.New("search result requires title and url")
 			}
-			values = append(values, result.Title, result.URL)
+			values = append(values, result.Title, result.URL, result.Snippet)
 		}
 		return validatePayloadTextAndError(values, typed.Error)
 	case WebFetchActivityPayload:

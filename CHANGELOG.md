@@ -1,5 +1,14 @@
 # Changelog
 
+## v7.4.0 - 2026-09-08
+
+- Add web Activity operation, URL, find pattern, result availability, and source
+  snippets without changing existing v7 fields or the domain schema.
+- Preserve DeepSeek operation facts across sparse status/completion events and
+  distinguish unavailable source details from explicitly empty results.
+- Keep source facts through Activity merging, sanitization, persistence, and
+  restart. Answer citations remain separate from per-call results.
+
 ## v7.3.4 - 2026-09-08
 
 - Persist the Engine's canonical local tool-call messages in live thread

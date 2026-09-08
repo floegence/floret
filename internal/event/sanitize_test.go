@@ -253,3 +253,15 @@ func TestTerminalMetadataSurvivesSanitizedLifecycleEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeWebSearchFacts(t *testing.T) {
+	input := &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{Operation: "find_in_page", URL: "https://example.com", Pattern: "forecast\xff", ResultsProvided: true, Results: []tools.WebSearchActivityResult{{Title: "Weather", URL: "https://example.com", Snippet: "Sunny\xff"}}}}
+	got := Sanitize(Event{Activity: input}).Activity
+	if got == nil {
+		t.Fatal("presentation lost")
+	}
+	p := got.Payload.(tools.WebSearchActivityPayload)
+	if p.Operation != "find_in_page" || p.URL != "https://example.com" || !p.ResultsProvided || strings.Contains(p.Pattern, "\xff") || strings.Contains(p.Results[0].Snippet, "\xff") {
+		t.Fatalf("unsafe or lost facts: %+v", p)
+	}
+}
