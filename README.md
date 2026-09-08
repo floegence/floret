@@ -291,6 +291,27 @@ the exact Floret physical schema and database integrity, refuses an open
 runtime, and uses SQLite's native `VACUUM` or `incremental_vacuum`; it never
 copies records or exposes their contents.
 
+### Coordinated storage startup and restore
+
+Hosts with multiple stores can call `runtime.InspectSQLite` before any writable
+open and `storage.BackupSQLite` while all writers are stopped. Inspection checks
+the supported migration path in memory without creating a runtime Host. A backup
+includes committed WAL records and never overwrites its destination.
+
+Open with `runtime.Options{Storage: source, DeferExecution: true}` when product
+stores or authorization must be prepared first. Reads and pending-input import
+cannot start execution until `host.Activate(ctx)` succeeds. Default startup
+remains automatic. `ErrExecutionDeferred` identifies commands attempted before
+activation; `ErrStoreTooNew` identifies a newer logical storage contract.
+
+For a restored snapshot, call `host.PrepareRestore(ctx)` on the staged, deferred
+Host before activating or publishing the storage set. It stops unfinished turns,
+resolves old interactions, and removes queued work from execution while exposing
+its original input through `ThreadView.RestoredInputs`. `ErrRestoredTurn` prevents
+retrying a stopped turn. Users must submit a new request under current authority.
+Restore does not undo external side effects. The application owns consistent
+multi-store snapshots, confirmation, retention, and recoverable file replacement.
+
 ## Source Of Truth
 
 Floret exclusively owns admitted messages and references, thread/turn/run

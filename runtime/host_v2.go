@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,8 @@ var (
 	ErrMigrationRequired = errors.New("floret storage migration required")
 	// ErrUnsupportedSchema reports a nonempty schema outside the v3 contract.
 	ErrUnsupportedSchema = errors.New("unsupported floret logical schema")
+	// ErrStoreTooNew reports a store written by a newer storage contract.
+	ErrStoreTooNew = errors.New("floret storage requires a newer runtime")
 )
 
 // MigrationRequiredError identifies the exact legacy logical schema observed
@@ -62,6 +65,8 @@ func (failure *MigrationRequiredError) Is(target error) bool {
 // Options configures one runtime Host.
 type Options struct {
 	Storage publicstorage.Source
+	// DeferExecution keeps provider and tool execution disabled until Activate.
+	DeferExecution bool
 	// StartupProgress observes product-neutral storage startup phases. The
 	// callback runs synchronously and must return promptly.
 	StartupProgress StartupProgress
@@ -97,10 +102,13 @@ func (progress StartupProgressFunc) OnStartupPhase(phase StartupPhase) {
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
-	store    *runtimeStore
-	backend  spi.Backend
-	idSource IDSource
-	idMu     sync.Mutex
+	maintenanceMu     sync.Mutex
+	executionMu       sync.RWMutex
+	executionDeferred bool
+	store             *runtimeStore
+	backend           spi.Backend
+	idSource          IDSource
+	idMu              sync.Mutex
 	// mutationMu protects inventory-wide and cross-thread mutations only.
 	mutationMu      sync.Mutex
 	threadRuntimeMu sync.Mutex
@@ -260,12 +268,15 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		idSource = randomIDSource{}
 	}
 	host := &Host{
-		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}),
+		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
 	}
 	return host, nil
 }
 
 func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, agent *Agent) (*turnRunnerHandle, error) {
+	if err := host.requireExecution(); err != nil {
+		return nil, err
+	}
 	if err := host.available(); err != nil {
 		return nil, err
 	}
@@ -347,6 +358,8 @@ func (host *Host) Shutdown(ctx context.Context) error {
 }
 
 func (host *Host) finishShutdown() {
+	host.maintenanceMu.Lock()
+	defer host.maintenanceMu.Unlock()
 	host.mutationMu.Lock()
 	defer host.mutationMu.Unlock()
 	host.threadRuntimeMu.Lock()
@@ -499,6 +512,10 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if decoder.More() {
 		return "", fmt.Errorf("%w: trailing schema data", ErrUnsupportedSchema)
+	}
+	currentVersion, _ := strconv.Atoi(logicalSchemaVersion)
+	if version, parseErr := strconv.Atoi(envelope.Version); parseErr == nil && version > currentVersion && envelope.Version != "16" {
+		return "", errors.Join(ErrUnsupportedSchema, ErrStoreTooNew)
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}

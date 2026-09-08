@@ -495,6 +495,7 @@ var ErrAuthorizationUnavailable error
 var ErrEffectDispatchConsumed error
 var ErrEffectOutcomeUnknown error
 var ErrEffectUnauthorized error
+var ErrExecutionDeferred error
 var ErrForkDestinationConflict error
 var ErrForkOperationConflict error
 var ErrHostClosed error
@@ -508,12 +509,14 @@ var ErrPendingToolNotFound error
 var ErrPendingToolSettlementConflict error
 var ErrRecoveryTargetResolved error
 var ErrRequestConflict error
+var ErrRestoredTurn error
 var ErrRevisionUnavailable error
 var ErrRunNotFound error
 var ErrStaleAuthority error
 var ErrStorageResetRequest error
 var ErrStorageResetUnsupported error
 var ErrStoreClosed error
+var ErrStoreTooNew error
 var ErrSubAgentClosed error
 var ErrSubAgentClosing error
 var ErrSubAgentNotFound error
@@ -576,7 +579,9 @@ field HistoryPage.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag=
 field HistoryPage.Before string tag="json:\"before,omitempty\""
 field HistoryPage.HasMore bool tag="json:\"has_more,omitempty\""
 type Host struct
+method *Host.Activate func(ctx context.Context) error
 method *Host.Shutdown func(ctx context.Context) error
+method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
 type ImportPendingInputsInput struct
@@ -600,6 +605,7 @@ field InputQuestion.Kind string tag="json:\"kind\""
 field InputQuestion.Options []string tag="json:\"options,omitempty\""
 field InputQuestion.WriteLabel string tag="json:\"write_label,omitempty\""
 field InputQuestion.Secret bool tag="json:\"secret,omitempty\""
+func InspectSQLite func(ctx context.Context, path string) (result github.com/floegence/floret/v7/runtime.StorageInspection, err error)
 type InteractionAnswer struct
 field InteractionAnswer.InteractionID string tag="json:\"interaction_id,omitempty\""
 field InteractionAnswer.Approved *bool tag="json:\"approved,omitempty\""
@@ -682,6 +688,7 @@ func NewAgent func(configuration github.com/floegence/floret/v7/config.AgentConf
 func Open func(ctx context.Context, options github.com/floegence/floret/v7/runtime.Options) (*github.com/floegence/floret/v7/runtime.Host, error)
 type Options struct
 field Options.Storage github.com/floegence/floret/v7/storage.Source
+field Options.DeferExecution bool
 field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress
 field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
@@ -712,6 +719,12 @@ field RespondInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag
 field RespondInput.InteractionID string tag="json:\"interaction_id\""
 field RespondInput.Answers []github.com/floegence/floret/v7/runtime.InteractionAnswer tag="json:\"answers\""
 field RespondInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type RestorePreparation struct
+field RestorePreparation.StoppedThreads int tag="json:\"stopped_threads\""
+field RestorePreparation.StoppedQueueInputs int tag="json:\"stopped_queue_inputs\""
+type RestoredInput struct
+field RestoredInput.ID string tag="json:\"id\""
+field RestoredInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
 type RetryInput struct
 field RetryInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field RetryInput.SourceTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"source_turn_id\""
@@ -745,6 +758,9 @@ const StartupPhaseVerifying github.com/floegence/floret/v7/runtime.StartupPhase 
 type StartupProgress interface interface{OnStartupPhase(github.com/floegence/floret/v7/runtime.StartupPhase)}
 type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)
 method StartupProgressFunc.OnStartupPhase func(phase github.com/floegence/floret/v7/runtime.StartupPhase)
+type StorageInspection struct
+field StorageInspection.Exists bool tag="json:\"exists\""
+field StorageInspection.MigrationRequired bool tag="json:\"migration_required\""
 type StorageResetPreflight struct
 field StorageResetPreflight.EnvironmentID string
 field StorageResetPreflight.OperationID string
@@ -930,6 +946,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.RestoredInputs []github.com/floegence/floret/v7/runtime.RestoredInput tag="json:\"restored_inputs,omitempty\""
 field ThreadView.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadView.ViewVersion uint64 tag="json:\"view_version\""
 field ThreadView.Activity github.com/floegence/floret/v7/runtime.ThreadActivity tag="json:\"activity\""
@@ -1046,6 +1063,10 @@ method *WorkspaceSubscription.Next func(ctx context.Context) (github.com/floegen
 method *WorkspaceSubscription.Close func()
 
 package github.com/floegence/floret/v7/storage
+func BackupSQLite func(ctx context.Context, path string, destination string) (err error)
+var ErrSQLiteIntegrity error
+var ErrSQLiteTooNew error
+var ErrUnsupportedSQLiteFormat error
 func MaintainSQLite func(ctx context.Context, path string, policy github.com/floegence/floret/v7/storage.SQLiteMaintenancePolicy) (github.com/floegence/floret/v7/storage.SQLiteMaintenanceResult, error)
 func Memory func() github.com/floegence/floret/v7/storage.Source
 func NewSource func(source github.com/floegence/floret/v7/storage/spi.Source) github.com/floegence/floret/v7/storage.Source

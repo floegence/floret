@@ -23,8 +23,9 @@ type sqliteSource struct {
 
 var sqliteOwnership = struct {
 	sync.Mutex
-	open map[string]int
-}{open: make(map[string]int)}
+	open        map[string]int
+	maintenance map[string]bool
+}{open: make(map[string]int), maintenance: make(map[string]bool)}
 
 // SQLite returns a Source backed by the SQLite file at path. The physical
 // database contains only backend metadata and opaque namespaced records.
@@ -55,7 +56,17 @@ func (source sqliteSource) Open(ctx context.Context) (spi.Backend, error) {
 			return nil, err
 		}
 		ownedPath = filepath.Clean(ownedPath)
+		if resolved, e := filepath.EvalSymlinks(filepath.Dir(ownedPath)); e == nil {
+			ownedPath = filepath.Join(resolved, filepath.Base(ownedPath))
+		}
+		if resolved, e := filepath.EvalSymlinks(ownedPath); e == nil {
+			ownedPath = resolved
+		}
 		sqliteOwnership.Lock()
+		if sqliteOwnership.maintenance[ownedPath] {
+			sqliteOwnership.Unlock()
+			return nil, spi.ErrConflict
+		}
 		sqliteOwnership.open[ownedPath]++
 		sqliteOwnership.Unlock()
 	}
@@ -92,10 +103,11 @@ func (source sqliteSource) Open(ctx context.Context) (spi.Backend, error) {
 }
 
 type sqliteBackend struct {
-	db        *sql.DB
-	ownedPath string
-	closeMu   sync.Mutex
-	closed    bool
+	maintenance bool
+	db          *sql.DB
+	ownedPath   string
+	closeMu     sync.Mutex
+	closed      bool
 }
 
 func (backend *sqliteBackend) initialize(ctx context.Context) error {
@@ -235,6 +247,9 @@ func (backend *sqliteBackend) Close() error {
 	err := backend.db.Close()
 	if backend.ownedPath != "" {
 		sqliteOwnership.Lock()
+		if backend.maintenance {
+			delete(sqliteOwnership.maintenance, backend.ownedPath)
+		}
 		if sqliteOwnership.open[backend.ownedPath] <= 1 {
 			delete(sqliteOwnership.open, backend.ownedPath)
 		} else {

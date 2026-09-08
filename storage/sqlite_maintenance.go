@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -70,6 +71,9 @@ func MaintainSQLite(ctx context.Context, path string, policy SQLiteMaintenancePo
 		return result, err
 	}
 	path = filepath.Clean(absolutePath)
+	if resolved, e := filepath.EvalSymlinks(path); e == nil {
+		path = resolved
+	}
 	sqliteOwnership.Lock()
 	defer sqliteOwnership.Unlock()
 	if sqliteOwnership.open[path] > 0 {
@@ -211,7 +215,7 @@ func validateSQLiteMaintenanceDatabase(ctx context.Context, query sqliteQueryer)
 		return err
 	}
 	if integrity != "ok" {
-		return fmt.Errorf("SQLite integrity check failed: %s", integrity)
+		return fmt.Errorf("%w: %s", ErrSQLiteIntegrity, integrity)
 	}
 	var tableCount, exactTableCount int
 	if err := query.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
@@ -221,14 +225,17 @@ func validateSQLiteMaintenanceDatabase(ctx context.Context, query sqliteQueryer)
 		return err
 	}
 	if tableCount != 2 || exactTableCount != 2 {
-		return fmt.Errorf("database is not a Floret backend")
+		return ErrUnsupportedSQLiteFormat
 	}
 	var physicalSchema []byte
 	if err := query.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name = 'physical_schema'`).Scan(&physicalSchema); err != nil {
 		return fmt.Errorf("invalid Floret backend metadata: %w", err)
 	}
 	if !bytesEqualString(physicalSchema, "1") {
-		return fmt.Errorf("unsupported Floret backend physical schema %q", physicalSchema)
+		if version, err := strconv.Atoi(string(physicalSchema)); err == nil && version > 1 {
+			return fmt.Errorf("%w: %w: version %q", ErrUnsupportedSQLiteFormat, ErrSQLiteTooNew, physicalSchema)
+		}
+		return fmt.Errorf("%w: version %q", ErrUnsupportedSQLiteFormat, physicalSchema)
 	}
 	return nil
 }

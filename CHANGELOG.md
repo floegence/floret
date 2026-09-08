@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.6.0 - 2026-09-08
+
+- Add read-only SQLite compatibility inspection and complete offline snapshots, including committed WAL records.
+- Add deferred Host activation so coordinated application startup cannot dispatch providers or tools before product storage and authorization are ready.
+- Prepare staged snapshot restores by stopping old execution and approvals, preserving queue input for explicit resubmission, and rejecting unsafe turn retries.
+- Keep existing startup defaults and canonical migration chains unchanged.
+
+
 ## v7.5.0 - 2026-09-08
 
 - Expose canonical `ThreadSummary.TitleGeneration` so hosts can order complete

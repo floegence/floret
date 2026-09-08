@@ -228,3 +228,27 @@ func TestWebSearchActivityPublicFacts(t *testing.T) {
 		t.Fatal("explicit empty list lost")
 	}
 }
+
+func TestPublishedStorageMaintenance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.sqlite")
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path), DeferExecution: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = host.PrepareRestore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := runtime.InspectSQLite(t.Context(), path)
+	if err != nil || !inspection.Exists || inspection.MigrationRequired {
+		t.Fatalf("inspection=%+v error=%v", inspection, err)
+	}
+	if err = storage.BackupSQLite(t.Context(), path, filepath.Join(t.TempDir(), "snapshot.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+}
