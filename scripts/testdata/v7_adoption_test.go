@@ -196,4 +196,8 @@ func TestDeepSeekResponsesConstructor(t *testing.T) {
 	if _, ok := gateway.(provider.RequestPreparer); !ok {
 		t.Fatal("DeepSeek must estimate the complete rendered request")
 	}
+	if _, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "adoption", Name: "Adoption"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, runtime.WithAgentHostedTools(provider.HostedToolDefinition{Name: "web_search", Type: "web_search"})); err != nil {
+		t.Fatal(err)
+	}
+
 }

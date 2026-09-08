@@ -1031,6 +1031,7 @@ func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runt
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v7/runtime.EffectAuthorizationGate) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEventSink func(sink github.com/floegence/floret/v7/runtime.EventSink) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentHostedTools func(definitions ...github.com/floegence/floret/v7/provider.HostedToolDefinition) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v7/runtime.LoopLimits) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentManualCompactions func(source github.com/floegence/floret/v7/runtime.ManualCompactionSource) github.com/floegence/floret/v7/runtime.AgentOption
