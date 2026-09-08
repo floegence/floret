@@ -107,6 +107,8 @@ system errors retain their original identities, including temporary lock errors.
 SQLite state, including WAL records. It rejects a live Host, existing destination,
 and cancelled context. The caller owns writer exclusion across the complete
 multi-store snapshot. Floret never opens another owner's database.
+Read-only maintenance removes only sidecars absent before its connection opened;
+existing WAL and shared-memory files remain owned by their original writer.
 
 `runtime.Options.DeferExecution` and `Host.Activate` provide one process-local
 activation boundary for coordinated startup. Before activation, `View` and

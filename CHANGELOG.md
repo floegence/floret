@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.6.1 - 2026-09-08
+
+- Remove temporary SQLite sidecars created by read-only maintenance after closing its connection. Preserve existing WAL and shared-memory files.
+- Verify that inspection and backup leave a closed database's file set unchanged, so staged restore checksums contain only owned durable data.
+
 ## v7.6.0 - 2026-09-08
 
 - Add read-only SQLite compatibility inspection and complete offline snapshots, including committed WAL records.

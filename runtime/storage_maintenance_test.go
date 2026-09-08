@@ -177,6 +177,13 @@ func TestSQLiteInspectionAndBackupLeaveSourceUnchanged(t *testing.T) {
 	if _, err = InspectSQLite(t.Context(), backup); err != nil {
 		t.Fatal(err)
 	}
+	for _, database := range []string{path, backup} {
+		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+			if _, err := os.Lstat(database + suffix); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("maintenance left a new sidecar %s: %v", database+suffix, err)
+			}
+		}
+	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
