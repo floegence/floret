@@ -528,7 +528,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 					finalIDs[item.CallID] = true
 					finalCalls = append(finalCalls, *calls[item.ID])
 				case "web_search_call":
-					if item.ID == "" || item.Status != "completed" {
+					if item.ID == "" || item.Status == "" {
 						fail(errors.New("invalid DeepSeek completed search"))
 						return true
 					}
