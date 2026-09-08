@@ -156,15 +156,20 @@ type HistoryPage struct {
 }
 
 type ThreadSummary struct {
-	ID              identity.ThreadID  `json:"id"`
-	ParentThreadID  identity.ThreadID  `json:"parent_thread_id,omitempty"`
-	ParentTurnID    identity.TurnID    `json:"parent_turn_id,omitempty"`
-	TaskName        string             `json:"task_name,omitempty"`
-	TaskDescription string             `json:"task_description,omitempty"`
-	HostProfileRef  string             `json:"host_profile_ref,omitempty"`
-	ForkMode        string             `json:"fork_mode,omitempty"`
-	Title           string             `json:"title,omitempty"`
-	TitleStatus     ThreadTitleStatus  `json:"title_status,omitempty"`
+	ID              identity.ThreadID `json:"id"`
+	ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
+	ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
+	TaskName        string            `json:"task_name,omitempty"`
+	TaskDescription string            `json:"task_description,omitempty"`
+	HostProfileRef  string            `json:"host_profile_ref,omitempty"`
+	ForkMode        string            `json:"fork_mode,omitempty"`
+	Title           string            `json:"title,omitempty"`
+	TitleStatus     ThreadTitleStatus `json:"title_status,omitempty"`
+	// TitleGeneration orders the complete Title/TitleStatus snapshot independently
+	// of runtime view versions and activity timestamps. Zero means unset. A new
+	// automatic attempt or manual title advances the generation; within one
+	// generation, pending may settle to ready or failed, never the reverse.
+	TitleGeneration int64              `json:"title_generation"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
 	Activity        ThreadActivity     `json:"activity"`
@@ -923,7 +928,7 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 	summary := ThreadSummary{
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
-		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
+		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), TitleGeneration: meta.TitleGeneration, CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: activity, LastOutcome: outcome, TurnID: turnID, RunID: runID, QueueCount: queueCount,
 		Failure: cloneThreadTurnFailure(failure),
 	}
@@ -1062,7 +1067,7 @@ func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadS
 	summary := ThreadSummary{
 		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
-		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
+		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), TitleGeneration: meta.TitleGeneration, CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
 		RunID: view.RunID, RunProgress: cloneThreadRunProgress(view.RunProgress),
 		QueueCount: len(view.Queue), Failure: failure,
@@ -1109,7 +1114,7 @@ func (service *threadRuntimeService) applyActiveThreadSummary(summary *ThreadSum
 	meta := sessiontree.ThreadMeta{
 		ID: summary.ID.String(), ParentThreadID: summary.ParentThreadID.String(), ParentTurnID: summary.ParentTurnID.String(),
 		TaskName: summary.TaskName, TaskDescription: summary.TaskDescription, HostProfileRef: summary.HostProfileRef, ForkMode: summary.ForkMode,
-		Title: summary.Title, TitleStatus: sessiontree.ThreadTitleStatus(summary.TitleStatus), CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt,
+		Title: summary.Title, TitleStatus: sessiontree.ThreadTitleStatus(summary.TitleStatus), TitleGeneration: summary.TitleGeneration, CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt,
 	}
 	*summary = threadSummaryFromView(meta, view)
 }

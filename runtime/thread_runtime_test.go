@@ -900,7 +900,7 @@ func TestThreadContextReaderPreservesCanonicalIdentityAcrossNestedForksAndRestar
 		}
 		for _, summary := range summaries {
 			if summary.ID == direct.ThreadID || summary.ID == nested.ThreadID {
-				if summary.Title != "compact context" || summary.TitleStatus != ThreadTitleStatusReady {
+				if summary.Title != "compact context" || summary.TitleStatus != ThreadTitleStatusReady || summary.TitleGeneration != 1 {
 					t.Fatalf("fork summary title=%#v", summary)
 				}
 			}
@@ -983,6 +983,9 @@ func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.
 					t.Fatal(listErr)
 				}
 				if len(summaries) == 1 && summaries[0].Title == test.wantTitle && summaries[0].TitleStatus == test.wantState {
+					if summaries[0].TitleGeneration != 2 {
+						t.Fatalf("automatic title generation=%d, want 2", summaries[0].TitleGeneration)
+					}
 					if gateway.titles.Load() != 1 {
 						t.Fatalf("automatic title requests = %d, want 1", gateway.titles.Load())
 					}

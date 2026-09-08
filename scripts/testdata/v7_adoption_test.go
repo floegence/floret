@@ -164,6 +164,10 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	summaries, err := secondService.List(ctx, runtime.ThreadScope{})
+	if err != nil || len(summaries) != 1 || summaries[0].TitleGeneration != 1 || summaries[0].Title != "compact then answer" || summaries[0].TitleStatus != runtime.ThreadTitleStatusReady {
+		t.Fatalf("published title snapshot after restart=%#v err=%v", summaries, err)
+	}
 	reader, ok := secondService.(runtime.ThreadContextReader)
 	if !ok {
 		t.Fatal("published ThreadService does not expose ThreadContextReader")

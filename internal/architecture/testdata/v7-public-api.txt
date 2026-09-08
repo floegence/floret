@@ -884,6 +884,7 @@ field ThreadSummary.HostProfileRef string tag="json:\"host_profile_ref,omitempty
 field ThreadSummary.ForkMode string tag="json:\"fork_mode,omitempty\""
 field ThreadSummary.Title string tag="json:\"title,omitempty\""
 field ThreadSummary.TitleStatus github.com/floegence/floret/v7/runtime.ThreadTitleStatus tag="json:\"title_status,omitempty\""
+field ThreadSummary.TitleGeneration int64 tag="json:\"title_generation\""
 field ThreadSummary.CreatedAt time.Time tag="json:\"created_at\""
 field ThreadSummary.UpdatedAt time.Time tag="json:\"updated_at\""
 field ThreadSummary.Activity github.com/floegence/floret/v7/runtime.ThreadActivity tag="json:\"activity\""

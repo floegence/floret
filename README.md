@@ -175,7 +175,9 @@ rendering remain separate host capabilities.
 ## Runtime Boundary
 
 `runtime.Host` belongs in the composition root. `Host.ThreadService` returns the
-single typed lifecycle boundary. Its `Create`, `Fork`, `Delete`, `SetTitle`,
+single typed lifecycle boundary. Title snapshots expose `Title`, `TitleStatus`, and
+`TitleGeneration`; hosts order them independently of body updates and activity.
+See the [title snapshot contract](okf/api/runtime.md#title-snapshots). Its `Create`, `Fork`, `Delete`, `SetTitle`,
 `List`, `View`, `History`, `Send`, `Respond`, `Cancel`, `Retry`,
 queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent

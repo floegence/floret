@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.5.0 - 2026-09-08
+
+- Expose canonical `ThreadSummary.TitleGeneration` so hosts can order complete
+  title snapshots independently of runtime views and activity timestamps.
+- Preserve generation through inactive and active summaries, forks, and restart
+  without changing title generation behavior or the domain schema.
+
 ## v7.4.0 - 2026-09-08
 
 - Add web Activity operation, URL, find pattern, result availability, and source

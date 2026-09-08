@@ -59,6 +59,18 @@ seals effect attempts, and appends the terminal. It returns that terminal view
 immediately instead of waiting for provider or tool goroutines. Late turn
 writes are rejected.
 
+## Title snapshots
+
+`ThreadSummary.Title`, `TitleStatus`, and `TitleGeneration` form one canonical
+snapshot. Hosts order titles independently of runtime view versions, activity,
+and product settings. An unset title has generation zero. Each new automatic
+attempt or manual title advances the generation. Within one generation,
+`pending` may settle to `ready` or `failed`; terminal snapshots cannot regress
+to pending, and conflicting terminal snapshots are invalid. Duplicate snapshots
+are idempotent. A higher generation takes precedence even when it is pending.
+Generation is existing durable authority, not another journal revision. Claim
+tokens remain private. Hosts must not infer titles from runtime current views.
+
 ## Effects and shutdown
 
 Tool effects cross a durable one-shot authorization boundary. If the outcome
