@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.3.0 - 2026-09-08
+
+- Add compatible terminal Activity facts for exec/read/write/terminate, sent
+  bytes, output cursors, remaining output, total bytes, public execution
+  location, and timeouts. Read snapshots can clear `has_more` after draining.
+- Validate, sanitize, clone, and preserve the typed metadata through updates,
+  finalization, and canonical history without admitting raw stdin fields.
+
 ## v7.2.0 - 2026-09-08
 
 - Release an effect finalizer when cancellation seals a dispatched tool before its result is finalized, preventing shutdown from waiting on an abandoned callback.

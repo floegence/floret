@@ -92,6 +92,17 @@ advance the same item without erasing a call-authored label, description,
 command, or other non-empty typed payload field. Canonical thread projection
 applies the same merge by tool-call identity, including after restart.
 
+`TerminalActivityPayload` is a product-neutral display contract for terminal
+operations (`exec`, `read`, `write`, `terminate`). Hosts author semantic labels
+and descriptions and sanitize command/location display strings. `InputBytes`
+counts bytes actually sent, never the input text. `FirstSeq`, `LastSeq`,
+`LatestSeq`, and `HasMore` form one output snapshot; a read update or an update
+with a nonzero cursor replaces the group, including zero and false. A partial
+status update preserves the group. `TotalBytes` and `TimedOut` retain output
+size and timeout facts across finalization. Absent new fields remain valid for
+existing v7 consumers. Unknown operation values and negative counters fail
+validation; raw stdin, passwords, and private paths are not display facts.
+
 `StructuredActivityPayload.Rows` carries a bounded, ordered list of
 host-sanitized display rows. Each row may contain a title, metadata, and text,
 Markdown, or code content. Floret validates, copies, merges, and persists these

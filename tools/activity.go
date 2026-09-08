@@ -95,6 +95,13 @@ func (StructuredActivityPayload) activityRenderer() ActivityRenderer {
 	return ActivityRendererStructured
 }
 
+// TerminalActivityPayload describes safe terminal execution and interaction facts.
+// Hosts supply a sanitized command display and a public execution-location label;
+// raw stdin, credentials, and private host paths must never enter this payload.
+// Operation is empty for existing v7 presentations, or exec, read, write, terminate.
+// InputBytes counts bytes actually sent. Output cursors are one snapshot: read
+// payloads (or payloads carrying a nonzero cursor) replace all cursor fields and
+// HasMore together, including zero/false values. Status-only updates preserve them.
 type TerminalActivityPayload struct {
 	Operation         string         `json:"operation,omitempty"`
 	Command           string         `json:"command,omitempty"`
@@ -764,16 +771,12 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.DurationMS != 0 {
 			l.DurationMS = r.DurationMS
 		}
-		if r.FirstSeq != 0 {
+		if r.Operation == "read" || r.FirstSeq != 0 || r.LastSeq != 0 || r.LatestSeq != 0 {
 			l.FirstSeq = r.FirstSeq
-		}
-		if r.LastSeq != 0 {
 			l.LastSeq = r.LastSeq
-		}
-		if r.LatestSeq != 0 {
 			l.LatestSeq = r.LatestSeq
+			l.HasMore = r.HasMore
 		}
-		l.HasMore = l.HasMore || r.HasMore
 		if r.TotalBytes != 0 {
 			l.TotalBytes = r.TotalBytes
 		}
@@ -1139,6 +1142,14 @@ func validateActivityPayload(payload ActivityPayload) error {
 	case TerminalActivityPayload:
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
+		}
+		switch typed.Operation {
+		case "", "exec", "read", "write", "terminate":
+		default:
+			return errors.New("terminal operation must be exec, read, write, or terminate")
+		}
+		if typed.FirstSeq > 0 && typed.LastSeq > 0 && typed.FirstSeq > typed.LastSeq || typed.LastSeq > 0 && typed.LatestSeq > 0 && typed.LastSeq > typed.LatestSeq {
+			return errors.New("terminal output cursors must be ordered")
 		}
 		if typed.InputBytes < 0 || typed.FirstSeq < 0 || typed.LastSeq < 0 || typed.LatestSeq < 0 || typed.TotalBytes < 0 {
 			return errors.New("terminal activity counters must be non-negative")

@@ -172,6 +172,7 @@ func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 			Chips:       []tools.ActivityChip{{Kind: "effect", Label: "shell"}},
 			TargetRefs:  []tools.ActivityTargetRef{{Kind: "file", Label: path, Path: path}},
 			Payload: tools.TerminalActivityPayload{
+				Operation: "read", ExecutionLocation: path + " token sk-test-secret", InputBytes: 12, FirstSeq: 1, LastSeq: 2, LatestSeq: 3, HasMore: true, TotalBytes: 128, TimedOut: true,
 				Command: "cat " + path,
 				Stdout:  "token sk-test-secret",
 			},
@@ -184,7 +185,7 @@ func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 	if !ok {
 		t.Fatalf("terminal payload type = %T", got.Activity.Payload)
 	}
-	data := strings.Join([]string{got.Activity.Label, got.Activity.Description, got.Activity.TargetRefs[0].Label, got.Activity.TargetRefs[0].Path, payload.Command, payload.Stdout}, "\n")
+	data := strings.Join([]string{got.Activity.Label, got.Activity.Description, got.Activity.TargetRefs[0].Label, got.Activity.TargetRefs[0].Path, payload.Command, payload.Stdout, payload.ExecutionLocation}, "\n")
 	if strings.Contains(data, path) {
 		t.Fatalf("activity still contains raw path: %#v", got.Activity)
 	}
@@ -236,6 +237,19 @@ func TestSanitizePathRefsCoversRawEventStrings(t *testing.T) {
 	} {
 		if strings.Contains(value, path) {
 			t.Fatalf("%s still contains local path: %q", name, value)
+		}
+	}
+}
+
+func TestTerminalMetadataSurvivesSanitizedLifecycleEvents(t *testing.T) {
+	for _, kind := range []Type{ToolCall, ToolActivityUpdated, ToolResult} {
+		original := tools.TerminalActivityPayload{Operation: "write", InputBytes: 12, FirstSeq: 1, LastSeq: 2, LatestSeq: 3, HasMore: true, TotalBytes: 128, ExecutionLocation: "local", TimedOut: true}
+		got := Sanitize(Event{Type: kind, Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Payload: original}})
+		if got.Activity == nil {
+			t.Fatalf("activity dropped at %s", kind)
+		}
+		if actual := got.Activity.Payload.(tools.TerminalActivityPayload); actual != original {
+			t.Fatalf("metadata changed at %s: %#v", kind, actual)
 		}
 	}
 }

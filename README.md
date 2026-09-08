@@ -147,6 +147,13 @@ Activity presentation is cumulative for one tool invocation. A result may add
 terminal status and output, while non-empty display facts from the matching
 tool call remain available in events, canonical views, and reopened threads.
 
+`tools.TerminalActivityPayload` adds optional operation, sent-byte count,
+output cursors, remaining-output flag, total bytes, public execution location,
+and timeout facts. Hosts author the label and description and retain only safe
+command display text; raw stdin and credentials are never display fields.
+Read cursor snapshots replace their cursors and `has_more` together, so a final
+page can clear the flag. Status-only updates preserve the prior snapshot.
+
 SubAgent management activity uses a dedicated operation payload that preserves
 the exact action, ordered child targets, and bounded outcome counts. The
 existing single-SubAgent payload remains the durable child-thread fact; hosts

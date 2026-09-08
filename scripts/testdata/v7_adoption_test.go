@@ -201,3 +201,15 @@ func TestDeepSeekResponsesConstructor(t *testing.T) {
 	}
 
 }
+
+func TestPublishedTerminalActivityContract(t *testing.T) {
+	initial := &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Label: "Read diagnostic output", Payload: tools.TerminalActivityPayload{Operation: "read", InputBytes: 12, FirstSeq: 1, LastSeq: 2, LatestSeq: 3, HasMore: true, TotalBytes: 128, ExecutionLocation: "local", TimedOut: true}}
+	final := tools.MergeActivityPresentations(initial, &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Operation: "read", FirstSeq: 3, LastSeq: 3, LatestSeq: 3}})
+	if err := final.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	got := final.Payload.(tools.TerminalActivityPayload)
+	if got.HasMore || got.LastSeq != 3 || got.InputBytes != 12 || !got.TimedOut {
+		t.Fatalf("terminal facts: %#v", got)
+	}
+}

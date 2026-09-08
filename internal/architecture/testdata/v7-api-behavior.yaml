@@ -169,3 +169,11 @@ methods:
     concurrency: every active thread may publish independent replacement views
     cancellation: Next returns ctx.Err; Close is idempotent
     closing: Host closure terminates the subscription
+
+terminal_activity:
+  operations: [exec, read, write, terminate]
+  compatibility: absent additive fields remain valid within v7
+  input: sent byte count only; raw stdin and credentials are host-private
+  cursor_merge: read or nonzero-cursor updates replace all cursor fields and has_more together
+  status_merge: status-only updates preserve the previous output snapshot
+  display: host-authored label, description, safe command, and public execution location

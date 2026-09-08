@@ -27,3 +27,4 @@ tools.ActivityRendererSubAgentOperation	add	ActivityPresentation	distinguishes m
 tools.SubAgentOperationAction	add	SubAgentOperationActivityPayload	closed product-neutral management action vocabulary
 tools.SubAgentOperationTarget	add	SubAgentOperationActivityPayload	ordered child identity and bounded display summary
 tools.SubAgentOperationActivityPayload	add	ActivityPresentation	preserves exact multi-child operation semantics without label inference
+tools.TerminalActivityPayload	add-fields	ActivityPresentation	adds safe terminal operation, byte, cursor, location, and timeout facts without raw stdin
