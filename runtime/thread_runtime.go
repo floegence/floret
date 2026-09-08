@@ -342,18 +342,19 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
-	ThreadID     identity.ThreadID   `json:"thread_id"`
-	ViewVersion  uint64              `json:"view_version"`
-	Activity     ThreadActivity      `json:"activity"`
-	Attention    AttentionSummary    `json:"attention"`
-	LastOutcome  *TurnOutcome        `json:"last_outcome,omitempty"`
-	Failure      *ThreadTurnFailure  `json:"failure,omitempty"`
-	TurnID       identity.TurnID     `json:"turn_id,omitempty"`
-	RunID        identity.RunID      `json:"run_id,omitempty"`
-	RunProgress  *ThreadRunProgress  `json:"run_progress,omitempty"`
-	Items        []ThreadItem        `json:"items,omitempty"`
-	Queue        []QueuedInput       `json:"queue,omitempty"`
-	Interactions []ThreadInteraction `json:"interactions,omitempty"`
+	RestoredInputs []RestoredInput     `json:"restored_inputs,omitempty"`
+	ThreadID       identity.ThreadID   `json:"thread_id"`
+	ViewVersion    uint64              `json:"view_version"`
+	Activity       ThreadActivity      `json:"activity"`
+	Attention      AttentionSummary    `json:"attention"`
+	LastOutcome    *TurnOutcome        `json:"last_outcome,omitempty"`
+	Failure        *ThreadTurnFailure  `json:"failure,omitempty"`
+	TurnID         identity.TurnID     `json:"turn_id,omitempty"`
+	RunID          identity.RunID      `json:"run_id,omitempty"`
+	RunProgress    *ThreadRunProgress  `json:"run_progress,omitempty"`
+	Items          []ThreadItem        `json:"items,omitempty"`
+	Queue          []QueuedInput       `json:"queue,omitempty"`
+	Interactions   []ThreadInteraction `json:"interactions,omitempty"`
 }
 
 // ThreadContextSnapshot is the canonical context and compaction projection for
@@ -1203,6 +1204,9 @@ func threadTokenUsageTotals(in *agentharness.ThreadTokenUsageTotals) *ThreadToke
 }
 
 func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1223,6 +1227,9 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 }
 
 func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1231,6 +1238,9 @@ func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (
 }
 
 func (service *threadRuntimeService) Respond(ctx context.Context, in RespondInput) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1324,6 +1334,9 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 }
 
 func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in PromoteQueuedInput) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1530,6 +1543,10 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	if err != nil {
 		return ThreadView{}, err
 	}
+	canonical.RestoredInputs, err = restoredQueueInputs(ctx, service.host.store.repo, threadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	canonical.Queue, err = hydrateCanonicalQueue(ctx, service.host.store.repo, threadID)
 	if err != nil {
 		return ThreadView{}, err
@@ -1552,7 +1569,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = runID
 		actor.state.requestKeys = hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
-		if canonical.Activity == ThreadActivityActive && !actor.state.hydrationStarted {
+		if canonical.Activity == ThreadActivityActive && !actor.state.hydrationStarted && service.host.requireExecution() == nil {
 			actor.state.hydrationStarted = true
 			startHydration = true
 		}
@@ -1600,6 +1617,9 @@ func hydrateThreadRequestKeys(ctx context.Context, repo sessiontree.JournalRepo,
 }
 
 func (service *threadRuntimeService) recoverHydratedThread(threadID identity.ThreadID) {
+	if service.host.requireExecution() != nil {
+		return
+	}
 	ctx := context.Background()
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
 	if err != nil {
@@ -1975,6 +1995,10 @@ func (service *threadRuntimeService) acceptAndExecutePreparedSend(
 
 func (service *threadRuntimeService) prepareExecution(ctx context.Context, actor *threadRuntimeState, request AgentRequest) <-chan preparedThreadExecution {
 	ready := make(chan preparedThreadExecution, 1)
+	if err := service.host.requireExecution(); err != nil {
+		ready <- preparedThreadExecution{err: err}
+		return ready
+	}
 	go func() {
 		prepared := preparedThreadExecution{}
 		prepared.agent, prepared.err = service.factory.Agent(ctx, request)
@@ -2307,6 +2331,9 @@ type threadRuntimeEffectGate struct {
 func (gate threadRuntimeEffectGate) Dispatch(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 	if gate.service == nil {
 		return EffectDispatchResult{}, ErrAuthorizationUnavailable
+	}
+	if err := gate.service.host.requireExecution(); err != nil {
+		return EffectDispatchResult{}, err
 	}
 	if request.Permission.Mode == tools.PermissionDeny {
 		return EffectDispatchResult{}, ErrEffectUnauthorized
@@ -2776,6 +2803,9 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 		metadata := map[string]string{
 			"run_id": runID.String(), "outcome": "cancelled",
 			sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled,
+		}
+		if source == "snapshot_restore" {
+			metadata[restoredFromBackupMetadata] = "true"
 		}
 		outcomePayload, err := json.Marshal(struct {
 			ThreadID identity.ThreadID `json:"thread_id"`
@@ -3344,6 +3374,21 @@ func retryExecutionIDs(threadID identity.ThreadID, requestKey string) (identity.
 }
 
 func (service *threadRuntimeService) retrySource(ctx context.Context, threadID identity.ThreadID, sourceTurnID identity.TurnID) (string, UserInput, error) {
+	entries, err := service.host.store.repo.Entries(ctx, threadID.String())
+	if err != nil {
+		return "", UserInput{}, runtimeHostError(err)
+	}
+	for _, entry := range entries {
+		if entry.TurnID != sourceTurnID.String() {
+			continue
+		}
+		if entry.Metadata[restoredFromBackupMetadata] == "true" {
+			return "", UserInput{}, ErrRestoredTurn
+		}
+		if entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureEffectOutcomeUnknown {
+			return "", UserInput{}, ErrEffectOutcomeUnknown
+		}
+	}
 	reader, ok := service.host.store.repo.(sessiontree.CanonicalTurnReadRepo)
 	if !ok {
 		return "", UserInput{}, ErrUnsupportedStoreCapability
@@ -3445,6 +3490,9 @@ func (service *threadRuntimeService) publish(current ThreadView) {
 }
 
 func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) {
+	if service.host.requireExecution() != nil {
+		return
+	}
 	var next QueuedInput
 	var threadID identity.ThreadID
 	_ = actor.apply(context.Background(), func() error {
@@ -3473,6 +3521,9 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 }
 
 func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
 	inputFingerprint, err := stableFingerprint(input)
 	if err != nil {
 		return ThreadView{}, err
@@ -3582,6 +3633,15 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 		view.Queue[index].Input.Attachments = cloneMessageAttachments(view.Queue[index].Input.Attachments)
 		view.Queue[index].Input.References = append([]MessageReference(nil), view.Queue[index].Input.References...)
 		view.Queue[index].SupplementalContext = cloneTurnSupplementalContext(view.Queue[index].SupplementalContext)
+	}
+	if view.RestoredInputs != nil {
+		items := make([]RestoredInput, len(view.RestoredInputs))
+		for i, item := range view.RestoredInputs {
+			items[i] = item
+			items[i].Input.Attachments = cloneMessageAttachments(item.Input.Attachments)
+			items[i].Input.References = append([]MessageReference(nil), item.Input.References...)
+		}
+		view.RestoredInputs = items
 	}
 	view.Interactions = cloneThreadInteractions(view.Interactions)
 	view.Failure = cloneThreadTurnFailure(view.Failure)

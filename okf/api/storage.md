@@ -9,7 +9,7 @@ timestamp: 2026-08-18T00:00:00Z
 
 # Storage
 
-`storage.Source` is an opaque value consumed exclusively by `runtime.Open`.
+`storage.Source` is an opaque runtime storage configuration.
 Ordinary hosts cannot transact through it or use it as a lifecycle query path.
 Floret owns tuple-key encoding, envelopes, indexes, and all domain
 interpretation. Implementations of `storage/spi` remain physical backends and
@@ -90,3 +90,39 @@ when sufficient temporary disk space is available. An incremental store uses
 insufficient disk space, or an expired maintenance context is safely skipped
 and reported through `SQLiteMaintenanceResult`; corruption and schema drift
 remain errors. No record is decoded, copied, or replaced by the host.
+
+## Coordinated maintenance
+
+`runtime.InspectSQLite` opens an existing file read-only and evaluates the same
+logical and domain migration code in a transaction-local memory overlay. It
+creates no Host, never dispatches providers or tools, and reports whether a
+migration would be needed. Formal startup verifies again under its writable
+transaction. Missing files are reported without creating them. `ErrStoreTooNew`
+retains `ErrUnsupportedSchema` classification for newer logical formats.
+Physical checks report `storage.ErrUnsupportedSQLiteFormat`,
+`storage.ErrSQLiteTooNew`, and `storage.ErrSQLiteIntegrity`. Driver and operating
+system errors retain their original identities, including temporary lock errors.
+
+`storage.BackupSQLite` exclusively creates a destination containing committed
+SQLite state, including WAL records. It rejects a live Host, existing destination,
+and cancelled context. The caller owns writer exclusion across the complete
+multi-store snapshot. Floret never opens another owner's database.
+
+`runtime.Options.DeferExecution` and `Host.Activate` provide one process-local
+activation boundary for coordinated startup. Before activation, `View` and
+`ImportPendingInputs` can hydrate and migrate without recovery dispatch. Explicit
+execution commands return `ErrExecutionDeferred`. Closing an unactivated Host
+never activates it. Default Hosts preserve immediate execution behavior.
+
+`Host.PrepareRestore` requires deferred execution and is applied to a staged
+snapshot. It settles unfinished turns using canonical cancellation and resolves
+outstanding interactions. Queue deletion records retain the original queue input
+as the read-only `ThreadView.RestoredInputs` projection. Canonical records mark
+restore cancellation with `restored_from_backup=true`; those turns return
+`ErrRestoredTurn` on retry. Existing unknown-effect turns retain their non-retryable
+classification. No alternate Agent ledger or replacement lifecycle is introduced.
+Preparation is idempotent; interrupted multi-thread preparation is retried before
+the host application publishes the restored storage set.
+
+Evidence: `runtime/storage_maintenance_test.go`, `runtime/storage_inspection.go`,
+`runtime/storage_restore.go`, and `storage/sqlite_snapshot.go`.

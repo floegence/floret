@@ -24,3 +24,14 @@ func Open(ctx context.Context, source Source) (spi.Backend, error) {
 	}
 	return source.source.Open(ctx)
 }
+
+// OpenReadOnly never falls back to Source.Open, which could initialize a store.
+func OpenReadOnly(ctx context.Context, source Source) (spi.Backend, error) {
+	reader, ok := source.source.(interface {
+		OpenReadOnly(context.Context) (spi.Backend, error)
+	})
+	if !ok {
+		return nil, errors.New("storage source does not support read-only inspection")
+	}
+	return reader.OpenReadOnly(ctx)
+}
