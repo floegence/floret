@@ -253,7 +253,7 @@ func anthropicSearchItemsResult(items []anthropicWebSearchResultItem) provider.H
 			Metadata: metadata,
 		})
 	}
-	result := provider.HostedToolResultData{Results: results}
+	result := provider.HostedToolResultData{ResultsProvided: true, Results: results}
 	result.Text = result.SummaryText()
 	return result
 }

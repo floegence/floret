@@ -339,10 +339,12 @@ type Event struct {
 // HostedToolResult is a provider-neutral projection of provider-native tool
 // output.
 type HostedToolResult struct {
-	Text     string                 `json:"text,omitempty"`
-	Results  []HostedToolResultItem `json:"results,omitempty"`
-	Error    *HostedToolResultError `json:"error,omitempty"`
-	Metadata map[string]any         `json:"metadata,omitempty"`
+	// ResultsProvided is true when the provider returned a structured result list, including an empty list.
+	ResultsProvided bool                   `json:"results_provided,omitempty"`
+	Text            string                 `json:"text,omitempty"`
+	Results         []HostedToolResultItem `json:"results,omitempty"`
+	Error           *HostedToolResultError `json:"error,omitempty"`
+	Metadata        map[string]any         `json:"metadata,omitempty"`
 }
 
 // HostedToolResultItem is one structured provider-native result item.

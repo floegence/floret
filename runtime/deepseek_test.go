@@ -53,7 +53,7 @@ func TestDeepSeekResponsesHistorySurvivesRuntimeRestart(t *testing.T) {
 				return
 			}
 		}
-		fmt.Fprint(w, `data: {"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws1","status":"completed","action":{"type":"search","queries":["Go releases","Go docs"],"sources":[{"title":"Go","url":"https://go.dev/"}]}}}`+"\n\n")
+		fmt.Fprint(w, `data: {"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws1","status":"completed","action":{"type":"search","queries":["Go releases","Go docs"],"sources":[{"title":"Go","url":"https://go.dev/","snippet":"Official Go website"}]}}}`+"\n\n")
 		fmt.Fprint(w, `data: {"type":"response.output_text.delta","delta":"answer"}`+"\n\n")
 		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"response","status":"completed","output":[{"type":"web_search_call","id":"ws1","status":"completed","search_receipt":"opaque","action":{"type":"search","queries":["Go releases","Go docs"]}},{"type":"reasoning","provider_receipt":"opaque","content":[{"type":"reasoning_text","text":"consider"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"beforeanswer"}]}]}}`+"\n\n")
 	}))
@@ -114,7 +114,7 @@ func TestDeepSeekResponsesHistorySurvivesRuntimeRestart(t *testing.T) {
 				t.Fatalf("search result incomplete: %+v", item)
 			}
 			payload, ok := item.Activity.Presentation.Payload.(tools.WebSearchActivityPayload)
-			if !ok || payload.Query != "Go releases\nGo docs" || len(payload.Results) != 1 {
+			if !ok || payload.Query != "Go releases\nGo docs" || len(payload.Results) != 1 || payload.Operation != "search" || !payload.ResultsProvided || payload.Results[0].Snippet != "Official Go website" {
 				t.Fatalf("search presentation: %+v", payload)
 			}
 		}

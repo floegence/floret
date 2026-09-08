@@ -197,10 +197,12 @@ type ToolCallStream struct {
 }
 
 type HostedToolResultData struct {
-	Text     string                 `json:"text,omitempty"`
-	Results  []HostedToolResultItem `json:"results,omitempty"`
-	Error    *HostedToolResultError `json:"error,omitempty"`
-	Metadata map[string]any         `json:"metadata,omitempty"`
+	// ResultsProvided is true when the provider returned a structured result list, including an empty list.
+	ResultsProvided bool                   `json:"results_provided,omitempty"`
+	Text            string                 `json:"text,omitempty"`
+	Results         []HostedToolResultItem `json:"results,omitempty"`
+	Error           *HostedToolResultError `json:"error,omitempty"`
+	Metadata        map[string]any         `json:"metadata,omitempty"`
 }
 
 type HostedToolResultItem struct {
@@ -217,7 +219,7 @@ type HostedToolResultError struct {
 }
 
 func (r HostedToolResultData) IsZero() bool {
-	return strings.TrimSpace(r.Text) == "" && len(r.Results) == 0 && r.Error == nil && len(r.Metadata) == 0
+	return !r.ResultsProvided && strings.TrimSpace(r.Text) == "" && len(r.Results) == 0 && r.Error == nil && len(r.Metadata) == 0
 }
 
 func (r HostedToolResultData) SummaryText() string {

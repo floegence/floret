@@ -285,7 +285,7 @@ func internalHostedToolResult(value *publicprovider.HostedToolResult) provider.H
 	if value.Error != nil {
 		resultError = &provider.HostedToolResultError{Code: value.Error.Code, Message: value.Error.Message}
 	}
-	return provider.HostedToolResultData{Text: value.Text, Results: items, Error: resultError, Metadata: cloneAnyMap(value.Metadata)}
+	return provider.HostedToolResultData{ResultsProvided: value.ResultsProvided, Text: value.Text, Results: items, Error: resultError, Metadata: cloneAnyMap(value.Metadata)}
 }
 
 func providerUsage(value publicprovider.Usage) provider.Usage {

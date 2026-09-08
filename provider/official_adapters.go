@@ -274,7 +274,7 @@ func publicHostedResult(result internalprovider.HostedToolResultData) *HostedToo
 	if result.Error != nil {
 		resultError = &HostedToolResultError{Code: result.Error.Code, Message: result.Error.Message}
 	}
-	return &HostedToolResult{Text: result.Text, Results: items, Error: resultError, Metadata: result.Metadata}
+	return &HostedToolResult{ResultsProvided: result.ResultsProvided, Text: result.Text, Results: items, Error: resultError, Metadata: result.Metadata}
 }
 
 func publicState(state *internalprovider.State) *State {

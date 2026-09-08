@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-09-08
+* **Web operation facts**: Preserve search/open/find targets, result availability,
+  and snippets through canonical Activity; hosts render one shared public shape.
 * **Fork continuation**: Engine-authored internal call messages now preserve
   complete reasoning in live persistence; hosted assistant fragment boundaries
   match execution history. New source and nested fork histories survive

@@ -62,3 +62,11 @@ See [the implementation](../../provider/deepseek.go),
 Static hosted tools are frozen with `runtime.WithAgentHostedTools`; it is
 mutually exclusive with the per-step dynamic tool surface option. Engine
 admission and provider requests consume that same immutable Agent surface.
+
+Web-search observations retain the operation, target URL, query, and find
+pattern through sparse completion events. `HostedToolResult.ResultsProvided`
+records whether a structured result list was supplied, including an empty list.
+The canonical `tools.WebSearchActivityPayload` carries these public facts and
+source snippets. Status-only merges preserve facts; an explicit empty result
+list clears earlier results. Hosts localize presentation and open safe links;
+they must not decode opaque state or infer per-call results from answer citations.

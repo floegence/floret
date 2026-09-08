@@ -387,12 +387,16 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.Error = sanitizeError(payload.Error)
 		return payload
 	case tools.WebSearchActivityPayload:
+		payload.Operation = sanitizeText(payload.Operation)
+		payload.URL = sanitizeText(payload.URL)
+		payload.Pattern = sanitizeText(payload.Pattern)
 		payload.Query = sanitizeText(payload.Query)
 		payload.Status = sanitizeText(payload.Status)
 		payload.Error = sanitizeError(payload.Error)
 		for i := range payload.Results {
 			payload.Results[i].Title = sanitizeText(payload.Results[i].Title)
 			payload.Results[i].URL = sanitizeText(payload.Results[i].URL)
+			payload.Results[i].Snippet = sanitizeText(payload.Results[i].Snippet)
 		}
 		return payload
 	case tools.WebFetchActivityPayload:
