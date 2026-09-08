@@ -35,6 +35,12 @@ Thread identity and entry references are remapped. Context payloads carry no
 second execution identity; context snapshots reconstruct identity from their
 canonical entries, including direct forks and forks of forks.
 
+Forks derive an independent ready/fallback title from the first copied user
+message with displayable text, attachments, or references, in the same backend
+transaction as the journal. Empty boundaries retain an unset title. A source
+title's provider task, token, generation, and request identity are never copied.
+Hosts can assign a product-specific branch name through public `SetTitle`.
+
 # Related
 
 * [Runtime API](../api/runtime.md)

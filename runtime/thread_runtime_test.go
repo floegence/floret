@@ -885,6 +885,28 @@ func TestThreadContextReaderPreservesCanonicalIdentityAcrossNestedForksAndRestar
 	if err != nil {
 		t.Fatal(err)
 	}
+	replayed, err := firstService.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork-context-direct"})
+	if err != nil || replayed.ThreadID != direct.ThreadID {
+		t.Fatalf("replayed fork identity=%q, err=%v", replayed.ThreadID, err)
+	}
+	assertForkTitles := func(service ThreadService) {
+		t.Helper()
+		summaries, err := service.List(t.Context(), ThreadScope{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) != 3 {
+			t.Fatalf("fork replay created extra roots: %d", len(summaries))
+		}
+		for _, summary := range summaries {
+			if summary.ID == direct.ThreadID || summary.ID == nested.ThreadID {
+				if summary.Title != "compact context" || summary.TitleStatus != ThreadTitleStatusReady {
+					t.Fatalf("fork summary title=%#v", summary)
+				}
+			}
+		}
+	}
+	assertForkTitles(firstService)
 
 	assertContexts := func(label string, reader ThreadContextReader) {
 		t.Helper()
@@ -919,6 +941,7 @@ func TestThreadContextReaderPreservesCanonicalIdentityAcrossNestedForksAndRestar
 	secondHost, secondService := openService(t)
 	t.Cleanup(func() { _ = secondHost.Shutdown(context.Background()) })
 	assertContexts("reopened", secondService.(ThreadContextReader))
+	assertForkTitles(secondService)
 }
 
 func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.T) {

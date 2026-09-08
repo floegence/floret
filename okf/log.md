@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-09-08
+* **Fork titles**: Copying user history now installs an independent canonical
+  fallback title atomically, including nested forks and attachment-only input.
 * **Native search activity**: Persist safe provider-hosted call/result facts in
   the canonical journal, preserving failed outcomes and restart presentation
   without local tool dispatch or model-history tool messages.
