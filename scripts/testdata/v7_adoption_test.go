@@ -252,3 +252,23 @@ func TestPublishedStorageMaintenance(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeepSeekVisionAttachmentPreparation(t *testing.T) {
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{
+		Model: "deepseek-v4-flash-vision-exp", BaseURL: "https://api.deepseek.com", APIKey: "test", StateCompatibilityKey: "adoption-vision",
+		ResolveAttachment: func(context.Context, provider.Attachment) ([]byte, error) { return []byte{1, 2, 3}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := gateway.(provider.RequestPreparer).Prepare(context.Background(), provider.Request{
+		RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Attachments: []provider.Attachment{{ResourceRef: "opaque-photo", Name: "photo.png", MIMEType: "image/png", SizeBytes: 3}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	if gateway.Capabilities().AttachmentPayload != provider.AttachmentExpanded || prepared.TokenEstimate().EstimatedInputTokens <= 0 {
+		t.Fatal("missing prepared image contract")
+	}
+}
