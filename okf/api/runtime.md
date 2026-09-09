@@ -30,6 +30,9 @@ Child threads are ordinary durable threads with explicit parent metadata.
 
 `Send` validates, fingerprints, and atomically commits canonical text,
 attachments, references, and `UserInput.Context` before publishing a live view.
+Input slices are copied before admission or asynchronous Agent preparation;
+callers may reuse their input after `Send` returns without changing queued or
+executing work.
 `MessageContextItem` carries Kind, Title, and Text snapshots effective from that
 user message. Reference kind, label, text, and truncation status enter model
 history in order; `ResourceRef` remains opaque and excluded. The same projection

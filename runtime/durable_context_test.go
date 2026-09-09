@@ -194,3 +194,48 @@ func TestMessageContextValidation(t *testing.T) {
 		t.Fatal("unbounded context admitted")
 	}
 }
+
+func TestSendOwnsInputBeforeAsyncExecution(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "owned-input"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventDone, Reason: "stop"}}})
+	agent, err := testAgent(gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	release := make(chan struct{})
+	observed := make(chan AgentRequest, 1)
+	service, err := host.ThreadService(AgentFactoryFunc(func(ctx context.Context, request AgentRequest) (*Agent, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		observed <- request
+		return agent, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := UserInput{Text: "inspect", References: []MessageReference{{ReferenceID: "device", Kind: MessageReferenceText, Label: "device", Text: "selected device"}}, Context: []MessageContextItem{{Kind: "runtime", Title: "Runtime", Text: "admitted runtime"}}}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: input, RequestKey: "send"}); err != nil {
+		t.Fatal(err)
+	}
+	input.References[0].Text = "caller changed reference"
+	input.Context[0].Text = "caller changed context"
+	close(release)
+	request := <-observed
+	for _, owned := range []UserInput{request.Input, request.CanonicalTurnInput} {
+		if owned.References[0].Text != "selected device" || owned.Context[0].Text != "admitted runtime" {
+			t.Fatalf("async factory received caller-owned input: %#v", owned)
+		}
+	}
+	waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.Activity == ThreadActivityIdle && view.LastOutcome != nil })
+}

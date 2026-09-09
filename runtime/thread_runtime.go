@@ -1819,7 +1819,8 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 }
 
 func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string) (ThreadView, error) {
-	if err := input.Validate(); err != nil {
+	input, err := normalizeTurnInput(input)
+	if err != nil {
 		return ThreadView{}, err
 	}
 	requestKey = strings.TrimSpace(requestKey)
