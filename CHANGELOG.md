@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.7.0 - 2026-09-09
+
+- Generate native Agent model metadata from an auditable offline models.dev snapshot, with explicit official corrections and lifecycle labels.
+- Update model token limits, image metadata, prices, and reasoning levels; remove retired and unsupported presets.
+- Send current Kimi, Qwen, OpenAI, and adaptive Claude reasoning parameters correctly. Keep credentials, model selection, and live catalog discovery in hosts.
+- Preserve the v7 public API and domain schema.
+
 ## v7.6.1 - 2026-09-08
 
 - Remove temporary SQLite sidecars created by read-only maintenance after closing its connection. Preserve existing WAL and shared-memory files.

@@ -1,0 +1,31 @@
+{
+  "checked_at": "2026-09-09",
+  "exclude_pattern": "realtime|(?:^|-)live(?:-|$)|deep-research|computer-use|safeguard|character",
+  "exclude": {
+    "openai": ["gpt-5.3-codex-spark"],
+    "google": [],
+    "xai": ["grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1"],
+    "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+  },
+  "sources": {
+    "openai": ["https://developers.openai.com/api/docs/models", "https://developers.openai.com/api/docs/guides/reasoning"],
+    "anthropic": ["https://platform.claude.com/docs/en/models/overview", "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking"],
+    "google": ["https://ai.google.dev/gemini-api/docs/openai", "https://ai.google.dev/gemini-api/docs/thinking"],
+    "moonshot": ["https://platform.kimi.com/docs/models", "https://platform.kimi.com/docs/guide/kimi-k3-quickstart"],
+    "chatglm": ["https://docs.z.ai/guides/overview/migrate-to-glm-new", "https://docs.z.ai/guides/capabilities/thinking-mode"],
+    "deepseek": ["https://api-docs.deepseek.com/guides/responses_api/", "https://api-docs.deepseek.com/guides/thinking_mode"],
+    "qwen": ["https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/deep-thinking"],
+    "xai": ["https://docs.x.ai/developers/models", "https://docs.x.ai/developers/model-capabilities/text/reasoning"],
+    "groq": ["https://console.groq.com/docs/models", "https://console.groq.com/docs/reasoning"]
+  },
+  "models": {
+    "moonshot/kimi-k3": {"reasoning": {"disable_supported": false, "default_level": "max"}},
+    "chatglm/glm-5.2": {"reasoning": {"default_level": "max"}},
+    "chatglm/glm-5.3": {"reasoning": {"default_level": "max"}},
+    "chatglm/glm-5.3-flash": {"reasoning": {"default_level": "max"}},
+    "deepseek/deepseek-v4-pro": {"reasoning": {"default_level": "high"}},
+    "deepseek/deepseek-v4-flash": {"reasoning": {"default_level": "high"}},
+    "groq/qwen/qwen3.6-27b": {"metadata": {"status": "beta"}},
+    "groq/qwen/qwen3.8-27b": {"metadata": {"status": "beta"}}
+  }
+}

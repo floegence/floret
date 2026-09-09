@@ -295,6 +295,9 @@ func (p AnthropicProvider) applyAnthropicReasoning(out *anthropicRequest, req pr
 	}
 	if selection.Level != "" && selection.Level != provider.ReasoningLevelDefault {
 		out.OutputConfig = &anthropicOutputConfig{Effort: string(selection.Level)}
+		if capability.Kind == provider.ReasoningKindEffort {
+			out.Thinking = &anthropicThinking{Type: "adaptive"}
+		}
 	}
 	return nil
 }

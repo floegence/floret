@@ -326,6 +326,12 @@ func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte,
 	chatReq.Model = p.Model
 	chatReq.Stream = p.StreamResponses
 	chatReq.MaxTokens = maxTokens
+	if (p.CostModel.Provider == catalog.ProviderOpenAI && p.CostModel.Reasoning.Kind != "") || p.Model == "kimi-k3" {
+		chatReq.MaxTokens = 0
+		if maxTokens > 0 {
+			chatReq.ExtraFields = map[string]any{"max_completion_tokens": maxTokens}
+		}
+	}
 	if len(chatReq.Tools) > 0 {
 		chatReq.ToolChoice = "auto"
 	}
@@ -356,7 +362,7 @@ func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req p
 	switch capability.WireShape {
 	case "":
 		return fmt.Errorf("model %q has no reasoning wire shape", p.Model)
-	case "openai_chat_reasoning_effort":
+	case "openai_chat_reasoning_effort", "kimi_reasoning_effort":
 		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
 	case "kimi_thinking_type":
 		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": thinkingType(selection)}})
@@ -366,6 +372,17 @@ func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req p
 			return nil
 		}
 		chatReq.ReasoningEffort = string(selection.Level)
+	case "qwen_reasoning_effort":
+		if selection.BudgetTokens > 0 && selection.Level != "" && selection.Level != provider.ReasoningLevelDefault {
+			return errors.New("qwen reasoning_effort and thinking_budget are mutually exclusive")
+		}
+		extra := map[string]any{"enable_thinking": selection.Level != provider.ReasoningLevelOff}
+		if selection.BudgetTokens > 0 {
+			extra["thinking_budget"] = selection.BudgetTokens
+		} else if selection.Level != provider.ReasoningLevelOff {
+			chatReq.ReasoningEffort = string(selection.Level)
+		}
+		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, extra)
 	case "qwen_enable_thinking":
 		extra := map[string]any{"enable_thinking": selection.Level != provider.ReasoningLevelOff}
 		if selection.BudgetTokens > 0 {

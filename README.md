@@ -363,6 +363,13 @@ payload. Missing terminal events fail; truncated responses continue through the
 normal runtime limit policy. The existing `NewOpenAICompatible` constructor
 continues to select Chat Completions explicitly.
 
+## Model metadata
+
+The engine uses a generated, offline models.dev snapshot with official protocol
+corrections. Hosts own credentials, enabled models, and discovery. Updating the
+snapshot does not select a model for an existing conversation or add a public
+catalog API. See [catalog maintenance](scripts/model-catalog/README.md).
+
 ## Development
 
 ```bash
