@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-09-09: Model image capability and DeepSeek transport
+
+* Add an optional host attachment resolver to DeepSeek. Per-model metadata gates image input; prepared payloads own bytes and opaque replay retains references and digests. See [provider contract](api/provider.md).
+
 ## 2026-09-09: Durable model context and argument correction
 
 * **Context**: Canonical references and admitted runtime snapshots now enter the
@@ -10,6 +14,7 @@
   regeneration opportunities; UI filtering does not change model history.
 * **Storage**: Append v9 to v10 without rewriting existing canonical bytes.
   See [runtime](api/runtime.md) and [storage](api/storage.md).
+
 
 ## 2026-09-09: Generated model metadata
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,11 @@ type DeepSeekOptions struct {
 	Temperature           *float64
 	TopP                  *float64
 	ResponseFormat        string
+	// ResolveAttachment resolves an authorized opaque attachment into image bytes.
+	// It runs during Prepare (or Stream for direct callers), never during replay
+	// of a prepared request. Nil preserves descriptor-only behavior. The gateway
+	// accepts images only when the selected model advertises image input.
+	ResolveAttachment func(context.Context, Attachment) ([]byte, error)
 }
 
 type deepSeekGateway struct {
@@ -40,11 +46,13 @@ type deepSeekGateway struct {
 	endpoint, apiKey, responseFormat string
 	client                           *http.Client
 	temperature, topP                *float64
+	resolveAttachment                func(context.Context, Attachment) ([]byte, error)
+	supportsImages                   bool
 }
 
 // NewDeepSeek constructs the single DeepSeek Responses execution path, including
 // native web_search, streaming reasoning, and validated stateless history replay.
-// It supports the catalogued DeepSeek text models and rejects attachments.
+// Image input is an optional per-model capability resolved by the host.
 func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 	model, ok := catalog.FindModel(catalog.ProviderDeepSeek, strings.TrimSpace(options.Model))
 	if !ok {
@@ -77,7 +85,10 @@ func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 		v := *p
 		return &v
 	}
-	return &deepSeekGateway{identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
+	if options.ResolveAttachment != nil {
+		capabilities.AttachmentPayload = AttachmentExpanded
+	}
+	return &deepSeekGateway{resolveAttachment: options.ResolveAttachment, supportsImages: slices.Contains(model.Input, "image"), identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
 }
 func (g *deepSeekGateway) Identity() Identity { return g.identity }
 func (g *deepSeekGateway) Capabilities() Capabilities {
@@ -134,7 +145,7 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 		r.ends = append(r.ends, len(r.input))
 	}
 }
-func renderDeepSeekMessages(messages []Message) (deepSeekRendered, []json.RawMessage, error) {
+func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]string) (deepSeekRendered, []json.RawMessage, error) {
 	// Canonical conversation may split one provider answer around hosted activity.
 	// Adjacent assistant segments still represent one Responses message boundary.
 	merged := make([]Message, 0, len(messages))
@@ -154,8 +165,36 @@ func renderDeepSeekMessages(messages []Message) (deepSeekRendered, []json.RawMes
 	pending := map[string]bool{}
 	seen := map[string]bool{}
 	for _, m := range merged {
+		var content any = m.Text
 		if len(m.Attachments) > 0 {
-			return out, nil, errors.New("DeepSeek text models do not accept attachments")
+			if m.Role != RoleUser || !g.supportsImages || g.resolveAttachment == nil {
+				return out, nil, errors.New("DeepSeek model does not accept resolved image input")
+			}
+			parts := []deepSeekImageContent{}
+			if m.Text != "" {
+				parts = append(parts, deepSeekImageContent{Type: "input_text", Text: m.Text})
+			}
+			for _, attachment := range m.Attachments {
+				switch attachment.MIMEType {
+				case "image/png", "image/jpeg", "image/gif", "image/webp":
+				default:
+					return out, nil, fmt.Errorf("unsupported DeepSeek image MIME type %q", attachment.MIMEType)
+				}
+				if err := ctx.Err(); err != nil {
+					return out, nil, err
+				}
+				data, err := g.resolveAttachment(ctx, attachment)
+				if err != nil {
+					return out, nil, fmt.Errorf("resolve DeepSeek attachment: %w", err)
+				}
+				if len(data) == 0 || (attachment.SizeBytes > 0 && int64(len(data)) != attachment.SizeBytes) {
+					return out, nil, errors.New("resolved DeepSeek image size differs from attachment")
+				}
+				ref := deepSeekImageReference{Attachment: attachment, SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
+				images[deepSeekHash(ref)] = "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)
+				parts = append(parts, deepSeekImageContent{Type: "image_reference", Image: &ref})
+			}
+			content = parts
 		}
 		if len(pending) > 0 && m.Role != RoleTool && !(m.Role == RoleAssistant && m.Text == "" && len(m.ToolCalls) > 0) {
 			return out, nil, errors.New("DeepSeek tool calls require results before the next message")
@@ -168,8 +207,8 @@ func renderDeepSeekMessages(messages []Message) (deepSeekRendered, []json.RawMes
 		if m.Reasoning != "" {
 			out.add(deepSeekInput{Type: "reasoning", Content: []map[string]string{{"type": "reasoning_text", "text": m.Reasoning}}}, m.Text == "" && len(m.ToolCalls) == 0)
 		}
-		if m.Text != "" {
-			out.add(deepSeekInput{Type: "message", Role: string(m.Role), Content: m.Text}, true)
+		if m.Text != "" || len(m.Attachments) > 0 {
+			out.add(deepSeekInput{Type: "message", Role: string(m.Role), Content: content}, true)
 		}
 		for _, c := range m.ToolCalls {
 			if c.ID == "" || c.Name == "" || !json.Valid([]byte(c.Args)) || seen[c.ID] {
@@ -194,7 +233,7 @@ func renderDeepSeekMessages(messages []Message) (deepSeekRendered, []json.RawMes
 	return out, system, nil
 }
 
-func (g *deepSeekGateway) render(req Request) ([]byte, deepSeekHistory, error) {
+func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deepSeekHistory, error) {
 	var history deepSeekHistory
 	if req.Reasoning.BudgetTokens != 0 {
 		return nil, history, errors.New("DeepSeek Responses does not support a reasoning token budget")
@@ -205,7 +244,8 @@ func (g *deepSeekGateway) render(req Request) ([]byte, deepSeekHistory, error) {
 	if err := configbridge.ReasoningCapability(g.capabilities.ReasoningCapability).ValidateSelection(configbridge.ReasoningSelection(req.Reasoning)); err != nil {
 		return nil, history, err
 	}
-	rendered, system, err := renderDeepSeekMessages(req.Messages)
+	images := map[string]string{}
+	rendered, system, err := g.renderMessages(ctx, req.Messages, images)
 	if err != nil {
 		return nil, history, err
 	}
@@ -240,7 +280,10 @@ func (g *deepSeekGateway) render(req Request) ([]byte, deepSeekHistory, error) {
 		}
 		history.Input = append(slices.Clone(previous.Input), rendered.input[end:]...)
 	}
-	input := append(slices.Clone(system), history.Input...)
+	input, err := expandDeepSeekImages(append(slices.Clone(system), history.Input...), images)
+	if err != nil {
+		return nil, history, err
+	}
 	body := map[string]any{"model": g.identity.Model, "input": input, "stream": true}
 	if req.MaxOutputTokens > 0 {
 		body["max_output_tokens"] = req.MaxOutputTokens
@@ -293,7 +336,7 @@ func (g *deepSeekGateway) render(req Request) ([]byte, deepSeekHistory, error) {
 }
 
 func (g *deepSeekGateway) Stream(ctx context.Context, req Request) (<-chan Event, error) {
-	body, history, err := g.render(req)
+	body, history, err := g.render(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -687,8 +730,8 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 
 // Prepare freezes the exact Responses body, including opaque replay items, so
 // request estimates cover the bytes that will actually be sent.
-func (g *deepSeekGateway) Prepare(_ context.Context, req Request) (PreparedRequest, error) {
-	body, history, err := g.render(req)
+func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedRequest, error) {
+	body, history, err := g.render(ctx, req)
 	if err != nil {
 		return nil, err
 	}

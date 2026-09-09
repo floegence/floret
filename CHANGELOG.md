@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.9.0 - 2026-09-09
+
+- Support DeepSeek Vision through optional host-authorized image resolution, gated by each model's image capability.
+- Freeze image payloads before estimation and streaming; retain only image references and digests in opaque replay state.
+- Add `DeepSeekOptions.ResolveAttachment` without changing existing defaults, public message shapes, or domain storage schema.
+
 ## v7.8.0 - 2026-09-09
 
 - Preserve submitted reference content in model history and compaction while excluding opaque resource locators.
@@ -7,6 +13,7 @@
 - Freeze the complete rendered request history; establish explicit projection v8 and canonical retry boundaries without rewriting old requests.
 - Record schema-invalid tool calls and results in canonical history and allow two regeneration opportunities. Keep invalid calls out of dispatch, authorization, interactions, and Activity; preserve `control_error` on exhaustion.
 - Migrate domain schema v9 to v10 atomically without modifying old journal bytes or reconstructing missing ephemeral material.
+
 
 ## v7.7.0 - 2026-09-09
 

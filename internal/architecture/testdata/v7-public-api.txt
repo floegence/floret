@@ -223,6 +223,7 @@ field DeepSeekOptions.HTTPClient *net/http.Client
 field DeepSeekOptions.Temperature *float64
 field DeepSeekOptions.TopP *float64
 field DeepSeekOptions.ResponseFormat string
+field DeepSeekOptions.ResolveAttachment func(context.Context, github.com/floegence/floret/v7/provider.Attachment) ([]byte, error)
 var ErrContextOverflow error
 type Event struct
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""

@@ -347,7 +347,7 @@ continues waiting. After completion, every retained handle returns
 ## DeepSeek Responses
 
 Use `provider.NewDeepSeek(provider.DeepSeekOptions{...})` for DeepSeek V4 Pro
-and Flash. Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`,
+and Flash, including the Flash Vision experimental model. Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`,
 and an explicit `StateCompatibilityKey`. The gateway always calls `/responses`,
 streams text and reasoning, and accepts the native hosted tool
 `provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}`.
@@ -362,6 +362,16 @@ returned empty list from unavailable details. An empty operation remains
 unknown. Hosts render these facts from canonical Activity, including after
 restart; answer citations are not per-call search results. These additive v7.4
 contracts serve Redeven's shared Flower UI and other public Activity consumers.
+
+Image support is a property of the selected model. Set the optional
+`DeepSeekOptions.ResolveAttachment` callback to resolve an authorized opaque
+`provider.Attachment` into image bytes. The gateway validates the model's image
+capability and MIME type, freezes the expanded payload during `Prepare`, and
+includes it in request estimates. Pure text models reject image input. The host
+owns resource authorization; Floret never reads files or fetches attachment URLs.
+Opaque state retains image references and content digests, never image bytes.
+Subsequent requests resolve the content again under current host authorization.
+This additive v7 option preserves existing descriptor-only callers.
 
 DeepSeek is stateless. Floret retains provider-native response items in opaque
 state, validates them against the canonical conversation, and returns the full

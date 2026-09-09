@@ -50,7 +50,13 @@ existing ephemeral-context fence; their next request uses canonical history.
 
 `DeepSeekOptions` is an additive v7 API decision for the identified Redeven
 consumer: it supplies the model, endpoint, credentials, HTTP client, state key,
-and immutable sampling/output-format controls. It shares the existing Gateway,
+and immutable sampling/output-format controls. The optional
+`ResolveAttachment(context.Context, provider.Attachment) ([]byte, error)` field
+is an additive v7.9 decision for Redeven's prepared image transport. Model
+metadata gates image input independently of provider identity. Resolution stays
+under host authorization and runs before estimation; prepared streaming never
+resolves again. Opaque replay stores descriptor/digest pairs and verifies
+freshly resolved bytes without persisting image payloads. It shares the existing Gateway,
 RequestPreparer, Event, and State contracts. No new lifecycle or storage schema
 is introduced. The explicit Chat constructor remains available throughout v7.
 
