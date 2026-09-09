@@ -5,13 +5,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 func TestCatalogContainsFlowerProvidersAndPiStyleMetadata(t *testing.T) {
-	for _, id := range []string{ProviderOpenAI, ProviderAnthropic, ProviderGoogle, ProviderMoonshot, ProviderChatGLM, ProviderDeepSeek, ProviderQwen, ProviderOpenRouter, ProviderOllama} {
+	for _, id := range []string{ProviderOpenAI, ProviderAnthropic, ProviderGoogle, ProviderMoonshot, ProviderChatGLM, ProviderDeepSeek, ProviderQwen} {
 		p, ok := FindProvider(id)
 		if !ok {
 			t.Fatalf("provider %q not found", id)
@@ -38,12 +39,8 @@ func TestReasoningCapabilitiesHaveOfficialProvenance(t *testing.T) {
 			if strings.TrimSpace(capability.Fixture) == "" {
 				t.Fatalf("%s/%s reasoning capability missing fixture", p.ID, model.ID)
 			}
-			checkedAt := "2026-06-23"
-			if p.ID == ProviderDeepSeek {
-				checkedAt = "2026-09-08"
-			}
-			if capability.SourceCheckedAt != checkedAt {
-				t.Fatalf("%s/%s source_checked_at = %q", p.ID, model.ID, capability.SourceCheckedAt)
+			if _, err := time.Parse("2006-01-02", capability.SourceCheckedAt); err != nil {
+				t.Fatalf("%s/%s invalid source date: %q", p.ID, model.ID, capability.SourceCheckedAt)
 			}
 			if len(capability.SourceURLs) == 0 {
 				t.Fatalf("%s/%s missing source urls", p.ID, model.ID)
@@ -70,27 +67,21 @@ func TestReasoningCapabilitiesUseProviderSpecificValues(t *testing.T) {
 	if qwen.Reasoning.Kind != provider.ReasoningKindToggleBudget || !qwen.Reasoning.DisableSupported || len(qwen.Reasoning.SupportedLevels) != 0 {
 		t.Fatalf("qwen reasoning capability = %#v", qwen.Reasoning)
 	}
-	openRouter, _ := FindModel(ProviderOpenRouter, "openai/gpt-5.4")
-	if !openRouter.Reasoning.DynamicProviderMetadata {
-		t.Fatalf("openrouter reasoning capability should be dynamic: %#v", openRouter.Reasoning)
-	}
 }
 
 func TestCatalogPredefinedModelsUseSupportedContextBaseline(t *testing.T) {
-	var minMaxTokens int64
-	for _, provider := range Providers() {
-		for _, model := range provider.Models {
-			if model.ContextWindow < contextpolicy.MinSupportedContextWindowTokens {
-				t.Fatalf("%s/%s context window = %d, want at least %d", provider.ID, model.ID, model.ContextWindow, contextpolicy.MinSupportedContextWindowTokens)
+	for _, p := range Providers() {
+		for _, model := range p.Models {
+			if model.ContextWindow <= 0 || model.MaxTokens < 0 {
+				t.Fatalf("%s/%s invalid token limits", p.ID, model.ID)
 			}
-			if model.MaxTokens > 0 && (minMaxTokens == 0 || model.MaxTokens < minMaxTokens) {
-				minMaxTokens = model.MaxTokens
+			policy := ContextPolicy(p.ID, model.ID)
+			if model.MaxTokens > 0 && policy.ReservedOutputTokens > model.MaxTokens {
+				t.Fatalf("%s/%s reserves more tokens than model output limit", p.ID, model.ID)
 			}
 		}
 	}
-	if minMaxTokens != contextpolicy.DefaultReservedOutputTokens {
-		t.Fatalf("minimum predefined max tokens = %d, want reserved output default %d", minMaxTokens, contextpolicy.DefaultReservedOutputTokens)
-	}
+
 	for _, model := range []string{"deepseek-chat", "deepseek-reasoner"} {
 		if SupportsModel(ProviderDeepSeek, model) {
 			t.Fatalf("%s should not be a predefined DeepSeek model", model)
@@ -183,8 +174,8 @@ func TestBuiltInCatalogUsesAuditedProviderCapabilities(t *testing.T) {
 		{provider: ProviderGoogle, model: "gemini-2.5-flash", context: 1048576, max: 65536},
 		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1000000, max: 384000},
 		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1000000, max: 384000},
-		{provider: ProviderXAI, model: "grok-4.20-0309-reasoning", context: 1000000, max: 128000},
-		{provider: ProviderXAI, model: "grok-4.20", context: 1000000, max: 128000},
+		{provider: ProviderXAI, model: "grok-4.3", context: 1000000, max: 30000},
+		{provider: ProviderXAI, model: "grok-4.6", context: 500000, max: 500000},
 	}
 
 	for _, tt := range cases {

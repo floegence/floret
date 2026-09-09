@@ -53,6 +53,9 @@ jobs:
           -run 'TestNoGoWorkFilesInRepository|TestNoLocalModuleReplacementWiring|TestNoRedevenDependencyWiring'
           -count=1
 
+      - name: Verify generated model catalog
+        run: python3 scripts/model-catalog/generate.py --check
+
       - name: Run repository tests and OKF conformance
         run: go test ./...
 

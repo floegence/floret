@@ -51,6 +51,7 @@ type WebSearchCapability struct {
 type Model struct {
 	ID             string                       `json:"id"`
 	Name           string                       `json:"name"`
+	Status         string                       `json:"status,omitempty"`
 	Provider       string                       `json:"provider"`
 	API            string                       `json:"api"`
 	ContextWindow  int64                        `json:"context_window,omitempty"`

@@ -297,10 +297,9 @@ func TestOpenAICompatibleProviderRejectsUnsupportedReasoningBudget(t *testing.T)
 }
 
 func TestOpenAICompatibleProviderRejectsOpenRouterWithoutDynamicMetadata(t *testing.T) {
-	model, ok := catalog.FindModel(catalog.ProviderOpenRouter, "openai/gpt-5.4")
-	if !ok {
-		t.Fatal("missing openrouter model")
-	}
+	model := catalog.Model{ID: "openai/gpt-5.4", OpenAIModelID: "openai/gpt-5.4", Reasoning: provider.ReasoningCapability{
+		Kind: provider.ReasoningKindDynamic, DynamicProviderMetadata: true, WireShape: "openrouter_reasoning_metadata",
+	}}
 	p := OpenAICompatibleProvider{Model: model.OpenAIModelID, CostModel: model}
 	_, err := p.chatRequestBody(provider.Request{
 		Messages:  []session.Message{{Role: session.User, Content: "hello"}},

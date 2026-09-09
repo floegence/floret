@@ -70,3 +70,10 @@ The canonical `tools.WebSearchActivityPayload` carries these public facts and
 source snippets. Status-only merges preserve facts; an explicit empty result
 list clears earlier results. Hosts localize presentation and open safe links;
 they must not decode opaque state or infer per-call results from answer citations.
+
+Internal model metadata is generated from a pinned models.dev snapshot with
+explicit official protocol corrections. It supplies token limits, cost estimates,
+and reasoning capabilities; it does not own user selection or credentials.
+The [maintenance workflow](../../scripts/model-catalog/README.md) regenerates
+offline and keeps live OpenRouter/Ollama discovery in the host. No v7 public
+catalog API or domain schema is added.

@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-09: Generated model metadata
+
+* Replace hand-written native model lists with an offline models.dev snapshot
+  and reviewed reasoning wire mappings. Host preferences and online discovery
+  remain outside Floret. See [provider ownership](api/provider.md).
+
 ## 2026-09-08: Canonical title ordering
 
 * **Public runtime**: Expose existing title generation with title text and status
