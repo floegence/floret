@@ -19,9 +19,10 @@ const (
 type MessageKind string
 
 const (
-	MessageKindNormal            MessageKind = ""
-	MessageKindCompactionSummary MessageKind = "compaction_summary"
-	MessageKindControlSignal     MessageKind = "control_signal"
+	MessageKindNormal              MessageKind = ""
+	MessageKindToolValidationError MessageKind = "tool_validation_error"
+	MessageKindCompactionSummary   MessageKind = "compaction_summary"
+	MessageKindControlSignal       MessageKind = "control_signal"
 )
 
 type ToolResultView struct {
@@ -93,7 +94,8 @@ type Message struct {
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
-	References           []MessageReference `json:"References,omitempty"`
+	References           []MessageReference   `json:"References,omitempty"`
+	Context              []MessageContextItem `json:"Context,omitempty"`
 	Reasoning            string
 	ToolCallID           string
 	ToolName             string
@@ -152,6 +154,7 @@ func CloneMessages(messages []Message) []Message {
 func CloneMessage(msg Message) Message {
 	msg.Attachments = CloneMessageAttachments(msg.Attachments)
 	msg.References = append([]MessageReference(nil), msg.References...)
+	msg.Context = append([]MessageContextItem(nil), msg.Context...)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult
 		if view.FullOutput != nil {

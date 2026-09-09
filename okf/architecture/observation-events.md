@@ -67,7 +67,7 @@ or validation failures require a canonical reload rather than event replay.
   failures after restart, and settle unfinished searches at a terminal Turn.
   DeepSeek multi-query search uses the typed web-search presentation; raw
   provider search receipts remain only in opaque provider state. These optional
-  custom entries use the existing schema v9 envelope and do not rewrite older
+  custom entries use the current schema v10 envelope and do not rewrite older
   journals or alter the automatic migration lineage.
   A running local tool can later emit `tool_activity_updated` to merge
   public presentation payload changes into the same activity item, for example

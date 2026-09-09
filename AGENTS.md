@@ -170,13 +170,14 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 9 is the current schema. The exact version 2 to version 3
+  lineage. Version 10 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
   run-identity and unknown-effect terminal migration, and version 7 to version
   8 Engine-continuation classification migration, and version 8 to version 9
-  canonical thread-context identity migration are required automatic edges.
+  canonical thread-context identity migration, and version 9 to version 10
+  durable model-context migration are required automatic edges.
   Future changes
   must append every contiguous `n -> n+1` edge; they must not reset the lineage,
   raise the minimum version, or remove an already released migration.
@@ -331,15 +332,28 @@ security audit, routing, unadmitted commands, and transport diagnostics, but
 must not persist a second queryable Agent lifecycle or rebuild it from audit
 records.
 
-Canonical user messages may contain product-neutral ordered references to text,
-files, directories, terminals, and processes. Floret persists and projects their
-opaque identity and display snapshot without resolving host resources. Rich or
-sensitive host context for only the current model turn belongs in
-`SupplementalContext`; it must not become durable conversation history,
-provider continuation state, or a source for rebuilding canonical references.
-Downstream hosts may map canonical references into product presentation and
-resolve opaque resources under current authorization, but must not persist an
-admitted reference mapping or a second message record.
+Canonical user messages contain product-neutral ordered references to text,
+files, directories, terminals, and processes, and admitted `MessageContextItem`
+snapshots. Submitted reference kind, label, text, and truncation status belong
+to model history; `ResourceRef` stays opaque and never becomes model content or
+authorization evidence. `UserInput.Context` holds durable, non-secret runtime
+facts effective from that message onward. Changes append a new snapshot rather
+than rewriting earlier inputs. Floret validates, fingerprints, and atomically
+admits these facts and uses one projection for execution, continuation, retry,
+fork, and compaction. Hosts must not persist a second admitted mapping.
+
+`SupplementalContext` is an explicit ephemeral contract for secrets and other
+material that must not survive the current provider turn. Ordinary references
+and runtime facts must not use it. It must not become durable history, provider
+continuation state, or a source for rebuilding canonical references.
+
+The provider preparation boundary freezes the complete rendered canonical
+history, including references and admitted context. Compaction, canonical retry,
+projection upgrades, and execution-configuration changes have explicit observable
+boundaries. Presentation filtering must never remove canonical model messages.
+Schema-invalid model tool arguments receive paired validation feedback with at
+most two regeneration opportunities. They cannot authorize, dispatch, or acquire
+control ownership; projector, storage, and effect failures do not enter this path.
 
 General capabilities may move into Floret only when they are product-neutral
 agent-engine contracts. Product policy and UI semantics stay in the host. If a
@@ -430,6 +444,8 @@ invent near-synonyms when a concept below already fits.
 - Provider raw plans are provider-specific rendered fragments. If raw fragments are
   missing, malformed, or for the wrong adapter, fail explicitly instead of rebuilding
   them from higher-level request data.
+- `MessageContextItem` is an admitted, durable host snapshot of Kind, Title,
+  and Text, effective from its canonical user message.
 - `MessageReference` is an ordered, durable, user-visible fact on a canonical
   user message. Its `ResourceRef` is opaque to Floret and is never authorization
   evidence. `SupplementalContext` is validated ephemeral input for the current

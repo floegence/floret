@@ -72,7 +72,7 @@ func TestV9MigrationAgainstV8SQLiteCopy(t *testing.T) {
 		}
 		_, found, err := loadBackendDomainV9(ctx, tx, time.Now)
 		if err != nil || !found {
-			return errors.Join(err, errors.New("v9 records are missing after qualification"))
+			return errors.Join(err, errors.New("v10 records are missing after qualification"))
 		}
 		return nil
 	}); err != nil {
@@ -122,7 +122,7 @@ func TestLargeV7SQLiteStartupQualification(t *testing.T) {
 		}
 		_, found, err := loadBackendDomainV9(ctx, tx, time.Now)
 		if err != nil || !found {
-			return errors.Join(err, errors.New("v9 records are missing after large-store qualification"))
+			return errors.Join(err, errors.New("v10 records are missing after large-store qualification"))
 		}
 		return nil
 	}); err != nil {

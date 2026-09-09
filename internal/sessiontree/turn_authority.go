@@ -171,10 +171,13 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 		if req.Input.Role != session.User {
 			return errors.New("turn acceptance input must be a user message")
 		}
-		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 && len(req.Input.References) == 0 {
-			return errors.New("turn acceptance requires text, attachments, or references")
+		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 && len(req.Input.References) == 0 && len(req.Input.Context) == 0 {
+			return errors.New("turn acceptance requires text, attachments, references, or context")
 		}
 		if err := validateAttachments(req.Input.Attachments); err != nil {
+			return err
+		}
+		if err := session.ValidateMessageContext(req.Input.Context); err != nil {
 			return err
 		}
 		if err := session.ValidateMessageReferences(req.Input.References); err != nil {
@@ -184,7 +187,7 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 		if retryTurnID == strings.TrimSpace(req.TurnID) {
 			return errors.New("retry source turn must differ from retry turn")
 		}
-		if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 {
+		if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 || len(req.Input.Context) != 0 {
 			return errors.New("retry acceptance cannot contain a replacement user message")
 		}
 	}

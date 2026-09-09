@@ -1963,36 +1963,44 @@ func TestCustomControlSpecRejectsNonJSONPayload(t *testing.T) {
 func TestMalformedControlPreservesAssistantTextAndUsesControlFailure(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
-		harness.Step(
-			harness.Text("I need one more detail before continuing."),
-			harness.Tool("ask-invalid", "ask_user", `{"required_from_user":"city"}`),
-			harness.DoneReason("tool_calls"),
-		),
+		harness.Step(harness.Text("I need one more detail before continuing."), harness.Tool("ask-invalid-1", "ask_user", `{"reason_code":"missing_external_input","required_from_user":"[\"city\"]","evidence_refs":[],"questions":[{"id":"city","header":"City","question":"Which city?","is_secret":false,"response_mode":"write"}]}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("ask-invalid-2", "ask_user", `{"reason_code":"missing_external_input","required_from_user":"[\"city\"]","evidence_refs":[],"questions":[{"id":"city","header":"City","question":"Which city?","is_secret":false,"response_mode":"write"}]}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("ask-invalid-3", "ask_user", `{"reason_code":"missing_external_input","required_from_user":"[\"city\"]","evidence_refs":[],"questions":[{"id":"city","header":"City","question":"Which city?","is_secret":false,"response_mode":"write"}]}`), harness.DoneReason("tool_calls")),
 	)
 	e := newTestEngine(p, rec)
-
+	e.Options.DuplicateToolLimit = 1
 	got := e.Run(context.Background(), "continue")
-
-	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginControl || got.Err == nil {
-		t.Fatalf("result = %#v, want typed control failure", got)
+	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginControl || got.Err == nil || got.Metrics.LLMRequests != 3 {
+		t.Fatalf("result = %#v, want bounded control failure", got)
 	}
 	if got.Output != "I need one more detail before continuing." {
-		t.Fatalf("assistant output = %q, want preserved text", got.Output)
+		t.Fatalf("assistant output = %q", got.Output)
 	}
-	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.Kind == session.MessageKindControlSignal && msg.ToolName == "ask_user" && msg.ToolCallID == "ask-invalid" &&
-			msg.ControlSignal != nil && msg.ControlSignal.Disposition == "failed" &&
-			msg.ControlSignal.ErrorCode == session.ControlSignalErrorCodeControlError
-	}) {
-		t.Fatalf("malformed control identity missing from transcript: %#v", got.Messages)
+	calls, results := 0, 0
+	for _, msg := range got.Messages {
+		if msg.Kind != session.MessageKindToolValidationError {
+			continue
+		}
+		if msg.ControlSignal != nil {
+			t.Fatal("validation feedback acquired control ownership")
+		}
+		if msg.Role == session.Assistant {
+			calls++
+		}
+		if msg.Role == session.Tool && strings.Contains(msg.Content, "must be an array") {
+			results++
+		}
 	}
-	if !slices.ContainsFunc(rec.Snapshot(), func(ev event.Event) bool {
-		metadata, _ := ev.Metadata.(map[string]any)
-		return ev.Type == event.ControlSignal && ev.ToolName == "ask_user" && ev.ToolID == "ask-invalid" &&
-			ev.Err != "" && metadata["control_disposition"] == "failed" &&
-			metadata["control_error_code"] == session.ControlSignalErrorCodeControlError
-	}) {
-		t.Fatalf("malformed control event missing typed identity and error: %#v", rec.Snapshot())
+	if calls != 3 || results != 3 {
+		t.Fatalf("validation pairs = %d/%d", calls, results)
+	}
+	if err := session.ValidateToolHistory(got.Messages); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range rec.Snapshot() {
+		if ev.Type == event.ControlSignal || ev.Type == event.ToolDispatchStarted {
+			t.Fatalf("invalid control dispatched: %#v", ev)
+		}
 	}
 }
 
@@ -2528,18 +2536,24 @@ func TestSchemaErrorRemainsInternalWhileModelRecovers(t *testing.T) {
 	if called {
 		t.Fatal("handler ran for schema-invalid args")
 	}
+	pairs := 0
 	for _, message := range got.Messages {
 		if message.ToolCallID == "read-1" {
-			t.Fatalf("internal validation correction leaked into canonical result messages: %#v", message)
+			if message.Kind != session.MessageKindToolValidationError {
+				t.Fatal("validation marker missing")
+			}
+			pairs++
 		}
 	}
+	if pairs != 2 {
+		t.Fatalf("validation pair count=%d", pairs)
+	}
+	if len(engineTestActivityTimeline(rec.Events).Items) != 0 {
+		t.Fatal("validation feedback became user activity")
+	}
 	for _, ev := range rec.Events {
-		if ev.ToolID != "read-1" {
-			continue
-		}
-		switch ev.Type {
-		case event.ToolCall, event.ToolDispatchStarted, event.ToolResult:
-			t.Fatalf("schema-invalid correction leaked as public activity: %#v", ev)
+		if ev.ToolID == "read-1" && ev.Type == event.ToolDispatchStarted {
+			t.Fatal("invalid arguments were dispatched")
 		}
 	}
 }
@@ -2554,15 +2568,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 		wantRenderer  tools.ActivityRenderer
 		wantCallLabel string
 	}{
-		{
-			name: "invalid args",
-			tool: stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
-				return "unexpected", nil
-			}),
-			args:         `{"bad":true}`,
-			wantReason:   "invalid arguments",
-			wantRenderer: tools.ActivityRendererStructured,
-		},
+
 		{
 			name: "permission denied",
 			tool: tools.Define[stringArgs](

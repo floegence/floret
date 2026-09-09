@@ -204,6 +204,9 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 	var lastAt int64
 	hasExplicitControlActivity := false
 	for index, ev := range events {
+		if ev.Metadata["tool_validation_error"] == true {
+			continue
+		}
 		if timeline.RunID == "" {
 			timeline.RunID = identity.RunID(strings.TrimSpace(ev.RunID.String()))
 		}

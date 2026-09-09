@@ -92,6 +92,15 @@ func main() {
 }
 ```
 
+`runtime.UserInput.References` and `runtime.UserInput.Context` are admitted
+with the user message and remain model context through follow-ups, Ask User
+responses, retries, forks, restart, and compaction. Reference kind, label, text,
+and truncation status render in submitted order; opaque `ResourceRef` values
+never enter model text. Context items have `Kind`, `Title`, and `Text` and describe
+non-secret runtime facts effective from that message. Append a new snapshot when
+facts change. Context is included in admission fingerprints and request-prefix
+checks; it does not grant tool authorization.
+
 Hosts may also set `runtime.SendInput.SupplementalContext` for material that is
 needed only by the current provider turn. Floret validates and renders that
 context for the provider without adding a second canonical conversation
@@ -323,9 +332,9 @@ Hosts may persist product authorization and audit, routing, credentials,
 editable persona sources, resource catalogs, read state, unadmitted commands,
 upload staging, and transport diagnostics. Those records must not contain a
 serialized Floret DTO or support reconstruction of Agent state. Canonical
-message references are opaque durable facts; rich material needed only for the
-current provider turn belongs in `SupplementalContext` and never becomes
-conversation history or continuation state.
+message references and admitted runtime snapshots are durable model history.
+Only material explicitly scoped to the current turn, such as secrets, belongs
+in `SupplementalContext`; it never becomes history or continuation state.
 
 ## Shutdown
 
@@ -381,3 +390,20 @@ scripts/check_candidate_release_adoption.sh
 
 Repository workflow and compatibility rules are defined in [AGENTS.md](AGENTS.md).
 Architecture and maintenance knowledge lives in [okf/](okf/).
+
+## Model input validation
+
+Invalid tool arguments remain strict errors. The Engine records each rejected
+call and its validation result and allows at most two regeneration opportunities.
+Rejected calls cannot execute tools, request authorization, or open an Ask User
+interaction. Technical feedback stays in canonical history and diagnostics while
+Activity omits it. Exhausted control correction retains `control_error`; failures
+inside control or Activity projectors and storage fail immediately.
+
+Schema v10 adds durable context without rewriting existing journal entries or
+provider request records. The automatic v9 to v10 edge preserves older migration
+edges. Provider projection v8 establishes an explicit boundary for existing
+threads: already saved references become visible; missing historical ephemeral
+material is never reconstructed. Ordinary requests retain their canonical prefix;
+compaction, canonical retry, projection upgrades, and execution configuration
+changes use the existing observable request boundary.

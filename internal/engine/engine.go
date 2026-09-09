@@ -150,6 +150,8 @@ type EffectResultFinalizationResult struct {
 type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
 
 type Options struct {
+	// RetrySourceEntryID is supplied only by the canonical harness retry admission.
+	RetrySourceEntryID       string
 	RunID                    string
 	LogicalRequestID         string
 	ThreadID                 string
@@ -484,6 +486,7 @@ type Engine struct {
 type turnState struct {
 	activeMessages                []session.Message
 	internalValidationCorrections map[string]bool
+	validationCorrectionCount     int
 }
 
 type Config struct {
@@ -1020,17 +1023,30 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		projectedCallBatchMetadata := map[string]map[string]any{}
 		var projectedSignal *ControlSignal
 		var projectedSignalErr error
+		validationErrors := map[string]error{}
 		if len(classifiedCalls.Ordinary) == 0 && len(controlCalls) > 0 {
-			signal, ok, signalErr := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{StepText: stepText})
-			if signalErr != nil {
-				failed := failedControlSignal(controlCalls[0])
-				projectedSignal = &failed
-				projectedSignalErr = signalErr
-			} else if ok {
-				if len(signal.Labels) == 0 {
-					signal.Labels = observabilityLabels(opts.Labels)
+			for _, call := range controlCalls {
+				validationErr := validateModelToolArguments(opts.ControlSpec.Definitions, call)
+				if validationErr == nil && len(controlCalls) > 1 {
+					validationErr = errors.New("submit exactly one control call per response")
 				}
-				projectedSignal = signal
+				if validationErr != nil {
+					validationErrors[call.ID] = validationErr
+					internalValidationCorrections[call.ID] = true
+				}
+			}
+			if len(validationErrors) == 0 {
+				signal, ok, signalErr := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{StepText: stepText})
+				if signalErr != nil {
+					failed := failedControlSignal(controlCalls[0])
+					projectedSignal = &failed
+					projectedSignalErr = signalErr
+				} else if ok {
+					if len(signal.Labels) == 0 {
+						signal.Labels = observabilityLabels(opts.Labels)
+					}
+					projectedSignal = signal
+				}
 			}
 		}
 		if len(classifiedCalls.Ordinary) > 0 {
@@ -1096,18 +1112,23 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				EffectBatchPreflight: opts.EffectBatchPreflight,
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
-			projectedCallIDs := make([]string, 0, len(calls))
 			for _, call := range calls {
-				activity, validationErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
-				if validationErr != nil {
+				if validationErr := validateModelToolArguments(opts.toolDefinitions, call); validationErr != nil {
+					validationErrors[call.ID] = validationErr
 					internalValidationCorrections[call.ID] = true
-				} else {
-					callActivities[call.ID] = sanitizeActivityPresentation(activity)
-					projectedCallIDs = append(projectedCallIDs, call.ID)
+					continue
 				}
+				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
+				if activityErr != nil {
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(activityErr, FailureOriginContract), metrics, started, decision)
+				}
+				callActivities[call.ID] = sanitizeActivityPresentation(activity)
 			}
-			for index, callID := range projectedCallIDs {
-				projectedCallBatchMetadata[callID] = map[string]any{"batch_index": index, "batch_size": len(projectedCallIDs)}
+			for index, call := range calls {
+				projectedCallBatchMetadata[call.ID] = map[string]any{"batch_index": index, "batch_size": len(calls)}
+				if internalValidationCorrections[call.ID] {
+					projectedCallBatchMetadata[call.ID]["tool_validation_error"] = true
+				}
 			}
 		}
 		callMessages := make([]session.Message, len(calls))
@@ -1117,7 +1138,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				reasoning = stepReasoning
 			}
 			kind := session.MessageKindNormal
-			if opts.ControlSpec.isControlTool(call.Name) {
+			if internalValidationCorrections[call.ID] {
+				kind = session.MessageKindToolValidationError
+			} else if opts.ControlSpec.isControlTool(call.Name) {
 				kind = session.MessageKindControlSignal
 			}
 			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
@@ -1132,8 +1155,39 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			activeHistory = append(activeHistory, msg)
 		}
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
+		if len(validationErrors) > 0 {
+			state.validationCorrectionCount++
+			decision.Metadata = mergeAnyMetadata(decision.Metadata, map[string]any{
+				"validation_correction_attempt": state.validationCorrectionCount,
+				"validation_correction_limit":   2,
+				"validation_error_count":        len(validationErrors),
+			})
+		}
+		if len(classifiedCalls.Ordinary) == 0 && len(validationErrors) > 0 {
+			for index, call := range calls {
+				msg := session.CloneMessage(callMessages[index])
+				e.emit(opts, event.Event{Type: event.ToolCall, Step: step, ToolID: call.ID, ToolName: call.Name, ToolKind: "control", ToolCallMessage: &msg, Args: call.Args,
+					Metadata: mergeAnyMetadata(attemptMetadata, map[string]any{"batch_index": index, "batch_size": len(calls), "tool_validation_error": true})})
+			}
+			for index, call := range calls {
+				msg := stableMessageAt(opts.RunID, len(activeHistory), validationFeedbackMessage(call, validationErrors[call.ID]))
+				if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+				}
+				activeHistory = append(activeHistory, msg)
+				state.activeMessages = append([]session.Message(nil), activeHistory...)
+				e.emit(opts, event.Event{Type: event.ToolResult, Step: step, ToolID: call.ID, ToolName: call.Name, ToolKind: "control", Result: msg.Content, Err: validationErrors[call.ID].Error(),
+					Metadata: mergeAnyMetadata(attemptMetadata, map[string]any{"batch_index": index, "batch_size": len(calls), "tool_validation_error": true, "tool_result_status": "error"})})
+			}
+			decision.ContinuationReason = ContinueToolResults
+			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
+			if state.validationCorrectionCount > 2 {
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(fmt.Errorf("control argument correction exhausted: %s", tools.InvalidArgumentsText(calls[0].Name, validationErrors[calls[0].ID])), FailureOriginControl), metrics, started, decision)
+			}
+			continue
+		}
 		sig := toolSignature(activeToolRegistry, calls)
-		if sig == lastToolSig {
+		if len(validationErrors) == 0 && sig == lastToolSig {
 			if toolBatchAllowsProgressRepeat(activeToolRegistry, calls) && lastToolProgressSig != "" {
 				if lastToolProgressSig != duplicateProgressSig {
 					duplicateProgressSig = lastToolProgressSig
@@ -1182,9 +1236,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for index, call := range calls {
-			if internalValidationCorrections[call.ID] {
-				continue
-			}
 			activity := callActivities[call.ID]
 			metadata := projectedCallBatchMetadata[call.ID]
 			if metadata == nil {
@@ -1258,6 +1309,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			resultView.Status = resultStatus
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
+			if validationErr := validationErrors[result.CallID]; validationErr != nil {
+				toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(provider.ToolCall{ID: result.CallID, Name: result.Name}, validationErr))
+			}
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
 				failureActivity := effectFinalizationErrorActivityPresentation(
@@ -1294,7 +1348,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			metadata := mergeAnyMetadata(metadataBase, projectedCallBatchMetadata[result.CallID])
 			metadata["tool_result_status"] = resultStatus
-			if !internalValidationCorrection {
+			{
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
 			}
 			toolMessageSet[i] = true
@@ -1317,6 +1371,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
+		if len(validationErrors) > 0 && state.validationCorrectionCount > 2 {
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(errors.New("tool argument correction exhausted"), FailureOriginToolDispatch), metrics, started, decision)
+		}
 		lastToolProgressSig = toolProgressSignature(activeToolRegistry, calls, toolResults)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
@@ -2115,6 +2172,8 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
+	plan.RetrySourceEntryID = opts.RetrySourceEntryID
+	plan.RetryRunID = opts.RunID
 	if err := cache.ValidateCanonicalLineage(ctx, promptStore, opts.PromptScopeID, &plan, systemPrompt, toolDefinitions, convertHostedToolDefinitions(opts.HostedToolDefinitions), map[string]any{
 		"provider": opts.ProviderName, "model": opts.Model,
 		"reasoning": opts.Reasoning, "adapter_version": cache.Version,
@@ -2385,35 +2444,37 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
 	pressure := req.ContextPressure
 	return map[string]any{
-		"request_id":             requestID(req.RunID, req.Step),
-		"logical_request_id":     req.LogicalRequestID,
-		"attempt_id":             req.AttemptID,
-		"attempt_epoch":          req.AttemptEpoch,
-		"attempt":                req.Attempt,
-		"request_estimate":       estimate,
-		"context_pressure":       pressure,
-		"compaction_generation":  req.RawPlan.CompactionGeneration,
-		"compaction_window_id":   req.RawPlan.CompactionWindowID,
-		"message_count":          len(req.Messages),
-		"raw_segment_count":      len(req.RawPlan.Segments),
-		"local_tool_count":       len(req.Tools),
-		"hosted_tool_count":      len(req.HostedTools),
-		"prefix_hash":            shortHash(req.RawPlan.PrefixHash),
-		"prefix_tokens":          estimate.PrefixTokens,
-		"message_tokens":         estimate.MessageTokens,
-		"tool_definition_tokens": estimate.ToolDefinitionTokens,
-		"estimated_input_tokens": estimate.EstimatedInputTokens,
-		"estimate_source":        estimate.Source,
-		"estimate_method":        estimate.Method,
-		"projected_input_tokens": pressure.ProjectedInputTokens,
-		"context_window":         pressure.ContextWindowTokens,
-		"threshold_tokens":       pressure.ThresholdTokens,
-		"request_safe_limit":     pressure.RequestSafeLimit,
-		"output_headroom":        pressure.OutputHeadroomTokens,
-		"pressure_signal":        pressure.Signal,
-		"pressure_source":        pressure.Source,
-		"confidence":             pressure.Confidence,
-		"hard_limit_exceeded":    pressure.HardLimitExceeded,
+		"request_id":                  requestID(req.RunID, req.Step),
+		"logical_request_id":          req.LogicalRequestID,
+		"attempt_id":                  req.AttemptID,
+		"attempt_epoch":               req.AttemptEpoch,
+		"attempt":                     req.Attempt,
+		"request_estimate":            estimate,
+		"context_pressure":            pressure,
+		"compaction_generation":       req.RawPlan.CompactionGeneration,
+		"context_projection_revision": req.RawPlan.ContextProjectionRevision,
+		"canonical_lineage_reset":     req.RawPlan.CanonicalLineageReset,
+		"compaction_window_id":        req.RawPlan.CompactionWindowID,
+		"message_count":               len(req.Messages),
+		"raw_segment_count":           len(req.RawPlan.Segments),
+		"local_tool_count":            len(req.Tools),
+		"hosted_tool_count":           len(req.HostedTools),
+		"prefix_hash":                 shortHash(req.RawPlan.PrefixHash),
+		"prefix_tokens":               estimate.PrefixTokens,
+		"message_tokens":              estimate.MessageTokens,
+		"tool_definition_tokens":      estimate.ToolDefinitionTokens,
+		"estimated_input_tokens":      estimate.EstimatedInputTokens,
+		"estimate_source":             estimate.Source,
+		"estimate_method":             estimate.Method,
+		"projected_input_tokens":      pressure.ProjectedInputTokens,
+		"context_window":              pressure.ContextWindowTokens,
+		"threshold_tokens":            pressure.ThresholdTokens,
+		"request_safe_limit":          pressure.RequestSafeLimit,
+		"output_headroom":             pressure.OutputHeadroomTokens,
+		"pressure_signal":             pressure.Signal,
+		"pressure_source":             pressure.Source,
+		"confidence":                  pressure.Confidence,
+		"hard_limit_exceeded":         pressure.HardLimitExceeded,
 	}
 }
 
@@ -4087,16 +4148,7 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 	} else if e.store != nil {
 		messages, _ = e.store.Transcript(opts.RunID)
 	}
-	if len(state.internalValidationCorrections) > 0 {
-		visible := messages[:0]
-		for _, message := range messages {
-			if state.internalValidationCorrections[message.ToolCallID] {
-				continue
-			}
-			visible = append(visible, message)
-		}
-		messages = visible
-	}
+
 	return Result{Status: status, FailureOrigin: failureOrigin(status, err), Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState), ProviderStateFresh: decision.ProviderStateFresh}
 }
 

@@ -5,17 +5,13 @@ import (
 	"strings"
 )
 
-func IsReferenceOnlyUserMessage(message Message) bool {
-	return message.Role == User && strings.TrimSpace(message.Content) == "" && len(message.Attachments) == 0 && len(message.References) > 0
-}
-
 // HasRetryEligibleDurableInput reports whether a canonical user message can be
 // replayed without depending on turn-scoped supplemental context.
 func HasRetryEligibleDurableInput(message Message) bool {
-	return message.Role == User && (strings.TrimSpace(message.Content) != "" || len(message.Attachments) > 0)
+	return message.Role == User && (strings.TrimSpace(message.Content) != "" || len(message.Attachments) > 0 || len(message.References) > 0 || len(message.Context) > 0)
 }
 
-// ProjectProviderHistory removes durable reference data from the provider view.
+// ProjectProviderHistory derives the complete provider history from canonical facts.
 // The returned insertion index is relative to the projected non-system history.
 func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string) ([]Message, int, error) {
 	anchor := strings.TrimSpace(supplementalAnchorEntryID)
@@ -27,14 +23,10 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 		if isAnchor {
 			anchorMatches++
 		}
-		if IsReferenceOnlyUserMessage(original) {
-			if isAnchor {
-				insertAt = len(out)
-			}
-			continue
-		}
 		message := CloneMessage(original)
+		message.Content = ProviderContent(message)
 		message.References = nil
+		message.Context = nil
 		message.Activity = nil
 		message.ControlSignal = nil
 		out = append(out, message)

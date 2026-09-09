@@ -21,13 +21,15 @@ transport diagnostics, and cross-store product intent.
 The host must not persist a second queryable Agent lifecycle, provider-visible
 message history, admitted reference mapping, approval queue, Todo state, or
 SubAgent state. It rebuilds presentation from canonical reads. Ordered
-`MessageReference` values are durable opaque facts; rich current-turn-only
-material belongs in `SupplementalContext`.
+`MessageReference` values and `MessageContextItem` snapshots are canonical model
+facts. Reference locators remain opaque; reference display content and admitted
+runtime context render deterministically for requests and compaction.
 
-Admission stores canonical user input and the immutable execution plan in
-Floret. `SupplementalContext` and executable signal projectors enter only
-`ExecutionContext`; they are excluded from journal entries, request fingerprints,
-provider continuation state, and canonical references.
+Admission commits these facts and their fingerprints together. Changes append
+new context snapshots. `SupplementalContext` carries explicitly temporary
+material such as secrets, excluded from the journal and provider continuation.
+No presentation policy may delete canonical tool validation feedback or user
+references from the provider history.
 
 Only the composition root retains `*runtime.Host`. It immediately hands local
 services minimal interfaces or closures backed by identity-bound handles.

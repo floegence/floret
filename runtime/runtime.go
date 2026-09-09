@@ -511,20 +511,38 @@ func (a MessageAttachment) Validate() error {
 	return sessionMessageAttachment(a).Validate()
 }
 
+// MessageContextItem is a durable model-context snapshot admitted with a user message.
+// Kind and Title are non-empty single-line labels (128 and 256 characters); Text
+// is non-empty UTF-8 (64,000 characters). An input permits 128 items / 256 KiB.
+// Do not place secrets or opaque resource locators in this persistent context.
+type MessageContextItem struct {
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+func (item MessageContextItem) Validate() error {
+	return session.MessageContextItem(item).Validate()
+}
+
 type TurnInput struct {
-	Text        string              `json:"text,omitempty"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"`
-	References  []MessageReference  `json:"references,omitempty"`
+	Text        string               `json:"text,omitempty"`
+	Attachments []MessageAttachment  `json:"attachments,omitempty"`
+	References  []MessageReference   `json:"references,omitempty"`
+	Context     []MessageContextItem `json:"context,omitempty"`
 }
 
 func (i TurnInput) Validate() error {
-	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 && len(i.References) == 0 {
-		return errors.New("turn input requires text, attachments, or references")
+	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 && len(i.References) == 0 && len(i.Context) == 0 {
+		return errors.New("turn input requires text, attachments, references, or context")
 	}
 	if err := session.ValidateMessageAttachments(sessionMessageAttachments(i.Attachments)); err != nil {
 		return fmt.Errorf("turn input: %w", err)
 	}
-	return validateMessageReferences(i.References)
+	if err := validateMessageReferences(i.References); err != nil {
+		return err
+	}
+	return session.ValidateMessageContext(sessionMessageContext(i.Context))
 }
 
 func validateMessageReferences(references []MessageReference) error {
@@ -1491,8 +1509,6 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		SupplementalContext:      supplementalContext,
-		Attachments:              sessionMessageAttachments(input.Attachments),
-		References:               sessionMessageReferences(input.References),
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
@@ -1542,6 +1558,7 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 func normalizeTurnInput(input TurnInput) (TurnInput, error) {
 	input.Attachments = cloneMessageAttachments(input.Attachments)
 	input.References = append([]MessageReference(nil), input.References...)
+	input.Context = append([]MessageContextItem(nil), input.Context...)
 	if err := input.Validate(); err != nil {
 		return TurnInput{}, err
 	}
@@ -2652,6 +2669,27 @@ func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
+	}
+	return out
+}
+
+func sessionMessageContext(in []MessageContextItem) []session.MessageContextItem {
+	if in == nil {
+		return nil
+	}
+	out := make([]session.MessageContextItem, len(in))
+	for i, item := range in {
+		out[i] = session.MessageContextItem(item)
+	}
+	return out
+}
+func runtimeMessageContext(in []session.MessageContextItem) []MessageContextItem {
+	if in == nil {
+		return nil
+	}
+	out := make([]MessageContextItem, len(in))
+	for i, item := range in {
+		out[i] = MessageContextItem(item)
 	}
 	return out
 }

@@ -28,15 +28,26 @@ Floret allocates `ThreadID`, `TurnID`, and `RunID`. A `LogicalRequestID` is a
 user-visible association only and never replaces those execution identities.
 Child threads are ordinary durable threads with explicit parent metadata.
 
-`Send` validates and commits the canonical user turn before publishing a live
-view or starting provider work. `SendInput.SupplementalContext` carries
-host-provided, turn-scoped material such as an explicitly selected file. It is
-validated and passed to the provider for that turn, but is not written into the
-canonical user message or provider history. Queue admission, interaction
-resolution, and cancellation use the same canonical-first ordering. A failed
-storage write returns an error without a successful live projection. The
-journal is the only durable lifecycle authority; hosts must not persist a
-second transcript or rebuild a Floret view from audit records.
+`Send` validates, fingerprints, and atomically commits canonical text,
+attachments, references, and `UserInput.Context` before publishing a live view.
+`MessageContextItem` carries Kind, Title, and Text snapshots effective from that
+user message. Reference kind, label, text, and truncation status enter model
+history in order; `ResourceRef` remains opaque and excluded. The same projection
+feeds continuation, retry, fork, restart, and compaction. Context-only and
+reference-only inputs remain eligible for retry.
+
+`SendInput.SupplementalContext` is only for explicitly ephemeral material,
+including secrets. It never becomes journal history or provider continuation
+state. Ordinary selected resources and runtime facts use durable input. Queue
+admission, interaction resolution, and cancellation remain canonical-first;
+hosts must not persist another transcript or reconstruct lifecycle from audit.
+
+Schema-invalid ordinary and control calls retain complete call/result pairs.
+At most two regeneration opportunities run before terminal failure. Only a valid
+control projection opens an interaction; programmer, storage, and effect failures
+are not model-correction opportunities. Activity filtering changes presentation,
+never model history. See [provider history](../../internal/session/provider_history.go)
+and [validation feedback](../../internal/engine/validation_feedback.go).
 
 `AgentRequest.Input` is the input for the execution being created. For an
 Ask User continuation it is the accepted, secret-free interaction resolution;
@@ -199,13 +210,13 @@ facts are read as failures and receive a safe paired provider error result.
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 -> v7 -> v8 -> v9 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 -> v7 -> v8 -> v9 -> v10 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
 records. `runtime.Options.StartupProgress` reports only the product-neutral
 `migrating` and `verifying` phases; it exposes no record counts or content.
 Startup selects one exact source format, rejects mixed authority, decodes an
-unchanged current-v9 store once, and performs a persisted final verification
+unchanged current-v10 store once, and performs a persisted final verification
 after every startup write. Current-schema startup is byte-preserving and
 idempotent. The v5 -> v6
 edge first replays pending v5 recovery frames and accepts only the exact v5
@@ -251,3 +262,10 @@ initialize a new store instead of falling back to normal startup.
 Use `identity`, `config`, `runtime`, `observation`, `tools`, `provider`, and
 opaque `storage.Source` values. Downstream applications must not import
 `internal/*` or infer lifecycle state from physical storage records.
+
+The v9 -> v10 edge admits optional durable model context and typed validation
+feedback without modifying old canonical bytes. A v9 source containing v10
+fields is rejected. Provider projection v8 explicitly resets prior projection
+lineages; an admitted retry uses its canonical source entry to establish a new
+boundary once, then resumes normal prefix checks. Missing ephemeral history is
+not fabricated.

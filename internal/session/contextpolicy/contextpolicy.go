@@ -474,7 +474,7 @@ func MethodForEstimateSource(source string, defaultMethod EstimateMethod) Estima
 }
 
 func EstimateMessageTokens(msg session.Message) int64 {
-	tokens := EstimateTextTokens(msg.Content) + EstimateTextTokens(msg.ToolName) + EstimateTextTokens(msg.ToolArgs) + EstimateTextTokens(msg.ToolCallID) + 8
+	tokens := EstimateTextTokens(session.ProviderContent(msg)) + EstimateTextTokens(msg.ToolName) + EstimateTextTokens(msg.ToolArgs) + EstimateTextTokens(msg.ToolCallID) + 8
 	if msg.Kind != "" {
 		tokens += EstimateTextTokens(string(msg.Kind))
 	}
