@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.9.1 - 2026-09-09
+
+- Own submitted input slices before asynchronous Agent preparation and execution, so callers cannot change admitted references, context, or queued input after `Send` returns.
+- Reuse the existing input normalization boundary and verify ownership with a deterministic blocked-factory regression and race detection.
+
 ## v7.9.0 - 2026-09-09
 
 - Support DeepSeek Vision through optional host-authorized image resolution, gated by each model's image capability.

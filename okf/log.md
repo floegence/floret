@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-09: Submitted input ownership
+
+* Copy input slices at the synchronous `Send` boundary before fingerprinting,
+  admission, and asynchronous Agent preparation. Verify caller mutation cannot
+  change admitted work with a deterministic regression and race detection.
+
 ## 2026-09-09: Model image capability and DeepSeek transport
 
 * Add an optional host attachment resolver to DeepSeek. Per-model metadata gates image input; prepared payloads own bytes and opaque replay retains references and digests. See [provider contract](api/provider.md).
