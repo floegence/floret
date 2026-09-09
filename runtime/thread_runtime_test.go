@@ -1411,6 +1411,8 @@ func TestThreadServiceFailedAskUserRecoversAfterRestartWithPairedHistory(t *test
 			{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "invalid-ask", Name: "ask_user", Args: `{"required_from_user":"city"}`}}},
 			{Type: provider.EventDone, Reason: "tool_calls"},
 		}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "invalid-ask-2", Name: "ask_user", Args: `{"required_from_user":"city"}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "invalid-ask-3", Name: "ask_user", Args: `{"required_from_user":"city"}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "recovered"}, {Type: provider.EventDone, Reason: "stop"}}},
 	)
 	agent, err := NewAgent(config.AgentConfig{
@@ -1475,22 +1477,22 @@ func TestThreadServiceFailedAskUserRecoversAfterRestartWithPairedHistory(t *test
 		t.Fatalf("recovered view=%#v", completed)
 	}
 	requests := gateway.Requests()
-	if len(requests) != 2 {
-		t.Fatalf("provider requests=%d, want 2", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("provider requests=%d, want 4", len(requests))
 	}
 	calls, results := 0, 0
-	for _, message := range requests[1].Messages {
+	for _, message := range requests[3].Messages {
 		for _, call := range message.ToolCalls {
 			if call.ID == "invalid-ask" && call.Name == "ask_user" {
 				calls++
 			}
 		}
-		if message.ToolResult != nil && message.ToolResult.CallID == "invalid-ask" && message.ToolResult.ToolName == "ask_user" && message.ToolResult.Text == `{"type":"control_result","outcome":"failed"}` {
+		if message.ToolResult != nil && message.ToolResult.CallID == "invalid-ask" && message.ToolResult.ToolName == "ask_user" && strings.Contains(message.ToolResult.Text, "invalid arguments") {
 			results++
 		}
 	}
 	if calls != 1 || results != 1 {
-		t.Fatalf("failed control provider pair=(calls:%d results:%d) messages=%#v", calls, results, requests[1].Messages)
+		t.Fatalf("failed control provider pair=(calls:%d results:%d) messages=%#v", calls, results, requests[3].Messages)
 	}
 }
 
@@ -2111,16 +2113,19 @@ func TestThreadServiceProjectsMixedSchemaCorrectionBatchWithVisibleCardinality(t
 			continue
 		}
 		if event.ToolID == "invalid-read-1" || event.ToolID == "invalid-read-2" {
-			t.Fatalf("schema correction leaked as canonical tool event: %#v", event)
+			if event.Metadata["tool_validation_error"] != true || event.Activity != nil {
+				t.Fatalf("validation event lacks its presentation marker: %#v", event)
+			}
+			continue
 		}
 		if event.ToolID != "visible-read-1" && event.ToolID != "visible-read-2" {
 			continue
 		}
-		wantIndex := 0
+		wantIndex := 1
 		if event.ToolID == "visible-read-2" {
-			wantIndex = 1
+			wantIndex = 3
 		}
-		if event.Metadata["batch_index"] != wantIndex || event.Metadata["batch_size"] != 2 {
+		if event.Metadata["batch_index"] != wantIndex || event.Metadata["batch_size"] != 4 {
 			t.Fatalf("event batch metadata=%#v for %s", event.Metadata, event.ToolID)
 		}
 	}

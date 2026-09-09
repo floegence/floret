@@ -1,5 +1,16 @@
 # Floret OKF Update Log
 
+## 2026-09-09: Durable model context and argument correction
+
+* **Context**: Canonical references and admitted runtime snapshots now enter the
+  same execution and compaction projection. Locators and explicit ephemeral
+  secrets remain isolated. Projection v8 and canonical retries have explicit
+  prefix boundaries.
+* **Control**: Invalid model arguments produce durable paired feedback, with two
+  regeneration opportunities; UI filtering does not change model history.
+* **Storage**: Append v9 to v10 without rewriting existing canonical bytes.
+  See [runtime](api/runtime.md) and [storage](api/storage.md).
+
 ## 2026-09-09: Generated model metadata
 
 * Replace hand-written native model lists with an offline models.dev snapshot

@@ -10,13 +10,16 @@ import (
 )
 
 func fallbackThreadTitle(message session.Message) string {
-	candidates := make([]string, 0, 1+len(message.Attachments)+len(message.References))
+	candidates := make([]string, 0, 1+len(message.Attachments)+len(message.References)+len(message.Context))
 	candidates = append(candidates, message.Content)
 	for _, attachment := range message.Attachments {
 		candidates = append(candidates, attachment.Name)
 	}
 	for _, reference := range message.References {
 		candidates = append(candidates, reference.Label)
+	}
+	for _, item := range message.Context {
+		candidates = append(candidates, item.Title)
 	}
 	for _, candidate := range candidates {
 		title := strings.Join(strings.Fields(candidate), " ")

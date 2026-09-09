@@ -156,8 +156,6 @@ type RunOptions struct {
 	ManualCompactions           engine.ManualCompactionSource
 	ToolSurfaceProvider         engine.ToolSurfaceProvider
 	SupplementalContext         []engine.TurnSupplementalContextItem
-	Attachments                 []session.MessageAttachment
-	References                  []session.MessageReference
 	Sink                        event.Sink
 	SkipContextPolicyEvent      bool
 }
@@ -745,6 +743,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
+	if retrySource != nil {
+		engineOptions.RetrySourceEntryID = retrySource.ID
+	}
 	engineOptions.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
 	engineOptions.ThreadID = t.id
 	engineOptions.TurnID = turnID
@@ -2149,7 +2150,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		p.pendingResults = append(p.pendingResults, pendingToolMessage{
-			message:          session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
 			observedAt:       ev.Timestamp,
 			canonicalEntryID: ev.CanonicalEntryID,
 		})
@@ -2303,7 +2304,7 @@ func (p *turnProjection) failCompactionFinalization(cause error) error {
 
 func canonicalToolCallMessage(ev event.Event) (session.Message, error) {
 	msg := ev.ToolCallMessage
-	if msg == nil || msg.Role != session.Assistant || msg.Content != "tool_call" || msg.Kind != session.MessageKindNormal ||
+	if msg == nil || msg.Role != session.Assistant || msg.Content != "tool_call" || (msg.Kind != session.MessageKindNormal && msg.Kind != session.MessageKindToolValidationError) ||
 		msg.ToolCallID == "" || msg.ToolCallID != ev.ToolID || msg.ToolName == "" || msg.ToolName != ev.ToolName || msg.ToolArgs != ev.Args {
 		return session.Message{}, newTurnProjectionContractError("tool call event requires a matching canonical call message")
 	}
@@ -2717,4 +2718,11 @@ func metadataInt(values map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func toolResultMessageKind(ev event.Event) session.MessageKind {
+	if metadata, ok := ev.Metadata.(map[string]any); ok && metadata["tool_validation_error"] == true {
+		return session.MessageKindToolValidationError
+	}
+	return session.MessageKindNormal
 }

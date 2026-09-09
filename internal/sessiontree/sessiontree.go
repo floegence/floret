@@ -2835,6 +2835,19 @@ func PrepareEntry(entry Entry) Entry {
 }
 
 func ValidateEntryMessageReferences(entry Entry) error {
+	if entry.Message.Kind == session.MessageKindToolValidationError {
+		if (entry.Type != EntryToolCall && entry.Type != EntryToolResult) || entry.Message.ToolCallID == "" || entry.Message.ControlSignal != nil || entry.Message.Activity != nil {
+			return errors.New("tool validation feedback requires an unexecuted call/result without control ownership or activity")
+		}
+	}
+	if len(entry.Message.Context) > 0 {
+		if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
+			return errors.New("message context is only valid on canonical user message entries")
+		}
+		if err := session.ValidateMessageContext(entry.Message.Context); err != nil {
+			return err
+		}
+	}
 	if len(entry.Message.References) == 0 {
 		return nil
 	}

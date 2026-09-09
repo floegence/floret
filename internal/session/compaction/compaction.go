@@ -506,7 +506,7 @@ func checkpointContent(summary string, keptUsers []session.Message, hasTail bool
 		out.WriteString("Treat them as historical requirements unless the retained tail or the latest user message supersedes them.\n\n")
 		data := make([]preservedUserInput, 0, len(keptUsers))
 		for _, msg := range keptUsers {
-			data = append(data, preservedUserInput{Content: msg.Content})
+			data = append(data, preservedUserInput{Content: session.ProviderContent(msg)})
 		}
 		encoded, _ := json.MarshalIndent(data, "", "  ")
 		out.Write(encoded)
@@ -723,7 +723,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	}
 	latest := -1
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == session.User && history[i].EntryID != "" && !session.IsReferenceOnlyUserMessage(history[i]) {
+		if history[i].Role == session.User && history[i].EntryID != "" {
 			latest = i
 			break
 		}
@@ -734,7 +734,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	var selected []session.Message
 	total := contextpolicy.EstimateMessageTokens(history[latest])
 	for i := latest - 1; i >= 0; i-- {
-		if history[i].Role != session.User || history[i].EntryID == "" || session.IsReferenceOnlyUserMessage(history[i]) {
+		if history[i].Role != session.User || history[i].EntryID == "" {
 			continue
 		}
 		msgTokens := contextpolicy.EstimateMessageTokens(history[i])

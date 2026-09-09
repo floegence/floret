@@ -2,6 +2,8 @@ package sessiontree
 
 import (
 	"context"
+	"fmt"
+	"github.com/floegence/floret/v7/internal/session"
 	"time"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -37,7 +39,17 @@ func loadBackendDomainV9(ctx context.Context, tx spi.ReadTx, now func() time.Tim
 }
 
 func validateBackendDomainV9Memory(memory *MemoryRepo) error {
-	return validateBackendDomainMemory(memory, "v9", true)
+	if err := validateBackendDomainMemory(memory, "v9", true); err != nil {
+		return err
+	}
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if len(entry.Message.Context) != 0 || entry.Message.Kind == session.MessageKindToolValidationError {
+				return fmt.Errorf("%w: v9 entry contains v10 message context", ErrAuthorityCorrupt)
+			}
+		}
+	}
+	return nil
 }
 
 func saveCompleteBackendDomainV9(tx spi.WriteTx, memory *MemoryRepo) error {

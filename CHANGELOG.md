@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.8.0 - 2026-09-09
+
+- Preserve submitted reference content in model history and compaction while excluding opaque resource locators.
+- Add durable `UserInput.Context` snapshots, validated and fingerprinted atomically with canonical input; preserve them through response, retry, restart, and fork.
+- Freeze the complete rendered request history; establish explicit projection v8 and canonical retry boundaries without rewriting old requests.
+- Record schema-invalid tool calls and results in canonical history and allow two regeneration opportunities. Keep invalid calls out of dispatch, authorization, interactions, and Activity; preserve `control_error` on exhaustion.
+- Migrate domain schema v9 to v10 atomically without modifying old journal bytes or reconstructing missing ephemeral material.
+
 ## v7.7.0 - 2026-09-09
 
 - Generate native Agent model metadata from an auditable offline models.dev snapshot, with explicit official corrections and lifecycle labels.

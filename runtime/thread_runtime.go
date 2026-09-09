@@ -264,6 +264,7 @@ type ThreadItem struct {
 	CreatedAt   time.Time                 `json:"created_at,omitempty"`
 	Attachments []MessageAttachment       `json:"attachments,omitempty"`
 	References  []MessageReference        `json:"references,omitempty"`
+	Context     []MessageContextItem      `json:"context,omitempty"`
 	Activity    *observation.ActivityItem `json:"activity,omitempty"`
 	Interaction *ThreadInteraction        `json:"interaction,omitempty"`
 }
@@ -939,6 +940,9 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 	for _, entry := range path {
 		switch entry.Type {
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			if entry.Message.Kind == session.MessageKindToolValidationError {
+				continue
+			}
 			if entry.Message.Kind != session.MessageKindControlSignal || entry.Message.ControlSignal == nil {
 				continue
 			}
@@ -1807,6 +1811,7 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 		}
 		input.Attachments = append(input.Attachments, item)
 	}
+	input.Context = runtimeMessageContext(message.Context)
 	for _, reference := range message.References {
 		input.References = append(input.References, MessageReference{ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label, Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated})
 	}
@@ -1945,7 +1950,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		if acceptErr != nil {
 			return acceptErr
 		}
-		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
 		result = cloneThreadRuntimeView(actor.state.view)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -2022,6 +2027,7 @@ func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, th
 		Role: session.User, Content: request.Input.Text,
 		Attachments: sessionMessageAttachments(request.Input.Attachments),
 		References:  sessionMessageReferences(request.Input.References),
+		Context:     sessionMessageContext(request.Input.Context),
 	}
 	if request.RetrySourceEntryID != "" {
 		canonicalInput = session.Message{}
@@ -3591,7 +3597,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 				}
 			}
 		}
-		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...)})
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3632,6 +3638,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	for index := range view.Queue {
 		view.Queue[index].Input.Attachments = cloneMessageAttachments(view.Queue[index].Input.Attachments)
 		view.Queue[index].Input.References = append([]MessageReference(nil), view.Queue[index].Input.References...)
+		view.Queue[index].Input.Context = append([]MessageContextItem(nil), view.Queue[index].Input.Context...)
 		view.Queue[index].SupplementalContext = cloneTurnSupplementalContext(view.Queue[index].SupplementalContext)
 	}
 	if view.RestoredInputs != nil {
@@ -3640,6 +3647,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 			items[i] = item
 			items[i].Input.Attachments = cloneMessageAttachments(item.Input.Attachments)
 			items[i].Input.References = append([]MessageReference(nil), item.Input.References...)
+			items[i].Input.Context = append([]MessageContextItem(nil), item.Input.Context...)
 		}
 		view.RestoredInputs = items
 	}
@@ -3688,6 +3696,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 		out[index] = item
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
 		out[index].References = append([]MessageReference(nil), item.References...)
+		out[index].Context = append([]MessageContextItem(nil), item.Context...)
 		if item.Activity != nil {
 			timeline := observation.CloneActivityTimeline(&observation.ActivityTimeline{Items: []observation.ActivityItem{*item.Activity}})
 			out[index].Activity = &timeline.Items[0]
@@ -3865,7 +3874,7 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 			if identityErr != nil {
 				return nil, nil, identityErr
 			}
-			items = appendThreadItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: entry.CreatedAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References)})
+			items = appendThreadItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: entry.CreatedAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References), Context: runtimeMessageContext(entry.Message.Context)})
 		case sessiontree.EntryAssistantMessage:
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
@@ -3901,6 +3910,9 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				item.Activity.Presentation = tools.FinalizeActivityPresentation(item.Activity.Presentation, "canceled")
 			}
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			if entry.Message.Kind == session.MessageKindToolValidationError {
+				continue
+			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return nil, nil, identityErr

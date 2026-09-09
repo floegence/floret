@@ -666,6 +666,11 @@ method MessageAttachment.Validate func() error
 type MessageAttachmentTextStats struct
 field MessageAttachmentTextStats.UnicodeCodePointCount int64 tag="json:\"unicode_code_points\""
 field MessageAttachmentTextStats.LogicalLineCount int64 tag="json:\"logical_lines\""
+type MessageContextItem struct
+field MessageContextItem.Kind string tag="json:\"kind\""
+field MessageContextItem.Title string tag="json:\"title\""
+field MessageContextItem.Text string tag="json:\"text\""
+method MessageContextItem.Validate func() error
 type MessageReference struct
 field MessageReference.ReferenceID string tag="json:\"reference_id\""
 field MessageReference.Kind github.com/floegence/floret/v7/runtime.MessageReferenceKind tag="json:\"kind\""
@@ -859,6 +864,7 @@ field ThreadItem.Live bool tag="json:\"live,omitempty\""
 field ThreadItem.CreatedAt time.Time tag="json:\"created_at,omitempty\""
 field ThreadItem.Attachments []github.com/floegence/floret/v7/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
 field ThreadItem.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
+field ThreadItem.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 field ThreadItem.Activity *github.com/floegence/floret/v7/observation.ActivityItem tag="json:\"activity,omitempty\""
 field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interaction,omitempty\""
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
@@ -985,6 +991,7 @@ type TurnInput struct
 field TurnInput.Text string tag="json:\"text,omitempty\""
 field TurnInput.Attachments []github.com/floegence/floret/v7/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
 field TurnInput.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
+field TurnInput.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 method TurnInput.Validate func() error
 type TurnLimits struct
 field TurnLimits.MaxInputTokens int64

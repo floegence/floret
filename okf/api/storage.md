@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 lineage. Version 9 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 lineage. Version 10 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -128,3 +128,9 @@ the host application publishes the restored storage set.
 
 Evidence: `runtime/storage_maintenance_test.go`, `runtime/storage_inspection.go`,
 `runtime/storage_restore.go`, and `storage/sqlite_snapshot.go`.
+
+The v9 -> v10 edge accepts optional durable user-context snapshots and typed tool
+validation feedback. It validates exact v9 source authority, preserves raw
+journal payloads and request records, and commits the new namespace and complete
+current invariant atomically. Current v10 opens without rewriting bytes; failures,
+cancellation, panic, mixed formats, and future versions leave the store unchanged.

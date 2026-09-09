@@ -32,7 +32,7 @@ func TestProjectProviderHistoryRequiresExactSupplementalAnchor(t *testing.T) {
 	}
 }
 
-func TestProjectProviderHistoryReplacesReferenceOnlyAnchorInPlace(t *testing.T) {
+func TestProjectProviderHistoryRetainsReferenceOnlyAnchorInPlace(t *testing.T) {
 	history := []Message{
 		{Role: User, Content: "old", EntryID: "old"},
 		{Role: User, EntryID: "anchor", References: []MessageReference{{
@@ -41,7 +41,7 @@ func TestProjectProviderHistoryReplacesReferenceOnlyAnchorInPlace(t *testing.T) 
 		{Role: Assistant, Content: "after", EntryID: "after"},
 	}
 	projected, insertAt, err := ProjectProviderHistory(history, "anchor")
-	if err != nil || insertAt != 1 || len(projected) != 2 || projected[1].EntryID != "after" {
+	if err != nil || insertAt != 2 || len(projected) != 3 || projected[1].EntryID != "anchor" {
 		t.Fatalf("projection=%#v insertAt=%d err=%v", projected, insertAt, err)
 	}
 }

@@ -22,7 +22,8 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v7"
+	ContextProjectionRevision = "provider-context.v8"
+	contextProjectionV7       = "provider-context.v7"
 	contextProjectionV2       = "provider-context.v2"
 	contextProjectionV3       = "provider-context.v3"
 	contextProjectionV4       = "provider-context.v4"
@@ -95,6 +96,9 @@ func (r PromptScopeRef) validate() error {
 }
 
 type RawPlan struct {
+	// These transient fields come from validated canonical retry admission, never a host hint.
+	RetrySourceEntryID         string                        `json:"-"`
+	RetryRunID                 string                        `json:"-"`
 	Version                    string                        `json:"version"`
 	SegmentIDs                 []string                      `json:"segment_ids"`
 	Segments                   []Segment                     `json:"segments"`
@@ -970,6 +974,13 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	previous := requests[len(requests)-1]
+	if plan.RetrySourceEntryID != "" && plan.RetryRunID != "" && previous.RunID != plan.RetryRunID {
+		if len(history) == 0 || history[len(history)-1].EntryID != plan.RetrySourceEntryID {
+			return fmt.Errorf("%w: retry history does not end at its canonical source", ErrContextPrefixDrift)
+		}
+		plan.CanonicalLineageReset = true
+		return nil
+	}
 	if previous.CompactionGeneration > plan.CompactionGeneration {
 		return fmt.Errorf("%w: compaction generation moved backwards", ErrContextPrefixDrift)
 	}
@@ -981,7 +992,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
-		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6) && plan.ContextProjectionRevision == ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			plan.CanonicalLineageReset = true
 			return nil
 		}

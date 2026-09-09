@@ -561,7 +561,7 @@ func TestBuildActiveMessagesWithKeptUsersEmbedsOnlyTailExternalUsers(t *testing.
 	}
 }
 
-func TestPrepareKeepsLatestReferenceOnlyUserAsStructuralTailButHidesItFromSummary(t *testing.T) {
+func TestPrepareKeepsLatestReferenceOnlyUserInSummaryAndStructuralTail(t *testing.T) {
 	const sentinel = "REFERENCE-SECRET-3c91"
 	generator := &recordingSummaryGenerator{summaries: []string{"summary"}}
 	prep, err := Prepare(context.Background(), Request{
@@ -589,8 +589,8 @@ func TestPrepareKeepsLatestReferenceOnlyUserAsStructuralTailButHidesItFromSummar
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), sentinel) || strings.Contains(string(encoded), "current-reference") {
-		t.Fatalf("summary generator received durable reference data: %s", encoded)
+	if !strings.Contains(string(encoded), sentinel) || strings.Contains(string(encoded), "current-reference") {
+		t.Fatalf("summary generator lost reference content or leaked entry identity: %s", encoded)
 	}
 	foundStructuralAnchor := false
 	for _, message := range prep.RetainedTail {
@@ -601,8 +601,8 @@ func TestPrepareKeepsLatestReferenceOnlyUserAsStructuralTailButHidesItFromSummar
 	if !foundStructuralAnchor {
 		t.Fatalf("compaction lost reference-only structural anchor: %#v", prep.RetainedTail)
 	}
-	if slices.Contains(prep.Result.KeptUserEntryIDs, "current-reference") {
-		t.Fatalf("reference-only user entered preserved inputs: %#v", prep.Result.KeptUserEntryIDs)
+	if !slices.Contains(prep.Result.KeptUserEntryIDs, "current-reference") {
+		t.Fatalf("reference-only user missing from preserved inputs: %#v", prep.Result.KeptUserEntryIDs)
 	}
 	checkpoint := requireCheckpointPlusTail(t, prep)
 	if strings.Contains(checkpoint.Content, sentinel) || strings.Contains(checkpoint.Content, "current-reference") || strings.Contains(checkpoint.Content, `"content": ""`) {

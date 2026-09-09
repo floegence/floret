@@ -28,15 +28,15 @@ func TestBackendDomainV8ToV9MigratesResumedAndNestedForkContext(t *testing.T) {
 	if got := migrationTestNamespaceRecords(t, backend, backendDomainV8Namespace); len(got) != 0 {
 		t.Fatalf("v8 records survived migration: %d", len(got))
 	}
-	current := migrationTestNamespaceRecords(t, backend, backendDomainV9Namespace)
+	current := migrationTestNamespaceRecords(t, backend, backendDomainV10Namespace)
 	if len(current) == 0 {
-		t.Fatal("v9 records are missing after migration")
+		t.Fatal("v10 records are missing after migration")
 	}
 	if _, err := NewBackendRepo(t.Context(), backend, func() time.Time { return fixture.now }); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationTestNamespaceRecords(t, backend, backendDomainV9Namespace); !reflect.DeepEqual(got, current) {
-		t.Fatal("current v9 restart rewrote canonical bytes")
+	if got := migrationTestNamespaceRecords(t, backend, backendDomainV10Namespace); !reflect.DeepEqual(got, current) {
+		t.Fatal("current v10 restart rewrote canonical bytes")
 	}
 }
 
@@ -451,7 +451,7 @@ type migrationPanickingTx struct {
 }
 
 func (tx migrationPanickingTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV9Namespace && bytes.Equal(key, backendDomainV9Key(backendDomainRecordRootIndex)) {
+	if namespace == backendDomainV10Namespace && bytes.Equal(key, backendDomainV10Key(backendDomainRecordRootIndex)) {
 		panic("injected v9 migration panic")
 	}
 	return tx.WriteTx.Put(namespace, key, value)
@@ -464,14 +464,14 @@ func TestBackendDomainV9RejectsFutureRecordVersionWithoutMutation(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		key := backendDomainV9Key(backendDomainRecordManifest)
-		future := backendDomainV9Format
-		future.version = backendDomainV9Version + 1
+		key := backendDomainV10Key(backendDomainRecordManifest)
+		future := backendDomainV10Format
+		future.version = backendDomainV10Version + 1
 		encoded, err := encodeBackendDomainRecord(future, backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: future.version, Sequence: 1})
 		if err != nil {
 			return err
 		}
-		return tx.Put(backendDomainV9Namespace, key, encoded)
+		return tx.Put(backendDomainV10Namespace, key, encoded)
 	}); err != nil {
 		t.Fatal(err)
 	}

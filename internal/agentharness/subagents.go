@@ -162,14 +162,15 @@ type ThreadDetailEvent struct {
 }
 
 type ThreadDetailMessage struct {
-	Role        string                      `json:"role,omitempty"`
-	Kind        string                      `json:"kind,omitempty"`
-	Preview     string                      `json:"preview,omitempty"`
-	Content     string                      `json:"content,omitempty"`
-	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
-	References  []session.MessageReference  `json:"references,omitempty"`
-	Reasoning   string                      `json:"reasoning,omitempty"`
-	Activity    *tools.ActivityPresentation `json:"activity,omitempty"`
+	Role        string                       `json:"role,omitempty"`
+	Kind        string                       `json:"kind,omitempty"`
+	Preview     string                       `json:"preview,omitempty"`
+	Content     string                       `json:"content,omitempty"`
+	Attachments []session.MessageAttachment  `json:"attachments,omitempty"`
+	References  []session.MessageReference   `json:"references,omitempty"`
+	Context     []session.MessageContextItem `json:"context,omitempty"`
+	Reasoning   string                       `json:"reasoning,omitempty"`
+	Activity    *tools.ActivityPresentation  `json:"activity,omitempty"`
 }
 
 type ThreadDetailToolCall struct {
@@ -861,6 +862,9 @@ func threadDetailActivityTimeline(detail ThreadDetailEvent, entry sessiontree.En
 }
 
 func threadDetailObservationEvent(detail ThreadDetailEvent, entry sessiontree.Entry, activityContext threadDetailActivityContext) (observation.Event, bool) {
+	if entry.Message.Kind == session.MessageKindToolValidationError {
+		return observation.Event{}, false
+	}
 	if entry.Type == sessiontree.EntryCustom && entry.Metadata[threadDetailKindKey] == sessiontree.HostedToolEntryKind {
 		observed, err := sessiontree.HostedToolObservation(entry)
 		return observed, err == nil
@@ -1203,7 +1207,7 @@ func threadDetailApproval(metadata map[string]string) *ThreadDetailApproval {
 
 func threadDetailMessage(msg session.Message, includeRaw bool) *ThreadDetailMessage {
 	activity := observationActivityPresentation(msg.Activity)
-	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && len(msg.Attachments) == 0 && len(msg.References) == 0 && msg.Reasoning == "" && activity == nil {
+	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && len(msg.Attachments) == 0 && len(msg.References) == 0 && len(msg.Context) == 0 && msg.Reasoning == "" && activity == nil {
 		return nil
 	}
 	out := &ThreadDetailMessage{
@@ -1212,6 +1216,7 @@ func threadDetailMessage(msg session.Message, includeRaw bool) *ThreadDetailMess
 		Preview:     safeThreadDetailPreview(msg.Content, 500),
 		Attachments: session.CloneMessageAttachments(msg.Attachments),
 		References:  append([]session.MessageReference(nil), msg.References...),
+		Context:     append([]session.MessageContextItem(nil), msg.Context...),
 		Activity:    activity,
 	}
 	if includeRaw {
