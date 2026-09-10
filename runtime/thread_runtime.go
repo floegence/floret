@@ -2548,12 +2548,13 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		if !actor.acceptLiveEvent(event) {
 			return nil
 		}
+		activityChanged := actor.applyToolActivity(event.ActivityTimeline)
 		progress, progressEvent := threadRunProgressForEvent(event)
 		progressChanged := progressEvent && !threadRuntimeViewNeedsAttention(actor.state.view) && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
 		if progressChanged {
 			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
 		}
-		if event.Stream != nil || progressChanged {
+		if event.Stream != nil || progressChanged || activityChanged {
 			actor.state.view.ViewVersion++
 			current = cloneThreadRuntimeView(actor.state.view)
 			changed = true
@@ -2682,6 +2683,15 @@ func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal boo
 		if committed, exists := byOrdinal[item.Ordinal]; exists {
 			if committed.ID != item.ID {
 				return nil, false
+			}
+			// A journal call is durable input, not a newer observation of an
+			// executing tool. Keep live output and settled results until the
+			// corresponding canonical result or terminal turn is available.
+			if item.Kind == ThreadItemTool && item.RunID == committed.RunID && item.Activity != nil && committed.Activity != nil &&
+				(threadToolActivityTerminal(item.Activity.Status) || item.Live && !threadToolActivityTerminal(committed.Activity.Status)) {
+				committed.Activity, committed.Live = item.Activity, item.Live
+				byOrdinal[item.Ordinal] = committed
+				continue
 			}
 			canonicalTerminalTool := committed.Kind == ThreadItemTool && committed.Activity != nil && committed.Activity.Status != observation.ActivityStatusRunning
 			if item.Live && !canonicalTerminalTool {

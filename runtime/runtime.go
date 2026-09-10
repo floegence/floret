@@ -2526,6 +2526,7 @@ func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
 	observed := runtimeObservationEvent(ev)
 	var timeline *observation.ActivityTimeline
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, observed)
 	if runtimeActivityTimelineEvent(ev.Type) {
 		built := observation.BuildActivityTimeline(observation.ActivityRunMeta{
@@ -2538,7 +2539,8 @@ func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
 			timeline = &built
 		}
 	}
-	r.mu.Unlock()
+	// Parallel tools must publish snapshots in the order they were reduced.
+	// Otherwise a delayed earlier snapshot can overwrite a completed tool.
 	r.sink.EmitWithActivityTimeline(ev, timeline)
 }
 

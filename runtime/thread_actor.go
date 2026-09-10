@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,6 +114,12 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if runtime == nil || runtime.deleting || runtime.deleted {
 		return false
 	}
+	if event.ThreadID != "" && runtime.state.view.ThreadID != "" && event.ThreadID != runtime.state.view.ThreadID {
+		return false
+	}
+	if timeline := event.ActivityTimeline; timeline != nil && (timeline.ThreadID != event.ThreadID || timeline.TurnID != event.TurnID || timeline.RunID != event.RunID) {
+		return false
+	}
 	if runtime.state.view.Activity == ThreadActivityIdle && runtime.state.view.LastOutcome != nil {
 		return false
 	}
@@ -160,7 +167,6 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 			runtime.finishLiveTextSegment()
 		case StreamObservationToolCallEnd:
 			runtime.finishLiveTextSegment()
-			runtime.appendLiveToolSegment(event.Stream.ToolCallStream)
 		case StreamObservationModelRetry:
 			runtime.finishLiveTextSegment()
 		}
@@ -203,25 +209,48 @@ func (runtime *threadRuntimeState) releaseEffectDispatch() {
 	}
 }
 
-func (runtime *threadRuntimeState) appendLiveToolSegment(stream *ToolCallStream) {
-	if runtime == nil || stream == nil || strings.TrimSpace(stream.ID) == "" {
-		return
+// The Engine's Activity projection already owns validation, presentation merging,
+// and tool status. Apply that snapshot in the actor before dispatch can proceed;
+// provider argument streams are not admitted tool executions.
+func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.ActivityTimeline) bool {
+	if timeline == nil {
+		return false
 	}
-	name := strings.TrimSpace(stream.Name)
-	if name == CoreControlAskUser {
-		return
+	changed := false
+	for _, activity := range observation.CloneActivityTimeline(timeline).Items {
+		if activity.Kind != observation.ActivityKindTool || activity.ToolID == "" {
+			continue
+		}
+		id := threadToolSegmentID(timeline.TurnID, activity.ToolID)
+		index := threadItemIndexByID(runtime.state.view.Items, id)
+		live := !threadToolActivityTerminal(activity.Status)
+		if index >= 0 {
+			item := &runtime.state.view.Items[index]
+			if item.TurnID != timeline.TurnID || item.RunID != timeline.RunID {
+				continue
+			}
+			if reflect.DeepEqual(item.Activity, &activity) && item.Live == live {
+				continue
+			}
+			item.Activity, item.Live = &activity, live
+		} else {
+			runtime.finishLiveTextSegment()
+			runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
+				ID: id, TurnID: timeline.TurnID, RunID: timeline.RunID, Kind: ThreadItemTool, Live: live, Activity: &activity,
+			})
+		}
+		changed = true
 	}
-	id := threadToolSegmentID(runtime.state.turnID, stream.ID)
-	if threadItemIndexByID(runtime.state.view.Items, id) >= 0 {
-		return
+	return changed
+}
+
+func threadToolActivityTerminal(status observation.ActivityStatus) bool {
+	switch status {
+	case observation.ActivityStatusSuccess, observation.ActivityStatusError, observation.ActivityStatusCanceled, observation.ActivityStatusDeclined:
+		return true
+	default:
+		return false
 	}
-	activity := observation.ActivityItem{
-		ItemID: id, ToolID: strings.TrimSpace(stream.ID), ToolName: name,
-		Kind: observation.ActivityKindTool, Status: observation.ActivityStatusRunning,
-	}
-	runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-		ID: id, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: ThreadItemTool, Live: true, Activity: &activity,
-	})
 }
 
 func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string) {

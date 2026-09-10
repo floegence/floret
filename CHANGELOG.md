@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.9.2 - 2026-09-10
+
+- Publish validated tool descriptions, commands, output updates, and status directly through the thread actor, without waiting for canonical refresh or turn completion.
+- Keep provider argument streams out of running tool cards, preserve observed progress across older journal snapshots, and serialize Activity snapshot publication for parallel tools.
+- Preserve existing public APIs, presentation sanitization, canonical history, and domain schema.
+
 ## v7.9.1 - 2026-09-09
 
 - Own submitted input slices before asynchronous Agent preparation and execution, so callers cannot change admitted references, context, or queued input after `Send` returns.
