@@ -1,5 +1,14 @@
 # Changelog
 
+## v7.10.0 - 2026-09-10
+
+- Add opt-in graceful Stop with canonical provenance, immediate acknowledgement, and a shared five-second tool settlement window; preserve the default immediate Cancel contract.
+- Preserve confirmed canceled tool results, partial output, artifacts, and real execution errors. Fence new dispatch and Ask User continuation after Stop, retain queued input, and reject late results.
+- Keep unknown effects protected from replay and retry, and preserve their canonical terminal classification across live views and restart.
+- Add `Registry.DispatchBatchObserved` so Stop can settle ready results within the shared deadline while normal Engine execution retains model call order.
+- Add `tools.ResultOutcomeCanceled` and `tools.CanceledResult`; bare context cancellation cannot confirm an effect outcome.
+- Migrate domain schema v10 to v11 automatically, preserving old records and missing historical stop provenance.
+
 ## v7.9.2 - 2026-09-10
 
 - Publish validated tool descriptions, commands, output updates, and status directly through the thread actor, without waiting for canonical refresh or turn completion.

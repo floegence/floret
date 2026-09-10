@@ -34,7 +34,7 @@ func TestOpenReportsVerifyingForFreshAndCurrentStores(t *testing.T) {
 	}
 }
 
-func TestOpenCurrentStoreDecodesV10Once(t *testing.T) {
+func TestOpenCurrentStoreDecodesV11Once(t *testing.T) {
 	path := t.TempDir() + "/floret.sqlite"
 	first, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
 	if err != nil {
@@ -54,7 +54,7 @@ func TestOpenCurrentStoreDecodesV10Once(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := counts.fullV9Scans(); got != 1 {
-		t.Fatalf("full v10 scans = %d, want 1", got)
+		t.Fatalf("full v11 scans = %d, want 1", got)
 	}
 }
 
@@ -94,7 +94,7 @@ type startupScanCounts struct {
 }
 
 func (counts *startupScanCounts) record(request spi.ScanRequest) {
-	if request.Namespace != "floret.domain.sessiontree.v10" || request.Limit != 256 {
+	if request.Namespace != "floret.domain.sessiontree.v11" || request.Limit != 256 {
 		return
 	}
 	counts.mu.Lock()

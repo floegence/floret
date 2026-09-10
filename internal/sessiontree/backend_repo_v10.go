@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -37,7 +38,26 @@ func loadBackendDomainV10(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV10Memory(memory *MemoryRepo) error {
-	return validateBackendDomainMemory(memory, "v10", true)
+	if err := validateBackendDomainMemory(memory, "v10", true); err != nil {
+		return err
+	}
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if entry.Type == EntryCancelRequested && (entry.Metadata["cancellation_source"] != "" || entry.Metadata["cancellation_mode"] != "") {
+				return fmt.Errorf("v10 contains v11 cancellation provenance")
+			}
+			if entry.Type == EntryEffectAttempt {
+				attempt, err := decodeEffectAttempt(entry)
+				if err != nil {
+					return err
+				}
+				if attempt.State == EffectAttemptCancelled && attempt.ResultEntryID != "" {
+					return fmt.Errorf("v10 contains a v11 canceled effect result")
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func saveCompleteBackendDomainV10(tx spi.WriteTx, memory *MemoryRepo) error {

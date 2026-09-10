@@ -411,8 +411,12 @@ type AuthorityBusyKind string
 const AuthorityBusyTurn github.com/floegence/floret/v7/runtime.AuthorityBusyKind = "turn"
 type AuthorizedEffect func(context.Context, github.com/floegence/floret/v7/runtime.EffectAuthorizationProof) (github.com/floegence/floret/v7/runtime.EffectDispatchResult, error)
 type CancelInput struct
+field CancelInput.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode,omitempty\""
 field CancelInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field CancelInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type CancelMode string
+const CancelModeGraceful github.com/floegence/floret/v7/runtime.CancelMode = "graceful"
+const CancelModeImmediate github.com/floegence/floret/v7/runtime.CancelMode = "immediate"
 type CapabilityOptions struct
 field CapabilityOptions.SkillsEnabled bool
 field CapabilityOptions.SkillSources []string
@@ -809,6 +813,13 @@ method StreamObservationType.Valid func() bool
 type ThreadActivity string
 const ThreadActivityActive github.com/floegence/floret/v7/runtime.ThreadActivity = "active"
 const ThreadActivityIdle github.com/floegence/floret/v7/runtime.ThreadActivity = "idle"
+type ThreadCancellation struct
+field ThreadCancellation.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadCancellation.Source string tag="json:\"source\""
+field ThreadCancellation.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode\""
+field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
 type ThreadContextCompaction struct
 field ThreadContextCompaction.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadContextCompaction.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
@@ -898,6 +909,7 @@ const ThreadStatusInterrupted github.com/floegence/floret/v7/runtime.ThreadStatu
 const ThreadStatusRunning github.com/floegence/floret/v7/runtime.ThreadStatus = "running"
 const ThreadStatusWaiting github.com/floegence/floret/v7/runtime.ThreadStatus = "waiting"
 type ThreadSummary struct
+field ThreadSummary.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadSummary.ID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"id\""
 field ThreadSummary.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id,omitempty\""
 field ThreadSummary.ParentTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"parent_turn_id,omitempty\""
@@ -953,6 +965,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadView.RestoredInputs []github.com/floegence/floret/v7/runtime.RestoredInput tag="json:\"restored_inputs,omitempty\""
 field ThreadView.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadView.ViewVersion uint64 tag="json:\"view_version\""
@@ -1182,6 +1195,7 @@ field ArtifactRef.SizeBytes int64 tag="json:\"size_bytes,omitempty\""
 field ArtifactRef.SHA256 string tag="json:\"sha256,omitempty\""
 func Boolean func(description string) map[string]any
 func BuildOutputProjection func(result github.com/floegence/floret/v7/tools.Result, policy github.com/floegence/floret/v7/tools.OutputPolicy) github.com/floegence/floret/v7/tools.OutputProjection
+func CanceledResult func(callID string, name string, text string) github.com/floegence/floret/v7/tools.Result
 func ClearPendingActivity func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
 func CloneActivityPresentation func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
 type CompletionActivityPayload struct
@@ -1421,6 +1435,7 @@ method *Registry.Definitions func() []github.com/floegence/floret/v7/tools.ToolD
 method *Registry.ExposedDefinitions func() []github.com/floegence/floret/v7/tools.ToolDefinition
 method *Registry.Dispatch func(ctx context.Context, call github.com/floegence/floret/v7/tools.ToolCall, opts github.com/floegence/floret/v7/tools.DispatchOptions) github.com/floegence/floret/v7/tools.Result
 method *Registry.DispatchBatch func(ctx context.Context, calls []github.com/floegence/floret/v7/tools.ToolCall, opts github.com/floegence/floret/v7/tools.DispatchOptions) []github.com/floegence/floret/v7/tools.Result
+method *Registry.DispatchBatchObserved func(ctx context.Context, calls []github.com/floegence/floret/v7/tools.ToolCall, opts github.com/floegence/floret/v7/tools.DispatchOptions, observe func(int, github.com/floegence/floret/v7/tools.Result) error) ([]github.com/floegence/floret/v7/tools.Result, error)
 method *Registry.ActivityForCall func(call github.com/floegence/floret/v7/tools.ToolCall, opts github.com/floegence/floret/v7/tools.DispatchOptions) (*github.com/floegence/floret/v7/tools.ActivityPresentation, error)
 method *Registry.OutputPolicyFor func(name string) github.com/floegence/floret/v7/tools.OutputPolicy
 const RepeatPolicyPolling untyped string = "polling"
@@ -1442,6 +1457,7 @@ field Result.IsError bool
 field Result.DispatchErr error
 method Result.RequiresEffectFinalization func() bool
 const ResultMetadataProgressToken untyped string = "progress_token"
+const ResultOutcomeCanceled untyped string = "canceled"
 const ResultOutcomeDeclined untyped string = "declined"
 func StrictObject func(properties map[string]any, required []string) map[string]any
 func String func(description string) map[string]any

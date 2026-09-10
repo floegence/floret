@@ -816,6 +816,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, contractErr, "engine_failure_classification_error", engine.FailureOriginContract)
 		}
 	}
+	if resultFailureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
+		// Effect convergence already owns the complete terminal journal.
+		// Flushing a second result would replace its error with a write conflict.
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, result.Status, result.Err, "effect_outcome_unknown", result.FailureOrigin)
+	}
 	projection.ctx = persistCtx
 	if projection.err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error", turnProjectionFailureOrigin(projection.err))
@@ -829,6 +834,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	if err := t.appendDelta(persistCtx, turnID, runID, history, result.Messages, current.Path); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error", engine.FailureOriginStorage)
+	}
+	if _, graceful := gracefulCancellation(ctx); graceful && result.Status == engine.Cancelled {
+		turn := t.turnResultFromEngine(turnID, runID, result, nil)
+		turn.FailureCode = resultFailureCode
+		return turn, result.Err
 	}
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
@@ -876,7 +886,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 }
 
 func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) engine.Result {
-	if cancellation := contextCancellationError(ctx); cancellation != nil {
+	if cancellation := contextCancellationError(ctx); cancellation != nil && (result.Err == nil || isContextCancellationError(result.Err) || result.FailureOrigin == engine.FailureOriginProvider) && !errors.Is(result.Err, sessiontree.ErrEffectOutcomeUnknown) {
 		result.Status = engine.Cancelled
 		result.Err = cancellation
 		result.FailureOrigin = engine.FailureOriginCancelled
@@ -962,6 +972,9 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		status = engine.Failed
 		origin = engine.FailureOriginContract
 		failureCode = sessiontree.TurnFailureEngineContract
+	}
+	if failureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
+		status, origin = engine.Failed, engine.FailureOriginToolDispatch
 	}
 	result := engine.Result{Status: status, FailureOrigin: origin, Err: err}
 	if failureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
@@ -1194,6 +1207,9 @@ func turnFinalizationContext(ctx context.Context) (context.Context, context.Canc
 }
 
 func (h *AgentHarness) effectFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, graceful := gracefulCancellation(ctx); graceful {
+		return effectSettlementContext(ctx)
+	}
 	timeout := 5 * time.Second
 	if h != nil && h.effectFinalizationTimeout > 0 {
 		timeout = h.effectFinalizationTimeout

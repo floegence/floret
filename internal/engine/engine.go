@@ -1247,6 +1247,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
 		toolMessageSet := make([]bool, len(calls))
+		toolMessageOrder := make([]int, 0, len(calls))
 		toolResults := make([]tools.Result, len(calls))
 		toolMessageIndex := len(activeHistory)
 		var dispatchedMu sync.Mutex
@@ -1352,6 +1353,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
 			}
 			toolMessageSet[i] = true
+			toolMessageOrder = append(toolMessageOrder, i)
 			return nil
 		}
 		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, processToolResult); err != nil {
@@ -1360,10 +1362,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginToolDispatch), metrics, started, decision)
 		}
-		for i, msg := range toolMessages {
+		for i := range toolMessages {
 			if !toolMessageSet[i] {
 				return e.end(state, opts, step, Failed, output, fmt.Errorf("tool result %d was not recorded", i), metrics, started, decision)
 			}
+		}
+		// Match the canonical completion order established by result finalization.
+		for _, i := range toolMessageOrder {
+			msg := toolMessages[i]
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
@@ -1433,16 +1439,44 @@ func exactToolOutputProjection(text string) tools.OutputProjection {
 }
 
 func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, opts tools.DispatchOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
-	results := registry.DispatchBatch(ctx, calls, opts)
+	// Preserve provider call order during normal execution. Once cancellation
+	// starts, settle every available result without waiting for an unresponsive
+	// sibling. There is still one observer and one result finalization path.
+	var mu sync.Mutex
+	captured := make([]tools.Result, len(calls))
+	ready := make([]bool, len(calls))
+	observed := make([]bool, len(calls))
 	var observeErr error
-	for index, result := range results {
-		if observe != nil {
-			if err := observe(index, result); observeErr == nil && err != nil {
-				observeErr = err
+	flush := func() {
+		for index, result := range captured {
+			if !ready[index] || observed[index] {
+				continue
+			}
+			observed[index] = true
+			if observe != nil {
+				observeErr = errors.Join(observeErr, observe(index, result))
 			}
 		}
 	}
-	return results, observeErr
+	stopCancellation := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		flush()
+	})
+	defer stopCancellation()
+	results, dispatchErr := registry.DispatchBatchObserved(ctx, calls, opts, func(index int, result tools.Result) error {
+		mu.Lock()
+		defer mu.Unlock()
+		captured[index], ready[index] = result, true
+		if ctx.Err() != nil {
+			flush()
+		}
+		return nil
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	flush()
+	return results, errors.Join(dispatchErr, observeErr)
 }
 
 func preparePendingToolResult(result tools.Result) tools.Result {
@@ -1523,6 +1557,9 @@ func toolResultStatus(result tools.Result) string {
 	}
 	if result.IsError {
 		return string(observation.ActivityStatusError)
+	}
+	if result.Structured != nil && result.Structured["outcome"] == tools.ResultOutcomeCanceled {
+		return string(observation.ActivityStatusCanceled)
 	}
 	return string(observation.ActivityStatusSuccess)
 }

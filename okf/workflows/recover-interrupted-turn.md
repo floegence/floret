@@ -41,7 +41,8 @@ effect attempt identity, and durable thread facts. The host owns endpoint
 authorization, external resource resolution, and product audit; it must not
 infer lifecycle state from those records or rewrite the Floret journal.
 
-Cancellation closes in-process effect-finalization waiters even when the engine
+Graceful cancellation bounds in-process effect-finalization waiters by one
+five-second deadline, even when the engine
 has already stopped consuming tool results. Uncertain dispatched effects retain
 the existing terminal classification; shutdown must not wait for an abandoned
 finalization callback. See [effect dispatch](../../internal/agentharness/effect_dispatch.go).

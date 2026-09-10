@@ -301,11 +301,11 @@ func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV10Namespace)
+			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV11Namespace)
 			if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV10Namespace), stateAfterFirstOpen) {
+			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV11Namespace), stateAfterFirstOpen) {
 				t.Fatal("repaired state was rewritten during idempotent reopen")
 			}
 		})
@@ -664,7 +664,7 @@ type migrationFailingTx struct {
 }
 
 func (tx migrationFailingTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV10Namespace && bytes.Equal(key, backendDomainV10Key(backendDomainRecordRootIndex)) {
+	if namespace == backendDomainV11Namespace && bytes.Equal(key, backendDomainV11Key(backendDomainRecordRootIndex)) {
 		return tx.err
 	}
 	return tx.WriteTx.Put(namespace, key, value)

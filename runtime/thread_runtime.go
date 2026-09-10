@@ -107,7 +107,29 @@ type RespondInput struct {
 	RequestKey    RequestKey          `json:"request_key"`
 }
 
+// CancelMode selects when an accepted stop seals in-flight effects.
+type CancelMode string
+
+const (
+	CancelModeImmediate CancelMode = "immediate"
+	CancelModeGraceful  CancelMode = "graceful"
+)
+
+// ThreadCancellation is a canonical stop request for the indicated execution.
+// Active views with this fact are stopping; terminal views retain its provenance.
+type ThreadCancellation struct {
+	ThreadID    identity.ThreadID `json:"thread_id"`
+	Source      string            `json:"source"`
+	Mode        CancelMode        `json:"mode"`
+	TurnID      identity.TurnID   `json:"turn_id"`
+	RunID       identity.RunID    `json:"run_id"`
+	RequestedAt time.Time         `json:"requested_at"`
+}
+
 type CancelInput struct {
+	// Mode defaults to immediate. Graceful stops admit immediately and allow
+	// in-flight tools up to five seconds to commit their confirmed results.
+	Mode       CancelMode        `json:"mode,omitempty"`
 	ThreadID   identity.ThreadID `json:"thread_id"`
 	RequestKey RequestKey        `json:"request_key"`
 }
@@ -156,15 +178,16 @@ type HistoryPage struct {
 }
 
 type ThreadSummary struct {
-	ID              identity.ThreadID `json:"id"`
-	ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
-	ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
-	TaskName        string            `json:"task_name,omitempty"`
-	TaskDescription string            `json:"task_description,omitempty"`
-	HostProfileRef  string            `json:"host_profile_ref,omitempty"`
-	ForkMode        string            `json:"fork_mode,omitempty"`
-	Title           string            `json:"title,omitempty"`
-	TitleStatus     ThreadTitleStatus `json:"title_status,omitempty"`
+	Cancellation    *ThreadCancellation `json:"cancellation,omitempty"`
+	ID              identity.ThreadID   `json:"id"`
+	ParentThreadID  identity.ThreadID   `json:"parent_thread_id,omitempty"`
+	ParentTurnID    identity.TurnID     `json:"parent_turn_id,omitempty"`
+	TaskName        string              `json:"task_name,omitempty"`
+	TaskDescription string              `json:"task_description,omitempty"`
+	HostProfileRef  string              `json:"host_profile_ref,omitempty"`
+	ForkMode        string              `json:"fork_mode,omitempty"`
+	Title           string              `json:"title,omitempty"`
+	TitleStatus     ThreadTitleStatus   `json:"title_status,omitempty"`
 	// TitleGeneration orders the complete Title/TitleStatus snapshot independently
 	// of runtime view versions and activity timestamps. Zero means unset. A new
 	// automatic attempt or manual title advances the generation; within one
@@ -343,6 +366,7 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
+	Cancellation   *ThreadCancellation `json:"cancellation,omitempty"`
 	RestoredInputs []RestoredInput     `json:"restored_inputs,omitempty"`
 	ThreadID       identity.ThreadID   `json:"thread_id"`
 	ViewVersion    uint64              `json:"view_version"`
@@ -809,7 +833,7 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 	for _, drain := range drains {
 		if drain.actor.state.cancel != nil {
 			service.recordCancellation(identity.ThreadID(drain.actor.threadID), drain.actor.state.turnID, drain.actor.state.runID, "thread_delete", "thread deleted")
-			drain.actor.state.cancel()
+			drain.actor.state.cancel(context.Canceled)
 		}
 	}
 	for _, drain := range drains {
@@ -928,7 +952,8 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		return ThreadSummary{}, err
 	}
 	summary := ThreadSummary{
-		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
+		Cancellation: threadCancellationForTurn(path, turnID),
+		ID:           identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), TitleGeneration: meta.TitleGeneration, CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: activity, LastOutcome: outcome, TurnID: turnID, RunID: runID, QueueCount: queueCount,
@@ -1070,7 +1095,8 @@ func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
 func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {
 	failure := cloneThreadTurnFailure(view.Failure)
 	summary := ThreadSummary{
-		ID: identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
+		Cancellation: cloneThreadCancellation(view.Cancellation),
+		ID:           identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
 		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), TitleGeneration: meta.TitleGeneration, CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
 		Activity: view.Activity, Attention: view.Attention, LastOutcome: view.LastOutcome, TurnID: view.TurnID,
@@ -1227,7 +1253,10 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.cancel(ctx, in.ThreadID, key)
+	if in.Mode != "" && in.Mode != CancelModeImmediate && in.Mode != CancelModeGraceful {
+		return ThreadView{}, fmt.Errorf("invalid cancellation mode %q", in.Mode)
+	}
+	return service.cancel(ctx, in.ThreadID, key, in.Mode)
 }
 
 func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (ThreadView, error) {
@@ -1517,7 +1546,7 @@ func (service *threadRuntimeService) close() {
 		})
 		if runtime.state.cancel != nil {
 			service.recordCancellation(identity.ThreadID(runtime.threadID), runtime.state.turnID, runtime.state.runID, "runtime_shutdown", "runtime shutdown")
-			runtime.state.cancel()
+			runtime.state.cancel(context.Canceled)
 		}
 		runtime.mu.Unlock()
 	}
@@ -1542,8 +1571,12 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
+	entries, err := service.host.store.repo.Path(ctx, threadID.String(), meta.LeafID)
+	if err != nil {
+		return ThreadView{}, runtimeHostError(err)
+	}
 	canonical := ThreadView{ThreadID: threadID, Activity: ThreadActivityIdle}
-	canonical.Items, canonical.Interactions, err = hydrateThreadRuntimeItems(ctx, service.host.store.repo, threadID)
+	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1564,8 +1597,9 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		canonical.ViewVersion = 1
 		canonical.ThreadID = threadID
 		var runID identity.RunID
-		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = hydrateThreadRuntimeLifecycle(ctx, service.host.store.repo, meta)
+		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
 		canonical.RunID = runID
+		canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
@@ -1773,7 +1807,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	if err != nil {
 		return
 	}
-	executionCtx, cancel := context.WithCancel(context.Background())
+	executionCtx, cancel := context.WithCancelCause(context.Background())
 	done := make(chan struct{})
 	actor := service.runtime(threadID)
 	var current ThreadView
@@ -1788,7 +1822,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 		current = cloneThreadRuntimeView(actor.state.view)
 		return nil
 	}); err != nil {
-		cancel()
+		cancel(context.Canceled)
 		close(done)
 		return
 	}
@@ -1915,7 +1949,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	if err != nil {
 		return ThreadView{}, err
 	}
-	executionCtx, cancel := context.WithCancel(context.Background())
+	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
@@ -1960,11 +1994,11 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		return nil
 	})
 	if err != nil {
-		cancel()
+		cancel(context.Canceled)
 		return ThreadView{}, err
 	}
 	if replayed {
-		cancel()
+		cancel(context.Canceled)
 		return result, nil
 	}
 	service.publish(result)
@@ -2183,6 +2217,11 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 }
 
 func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
+	var graceful *agentharness.GracefulCancellation
+	if completed.Status == TurnStatusCancelled && errors.As(runErr, &graceful) {
+		// The stop owner seals the terminal after this execution drains.
+		return
+	}
 	settleCanonical := completed.Status != TurnStatusWaiting
 	var outcome TurnOutcome
 	_ = actor.apply(context.Background(), func() error {
@@ -2259,7 +2298,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		current = service.currentView(actor)
 	}
 	service.publish(current)
-	if completed.Status == TurnStatusCompleted && runErr == nil {
+	if completed.Status == TurnStatusCompleted && runErr == nil && current.LastOutcome != nil && *current.LastOutcome == TurnOutcomeCompleted && current.Cancellation == nil {
 		service.startNextQueued(actor)
 	}
 }
@@ -2619,10 +2658,19 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	}
 	actor := service.runtime(threadID)
 	baseVersion := service.currentView(actor).ViewVersion
-	items, interactions, err := hydrateThreadRuntimeItems(context.Background(), service.host.store.repo, threadID)
+	meta, err := service.host.store.repo.Thread(context.Background(), threadID.String())
+	if err != nil {
+		return fmt.Errorf("canonical refresh thread: %w", err)
+	}
+	entries, err := service.host.store.repo.Path(context.Background(), threadID.String(), meta.LeafID)
+	if err != nil {
+		return fmt.Errorf("canonical refresh path: %w", err)
+	}
+	items, interactions, err := threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return fmt.Errorf("canonical refresh hydrate items: %w", err)
 	}
+	canonicalTurn, canonicalRun, canonicalActivity, canonicalOutcome, canonicalFailure := threadRuntimeLifecycleFromEntries(meta, entries)
 	var current ThreadView
 	changed := false
 	var refreshErr error
@@ -2636,6 +2684,11 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 			return nil
 		}
 		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
+		if terminal && canonicalActivity == ThreadActivityIdle && canonicalOutcome != nil && actor.state.turnID == canonicalTurn && actor.state.runID == canonicalRun {
+			actor.state.view.LastOutcome = canonicalOutcome
+			actor.state.view.Failure = cloneThreadTurnFailure(canonicalFailure)
+			actor.state.view.Cancellation = threadCancellationForTurn(entries, canonicalTurn)
+		}
 		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items, terminal)
 		if !ok {
 			refreshErr = fmt.Errorf("%w: item identity or ordinal conflict", errCanonicalRefreshDiscarded)
@@ -2764,7 +2817,7 @@ func applyThreadInteractionsToItems(items []ThreadItem, interactions []ThreadInt
 	}
 }
 
-func (service *threadRuntimeService) cancel(ctx context.Context, threadID identity.ThreadID, requestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) cancel(ctx context.Context, threadID identity.ThreadID, requestKey string, mode CancelMode) (ThreadView, error) {
 	if _, err := service.ensureThread(ctx, threadID); err != nil {
 		return ThreadView{}, err
 	}
@@ -2783,6 +2836,9 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 	}{threadID, turnID})
 	if err != nil {
 		return ThreadView{}, err
+	}
+	if mode == CancelModeGraceful {
+		return service.requestGracefulCancellation(ctx, actor, threadID, turnID, requestKey)
 	}
 	return service.settleCancellation(ctx, actor, threadID, turnID, "", cancellationRequest{
 		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint,
@@ -2805,7 +2861,7 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 	if err != nil {
 		return ThreadView{}, err
 	}
-	var runCancel context.CancelFunc
+	var runCancel context.CancelCauseFunc
 	var waiters []chan InteractionResolution
 	unknownEffectFailure := false
 	err = actor.apply(ctx, func() error {
@@ -2840,10 +2896,14 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 			RequestKey: request.RequestKey, RequestFingerprint: request.RequestFingerprint,
 			OutcomeFingerprint:           sessiontree.StableHash(string(outcomePayload)),
 			InteractionResolutionPayload: resolutionPayload, Metadata: metadata,
-			ClearProviderState: true, Now: time.Now().UTC(),
+			CancellationMetadata: map[string]string{"cancellation_source": source, "cancellation_mode": string(CancelModeImmediate)},
+			ClearProviderState:   true, Now: time.Now().UTC(),
 		})
 		if err != nil {
 			return err
+		}
+		if cancellation := threadCancellationForTurn([]sessiontree.Entry{result.CancelRequest}, turnID); cancellation != nil {
+			actor.state.view.Cancellation = cancellation
 		}
 		unknownEffectFailure = result.Terminal.TurnStatus == sessiontree.TurnFailed &&
 			strings.TrimSpace(result.Terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey]) == sessiontree.TurnFailureEffectOutcomeUnknown
@@ -2873,10 +2933,8 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 		return ThreadView{}, runtimeHostError(err)
 	}
 	if runCancel != nil {
-		if !unknownEffectFailure {
-			service.recordCancellation(threadID, turnID, runID, source, reason)
-		}
-		runCancel()
+		service.recordCancellation(threadID, turnID, runID, source, reason)
+		runCancel(context.Canceled)
 	}
 	for _, waiter := range waiters {
 		waiter <- resolution
@@ -3081,6 +3139,9 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 			replayedRespond = true
 			return nil
 		}
+		if actor.state.view.Cancellation != nil {
+			return ErrRequestConflict
+		}
 		for interactionID := range resolutions {
 			for _, interaction := range actor.state.view.Interactions {
 				if interaction.ID != interactionID {
@@ -3249,13 +3310,13 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	if err != nil {
 		return
 	}
-	executionCtx, cancel := context.WithCancel(context.Background())
+	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
 	var previousExecution <-chan struct{}
 	var preparing ThreadView
 	claimed := false
 	_ = actor.apply(context.Background(), func() error {
-		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive {
+		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
 			return nil
 		}
 		var beginErr error
@@ -3271,12 +3332,12 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		return nil
 	})
 	if !claimed {
-		cancel()
+		cancel(context.Canceled)
 		close(executionDone)
 		return
 	}
 	service.publish(preparing)
-	defer cancel()
+	defer cancel(context.Canceled)
 	defer close(executionDone)
 	if previousExecution != nil {
 		select {
@@ -3334,7 +3395,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		return ThreadView{}, err
 	}
 	turnID, runID := retryExecutionIDs(threadID, requestKey)
-	executionCtx, cancel := context.WithCancel(context.Background())
+	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
 	actor := service.runtime(threadID)
 	var result ThreadView
@@ -3368,11 +3429,11 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		return nil
 	})
 	if err != nil {
-		cancel()
+		cancel(context.Canceled)
 		return ThreadView{}, err
 	}
 	if replayed {
-		cancel()
+		cancel(context.Canceled)
 		return result, nil
 	}
 	service.publish(result)
@@ -3558,7 +3619,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 	if err != nil {
 		return ThreadView{}, err
 	}
-	executionCtx, cancel := context.WithCancel(context.Background())
+	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
@@ -3620,7 +3681,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		return nil
 	})
 	if err != nil {
-		cancel()
+		cancel(context.Canceled)
 		return ThreadView{}, err
 	}
 	service.publish(result)
@@ -3632,6 +3693,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
+	view.Cancellation = cloneThreadCancellation(view.Cancellation)
 	view.Attention = AttentionSummary{}
 	for _, interaction := range view.Interactions {
 		if interaction.Resolved {
@@ -4238,7 +4300,7 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 		outcome = &value
 	}
 	var failure *ThreadTurnFailure
-	if failureMessage != "" {
+	if failureMessage != "" && (lifecycle.Status() == sessionlifecycle.StatusFailed || lifecycle.Status() == sessionlifecycle.StatusInterrupted) {
 		if !failureCode.Valid() {
 			failureCode = ThreadTurnFailureLegacyUnclassified
 		}

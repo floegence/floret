@@ -1095,3 +1095,57 @@ func TestDispatchBatchPreflightCarriesDetachedActivityPerCall(t *testing.T) {
 func contains(value, substr string) bool {
 	return strings.Contains(value, substr)
 }
+
+func TestDispatchBatchObservedSettlesReadyResultBeforeSlowSibling(t *testing.T) {
+	reg := NewRegistry()
+	release := make(chan struct{})
+	defer close(release)
+	if err := reg.Register(testTool("read", true, func(ctx context.Context, inv Invocation[testArgs]) (Result, error) {
+		if inv.CallID == "slow" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return Result{Text: inv.CallID}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	observed := make(chan string, 2)
+	observerErr := errors.New("observer error")
+	done := make(chan error, 1)
+	go func() {
+		results, err := reg.DispatchBatchObserved(ctx, []ToolCall{{ID: "slow", Name: "read", Args: `{"value":"slow"}`}, {ID: "fast", Name: "read", Args: `{"value":"fast"}`}}, DispatchOptions{
+			EffectDispatcher: func(ctx context.Context, _ EffectDispatchRequest, invoke func(context.Context) Result) Result {
+				return invoke(ctx)
+			},
+		}, func(_ int, result Result) error { observed <- result.CallID; return observerErr })
+		if len(results) != 2 || results[0].CallID != "slow" || results[1].CallID != "fast" {
+			done <- errors.New("batch results lost input order")
+			return
+		}
+		done <- err
+	}()
+	select {
+	case id := <-observed:
+		if id != "fast" {
+			t.Fatalf("first observed %s", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fast result was blocked by slow sibling")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, observerErr) {
+			t.Fatalf("observer error lost: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("batch did not finish")
+	}
+	if id := <-observed; id != "slow" {
+		t.Fatalf("remaining result %s", id)
+	}
+}

@@ -505,15 +505,23 @@ func (r *Registry) Dispatch(ctx context.Context, call ToolCall, opts DispatchOpt
 }
 
 func (r *Registry) DispatchBatch(ctx context.Context, calls []ToolCall, opts DispatchOptions) []Result {
+	results, _ := r.DispatchBatchObserved(ctx, calls, opts, nil)
+	return results
+}
+
+// DispatchBatchObserved dispatches a batch and observes each result as soon as
+// it is ready. Observations are serialized in completion order; returned results
+// retain input order. An observer error does not skip remaining observations.
+func (r *Registry) DispatchBatchObserved(ctx context.Context, calls []ToolCall, opts DispatchOptions, observe func(int, Result) error) ([]Result, error) {
 	results := make([]Result, len(calls))
 	if len(calls) == 0 {
-		return results
+		return results, nil
 	}
 	if opts.EffectDispatcher == nil {
 		for index, call := range calls {
 			results[index] = ErrorResult(call.ID, call.Name, ErrEffectDispatcherRequired.Error())
 		}
-		return results
+		return observeUndispatchedBatch(results, observe)
 	}
 	prepared := make([]preparedDispatch, len(calls))
 	ready := make([]bool, len(calls))
@@ -538,22 +546,46 @@ func (r *Registry) DispatchBatch(ctx context.Context, calls []ToolCall, opts Dis
 					results[index] = ErrorResult(calls[index].ID, calls[index].Name, err.Error())
 				}
 			}
-			return results
+			return observeUndispatchedBatch(results, observe)
+		}
+	}
+	var observeMu sync.Mutex
+	var observeErr error
+	observeResult := func(index int) {
+		if observe == nil {
+			return
+		}
+		observeMu.Lock()
+		defer observeMu.Unlock()
+		if err := observe(index, results[index]); err != nil {
+			observeErr = errors.Join(observeErr, err)
 		}
 	}
 	var wg sync.WaitGroup
 	for index, ok := range ready {
 		if !ok {
+			observeResult(index)
 			continue
 		}
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			results[index] = prepared[index].dispatch(ctx, opts.EffectDispatcher)
+			observeResult(index)
 		}(index)
 	}
 	wg.Wait()
-	return results
+	return results, observeErr
+}
+
+func observeUndispatchedBatch(results []Result, observe func(int, Result) error) ([]Result, error) {
+	var observedErr error
+	if observe != nil {
+		for index, result := range results {
+			observedErr = errors.Join(observedErr, observe(index, result))
+		}
+	}
+	return results, observedErr
 }
 
 func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*ActivityPresentation, error) {
@@ -719,7 +751,11 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 		}
 		result, err := t.handler(ctx, inv)
 		if err != nil {
-			return ErrorResult(call.ID, call.Name, err.Error())
+			failed := ErrorResult(call.ID, call.Name, err.Error())
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				failed.DispatchErr = err
+			}
+			return failed
 		}
 		result = result.withCall(call.ID, call.Name)
 		if result.Pending != nil {

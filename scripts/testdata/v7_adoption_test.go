@@ -272,3 +272,76 @@ func TestDeepSeekVisionAttachmentPreparation(t *testing.T) {
 		t.Fatal("missing prepared image contract")
 	}
 }
+
+func TestPublishedGracefulStopPreservesToolOutcome(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started := make(chan struct{})
+	tool := tools.Define[map[string]any](tools.Definition{
+		Name: "work", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+	}, nil, nil, func(ctx context.Context, inv tools.Invocation[map[string]any]) (tools.Result, error) {
+		close(started)
+		<-ctx.Done()
+		return tools.CanceledResult(inv.CallID, inv.Name, "execution ended"), nil
+	})
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "stop", StateCompatibilityKey: "test:stop"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "work", Name: "work", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}})
+	agent, err := runtime.NewAgent(config.AgentConfig{
+		Profile: config.AgentProfile{ID: "stop", Name: "Stop"}, SystemPrompt: "Complete the task.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+	}, gateway, runtime.WithAgentTools(tool), runtime.WithAgentEffectAuthorization(runtime.EffectAuthorizationGateFunc(func(ctx context.Context, req runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		return effect(ctx, runtime.EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
+			ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
+			PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now()})
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, Input: runtime.UserInput{Text: "work"}, RequestKey: "send"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	sub, err := service.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	accepted, err := service.Cancel(ctx, runtime.CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: runtime.CancelModeGraceful})
+	if err != nil || accepted.Cancellation == nil || accepted.Cancellation.Source != "user_stop" || accepted.Cancellation.ThreadID != created.ThreadID {
+		t.Fatalf("stop acceptance=%#v err=%v", accepted, err)
+	}
+	for {
+		view, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Activity != runtime.ThreadActivityIdle {
+			continue
+		}
+		if view.LastOutcome == nil || *view.LastOutcome != runtime.TurnOutcomeCancelled || view.Failure != nil || view.Cancellation == nil {
+			t.Fatalf("stop=%#v", view)
+		}
+		for _, item := range view.Items {
+			if item.Activity != nil && item.Activity.ToolID == "work" && item.Activity.Status == observation.ActivityStatusCanceled {
+				return
+			}
+		}
+		t.Fatal("confirmed cancellation was lost")
+	}
+}

@@ -3355,7 +3355,7 @@ func TestThreadRuntimeFencesLateAndDuplicateProviderAttempts(t *testing.T) {
 func TestThreadRuntimeBeginRunResetsAttemptAndLiveOwnership(t *testing.T) {
 	previousDone := make(chan struct{})
 	nextDone := make(chan struct{})
-	_, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancelCause(context.Background())
 	actor := &threadRuntimeState{state: threadRuntimeData{
 		turnID: "turn-old", runID: "run-old", logicalRequestID: "request-old",
 		attemptID: "attempt-old-3", attemptEpoch: 3,
@@ -3402,130 +3402,135 @@ func TestThreadRuntimeDuplicateStreamEventKeepsOneAssistantIdentity(t *testing.T
 }
 
 func TestThreadServiceCancelIsIdempotentAcrossIdlePreparingWaitingAndTerminal(t *testing.T) {
-	t.Run("idle", func(t *testing.T) {
-		_, service := testThreadService(t, newBlockingThreadGateway())
-		created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-idle-cancel"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		view, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-idle"})
-		if err != nil || view.Activity != ThreadActivityIdle {
-			t.Fatalf("idle cancel=%#v err=%v", view, err)
-		}
-	})
-
-	t.Run("preparing", func(t *testing.T) {
-		releaseFactory := make(chan struct{})
-		gateway := newBlockingThreadGateway()
-		agent, err := testAgent(gateway)
-		if err != nil {
-			t.Fatal(err)
-		}
-		host, err := Open(t.Context(), Options{Storage: storage.Memory()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
-		service, err := host.ThreadService(AgentFactoryFunc(func(ctx context.Context, _ AgentRequest) (*Agent, error) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-releaseFactory:
-				return agent, nil
-			}
-		}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-preparing-cancel"})
-		if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "prepare"}, RequestKey: "send-preparing"}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-preparing"}); err != nil {
-			t.Fatal(err)
-		}
-		close(releaseFactory)
-		cancelled := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
-			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCancelled
-		})
-		if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-preparing-again"}); err != nil || cancelled.Failure != nil {
-			t.Fatalf("preparing cancel=%#v err=%v", cancelled, err)
-		}
-	})
-
-	t.Run("waiting input", func(t *testing.T) {
-		gateway := florettest.NewScriptedGateway(
-			provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
-			provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-			florettest.Step{Events: []provider.Event{
-				{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-cancel", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}}},
-				{Type: provider.EventDone, Reason: "tool_calls"},
-			}},
-			florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "after cancel"}, {Type: provider.EventDone, Reason: "stop"}}},
-		)
-		_, service := testThreadService(t, gateway)
-		created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-waiting-cancel"})
-		_, _ = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "wait"}, RequestKey: "send-waiting"})
-		waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.Attention.InputCount == 1 })
-		if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-waiting"}); err != nil {
-			t.Fatal(err)
-		}
-		view := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
-			return view.Activity == ThreadActivityIdle && view.Attention.InputCount == 0
-		})
-		if len(view.Interactions) != 1 || !view.Interactions[0].Resolved || view.Interactions[0].Resolution == nil || view.Interactions[0].Resolution.Outcome != "cancelled" {
-			t.Fatalf("waiting cancel=%#v", view)
-		}
-		if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue after cancel"}, RequestKey: "send-after-waiting-cancel"}); err != nil {
-			t.Fatal(err)
-		}
-		waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
-			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
-		})
-		requests := gateway.Requests()
-		if len(requests) != 2 {
-			t.Fatalf("provider requests=%d, want 2", len(requests))
-		}
-		calls := 0
-		results := 0
-		for _, message := range requests[1].Messages {
-			for _, call := range message.ToolCalls {
-				if call.Name == "ask_user" && call.ID == "ask-cancel" {
-					calls++
+	for _, mode := range []CancelMode{CancelModeImmediate, CancelModeGraceful} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Run("idle", func(t *testing.T) {
+				_, service := testThreadService(t, newBlockingThreadGateway())
+				created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-idle-cancel"})
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && message.ToolResult.CallID == "ask-cancel" {
-				results++
-				if !strings.Contains(message.ToolResult.Text, `"outcome":"cancelled"`) {
-					t.Errorf("unexpected ask_user cancellation result: %q", message.ToolResult.Text)
+				view, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "cancel-idle"})
+				if err != nil || view.Activity != ThreadActivityIdle {
+					t.Fatalf("idle cancel=%#v err=%v", view, err)
 				}
-			}
-		}
-		if calls != 1 || results != 1 {
-			t.Fatalf("cancelled ask_user calls=%d results=%d messages=%#v", calls, results, requests[1].Messages)
-		}
-	})
+			})
 
-	t.Run("terminal", func(t *testing.T) {
-		gateway := florettest.NewScriptedGateway(
-			provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
-			provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-			florettest.Step{Events: []provider.Event{{Type: provider.EventDone, Reason: "stop"}}},
-		)
-		_, service := testThreadService(t, gateway)
-		created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-cancel"})
-		_, _ = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "finish"}, RequestKey: "send-terminal"})
-		before := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
-			return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+			t.Run("preparing", func(t *testing.T) {
+				releaseFactory := make(chan struct{})
+				gateway := newBlockingThreadGateway()
+				agent, err := testAgent(gateway)
+				if err != nil {
+					t.Fatal(err)
+				}
+				host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+				service, err := host.ThreadService(AgentFactoryFunc(func(ctx context.Context, _ AgentRequest) (*Agent, error) {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-releaseFactory:
+						return agent, nil
+					}
+				}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-preparing-cancel"})
+				if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "prepare"}, RequestKey: "send-preparing"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "cancel-preparing"}); err != nil {
+					t.Fatal(err)
+				}
+				close(releaseFactory)
+				cancelled := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+					return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCancelled
+				})
+				if _, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "cancel-preparing-again"}); err != nil || cancelled.Failure != nil {
+					t.Fatalf("preparing cancel=%#v err=%v", cancelled, err)
+				}
+			})
+
+			t.Run("waiting input", func(t *testing.T) {
+				gateway := florettest.NewScriptedGateway(
+					provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+					provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+					florettest.Step{Events: []provider.Event{
+						{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask-cancel", Name: "ask_user", Args: `{"reason_code":"missing_external_input","required_from_user":["q"],"evidence_refs":[],"questions":[{"id":"q","header":"Question","question":"Continue?","response_mode":"write","is_secret":false}]}`}}},
+						{Type: provider.EventDone, Reason: "tool_calls"},
+					}},
+					florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "after cancel"}, {Type: provider.EventDone, Reason: "stop"}}},
+				)
+				_, service := testThreadService(t, gateway)
+				created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-waiting-cancel"})
+				_, _ = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "wait"}, RequestKey: "send-waiting"})
+				waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.Attention.InputCount == 1 })
+				if _, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "cancel-waiting"}); err != nil {
+					t.Fatal(err)
+				}
+				view := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+					return view.Activity == ThreadActivityIdle && view.Attention.InputCount == 0
+				})
+				if len(view.Interactions) != 1 || !view.Interactions[0].Resolved || view.Interactions[0].Resolution == nil || view.Interactions[0].Resolution.Outcome != "cancelled" {
+					t.Fatalf("waiting cancel=%#v", view)
+				}
+				if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue after cancel"}, RequestKey: "send-after-waiting-cancel"}); err != nil {
+					t.Fatal(err)
+				}
+				waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+					return view.Activity == ThreadActivityIdle && view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted
+				})
+				requests := gateway.Requests()
+				if len(requests) != 2 {
+					t.Fatalf("provider requests=%d, want 2", len(requests))
+				}
+				calls := 0
+				results := 0
+				for _, message := range requests[1].Messages {
+					for _, call := range message.ToolCalls {
+						if call.Name == "ask_user" && call.ID == "ask-cancel" {
+							calls++
+						}
+					}
+					if message.ToolResult != nil && message.ToolResult.ToolName == "ask_user" && message.ToolResult.CallID == "ask-cancel" {
+						results++
+						if !strings.Contains(message.ToolResult.Text, `"outcome":"cancelled"`) {
+							t.Errorf("unexpected ask_user cancellation result: %q", message.ToolResult.Text)
+						}
+					}
+				}
+				if calls != 1 || results != 1 {
+					t.Fatalf("cancelled ask_user calls=%d results=%d messages=%#v", calls, results, requests[1].Messages)
+				}
+			})
+
+			t.Run("terminal", func(t *testing.T) {
+				gateway := florettest.NewScriptedGateway(
+					provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"},
+					provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+					florettest.Step{Events: []provider.Event{{Type: provider.EventDone, Reason: "stop"}}},
+				)
+				_, service := testThreadService(t, gateway)
+				created, _ := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-cancel"})
+				_, _ = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "finish"}, RequestKey: "send-terminal"})
+				before := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+					return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
+				})
+				if *before.LastOutcome != TurnOutcomeFailed || before.Failure == nil || strings.TrimSpace(before.Failure.Message) == "" {
+					t.Fatalf("empty terminal response=%#v, want failed outcome with an error", before)
+				}
+				after, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "cancel-terminal"})
+				if err != nil || after.LastOutcome == nil || *after.LastOutcome != *before.LastOutcome {
+					t.Fatalf("terminal cancel before=%#v after=%#v err=%v", before, after, err)
+				}
+			})
+
 		})
-		if *before.LastOutcome != TurnOutcomeFailed || before.Failure == nil || strings.TrimSpace(before.Failure.Message) == "" {
-			t.Fatalf("empty terminal response=%#v, want failed outcome with an error", before)
-		}
-		after, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "cancel-terminal"})
-		if err != nil || after.LastOutcome == nil || *after.LastOutcome != *before.LastOutcome {
-			t.Fatalf("terminal cancel before=%#v after=%#v err=%v", before, after, err)
-		}
-	})
+	}
 }
 
 func TestThreadServiceSendCarriesSupplementalContextToProvider(t *testing.T) {

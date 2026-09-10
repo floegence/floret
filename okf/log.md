@@ -1,5 +1,14 @@
 # Floret OKF Update Log
 
+## 2026-09-10: Graceful user Stop
+
+* Add opt-in bounded cancellation with one runtime owner, canonical stop
+  provenance, and confirmed canceled tool results. Reuse effect finalization and
+  preserve unknown-effect protection, output, queue input, and exact identities.
+  Append schema v10 to v11 without rewriting old facts. See
+  [runtime Stop](api/runtime.md), [tool outcomes](api/tools.md), and
+  [recovery](workflows/recover-interrupted-turn.md).
+
 ## 2026-09-10: Immediate tool presentation
 
 * Apply validated Activity snapshots in the thread actor before tool dispatch,

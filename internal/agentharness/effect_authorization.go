@@ -210,7 +210,9 @@ func (t *Thread) convergeDispatchedEffect(ctx context.Context, attempt sessiontr
 	var terminalErr error
 	if !ok {
 		terminalErr = sessiontree.ErrUnsupportedStoreCapability
-	} else {
+	} else if _, graceful := gracefulCancellation(ctx); !graceful {
+		// Graceful Stop lets other tools commit before the runtime owner seals
+		// the turn. The existing dispatching attempt already records uncertainty.
 		_, terminalErr = repo.FailUnknownEffectTurn(unknownCtx, sessiontree.FailUnknownEffectTurnRequest{
 			ThreadID: attempt.Invocation.ThreadID, TurnID: attempt.Invocation.TurnID, RunID: attempt.Invocation.RunID, Now: t.harness.now(),
 		})
@@ -240,7 +242,7 @@ func validateCommittedEffectFinalization(req engine.EffectResultFinalizationRequ
 		req.Message.ToolResult == nil ||
 		finished.Attempt.EffectAttemptID != prepared.EffectAttemptID ||
 		finished.Attempt.Invocation != prepared.Invocation ||
-		(finished.Attempt.State != sessiontree.EffectAttemptCompleted && finished.Attempt.State != sessiontree.EffectAttemptFailed) ||
+		(finished.Attempt.State != sessiontree.EffectAttemptCompleted && finished.Attempt.State != sessiontree.EffectAttemptFailed && finished.Attempt.State != sessiontree.EffectAttemptCancelled) ||
 		finished.Attempt.ResultEntryID == "" ||
 		finished.Result.ID != finished.Attempt.ResultEntryID ||
 		finished.Result.ThreadID != req.ThreadID ||
@@ -278,6 +280,10 @@ func (t *Thread) rejectEffectAttempt(ctx context.Context, repo sessiontree.Effec
 }
 
 func (t *Thread) rejectEffectAttemptCause(ctx context.Context, repo sessiontree.EffectAttemptRepo, attempt sessiontree.EffectAttempt, requestFingerprint string, cause error) error {
+	if isContextCancellationError(cause) {
+		// Cancellation leaves undispatched attempts for the stop transaction.
+		return cause
+	}
 	code := "authorization_unavailable"
 	public := ErrAuthorizationUnavailable
 	switch {
@@ -298,7 +304,10 @@ func (t *Thread) rejectEffectAttemptCause(ctx context.Context, repo sessiontree.
 
 func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.EffectAttempt) tools.Result {
 	switch attempt.State {
-	case sessiontree.EffectAttemptCompleted, sessiontree.EffectAttemptFailed:
+	case sessiontree.EffectAttemptCompleted, sessiontree.EffectAttemptFailed, sessiontree.EffectAttemptCancelled:
+		if attempt.State == sessiontree.EffectAttemptCancelled && attempt.ResultEntryID == "" {
+			return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, context.Canceled)
+		}
 		entry, err := t.harness.options.Repo.Entry(ctx, attempt.Invocation.ThreadID, attempt.ResultEntryID)
 		if err != nil {
 			return committedEffectDispatchError(attempt, err)
@@ -322,14 +331,16 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 		if attempt.State == sessiontree.EffectAttemptFailed {
 			text = strings.TrimPrefix(text, "ERROR: ")
 		}
-		return tools.Result{CallID: attempt.Invocation.ToolCallID, Name: attempt.Invocation.ToolName, Text: text, IsError: attempt.State == sessiontree.EffectAttemptFailed,
+		structured := map[string]any(nil)
+		if attempt.State == sessiontree.EffectAttemptCancelled {
+			structured = map[string]any{"outcome": tools.ResultOutcomeCanceled}
+		}
+		return tools.Result{CallID: attempt.Invocation.ToolCallID, Name: attempt.Invocation.ToolName, Text: text, Structured: structured, IsError: attempt.State == sessiontree.EffectAttemptFailed,
 			OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: len(text) + 1, VisibleMaxLines: strings.Count(text, "\n") + 2, Strategy: tools.OutputStrategy(entry.Message.ToolResult.Strategy), PreserveFullSet: true}}
 	case sessiontree.EffectAttemptRejected:
 		return tools.DeclinedResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName)
 	case sessiontree.EffectAttemptUnknown, sessiontree.EffectAttemptDispatching:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, sessiontree.ErrEffectOutcomeUnknown)
-	case sessiontree.EffectAttemptCancelled:
-		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, context.Canceled)
 	default:
 		return effectDispatchError(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName, ErrAuthorizationUnavailable)
 	}
@@ -343,7 +354,7 @@ func validateReplayedEffectEntry(attempt sessiontree.EffectAttempt, entry sessio
 		return sessiontree.ErrAuthorityCorrupt
 	}
 	status := observation.ActivityStatus(entry.Message.ToolResult.Status)
-	if attempt.State == sessiontree.EffectAttemptCompleted && status != observation.ActivityStatusSuccess || attempt.State == sessiontree.EffectAttemptFailed && status != observation.ActivityStatusError {
+	if attempt.State == sessiontree.EffectAttemptCompleted && status != observation.ActivityStatusSuccess || attempt.State == sessiontree.EffectAttemptFailed && status != observation.ActivityStatusError || attempt.State == sessiontree.EffectAttemptCancelled && status != observation.ActivityStatusCanceled {
 		return sessiontree.ErrAuthorityCorrupt
 	}
 	return sessiontree.ValidateEntryIntegrity(entry)

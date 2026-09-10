@@ -164,89 +164,94 @@ func TestCanceledAskUserHistoryPassesStrictHTTPAfterRestartForkAndRetry(t *testi
 }
 
 func TestAnsweredAskUserThenToolStopPreservesSingleAnswer(t *testing.T) {
-	for _, race := range []bool{false, true} {
-		t.Run(fmt.Sprintf("respond_cancel_race_%v", race), func(t *testing.T) {
-			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "cancel", StateCompatibilityKey: "test:cancel"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
-				florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: cancelHistoryAskArgs}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
-				florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "slow", Name: "slow", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
-			)
-			started := make(chan struct{})
-			var startedOnce sync.Once
-			slow := tools.Define[map[string]any](tools.Definition{Name: "slow", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
-				startedOnce.Do(func() { close(started) })
-				<-ctx.Done()
-				return tools.Result{}, ctx.Err()
-			})
-			agent, err := testAgent(gateway, WithAgentTools(slow), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
-				return effect(ctx, EffectAuthorizationProof{
-					EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
-					ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
-					PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+	for _, mode := range []CancelMode{CancelModeImmediate, CancelModeGraceful} {
+		t.Run(string(mode), func(t *testing.T) {
+			for _, race := range []bool{false, true} {
+				t.Run(fmt.Sprintf("respond_cancel_race_%v", race), func(t *testing.T) {
+					gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "cancel", StateCompatibilityKey: "test:cancel"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+						florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: cancelHistoryAskArgs}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+						florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "slow", Name: "slow", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+					)
+					started := make(chan struct{})
+					var startedOnce sync.Once
+					slow := tools.Define[map[string]any](tools.Definition{Name: "slow", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
+						startedOnce.Do(func() { close(started) })
+						<-ctx.Done()
+						return tools.Result{}, ctx.Err()
+					})
+					agent, err := testAgent(gateway, WithAgentTools(slow), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+						return effect(ctx, EffectAuthorizationProof{
+							EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint,
+							ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID,
+							PolicyRevision: "test-policy", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now().UTC(),
+						})
+					})))
+					if err != nil {
+						t.Fatal(err)
+					}
+					host, service := testThreadServiceWithAgent(t, agent)
+					created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
+						t.Fatal(err)
+					}
+					waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
+					var respondErr error
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						_, respondErr = service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"})
+					}()
+					if !race {
+						select {
+						case <-started:
+						case <-time.After(5 * time.Second):
+							view, _ := service.View(t.Context(), created.ThreadID)
+							t.Fatalf("slow tool did not start after the answer was accepted: failure=%+v activity=%+v", view.Failure, view.Items[len(view.Items)-1].Activity)
+						case <-t.Context().Done():
+							t.Fatal(t.Context().Err())
+						}
+					}
+					if _, err := service.Cancel(t.Context(), CancelInput{Mode: mode, ThreadID: created.ThreadID, RequestKey: "stop"}); err != nil {
+						t.Fatal(err)
+					}
+					wg.Wait()
+					if !race && respondErr != nil {
+						t.Fatal(respondErr)
+					}
+					view := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.Attention.InputCount == 0 })
+					if len(view.Interactions) != 1 || !view.Interactions[0].Resolved {
+						t.Fatalf("interactions=%#v", view.Interactions)
+					}
+					if !race && view.Interactions[0].Resolution.Input["q"] != "yes" {
+						t.Fatal("answer was replaced by cancellation")
+					}
+					entries, err := host.store.repo.Path(t.Context(), created.ThreadID.String(), "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					messages, err := sessiontree.BuildContextChecked(entries, sessiontree.ContextOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := session.ValidateToolHistory(messages); err != nil {
+						t.Fatal(err)
+					}
+					results := 0
+					for _, message := range messages {
+						if message.Role == session.Tool && message.ToolCallID == "ask" {
+							results++
+						}
+					}
+					if results != 1 {
+						t.Fatalf("ask results=%d", results)
+					}
 				})
-			})))
-			if err != nil {
-				t.Fatal(err)
 			}
-			host, service := testThreadServiceWithAgent(t, agent)
-			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
-				t.Fatal(err)
-			}
-			waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
-			var respondErr error
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_, respondErr = service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"})
-			}()
-			if !race {
-				select {
-				case <-started:
-				case <-time.After(5 * time.Second):
-					view, _ := service.View(t.Context(), created.ThreadID)
-					t.Fatalf("slow tool did not start after the answer was accepted: failure=%+v activity=%+v", view.Failure, view.Items[len(view.Items)-1].Activity)
-				case <-t.Context().Done():
-					t.Fatal(t.Context().Err())
-				}
-			}
-			if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop"}); err != nil {
-				t.Fatal(err)
-			}
-			wg.Wait()
-			if !race && respondErr != nil {
-				t.Fatal(respondErr)
-			}
-			view := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.Attention.InputCount == 0 })
-			if len(view.Interactions) != 1 || !view.Interactions[0].Resolved {
-				t.Fatalf("interactions=%#v", view.Interactions)
-			}
-			if !race && view.Interactions[0].Resolution.Input["q"] != "yes" {
-				t.Fatal("answer was replaced by cancellation")
-			}
-			entries, err := host.store.repo.Path(t.Context(), created.ThreadID.String(), "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			messages, err := sessiontree.BuildContextChecked(entries, sessiontree.ContextOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := session.ValidateToolHistory(messages); err != nil {
-				t.Fatal(err)
-			}
-			results := 0
-			for _, message := range messages {
-				if message.Role == session.Tool && message.ToolCallID == "ask" {
-					results++
-				}
-			}
-			if results != 1 {
-				t.Fatalf("ask results=%d", results)
-			}
+
 		})
 	}
 }

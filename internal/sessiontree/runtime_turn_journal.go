@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"time"
@@ -196,6 +197,9 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	if req.Status != TurnWaiting && runtimeTurnHasPendingInteraction(r.entries[meta.ID], req.TurnID) {
 		return FinishTurnResult{}, ErrRequestConflict
 	}
+	if (req.Status == TurnCompleted || req.Status == TurnWaiting) && turnCancellationRequested(r.entries[meta.ID], req.TurnID) {
+		return FinishTurnResult{}, context.Canceled
+	}
 	attempts := canonicalEffectAttemptsForTurn(r.entries[meta.ID], req.TurnID)
 	for _, attempt := range attempts {
 		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
@@ -251,6 +255,12 @@ func unknownEffectOutcomeFingerprint(threadID, turnID, runID string) string {
 // pending interaction and tool closure, provider-state removal, failure, and
 // terminal records share one transaction.
 func (r *MemoryRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownEffectTurnRequest) (FailUnknownEffectTurnResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.failUnknownEffectTurnLocked(ctx, req)
+}
+
+func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUnknownEffectTurnRequest) (FailUnknownEffectTurnResult, error) {
 	if err := ValidateFailUnknownEffectTurnRequest(req); err != nil {
 		return FailUnknownEffectTurnResult{}, err
 	}
@@ -261,8 +271,6 @@ func (r *MemoryRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownE
 	outcomeFingerprint := unknownEffectOutcomeFingerprint(req.ThreadID, req.TurnID, req.RunID)
 	failureID := "turn-failure:" + req.TurnID
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	previousEntries := cloneEntries(r.entries[req.ThreadID])
 	previousOrdinals := maps.Clone(r.entryOrdinals[req.ThreadID])
 	previousDepths := maps.Clone(r.entryDepths[req.ThreadID])
@@ -313,7 +321,7 @@ func (r *MemoryRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownE
 	}
 	activeRunID, identityErr := activeRunIdentity(r.entries[req.ThreadID], req.TurnID)
 	if identityErr != nil || activeRunID != req.RunID {
-		return FailUnknownEffectTurnResult{}, ErrStaleAuthority
+		return FailUnknownEffectTurnResult{}, fmt.Errorf("unknown effect run %q, current %q: %w", req.RunID, activeRunID, ErrStaleAuthority)
 	}
 	meta, ok := r.threads[req.ThreadID]
 	if !ok {
@@ -369,14 +377,24 @@ func (r *MemoryRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnknownE
 		}
 	}
 
+	unknownCalls := make(map[string]bool)
+	for _, attempt := range attempts {
+		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
+			unknownCalls[attempt.Invocation.ToolCallID] = true
+		}
+	}
 	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
-		activity := activityview.WithTerminalStatus(call.Message.Activity, string(observation.ActivityStatusError), EffectOutcomeUnknownFailureMessage)
+		status, message := observation.ActivityStatusCanceled, "Tool call was canceled before execution."
+		if unknownCalls[call.Message.ToolCallID] {
+			status, message = observation.ActivityStatusError, EffectOutcomeUnknownFailureMessage
+		}
+		activity := activityview.WithTerminalStatus(call.Message.Activity, string(status), message)
 		entryID := "tool-effect-unknown:" + req.TurnID + ":" + strings.TrimSpace(call.Message.ToolCallID)
 		closed, appendErr := r.appendLocked(ctx, Entry{
 			ID: entryID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Type: EntryToolResult,
 			Message: session.Message{
-				Role: session.Tool, Content: EffectOutcomeUnknownFailureMessage, ToolCallID: call.Message.ToolCallID, ToolName: call.Message.ToolName,
-				ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusError)}, Activity: activity,
+				Role: session.Tool, Content: message, ToolCallID: call.Message.ToolCallID, ToolName: call.Message.ToolName,
+				ToolResult: &session.ToolResultView{Status: string(status)}, Activity: activity,
 			},
 			CreatedAt: now,
 		}, AppendOptions{ID: entryID, Now: now})
@@ -428,21 +446,6 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	req.RequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
 	req.OutcomeFingerprint = strings.TrimSpace(req.OutcomeFingerprint)
 
-	unknown, unknownErr := r.FailUnknownEffectTurn(ctx, FailUnknownEffectTurnRequest{
-		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Now: req.Now,
-	})
-	if unknownErr == nil {
-		return CancelTurnResult{
-			InteractionResolutions: unknown.InteractionResolutions,
-			ToolResults:            unknown.ToolResults,
-			Terminal:               unknown.Terminal,
-			Replayed:               unknown.Replayed,
-		}, nil
-	}
-	if !errors.Is(unknownErr, ErrRequestConflict) && !errors.Is(unknownErr, ErrStaleAuthority) {
-		return CancelTurnResult{}, unknownErr
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	previousEntries := cloneEntries(r.entries[req.ThreadID])
@@ -488,6 +491,15 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		committed = true
 		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
+	if terminal, found := findEntry(r.entries[req.ThreadID], unknownEffectTerminalEntryID(req.ThreadID, req.TurnID, req.RunID)); found && terminal.Metadata[TurnFailureCodeMetadataKey] == TurnFailureEffectOutcomeUnknown {
+		cancel, _ := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+		committed = true
+		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
+	}
+	if terminal, found := runtimeTurnTerminal(r.entries[req.ThreadID], req.TurnID); found && req.RequestOnly {
+		committed = true
+		return CancelTurnResult{Terminal: cloneEntry(terminal), Replayed: true}, nil
+	}
 	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
 	if !active || activeTurnID != req.TurnID {
 		return CancelTurnResult{}, ErrStaleAuthority
@@ -511,13 +523,28 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		cancel, appendErr = r.appendLocked(ctx, Entry{
 			ID: req.CancelEntryID, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID,
 			Type: EntryCancelRequested, RequestKey: req.RequestKey, RequestFingerprint: req.RequestFingerprint,
-			CreatedAt: now,
+			CreatedAt: now, Metadata: cloneStringMap(req.CancellationMetadata),
 		}, AppendOptions{ID: req.CancelEntryID, Now: now})
 		if appendErr != nil {
 			return CancelTurnResult{}, appendErr
 		}
 	}
 	result := CancelTurnResult{CancelRequest: cancel}
+	if req.RequestOnly {
+		committed = true
+		return result, nil
+	}
+	unknown, unknownErr := r.failUnknownEffectTurnLocked(ctx, FailUnknownEffectTurnRequest{
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Now: req.Now,
+	})
+	if unknownErr == nil {
+		committed = true
+		return CancelTurnResult{CancelRequest: cancel, InteractionResolutions: unknown.InteractionResolutions,
+			ToolResults: unknown.ToolResults, Terminal: unknown.Terminal, Replayed: unknown.Replayed}, nil
+	}
+	if !errors.Is(unknownErr, ErrRequestConflict) {
+		return CancelTurnResult{}, unknownErr
+	}
 
 	pendingInteractions := runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID)
 	for _, interaction := range pendingInteractions {
@@ -755,4 +782,13 @@ func runtimeQueueContains(entries []Entry, queueID string) bool {
 
 func sameCanonicalUserInput(left, right session.Message) bool {
 	return left.Role == right.Role && left.Content == right.Content && stableHash(rawForEntry(Entry{Type: EntryUserMessage, Message: left})) == stableHash(rawForEntry(Entry{Type: EntryUserMessage, Message: right}))
+}
+
+func turnCancellationRequested(entries []Entry, turnID string) bool {
+	for _, entry := range entries {
+		if entry.Type == EntryCancelRequested && entry.TurnID == turnID {
+			return true
+		}
+	}
+	return false
 }
