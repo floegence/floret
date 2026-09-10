@@ -2222,8 +2222,16 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		// The stop owner seals the terminal after this execution drains.
 		return
 	}
-	settleCanonical := completed.Status != TurnStatusWaiting
-	var outcome TurnOutcome
+	// Keep the execution active until its complete canonical terminal snapshot
+	// can be installed in one actor transition. View and Send read this state
+	// directly; delaying publication alone cannot prevent partial settlement.
+	var canonical ThreadView
+	var refreshErr error
+	if completed.Status != TurnStatusWaiting {
+		canonical, refreshErr = service.loadCanonicalThreadView(context.Background(), identity.ThreadID(actor.threadID))
+	}
+	var current ThreadView
+	changed := false
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
 			return nil
@@ -2236,7 +2244,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.finishLiveTextSegment()
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.RunProgress = nil
-		outcome = TurnOutcomeCompleted
+		outcome := TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
@@ -2248,54 +2256,41 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		}
 		actor.state.view.Failure = nil
 		if outcome == TurnOutcomeFailed {
-			if completed.Failure != nil {
-				actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
-			}
+			actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
 			if actor.state.view.Failure == nil && runErr != nil {
 				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: strings.TrimSpace(runErr.Error())}
 			}
 		}
 		if completed.Status != TurnStatusWaiting {
 			actor.state.view.LastOutcome = &outcome
-			actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
+			if refreshErr == nil {
+				actor.state.view.Items = canonical.Items
+				actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
+				applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
+				if canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && canonical.TurnID == turnID && canonical.RunID == runID {
+					actor.state.view.LastOutcome = canonical.LastOutcome
+					actor.state.view.Failure = canonical.Failure
+					actor.state.view.Cancellation = canonical.Cancellation
+				}
+			} else {
+				actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
+			}
+			if outcome == TurnOutcomeCompleted && (refreshErr != nil || !hasTerminalPresentation(actor.state.view.Items, turnID)) {
+				failed := TurnOutcomeFailed
+				actor.state.view.LastOutcome = &failed
+				message := "The turn completed without a visible response."
+				if refreshErr != nil {
+					message = "The completed response could not be loaded."
+				}
+				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: message}
+			}
 		}
+		current = cloneThreadRuntimeView(actor.state.view)
+		changed = true
 		return nil
 	})
-	if !settleCanonical {
-		service.publish(service.currentView(actor))
+	if !changed {
 		return
-	}
-	// TurnResult.Output is the run-level aggregate, not a display segment.
-	// The canonical journal owns terminal text and preserves each ordered
-	// assistant segment without creating a second item at settlement. Publish
-	// only after the journal projection has been applied, so a terminal view
-	// cannot temporarily claim success while containing only the user item.
-	refreshErr := service.refreshCanonical(identity.ThreadID(actor.threadID), turnID)
-	current := service.currentView(actor)
-	if refreshErr != nil && !errors.Is(refreshErr, errCanonicalRefreshDiscarded) && outcome == TurnOutcomeCompleted {
-		_ = actor.apply(context.Background(), func() error {
-			if actor.state.turnID != turnID || actor.state.runID != runID {
-				return nil
-			}
-			actor.state.view.ViewVersion++
-			failed := TurnOutcomeFailed
-			actor.state.view.LastOutcome = &failed
-			actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "The completed response could not be loaded."}
-			return nil
-		})
-		current = service.currentView(actor)
-	} else if outcome == TurnOutcomeCompleted && !hasTerminalPresentation(current.Items, turnID) {
-		_ = actor.apply(context.Background(), func() error {
-			if actor.state.turnID != turnID || actor.state.runID != runID {
-				return nil
-			}
-			actor.state.view.ViewVersion++
-			failed := TurnOutcomeFailed
-			actor.state.view.LastOutcome = &failed
-			actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: "The turn completed without a visible response."}
-			return nil
-		})
-		current = service.currentView(actor)
 	}
 	service.publish(current)
 	if completed.Status == TurnStatusCompleted && runErr == nil && current.LastOutcome != nil && *current.LastOutcome == TurnOutcomeCompleted && current.Cancellation == nil {
@@ -2658,19 +2653,10 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	}
 	actor := service.runtime(threadID)
 	baseVersion := service.currentView(actor).ViewVersion
-	meta, err := service.host.store.repo.Thread(context.Background(), threadID.String())
+	canonical, err := service.loadCanonicalThreadView(context.Background(), threadID)
 	if err != nil {
-		return fmt.Errorf("canonical refresh thread: %w", err)
+		return err
 	}
-	entries, err := service.host.store.repo.Path(context.Background(), threadID.String(), meta.LeafID)
-	if err != nil {
-		return fmt.Errorf("canonical refresh path: %w", err)
-	}
-	items, interactions, err := threadRuntimeItemsFromEntries(entries)
-	if err != nil {
-		return fmt.Errorf("canonical refresh hydrate items: %w", err)
-	}
-	canonicalTurn, canonicalRun, canonicalActivity, canonicalOutcome, canonicalFailure := threadRuntimeLifecycleFromEntries(meta, entries)
 	var current ThreadView
 	changed := false
 	var refreshErr error
@@ -2684,19 +2670,19 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 			return nil
 		}
 		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
-		if terminal && canonicalActivity == ThreadActivityIdle && canonicalOutcome != nil && actor.state.turnID == canonicalTurn && actor.state.runID == canonicalRun {
-			actor.state.view.LastOutcome = canonicalOutcome
-			actor.state.view.Failure = cloneThreadTurnFailure(canonicalFailure)
-			actor.state.view.Cancellation = threadCancellationForTurn(entries, canonicalTurn)
+		if terminal && canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && actor.state.turnID == canonical.TurnID && actor.state.runID == canonical.RunID {
+			actor.state.view.LastOutcome = canonical.LastOutcome
+			actor.state.view.Failure = cloneThreadTurnFailure(canonical.Failure)
+			actor.state.view.Cancellation = canonical.Cancellation
 		}
-		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, items, terminal)
+		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal)
 		if !ok {
 			refreshErr = fmt.Errorf("%w: item identity or ordinal conflict", errCanonicalRefreshDiscarded)
 			return nil
 		}
 		actor.state.view.ViewVersion++
 		actor.state.view.Items = reconciled
-		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, interactions)
+		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		normalizeActiveThreadRunProgress(&actor.state.view)
 		current = cloneThreadRuntimeView(actor.state.view)
@@ -2707,6 +2693,25 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		service.publish(current)
 	}
 	return refreshErr
+}
+
+func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
+	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
+	if err != nil {
+		return ThreadView{}, fmt.Errorf("canonical refresh thread: %w", err)
+	}
+	entries, err := service.host.store.repo.Path(ctx, threadID.String(), meta.LeafID)
+	if err != nil {
+		return ThreadView{}, fmt.Errorf("canonical refresh path: %w", err)
+	}
+	canonical := ThreadView{ThreadID: threadID}
+	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
+	if err != nil {
+		return ThreadView{}, fmt.Errorf("canonical refresh hydrate items: %w", err)
+	}
+	canonical.TurnID, canonical.RunID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
+	canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
+	return canonical, nil
 }
 
 func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool) ([]ThreadItem, bool) {

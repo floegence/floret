@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-10: Atomic terminal presentation
+
+* Keep execution active until canonical terminal items and lifecycle can be
+  installed together. Direct reads and input admission share the same actor
+  boundary as live publication; see [runtime views](api/runtime.md#views-and-subscriptions).
+
 ## 2026-09-10: Graceful user Stop
 
 * Add opt-in bounded cancellation with one runtime owner, canonical stop

@@ -287,3 +287,40 @@ func TestThreadRuntimeToolResultSurvivesBlockedCanonicalRefresh(t *testing.T) {
 		t.Fatalf("tool result was lost during refresh: %#v", after)
 	}
 }
+
+func TestThreadRuntimeTerminalViewWaitsForCanonicalSnapshot(t *testing.T) {
+	host, service := testThreadService(t, newBlockingThreadGateway())
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-terminal-snapshot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := service.(*threadRuntimeService)
+	actor := typed.runtime(created.ThreadID)
+	_ = actor.apply(t.Context(), func() error {
+		actor.state.turnID, actor.state.runID = "turn-stop", "run-stop"
+		actor.state.view.TurnID, actor.state.view.RunID = "turn-stop", "run-stop"
+		actor.state.view.Activity = ThreadActivityActive
+		actor.state.view.Cancellation = &ThreadCancellation{ThreadID: created.ThreadID, TurnID: "turn-stop", RunID: "run-stop", Source: "user_stop", Mode: CancelModeGraceful, RequestedAt: time.Now()}
+		return nil
+	})
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	host.store.repo = &blockingCanonicalPathRepo{Repo: host.store.repo, started: started, release: release}
+	finished := make(chan struct{})
+	go func() {
+		typed.finishSend(actor, "turn-stop", "run-stop", TurnResult{Status: TurnStatusCancelled}, context.Canceled)
+		close(finished)
+	}()
+	waitClosed(t, started, "terminal snapshot read did not start")
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil || view.Activity != ThreadActivityActive || view.LastOutcome != nil || view.Cancellation == nil {
+		t.Fatalf("partial terminal snapshot became visible: %#v, %v", view, err)
+	}
+	unblock()
+	waitClosed(t, finished, "terminal snapshot did not settle")
+	view, err = service.View(t.Context(), created.ThreadID)
+	if err != nil || view.Activity != ThreadActivityIdle || view.LastOutcome == nil || *view.LastOutcome != TurnOutcomeCancelled {
+		t.Fatalf("complete terminal snapshot missing: %#v, %v", view, err)
+	}
+}

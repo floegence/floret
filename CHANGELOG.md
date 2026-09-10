@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.10.1 - 2026-09-10
+
+- Install terminal lifecycle and canonical results in one actor transition, preventing polling and new input from observing partially settled Stop outcomes.
+- Preserve confirmed cancellation and real errors in tool-result event projection. Add a blocked-snapshot regression and repeated race validation.
+
 ## v7.10.0 - 2026-09-10
 
 - Add opt-in graceful Stop with canonical provenance, immediate acknowledgement, and a shared five-second tool settlement window; preserve the default immediate Cancel contract.
