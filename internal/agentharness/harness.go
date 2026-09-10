@@ -2679,8 +2679,11 @@ func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
 	if metadataBool(values, "pending_tool_result") {
 		return string(observation.ActivityStatusRunning)
 	}
-	if strings.TrimSpace(ev.Err) != "" || metadataBool(values, "error_present") {
+	if strings.TrimSpace(ev.Err) != "" || metadataBool(values, "error_present") || metadataString(values, "tool_result_status") == string(observation.ActivityStatusError) {
 		return string(observation.ActivityStatusError)
+	}
+	if metadataString(values, "tool_result_status") == string(observation.ActivityStatusCanceled) {
+		return string(observation.ActivityStatusCanceled)
 	}
 	return string(observation.ActivityStatusSuccess)
 }
