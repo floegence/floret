@@ -376,6 +376,9 @@ func (r *MemoryRepo) PrepareEffectAttempt(_ context.Context, req PrepareEffectAt
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	}
+	if turnCancellationRequested(r.entries[req.Invocation.ThreadID], req.Invocation.TurnID) {
+		return PrepareEffectAttemptResult{}, context.Canceled
+	}
 	if activeTurnID, active := runtimeActiveTurn(r.entries[meta.ID]); !active || activeTurnID != req.Invocation.TurnID {
 		return PrepareEffectAttemptResult{}, ErrStaleAuthority
 	}
@@ -454,6 +457,9 @@ func (r *MemoryRepo) BeginEffectDispatch(_ context.Context, req BeginEffectDispa
 	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 		return EffectAttempt{}, ErrRequestConflict
 	}
+	if turnCancellationRequested(r.entries[attempt.Invocation.ThreadID], attempt.Invocation.TurnID) {
+		return EffectAttempt{}, context.Canceled
+	}
 	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
 		return EffectAttempt{}, ErrStaleAuthority
 	}
@@ -490,6 +496,8 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 	wantState := EffectAttemptCompleted
 	if req.Failed {
 		wantState = EffectAttemptFailed
+	} else if req.Result.Message.ToolResult != nil && req.Result.Message.ToolResult.Status == "canceled" {
+		wantState = EffectAttemptCancelled
 	}
 	if attempt.State == wantState {
 		if attempt.TerminalFingerprint != strings.TrimSpace(req.OutcomeFingerprint) {

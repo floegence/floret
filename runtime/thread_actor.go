@@ -32,7 +32,7 @@ type threadRuntimeData struct {
 	openTextSegmentID   string
 	openTextKind        ThreadItemKind
 	view                ThreadView
-	cancel              context.CancelFunc
+	cancel              context.CancelCauseFunc
 	cancelOwner         string
 	executionDone       <-chan struct{}
 	activeEffects       int
@@ -47,7 +47,7 @@ type beginThreadRunInput struct {
 	turnID           identity.TurnID
 	runID            identity.RunID
 	logicalRequestID identity.LogicalRequestID
-	cancel           context.CancelFunc
+	cancel           context.CancelCauseFunc
 	executionDone    <-chan struct{}
 	clearOutcome     bool
 }
@@ -78,6 +78,7 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	if input.clearOutcome {
 		runtime.state.view.LastOutcome = nil
 		runtime.state.view.Failure = nil
+		runtime.state.view.Cancellation = nil
 	}
 	runtime.state.view.ViewVersion++
 	return previousExecution, nil
@@ -185,6 +186,9 @@ func (runtime *threadRuntimeState) claimEffectDispatch() error {
 	}
 	if runtime.deleting || runtime.deleted {
 		return ErrThreadDeleted
+	}
+	if runtime.state.view.Cancellation != nil && runtime.state.view.Cancellation.TurnID == runtime.state.turnID {
+		return context.Canceled
 	}
 	if runtime.state.activeEffects == 0 {
 		runtime.state.effectsDone = make(chan struct{})

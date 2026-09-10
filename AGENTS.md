@@ -170,14 +170,15 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 10 is the current schema. The exact version 2 to version 3
+  lineage. Version 11 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
   run-identity and unknown-effect terminal migration, and version 7 to version
   8 Engine-continuation classification migration, and version 8 to version 9
   canonical thread-context identity migration, and version 9 to version 10
-  durable model-context migration are required automatic edges.
+  durable model-context migration, and version 10 to version 11 explicit
+  cancellation and confirmed tool-result migration are required automatic edges.
   Future changes
   must append every contiguous `n -> n+1` edge; they must not reset the lineage,
   raise the minimum version, or remove an already released migration.

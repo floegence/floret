@@ -118,6 +118,9 @@ type FailUnknownEffectTurnResult struct {
 // stop. The cancellation fact, pending interaction resolutions, unfinished
 // tool closures, effect fences, and aborted terminal share one transaction.
 type CancelTurnRequest struct {
+	// RequestOnly admits the stop without sealing in-flight results.
+	RequestOnly                  bool
+	CancellationMetadata         map[string]string
 	ThreadID                     string
 	TurnID                       string
 	RunID                        string

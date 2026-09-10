@@ -260,7 +260,8 @@ func presentationEntryRequiresRunIdentity(entryType EntryType) bool {
 func activeRunIdentity(entries []Entry, turnID string) (string, error) {
 	for index := len(entries) - 1; index >= 0; index-- {
 		entry := entries[index]
-		if entry.Type != EntryTurnMarker || entry.TurnID != turnID {
+		// A stop binds the current continuation Run under the runtime owner lock.
+		if (entry.Type != EntryTurnMarker && entry.Type != EntryCancelRequested) || entry.TurnID != turnID {
 			continue
 		}
 		if runID := strings.TrimSpace(entry.RunID); runID != "" {

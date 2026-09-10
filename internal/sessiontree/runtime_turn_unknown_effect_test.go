@@ -24,7 +24,7 @@ func TestFailUnknownEffectTurnAtomicallyTerminatesEveryPendingEffect(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, callID := range []string{"call-a", "call-b"} {
+	for _, callID := range []string{"call-a", "call-b", "not-dispatched"} {
 		if _, err := repo.AppendRuntimeFacts(ctx, "thread", []Entry{{
 			ID: "tool-call:" + callID, ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall,
 			Message: session.Message{Role: session.Assistant, ToolCallID: callID, ToolName: "subagents", ToolArgs: `{}`},
@@ -39,6 +39,9 @@ func TestFailUnknownEffectTurnAtomicallyTerminatesEveryPendingEffect(t *testing.
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if callID == "not-dispatched" {
+			continue
 		}
 		if _, err := repo.BeginEffectDispatch(ctx, BeginEffectDispatchRequest{
 			EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "effect:" + callID,
@@ -61,11 +64,15 @@ func TestFailUnknownEffectTurnAtomicallyTerminatesEveryPendingEffect(t *testing.
 	if failed.Terminal.TurnStatus != TurnFailed || failed.Terminal.Metadata[TurnFailureCodeMetadataKey] != TurnFailureEffectOutcomeUnknown {
 		t.Fatalf("terminal=%#v", failed.Terminal)
 	}
-	if failed.Failure.Error != EffectOutcomeUnknownFailureMessage || len(failed.ToolResults) != 2 {
+	if failed.Failure.Error != EffectOutcomeUnknownFailureMessage || len(failed.ToolResults) != 3 {
 		t.Fatalf("failure=%#v tool_results=%d", failed.Failure, len(failed.ToolResults))
 	}
 	for _, result := range failed.ToolResults {
-		if result.Message.ToolResult == nil || result.Message.ToolResult.Status != "error" {
+		want := "error"
+		if result.Message.ToolCallID == "not-dispatched" {
+			want = "canceled"
+		}
+		if result.Message.ToolResult == nil || result.Message.ToolResult.Status != want {
 			t.Fatalf("tool result=%#v", result.Message.ToolResult)
 		}
 	}

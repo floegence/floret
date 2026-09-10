@@ -67,11 +67,22 @@ waiting; closing an HTTP request, changing the selected thread, or reconnecting
 a view cannot cancel the accepted turn. Only `Cancel`, thread deletion, and
 Host shutdown are execution cancellation owners.
 
-`Cancel` is the authoritative user Stop boundary. One transaction records the
-cancel request, resolves pending interactions, closes unfinished tool rows,
-seals effect attempts, and appends the terminal. It returns that terminal view
-immediately instead of waiting for provider or tool goroutines. Late turn
-writes are rejected.
+`Cancel` is the authoritative user Stop boundary. Default `CancelModeImmediate`
+keeps synchronous settlement for existing v7 consumers. `CancelModeGraceful`
+commits a stop fact and fences new execution before cancelling the execution
+context, then returns acceptance. One absolute five-second window lets in-flight
+tools finish output, artifacts, and canonical results through the existing effect
+finalizer. The runtime owner seals cancellation when execution drains or the
+window expires. Confirmed results and real errors remain unchanged; dispatched
+unknown effects keep `effect_outcome_unknown` and cannot be retried.
+
+`ThreadView.Cancellation` and `ThreadSummary.Cancellation` retain source, mode,
+Thread/Turn/Run identity, and request time. Active plus Cancellation means stopping;
+an idle cancelled turn means stopped. Hosts must derive progress from these views
+and allow editing/navigation while waiting. Accepted cancellation survives request
+disconnection and restart; it never starts queued input automatically. Historic
+records without provenance do not acquire an inferred source. Stopping does not
+undo effects that already occurred.
 
 ## Title snapshots
 
@@ -223,13 +234,13 @@ facts are read as failures and receive a safe paired provider error result.
 ## Durable schema
 
 The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 -> v7 -> v8 -> v9 -> v10 migration lineage. `runtime.Open` runs domain migration, logical schema
+v5 -> v6 -> v7 -> v8 -> v9 -> v10 -> v11 migration lineage. `runtime.Open` runs domain migration, logical schema
 update, and final invariant verification in one backend transaction. Unknown,
 future, corrupt, or drifted state fails closed without changing canonical
 records. `runtime.Options.StartupProgress` reports only the product-neutral
 `migrating` and `verifying` phases; it exposes no record counts or content.
 Startup selects one exact source format, rejects mixed authority, decodes an
-unchanged current-v10 store once, and performs a persisted final verification
+unchanged current-v11 store once, and performs a persisted final verification
 after every startup write. Current-schema startup is byte-preserving and
 idempotent. The v5 -> v6
 edge first replays pending v5 recovery frames and accepts only the exact v5
@@ -282,3 +293,8 @@ fields is rejected. Provider projection v8 explicitly resets prior projection
 lineages; an admitted retry uses its canonical source entry to establish a new
 boundary once, then resumes normal prefix checks. Missing ephemeral history is
 not fabricated.
+
+The v10 -> v11 edge validates the exact old authority and preserves every journal
+byte. New stop facts require source, mode, and exact execution identity; a canceled
+effect may reference a confirmed canonical canceled result. These shapes are
+rejected under v10. Restart seals pending cancellation without re-executing tools.

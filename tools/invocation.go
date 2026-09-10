@@ -78,6 +78,19 @@ func ErrorResult(callID, name, text string) Result {
 
 const ResultOutcomeDeclined = "declined"
 
+// ResultOutcomeCanceled reports a tool that confirmed its execution has ended
+// after cancellation. It does not imply that earlier effects were rolled back.
+const ResultOutcomeCanceled = "canceled"
+
+// CanceledResult preserves a confirmed cancellation as a normal tool outcome.
+// Handlers must not use it merely because their context was canceled: execution
+// must have ended, and any partial output or effects should be described in text.
+func CanceledResult(callID, name, text string) Result {
+	return Result{CallID: callID, Name: name, Text: text,
+		Structured: map[string]any{"outcome": ResultOutcomeCanceled},
+	}
+}
+
 // DeclinedResult reports a normal user decision that prevented execution. It
 // is provider-visible, but it is not a tool dispatch or execution failure.
 func DeclinedResult(callID, name string) Result {

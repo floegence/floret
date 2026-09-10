@@ -48,9 +48,17 @@ it is not rewritten as an authorization rejection.
 `ApprovalRequest`, `PermissionDecision`, and `Approver` are not `tools` package
 contracts; test-only authorization helpers live under `internal/testing`.
 After the handler crosses `dispatching`, Floret owns result convergence. It
-commits the captured success or failure once, or marks the attempt `unknown` if
+commits the captured success, failure, or confirmed cancellation once, or marks the attempt `unknown` if
 that exact result cannot be durably finalized. Cancellation and adapter return
 errors never authorize a second handler call.
+
+`tools.CanceledResult` sets `Structured["outcome"]` to
+`tools.ResultOutcomeCanceled`. It records confirmed execution termination, with
+partial output and artifacts preserved; it does not promise rollback. Handlers
+must wait for actual termination before returning it. Bare context cancellation,
+termination failure, and handler panic do not prove the effect completed safely.
+Graceful user stops allow up to five seconds for normal result finalization; every
+parallel tool shares the same deadline. Terminal turns reject late results.
 
 The committed Effect result entry is the only durable result message. Engine
 projection reads that canonical entry after validating Effect identity, entry
@@ -136,6 +144,16 @@ later model response after its prerequisite result is available. Approval
 decisions for different calls in the same batch may arrive in any order or
 concurrently; each call settles independently and continuation waits for every
 source-ordered result slot to become terminal.
+
+`Registry.DispatchBatchObserved` is the additive v7.10 batch contract used by the
+Engine to capture ready results without waiting for a slow sibling. It preserves
+preflight and concurrent dispatch from `DispatchBatch`, serializes observer calls
+in completion order, returns results in input order, and joins observer errors
+without skipping later results. `DispatchBatch` delegates to this one implementation.
+The Engine retains normal model call order; cancellation flushes every available
+captured result through the same finalizer within the shared grace deadline.
+This bounded in-memory ordering decision is not another result processor or
+persistent lifecycle. New model execution remains fenced throughout Stop.
 
 # Repeat And Progress Metadata
 

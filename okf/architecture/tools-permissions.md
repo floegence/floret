@@ -129,7 +129,10 @@ may therefore arrive in completion order while provider-visible tool results
 remain in the original model call order. Each captured handler result receives a
 fresh finalization context when its ordered finalizer runs; a slow batch cannot
 expire a faster sibling's persistence window, and one finalization failure does
-not skip later sibling finalizers.
+not skip later sibling finalizers. During graceful cancellation, all tools share
+one five-second deadline: the Engine flushes ready results through the same
+finalizer without waiting for an unresponsive sibling. No new provider request
+runs in this state; canonical committed order is retained for later context.
 
 # Tool Approval State
 

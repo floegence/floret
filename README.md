@@ -196,12 +196,28 @@ Each thread has one in-memory runtime owner. `Send` first commits canonical turn
 acceptance, then publishes and returns the user item and active current view
 before provider dispatch. The canonical journal is the only durable fact
 source. Provider and tool I/O execute outside the thread lock.
-`Cancel` is idempotent for every known thread. It commits the terminal turn
-before returning, releases pending interactions, and fences late provider or
-tool output without waiting for those goroutines to exit. If an irreversible
-effect outcome cannot be confirmed, Floret atomically fails the turn with
-`effect_outcome_unknown`, closes every unfinished tool and interaction, clears
-provider continuation, and never replays the effect.
+`Cancel` is idempotent for every known thread. Its default `immediate` mode
+preserves synchronous terminal settlement. Interactive hosts can opt into
+`CancelInput.Mode: runtime.CancelModeGraceful`: Floret commits the stop request,
+fences new execution, cancels the execution context, and returns acceptance.
+In-flight tools share one five-second window to commit confirmed results through
+the normal output and artifact path. The terminal is cancelled when all effects
+are confirmed; real tool errors and completed effects remain visible. A stop does
+not roll back earlier changes. Queued input remains queued until a later explicit
+submission or promotion.
+
+`ThreadView.Cancellation` and `ThreadSummary.Cancellation` carry the canonical
+source, exact execution identity, mode, and request time. Active views with that
+fact are stopping; hosts must keep that indication until the authoritative view
+becomes terminal, independently of the HTTP request. A dispatched effect with
+unconfirmed outcome fails the turn with `effect_outcome_unknown`; only unresolved
+dispatched tools become unknown, while undispatched calls are cancelled. Floret
+never automatically replays unknown effects or permits retrying that turn. Late
+results cannot change the terminal or a later turn. Use `tools.CanceledResult`
+only when execution has actually ended; a bare `context.Canceled` is insufficient.
+Schema v11 appends the v10 to v11 migration without rewriting historical records
+or inventing missing stop provenance.
+
 `Respond` resolves the matching approval or input interaction in place.
 Public Ask User answers become one canonical user message and remain in every
 later provider request. Secret answers are sent only to the current continuation;

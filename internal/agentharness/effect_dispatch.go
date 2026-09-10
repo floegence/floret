@@ -57,6 +57,18 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		if dispatchCtx == nil {
 			return EffectDispatchResult{}, ErrAuthorizationContract
 		}
+		// A host may narrow execution, but cannot detach it from the turn.
+		boundedCtx, cancelExecution := context.WithCancelCause(dispatchCtx)
+		stopBinding := context.AfterFunc(ctx, func() { cancelExecution(context.Cause(ctx)) })
+		defer stopBinding()
+		defer cancelExecution(context.Canceled)
+		if ctx.Err() != nil {
+			cancelExecution(context.Cause(ctx))
+		}
+		dispatchCtx = boundedCtx
+		if err := dispatchCtx.Err(); err != nil {
+			return EffectDispatchResult{}, err
+		}
 		if err := validateEffectAuthorizationProof(authorizationRequest, proof); err != nil {
 			return EffectDispatchResult{}, err
 		}
@@ -70,7 +82,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		close(dispatchStarted)
 		handlerResult := invoke(dispatchCtx)
 		if handlerResult.DispatchErr != nil {
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "effect_handler_panic", handlerResult.DispatchErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "effect_handler_panic", handlerResult.DispatchErr)
 		}
 		effectDone := make(chan struct{})
 		defer close(effectDone)
@@ -97,7 +109,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				}
 			}
 		}); err != nil {
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(dispatchCtx, prepared.Attempt, "register_effect_finalizer_error", err)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "register_effect_finalizer_error", err)
 		}
 		if t.harness.effectFinalizerRegistration != nil {
 			t.harness.effectFinalizerRegistration(nil)
@@ -108,9 +120,13 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		select {
 		case finalization = <-finalize:
 		case <-dispatchCtx.Done():
-			persistCtx, cancelPersist := t.harness.effectFinalizationContext(dispatchCtx)
-			defer cancelPersist()
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(persistCtx, prepared.Attempt, "turn_cancelled_before_finalization", contextCancellationError(dispatchCtx))
+			settlementCtx, finishSettlement := effectSettlementContext(ctx)
+			defer finishSettlement()
+			select {
+			case finalization = <-finalize:
+			case <-settlementCtx.Done():
+				return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "turn_cancelled_before_finalization", contextCancellationError(dispatchCtx))
+			}
 		}
 		var finalizationOutcome effectFinalizeOutcome
 		defer func() { finalization.outcome <- finalizationOutcome }()
@@ -119,7 +135,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		outcomeFingerprint, fingerprintErr := t.harness.effectOutcomeFingerprinter(handlerResult, finalization.request.Message, finalization.request.FullOutput)
 		if fingerprintErr != nil {
 			finalizationOutcome.err = fingerprintErr
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, prepared.Attempt, "outcome_fingerprint_error", fingerprintErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "outcome_fingerprint_error", fingerprintErr)
 		}
 		finished, finishErr := repo.FinishEffectDispatch(finishCtx, sessiontree.FinishEffectDispatchRequest{
 			EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
@@ -129,7 +145,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		})
 		if finishErr != nil {
 			finalizationOutcome.err = finishErr
-			return EffectDispatchResult{}, t.convergeDispatchedEffect(finishCtx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
+			return EffectDispatchResult{}, t.convergeDispatchedEffect(ctx, prepared.Attempt, "finish_effect_dispatch_error", finishErr)
 		}
 		committed, validateErr := validateCommittedEffectFinalization(finalization.request, prepared.Attempt, finished)
 		if validateErr != nil {
@@ -156,32 +172,43 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			outcome.err = ErrAuthorizationContract
 		}
 	}()
-	select {
-	case handlerResult := <-ready:
-		return handlerResult
-	case outcome := <-gateDone:
-		if outcome.err == nil {
-			outcome.err = ErrAuthorizationContract
-		}
-		if request.Permission.Mode == tools.PermissionAsk && (errors.Is(outcome.err, ErrEffectUnauthorized) || errors.Is(outcome.err, tools.ErrRejected)) {
-			_ = t.rejectEffectAttemptCause(ctx, repo, prepared.Attempt, fingerprint, tools.ErrRejected)
-			return tools.DeclinedResult(request.CallID, request.Name)
-		}
-		var committed *CommittedEffectError
-		if errors.As(outcome.err, &committed) {
-			return effectDispatchError(request.CallID, request.Name, outcome.err)
-		}
-		return t.rejectEffectAttempt(ctx, repo, prepared.Attempt, fingerprint, outcome.err)
-	case <-ctx.Done():
+	settlementCtx := ctx
+	waitingForSettlement := false
+	for {
 		select {
-		case <-dispatchStarted:
-			persistCtx, cancelPersist := t.harness.effectFinalizationContext(ctx)
-			unknownErr := t.convergeDispatchedEffect(persistCtx, prepared.Attempt, "turn_cancelled_after_dispatch", contextCancellationError(ctx))
-			cancelPersist()
-			return effectDispatchError(request.CallID, request.Name, unknownErr)
-		default:
-			_ = t.rejectEffectAttemptCause(context.Background(), repo, prepared.Attempt, fingerprint, contextCancellationError(ctx))
+		case handlerResult := <-ready:
+			return handlerResult
+		case outcome := <-gateDone:
+			if outcome.err == nil {
+				outcome.err = ErrAuthorizationContract
+			}
+			if request.Permission.Mode == tools.PermissionAsk && (errors.Is(outcome.err, ErrEffectUnauthorized) || errors.Is(outcome.err, tools.ErrRejected)) {
+				_ = t.rejectEffectAttemptCause(ctx, repo, prepared.Attempt, fingerprint, tools.ErrRejected)
+				return tools.DeclinedResult(request.CallID, request.Name)
+			}
+			var committed *CommittedEffectError
+			if errors.As(outcome.err, &committed) {
+				return effectDispatchError(request.CallID, request.Name, outcome.err)
+			}
+			return t.rejectEffectAttempt(ctx, repo, prepared.Attempt, fingerprint, outcome.err)
+		case <-settlementCtx.Done():
+			if _, graceful := gracefulCancellation(ctx); graceful && !waitingForSettlement {
+				var finishSettlement context.CancelFunc
+				settlementCtx, finishSettlement = effectSettlementContext(ctx)
+				defer finishSettlement()
+				waitingForSettlement = true
+				continue
+			}
+			select {
+			case <-dispatchStarted:
+				persistCtx, cancelPersist := t.harness.effectFinalizationContext(ctx)
+				unknownErr := t.convergeDispatchedEffect(persistCtx, prepared.Attempt, "turn_cancelled_after_dispatch", contextCancellationError(ctx))
+				cancelPersist()
+				return effectDispatchError(request.CallID, request.Name, unknownErr)
+			default:
+				_ = t.rejectEffectAttemptCause(context.Background(), repo, prepared.Attempt, fingerprint, contextCancellationError(ctx))
+			}
+			return effectDispatchError(request.CallID, request.Name, contextCancellationError(ctx))
 		}
-		return effectDispatchError(request.CallID, request.Name, contextCancellationError(ctx))
 	}
 }
