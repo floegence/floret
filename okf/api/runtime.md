@@ -107,6 +107,16 @@ is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
 
+Validated tool calls enter the current view with their Activity presentation
+before dispatch. Provider argument streams do not create running tool items.
+The existing actor applies the Engine's Activity timeline for pending,
+approval, dispatch, output, and result changes, and publishes each changed
+view without waiting for a journal refresh or the end of the Turn. Parallel
+tools publish these snapshots in reduction order. Canonical refresh retains
+newer observed tool progress when it has only the older call record; terminal
+turn settlement still uses the complete canonical journal. Hosts consume this
+view rather than maintaining another tool lifecycle or argument cache.
+
 Every `ThreadItem` and `ThreadInteraction` carries the exact `TurnID` and
 `RunID` of its canonical journal fact. Historical items retain their original
 run across later turns and same-turn input continuation. Missing or conflicting

@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-09-10: Immediate tool presentation
+
+* Apply validated Activity snapshots in the thread actor before tool dispatch,
+  retaining command facts and progress across canonical refresh races. Keep
+  argument streaming separate from execution and preserve journal authority
+  at terminal settlement. See [runtime views](api/runtime.md#views-and-subscriptions).
+
 ## 2026-09-09: Submitted input ownership
 
 * Copy input slices at the synchronous `Send` boundary before fingerprinting,
