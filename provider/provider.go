@@ -257,9 +257,10 @@ type ToolCall struct {
 
 // ToolResult is one provider-visible local tool outcome.
 type ToolResult struct {
-	CallID   string `json:"call_id"`
-	ToolName string `json:"tool_name"`
-	Text     string `json:"text,omitempty"`
+	CallID      string       `json:"call_id"`
+	ToolName    string       `json:"tool_name"`
+	Text        string       `json:"text,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // HostedToolDefinition is one provider-native capability that the local tool

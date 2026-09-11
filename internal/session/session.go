@@ -26,15 +26,16 @@ const (
 )
 
 type ToolResultView struct {
-	Status        string        `json:"status,omitempty"`
-	Truncated     bool          `json:"truncated,omitempty"`
-	OriginalBytes int           `json:"original_bytes,omitempty"`
-	VisibleBytes  int           `json:"visible_bytes,omitempty"`
-	OriginalLines int           `json:"original_lines,omitempty"`
-	VisibleLines  int           `json:"visible_lines,omitempty"`
-	Strategy      string        `json:"strategy,omitempty"`
-	ContentSHA256 string        `json:"content_sha256,omitempty"`
-	FullOutput    *artifact.Ref `json:"full_output,omitempty"`
+	Status        string              `json:"status,omitempty"`
+	Truncated     bool                `json:"truncated,omitempty"`
+	OriginalBytes int                 `json:"original_bytes,omitempty"`
+	VisibleBytes  int                 `json:"visible_bytes,omitempty"`
+	OriginalLines int                 `json:"original_lines,omitempty"`
+	VisibleLines  int                 `json:"visible_lines,omitempty"`
+	Strategy      string              `json:"strategy,omitempty"`
+	ContentSHA256 string              `json:"content_sha256,omitempty"`
+	FullOutput    *artifact.Ref       `json:"full_output,omitempty"`
+	Attachments   []MessageAttachment `json:"attachments,omitempty"`
 }
 
 type ActivityChip = tools.ActivityChip
@@ -161,6 +162,7 @@ func CloneMessage(msg Message) Message {
 			ref := *view.FullOutput
 			view.FullOutput = &ref
 		}
+		view.Attachments = CloneMessageAttachments(view.Attachments)
 		msg.ToolResult = &view
 	}
 	msg.Activity = CloneActivityPresentation(msg.Activity)

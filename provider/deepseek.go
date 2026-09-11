@@ -224,7 +224,35 @@ func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message
 				return out, nil, errors.New("orphan or duplicate DeepSeek function result")
 			}
 			delete(pending, c.CallID)
-			out.add(deepSeekInput{Type: "function_call_output", CallID: c.CallID, Output: c.Text}, true)
+			if len(c.Attachments) == 0 {
+				out.add(deepSeekInput{Type: "function_call_output", CallID: c.CallID, Output: c.Text}, true)
+				continue
+			}
+			if !g.supportsImages || g.resolveAttachment == nil {
+				return out, nil, errors.New("DeepSeek tool result contains images but the model has no image resolver")
+			}
+			parts := make([]deepSeekImageContent, 0, 1+len(c.Attachments))
+			if c.Text != "" {
+				parts = append(parts, deepSeekImageContent{Type: "input_text", Text: c.Text})
+			}
+			for _, attachment := range c.Attachments {
+				switch attachment.MIMEType {
+				case "image/png", "image/jpeg", "image/gif", "image/webp":
+				default:
+					return out, nil, fmt.Errorf("DeepSeek tool result has unsupported image MIME type %q", attachment.MIMEType)
+				}
+				data, err := g.resolveAttachment(ctx, attachment)
+				if err != nil {
+					return out, nil, fmt.Errorf("resolve DeepSeek tool result image %q: %w", attachment.ResourceRef, err)
+				}
+				if len(data) == 0 {
+					return out, nil, errors.New("DeepSeek tool result image is empty")
+				}
+				ref := deepSeekImageReference{Attachment: attachment, SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
+				images[deepSeekHash(ref)] = "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)
+				parts = append(parts, deepSeekImageContent{Type: "image_reference", Image: &ref})
+			}
+			out.add(deepSeekInput{Type: "function_call_output", CallID: c.CallID, Output: parts}, true)
 		}
 	}
 	if len(pending) > 0 {

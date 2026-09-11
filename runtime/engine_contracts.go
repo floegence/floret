@@ -207,9 +207,10 @@ func (role modelMessageRole) Valid() bool {
 }
 
 type modelToolResult struct {
-	CallID   string `json:"call_id"`
-	ToolName string `json:"tool_name"`
-	Text     string `json:"text,omitempty"`
+	CallID      string                      `json:"call_id"`
+	ToolName    string                      `json:"tool_name"`
+	Text        string                      `json:"text,omitempty"`
+	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
 }
 
 type modelMessage struct {

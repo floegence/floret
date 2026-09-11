@@ -688,7 +688,11 @@ func providerMessage(message modelMessage) provider.Message {
 	}
 	var result *provider.ToolResult
 	if message.ToolResult != nil {
-		result = &provider.ToolResult{CallID: message.ToolResult.CallID, ToolName: message.ToolResult.ToolName, Text: message.ToolResult.Text}
+		attachments := make([]provider.Attachment, len(message.ToolResult.Attachments))
+		for index, attachment := range message.ToolResult.Attachments {
+			attachments[index] = provider.Attachment{ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType, SizeBytes: attachment.SizeBytes}
+		}
+		result = &provider.ToolResult{CallID: message.ToolResult.CallID, ToolName: message.ToolResult.ToolName, Text: message.ToolResult.Text, Attachments: attachments}
 	}
 	return provider.Message{
 		Role: provider.MessageRole(message.Role), Text: message.Text, Attachments: attachments,

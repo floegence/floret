@@ -223,7 +223,11 @@ func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 			}
 			result = append(result, projected)
 		case session.Tool:
-			result = append(result, modelMessage{Role: modelMessageRoleTool, ToolResult: &modelToolResult{CallID: message.ToolCallID, ToolName: message.ToolName, Text: message.Content}})
+			var attachments []session.MessageAttachment
+			if message.ToolResult != nil {
+				attachments = session.CloneMessageAttachments(message.ToolResult.Attachments)
+			}
+			result = append(result, modelMessage{Role: modelMessageRoleTool, ToolResult: &modelToolResult{CallID: message.ToolCallID, ToolName: message.ToolName, Text: message.Content, Attachments: attachments}})
 			index++
 		default:
 			return nil, fmt.Errorf("model message %d has unsupported role %q", index, message.Role)
