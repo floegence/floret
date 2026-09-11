@@ -26,15 +26,28 @@ func expandDeepSeekImages(input []json.RawMessage, images map[string]string) ([]
 			Type    string          `json:"type"`
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
+			Output  json.RawMessage `json:"output"`
 		}
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, err
 		}
-		if item.Type != "message" || item.Role != "user" || len(item.Content) == 0 || item.Content[0] != '[' {
+		isMessageImage := item.Type == "message" && item.Role == "user"
+		isToolOutputImage := item.Type == "function_call_output"
+		content := item.Content
+		if isToolOutputImage {
+			content = item.Output
+		}
+		if !isMessageImage && !isToolOutputImage || len(content) == 0 || content[0] != '[' {
 			continue
 		}
 		var parts []deepSeekImageContent
-		if err := json.Unmarshal(item.Content, &parts); err != nil {
+		if isToolOutputImage {
+			var output []deepSeekImageContent
+			if err := json.Unmarshal(content, &output); err != nil {
+				return nil, err
+			}
+			parts = output
+		} else if err := json.Unmarshal(content, &parts); err != nil {
 			return nil, err
 		}
 		for j, part := range parts {
@@ -54,7 +67,18 @@ func expandDeepSeekImages(input []json.RawMessage, images map[string]string) ([]
 			}
 		}
 		var err error
-		input[i], err = json.Marshal(deepSeekInput{Type: "message", Role: "user", Content: parts})
+		if isToolOutputImage {
+			var output struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+			}
+			if err := json.Unmarshal(raw, &output); err != nil {
+				return nil, err
+			}
+			input[i], err = json.Marshal(deepSeekInput{Type: "function_call_output", CallID: output.CallID, Output: parts})
+		} else {
+			input[i], err = json.Marshal(deepSeekInput{Type: "message", Role: "user", Content: parts})
+		}
 		if err != nil {
 			return nil, err
 		}

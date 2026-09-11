@@ -132,3 +132,67 @@ func TestDeepSeekImageCapabilityAndAuthorityFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepSeekVisionToolResultImageRoundTrip(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"computer-response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n")
+	}))
+	defer server.Close()
+	data := []byte{9, 8, 7}
+	resolverCalls := 0
+	options := provider.DeepSeekOptions{
+		Model: "deepseek-v4-flash-vision-exp", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "tool-image",
+		ResolveAttachment: func(_ context.Context, attachment provider.Attachment) ([]byte, error) {
+			resolverCalls++
+			if attachment.ResourceRef != "screen-1" {
+				t.Fatalf("unexpected tool attachment: %+v", attachment)
+			}
+			return data, nil
+		},
+	}
+	gateway, err := provider.NewDeepSeek(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := provider.Request{
+		RunID: "run", PromptScopeID: "scope",
+		Messages: []provider.Message{
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "computer.screenshot", Args: "{}"}}},
+			{Role: provider.RoleTool, ToolResult: &provider.ToolResult{CallID: "call-1", ToolName: "computer.screenshot", Text: "screenshot captured", Attachments: []provider.Attachment{{ResourceRef: "screen-1", Name: "screen.png", MIMEType: "image/png", SizeBytes: int64(len(data))}}}},
+		},
+	}
+	events := collectDeepSeek(t, gateway, request)
+	var state *provider.State
+	for _, event := range events {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.ResponseState != nil {
+			state = event.ResponseState
+		}
+	}
+	if state == nil || resolverCalls != 1 || len(bodies) != 1 {
+		t.Fatalf("tool image was not resolved: resolver=%d bodies=%d state=%v", resolverCalls, len(bodies), state)
+	}
+	if !strings.Contains(bodies[0], "function_call_output") || !strings.Contains(bodies[0], "input_image") || strings.Contains(bodies[0], "image_reference") {
+		t.Fatalf("tool result image was not expanded: %s", bodies[0])
+	}
+	stateBytes, _ := json.Marshal(state)
+	if strings.Contains(string(stateBytes), "base64") || !strings.Contains(string(stateBytes), "screen-1") {
+		t.Fatalf("tool image state must retain only the opaque reference: %s", stateBytes)
+	}
+	data = []byte{9, 8, 7}
+	request.PreviousState = state
+	request.Messages = append(request.Messages, provider.Message{Role: provider.RoleAssistant, Text: "done"}, provider.Message{Role: provider.RoleUser, Text: "continue"})
+	collectDeepSeek(t, gateway, request)
+	if resolverCalls != 2 || len(bodies) != 2 || !strings.Contains(bodies[1], "input_image") {
+		t.Fatalf("tool image was not replayed: resolver=%d bodies=%d", resolverCalls, len(bodies))
+	}
+}

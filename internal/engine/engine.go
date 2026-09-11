@@ -1308,6 +1308,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if resultView == nil {
 				resultView = &session.ToolResultView{}
 			}
+			resultView.Attachments = toolResultAttachments(result.Attachments)
 			resultView.Status = resultStatus
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			if validationErr := validationErrors[result.CallID]; validationErr != nil {
@@ -1350,7 +1351,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			metadata := mergeAnyMetadata(metadataBase, projectedCallBatchMetadata[result.CallID])
 			metadata["tool_result_status"] = resultStatus
 			{
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: append(eventArtifacts(projection, result.Artifacts), eventArtifactsFromToolAttachments(result.Attachments)...), CanonicalEntryID: finalized.CanonicalEntryID})
 			}
 			toolMessageSet[i] = true
 			toolMessageOrder = append(toolMessageOrder, i)
@@ -4128,6 +4129,38 @@ func toolResultView(projection tools.OutputProjection) *session.ToolResultView {
 		view.FullOutput = &ref
 	}
 	return view
+}
+
+func toolResultAttachments(values []tools.ArtifactRef) []session.MessageAttachment {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]session.MessageAttachment, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value.ID) == "" || strings.TrimSpace(value.MIME) == "" {
+			continue
+		}
+		name := strings.TrimSpace(value.SafeLabel)
+		if name == "" {
+			name = value.ID
+		}
+		out = append(out, session.MessageAttachment{ResourceRef: value.ID, Name: name, MIMEType: value.MIME, SizeBytes: value.SizeBytes})
+	}
+	return out
+}
+
+func eventArtifactsFromToolAttachments(values []tools.ArtifactRef) []event.Artifact {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]event.Artifact, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value.ID) == "" {
+			continue
+		}
+		out = append(out, event.Artifact{ID: value.ID, SafeLabel: value.SafeLabel, Kind: value.Kind, MIME: value.MIME, SizeBytes: value.SizeBytes, SHA256: value.SHA256})
+	}
+	return out
 }
 
 func shortHash(hash string) string {

@@ -358,6 +358,7 @@ type ToolResult struct
 field ToolResult.CallID string tag="json:\"call_id\""
 field ToolResult.ToolName string tag="json:\"tool_name\""
 field ToolResult.Text string tag="json:\"text,omitempty\""
+field ToolResult.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
 type Usage struct
 field Usage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
 field Usage.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
@@ -1451,6 +1452,7 @@ field Result.Structured map[string]any
 field Result.Metadata map[string]any
 field Result.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation
 field Result.Artifacts []github.com/floegence/floret/v7/tools.ArtifactRef
+field Result.Attachments []github.com/floegence/floret/v7/tools.ArtifactRef
 field Result.OutputPolicy *github.com/floegence/floret/v7/tools.OutputPolicy
 field Result.Pending *github.com/floegence/floret/v7/tools.PendingToolResult
 field Result.IsError bool

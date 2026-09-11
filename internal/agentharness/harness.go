@@ -2641,6 +2641,16 @@ func toolResultViewFromEvent(ev event.Event) *session.ToolResultView {
 		Strategy:      metadataString(values, "strategy"),
 		ContentSHA256: metadataString(values, "content_sha256"),
 	}
+	for _, item := range ev.Artifacts {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.MIME)), "image/") || strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		name := strings.TrimSpace(item.SafeLabel)
+		if name == "" {
+			name = item.ID
+		}
+		view.Attachments = append(view.Attachments, session.MessageAttachment{ResourceRef: item.ID, Name: name, MIMEType: item.MIME, SizeBytes: item.SizeBytes})
+	}
 	if artifactID := metadataString(values, "artifact_id"); artifactID != "" {
 		for _, item := range ev.Artifacts {
 			if item.ID != artifactID {
@@ -2669,7 +2679,8 @@ func emptyToolResultView(view *session.ToolResultView) bool {
 			view.VisibleLines == 0 &&
 			view.Strategy == "" &&
 			view.ContentSHA256 == "" &&
-			view.FullOutput == nil)
+			view.FullOutput == nil &&
+			len(view.Attachments) == 0)
 }
 
 func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {

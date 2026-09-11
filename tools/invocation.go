@@ -56,14 +56,17 @@ func (i Invocation[T]) UpdateActivity(update ActivityUpdate) {
 }
 
 type Result struct {
-	CallID       string
-	Name         string
-	Title        string
-	Text         string
-	Structured   map[string]any
-	Metadata     map[string]any
-	Activity     *ActivityPresentation
-	Artifacts    []ArtifactRef
+	CallID     string
+	Name       string
+	Title      string
+	Text       string
+	Structured map[string]any
+	Metadata   map[string]any
+	Activity   *ActivityPresentation
+	Artifacts  []ArtifactRef
+	// Attachments are opaque media references that may be sent to a provider as
+	// tool-result content. Hosts own the bytes; Floret only persists descriptors.
+	Attachments  []ArtifactRef
 	OutputPolicy *OutputPolicy
 	Pending      *PendingToolResult
 	IsError      bool
