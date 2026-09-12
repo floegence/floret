@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.10.2 - 2026-09-12
+
+- Add opaque image attachments to provider tool results so hosts can return screenshots and other media through a resolver without persisting bytes.
+- Expand DeepSeek Vision tool-result images into `function_call_output` image parts and preserve attachment descriptors through runtime replay.
+- Preserve the v7 public API and reject unresolved or unsupported image tool outputs at the provider boundary.
+
 ## v7.10.1 - 2026-09-10
 
 - Install terminal lifecycle and canonical results in one actor transition, preventing polling and new input from observing partially settled Stop outcomes.
