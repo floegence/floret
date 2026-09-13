@@ -1,6 +1,7 @@
 package event
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,29 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/tools"
 )
+
+func TestActivityResourceReferenceSurvivesEventAndReplay(t *testing.T) {
+	ref := "host-frame://session/" + strings.Repeat("a", 64)
+	value := Event{Activity: &tools.ActivityPresentation{
+		Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: "success"},
+		TargetRefs: []tools.ActivityTargetRef{{Kind: "image", Label: "Screenshot", ResourceRef: ref, URI: "file:///private/secret"}},
+	}}
+	for range 2 {
+		value = Sanitize(value)
+		body, err := json.Marshal(value.Activity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var replay tools.ActivityPresentation
+		if err := json.Unmarshal(body, &replay); err != nil {
+			t.Fatal(err)
+		}
+		if len(replay.TargetRefs) != 1 || replay.TargetRefs[0].ResourceRef != ref || replay.TargetRefs[0].URI != "" {
+			t.Fatalf("opaque attachment reference or navigation boundary changed: %s", body)
+		}
+		value.Activity = &replay
+	}
+}
 
 func TestSanitizeActivityPresentationPreservesEveryTypedPayload(t *testing.T) {
 	t.Parallel()

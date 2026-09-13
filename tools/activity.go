@@ -48,8 +48,11 @@ type ActivityTargetRef struct {
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
 	URI   string `json:"uri,omitempty"`
-	Path  string `json:"path,omitempty"`
-	Line  int    `json:"line,omitempty"`
+	// ResourceRef is an opaque host-owned attachment identifier, never a
+	// navigable URL. Hosts authorize and resolve it before displaying media.
+	ResourceRef string `json:"resource_ref,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Line        int    `json:"line,omitempty"`
 }
 
 // ActivityPayload is the closed set of renderer-specific presentation data.
@@ -426,7 +429,7 @@ func (presentation ActivityPresentation) Validate() error {
 			return errors.New("tool activity target requires kind, label, and a non-negative line")
 		}
 		if activityTextTooLong(target.Kind, 64) || activityTextTooLong(target.Label, 240) ||
-			activityTextTooLong(target.URI, 500) || activityTextTooLong(target.Path, 500) {
+			activityTextTooLong(target.URI, 500) || activityTextTooLong(target.Path, 500) || activityTextTooLong(target.ResourceRef, 1000) {
 			return errors.New("tool activity target exceeds its size limit")
 		}
 	}

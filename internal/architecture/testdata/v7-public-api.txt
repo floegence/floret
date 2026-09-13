@@ -1185,6 +1185,7 @@ type ActivityTargetRef struct
 field ActivityTargetRef.Kind string tag="json:\"kind\""
 field ActivityTargetRef.Label string tag="json:\"label\""
 field ActivityTargetRef.URI string tag="json:\"uri,omitempty\""
+field ActivityTargetRef.ResourceRef string tag="json:\"resource_ref,omitempty\""
 field ActivityTargetRef.Path string tag="json:\"path,omitempty\""
 field ActivityTargetRef.Line int tag="json:\"line,omitempty\""
 type ActivityUpdate struct

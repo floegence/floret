@@ -507,11 +507,12 @@ func sanitizeActivityTargetRefs(in []tools.ActivityTargetRef) []tools.ActivityTa
 	out := make([]tools.ActivityTargetRef, 0, len(in))
 	for _, ref := range in {
 		item := tools.ActivityTargetRef{
-			Kind:  safeActivityToken(ref.Kind, 64),
-			Label: safeActivityText(ref.Label, 240),
-			URI:   safeActivityURI(ref.URI),
-			Path:  safeActivityPath(ref.Path),
-			Line:  ref.Line,
+			Kind:        safeActivityToken(ref.Kind, 64),
+			Label:       safeActivityText(ref.Label, 240),
+			URI:         safeActivityURI(ref.URI),
+			ResourceRef: ref.ResourceRef,
+			Path:        safeActivityPath(ref.Path),
+			Line:        ref.Line,
 		}
 		if item.Line < 0 {
 			item.Line = 0
