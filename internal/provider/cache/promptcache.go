@@ -22,8 +22,9 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v8"
+	ContextProjectionRevision = "provider-context.v9"
 	contextProjectionV7       = "provider-context.v7"
+	contextProjectionV8       = "provider-context.v8"
 	contextProjectionV2       = "provider-context.v2"
 	contextProjectionV3       = "provider-context.v3"
 	contextProjectionV4       = "provider-context.v4"
@@ -992,7 +993,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
-		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7) && plan.ContextProjectionRevision == ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7 || previous.ContextProjectionRevision == contextProjectionV8) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			plan.CanonicalLineageReset = true
 			return nil
 		}

@@ -43,6 +43,8 @@ not interpret host schemes or turn references into fetchable URLs.
 Tool-result image descriptors survive model request cache snapshots and replay
 through the existing attachment field. Snapshotting preserves resource identity
 and request fingerprints; image bytes remain with the host resolver.
+Provider context projection v9 rebuilds prior v8 request snapshots once without
+rewriting canonical history. Subsequent requests retain prefix-drift checks.
 
 Tools declare effects and permission behavior. A public registry does not expose
 a direct handler runner. Floret first creates a canonical effect attempt, then

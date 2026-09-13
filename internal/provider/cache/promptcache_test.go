@@ -47,6 +47,34 @@ func TestToolImageSurvivesRequestSnapshotAndReplay(t *testing.T) {
 	}
 }
 
+func TestMediaProjectionMigratesV8OnceWithoutRewritingCanonicalHistory(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	history := []session.Message{{Role: session.User, Content: "capture", EntryID: "user"}}
+	old := lineagePlan("test", "vision", "ns", "system", "image-omitted")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	old.ContextProjectionRevision = contextProjectionV8
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "old", ThreadID: "thread", TurnID: "old"}, 1, "test", "vision", CachePolicy{}, old); err != nil {
+		t.Fatal(err)
+	}
+	next := lineagePlan("test", "vision", "ns", "system", "image-preserved")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	if !next.CanonicalLineageReset || next.CanonicalHistoryPrefixHash != old.CanonicalHistoryPrefixHash {
+		t.Fatal("media projection migration changed canonical history or failed to reset render lineage")
+	}
+	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "new", ThreadID: "thread", TurnID: "new"}, 1, "test", "vision", CachePolicy{}, next); err != nil {
+		t.Fatal(err)
+	}
+	drift := lineagePlan("test", "vision", "ns", "system", "unexpected-rewrite")
+	if err := ValidateCanonicalLineage(ctx, store, "thread", &drift, "system", nil, nil, nil, history); !errors.Is(err, ErrContextRenderLineageChanged) {
+		t.Fatalf("post-migration drift was not rejected: %v", err)
+	}
+}
+
 func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

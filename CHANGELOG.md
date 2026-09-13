@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.11.1 - 2026-09-14
+
+- Advance the provider context projection revision for tool-result media replay and reset old render lineages once so historical requests are rebuilt with preserved attachment descriptors.
+
 ## v7.11.0 - 2026-09-14
 
 - Add opaque Activity target resource references without treating media identifiers as navigable URLs.

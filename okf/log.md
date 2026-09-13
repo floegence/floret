@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-14: Historical media context replay
+
+* Advance provider projection to v9 so old requests that omitted tool images
+  rebuild once from canonical descriptors; preserve subsequent drift checks.
+
 ## 2026-09-14: Host media references across runtime boundaries
 
 * Add opaque Activity target resource references, independently of navigable
