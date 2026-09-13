@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.10.3 - 2026-09-13
+
+- Preserve sanitized DeepSeek HTTP error codes and messages through the public provider error contract while retaining context-overflow classification.
+
 ## v7.10.2 - 2026-09-12
 
 - Add opaque image attachments to provider tool results so hosts can return screenshots and other media through a resolver without persisting bytes.

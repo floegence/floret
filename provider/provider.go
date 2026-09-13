@@ -20,6 +20,39 @@ var (
 	ErrContextOverflow = errors.New("provider context overflow")
 )
 
+// ProviderHTTPError reports a non-successful HTTP response from a provider.
+// Message and Code are provider-supplied values after transport-safe
+// sanitization; they never contain authorization headers or request bodies.
+type ProviderHTTPError struct {
+	Provider   string
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *ProviderHTTPError) Error() string {
+	if e == nil {
+		return "provider HTTP error"
+	}
+	provider := strings.TrimSpace(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	base := fmt.Sprintf("%s provider status %d", provider, e.StatusCode)
+	code := strings.TrimSpace(e.Code)
+	message := strings.TrimSpace(e.Message)
+	if code == "" && message == "" {
+		return base
+	}
+	if code == "" {
+		return fmt.Sprintf("%s: %s", base, message)
+	}
+	if message == "" {
+		return fmt.Sprintf("%s: %s", base, code)
+	}
+	return fmt.Sprintf("%s: %s: %s", base, code, message)
+}
+
 // Gateway is the single model-execution path used by every Agent.
 type Gateway interface {
 	Identity() Identity

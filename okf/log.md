@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-13: Structured DeepSeek transport errors
+
+* Preserve bounded, sanitized DeepSeek HTTP status, error code, and message
+  through `provider.ProviderHTTPError`; retain the existing context-overflow
+  classification for hosts.
+
 ## 2026-09-10: Atomic terminal presentation
 
 * Keep execution active until canonical terminal items and lifecycle can be

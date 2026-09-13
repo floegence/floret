@@ -60,6 +60,12 @@ freshly resolved bytes without persisting image payloads. It shares the existing
 RequestPreparer, Event, and State contracts. No new lifecycle or storage schema
 is introduced. The explicit Chat constructor remains available throughout v7.
 
+Non-successful DeepSeek HTTP responses are returned as `provider.ProviderHTTPError`
+with status, provider code, and a bounded sanitized message. Context-overflow
+responses continue to use `provider.ErrContextOverflow`; hosts must use the
+typed error for actionable provider diagnostics and must not expose credentials
+or raw request bodies.
+
 See [the implementation](../../provider/deepseek.go),
 [wire tests](../../provider/deepseek_test.go),
 [runtime restart test](../../runtime/deepseek_test.go), and
