@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -153,6 +154,50 @@ func TestDeepSeekStreamsToolsAndRequiresTerminal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeepSeekReturnsStructuredHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"code":"invalid_request_error","message":"Invalid schema for function 'browser_back': null is not of type array"}}`)
+	}))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-flash", BaseURL: server.URL, APIKey: "secret", StateCompatibilityKey: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = gateway.Stream(context.Background(), provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "inspect"}}})
+	var providerErr *provider.ProviderHTTPError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %v, want ProviderHTTPError", err, err)
+	}
+	if providerErr.StatusCode != http.StatusBadRequest || providerErr.Code != "invalid_request_error" || !strings.Contains(providerErr.Message, "null") {
+		t.Fatalf("provider error = %+v", providerErr)
+	}
+	if strings.Contains(providerErr.Error(), "secret") {
+		t.Fatalf("provider error leaked credential: %v", providerErr)
+	}
+}
+
+func TestDeepSeekHTTPErrorWithoutJSONBodyStaysSafe(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "Authorization: Bearer secret")
+	}))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-flash", BaseURL: server.URL, APIKey: "secret", StateCompatibilityKey: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = gateway.Stream(context.Background(), provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "inspect"}}})
+	var providerErr *provider.ProviderHTTPError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %v, want ProviderHTTPError", err, err)
+	}
+	if providerErr.Code != "" || providerErr.Message != "" || strings.Contains(providerErr.Error(), "secret") {
+		t.Fatalf("unsafe provider error = %+v", providerErr)
 	}
 }
 

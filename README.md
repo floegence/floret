@@ -389,6 +389,10 @@ Opaque state retains image references and content digests, never image bytes.
 Subsequent requests resolve the content again under current host authorization.
 This additive v7 option preserves existing descriptor-only callers.
 
+Non-successful DeepSeek HTTP responses return `provider.ProviderHTTPError` with
+the status code and sanitized provider error details. Context-overflow responses
+continue to return `provider.ErrContextOverflow`.
+
 DeepSeek is stateless. Floret retains provider-native response items in opaque
 state, validates them against the canonical conversation, and returns the full
 input history on each call, including search receipts and reasoning. Hosts must

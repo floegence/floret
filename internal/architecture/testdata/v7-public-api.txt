@@ -304,6 +304,12 @@ field OpenAICompatibleOptions.StateCompatibilityKey string
 field OpenAICompatibleOptions.HTTPClient *net/http.Client
 field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provider.Capabilities
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
+type ProviderHTTPError struct
+field ProviderHTTPError.Provider string
+field ProviderHTTPError.StatusCode int
+field ProviderHTTPError.Code string
+field ProviderHTTPError.Message string
+method *ProviderHTTPError.Error func() string
 type ReasoningSupport string
 const ReasoningSupported github.com/floegence/floret/v7/provider.ReasoningSupport = "supported"
 const ReasoningUnsupported github.com/floegence/floret/v7/provider.ReasoningSupport = "unsupported"

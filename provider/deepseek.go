@@ -390,11 +390,36 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 		if response.StatusCode == 413 || response.StatusCode == 400 && (strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context window") || strings.Contains(lower, "maximum context length")) {
 			return nil, ErrContextOverflow
 		}
-		return nil, fmt.Errorf("DeepSeek provider status %d", response.StatusCode)
+		var envelope struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &envelope)
+		return nil, &ProviderHTTPError{
+			Provider:   "DeepSeek",
+			StatusCode: response.StatusCode,
+			Code:       sanitizeProviderErrorText(envelope.Error.Code),
+			Message:    sanitizeProviderErrorText(envelope.Error.Message),
+		}
 	}
 	out := make(chan Event, 32)
 	go func() { defer close(out); defer response.Body.Close(); g.readStream(ctx, response.Body, history, out) }()
 	return out, nil
+}
+
+func sanitizeProviderErrorText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	if len(value) > 1000 {
+		value = value[:1000]
+	}
+	return value
 }
 
 type deepSeekOutput struct {
