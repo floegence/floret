@@ -289,7 +289,7 @@ opaque `storage.Source` values. Downstream applications must not import
 
 The v9 -> v10 edge admits optional durable model context and typed validation
 feedback without modifying old canonical bytes. A v9 source containing v10
-fields is rejected. Provider projection v8 explicitly resets prior projection
+fields is rejected. Provider projection v9 explicitly resets prior projection
 lineages; an admitted retry uses its canonical source entry to establish a new
 boundary once, then resumes normal prefix checks. Missing ephemeral history is
 not fabricated.
