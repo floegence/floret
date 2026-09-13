@@ -34,6 +34,16 @@ failure or panic produce no presentation fallback.
 
 # Permission Model
 
+`ActivityTargetRef.ResourceRef` carries an opaque host-owned media identifier
+through event sanitization and durable Activity replay. It is distinct from
+the navigable `URI` field: renderers must authorize and resolve it through the
+host before displaying bytes. Identifiers must contain no secrets; Floret does
+not interpret host schemes or turn references into fetchable URLs.
+
+Tool-result image descriptors survive model request cache snapshots and replay
+through the existing attachment field. Snapshotting preserves resource identity
+and request fingerprints; image bytes remain with the host resolver.
+
 Tools declare effects and permission behavior. A public registry does not expose
 a direct handler runner. Floret first creates a canonical effect attempt, then
 passes the exact invocation to the host `EffectAuthorizationGate`; only its

@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-14: Host media references across runtime boundaries
+
+* Add opaque Activity target resource references, independently of navigable
+  URLs, and preserve tool-result image descriptors through model request cache
+  snapshots. Verify event sanitization, replay, and attachment fingerprints.
+
 ## 2026-09-13: Structured DeepSeek transport errors
 
 * Preserve bounded, sanitized DeepSeek HTTP status, error code, and message

@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.11.0 - 2026-09-14
+
+- Add opaque Activity target resource references without treating media identifiers as navigable URLs.
+- Preserve tool-result image descriptors in model request snapshots and replay; verify both model input and Activity through the durable thread runtime and restart.
+
 ## v7.10.3 - 2026-09-13
 
 - Preserve sanitized DeepSeek HTTP error codes and messages through the public provider error contract while retaining context-overflow classification.

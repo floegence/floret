@@ -1638,6 +1638,9 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		ToolArgs:    msg.ToolArgs,
 		Kind:        string(msg.Kind),
 	}
+	if msg.Role == session.Tool && msg.ToolResult != nil {
+		snap.Attachments = session.CloneMessageAttachments(msg.ToolResult.Attachments)
+	}
 	entryID := msg.EntryID
 	parentEntryID := msg.ParentEntryID
 	generation := msg.CompactionGeneration
@@ -1699,7 +1702,11 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 func providerOnlyMessageForRaw(msg session.Message) session.Message {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
-	msg.ToolResult = nil
+	if msg.ToolResult != nil && len(msg.ToolResult.Attachments) > 0 {
+		msg.ToolResult = &session.ToolResultView{Attachments: session.CloneMessageAttachments(msg.ToolResult.Attachments)}
+	} else {
+		msg.ToolResult = nil
+	}
 	return msg
 }
 
@@ -1753,7 +1760,7 @@ func kindForMessage(msg session.Message) SegmentKind {
 }
 
 func (m MessageSnapshot) toSession() session.Message {
-	return session.Message{
+	message := session.Message{
 		Role:        session.Role(m.Role),
 		Content:     m.Content,
 		Attachments: session.CloneMessageAttachments(m.Attachments),
@@ -1763,6 +1770,11 @@ func (m MessageSnapshot) toSession() session.Message {
 		ToolArgs:    m.ToolArgs,
 		Kind:        session.MessageKind(m.Kind),
 	}
+	if message.Role == session.Tool && len(message.Attachments) > 0 {
+		message.ToolResult = &session.ToolResultView{Attachments: message.Attachments}
+		message.Attachments = nil
+	}
+	return message
 }
 
 func activeCompactionWindow(history []session.Message) (int, string, string) {

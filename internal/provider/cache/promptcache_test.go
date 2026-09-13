@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -12,6 +13,39 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
+
+func TestToolImageSurvivesRequestSnapshotAndReplay(t *testing.T) {
+	ref := "host-frame://session/frame"
+	message := session.Message{Role: session.Tool, Content: "captured", ToolCallID: "call", ToolName: "capture",
+		ToolResult: &session.ToolResultView{Attachments: []session.MessageAttachment{{ResourceRef: ref, Name: "screen.png", MIMEType: "image/png", SizeBytes: 100}}}}
+	segment, err := newMessageSegment(BuildInput{}, SegmentToolResult, message, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(segment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay Segment
+	if err := json.Unmarshal(body, &replay); err != nil {
+		t.Fatal(err)
+	}
+	got := Messages(RawPlan{Segments: []Segment{replay}})
+	if len(got) != 1 || got[0].ToolResult == nil || len(got[0].ToolResult.Attachments) != 1 || got[0].ToolResult.Attachments[0].ResourceRef != ref {
+		t.Fatalf("tool image lost in cached model request: %+v", got)
+	}
+	message.ToolResult.Attachments[0].ResourceRef = "changed"
+	if got[0].ToolResult.Attachments[0].ResourceRef != ref {
+		t.Fatal("snapshot shares mutable attachments")
+	}
+	changed, err := newMessageSegment(BuildInput{}, SegmentToolResult, message, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Fingerprint == segment.Fingerprint {
+		t.Fatal("attachment change did not change request fingerprint")
+	}
+}
 
 func TestValidateCanonicalLineageAllowsOnlyAppendWithinGeneration(t *testing.T) {
 	ctx := context.Background()
