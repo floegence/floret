@@ -782,13 +782,65 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 }
 
 // Prepare freezes the exact Responses body, including opaque replay items, so
-// request estimates cover the bytes that will actually be sent.
+// request estimates cover the complete text and image input actually sent.
 func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedRequest, error) {
 	body, history, err := g.render(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return &deepSeekPrepared{gateway: g, body: body, history: history, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: TokenEstimate{MessageTokens: int64(len(body)), EstimatedInputTokens: int64(len(body)), Source: "deepseek_responses_rendered_json_utf8_bytes_v1", Method: string(config.EstimateMethodProviderRenderedPayload), Confidence: "conservative", Coverage: "complete_request"}}, nil
+	estimate, err := deepSeekRenderedEstimate(body)
+	if err != nil {
+		return nil, err
+	}
+	return &deepSeekPrepared{gateway: g, body: body, history: history, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
+}
+
+// DeepSeek documents an upper bound of 1024 tokens per image. Base64 is a
+// transport encoding, not text input. Only discount image URLs in Responses
+// content parts; identically shaped tool schemas, arguments and text retain
+// their conservative UTF-8 byte estimate. The frozen wire body is untouched.
+// https://api-docs.deepseek.com/guides/vision/
+func deepSeekRenderedEstimate(body []byte) (TokenEstimate, error) {
+	var request struct {
+		Input []struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+			Output  json.RawMessage `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return TokenEstimate{}, fmt.Errorf("estimate DeepSeek rendered request: %w", err)
+	}
+	total := int64(len(body))
+	for _, item := range request.Input {
+		var content json.RawMessage
+		switch item.Type {
+		case "message":
+			content = item.Content
+		case "function_call_output":
+			content = item.Output
+		default:
+			continue
+		}
+		if len(content) == 0 || content[0] != '[' {
+			continue
+		}
+		var parts []struct {
+			Type     string          `json:"type"`
+			ImageURL json.RawMessage `json:"image_url"`
+		}
+		if err := json.Unmarshal(content, &parts); err != nil {
+			return TokenEstimate{}, fmt.Errorf("estimate DeepSeek image parts: %w", err)
+		}
+		for _, part := range parts {
+			if part.Type == "input_image" && len(part.ImageURL) >= 2 && part.ImageURL[0] == '"' {
+				total += 1024 - int64(len(part.ImageURL)-2)
+			}
+		}
+	}
+	return TokenEstimate{MessageTokens: total, EstimatedInputTokens: total,
+		Source: "deepseek_responses_text_bytes_image_tokens_v2", Method: string(config.EstimateMethodProviderRenderedPayload),
+		Confidence: "conservative", Coverage: "complete_request"}, nil
 }
 
 type deepSeekPrepared struct {

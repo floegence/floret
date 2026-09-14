@@ -60,6 +60,16 @@ freshly resolved bytes without persisting image payloads. It shares the existing
 RequestPreparer, Event, and State contracts. No new lifecycle or storage schema
 is introduced. The explicit Chat constructor remains available throughout v7.
 
+DeepSeek preparation estimates the exact rendered Responses body with a
+conservative UTF-8 byte cost for text and a documented upper bound of 1024
+tokens for each image. Image transport URLs are not text tokens. This applies
+equally to user images, tool-result images, and resolved history replay; tool
+schemas, arguments, and literal data-URL text retain their text cost. Estimation
+does not alter the frozen body, fingerprint, or image bytes. Hosts must use the
+same prepared request for budget admission and streaming, not estimate an
+intermediate host DTO. See the [vision budget contract](https://api-docs.deepseek.com/guides/vision/)
+and [budget regression tests](../../provider/deepseek_budget_test.go).
+
 Non-successful DeepSeek HTTP responses are returned as `provider.ProviderHTTPError`
 with status, provider code, and a bounded sanitized message. Context-overflow
 responses continue to use `provider.ErrContextOverflow`; hosts must use the

@@ -65,8 +65,8 @@ func TestDeepSeekVisionPreparesImagesWithoutPersistingPayload(t *testing.T) {
 	if calls != 1 || len(bodies) != 1 || !strings.Contains(bodies[0], dataURL) || strings.Contains(bodies[0], "image_reference") {
 		t.Fatalf("unexpected image request: calls=%d bodies=%v", calls, bodies)
 	}
-	if prepared.TokenEstimate().EstimatedInputTokens < int64(len(bodies[0])) {
-		t.Fatal("estimate excludes image payload")
+	if prepared.TokenEstimate().EstimatedInputTokens < 1024 {
+		t.Fatal("estimate excludes visual input tokens")
 	}
 	raw, _ := json.Marshal(state)
 	if state == nil || strings.Contains(string(raw), "base64") || !strings.Contains(string(raw), "opaque-photo") {
