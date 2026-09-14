@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-09-14: DeepSeek visual request budget
+
+* Count rendered image parts using the documented visual token bound instead
+  of base64 transport bytes. Cover tool output, restart replay, and literal
+  text without changing prepared payloads or public contracts.
+
 ## 2026-09-14: Historical media context replay
 
 * Advance provider projection to v9 so old requests that omitted tool images
