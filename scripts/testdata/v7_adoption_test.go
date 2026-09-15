@@ -11,6 +11,7 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/runtime"
@@ -344,4 +345,112 @@ func TestPublishedGracefulStopPreservesToolOutcome(t *testing.T) {
 		}
 		t.Fatal("confirmed cancellation was lost")
 	}
+}
+
+func TestPublishedToolInputSurvivesRestartWithoutReplay(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "input", StateCompatibilityKey: "test:input"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "inspect-1", Name: "inspect", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "resumed"}, {Type: provider.EventDone, Reason: "stop"}}},
+	)
+	var calls atomic.Int32
+	inspect := tools.Define[map[string]any](tools.Definition{Name: "inspect", InputSchema: tools.StrictObject(map[string]any{}, []string{}), ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil,
+		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+			calls.Add(1)
+			return tools.Result{Text: "Observation complete; user input required before continuing.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}}}}}, nil
+		})
+	agent, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "input", Name: "Input"}, SystemPrompt: "Complete the requested task.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, runtime.WithAgentTools(inspect), runtime.WithAgentEffectAuthorization(runtime.EffectAuthorizationGateFunc(func(ctx context.Context, req runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		return effect(ctx, runtime.EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/input.db"
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		t.Helper()
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) { return agent, nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, svc
+	}
+	host, svc := open()
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	created, err := svc.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(t.Context(), runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: runtime.UserInput{Text: "inspect"}}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := waitPublishedToolInputView(t, svc, created.ThreadID, func(v runtime.ThreadView) bool { return len(v.Interactions) == 1 || v.LastOutcome != nil })
+	if len(waiting.Interactions) != 1 || waiting.Interactions[0].Resolved || len(gateway.Requests()) != 1 {
+		t.Fatalf("tool did not stop model for input: interactions=%+v requests=%d outcome=%v", waiting.Interactions, len(gateway.Requests()), waiting.LastOutcome)
+	}
+	interaction := waiting.Interactions[0]
+	if interaction.ToolCallID != "inspect-1" || interaction.Input == nil || interaction.Input.Summary != "Complete the external step" {
+		t.Fatalf("input lost source identity: %+v", interaction)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	host, svc = open()
+	restored, err := svc.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Interactions) != 1 || restored.Interactions[0].ID != interaction.ID || restored.Interactions[0].Resolved {
+		t.Fatalf("input not restored: %+v", restored.Interactions)
+	}
+	if _, err := svc.Respond(t.Context(), runtime.RespondInput{ThreadID: created.ThreadID, InteractionID: interaction.ID, RequestKey: "respond", Answers: []runtime.InteractionAnswer{{Input: map[string]string{"ready": "Continue"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	final := waitPublishedToolInputView(t, svc, created.ThreadID, func(v runtime.ThreadView) bool {
+		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
+	})
+	if final.Failure != nil || *final.LastOutcome != runtime.TurnOutcomeCompleted || calls.Load() != 1 {
+		t.Fatalf("resume failed or replayed tool: failure=%+v outcome=%v calls=%d", final.Failure, final.LastOutcome, calls.Load())
+	}
+	if final.TurnID != waiting.TurnID {
+		t.Fatal("input response created another turn")
+	}
+	requests := gateway.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("requests=%d", len(requests))
+	}
+	var callCount, resultCount int
+	for _, msg := range requests[1].Messages {
+		for _, call := range msg.ToolCalls {
+			if call.ID == "inspect-1" {
+				callCount++
+			}
+		}
+		if msg.ToolResult != nil && msg.ToolResult.CallID == "inspect-1" {
+			resultCount++
+		}
+	}
+
+	if callCount != 1 || resultCount != 1 {
+		t.Fatalf("tool history is unpaired: calls=%d results=%d", callCount, resultCount)
+	}
+}
+
+func waitPublishedToolInputView(t *testing.T, service runtime.ThreadService, threadID identity.ThreadID, ready func(runtime.ThreadView) bool) runtime.ThreadView {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		view, err := service.View(t.Context(), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ready(view) {
+			return view
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("published tool input view did not converge")
+	return runtime.ThreadView{}
 }

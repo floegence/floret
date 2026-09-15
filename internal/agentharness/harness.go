@@ -859,6 +859,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	if result.Status == engine.Waiting {
 		terminalMetadata["interrupt_reason"] = "ask_user"
+		if result.ControlSignal == nil {
+			terminalMetadata["interrupt_reason"] = "tool_input"
+		}
 	}
 	terminalEntryID := terminalTurnEntryID(t.id, turnID, runID)
 	var stateToSave *provider.State

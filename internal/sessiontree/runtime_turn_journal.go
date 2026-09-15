@@ -622,6 +622,7 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 			failedControls[callID] = runtimePendingInteraction{ID: callID, TurnID: entry.TurnID, RunID: entry.RunID}
 		}
 	}
+	readyToolInputs := ReadyToolInputResultIDs(entries)
 	pending := make(map[string]runtimePendingInteraction)
 	order := make([]string, 0)
 	for _, entry := range entries {
@@ -629,6 +630,15 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 			continue
 		}
 		switch entry.Type {
+		case EntryToolResult:
+			if !readyToolInputs[entry.ID] {
+				continue
+			}
+			id := ToolInputInteractionID(entry.ID)
+			if _, exists := pending[id]; !exists {
+				order = append(order, id)
+			}
+			pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
 		case EntryInteractionAsked:
 			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
 			if failed, ok := failedControls[id]; ok && failed.TurnID == entry.TurnID && failed.RunID == entry.RunID {
@@ -791,4 +801,23 @@ func turnCancellationRequested(entries []Entry, turnID string) bool {
 		}
 	}
 	return false
+}
+
+// ReadyToolInputResultIDs exposes host input requests only once their entire
+// tool batch has settled at its canonical waiting boundary. This prevents an
+// early answer from racing a later sibling result into another provider run.
+func ReadyToolInputResultIDs(entries []Entry) map[string]bool {
+	waiting := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
+			waiting[entry.TurnID+"\x00"+entry.RunID] = true
+		}
+	}
+	ready := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil && waiting[entry.TurnID+"\x00"+entry.RunID] {
+			ready[entry.ID] = true
+		}
+	}
+	return ready
 }

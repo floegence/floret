@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.12.0 - 2026-09-15
+
+- Add completed-tool user input requests through the existing runtime interaction and Respond boundary; wait for the entire batch and every answer without replaying tools.
+- Preserve waits and partial answers across restart, reject incomplete or invalid answers, and retain cancellation and unknown-effect safety.
+- Append automatic domain migration v11 to v12 for validated tool input requests, preserving canonical history and existing v7 public contracts.
+
 ## v7.11.1 - 2026-09-14
 
 - Advance the provider context projection revision for tool-result media replay and reset old render lineages once so historical requests are rebuilt with preserved attachment descriptors.

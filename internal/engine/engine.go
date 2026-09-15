@@ -1309,6 +1309,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				resultView = &session.ToolResultView{}
 			}
 			resultView.Attachments = toolResultAttachments(result.Attachments)
+			resultView.InputRequired = tools.CloneInputRequest(result.InputRequired)
 			resultView.Status = resultStatus
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			if validationErr := validationErrors[result.CallID]; validationErr != nil {
@@ -1380,6 +1381,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if len(validationErrors) > 0 && state.validationCorrectionCount > 2 {
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(errors.New("tool argument correction exhausted"), FailureOriginToolDispatch), metrics, started, decision)
+		}
+		for _, result := range toolResults {
+			if result.InputRequired != nil {
+				e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
+				return e.end(state, opts, step, Waiting, result.InputRequired.Summary, nil, metrics, started, decision)
+			}
 		}
 		lastToolProgressSig = toolProgressSignature(activeToolRegistry, calls, toolResults)
 		decision.ContinuationReason = ContinueToolResults

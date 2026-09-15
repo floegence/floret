@@ -1206,6 +1206,7 @@ func BuildOutputProjection func(result github.com/floegence/floret/v7/tools.Resu
 func CanceledResult func(callID string, name string, text string) github.com/floegence/floret/v7/tools.Result
 func ClearPendingActivity func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
 func CloneActivityPresentation func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
+func CloneInputRequest func(in *github.com/floegence/floret/v7/tools.InputRequest) *github.com/floegence/floret/v7/tools.InputRequest
 type CompletionActivityPayload struct
 field CompletionActivityPayload.Status string tag="json:\"status,omitempty\""
 field CompletionActivityPayload.Summary string tag="json:\"summary,omitempty\""
@@ -1326,6 +1327,16 @@ type FullOutputPlan struct
 field FullOutputPlan.Text string
 field FullOutputPlan.Kind string
 field FullOutputPlan.MIME string
+type InputQuestion struct
+field InputQuestion.ID string tag="json:\"id\""
+field InputQuestion.Prompt string tag="json:\"prompt\""
+field InputQuestion.Kind string tag="json:\"kind\""
+field InputQuestion.Options []string tag="json:\"options,omitempty\""
+field InputQuestion.WriteLabel string tag="json:\"write_label,omitempty\""
+type InputRequest struct
+field InputRequest.Summary string tag="json:\"summary\""
+field InputRequest.Questions []github.com/floegence/floret/v7/tools.InputQuestion tag="json:\"questions\""
+method InputRequest.Validate func() error
 func Integer func(description string) map[string]any
 func InvalidArgumentsText func(name string, err error) string
 type Invocation struct
@@ -1460,6 +1471,7 @@ field Result.Metadata map[string]any
 field Result.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation
 field Result.Artifacts []github.com/floegence/floret/v7/tools.ArtifactRef
 field Result.Attachments []github.com/floegence/floret/v7/tools.ArtifactRef
+field Result.InputRequired *github.com/floegence/floret/v7/tools.InputRequest
 field Result.OutputPolicy *github.com/floegence/floret/v7/tools.OutputPolicy
 field Result.Pending *github.com/floegence/floret/v7/tools.PendingToolResult
 field Result.IsError bool
