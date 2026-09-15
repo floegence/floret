@@ -181,6 +181,23 @@ func TestDeepSeekReturnsStructuredHTTPError(t *testing.T) {
 	}
 }
 
+func TestDeepSeekHTTP413RetainsTransportDetailsAndOverflowRecovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		fmt.Fprint(w, `{"error":{"code":"request_too_large","message":"Request body is too large"}}`)
+	}))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-pro", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = gateway.Stream(t.Context(), provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "hello"}}})
+	var httpError *provider.ProviderHTTPError
+	if !errors.Is(err, provider.ErrContextOverflow) || !errors.As(err, &httpError) || httpError.StatusCode != 413 || httpError.Code != "request_too_large" {
+		t.Fatalf("payload overflow lost its transport details: %v", err)
+	}
+}
+
 func TestDeepSeekHTTPErrorWithoutJSONBodyStaysSafe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
