@@ -1,5 +1,18 @@
 # Floret OKF Update Log
 
+## 2026-09-15: Completed-tool input waits
+
+* Add non-secret tool-requested input through the existing canonical interaction
+  and actor continuation path. Settle the whole batch and require every answer;
+  preserve partial answers across restart and never replay the source tool.
+* Install waiting presentation at run settlement, so a discarded asynchronous
+  refresh cannot hide a durable input interaction. Append domain v11 to v12.
+* API comparison against published v7.11.2 shows no new incompatibility. The
+  original v7.0.0 checker still reports the already-published loss of comparability
+  in `provider.ToolResult` after image attachments were added. This result is not
+  waived or reported as passing; removing the published slice field would itself
+  break current consumers and is outside this additive input contract.
+
 ## 2026-09-14: DeepSeek visual request budget
 
 * Count rendered image parts using the documented visual token bound instead

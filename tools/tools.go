@@ -758,6 +758,16 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 			return failed
 		}
 		result = result.withCall(call.ID, call.Name)
+		if result.InputRequired != nil {
+			if err := result.InputRequired.Validate(); err != nil || result.Pending != nil || result.IsError || result.Structured["outcome"] == ResultOutcomeCanceled || result.Structured["outcome"] == ResultOutcomeDeclined {
+				failure := fmt.Errorf("tool %q returned an invalid input request", call.Name)
+				failed := ErrorResult(call.ID, call.Name, failure.Error())
+				failed.DispatchErr = failure
+				return failed
+			}
+			result.InputRequired = CloneInputRequest(result.InputRequired)
+		}
+
 		if result.Pending != nil {
 			pending := result.Pending.normalized()
 			if err := pending.Validate(); err != nil {

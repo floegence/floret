@@ -284,6 +284,9 @@ func validateBackendDomainMemory(memory *MemoryRepo, label string, validateConte
 				return fmt.Errorf("thread %q leaf is missing from its canonical journal", threadID)
 			}
 			for _, entry := range threadEntries {
+				if label != "v12" && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+					return fmt.Errorf("session-tree %s contains a v12 tool input request", label)
+				}
 				if err := ValidateEntryIntegrity(entry); err != nil {
 					return fmt.Errorf("thread %q contains invalid entry %q: %w", threadID, entry.ID, err)
 				}

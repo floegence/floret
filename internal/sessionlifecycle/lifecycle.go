@@ -268,7 +268,13 @@ func statusForStarted(current phase) status {
 func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		entry := path[i]
-		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolCall {
+		if entry.TurnID != turnID {
+			continue
+		}
+		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+			return entry.Message.ToolResult.InputRequired.Summary
+		}
+		if entry.Type != sessiontree.EntryToolCall {
 			continue
 		}
 		if entry.Message.ToolName == "ask_user" {

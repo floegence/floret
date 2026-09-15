@@ -86,6 +86,20 @@ represents a user decision before execution with structured `outcome=declined`,
 a dispatch or execution failure. It cannot be mistaken for a completed or
 failed handler effect.
 
+# Tool-requested user input
+
+`Result.InputRequired` is an optional `InputRequest` on a successful completed
+result. It reuses the runtime input interaction, not pending host execution or
+an invented model control call. The whole batch settles before input becomes
+answerable, then the Engine stops before sending another provider request.
+Hosts use `ThreadService.Respond`; continuation never repeats the completed tool.
+`InputQuestion` supports `write`, `select`, and `select_or_write`. Every question
+requires an answer; `select` accepts only a declared option. An invalid request,
+an error/canceled/declined result, or combining input with `Pending` fails closed.
+Prompts, choices, and answers are durable non-secret data. External login and
+similar work use acknowledgment choices, never secret inputs. The host owns
+external control and fresh observation after the answer.
+
 # Dispatch Observation
 
 `tools.DispatchOptions.DispatchStarted` is the product-neutral observer used by the

@@ -218,6 +218,16 @@ only when execution has actually ended; a bare `context.Canceled` is insufficien
 Schema v11 appends the v10 to v11 migration without rewriting historical records
 or inventing missing stop provenance.
 
+A completed tool may return `tools.Result.InputRequired` with a validated
+`tools.InputRequest`. Floret commits the result and pauses before the next model
+request, after every tool in the batch settles. The existing input interaction
+survives restart; `Respond` must answer every question, and all batch interactions
+must be resolved before continuation. The original tool is never replayed.
+Prompts, options, and answers are durable, non-secret data. Use acknowledgment
+choices for external user actions; collect passwords and tokens outside the
+agent. `Pending` remains asynchronous host work and cannot be combined with input.
+Domain schema v12 appends the v11 to v12 migration, preserving historical facts.
+
 `Respond` resolves the matching approval or input interaction in place.
 Public Ask User answers become one canonical user message and remain in every
 later provider request. Secret answers are sent only to the current continuation;

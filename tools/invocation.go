@@ -66,11 +66,14 @@ type Result struct {
 	Artifacts  []ArtifactRef
 	// Attachments are opaque media references that may be sent to a provider as
 	// tool-result content. Hosts own the bytes; Floret only persists descriptors.
-	Attachments  []ArtifactRef
-	OutputPolicy *OutputPolicy
-	Pending      *PendingToolResult
-	IsError      bool
-	DispatchErr  error
+	Attachments []ArtifactRef
+	// InputRequired stops the next model request until the user responds through
+	// the thread runtime. It requires a successful, completed tool result.
+	InputRequired *InputRequest
+	OutputPolicy  *OutputPolicy
+	Pending       *PendingToolResult
+	IsError       bool
+	DispatchErr   error
 
 	effectFinalizationRequired bool
 }

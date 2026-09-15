@@ -2447,6 +2447,14 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 		if interactionID == entry.ID || strings.TrimSpace(interactionID) == "" {
 			return nil, fmt.Errorf("%w: invalid interaction resolution id %q", ErrAuthorityCorrupt, entry.ID)
 		}
+		if toolInputSource(messages, interactionID) {
+			content, err := json.Marshal(interactionResponseMessage{Type: "interaction_response", Answers: resolution.Input, SecretAnswersRedacted: resolution.Redacted, Outcome: resolution.Outcome})
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, session.Message{Role: session.User, Kind: session.MessageKindControlSignal, Content: string(content), EntryID: entry.ID, ParentEntryID: entry.ParentID})
+			break
+		}
 		toolName := providerToolNameForCall(messages, interactionID)
 		if (len(resolution.Input) != 0 || resolution.Redacted) && toolName != control.AskUserTool {
 			return nil, fmt.Errorf("%w: interaction resolution %q has no matching ask_user call", ErrAuthorityCorrupt, entry.ID)
@@ -3028,4 +3036,17 @@ func safePath(value string) string {
 		return "_"
 	}
 	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+// ToolInputInteractionID binds a host-requested input to its committed result.
+// The identity does not fabricate a provider tool call.
+func ToolInputInteractionID(resultEntryID string) string { return "tool-input:" + resultEntryID }
+
+func toolInputSource(messages []session.Message, interactionID string) bool {
+	for _, message := range messages {
+		if message.Role == session.Tool && message.ToolResult != nil && message.ToolResult.InputRequired != nil && ToolInputInteractionID(message.EntryID) == interactionID {
+			return true
+		}
+	}
+	return false
 }

@@ -301,6 +301,8 @@ const (
 
 // ThreadInteraction is an unresolved or resolved action embedded in one item.
 type ThreadInteraction struct {
+	toolRequestedInput bool
+
 	ID         string                 `json:"id"`
 	TurnID     identity.TurnID        `json:"turn_id"`
 	RunID      identity.RunID         `json:"run_id"`
@@ -946,6 +948,7 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 }
 
 func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (ThreadSummary, error) {
+	readyToolInputs := sessiontree.ReadyToolInputResultIDs(path)
 	turnID, runID, activity, outcome, failure := threadRuntimeLifecycleFromEntries(meta, path)
 	queueCount, err := canonicalQueueCountFromEntries(path)
 	if err != nil {
@@ -966,6 +969,13 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		switch entry.Type {
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
 			if entry.Message.Kind == session.MessageKindToolValidationError {
+				continue
+			}
+			if input, err := toolInputInteraction(entry, readyToolInputs); err != nil {
+				return ThreadSummary{}, err
+			} else if input != nil {
+				interactionOrder = append(interactionOrder, input.ID)
+				interactions[input.ID] = *input
 				continue
 			}
 			if entry.Message.Kind != session.MessageKindControlSignal || entry.Message.ControlSignal == nil {
@@ -2225,11 +2235,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	// Keep the execution active until its complete canonical terminal snapshot
 	// can be installed in one actor transition. View and Send read this state
 	// directly; delaying publication alone cannot prevent partial settlement.
-	var canonical ThreadView
-	var refreshErr error
-	if completed.Status != TurnStatusWaiting {
-		canonical, refreshErr = service.loadCanonicalThreadView(context.Background(), identity.ThreadID(actor.threadID))
-	}
+	canonical, refreshErr := service.loadCanonicalThreadView(context.Background(), identity.ThreadID(actor.threadID))
 	var current ThreadView
 	changed := false
 	_ = actor.apply(context.Background(), func() error {
@@ -2244,6 +2250,11 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.finishLiveTextSegment()
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.RunProgress = nil
+		if refreshErr == nil {
+			actor.state.view.Items = canonical.Items
+			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
+			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
+		}
 		outcome := TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
 			actor.state.view.Activity = ThreadActivityActive
@@ -2264,9 +2275,6 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		if completed.Status != TurnStatusWaiting {
 			actor.state.view.LastOutcome = &outcome
 			if refreshErr == nil {
-				actor.state.view.Items = canonical.Items
-				actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
-				applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 				if canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && canonical.TurnID == turnID && canonical.RunID == runID {
 					actor.state.view.LastOutcome = canonical.LastOutcome
 					actor.state.view.Failure = canonical.Failure
@@ -3252,6 +3260,17 @@ func canonicalInteractionResolution(interaction ThreadInteraction, answer Intera
 		}
 		public[id] = value
 	}
+	if interaction.toolRequestedInput {
+		if len(public) != len(questions) || len(answer.Input) != len(questions) {
+			return InteractionResolution{}, nil, fmt.Errorf("%w: every tool input question requires an answer", ErrRequestConflict)
+		}
+		for id, question := range questions {
+			value := public[id]
+			if strings.TrimSpace(value) == "" || (question.Kind == "select" && !slices.Contains(question.Options, value)) {
+				return InteractionResolution{}, nil, fmt.Errorf("%w: invalid answer for tool input question %q", ErrRequestConflict, id)
+			}
+		}
+	}
 	if len(public) != 0 {
 		resolution.Input = public
 	}
@@ -3324,6 +3343,12 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
 			return nil
 		}
+		for _, pending := range actor.state.view.Interactions {
+			if pending.Kind == ThreadInteractionInput && !pending.Resolved {
+				return nil
+			}
+		}
+
 		var beginErr error
 		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
 			turnID: interaction.TurnID, runID: runID, logicalRequestID: identity.LogicalRequestID(continuationKey),
@@ -3897,6 +3922,7 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 	if err != nil {
 		return nil, nil, runtimeHostError(err)
 	}
+	readyToolInputs := sessiontree.ReadyToolInputResultIDs(entries)
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
 	interactionIndex := make(map[string]int)
@@ -4032,10 +4058,18 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				items[previous].Activity = &activity
 				items[previous].Live = false
 				reasoningOpen[threadExecutionKey(turnID, runID)] = false
-				continue
+			} else {
+				toolItemIndex[toolKey] = len(items)
+				items = appendThreadItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity})
 			}
-			toolItemIndex[toolKey] = len(items)
-			items = appendThreadItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity})
+			if interaction, err := toolInputInteraction(entry, readyToolInputs); err != nil {
+				return nil, nil, err
+			} else if interaction != nil {
+				interactionIndex[interaction.ID] = len(interactions)
+				interactions = append(interactions, *interaction)
+				itemIndex[interaction.ID] = len(items)
+				items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: interaction})
+			}
 		case sessiontree.EntryEffectAttempt:
 			if _, decodeErr := sessiontree.DecodeCanonicalEffectAttempt(entry); decodeErr != nil {
 				return nil, nil, decodeErr
@@ -4320,4 +4354,23 @@ func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
 	}
 	cloned := *failure
 	return &cloned
+}
+
+func toolInputInteraction(entry sessiontree.Entry, ready map[string]bool) (*ThreadInteraction, error) {
+	if !ready[entry.ID] {
+		return nil, nil
+	}
+	request := entry.Message.ToolResult.InputRequired
+	if err := request.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: invalid tool input request", ErrAuthorityCorrupt)
+	}
+	turnID, runID, err := threadRuntimeEntryIdentity(entry)
+	if err != nil {
+		return nil, err
+	}
+	input := &InputPresentation{Summary: request.Summary}
+	for _, q := range request.Questions {
+		input.Questions = append(input.Questions, InputQuestion{ID: q.ID, Prompt: q.Prompt, Kind: q.Kind, Options: append([]string(nil), q.Options...), WriteLabel: q.WriteLabel})
+	}
+	return &ThreadInteraction{toolRequestedInput: true, ID: sessiontree.ToolInputInteractionID(entry.ID), TurnID: turnID, RunID: runID, Kind: ThreadInteractionInput, ToolCallID: entry.Message.ToolCallID, Input: input}, nil
 }

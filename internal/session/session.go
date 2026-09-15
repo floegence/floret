@@ -26,6 +26,7 @@ const (
 )
 
 type ToolResultView struct {
+	InputRequired *tools.InputRequest `json:"input_required,omitempty"`
 	Status        string              `json:"status,omitempty"`
 	Truncated     bool                `json:"truncated,omitempty"`
 	OriginalBytes int                 `json:"original_bytes,omitempty"`
@@ -158,6 +159,7 @@ func CloneMessage(msg Message) Message {
 	msg.Context = append([]MessageContextItem(nil), msg.Context...)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult
+		view.InputRequired = tools.CloneInputRequest(view.InputRequired)
 		if view.FullOutput != nil {
 			ref := *view.FullOutput
 			view.FullOutput = &ref

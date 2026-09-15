@@ -53,7 +53,7 @@ never model history. See [provider history](../../internal/session/provider_hist
 and [validation feedback](../../internal/engine/validation_feedback.go).
 
 `AgentRequest.Input` is the input for the execution being created. For an
-Ask User continuation it is the accepted, secret-free interaction resolution;
+input continuation it is the accepted, secret-free interaction resolution;
 `AgentRequest.CanonicalTurnInput` remains the original canonical user input of
 that Turn. Agent factories use the latter when resolving stable task identity
 and must not reinterpret an interaction answer as a replacement objective.
@@ -83,6 +83,18 @@ and allow editing/navigation while waiting. Accepted cancellation survives reque
 disconnection and restart; it never starts queued input automatically. Historic
 records without provenance do not acquire an inferred source. Stopping does not
 undo effects that already occurred.
+
+## Tool-requested input
+
+A completed `tools.Result.InputRequired` produces an ordinary input interaction
+linked to the original tool, Turn, and Run. Its identity is derived from the
+canonical result entry. The Activity remains a completed tool; no fake `ask_user`
+call or duplicate result enters provider history. The response is a user-role
+control message. Input becomes visible only after the batch reaches its canonical
+waiting marker. The actor resumes only after every input has resolved, including
+across restart; cancellation resolves outstanding input without another dispatch.
+A failed batch exposes no orphan input request. Hosts must not build a second
+wait owner. See the [tool input contract](tools.md#tool-requested-user-input).
 
 ## Title snapshots
 
