@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +80,19 @@ func TestDeepSeekHTTPOverflowCompactsAndContinuesSameThread(t *testing.T) {
 }
 
 func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T) {
+	for _, initialHistory := range []string{"", strings.Repeat("Earlier observed application state. ", 1500)} {
+		name := "short_history"
+		if initialHistory != "" {
+			name = "large_earlier_observation"
+		}
+		t.Run(name, func(t *testing.T) { testDeepSeekImageHistoryOverflow(t, initialHistory, false) })
+	}
+	t.Run("mixed_frame_transport_bytes", func(t *testing.T) {
+		testDeepSeekImageHistoryOverflow(t, strings.Repeat("Earlier observed application state. ", 1500), true)
+	})
+}
+
+func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, transportBudget bool) {
 	var calls, overflows, effects, recoveries atomic.Int32
 	var latestCall string
 	var awaitingRecovery bool
@@ -87,7 +102,12 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 			Input []map[string]json.RawMessage `json:"input"`
 			Tools []any                        `json:"tools"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
 			t.Error(err)
 			return
 		}
@@ -108,7 +128,11 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 			}
 			lastOutput = callID
 		}
-		if len(raw.Tools) > 0 && images > 3 {
+		exceeded := images > 3
+		if transportBudget {
+			exceeded = len(body) > 900000
+		}
+		if len(raw.Tools) > 0 && exceeded {
 			overflows.Add(1)
 			awaitingRecovery = true
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -138,13 +162,35 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 	}
 	imageBytes := pngBody.Bytes()
 	hash := fmt.Sprintf("%x", sha256.Sum256(imageBytes))
-	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-flash-vision-exp", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "images:overflow", ResolveAttachment: func(context.Context, provider.Attachment) ([]byte, error) { return imageBytes, nil }})
+	images := map[string][]byte{"frame://" + hash: imageBytes}
+	large := image.NewNRGBA(image.Rect(0, 0, 256, 256))
+	random := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < len(large.Pix); i += 4 {
+		large.Pix[i], large.Pix[i+1], large.Pix[i+2], large.Pix[i+3] = byte(random.Uint32()), byte(random.Uint32()), byte(random.Uint32()), 255
+	}
+	var largePNG bytes.Buffer
+	if err := png.Encode(&largePNG, large); err != nil {
+		t.Fatal(err)
+	}
+	largeHash := fmt.Sprintf("%x", sha256.Sum256(largePNG.Bytes()))
+	images["frame://"+largeHash] = largePNG.Bytes()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-flash-vision-exp", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "images:overflow", ResolveAttachment: func(_ context.Context, attachment provider.Attachment) ([]byte, error) {
+		return images[attachment.ResourceRef], nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	capture := tools.Define[map[string]any](tools.Definition{Name: "capture", InputSchema: tools.StrictObject(map[string]any{"frame": map[string]any{"type": "integer"}}, []string{"frame"}), ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
-		effects.Add(1)
-		return tools.Result{Text: "captured", Attachments: []tools.ArtifactRef{{ID: "frame://" + hash, Kind: "image", MIME: "image/png", SHA256: hash, SizeBytes: int64(len(imageBytes))}}}, nil
+		index := effects.Add(1)
+		text := "captured"
+		if index == 1 {
+			text += initialHistory
+		}
+		frameHash, frameBytes := hash, imageBytes
+		if transportBudget && index > 3 {
+			frameHash, frameBytes = largeHash, largePNG.Bytes()
+		}
+		return tools.Result{Text: text, Attachments: []tools.ArtifactRef{{ID: "frame://" + frameHash, Kind: "image", MIME: "image/png", SHA256: frameHash, SizeBytes: int64(len(frameBytes))}}}, nil
 	})
 	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "images", Name: "Images"}, SystemPrompt: "Capture ten times.", Context: config.ContextPolicy{ContextWindowTokens: 128000}}, gateway, WithAgentTools(capture), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, request EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 		return effect(ctx, EffectAuthorizationProof{EffectAttemptID: request.EffectAttemptID, RequestFingerprint: request.RequestFingerprint, ThreadID: request.ThreadID, TurnID: request.TurnID, RunID: request.RunID, ToolCallID: request.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
@@ -157,10 +203,28 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sub, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "Capture ten times."}}); err != nil {
 		t.Fatal(err)
 	}
-	view := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	// Real image encoding and resolution is slower under the race detector;
+	// wait for the canonical terminal event instead of a short polling helper.
+	waitCtx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	var view ThreadView
+	for {
+		view, err = sub.Next(waitCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.ThreadID == created.ThreadID && view.Activity == ThreadActivityIdle && view.LastOutcome != nil {
+			break
+		}
+	}
 	if view.Failure != nil {
 		t.Fatalf("image history recovery failed: %+v", view.Failure)
 	}

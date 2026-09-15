@@ -82,7 +82,16 @@ boundary for direct and streamed failures. The existing bounded compaction path
 then prepares a new request from canonical context; it does not replay completed
 tools, resize images, or change the thread. Image-history regression coverage
 requires the newest tool image after compaction and exactly one execution per
-original tool call. A failed compaction or repeated overflow remains a failure.
+original tool call. On a provider overflow, retention uses the latest complete
+interaction instead of the ordinary text-token tail window, which cannot bound
+image transport bytes. Matching tool calls/results and the latest batch stay
+together; supplemental user anchors remain protected. Earlier exchanges enter
+the canonical summary, while the journal and host image resources stay intact.
+The decision is recorded as `retained_tail_strategy=latest_interaction`. Coverage
+includes long earlier observations and mixed-size images rejected by actual
+serialized body length, not only short histories or image counts. A protected
+anchor or an oversized latest interaction may still prevent recovery; a failed
+compaction or repeated overflow remains a failure.
 
 See [the implementation](../../provider/deepseek.go),
 [wire tests](../../provider/deepseek_test.go),

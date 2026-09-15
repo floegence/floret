@@ -222,6 +222,13 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		return Preparation{}, ErrNoCutPoint
 	}
 	start := findTailStart(history, req.Policy.RecentTailTokens)
+	if req.Trigger == TriggerOverflow {
+		// The provider rejected the rendered request, so the normal text-based
+		// tail budget cannot establish that it fits (notably for image bytes).
+		// Retain the latest interaction and summarize older exchanges instead
+		// of spending the one recovery attempt on substantially the same body.
+		start = overflowTailStart(history)
+	}
 	if protectedAnchor >= 0 && start > protectedAnchor {
 		start = protectedAnchor
 	}
@@ -257,6 +264,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		"message_context_estimate_method": string(req.Policy.EstimatorMethod),
 		"read_files":                      "",
 		"modified_files":                  "",
+	}
+	if req.Trigger == TriggerOverflow {
+		details["retained_tail_strategy"] = "latest_interaction"
 	}
 	recordCompactionBudgetDetails(details, req.Policy)
 	recordProjectedToolDetails(details, history, tail)
@@ -643,6 +653,23 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 		}
 	}
 	return 0
+}
+
+func overflowTailStart(history []session.Message) int {
+	for i := len(history) - 1; i >= 0; i-- {
+		switch history[i].Role {
+		case session.User:
+			return i
+		case session.Tool:
+			// Keep the complete latest batch, not just its final result. The
+			// shared boundary repair below also retains every matching call.
+			for i > 0 && history[i-1].Role == session.Tool {
+				i--
+			}
+			return i
+		}
+	}
+	return len(history) - 1
 }
 
 func fitTailStartForCompactedContext(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy, protectedIndex int) (int, bool) {
