@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-09-15: Overflow retention for image-heavy histories
+
+* Use the latest complete interaction for overflow recovery, preserving tool
+  batches and protected user anchors without changing normal compaction budgets.
+* Cover long preceding observations and mixed-size image transport rejection;
+  retain latest images unchanged and execute each original effect once.
+
 ## 2026-09-15: Provider overflow recovery boundary
 
 * Preserve public overflow classification at the internal engine boundary for
