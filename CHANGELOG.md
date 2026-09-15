@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.13.0 - 2026-09-15
+
+- Preserve Ask User headers, input placeholders, declared choice exhaustiveness, and original choice identifiers, labels, and descriptions in live views, summaries, and restored interaction history.
+- Add optional runtime presentation fields and `InputChoice`; retain v7 `options` strings and submitted answer values unchanged. Missing historical metadata remains absent, with no storage migration or journal rewrite.
+- Detach nested interaction presentation data at public view boundaries so consumer edits cannot mutate runtime state.
+
 ## v7.12.0 - 2026-09-15
 
 - Add completed-tool user input requests through the existing runtime interaction and Respond boundary; wait for the entire batch and every answer without replaying tools.

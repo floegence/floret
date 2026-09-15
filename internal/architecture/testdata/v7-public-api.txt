@@ -607,6 +607,11 @@ type ImportedPendingInput struct
 field ImportedPendingInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 field ImportedPendingInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
 field ImportedPendingInput.SupplementalContext []github.com/floegence/floret/v7/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
+type InputChoice struct
+field InputChoice.ChoiceID string tag="json:\"choice_id,omitempty\""
+field InputChoice.Value string tag="json:\"value\""
+field InputChoice.Label string tag="json:\"label\""
+field InputChoice.Description string tag="json:\"description,omitempty\""
 type InputPresentation struct
 field InputPresentation.Summary string tag="json:\"summary\""
 field InputPresentation.Questions []github.com/floegence/floret/v7/runtime.InputQuestion tag="json:\"questions\""
@@ -617,6 +622,10 @@ field InputQuestion.Kind string tag="json:\"kind\""
 field InputQuestion.Options []string tag="json:\"options,omitempty\""
 field InputQuestion.WriteLabel string tag="json:\"write_label,omitempty\""
 field InputQuestion.Secret bool tag="json:\"secret,omitempty\""
+field InputQuestion.Header string tag="json:\"header,omitempty\""
+field InputQuestion.WritePlaceholder string tag="json:\"write_placeholder,omitempty\""
+field InputQuestion.ChoicesExhaustive *bool tag="json:\"choices_exhaustive,omitempty\""
+field InputQuestion.Choices []github.com/floegence/floret/v7/runtime.InputChoice tag="json:\"choices,omitempty\""
 func InspectSQLite func(ctx context.Context, path string) (result github.com/floegence/floret/v7/runtime.StorageInspection, err error)
 type InteractionAnswer struct
 field InteractionAnswer.InteractionID string tag="json:\"interaction_id,omitempty\""

@@ -228,6 +228,15 @@ choices for external user actions; collect passwords and tokens outside the
 agent. `Pending` remains asynchronous host work and cannot be combined with input.
 Domain schema v12 appends the v11 to v12 migration, preserving historical facts.
 
+Ask User `runtime.InputQuestion` preserves optional `Header`, `WritePlaceholder`,
+`ChoicesExhaustive`, and rich `Choices` from the original validated call across
+live updates, reads, and restart. Each `InputChoice` has an original `ChoiceID`,
+`Label`, optional `Description`, and the established answer `Value`. Submit
+`Value` through `Respond`; the original identifier is display identity, not a
+new answer encoding. Existing v7 `Options` strings remain supported and match
+rich choice values in order. Historical and tool-origin input without rich
+metadata remains valid; hosts must not invent missing presentation content.
+
 `Respond` resolves the matching approval or input interaction in place.
 Public Ask User answers become one canonical user message and remain in every
 later provider request. Secret answers are sent only to the current continuation;

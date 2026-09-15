@@ -1,5 +1,17 @@
 # Floret OKF Update Log
 
+## 2026-09-15: Ask User presentation contract
+
+* Add optional rich runtime input metadata in v7.13.0 while preserving every v7
+  option string and answer value. The existing validated control signal remains
+  the single durable source; domain schema v12 and old records are unchanged.
+* Verify provider-to-subscription projection, current reads, workspace summaries,
+  restart, history, original response values, and caller mutation isolation.
+* The generated baseline and comparison with published v7.12.2 pass. The v7.0.0
+  comparison still reports only the previously recorded `provider.ToolResult`
+  comparability change; this release neither changes that type nor claims the
+  historical compatibility check passed.
+
 ## 2026-09-15: Overflow retention for image-heavy histories
 
 * Use the latest complete interaction for overflow recovery, preserving tool
