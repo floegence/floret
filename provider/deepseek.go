@@ -387,9 +387,7 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 		defer response.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		lower := strings.ToLower(string(raw))
-		if response.StatusCode == 413 || response.StatusCode == 400 && (strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context window") || strings.Contains(lower, "maximum context length")) {
-			return nil, ErrContextOverflow
-		}
+		overflow := response.StatusCode == 413 || response.StatusCode == 400 && (strings.Contains(lower, "context_length_exceeded") || strings.Contains(lower, "context window") || strings.Contains(lower, "maximum context length"))
 		var envelope struct {
 			Error struct {
 				Code    string `json:"code"`
@@ -397,12 +395,18 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &envelope)
-		return nil, &ProviderHTTPError{
+		failure := &ProviderHTTPError{
 			Provider:   "DeepSeek",
 			StatusCode: response.StatusCode,
 			Code:       sanitizeProviderErrorText(envelope.Error.Code),
 			Message:    sanitizeProviderErrorText(envelope.Error.Message),
 		}
+		if overflow {
+			// Preserve the established recovery classification while exposing
+			// whether the server rejected transport bytes (413) or model context.
+			return nil, errors.Join(failure, ErrContextOverflow)
+		}
+		return nil, failure
 	}
 	out := make(chan Event, 32)
 	go func() { defer close(out); defer response.Body.Close(); g.readStream(ctx, response.Body, history, out) }()

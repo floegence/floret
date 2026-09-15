@@ -76,9 +76,18 @@ responses continue to use `provider.ErrContextOverflow`; hosts must use the
 typed error for actionable provider diagnostics and must not expose credentials
 or raw request bodies.
 
+HTTP 413 preserves both the typed transport status and the established overflow
+classification. The runtime translates public overflow errors at its engine
+boundary for direct and streamed failures. The existing bounded compaction path
+then prepares a new request from canonical context; it does not replay completed
+tools, resize images, or change the thread. Image-history regression coverage
+requires the newest tool image after compaction and exactly one execution per
+original tool call. A failed compaction or repeated overflow remains a failure.
+
 See [the implementation](../../provider/deepseek.go),
 [wire tests](../../provider/deepseek_test.go),
 [runtime restart test](../../runtime/deepseek_test.go), and
+[image overflow recovery tests](../../runtime/deepseek_overflow_test.go), and
 [DeepSeek's compatibility contract](https://api-docs.deepseek.com/guides/responses_api/).
 
 Static hosted tools are frozen with `runtime.WithAgentHostedTools`; it is

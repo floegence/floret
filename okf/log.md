@@ -1,5 +1,14 @@
 # Floret OKF Update Log
 
+## 2026-09-15: Provider overflow recovery boundary
+
+* Preserve public overflow classification at the internal engine boundary for
+  both direct and streamed errors, activating existing bounded compaction.
+* Keep HTTP 413 status and safe diagnostics alongside the existing overflow
+  sentinel. Verify continuous image tool history recovers without resizing
+  images, changing threads, or repeating tool effects. No public API or storage
+  schema changes are introduced.
+
 ## 2026-09-15: Completed-tool input waits
 
 * Add non-secret tool-requested input through the existing canonical interaction

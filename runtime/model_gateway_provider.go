@@ -126,7 +126,7 @@ func (adapter modelGatewayProvider) modelRequest(request provider.Request) (mode
 func streamModelGateway(ctx context.Context, start func(context.Context) (<-chan modelEvent, error)) (<-chan provider.StreamEvent, error) {
 	stream, err := start(ctx)
 	if err != nil {
-		return nil, err
+		return nil, engineProviderError(err)
 	}
 	out := make(chan provider.StreamEvent)
 	go func() {
@@ -148,6 +148,16 @@ func streamModelGateway(ctx context.Context, start func(context.Context) (<-chan
 		}
 	}()
 	return out, nil
+}
+
+// Public gateways and the engine have distinct error contracts. Translate at
+// this single boundary for synchronous failures and streamed errors alike;
+// retain the original cause for host errors.Is/errors.As diagnostics.
+func engineProviderError(err error) error {
+	if errors.Is(err, publicprovider.ErrContextOverflow) && !errors.Is(err, provider.ErrContextOverflow) {
+		return errors.Join(err, provider.ErrContextOverflow)
+	}
+	return err
 }
 
 type modelGatewayPreparedRequest struct {
@@ -249,7 +259,7 @@ func providerStreamEvent(event modelEvent) provider.StreamEvent {
 	if event.HostedToolCall != nil {
 		hosted = provider.ToolCall{ID: event.HostedToolCall.ID, Name: event.HostedToolCall.Name, Args: event.HostedToolCall.Args}
 	}
-	return provider.StreamEvent{Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: event.Err}
+	return provider.StreamEvent{Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: engineProviderError(event.Err)}
 }
 
 func providerToolCallStream(value *ToolCallStream) provider.ToolCallStream {
