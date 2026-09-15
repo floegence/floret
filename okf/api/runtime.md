@@ -84,6 +84,23 @@ disconnection and restart; it never starts queued input automatically. Historic
 records without provenance do not acquire an inferred source. Stopping does not
 undo effects that already occurred.
 
+## Input presentation
+
+Validated Ask User fields have one projection into `InputPresentation` for
+subscriptions, current views, workspace summaries, restart, and historical
+interactions. Optional `InputQuestion.Header`, `WritePlaceholder`, and
+`ChoicesExhaustive` preserve source intent; absent metadata remains absent.
+`Choices` contains `InputChoice` entries with original `ChoiceID`, display
+`Label` and `Description`, and the established submitted `Value`.
+
+This additive v7 API preserves `Options` as ordered answer strings for existing
+consumers throughout v7; removal requires a future major version. Both option
+forms come from the same projection. Hosts submit `Value`, not `ChoiceID`.
+Tool-origin `tools.InputRequest` remains valid with its existing string options.
+No domain schema change, new durable state, history rewrite, or host journal
+access is needed. Public views detach nested input data from the runtime owner.
+See the [runtime presentation regression](../../runtime/thread_input_presentation_test.go).
+
 ## Tool-requested input
 
 A completed `tools.Result.InputRequired` produces an ordinary input interaction

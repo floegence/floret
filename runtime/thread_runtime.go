@@ -331,13 +331,28 @@ type InputPresentation struct {
 	Questions []InputQuestion `json:"questions"`
 }
 
+// InputChoice preserves display metadata alongside the established v7 answer value.
+// ChoiceID identifies the original option; clients submit Value through Respond.
+type InputChoice struct {
+	ChoiceID    string `json:"choice_id,omitempty"`
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
 type InputQuestion struct {
-	ID         string   `json:"id"`
-	Prompt     string   `json:"prompt"`
-	Kind       string   `json:"kind"`
-	Options    []string `json:"options,omitempty"`
-	WriteLabel string   `json:"write_label,omitempty"`
-	Secret     bool     `json:"secret,omitempty"`
+	ID     string `json:"id"`
+	Prompt string `json:"prompt"`
+	Kind   string `json:"kind"`
+	// Options retains the v7 answer values, in the same order as Choices when present.
+	Options          []string `json:"options,omitempty"`
+	WriteLabel       string   `json:"write_label,omitempty"`
+	Secret           bool     `json:"secret,omitempty"`
+	Header           string   `json:"header,omitempty"`
+	WritePlaceholder string   `json:"write_placeholder,omitempty"`
+	// ChoicesExhaustive is absent when the source did not declare it.
+	ChoicesExhaustive *bool         `json:"choices_exhaustive,omitempty"`
+	Choices           []InputChoice `json:"choices,omitempty"`
 }
 
 type InteractionResolution struct {
@@ -1043,9 +1058,7 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		case ThreadInteractionInput:
 			summary.Attention.InputCount++
 			if interaction.Input != nil {
-				input := *interaction.Input
-				input.Questions = append([]InputQuestion(nil), interaction.Input.Questions...)
-				summary.PendingInput = &input
+				summary.PendingInput = cloneInputPresentation(interaction.Input)
 			}
 		}
 	}
@@ -1116,9 +1129,7 @@ func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadS
 	for index := len(view.Interactions) - 1; index >= 0; index-- {
 		interaction := view.Interactions[index]
 		if !interaction.Resolved && interaction.Kind == ThreadInteractionInput && interaction.Input != nil {
-			input := *interaction.Input
-			input.Questions = append([]InputQuestion(nil), interaction.Input.Questions...)
-			summary.PendingInput = &input
+			summary.PendingInput = cloneInputPresentation(interaction.Input)
 			break
 		}
 	}
@@ -3805,7 +3816,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 			out[index].Activity = &timeline.Items[0]
 		}
 		if item.Interaction != nil {
-			interaction := *item.Interaction
+			interaction := cloneThreadInteraction(*item.Interaction)
 			out[index].Interaction = &interaction
 		}
 	}
@@ -3813,7 +3824,53 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 }
 
 func cloneThreadInteractions(items []ThreadInteraction) []ThreadInteraction {
-	return append([]ThreadInteraction(nil), items...)
+	out := slices.Clone(items)
+	for index := range out {
+		out[index] = cloneThreadInteraction(out[index])
+	}
+	return out
+}
+
+func cloneThreadInteraction(item ThreadInteraction) ThreadInteraction {
+	item.Input = cloneInputPresentation(item.Input)
+	if item.Approval != nil {
+		approval := *item.Approval
+		approval.Effects = slices.Clone(approval.Effects)
+		approval.Targets = slices.Clone(approval.Targets)
+		item.Approval = &approval
+	}
+	if item.Approved != nil {
+		approved := *item.Approved
+		item.Approved = &approved
+	}
+	if item.Resolution != nil {
+		resolution := *item.Resolution
+		resolution.Input = maps.Clone(resolution.Input)
+		if resolution.Approved != nil {
+			approved := *resolution.Approved
+			resolution.Approved = &approved
+		}
+		item.Resolution = &resolution
+	}
+	return item
+}
+
+func cloneInputPresentation(input *InputPresentation) *InputPresentation {
+	if input == nil {
+		return nil
+	}
+	out := *input
+	out.Questions = slices.Clone(input.Questions)
+	for index := range out.Questions {
+		question := &out.Questions[index]
+		question.Options = slices.Clone(question.Options)
+		question.Choices = slices.Clone(question.Choices)
+		if question.ChoicesExhaustive != nil {
+			exhaustive := *question.ChoicesExhaustive
+			question.ChoicesExhaustive = &exhaustive
+		}
+	}
+	return &out
 }
 
 func hydrateCanonicalQueue(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]QueuedInput, error) {
@@ -4249,11 +4306,16 @@ func inputPresentationFromControlSignal(text string, payload map[string]any) *In
 				continue
 			}
 			question := InputQuestion{
-				ID:         optionalString(item["id"]),
-				Prompt:     optionalString(item["question"]),
-				Kind:       optionalString(item["response_mode"]),
-				WriteLabel: optionalString(item["write_label"]),
-				Secret:     item["is_secret"] == true,
+				ID:               optionalString(item["id"]),
+				Header:           optionalString(item["header"]),
+				WritePlaceholder: optionalString(item["write_placeholder"]),
+				Prompt:           optionalString(item["question"]),
+				Kind:             optionalString(item["response_mode"]),
+				WriteLabel:       optionalString(item["write_label"]),
+				Secret:           item["is_secret"] == true,
+			}
+			if exhaustive, ok := item["choices_exhaustive"].(bool); ok {
+				question.ChoicesExhaustive = &exhaustive
 			}
 			if choices, ok := item["choices"].([]any); ok {
 				for _, rawChoice := range choices {
@@ -4267,6 +4329,10 @@ func inputPresentationFromControlSignal(text string, payload map[string]any) *In
 					}
 					if label != "" {
 						question.Options = append(question.Options, label)
+						question.Choices = append(question.Choices, InputChoice{
+							ChoiceID: optionalString(choice["choice_id"]),
+							Value:    label, Label: label, Description: optionalString(choice["description"]),
+						})
 					}
 				}
 			}
