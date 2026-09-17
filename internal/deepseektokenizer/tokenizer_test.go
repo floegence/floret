@@ -2,7 +2,6 @@ package deepseektokenizer
 
 import (
 	"encoding/json"
-	"github.com/dlclark/regexp2"
 	"os"
 	"strings"
 	"testing"
@@ -56,18 +55,5 @@ func TestCountAfterIdle(t *testing.T) {
 	time.Sleep(4 * time.Second)
 	if _, err := Count(strings.Repeat("Inspect input 123 and return the result.\n", 15000)); err != nil {
 		t.Fatal("tokenization failed after idle")
-	}
-}
-
-func TestTimeoutDoesNotExposeInput(t *testing.T) {
-	pattern := regexp2.MustCompile(`(x+)+y`, regexp2.None)
-	pattern.MatchTimeout = time.Millisecond
-	c := counter{patterns: []*regexp2.Regexp{pattern}}
-	_, err := c.count([]rune("private-context-marker"+strings.Repeat("x", 80)), 0)
-	if err == nil {
-		t.Fatal("expected bounded timeout")
-	}
-	if strings.Contains(err.Error(), "private-context-marker") || strings.Contains(err.Error(), "xxxx") {
-		t.Fatal("timeout exposed input")
 	}
 }

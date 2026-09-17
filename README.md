@@ -437,6 +437,19 @@ Missing terminal events fail; truncated responses continue through the
 normal runtime limit policy. The existing `NewOpenAICompatible` constructor
 continues to select Chat Completions explicitly.
 
+## Model-aware request estimates
+
+`provider.EstimateRenderedRequest` lets custom transports estimate the exact frozen
+Chat Completions, Responses, or Anthropic Messages JSON they send. It counts model
+input rather than HTTP controls or host metadata, including tool definitions and
+structured-output schemas. Recognized OpenAI models use embedded official
+cl100k/o200k vocabularies. Unknown models use an explicitly identified multilingual
+BPE proxy; OpenAI-compatible transport alone does not select an OpenAI tokenizer.
+Images use separate dimension/model budgets, while opaque files remain conservative.
+`RequestFormatJSON` supports opaque host transports without claiming exact server
+rendering. These offline predictions never replace native measurements. See
+[provenance, coverage, and limitations](scripts/openai-tokenizer/README.md).
+
 ## Model metadata
 
 The engine uses a generated, offline models.dev snapshot with official protocol

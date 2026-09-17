@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-18: Model-aware request estimation
+
+* Add offline rendered-request counting with explicit model/format identity, verified OpenAI vocabularies, multilingual proxy estimates, and separate media budgets.
+* Preserve canonical calibration and schema v12; hosts consume one public counter instead of maintaining provider-specific estimators.
+
 ## 2026-09-17: Structured tool inputs and results
 
 * Document optional independent inputs, explicit empty results, code syntax and

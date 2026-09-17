@@ -801,7 +801,7 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 		t.Fatal(err)
 	}
 	if withTool.EstimatedInputTokens <= base.EstimatedInputTokens ||
-		withTool.Source != "openai_compatible_rendered_json" ||
+		withTool.Source != "rendered_proxy_bpe_media_v1" ||
 		withTool.Method != provider.TokenEstimateProviderRenderedPayload ||
 		withTool.Confidence != provider.EstimateConservative {
 		t.Fatalf("estimate did not include rendered tool schema: base=%#v withTool=%#v", base, withTool)
@@ -946,7 +946,7 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	if estimate.EstimatedInputTokens <= baseEstimate.EstimatedInputTokens ||
-		estimate.Source != "anthropic_rendered_json" ||
+		estimate.Source != "rendered_proxy_bpe_media_v1" ||
 		estimate.Method != provider.TokenEstimateProviderRenderedPayload ||
 		estimate.Confidence != provider.EstimateConservative {
 		t.Fatalf("anthropic estimate did not include rendered tools/source/confidence: base=%#v estimate=%#v", baseEstimate, estimate)

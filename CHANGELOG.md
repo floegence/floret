@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.16.0 - 2026-09-18
+
+- Add public model-aware estimation of frozen provider requests, excluding transport metadata and separating actual media from text.
+- Embed hash-verified official OpenAI vocabularies; use an explicit multilingual proxy for unknown models and opaque host transports, with documented uncertainty.
+- Share bounded BPE counting with DeepSeek; preserve canonical calibration, overflow recovery and schema v12.
+
+Compatibility: additive API relative to v7.15.1. The v7.0.0 baseline retains the documented pre-existing ToolResult comparability loss; this release does not change that type.
+
 ## v7.15.1 - 2026-09-18
 
 - Upgrade regexp2 to fix stale timeout deadlines on the first tokenizer request after an idle conversation.
