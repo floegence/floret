@@ -454,3 +454,15 @@ func waitPublishedToolInputView(t *testing.T, service runtime.ThreadService, thr
 	t.Fatal("published tool input view did not converge")
 	return runtime.ThreadView{}
 }
+
+func TestPublishedStructuredInputAndEmptyOutput(t *testing.T) {
+	call := &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Inputs: []tools.StructuredActivityRow{{Content: "log('page');", Format: tools.StructuredActivityRowFormatCode, Language: "javascript"}}}}
+	result := tools.MergeActivityPresentations(call, &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{RowsProvided: true}})
+	if err := result.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	payload := result.Payload.(tools.StructuredActivityPayload)
+	if !payload.RowsProvided || len(payload.Rows) != 0 || len(payload.Inputs) != 1 || payload.Inputs[0].Truncated {
+		t.Fatal("published activity input/output contract changed")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
@@ -336,11 +337,8 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.DisplayName = sanitizeText(payload.DisplayName)
 		payload.Summary = sanitizeText(payload.Summary)
 		payload.Error = sanitizeError(payload.Error)
-		for i := range payload.Rows {
-			payload.Rows[i].Title = sanitizeText(payload.Rows[i].Title)
-			payload.Rows[i].Meta = sanitizeText(payload.Rows[i].Meta)
-			payload.Rows[i].Content = sanitizeText(payload.Rows[i].Content)
-		}
+		payload.Inputs = sanitizeStructuredActivityRows(payload.Inputs)
+		payload.Rows = sanitizeStructuredActivityRows(payload.Rows)
 		return payload
 	case tools.TerminalActivityPayload:
 		payload.Operation = sanitizeText(payload.Operation)
@@ -465,6 +463,34 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 	default:
 		return nil
 	}
+}
+
+func sanitizeStructuredActivityRows(in []tools.StructuredActivityRow) []tools.StructuredActivityRow {
+	out := append([]tools.StructuredActivityRow(nil), in...)
+	for i := range out {
+		row := &out[i]
+		row.Title = safeActivityText(row.Title, 8_000)
+		row.Meta = safeActivityText(row.Meta, 8_000)
+		if row.Format == tools.StructuredActivityRowFormatCode {
+			// Preserve code whitespace while applying the same path and secret policy.
+			row.Content = Redact(SafePathRefsText(strings.ToValidUTF8(row.Content, "\uFFFD")))
+			if len(row.Content) > 64<<10 {
+				end := 64 << 10
+				for end > 0 && !utf8.RuneStart(row.Content[end]) {
+					end--
+				}
+				row.Content = row.Content[:end]
+				row.Truncated = true
+			}
+		} else {
+			content := safeActivityText(row.Content, 0)
+			if len([]rune(content)) > 8_000 {
+				row.Truncated = true
+			}
+			row.Content = safeActivityText(content, 8_000)
+		}
+	}
+	return out
 }
 
 func safeActivityText(value string, limit int) string {
@@ -651,6 +677,10 @@ func SafePathRefsText(value string) string {
 }
 
 func preservePathRef(value string, start int, text string) bool {
+	// Bare slashes include code comment delimiters, not private path names.
+	if strings.Trim(text, "/") == "" {
+		return true
+	}
 	if strings.HasPrefix(text, "/artifacts/") {
 		return true
 	}

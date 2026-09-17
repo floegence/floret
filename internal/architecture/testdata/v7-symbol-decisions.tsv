@@ -28,3 +28,7 @@ tools.SubAgentOperationAction	add	SubAgentOperationActivityPayload	closed produc
 tools.SubAgentOperationTarget	add	SubAgentOperationActivityPayload	ordered child identity and bounded display summary
 tools.SubAgentOperationActivityPayload	add	ActivityPresentation	preserves exact multi-child operation semantics without label inference
 tools.TerminalActivityPayload	add-fields	ActivityPresentation	adds safe terminal operation, byte, cursor, location, and timeout facts without raw stdin
+tools.StructuredActivityPayload.Inputs	add	structured tool display	preserve sanitized invocation facts independently of result snapshots
+tools.StructuredActivityPayload.RowsProvided	add	structured tool display	distinguish explicit empty output from absent historical data
+tools.StructuredActivityRow.Language	add	code presentation	bounded syntax identifier without execution authority
+tools.StructuredActivityRow.Truncated	add	bounded output presentation	expose preview limits instead of implying complete content

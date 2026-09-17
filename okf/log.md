@@ -1,5 +1,15 @@
 # Floret OKF Update Log
 
+## 2026-09-17: Structured tool inputs and results
+
+* Document optional independent inputs, explicit empty results, code syntax and
+  truncation metadata in the public Activity contract.
+* Keep historical fields valid and schema v12 unchanged; verify live views,
+  subscriptions, journal history and restart against the same canonical facts.
+* The API baseline, published v7.13.0 comparison, full tests, vet, focused race
+  checks and candidate adoption pass. The v7.0.0 comparison retains only the
+  previously documented `provider.ToolResult` comparability failure.
+
 ## 2026-09-15: Ask User presentation contract
 
 * Add optional rich runtime input metadata in v7.13.0 while preserving every v7
