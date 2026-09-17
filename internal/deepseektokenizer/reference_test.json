@@ -1,0 +1,46 @@
+[
+  {
+    "text": "Hello, world!",
+    "tokens": 4
+  },
+  {
+    "text": "你好，世界！请解释上下文管理。",
+    "tokens": 9
+  },
+  {
+    "text": "const n = 123456789;\nconsole.log(`value: ${n}`);",
+    "tokens": 17
+  },
+  {
+    "text": "{\"input\":[{\"role\":\"user\",\"content\":\"hello\\nworld\"}],\"tools\":[]}",
+    "tokens": 19
+  },
+  {
+    "text": "https://example.com/a_b?q=123456&lang=zh-CN",
+    "tokens": 17
+  },
+  {
+    "text": "café é \t\n👩🏽‍💻 🌸",
+    "tokens": 16
+  },
+  {
+    "text": "日本語 カタカナ 한국어 العربية русский",
+    "tokens": 11
+  },
+  {
+    "text": "  a\r\n\t b  ",
+    "tokens": 7
+  },
+  {
+    "text": "foo_BAR---test AAAAAAAAAAAAAAAA",
+    "tokens": 9
+  },
+  {
+    "text": "你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好你好",
+    "tokens": 200
+  },
+  {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 63
+  }
+]

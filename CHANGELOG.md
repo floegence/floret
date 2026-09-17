@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.15.0 - 2026-09-18
+
+- Preserve native context calibration across durable Turn boundaries and restart using canonical history prefixes and complete request deltas.
+- Add committed confirmed/estimated context snapshots for consistent live and reconnect presentation, retaining existing v7 fields and schema v12.
+- Replace DeepSeek UTF-8 byte estimates with an offline official V4 tokenizer, explicit text headroom, and image budgets; preserve overflow recovery and invalidate incompatible old estimates.
+
+Compatibility: no incompatible API changes from published v7.14.0. The v7.0.0 comparison still reports the pre-existing `provider.ToolResult` comparability loss from the image attachment addition in v7.10.2; this release does not change that type.
+
 ## v7.14.0 - 2026-09-17
 
 - Preserve safe structured tool inputs independently of result rows, including explicit empty output snapshots.

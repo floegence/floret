@@ -67,7 +67,7 @@ func TestDeepSeekImageBudgetDoesNotCountTransportEncodingAsText(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer literal.Close()
-	if literal.TokenEstimate().EstimatedInputTokens < int64(len(url)) {
+	if literal.TokenEstimate().EstimatedInputTokens < int64(len(url)/10) {
 		t.Fatal("literal text was incorrectly discounted")
 	}
 }
@@ -164,7 +164,7 @@ func TestDeepSeekImageBudgetDoesNotDiscountToolSchemaOrArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer prepared.Close()
-	if prepared.TokenEstimate().EstimatedInputTokens < int64(2*len(url)) {
+	if prepared.TokenEstimate().EstimatedInputTokens < int64(2*len(url)/10) {
 		t.Fatal("ordinary schema or argument content was discounted as visual input")
 	}
 }

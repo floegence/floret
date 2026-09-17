@@ -74,12 +74,13 @@ type ListThreadDetailEventsOptions struct {
 }
 
 type ThreadContextSnapshot struct {
-	Model       ThreadContextModel         `json:"model,omitempty"`
-	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
-	Usage       *observation.ContextStatus `json:"usage,omitempty"`
-	UsageTotals *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
-	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
-	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
+	ContextUsage *event.ThreadContextUsage  `json:"context_usage,omitempty"`
+	Model        ThreadContextModel         `json:"model,omitempty"`
+	Policy       ThreadContextPolicy        `json:"policy,omitempty"`
+	Usage        *observation.ContextStatus `json:"usage,omitempty"`
+	UsageTotals  *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
+	Compactions  []ThreadContextCompaction  `json:"compactions,omitempty"`
+	UpdatedAt    time.Time                  `json:"updated_at,omitempty"`
 }
 
 type ThreadTokenUsageTotals struct {
@@ -267,6 +268,7 @@ func (h *AgentHarness) threadDetailActivityTimeline(entries []sessiontree.Entry,
 
 func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext threadDetailActivityContext, generatedAt time.Time) (ThreadContextSnapshot, error) {
 	out := ThreadContextSnapshot{}
+	usageProjection := contextUsageProjection{}
 	compactions := make([]ThreadContextCompaction, 0)
 	seenCompactions := map[string]int{}
 	latestContextObservedAt := time.Time{}
@@ -284,6 +286,7 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 			out.Model.Provider = record.Provider
 			out.Model.Model = record.Model
 			out.Policy = record.Policy
+			usageProjection.applyPolicy(out.Model, out.Policy)
 			out.Usage = nil
 			hasPolicy = true
 			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
@@ -302,12 +305,14 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 				out.UsageTotals.add(status.Usage)
 			}
 			out.Usage = &status
+			usageProjection.applyStatus(status)
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
 		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind:
 			compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
 			if err != nil {
 				return ThreadContextSnapshot{}, err
 			}
+			usageProjection.applyCompaction(compact)
 			compactions = upsertThreadDetailCompaction(compactions, seenCompactions, compact)
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
 		}
@@ -318,6 +323,7 @@ func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retained
 	if out.Usage != nil && (out.Usage.Provider != out.Model.Provider || out.Usage.Model != out.Model.Model) {
 		return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
 	}
+	out.ContextUsage = event.CloneThreadContextUsage(usageProjection.usage)
 	out.Compactions = compactions
 	if !latestContextObservedAt.IsZero() {
 		out.UpdatedAt = latestContextObservedAt

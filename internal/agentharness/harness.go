@@ -792,6 +792,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	projection := &turnProjection{
 		thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream,
 		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
+		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
+	}
+	if !opts.SkipContextPolicyEvent {
+		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	eng.SetSink(projection)
 	result := eng.RunTurn(ctx, engine.RunInput{
@@ -1979,6 +1983,7 @@ type turnProjection struct {
 	lastCompaction    event.Event
 	activeAttempt     providerAttemptIdentity
 	threadUsageTotals ThreadTokenUsageTotals
+	contextUsage      contextUsageProjection
 	err               error
 }
 
@@ -2052,7 +2057,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	p.mu.Unlock()
-	if ev.Type == event.ProviderUsage {
+	if ev.Type == event.ProviderUsage || ev.Type == event.ProviderRequest {
 		status, committed, appendErr := p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
 		if appendErr != nil {
 			p.mu.Lock()
@@ -2062,15 +2067,44 @@ func (p *turnProjection) Emit(ev event.Event) {
 		}
 		if committed {
 			p.mu.Lock()
-			p.threadUsageTotals.add(status.Usage)
-			totals := p.threadUsageTotals
-			p.mu.Unlock()
-			ev.ThreadUsageTotals = &event.ThreadUsageTotals{
-				InputTokens: totals.InputTokens, OutputTokens: totals.OutputTokens,
-				CacheReadTokens: totals.CacheReadTokens, CacheWriteTokens: totals.CacheWriteTokens,
+			p.contextUsage.applyStatus(status)
+			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+			if status.Phase == observation.ContextPhaseProviderUsage {
+				p.threadUsageTotals.add(status.Usage)
+				totals := p.threadUsageTotals
+				ev.ThreadUsageTotals = &event.ThreadUsageTotals{InputTokens: totals.InputTokens, OutputTokens: totals.OutputTokens, CacheReadTokens: totals.CacheReadTokens, CacheWriteTokens: totals.CacheWriteTokens}
 			}
+			p.mu.Unlock()
 		}
 	}
+	if ev.Type == event.ContextCompact {
+		if err := p.thread.appendContextCompactionEvent(p.ctx, p.turnID, p.runID, ev); err != nil {
+			p.mu.Lock()
+			p.err = err
+			p.mu.Unlock()
+			return
+		}
+		compact, ok, err := subAgentContextCompactionFromEvent(ev)
+		if err != nil {
+			p.mu.Lock()
+			p.err = err
+			p.mu.Unlock()
+			return
+		}
+		if ok {
+			p.mu.Lock()
+			p.contextUsage.applyCompaction(compact)
+			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+			p.lastCompaction = ev
+			p.mu.Unlock()
+		}
+	}
+	if ev.Type == event.StepStart {
+		p.mu.Lock()
+		ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+		p.mu.Unlock()
+	}
+
 	if p.downstream != nil {
 		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}
@@ -2080,16 +2114,6 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	switch ev.Type {
-	case event.ProviderRequest:
-		_, _, p.err = p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
-	case event.ProviderUsage:
-		// Final usage was committed before live publication so totals and the
-		// canonical journal always advance together. Stream usage is not durable.
-	case event.ContextCompact:
-		p.err = p.thread.appendContextCompactionEvent(p.ctx, p.turnID, p.runID, ev)
-		if p.err == nil {
-			p.lastCompaction = ev
-		}
 	case event.ProviderDelta:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err

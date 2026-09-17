@@ -294,6 +294,14 @@ migrates affected v8 stores; hosts do not patch context records.
 Each successfully committed final `provider_usage` runtime event also carries
 `ThreadUsageTotals`. It is the live form of the same canonical fold; projected
 requests, stream-only usage, rejected attempts, and failed writes omit it.
+`ThreadContextSnapshot.ContextUsage` and `runtime.Event.ContextUsage` expose the
+same committed `ThreadContextUsage`: `Confirmed` holds the latest native usage,
+while `Estimate` holds the current prediction. Hosts can keep measurements stable
+while separately showing request pressure. Matching model and budget policies
+retain the measurement across Turns and restart; changed policies and successful
+compaction clear it. Failed, cancelled, and noop compactions do not clear it.
+Missing native usage updates only the estimate. Existing `Usage` and
+`ContextStatus` fields retain their latest-status semantics.
 `ThreadService.Subscribe` publishes workspace summary and current-view updates;
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle
@@ -420,7 +428,12 @@ state, validates them against the canonical conversation, and returns the full
 input history on each call, including search receipts and reasoning. Hosts must
 not inspect or rebuild this state. Supplemental-context Turns retain their
 existing no-continuation-state privacy boundary. Prepared estimates include the complete wire
-payload. Missing terminal events fail; truncated responses continue through the
+payload using the offline official DeepSeek V4 tokenizer, 10% text headroom,
+and 1024 tokens per actual image. These are conservative predictions, not native
+usage. Canonical history fingerprints validate native calibration across Turns;
+message ID reassignment does not invalidate it. See the
+[estimator provenance and limits](scripts/deepseek-tokenizer/README.md).
+Missing terminal events fail; truncated responses continue through the
 normal runtime limit policy. The existing `NewOpenAICompatible` constructor
 continues to select Chat Completions explicitly.
 

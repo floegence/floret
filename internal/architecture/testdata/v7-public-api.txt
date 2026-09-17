@@ -567,6 +567,7 @@ field Event.ContinuationReason github.com/floegence/floret/v7/observation.Contin
 field Event.Activity *github.com/floegence/floret/v7/tools.ActivityPresentation tag="json:\"activity,omitempty\""
 field Event.ActivityTimeline *github.com/floegence/floret/v7/observation.ActivityTimeline tag="json:\"activity_timeline,omitempty\""
 field Event.Stream *github.com/floegence/floret/v7/runtime.StreamObservation tag="json:\"stream,omitempty\""
+field Event.ContextUsage *github.com/floegence/floret/v7/runtime.ThreadContextUsage tag="json:\"context_usage,omitempty\""
 field Event.ContextStatus *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"context_status,omitempty\""
 field Event.ThreadUsageTotals *github.com/floegence/floret/v7/runtime.ThreadTokenUsageTotals tag="json:\"thread_usage_totals,omitempty\""
 field Event.Compaction *github.com/floegence/floret/v7/observation.CompactionEvent tag="json:\"compaction,omitempty\""
@@ -861,12 +862,16 @@ field ThreadContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,om
 field ThreadContextPolicy.ReservedOutputTokens int64 tag="json:\"reserved_output_tokens,omitempty\""
 type ThreadContextReader interface interface{Context(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadContextSnapshot, error)}
 type ThreadContextSnapshot struct
+field ThreadContextSnapshot.ContextUsage *github.com/floegence/floret/v7/runtime.ThreadContextUsage tag="json:\"context_usage,omitempty\""
 field ThreadContextSnapshot.Model github.com/floegence/floret/v7/runtime.ThreadContextModel tag="json:\"model,omitempty\""
 field ThreadContextSnapshot.Policy github.com/floegence/floret/v7/runtime.ThreadContextPolicy tag="json:\"policy,omitempty\""
 field ThreadContextSnapshot.Usage *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"usage,omitempty\""
 field ThreadContextSnapshot.UsageTotals *github.com/floegence/floret/v7/runtime.ThreadTokenUsageTotals tag="json:\"usage_totals,omitempty\""
 field ThreadContextSnapshot.Compactions []github.com/floegence/floret/v7/runtime.ThreadContextCompaction tag="json:\"compactions,omitempty\""
 field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty\""
+type ThreadContextUsage struct
+field ThreadContextUsage.Confirmed *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"confirmed,omitempty\""
+field ThreadContextUsage.Estimate *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"estimate,omitempty\""
 type ThreadInteraction struct
 field ThreadInteraction.ID string tag="json:\"id\""
 field ThreadInteraction.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""

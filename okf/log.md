@@ -1313,3 +1313,7 @@
   safe input-byte metadata, output cursor snapshots, public execution location,
   and timeout facts. Hosts own semantic labels and credential suppression;
   Floret owns validation, sanitization, cumulative projection, and history.
+
+## 2026-09-18
+
+Document canonical context calibration, committed measurement/estimate snapshots, and official DeepSeek tokenizer provenance and uncertainty.

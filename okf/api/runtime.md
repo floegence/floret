@@ -240,7 +240,7 @@ lineage and the complete typed canonical history. It does not create a
 compaction, rewrite the journal, or reuse old provider continuation state.
 
 `ThreadContextReader` treats each committed Turn policy as the boundary for the
-latest context-usage sample. Until that Turn records its first request status,
+legacy `Usage` sample. Until that Turn records its first request status,
 the snapshot exposes the new provider, model, and policy without carrying the
 previous Turn's usage. Canonical whole-thread token totals remain cumulative
 across the boundary.
@@ -327,3 +327,14 @@ The v10 -> v11 edge validates the exact old authority and preserves every journa
 byte. New stop facts require source, mode, and exact execution identity; a canceled
 effect may reference a confirmed canonical canceled result. These shapes are
 rejected under v10. Restart seals pending cancellation without re-executing tools.
+
+`ThreadContextSnapshot.ContextUsage` and `runtime.Event.ContextUsage` add a
+shared projection of committed context records without changing schema v12.
+`Confirmed` is the most recent native measurement; `Estimate` is the current
+prediction, including unavailable-native final observations. Same-model,
+same-budget Turns retain confirmed usage. Model or budget changes and successful
+compaction clear samples; failed, cancelled, and noop compactions preserve them.
+Live publication follows canonical commit. Reconnect and restart use the same
+fold. A present empty snapshot clears prior samples; absent samples are unknown.
+The existing `Usage` and `ContextStatus` remain latest-status observations for
+v7 consumers. Hosts must not use a prior confirmation to hide current pressure.

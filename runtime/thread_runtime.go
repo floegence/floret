@@ -402,12 +402,22 @@ type ThreadView struct {
 // ThreadContextSnapshot is the canonical context and compaction projection for
 // one thread. Compactions contain one latest lifecycle record per operation.
 type ThreadContextSnapshot struct {
-	Model       ThreadContextModel         `json:"model,omitempty"`
-	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
-	Usage       *observation.ContextStatus `json:"usage,omitempty"`
-	UsageTotals *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
-	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
-	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
+	ContextUsage *ThreadContextUsage        `json:"context_usage,omitempty"`
+	Model        ThreadContextModel         `json:"model,omitempty"`
+	Policy       ThreadContextPolicy        `json:"policy,omitempty"`
+	Usage        *observation.ContextStatus `json:"usage,omitempty"`
+	UsageTotals  *ThreadTokenUsageTotals    `json:"usage_totals,omitempty"`
+	Compactions  []ThreadContextCompaction  `json:"compactions,omitempty"`
+	UpdatedAt    time.Time                  `json:"updated_at,omitempty"`
+}
+
+// ThreadContextUsage separates model-confirmed input usage from the current
+// request estimate. Confirmed describes a completed provider request, not a
+// count of all tokens currently visible in the conversation. Nil samples mean
+// unavailable; a non-nil empty snapshot explicitly clears obsolete samples.
+type ThreadContextUsage struct {
+	Confirmed *observation.ContextStatus `json:"confirmed,omitempty"`
+	Estimate  *observation.ContextStatus `json:"estimate,omitempty"`
 }
 
 // ThreadTokenUsageTotals contains disjoint token totals from canonical final
@@ -1233,7 +1243,8 @@ func (service *threadRuntimeService) Context(ctx context.Context, threadID ident
 		})
 	}
 	return ThreadContextSnapshot{
-		Model: ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
+		ContextUsage: runtimeThreadContextUsage(contextSnapshot.ContextUsage),
+		Model:        ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
 		Policy: ThreadContextPolicy{
 			ContextWindowTokens:  contextSnapshot.Policy.ContextWindowTokens,
 			MaxOutputTokens:      contextSnapshot.Policy.MaxOutputTokens,

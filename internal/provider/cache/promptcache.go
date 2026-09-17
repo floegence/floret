@@ -1144,6 +1144,19 @@ func cloneTurnSurface(surface TurnSurfaceSnapshot) TurnSurfaceSnapshot {
 	return surface
 }
 
+// MatchesCanonicalHistoryPrefix checks the provider-neutral content of an
+// earlier request. Entry IDs deliberately do not participate in this identity.
+func MatchesCanonicalHistoryPrefix(previous ProviderRequestRecord, history []session.Message) bool {
+	if previous.CanonicalHistoryPrefixHash == "" || previous.CanonicalMessageCount < 0 || previous.CanonicalMessageCount > len(history) {
+		return false
+	}
+	hashes := make([]string, previous.CanonicalMessageCount)
+	for i := range hashes {
+		hashes[i] = canonicalMessageHash(history[i])
+	}
+	return HashStrings(hashes...) == previous.CanonicalHistoryPrefixHash
+}
+
 func canonicalMessageHash(message session.Message) string {
 	return StableHash(mustCanonical(map[string]any{
 		"role":                  message.Role,
