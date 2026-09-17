@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.15.1 - 2026-09-18
+
+- Upgrade regexp2 to fix stale timeout deadlines on the first tokenizer request after an idle conversation.
+- Sanitize tokenizer failures so model input cannot enter error messages; retain the official token counts and bounded long-span BPE work.
+
 ## v7.15.0 - 2026-09-18
 
 - Preserve native context calibration across durable Turn boundaries and restart using canonical history prefixes and complete request deltas.

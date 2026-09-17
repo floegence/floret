@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -105,7 +106,8 @@ func (c *counter) count(text []rune, stage int) (int64, error) {
 		match, err = c.patterns[stage].FindNextMatch(match)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("split DeepSeek V4 input: %w", err)
+		// regexp2 errors include the input. Never expose model context in failures.
+		return 0, errors.New("DeepSeek V4 input tokenization exceeded its work limit")
 	}
 	n, err := c.count(text[offset:], stage+1)
 	return total + n, err

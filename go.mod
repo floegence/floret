@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/dlclark/regexp2 v1.10.0
+	github.com/dlclark/regexp2 v1.12.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0

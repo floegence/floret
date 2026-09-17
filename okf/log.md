@@ -1317,3 +1317,5 @@
 ## 2026-09-18
 
 Document canonical context calibration, committed measurement/estimate snapshots, and official DeepSeek tokenizer provenance and uncertainty.
+
+Record the tokenizer dependency idle-clock fix and input-free error boundary in v7.15.1.

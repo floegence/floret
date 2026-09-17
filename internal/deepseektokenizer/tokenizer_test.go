@@ -2,9 +2,11 @@ package deepseektokenizer
 
 import (
 	"encoding/json"
+	"github.com/dlclark/regexp2"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Fixtures come from the official tokenizer.json with tokenizers 0.23.2,
@@ -42,5 +44,30 @@ func BenchmarkRequest(b *testing.B) {
 		if _, err := Count(text); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// regexp2's timeout clock stops when idle. Reusing its old deadline used to
+// falsely time out the first large request after an idle conversation.
+func TestCountAfterIdle(t *testing.T) {
+	if _, err := Count("warmup"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(4 * time.Second)
+	if _, err := Count(strings.Repeat("Inspect input 123 and return the result.\n", 15000)); err != nil {
+		t.Fatal("tokenization failed after idle")
+	}
+}
+
+func TestTimeoutDoesNotExposeInput(t *testing.T) {
+	pattern := regexp2.MustCompile(`(x+)+y`, regexp2.None)
+	pattern.MatchTimeout = time.Millisecond
+	c := counter{patterns: []*regexp2.Regexp{pattern}}
+	_, err := c.count([]rune("private-context-marker"+strings.Repeat("x", 80)), 0)
+	if err == nil {
+		t.Fatal("expected bounded timeout")
+	}
+	if strings.Contains(err.Error(), "private-context-marker") || strings.Contains(err.Error(), "xxxx") {
+		t.Fatal("timeout exposed input")
 	}
 }
