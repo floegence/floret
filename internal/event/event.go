@@ -101,11 +101,34 @@ type Event struct {
 	Activity           *tools.ActivityPresentation `json:"activity,omitempty"`
 	// ThreadUsageTotals is populated only after a final provider-usage status
 	// has been committed to the canonical thread journal.
-	ThreadUsageTotals *ThreadUsageTotals `json:"thread_usage_totals,omitempty"`
-	Artifacts         []Artifact         `json:"artifacts,omitempty"`
-	Sources           []SourceRef        `json:"sources,omitempty"`
-	Payload           any                `json:"-"`
-	Timestamp         time.Time          `json:"timestamp"`
+	ThreadUsageTotals *ThreadUsageTotals  `json:"thread_usage_totals,omitempty"`
+	ContextUsage      *ThreadContextUsage `json:"context_usage,omitempty"`
+	Artifacts         []Artifact          `json:"artifacts,omitempty"`
+	Sources           []SourceRef         `json:"sources,omitempty"`
+	Payload           any                 `json:"-"`
+	Timestamp         time.Time           `json:"timestamp"`
+}
+
+// ThreadContextUsage contains detached, committed context observations.
+type ThreadContextUsage struct {
+	Confirmed *observation.ContextStatus `json:"confirmed,omitempty"`
+	Estimate  *observation.ContextStatus `json:"estimate,omitempty"`
+}
+
+func CloneThreadContextUsage(in *ThreadContextUsage) *ThreadContextUsage {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Confirmed != nil {
+		v := *in.Confirmed
+		out.Confirmed = &v
+	}
+	if in.Estimate != nil {
+		v := *in.Estimate
+		out.Estimate = &v
+	}
+	return &out
 }
 
 type ThreadUsageTotals struct {
@@ -930,7 +953,7 @@ func publicMetadataStringKey(key string) bool {
 		return true
 	case "pending_handle", "pending_state":
 		return true
-	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
+	case "pressure_signal", "pressure_source", "pressure_anchor_reason", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
 		return true
 	case "operation_id", "request_id", "stage", "phase", "compaction_id", "compaction_window_id", "previous_compaction_id", "provider_state_kind":
 		return true

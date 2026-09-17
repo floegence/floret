@@ -61,7 +61,7 @@ RequestPreparer, Event, and State contracts. No new lifecycle or storage schema
 is introduced. The explicit Chat constructor remains available throughout v7.
 
 DeepSeek preparation estimates the exact rendered Responses body with a
-conservative UTF-8 byte cost for text and a documented upper bound of 1024
+conservative offline official V4 tokenizer count plus 10% text headroom and a documented upper bound of 1024
 tokens for each image. Image transport URLs are not text tokens. This applies
 equally to user images, tool-result images, and resolved history replay; tool
 schemas, arguments, and literal data-URL text retain their text cost. Estimation
@@ -117,3 +117,11 @@ and reasoning capabilities; it does not own user selection or credentials.
 The [maintenance workflow](../../scripts/model-catalog/README.md) regenerates
 offline and keeps live OpenRouter/Ollama discovery in the host. No v7 public
 catalog API or domain schema is added.
+
+Native pressure calibration validates the existing request record's canonical
+history prefix, model, prompt scope, execution envelope, rendering revision,
+compaction lineage, and estimator identity. It uses the complete estimate delta,
+including overhead, independently of transient message IDs. Missing evidence,
+changed history, ephemeral input, and negative deltas invalidate calibration.
+The tokenizer source and estimation limitations are documented in the
+[regeneration guide](../../scripts/deepseek-tokenizer/README.md).

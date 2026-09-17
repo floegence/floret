@@ -821,11 +821,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 	}
 	pressureTracker := NewContextPressureTracker(opts.PromptScopeID)
-	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model); err != nil {
-		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
-	} else if ok && !supplementalTurn {
-		pressureTracker.SetAnchor(anchor)
+	if !supplementalTurn {
+		if err := e.restorePressureAnchor(ctx, pressureTracker, opts); err != nil {
+			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
+		}
 	}
+
 	for step := 1; ; step++ {
 		opts.PreviousProviderState = provider.CloneState(latestProviderState)
 		if supplementalTurn {
@@ -1416,11 +1417,10 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
 	tracker := NewContextPressureTracker(opts.PromptScopeID)
-	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model); err != nil {
+	if err := e.restorePressureAnchor(ctx, tracker, opts); err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
-	} else if ok {
-		tracker.SetAnchor(anchor)
 	}
+
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 	active, req, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
@@ -2518,6 +2518,7 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 		"output_headroom":             pressure.OutputHeadroomTokens,
 		"pressure_signal":             pressure.Signal,
 		"pressure_source":             pressure.Source,
+		"pressure_anchor_reason":      req.PressureAnchorReason,
 		"confidence":                  pressure.Confidence,
 		"hard_limit_exceeded":         pressure.HardLimitExceeded,
 	}
@@ -2655,6 +2656,7 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	}
 	providerHistory, _, _ := session.ProjectProviderHistory(history, "")
 	req.ContextPressure = tracker.Project(req, providerHistory)
+	req.PressureAnchorReason = tracker.anchorReason
 	if req.EphemeralUser == nil {
 		req.RawPlan.ProjectedPressure = req.ContextPressure
 		req.RawPlan.RequestShape = requestShapeHashes(req)

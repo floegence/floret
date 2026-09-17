@@ -680,6 +680,7 @@ type Event struct {
 	Activity           *tools.ActivityPresentation    `json:"activity,omitempty"`
 	ActivityTimeline   *observation.ActivityTimeline  `json:"activity_timeline,omitempty"`
 	Stream             *StreamObservation             `json:"stream,omitempty"`
+	ContextUsage       *ThreadContextUsage            `json:"context_usage,omitempty"`
 	ContextStatus      *observation.ContextStatus     `json:"context_status,omitempty"`
 	// ThreadUsageTotals contains cumulative canonical usage after this final
 	// provider-usage record has been committed to the thread journal.
@@ -722,6 +723,24 @@ func (e Event) Validate() error {
 			return errors.New("runtime event context status identity mismatch")
 		}
 	}
+	if e.ContextUsage != nil {
+		for i, sample := range []*observation.ContextStatus{e.ContextUsage.Confirmed, e.ContextUsage.Estimate} {
+			if sample == nil {
+				continue
+			}
+			if err := sample.Validate(); err != nil {
+				return fmt.Errorf("invalid context usage: %w", err)
+			}
+			if sample.ThreadID != e.ThreadID {
+				return errors.New("runtime event context usage thread mismatch")
+			}
+			measured := sample.Phase == observation.ContextPhaseProviderUsage && sample.Usage.Available
+			if (i == 0) != measured {
+				return errors.New("runtime event context usage sample kind mismatch")
+			}
+		}
+	}
+
 	if e.ThreadUsageTotals != nil {
 		if e.ContextStatus == nil || e.ContextStatus.Phase != observation.ContextPhaseProviderUsage || e.Type != observation.EventTypeProviderUsage {
 			return errors.New("runtime event thread usage totals require final provider usage")
@@ -1992,6 +2011,7 @@ func runtimeEvent(ev event.Event) Event {
 		Activity:           cloneActivityPresentation(ev.Activity),
 		Stream:             stream,
 		ContextStatus:      contextStatus,
+		ContextUsage:       runtimeThreadContextUsage(ev.ContextUsage),
 		ThreadUsageTotals:  runtimeThreadUsageTotals(ev.ThreadUsageTotals),
 		Compaction:         compactionEvent,
 		CompactionDebug:    compactionDebugEvent,
@@ -2011,6 +2031,14 @@ func runtimeAttemptIdentity(metadata any) (identity.LogicalRequestID, string, in
 		return "", "", 0
 	}
 	return identity.LogicalRequestID(stringFromMetadata(values, "logical_request_id")), strings.TrimSpace(stringFromMetadata(values, "attempt_id")), intFromMetadata(values, "attempt_epoch")
+}
+
+func runtimeThreadContextUsage(in *event.ThreadContextUsage) *ThreadContextUsage {
+	cloned := event.CloneThreadContextUsage(in)
+	if cloned == nil {
+		return nil
+	}
+	return &ThreadContextUsage{Confirmed: cloned.Confirmed, Estimate: cloned.Estimate}
 }
 
 func runtimeThreadUsageTotals(in *event.ThreadUsageTotals) *ThreadTokenUsageTotals {

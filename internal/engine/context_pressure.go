@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -19,6 +20,8 @@ type PressureAnchorState = cache.PressureAnchorState
 type ContextPressureTracker struct {
 	promptScopeID     string
 	anchor            PressureAnchorState
+	anchorRequest     cache.ProviderRequestRecord
+	anchorReason      string
 	pendingCompaction bool
 	pendingPressure   contextpolicy.ContextPressure
 }
@@ -27,11 +30,12 @@ func NewContextPressureTracker(promptScopeID string) *ContextPressureTracker {
 	return &ContextPressureTracker{promptScopeID: promptScopeID}
 }
 
-func (t *ContextPressureTracker) SetAnchor(anchor PressureAnchorState) {
+func (t *ContextPressureTracker) SetAnchor(anchor PressureAnchorState, request cache.ProviderRequestRecord) {
 	if t == nil || anchor.WindowInputTokens <= 0 {
 		return
 	}
 	t.anchor = anchor
+	t.anchorRequest = request
 }
 
 func (t *ContextPressureTracker) Project(req provider.Request, history []session.Message) contextpolicy.ContextPressure {
@@ -39,14 +43,11 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 		return contextpolicy.PressureFromProjectedRequest(req.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, req.ContextPolicy)
 	}
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
-	if validPressureAnchor(t.anchor, req, history) {
+	t.anchorReason = pressureAnchorInvalidReason(t.anchor, t.anchorRequest, req, history)
+	if t.anchorReason == "" {
 		delta := contextpolicy.RequestDeltaEstimate{
-			MessageDeltaTokens:        estimate.MessageTokens - t.anchor.MessageTokens,
-			PrefixDeltaTokens:         estimate.PrefixTokens - t.anchor.PrefixTokens,
-			ToolDefinitionDeltaTokens: estimate.ToolDefinitionTokens - t.anchor.ToolDefinitionTokens,
-			Source:                    estimate.Source,
-			Method:                    estimate.Method,
-			Confidence:                estimate.Confidence,
+			EstimatedDeltaTokens: estimate.EstimatedInputTokens - t.anchorRequest.RequestEstimate.EstimatedInputTokens,
+			Source:               estimate.Source, Method: estimate.Method, Confidence: estimate.Confidence,
 		}
 		base := estimate
 		base.EstimatedInputTokens = t.anchor.WindowInputTokens
@@ -66,10 +67,18 @@ func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []
 	if normalized.Available {
 		anchor = pressureAnchorForRequest(req, history, normalized, pressure)
 		if anchor.WindowInputTokens > 0 {
-			t.anchor = anchor
+			t.SetAnchor(anchor, cache.ProviderRequestRecord{
+				ID: anchor.RequestID, PromptScopeID: req.PromptScopeID, Provider: req.Provider, Model: req.Model,
+				CanonicalEnvelopeHash:      req.RawPlan.CanonicalEnvelopeHash,
+				CanonicalMessageCount:      req.RawPlan.CanonicalMessageCount,
+				CanonicalHistoryPrefixHash: req.RawPlan.CanonicalHistoryPrefixHash,
+				RenderLineageKey:           req.RawPlan.RenderLineageKey, ContextProjectionRevision: req.RawPlan.ContextProjectionRevision,
+				RequestEstimate: req.RequestEstimate, HasEphemeralOverlay: req.EphemeralUser != nil,
+			})
 		}
 	} else {
-		pressure = contextpolicy.PressureFromMissingNativeUsage(req.RequestEstimate, req.ContextPolicy)
+		pressure = req.ContextPressure
+		pressure.Source = contextpolicy.PressureSourceMissingNativeUsage
 	}
 	if pressure.CompactionNeeded {
 		t.pendingCompaction = true
@@ -92,41 +101,58 @@ func (t *ContextPressureTracker) ConsumePendingCompaction() (contextpolicy.Conte
 	return pressure, true
 }
 
-func validPressureAnchor(anchor PressureAnchorState, req provider.Request, history []session.Message) bool {
-	if anchor.WindowInputTokens <= 0 {
-		return false
+// A calibration belongs to the canonical request prefix, not transient Engine
+// message identifiers, which the durable harness replaces when committing output.
+func pressureAnchorInvalidReason(anchor PressureAnchorState, previous cache.ProviderRequestRecord, req provider.Request, history []session.Message) string {
+	if anchor.WindowInputTokens <= 0 || previous.ID == "" || previous.ID != anchor.RequestID {
+		return "missing_measurement"
 	}
-	if anchor.PromptScopeID != "" && anchor.PromptScopeID != req.PromptScopeID {
-		return false
+	if anchor.PromptScopeID != req.PromptScopeID || previous.PromptScopeID != req.PromptScopeID {
+		return "prompt_scope_changed"
 	}
-	if anchor.Provider != "" && anchor.Provider != req.Provider {
-		return false
+	if anchor.Provider != req.Provider || anchor.Model != req.Model || previous.Provider != req.Provider || previous.Model != req.Model {
+		return "model_changed"
 	}
-	if anchor.Model != "" && anchor.Model != req.Model {
-		return false
+	if anchor.AdapterVersion != req.RawPlan.Version || previous.ContextProjectionRevision != req.RawPlan.ContextProjectionRevision {
+		return "projection_changed"
 	}
-	if anchor.AdapterVersion != "" && anchor.AdapterVersion != req.RawPlan.Version {
-		return false
+	if anchor.CompactionGeneration != req.RawPlan.CompactionGeneration || anchor.CompactionWindowID != req.RawPlan.CompactionWindowID || req.RawPlan.CanonicalLineageReset {
+		return "lineage_changed"
 	}
-	if anchor.CompactionGeneration != req.RawPlan.CompactionGeneration || anchor.CompactionWindowID != req.RawPlan.CompactionWindowID {
-		return false
+	if previous.HasEphemeralOverlay || req.EphemeralUser != nil {
+		return "ephemeral_input"
 	}
-	if anchor.Shape.CacheShapeHash != req.Cache.Namespace {
-		return false
+	if anchor.Shape.CacheShapeHash != req.Cache.Namespace || previous.CanonicalEnvelopeHash != req.RawPlan.CanonicalEnvelopeHash || previous.RenderLineageKey != req.RawPlan.RenderLineageKey {
+		return "execution_surface_changed"
 	}
-	if anchor.EstimateSource != "" && anchor.EstimateSource != req.RequestEstimate.Source {
-		return false
+	if anchor.EstimateSource != req.RequestEstimate.Source || anchor.EstimateMethod != req.RequestEstimate.Method || previous.RequestEstimate.Confidence != req.RequestEstimate.Confidence {
+		return "estimator_changed"
 	}
-	if anchor.EstimateMethod != "" && anchor.EstimateMethod != req.RequestEstimate.Method {
-		return false
+	if !cache.MatchesCanonicalHistoryPrefix(previous, history) {
+		return "history_changed"
 	}
-	if anchor.LastMessageEntryID == "" {
-		return false
+	if previous.RequestEstimate.EstimatedInputTokens <= 0 || req.RequestEstimate.EstimatedInputTokens < previous.RequestEstimate.EstimatedInputTokens {
+		return "non_monotonic_estimate"
 	}
-	if anchor.LastMessageIndex < 0 || anchor.LastMessageIndex >= len(history) {
-		return false
+	return ""
+}
+
+func (e *Engine) restorePressureAnchor(ctx context.Context, tracker *ContextPressureTracker, opts Options) error {
+	anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model)
+	if err != nil || !ok {
+		return err
 	}
-	return history[anchor.LastMessageIndex].EntryID == anchor.LastMessageEntryID
+	requests, err := e.prompt.ProviderRequests(ctx, opts.PromptScopeID)
+	if err != nil {
+		return err
+	}
+	for i := len(requests) - 1; i >= 0; i-- {
+		if requests[i].ID == anchor.RequestID {
+			tracker.SetAnchor(anchor, requests[i])
+			break
+		}
+	}
+	return nil
 }
 
 func pressureAnchorForRequest(req provider.Request, history []session.Message, usage provider.Usage, pressure contextpolicy.ContextPressure) PressureAnchorState {

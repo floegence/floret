@@ -17,6 +17,7 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/internal/configbridge"
+	"github.com/floegence/floret/v7/internal/deepseektokenizer"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 )
 
@@ -799,51 +800,72 @@ func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedReq
 	return &deepSeekPrepared{gateway: g, body: body, history: history, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
 }
 
-// DeepSeek documents an upper bound of 1024 tokens per image. Base64 is a
-// transport encoding, not text input. Only discount image URLs in Responses
-// content parts; identically shaped tool schemas, arguments and text retain
-// their conservative UTF-8 byte estimate. The frozen wire body is untouched.
+// Count the complete rendered request with the offline official V4 vocabulary.
+// Wire JSON differs from server prompt rendering, so include 10% text headroom
+// as a conservative estimate, never an exact count. Native usage calibrates deltas.
+// Only actual Responses image parts receive the documented 1024-token budget;
+// tool schemas, arguments, and image-like literal text retain their text cost.
 // https://api-docs.deepseek.com/guides/vision/
 func deepSeekRenderedEstimate(body []byte) (TokenEstimate, error) {
-	var request struct {
-		Input []struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
-			Output  json.RawMessage `json:"output"`
-		} `json:"input"`
-	}
+	var request map[string]json.RawMessage
 	if err := json.Unmarshal(body, &request); err != nil {
 		return TokenEstimate{}, fmt.Errorf("estimate DeepSeek rendered request: %w", err)
 	}
-	total := int64(len(body))
-	for _, item := range request.Input {
-		var content json.RawMessage
-		switch item.Type {
+	var input []map[string]json.RawMessage
+	if err := json.Unmarshal(request["input"], &input); err != nil {
+		return TokenEstimate{}, err
+	}
+	var imageTokens int64
+	for _, item := range input {
+		var kind string
+		if err := json.Unmarshal(item["type"], &kind); err != nil {
+			return TokenEstimate{}, err
+		}
+		field := ""
+		switch kind {
 		case "message":
-			content = item.Content
+			field = "content"
 		case "function_call_output":
-			content = item.Output
+			field = "output"
 		default:
 			continue
 		}
+		content := item[field]
 		if len(content) == 0 || content[0] != '[' {
 			continue
 		}
-		var parts []struct {
-			Type     string          `json:"type"`
-			ImageURL json.RawMessage `json:"image_url"`
-		}
+		var parts []map[string]json.RawMessage
 		if err := json.Unmarshal(content, &parts); err != nil {
-			return TokenEstimate{}, fmt.Errorf("estimate DeepSeek image parts: %w", err)
+			return TokenEstimate{}, err
 		}
 		for _, part := range parts {
-			if part.Type == "input_image" && len(part.ImageURL) >= 2 && part.ImageURL[0] == '"' {
-				total += 1024 - int64(len(part.ImageURL)-2)
+			var partType string
+			if err := json.Unmarshal(part["type"], &partType); err != nil {
+				return TokenEstimate{}, err
+			}
+			if partType == "input_image" {
+				var url string
+				if err := json.Unmarshal(part["image_url"], &url); err != nil {
+					return TokenEstimate{}, err
+				}
+				part["image_url"] = json.RawMessage(`""`)
+				imageTokens += 1024
 			}
 		}
+		item[field], _ = json.Marshal(parts)
 	}
+	request["input"], _ = json.Marshal(input)
+	text, err := json.Marshal(request)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	tokens, err := deepseektokenizer.Count(string(text))
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	total := tokens + (tokens+9)/10 + imageTokens
 	return TokenEstimate{MessageTokens: total, EstimatedInputTokens: total,
-		Source: "deepseek_responses_text_bytes_image_tokens_v2", Method: string(config.EstimateMethodProviderRenderedPayload),
+		Source: "deepseek_v4_tokenizer_image_tokens_v3", Method: string(config.EstimateMethodProviderRenderedPayload),
 		Confidence: "conservative", Coverage: "complete_request"}, nil
 }
 
