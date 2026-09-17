@@ -152,7 +152,10 @@ data, not an alternate input-response or durable message authority.
 Structured activity may include bounded, ordered `Rows` containing
 host-sanitized text, Markdown, or code. Floret validates and preserves these
 display rows without interpreting product tools or accepting arbitrary JSON
-payloads.
+payloads. Optional `Inputs` retain safe invocation details independently of result
+rows. `RowsProvided` distinguishes a captured empty result from missing historical
+output. Code rows support a syntax `Language`, up to 64 KiB of content, and an
+explicit `Truncated` preview marker. Other row text remains bounded at 8,000 runes.
 
 Activity presentation is cumulative for one tool invocation. A result may add
 terminal status and output, while non-empty display facts from the matching

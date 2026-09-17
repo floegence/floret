@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.14.0 - 2026-09-17
+
+- Preserve safe structured tool inputs independently of result rows, including explicit empty output snapshots.
+- Add code language and truncation metadata, with complete code display up to 64 KiB and detached sanitization.
+- Verify live subscriptions, canonical history and SQLite restart without rewriting old Activity records or changing domain schema v12.
+
 ## v7.13.0 - 2026-09-15
 
 - Preserve Ask User headers, input placeholders, declared choice exhaustiveness, and original choice identifiers, labels, and descriptions in live views, summaries, and restored interaction history.

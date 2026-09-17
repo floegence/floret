@@ -13,6 +13,7 @@ import (
 
 const (
 	maxActivityTextRunes            = 8_000
+	maxActivityCodeBytes            = 64 << 10
 	maxActivityPayloadItems         = 200
 	maxWebFetchPreviewRunes         = 2_000
 	maxWebFetchActivityIconDataSize = 8 << 10
@@ -82,6 +83,10 @@ type StructuredActivityRow struct {
 	Meta    string                      `json:"meta,omitempty"`
 	Content string                      `json:"content,omitempty"`
 	Format  StructuredActivityRowFormat `json:"format,omitempty"`
+	// Language is a syntax identifier for code, not executable content.
+	Language string `json:"language,omitempty"`
+	// Truncated distinguishes a bounded preview from complete display content.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type StructuredActivityPayload struct {
@@ -92,6 +97,12 @@ type StructuredActivityPayload struct {
 	DurationMS  int64                   `json:"duration_ms,omitempty"`
 	Error       *ActivityError          `json:"error,omitempty"`
 	Rows        []StructuredActivityRow `json:"rows,omitempty"`
+	// Inputs are validated, host-sanitized invocation facts. Result updates
+	// that omit Inputs preserve the original input independently of Rows.
+	Inputs []StructuredActivityRow `json:"inputs,omitempty"`
+	// RowsProvided makes an empty Rows slice an explicit empty result snapshot.
+	// Omitted historical fields retain the existing non-empty replacement rule.
+	RowsProvided bool `json:"rows_provided,omitempty"`
 }
 
 func (StructuredActivityPayload) activityRenderer() ActivityRenderer {
@@ -741,9 +752,13 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if r.Error != nil {
 			l.Error = cloneActivityError(r.Error)
 		}
-		if len(r.Rows) > 0 {
+		if len(r.Inputs) > 0 {
+			l.Inputs = append([]StructuredActivityRow(nil), r.Inputs...)
+		}
+		if r.RowsProvided || len(r.Rows) > 0 {
 			l.Rows = append([]StructuredActivityRow(nil), r.Rows...)
 		}
+		l.RowsProvided = l.RowsProvided || r.RowsProvided
 		return l
 	case TerminalActivityPayload:
 		l, ok := left.(TerminalActivityPayload)
@@ -1081,6 +1096,7 @@ func cloneQuestionActivityAnswers(in []QuestionActivityAnswer) []QuestionActivit
 func cloneStructuredActivityPayload(payload StructuredActivityPayload) StructuredActivityPayload {
 	payload.Error = cloneActivityError(payload.Error)
 	payload.Rows = append([]StructuredActivityRow(nil), payload.Rows...)
+	payload.Inputs = append([]StructuredActivityRow(nil), payload.Inputs...)
 	return payload
 }
 
@@ -1166,20 +1182,12 @@ func validateActivityPayload(payload ActivityPayload) error {
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
 		}
-		if len(typed.Rows) > maxActivityPayloadItems {
-			return errors.New("too many structured activity rows")
-		}
-		values := []string{typed.Status, typed.Operation, typed.DisplayName, typed.Summary}
-		for _, row := range typed.Rows {
-			if strings.TrimSpace(row.Title) == "" && strings.TrimSpace(row.Meta) == "" && strings.TrimSpace(row.Content) == "" {
-				return errors.New("structured activity row requires title, meta, or content")
+		for _, rows := range [][]StructuredActivityRow{typed.Inputs, typed.Rows} {
+			if err := validateStructuredActivityRows(rows); err != nil {
+				return err
 			}
-			if !validStructuredActivityRowFormat(row.Format) {
-				return errors.New("structured activity row format is unsupported")
-			}
-			values = append(values, row.Title, row.Meta, row.Content)
 		}
-		return validatePayloadTextAndError(values, typed.Error)
+		return validatePayloadTextAndError([]string{typed.Status, typed.Operation, typed.DisplayName, typed.Summary}, typed.Error)
 	case TerminalActivityPayload:
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
@@ -1372,6 +1380,39 @@ func validSubAgentOperationAction(action SubAgentOperationAction) bool {
 	default:
 		return false
 	}
+}
+
+func validateStructuredActivityRows(rows []StructuredActivityRow) error {
+	if len(rows) > maxActivityPayloadItems {
+		return errors.New("too many structured activity rows")
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(row.Title) == "" && strings.TrimSpace(row.Meta) == "" && strings.TrimSpace(row.Content) == "" {
+			return errors.New("structured activity row requires title, meta, or content")
+		}
+		if !validStructuredActivityRowFormat(row.Format) {
+			return errors.New("structured activity row format is unsupported")
+		}
+		if err := validatePayloadTextAndError([]string{row.Title, row.Meta}, nil); err != nil {
+			return err
+		}
+		if len(row.Language) > 64 {
+			return errors.New("structured activity language is too long")
+		}
+		for _, c := range row.Language {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '+' || c == '#' || c == '.') {
+				return errors.New("structured activity language is invalid")
+			}
+		}
+		if row.Format == StructuredActivityRowFormatCode {
+			if len(row.Content) > maxActivityCodeBytes {
+				return errors.New("structured activity code exceeds 64 KiB")
+			}
+		} else if err := validatePayloadTextAndError([]string{row.Content}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validStructuredActivityRowFormat(format StructuredActivityRowFormat) bool {

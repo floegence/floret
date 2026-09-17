@@ -142,7 +142,13 @@ host-sanitized display rows. Each row may contain a title, metadata, and text,
 Markdown, or code content. Floret validates, copies, merges, and persists these
 rows without understanding the product tool that authored them. A non-empty
 update replaces the prior row list; an empty terminal update preserves existing
-rows. This remains a closed typed payload, not an arbitrary JSON escape hatch.
+rows. `RowsProvided: true` instead installs an explicit result snapshot, including
+an empty result. Optional `Inputs` use the same row type and survive result-only
+updates. `Language` identifies code syntax, and `Truncated` marks a preview.
+Code content is bounded at 64 KiB; other text retains its 8,000-rune limit. Hosts
+supply only safe display content; scripts and rows grant no execution authority.
+These optional fields do not rewrite historical records or change schema v12.
+This remains a closed typed payload, not an arbitrary JSON escape hatch.
 
 `OutputPolicy.TruncationNotice` lets the single output projection path place a
 bounded notice at the truncation edge. The visible text remains inside the
