@@ -125,3 +125,16 @@ including overhead, independently of transient message IDs. Missing evidence,
 changed history, ephemeral input, and negative deltas invalidate calibration.
 The tokenizer source and estimation limitations are documented in the
 [regeneration guide](../../scripts/deepseek-tokenizer/README.md).
+
+## Model-aware estimation
+
+`provider.EstimateRenderedRequest` accepts a `RenderedRequest` with explicit provider,
+model and `RequestFormat`. It counts frozen model input, excludes protocol controls,
+and uses official OpenAI vocabularies only for verified model mappings. Unknown
+models use an identified multilingual BPE proxy. Actual images are budgeted separately
+from transport bytes; opaque files remain conservative. No resource resolution or
+network preflight occurs. Custom opaque transports use `RequestFormatJSON` and the
+generic estimate method, without claiming final server rendering. Native usage and
+canonical-prefix calibration remain the pressure authority. See the
+[estimator source and limits](../../scripts/openai-tokenizer/README.md) and
+[public implementation](../../provider/request_estimate.go).

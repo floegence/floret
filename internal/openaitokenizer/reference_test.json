@@ -1,0 +1,142 @@
+[
+  {
+    "encoding": "cl100k_base",
+    "text": "Hello, world!",
+    "tokens": 4
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "tokens": 10
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "请检查上下文估算与实际用量之间的差距。",
+    "tokens": 23
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "お誕生日おめでとう",
+    "tokens": 9
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "안녕하세요 세계",
+    "tokens": 9
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "Привет, мир!",
+    "tokens": 7
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "مرحبا بالعالم",
+    "tokens": 10
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "हेलो दुनिया",
+    "tokens": 11
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "🙂🧑🏽‍💻🚀",
+    "tokens": 15
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "func main() { fmt.Println(\"hello\", 1234567890) }",
+    "tokens": 16
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "  space\tand\r\nnewlines\n\n",
+    "tokens": 7
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "I'm we're they've don't I'll she's IT'S",
+    "tokens": 14
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "<|endoftext|> <|im_start|>",
+    "tokens": 12
+  },
+  {
+    "encoding": "cl100k_base",
+    "text": "abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()",
+    "tokens": 112
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "Hello, world!",
+    "tokens": 4
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "tokens": 10
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "请检查上下文估算与实际用量之间的差距。",
+    "tokens": 15
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "お誕生日おめでとう",
+    "tokens": 8
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "안녕하세요 세계",
+    "tokens": 3
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "Привет, мир!",
+    "tokens": 5
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "مرحبا بالعالم",
+    "tokens": 4
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "हेलो दुनिया",
+    "tokens": 4
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "🙂🧑🏽‍💻🚀",
+    "tokens": 11
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "func main() { fmt.Println(\"hello\", 1234567890) }",
+    "tokens": 16
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "  space\tand\r\nnewlines\n\n",
+    "tokens": 7
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "I'm we're they've don't I'll she's IT'S",
+    "tokens": 8
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "<|endoftext|> <|im_start|>",
+    "tokens": 13
+  },
+  {
+    "encoding": "o200k_base",
+    "text": "abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()abcXYZ中文0123456789@#$%^&*()",
+    "tokens": 104
+  }
+]

@@ -408,7 +408,7 @@ func (p AnthropicProvider) EstimateTokens(_ context.Context, req provider.Reques
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	return estimateRenderedParts("anthropic_rendered_json", anthropicReq.System, anthropicReq.Messages, anthropicReq.Tools)
+	return estimateRenderedRequest(req, "anthropic_messages", anthropicReq)
 }
 
 func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, error) {

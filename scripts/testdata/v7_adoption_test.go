@@ -466,3 +466,10 @@ func TestPublishedStructuredInputAndEmptyOutput(t *testing.T) {
 		t.Fatal("published activity input/output contract changed")
 	}
 }
+
+func TestPublishedOfflineRequestEstimate(t *testing.T) {
+	estimate, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "openai", Model: "gpt-4o", Format: provider.RequestFormatOpenAIChat, Payload: []byte(`{"messages":[{"role":"user","content":"Check this request."}]}`)})
+	if err != nil || estimate.EstimatedInputTokens <= 0 || estimate.Source != "rendered_o200k_base_media_v1" {
+		t.Fatalf("offline estimate: %+v %v", estimate, err)
+	}
+}

@@ -225,6 +225,7 @@ field DeepSeekOptions.TopP *float64
 field DeepSeekOptions.ResponseFormat string
 field DeepSeekOptions.ResolveAttachment func(context.Context, github.com/floegence/floret/v7/provider.Attachment) ([]byte, error)
 var ErrContextOverflow error
+func EstimateRenderedRequest func(request github.com/floegence/floret/v7/provider.RenderedRequest) (github.com/floegence/floret/v7/provider.TokenEstimate, error)
 type Event struct
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""
 field Event.Text string tag="json:\"text,omitempty\""
@@ -313,6 +314,11 @@ method *ProviderHTTPError.Error func() string
 type ReasoningSupport string
 const ReasoningSupported github.com/floegence/floret/v7/provider.ReasoningSupport = "supported"
 const ReasoningUnsupported github.com/floegence/floret/v7/provider.ReasoningSupport = "unsupported"
+type RenderedRequest struct
+field RenderedRequest.Provider string
+field RenderedRequest.Model string
+field RenderedRequest.Format github.com/floegence/floret/v7/provider.RequestFormat
+field RenderedRequest.Payload []byte
 type Request struct
 field Request.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field Request.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
@@ -332,6 +338,11 @@ field Request.PreviousState *github.com/floegence/floret/v7/provider.State tag="
 field Request.Labels github.com/floegence/floret/v7/provider.Labels tag="json:\"labels,omitempty\""
 method Request.MarshalJSON func() ([]byte, error)
 method Request.Validate func() error
+type RequestFormat string
+const RequestFormatAnthropic github.com/floegence/floret/v7/provider.RequestFormat = "anthropic_messages"
+const RequestFormatJSON github.com/floegence/floret/v7/provider.RequestFormat = "input_json"
+const RequestFormatOpenAIChat github.com/floegence/floret/v7/provider.RequestFormat = "openai_chat"
+const RequestFormatOpenAIResponses github.com/floegence/floret/v7/provider.RequestFormat = "openai_responses"
 type RequestPreparer interface interface{Prepare(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 const RoleAssistant github.com/floegence/floret/v7/provider.MessageRole = "assistant"
 const RoleSystem github.com/floegence/floret/v7/provider.MessageRole = "system"

@@ -306,8 +306,7 @@ func (p OpenAICompatibleProvider) EstimateTokens(_ context.Context, req provider
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	prefix, history := splitChatSystemMessages(chatReq.Messages)
-	return estimateRenderedParts("openai_compatible_rendered_json", prefix, history, chatReq.Tools)
+	return estimateRenderedRequest(req, "openai_chat", chatReq)
 }
 
 func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte, error) {
