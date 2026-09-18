@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.16.2 - 2026-09-18
+
+- Preserve every model call in mixed ordinary/control batches. Execute valid ordinary tools once and return paired, bounded correction feedback for controls that must be resubmitted separately.
+- Keep correction messages identical across live projection and final persistence; they never acquire effect authority or create interactions.
+- Resume provider-native reasoning and search state from the exact waiting run after input, including restart. Keep strict canonical history checks, public APIs, and schema v12 unchanged.
+
 ## v7.16.1 - 2026-09-18
 
 - Derive Ask User waits directly from committed control calls, removing the asynchronous duplicate request that could overtake an answer.

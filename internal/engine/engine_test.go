@@ -2105,7 +2105,7 @@ func TestDeclaredControlToolMustProjectSignal(t *testing.T) {
 	}
 }
 
-func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(t *testing.T) {
+func TestCustomControlToolMixedWithOrdinaryToolPairsCorrectionAndRunsOrdinaryTool(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(
@@ -2137,23 +2137,21 @@ func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "host_wait" }) {
-		t.Fatalf("deferred control call should not be persisted as an orphan: %#v", messages)
-	}
+	assertValidationPair(t, messages, "control")
 	if !slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "read" }) {
 		t.Fatalf("ordinary tool call should be persisted and executed: %#v", messages)
 	}
 	if hasEvent(rec.Events, event.ControlSignal) {
-		t.Fatalf("deferred control call should not emit a control signal: %#v", rec.Events)
+		t.Fatalf("rejected control call should not emit a control signal: %#v", rec.Events)
 	}
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 		if ev.Type != event.StepEnd {
 			return false
 		}
 		meta, ok := ev.Metadata.(map[string]any)
-		return ok && meta["deferred_control_tool_count"] == 1
+		return ok && meta["validation_correction_attempt"] == 1
 	}) {
-		t.Fatalf("step end missing deferred control metadata: %#v", rec.Events)
+		t.Fatalf("step end missing correction metadata: %#v", rec.Events)
 	}
 }
 
@@ -2191,7 +2189,7 @@ func TestProviderHistoryPreservesRemovedControlWithoutCurrentDefinition(t *testi
 	}
 }
 
-func TestMixedControlAndOrdinaryToolsDefersWaitingSignal(t *testing.T) {
+func TestMixedControlAndOrdinaryToolsCorrectsBeforeWaitingSignal(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
@@ -2217,11 +2215,7 @@ func TestMixedControlAndOrdinaryToolsDefersWaitingSignal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.ContainsFunc(messages, func(msg session.Message) bool {
-		return msg.ToolName == "ask_user" && msg.ToolCallID == "ask"
-	}) {
-		t.Fatalf("deferred ask_user call should not be persisted as an orphan: %#v", messages)
-	}
+	assertValidationPair(t, messages, "ask")
 	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
 		return msg.ToolName == "read"
 	}) {
@@ -5213,4 +5207,45 @@ func segmentRawsForTest(segments []cache.Segment) []string {
 		out[i] = segment.Raw
 	}
 	return out
+}
+
+func assertValidationPair(t *testing.T, messages []session.Message, callID string) {
+	t.Helper()
+	var pair []session.Message
+	for _, message := range messages {
+		if message.ToolCallID == callID {
+			pair = append(pair, message)
+		}
+	}
+	if len(pair) != 2 || pair[0].Role != session.Assistant || pair[1].Role != session.Tool || pair[0].Kind != session.MessageKindToolValidationError || pair[1].Kind != session.MessageKindToolValidationError || !strings.Contains(pair[1].Content, "separately") {
+		t.Fatalf("incomplete correction pair: %#v", pair)
+	}
+}
+
+func TestMixedControlCorrectionIsBounded(t *testing.T) {
+	var steps [][]provider.StreamEvent
+	for i := 0; i < 3; i++ {
+		steps = append(steps, harness.Step(provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+			{ID: fmt.Sprintf("read-%d", i), Name: "read", Args: `{"value":"x"}`},
+			{ID: fmt.Sprintf("ask-%d", i), Name: "ask_user", Args: `{}`},
+		}}, harness.DoneReason("tool_calls")))
+	}
+	p := harness.NewScriptedProvider(steps...)
+	rec := &event.Recorder{}
+	e := newTestEngine(p, rec)
+	reg := tools.NewRegistry()
+	executions := 0
+	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) { executions++; return "ok", nil }))
+	e.Tools = reg
+	result := e.Run(context.Background(), "inspect")
+	if result.Status != engine.Failed || result.Err == nil || !strings.Contains(result.Err.Error(), "correction exhausted") || len(p.Requests) != 3 || executions != 3 || hasEvent(rec.Events, event.ControlSignal) {
+		t.Fatalf("result=%+v requests=%d executions=%d", result, len(p.Requests), executions)
+	}
+	messages, err := e.Store.Transcript("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		assertValidationPair(t, messages, fmt.Sprintf("ask-%d", i))
+	}
 }

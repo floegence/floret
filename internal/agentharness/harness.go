@@ -587,7 +587,9 @@ func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer s
 	opts.TurnID = turnID
 	opts.RunID = runID
 	opts.AdmissionCommitted = true
-	opts.AdmissionBaseLeafID = ""
+	// The answer continues the exact waiting run. Its committed terminal owns
+	// the provider state, even though resolving input advances the journal leaf.
+	opts.AdmissionBaseLeafID = terminalTurnEntryID(t.id, turnID, waitingRunID)
 	opts.SkipContextPolicyEvent = true
 	return t.runAccepted(ctx, "", opts, nil)
 }

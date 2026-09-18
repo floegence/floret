@@ -46,6 +46,12 @@ admission, interaction resolution, and cancellation remain canonical-first;
 hosts must not persist another transcript or reconstruct lifecycle from audit.
 
 Schema-invalid ordinary and control calls retain complete call/result pairs.
+Mixed batches retain original call order: valid ordinary tools execute once,
+while control calls receive correction to submit separately after seeing those
+results. Rejected calls never acquire effect authority or open interactions.
+Correction feedback has one identical representation in live projection and
+final persistence. Input continuation reuses provider state from its exact
+waiting run, retaining native reasoning/search data and strict history checks.
 At most two regeneration opportunities run before terminal failure. Only a valid
 control projection opens an interaction; programmer, storage, and effect failures
 are not model-correction opportunities. Activity filtering changes presentation,

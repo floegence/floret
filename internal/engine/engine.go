@@ -1011,12 +1011,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		classifiedCalls := classifyToolCalls(opts.ControlSpec, calls)
 		controlCalls := classifiedCalls.Control
-		if len(classifiedCalls.Ordinary) > 0 {
-			calls = classifiedCalls.Ordinary
-			if len(controlCalls) > 0 {
-				decision.Metadata = deferredControlMetadata(controlCalls)
-			}
-		}
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*tools.ActivityPresentation{}
@@ -1025,9 +1019,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		var projectedSignal *ControlSignal
 		var projectedSignalErr error
 		validationErrors := map[string]error{}
-		if len(classifiedCalls.Ordinary) == 0 && len(controlCalls) > 0 {
+		if len(controlCalls) > 0 {
 			for _, call := range controlCalls {
 				validationErr := validateModelToolArguments(opts.ControlSpec.Definitions, call)
+				if len(classifiedCalls.Ordinary) > 0 {
+					validationErr = errors.New("submit the control call separately after receiving the ordinary tool results")
+				}
 				if validationErr == nil && len(controlCalls) > 1 {
 					validationErr = errors.New("submit exactly one control call per response")
 				}
@@ -1113,7 +1110,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				EffectBatchPreflight: opts.EffectBatchPreflight,
 				EffectDispatcher:     opts.EffectDispatcher,
 			}
-			for _, call := range calls {
+			for _, call := range classifiedCalls.Ordinary {
 				if validationErr := validateModelToolArguments(opts.toolDefinitions, call); validationErr != nil {
 					validationErrors[call.ID] = validationErr
 					internalValidationCorrections[call.ID] = true
@@ -1266,6 +1263,17 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if result.DispatchErr != nil {
 				return result.DispatchErr
 			}
+			if validationErr := validationErrors[result.CallID]; validationErr != nil {
+				// Engine feedback has no tool output projection or effect result.
+				// Persist the same message through live events and the transcript.
+				msg := stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(calls[i], validationErr))
+				toolResults[i], toolMessages[i] = result, msg
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: msg.Content, Err: validationErr.Error(),
+					Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(projectedCallBatchMetadata[result.CallID], map[string]any{"tool_result_status": "error"}))})
+				toolMessageSet[i] = true
+				toolMessageOrder = append(toolMessageOrder, i)
+				return nil
+			}
 			result = preparePendingToolResult(result)
 			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
 			result.Activity = sanitizeActivityPresentation(result.Activity)
@@ -1313,9 +1321,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			resultView.InputRequired = tools.CloneInputRequest(result.InputRequired)
 			resultView.Status = resultStatus
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
-			if validationErr := validationErrors[result.CallID]; validationErr != nil {
-				toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(provider.ToolCall{ID: result.CallID, Name: result.Name}, validationErr))
-			}
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
 				failureActivity := effectFinalizationErrorActivityPresentation(
@@ -1359,7 +1364,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			toolMessageOrder = append(toolMessageOrder, i)
 			return nil
 		}
-		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, processToolResult); err != nil {
+		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, validationErrors, processToolResult); err != nil {
 			if isContextCancellation(err) {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 			}
@@ -1446,7 +1451,7 @@ func exactToolOutputProjection(text string) tools.OutputProjection {
 	}
 }
 
-func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, opts tools.DispatchOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
+func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, opts tools.DispatchOptions, validationErrors map[string]error, observe func(int, tools.Result) error) ([]tools.Result, error) {
 	// Preserve provider call order during normal execution. Once cancellation
 	// starts, settle every available result without waiting for an unresponsive
 	// sibling. There is still one observer and one result finalization path.
@@ -1455,6 +1460,37 @@ func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, cal
 	ready := make([]bool, len(calls))
 	observed := make([]bool, len(calls))
 	var observeErr error
+	var dispatchCalls []tools.ToolCall
+	var dispatchIndices []int
+	for index, call := range calls {
+		if err := validationErrors[call.ID]; err != nil {
+			captured[index] = tools.ErrorResult(call.ID, call.Name, tools.InvalidArgumentsText(call.Name, err))
+			ready[index] = true
+		} else {
+			dispatchCalls = append(dispatchCalls, call)
+			dispatchIndices = append(dispatchIndices, index)
+		}
+	}
+	// Authorization uses the original provider batch identity, including calls
+	// rejected before dispatch. Corrections never acquire effect authority.
+	remap := func(request tools.EffectDispatchRequest) tools.EffectDispatchRequest {
+		request.BatchIndex = dispatchIndices[request.BatchIndex]
+		request.BatchSize = len(calls)
+		return request
+	}
+	if preflight := opts.EffectBatchPreflight; preflight != nil {
+		opts.EffectBatchPreflight = func(ctx context.Context, requests []tools.EffectDispatchRequest) error {
+			for index := range requests {
+				requests[index] = remap(requests[index])
+			}
+			return preflight(ctx, requests)
+		}
+	}
+	if dispatch := opts.EffectDispatcher; dispatch != nil {
+		opts.EffectDispatcher = func(ctx context.Context, request tools.EffectDispatchRequest, execute func(context.Context) tools.Result) tools.Result {
+			return dispatch(ctx, remap(request), execute)
+		}
+	}
 	flush := func() {
 		for index, result := range captured {
 			if !ready[index] || observed[index] {
@@ -1472,9 +1508,10 @@ func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, cal
 		flush()
 	})
 	defer stopCancellation()
-	results, dispatchErr := registry.DispatchBatchObserved(ctx, calls, opts, func(index int, result tools.Result) error {
+	_, dispatchErr := registry.DispatchBatchObserved(ctx, dispatchCalls, opts, func(index int, result tools.Result) error {
 		mu.Lock()
 		defer mu.Unlock()
+		index = dispatchIndices[index]
 		captured[index], ready[index] = result, true
 		if ctx.Err() != nil {
 			flush()
@@ -1484,7 +1521,7 @@ func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, cal
 	mu.Lock()
 	defer mu.Unlock()
 	flush()
-	return results, errors.Join(dispatchErr, observeErr)
+	return captured, errors.Join(dispatchErr, observeErr)
 }
 
 func preparePendingToolResult(result tools.Result) tools.Result {
@@ -4381,26 +4418,6 @@ func classifyToolCalls(spec ControlSpec, calls []provider.ToolCall) toolCallBatc
 		batch.Ordinary = append(batch.Ordinary, call)
 	}
 	return batch
-}
-
-func deferredControlMetadata(calls []provider.ToolCall) map[string]any {
-	items := make([]map[string]any, 0, len(calls))
-	for _, call := range calls {
-		item := map[string]any{
-			"tool_name": strings.TrimSpace(call.Name),
-		}
-		if id := strings.TrimSpace(call.ID); id != "" {
-			item["tool_id"] = id
-		}
-		if hash := providerStableHash(call.Args); hash != "" {
-			item["args_hash"] = hash
-		}
-		items = append(items, item)
-	}
-	return map[string]any{
-		"deferred_control_tool_count": len(calls),
-		"deferred_control_tools":      items,
-	}
 }
 
 func validateToolCalls(calls []provider.ToolCall) error {
