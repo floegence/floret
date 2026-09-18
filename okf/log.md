@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-18: Complete mixed-call history
+
+* Replace discarded mixed controls with paired bounded correction and preserve ordinary effect execution and batch identity.
+* Keep live correction projection identical to final persistence and resume native provider state from the exact waiting run. No public API or schema change.
+
 ## 2026-09-18: Canonical Ask User ownership
 
 * Use the committed control call as the pending-input authority; remove the asynchronous duplicate request write.
