@@ -8,6 +8,7 @@ import (
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 )
@@ -68,6 +69,15 @@ func TestDurableContextSurvivesCorrectionResponseRestartForkAndRetry(t *testing.
 	}
 	if view := waitDone(created.ThreadID, ""); view.Failure != nil {
 		t.Fatal(view.Failure)
+	}
+	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryInteractionAsked {
+			t.Fatal("Ask User wrote a second request beside its committed control")
+		}
 	}
 	if err := host.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

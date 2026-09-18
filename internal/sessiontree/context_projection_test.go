@@ -175,3 +175,23 @@ func TestBuildContextRejectsMalformedInteractionResolution(t *testing.T) {
 		t.Fatalf("malformed resolution error=%v, want ErrAuthorityCorrupt", err)
 	}
 }
+
+func TestRuntimePendingInteractionsUseCommittedControlAndNeverReopenAnswers(t *testing.T) {
+	call := Entry{ID: "ask", TurnID: "turn", RunID: "run", Type: EntryToolCall,
+		Message: session.Message{Kind: session.MessageKindControlSignal, ControlSignal: &session.ControlSignalView{
+			Name: "ask_user", CallID: "ask", Disposition: "waiting", Payload: controlResultTestPayload(),
+		}},
+	}
+	asked := Entry{ID: "interaction-requested:ask", TurnID: "turn", RunID: "run", Type: EntryInteractionAsked}
+	done := Entry{ID: "interaction-resolved:ask", TurnID: "turn", RunID: "run", Type: EntryInteractionDone}
+	for _, entries := range [][]Entry{{call}, {call, asked}} {
+		if got := runtimePendingInteractions(entries, "turn"); len(got) != 1 || got[0].ID != "ask" {
+			t.Fatalf("committed control must own one pending interaction: %#v", got)
+		}
+	}
+	for _, entries := range [][]Entry{{call, done}, {call, asked, done}, {call, done, asked}} {
+		if got := runtimePendingInteractions(entries, "turn"); len(got) != 0 {
+			t.Fatalf("answered control reopened: %#v", got)
+		}
+	}
+}

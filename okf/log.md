@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-18: Canonical Ask User ownership
+
+* Use the committed control call as the pending-input authority; remove the asynchronous duplicate request write.
+* Preserve answers across historical duplicate ordering, cancellation, continuation, restart and summary projection without changing schema v12.
+
 ## 2026-09-18: Model-aware request estimation
 
 * Add offline rendered-request counting with explicit model/format identity, verified OpenAI vocabularies, multilingual proxy estimates, and separate media budgets.

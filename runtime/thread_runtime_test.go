@@ -4130,3 +4130,37 @@ func waitThreadExecutionDone(t *testing.T, service *threadRuntimeService, thread
 		t.Fatal("thread execution did not finish")
 	}
 }
+
+func TestThreadRuntimeKeepsAnswerWhenHistoricalRequestFollowsResolution(t *testing.T) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(cancelHistoryAskArgs), &payload); err != nil {
+		t.Fatal(err)
+	}
+	call := sessiontree.Entry{ID: "ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall,
+		Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolCallID: "ask", ToolName: "ask_user",
+			ControlSignal: &session.ControlSignalView{Name: "ask_user", CallID: "ask", Disposition: "waiting", Payload: payload}},
+	}
+	input, _, err := waitingInputFromControlSignal(call.Message.ControlSignal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	askedPayload, err := json.Marshal(ThreadInteraction{ID: "ask", TurnID: "turn", RunID: "run", Kind: ThreadInteractionInput, Input: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := sessiontree.Entry{ID: "interaction-requested:ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryInteractionAsked, Payload: askedPayload}
+	done := sessiontree.Entry{ID: "interaction-resolved:ask", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryInteractionDone, Payload: json.RawMessage(`{"accepted":true,"input":{"q":"yes"}}`)}
+	for _, entries := range [][]sessiontree.Entry{{call, done}, {call, asked, done}, {call, done, asked}} {
+		items, interactions, err := threadRuntimeItemsFromEntries(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(interactions) != 1 || !interactions[0].Resolved || interactions[0].Resolution.Input["q"] != "yes" || len(items) != 1 || !items[0].Interaction.Resolved {
+			t.Fatalf("answer lost: interactions=%#v items=%#v", interactions, items)
+		}
+		summary, err := threadSummaryFromCanonicalPath(sessiontree.ThreadMeta{ID: "thread"}, entries)
+		if err != nil || summary.Attention.InputCount != 0 || summary.PendingInput != nil {
+			t.Fatalf("answered question needs attention: %#v err=%v", summary, err)
+		}
+	}
+}

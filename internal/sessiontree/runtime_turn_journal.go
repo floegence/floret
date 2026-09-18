@@ -624,30 +624,37 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 	}
 	readyToolInputs := ReadyToolInputResultIDs(entries)
 	pending := make(map[string]runtimePendingInteraction)
+	seen := make(map[string]bool)
 	order := make([]string, 0)
+	add := func(id string, entry Entry) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		order = append(order, id)
+		pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
+	}
 	for _, entry := range entries {
 		if entry.TurnID != turnID {
 			continue
 		}
 		switch entry.Type {
+		case EntryToolCall:
+			if entry.Message.Kind == session.MessageKindControlSignal && controlstate.Classify(entry.Message.ControlSignal) == controlstate.WaitingInput {
+				add(strings.TrimSpace(entry.Message.ControlSignal.CallID), entry)
+			}
 		case EntryToolResult:
 			if !readyToolInputs[entry.ID] {
 				continue
 			}
 			id := ToolInputInteractionID(entry.ID)
-			if _, exists := pending[id]; !exists {
-				order = append(order, id)
-			}
-			pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
+			add(id, entry)
 		case EntryInteractionAsked:
 			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
 			if failed, ok := failedControls[id]; ok && failed.TurnID == entry.TurnID && failed.RunID == entry.RunID {
 				continue
 			}
-			if _, exists := pending[id]; !exists {
-				order = append(order, id)
-			}
-			pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
+			add(id, entry)
 		case EntryInteractionDone:
 			delete(pending, strings.TrimPrefix(entry.ID, "interaction-resolved:"))
 		}

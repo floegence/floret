@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.16.1 - 2026-09-18
+
+- Derive Ask User waits directly from committed control calls, removing the asynchronous duplicate request that could overtake an answer.
+- Keep answered interactions settled in cancellation, terminal validation, history, and summaries even when historical request records follow the resolution.
+- Preserve public contracts and schema v12; add deterministic journal-order regressions and durable continuation coverage.
+
 ## v7.16.0 - 2026-09-18
 
 - Add public model-aware estimation of frozen provider requests, excluding transport metadata and separating actual media from text.
