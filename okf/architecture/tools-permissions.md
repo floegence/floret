@@ -85,7 +85,10 @@ facts without journal entry identities, so the same unavailable-tool pair
 remains append-only after an active loop is reconstructed for a later Turn.
 
 Only a successfully validated `ask_user` signal with at least one complete
-question creates pending input. A projection carrying `control_error` is a
+question creates pending input. Its committed control call is the request
+authority for runtime views and terminal/cancellation decisions; observation
+does not append a second request. A historical repeated request never reopens
+a resolved interaction. A projection carrying `control_error` is a
 terminal control failure even when an older record says `waiting`; a matching
 late interaction is ignored. Provider history pairs that failed call with one
 safe error result containing only the failed outcome, so later Turns remain

@@ -1038,9 +1038,11 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 			if strings.TrimSpace(interaction.ID) == "" {
 				return ThreadSummary{}, ErrAuthorityCorrupt
 			}
-			if _, found := interactions[interaction.ID]; !found {
-				interactionOrder = append(interactionOrder, interaction.ID)
+			if _, found := interactions[interaction.ID]; found {
+				// The committed control already owns this interaction and any answer.
+				continue
 			}
+			interactionOrder = append(interactionOrder, interaction.ID)
 			interactions[interaction.ID] = interaction
 		case sessiontree.EntryInteractionDone:
 			interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
@@ -2628,17 +2630,6 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 	if changed {
 		sink.service.publish(current)
 	}
-	if event.Type == observation.EventTypeThreadEntryCommitted && event.committed != nil && event.committed.ToolCall != nil && event.committed.ToolCall.ControlSignal != nil {
-		signal := event.committed.ToolCall.ControlSignal
-		view := &session.ControlSignalView{Name: signal.Name, CallID: signal.CallID, Disposition: signal.Disposition, ErrorCode: signal.ErrorCode, OutputText: signal.Text, Payload: signal.Payload}
-		input, classification, _ := waitingInputFromControlSignal(view)
-		if classification == controlstate.WaitingInput && strings.TrimSpace(signal.CallID) != "" {
-			interaction := ThreadInteraction{ID: signal.CallID, TurnID: event.TurnID, RunID: event.RunID, Kind: ThreadInteractionInput, Input: input}
-			go func() {
-				_, _ = sink.service.requestInteraction(context.Background(), actor, event.ThreadID, interaction)
-			}()
-		}
-	}
 	if event.committed != nil || event.Type == observation.EventTypeToolApprovalRequested || event.Type == observation.EventTypeToolApprovalApproved || event.Type == observation.EventTypeToolApprovalRejected || event.Type == observation.EventTypeControlSignal {
 		go sink.service.refreshCanonical(event.ThreadID, event.TurnID)
 	}
@@ -4163,11 +4154,11 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 				return nil, nil, ErrAuthorityCorrupt
 			}
 			if previous, ok := interactionIndex[interaction.ID]; ok {
-				interactions[previous] = interaction
-				if index, exists := itemIndex[interaction.ID]; exists {
-					copy := interaction
-					items[index].Interaction = &copy
+				current := interactions[previous]
+				if current.TurnID != interaction.TurnID || current.RunID != interaction.RunID || current.Kind != interaction.Kind {
+					return nil, nil, ErrAuthorityCorrupt
 				}
+				// A repeated request cannot replace the committed control or reopen its answer.
 				continue
 			}
 			interactionIndex[interaction.ID] = len(interactions)
