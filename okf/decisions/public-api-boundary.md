@@ -33,6 +33,14 @@ and OKF updates, changelog entry, backend conformance where relevant, and the
 published-release adoption gate. Green compatibility tooling is not design
 approval.
 
+The exact published v7.16.2 API is the compatibility floor, together with
+compatible additions released afterward. Earlier releases carry no source/API
+compatibility promise and must not introduce aliases or old-shape adapters.
+The fixed published comparison remains mandatory even without local Git tags;
+the generated `go/types` snapshot describes the current API for review.
+This API decision leaves the permanent conversation-schema migration lineage
+intact. Historical release notes record earlier comparisons, not current gates.
+
 `runtime.Options.StartupProgress` is the sole startup-presentation addition in
 v7. It reports product-neutral migration and verification phases
 synchronously. Storage rows, counts, schema versions, and downstream UI policy
