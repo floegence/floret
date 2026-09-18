@@ -149,9 +149,11 @@ Rules:
 
 ### v7 Semantic Versioning
 
-- `v7.0.0` freezes the exported contracts in `config`, `provider`, `runtime`,
-  `storage`, `tools`, `observation`, and the test-only `florettest` package.
-- Within v7, do not delete or rename exported symbols, narrow previously
+- `v7.16.2` is the public API compatibility baseline. Its exact published
+  contracts, and compatible additions released afterward, are protected within
+  v7. Earlier releases are outside the source/API compatibility promise; do not
+  add aliases, substitute shapes, or exceptions to restore their old APIs.
+- From `v7.16.2` onward, do not delete or rename exported symbols, narrow previously
   accepted valid inputs, change established JSON field names or values, or
   change documented `errors.Is` / `errors.As` classifications.
 - Deprecations must remain available for at least one complete minor release
@@ -163,9 +165,12 @@ Rules:
   impact explicitly. Do not preserve or replace unsafe behavior through a
   silent fallback, substitute path, or unsupported transitional shape.
 - Run the v7 `go/types` baseline test and published-release adoption gate for
-  every public API change. After `v7.0.0` is published, compatibility checks
-  compare the exact published module with `HEAD`; earlier major-version APIs
-  remain only in their Git tags and must not return through aliases or facades.
+  every public API change. `scripts/check_v7_api_compatibility.sh` compares the
+  exact published `v7.16.2` module with `HEAD`; absence of a local tag must not
+  skip that comparison. Review additions since the baseline as protected API
+  too; passing the fixed-baseline check does not authorize removing them.
+- This API baseline reset does not reset the permanent domain-schema migration
+  lineage or authorize losing existing conversation data.
 
 ### Domain Schema Migration Contract
 

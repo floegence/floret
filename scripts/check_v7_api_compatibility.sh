@@ -2,17 +2,12 @@
 set -euo pipefail
 
 readonly module_path="github.com/floegence/floret/v7"
-readonly baseline_tag="v7.0.0"
+readonly baseline_tag="v7.16.2"
 readonly apidiff_version="v0.0.0-20260727155853-b88d891fe743"
 readonly apidiff_package="golang.org/x/exp/cmd/apidiff@${apidiff_version}"
 
 export GOWORK=off
 go test ./internal/architecture -run TestV7PublicAPIBaselineIsCurrent -count=1
-
-if ! git rev-parse --quiet --verify "refs/tags/${baseline_tag}" >/dev/null; then
-  printf 'v7 API compatibility: %s is not tagged; the designed go/types baseline matches\n' "${baseline_tag}"
-  exit 0
-fi
 
 go list -m "${module_path}@${baseline_tag}" >/dev/null
 readonly compatibility_root=$(mktemp -d "${TMPDIR:-/tmp}/floret-v7-apidiff.XXXXXX")

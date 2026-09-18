@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Establish published v7.16.2 as the public API compatibility baseline. Retire source/API compatibility promises for earlier releases; protect the new baseline and compatible additions released afterward.
+- Require the published-module comparison even when the local checkout has no baseline tag. Keep the current API snapshot, strict incompatibility failures, and permanent conversation-schema migration lineage.
+
 ## v7.16.2 - 2026-09-18
 
 - Preserve every model call in mixed ordinary/control batches. Execute valid ordinary tools once and return paired, bounded correction feedback for controls that must be resubmitted separately.

@@ -17,8 +17,10 @@ timestamp: 2026-07-29T00:00:00Z
 4. Add Go documentation for every exported symbol.
 5. Make an explicit design decision, then update the generated v7 API
    baseline, symbol decision matrix, behavior contract, README, OKF, and changelog.
-6. Run the v7 `go/types` baseline test and the blank-module adoption gate.
-   After v7.0.0, incompatible changes require the next major version.
+6. Run the v7 `go/types` baseline test, the published v7.16.2 API comparison,
+   and the blank-module adoption gate. Protect that baseline and compatible
+   additions released afterward; incompatible changes require the next major
+   version. Earlier releases are outside the source/API compatibility promise.
 
 Do not add aliases, deprecated facades, dual shapes, silent parsing, or fallback
 execution paths to preserve an incorrect pre-release contract.

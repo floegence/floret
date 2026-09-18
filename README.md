@@ -459,10 +459,17 @@ catalog API. See [catalog maintenance](scripts/model-catalog/README.md).
 
 ## Development
 
+Public API compatibility starts at the published **v7.16.2** release. That
+release and compatible additions published afterward are protected within v7;
+source/API compatibility with earlier releases is no longer promised. Consumers
+upgrading from an older release must adopt the v7.16.2 API. Existing conversation
+data continues through the permanent automatic domain-schema migration lineage.
+
 ```bash
 GOWORK=off go test ./...
 GOWORK=off go vet ./...
 GOWORK=off go test -race ./...
+scripts/check_v7_api_compatibility.sh
 scripts/check_candidate_release_adoption.sh
 ```
 

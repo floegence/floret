@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-18: Public API compatibility starts at v7.16.2
+
+* Establish the exact published v7.16.2 API and later compatible additions as the supported compatibility window; earlier release comparisons remain historical evidence only.
+* Remove the local-tag absence bypass from the published API gate. Keep the current API snapshot and permanent conversation-schema migration lineage.
+
 ## 2026-09-18: Complete mixed-call history
 
 * Replace discarded mixed controls with paired bounded correction and preserve ordinary effect execution and batch identity.
