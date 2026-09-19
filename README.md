@@ -263,6 +263,17 @@ calls remain readable when their definitions are removed; a new call to an
 unavailable tool returns a safe ordinary tool result and the model loop
 continues.
 
+
+Hosts that need live capability changes can explicitly return
+`ToolSurface.RefreshProviderSurface: true` from `WithAgentDynamicToolSurface`.
+Each subsequent provider request then uses current system text and local/hosted
+tool definitions. Provider, model, reasoning, context policy and compatibility
+identity remain fixed by the first Turn checkpoint. Changed envelopes establish
+a new render lineage and clear provider continuation state without compaction
+or rewriting earlier checkpoints. The default remains the frozen Turn surface.
+Dispatch-time permission resolution and existing approvals remain independent:
+refreshing model-visible tools does not authorize an invocation or settle a wait.
+
 Current views contain one Floret-ordered sequence of directly renderable user,
 thinking, assistant, tool, and interaction items, plus pending interactions and
 the accepted queue. Each item has a stable ID and ordinal; live deltas grow the

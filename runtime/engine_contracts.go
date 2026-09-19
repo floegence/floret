@@ -89,13 +89,17 @@ type ToolSurfaceRequest struct {
 }
 
 type ToolSurface struct {
-	Tools                 *tools.Registry
-	ToolDefinitions       []tools.ToolDefinition
-	HostedToolDefinitions []publicprovider.HostedToolDefinition
-	SystemPrompt          string
-	HostContext           map[string]string
-	Epoch                 string
-	Reason                string
+	// RefreshProviderSurface opts into resolving system text and tool definitions
+	// at each provider request. Model, reasoning, context policy and historical
+	// checkpoints stay fixed. The zero value preserves the first Turn surface.
+	RefreshProviderSurface bool
+	Tools                  *tools.Registry
+	ToolDefinitions        []tools.ToolDefinition
+	HostedToolDefinitions  []publicprovider.HostedToolDefinition
+	SystemPrompt           string
+	HostContext            map[string]string
+	Epoch                  string
+	Reason                 string
 }
 
 type ToolSurfaceProvider func(context.Context, ToolSurfaceRequest) (ToolSurface, error)
@@ -377,7 +381,8 @@ func runtimeToolSurfaceProvider(surfaceProvider ToolSurfaceProvider) engine.Tool
 			return engine.ToolSurface{}, err
 		}
 		return engine.ToolSurface{
-			Tools: surface.Tools, ToolDefinitions: normalizeToolDefinitions(surface.ToolDefinitions),
+			RefreshProviderSurface: surface.RefreshProviderSurface,
+			Tools:                  surface.Tools, ToolDefinitions: normalizeToolDefinitions(surface.ToolDefinitions),
 			HostedToolDefinitions: providerHostedToolDefinitions(surface.HostedToolDefinitions),
 			SystemPrompt:          surface.SystemPrompt, HostContext: cloneStringMap(surface.HostContext),
 			Epoch: strings.TrimSpace(surface.Epoch), Reason: strings.TrimSpace(surface.Reason),

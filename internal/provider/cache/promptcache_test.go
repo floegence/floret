@@ -217,7 +217,7 @@ func TestResolveTurnSurfaceFreezesCompleteSurfaceAndStoreDetachesCopies(t *testi
 		ContextPolicy:  contextpolicy.Policy{ContextWindowTokens: 128000, MaxOutputTokens: 8192},
 		AdapterVersion: Version, CacheNamespace: "flash-cache", StateCompatibilityKey: "deepseek:flash:v1",
 	}
-	frozen, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", first)
+	frozen, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", first, false)
 	if err != nil || found || frozen.Hash == "" {
 		t.Fatalf("first surface = %#v found=%v err=%v", frozen, found, err)
 	}
@@ -231,7 +231,7 @@ func TestResolveTurnSurfaceFreezesCompleteSurfaceAndStoreDetachesCopies(t *testi
 	changed.Model = "pro"
 	changed.SystemPrompt = "system-v2"
 	changed.Tools = []ToolDefinition{{Name: "write"}}
-	restored, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", changed)
+	restored, found, err := ResolveTurnSurface(ctx, store, "thread", "turn", changed, false)
 	if err != nil || !found || restored.Hash != frozen.Hash || restored.Model != "flash" || restored.SystemPrompt != "system-v1" || len(restored.Tools) != 1 || restored.Tools[0].Name != "read" {
 		t.Fatalf("restored surface = %#v found=%v err=%v", restored, found, err)
 	}
@@ -251,7 +251,7 @@ func TestResolveTurnSurfaceFreezesCompleteSurfaceAndStoreDetachesCopies(t *testi
 		t.Fatalf("stored execution surface was mutated through a read: %#v", again[0])
 	}
 
-	next, found, err := ResolveTurnSurface(ctx, store, "thread", "next-turn", changed)
+	next, found, err := ResolveTurnSurface(ctx, store, "thread", "next-turn", changed, false)
 	if err != nil || found || next.Model != "pro" || next.SystemPrompt != "system-v2" || next.Hash == frozen.Hash {
 		t.Fatalf("next turn surface = %#v found=%v err=%v", next, found, err)
 	}
@@ -1235,4 +1235,45 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestRefreshTurnSurfacePreservesConfigurationAndHistoricalCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	initial := TurnSurfaceSnapshot{Provider: "original", Model: "model", ReasoningLevel: "medium", ReasoningBudgetTokens: 1024, SystemPrompt: "read only", Tools: []ToolDefinition{{Name: "read"}}, AdapterVersion: Version, StateCompatibilityKey: "original:model", CacheNamespace: "original"}
+	first, _, err := ResolveTurnSurface(ctx, store, "thread", "turn", initial, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{ID: "first", PromptScopeID: "thread", TurnID: "turn", TurnSurface: first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := initial
+	changed.Provider, changed.Model, changed.ReasoningLevel, changed.CacheNamespace = "different", "different", "high", "different"
+	changed.SystemPrompt, changed.Tools = "write enabled", []ToolDefinition{{Name: "write"}}
+	for attempt := 0; attempt < 2; attempt++ {
+		got, frozen, err := ResolveTurnSurface(ctx, store, "thread", "turn", changed, true)
+		if err != nil || !frozen {
+			t.Fatalf("resolve: %v %v", frozen, err)
+		}
+		if got.Provider != first.Provider || got.Model != first.Model || got.ReasoningLevel != first.ReasoningLevel || got.CacheNamespace != first.CacheNamespace || got.StateCompatibilityKey != first.StateCompatibilityKey {
+			t.Fatalf("changed Turn configuration: %+v", got)
+		}
+		if got.SystemPrompt != changed.SystemPrompt || got.Tools[0].Name != "write" || got.Hash == first.Hash {
+			t.Fatalf("stale tools: %+v", got)
+		}
+		if attempt == 0 {
+			if err := store.AppendProviderRequest(ctx, ProviderRequestRecord{ID: "second", PromptScopeID: "thread", TurnID: "turn", TurnSurface: got}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	restored, _, err := ResolveTurnSurface(ctx, store, "thread", "turn", changed, false)
+	if err != nil || restored.Hash != first.Hash {
+		t.Fatalf("default surface drifted: %+v %v", restored, err)
+	}
+	requests, err := store.ProviderRequests(ctx, "thread")
+	if err != nil || len(requests) != 2 || requests[0].TurnSurface.Hash != first.Hash {
+		t.Fatalf("historical checkpoint changed: %+v %v", requests, err)
+	}
 }

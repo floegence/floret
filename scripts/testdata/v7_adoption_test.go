@@ -473,3 +473,10 @@ func TestPublishedOfflineRequestEstimate(t *testing.T) {
 		t.Fatalf("offline estimate: %+v %v", estimate, err)
 	}
 }
+
+func TestLiveProviderSurfaceOptIn(t *testing.T) {
+	surface := runtime.ToolSurface{RefreshProviderSurface: true}
+	if !surface.RefreshProviderSurface {
+		t.Fatal("live surface option lost")
+	}
+}

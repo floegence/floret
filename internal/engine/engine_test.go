@@ -839,6 +839,91 @@ func TestDynamicToolSurfaceIsFrozenForTheTurn(t *testing.T) {
 	}
 }
 
+func TestDynamicToolSurfaceRefreshesProviderEnvelopeWhenEnabled(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	readOnly := tools.NewRegistry()
+	mustRegister(t, readOnly, stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "content", nil
+	}))
+	writeEnabled := tools.NewRegistry()
+	mustRegister(t, writeEnabled, stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "content", nil
+	}))
+	mustRegister(t, writeEnabled, stringTool("write", "Write", false, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "written", nil
+	}))
+	e := newTestEngine(p, rec)
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{
+		Name: "default_search",
+		Type: "web_search",
+	}}
+	e.Options.ToolSurfaceProvider = func(_ context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		if req.Step >= 2 && req.Phase == "provider_request" {
+			return engine.ToolSurface{
+				RefreshProviderSurface: true,
+				Tools:                  writeEnabled,
+				HostedToolDefinitions: []provider.HostedToolDefinition{{
+					Name: "hosted_search",
+					Type: "web_search",
+				}},
+				SystemPrompt: "write tools are available",
+				Epoch:        "write",
+				Reason:       "test_switch",
+			}, nil
+		}
+		return engine.ToolSurface{
+			RefreshProviderSurface: true,
+			Tools:                  readOnly,
+			HostedToolDefinitions:  []provider.HostedToolDefinition{},
+			SystemPrompt:           "read only tools are available",
+			Epoch:                  "read",
+			Reason:                 "test_switch",
+		}, nil
+	}
+
+	got := e.Run(context.Background(), "inspect")
+
+	if got.Status != engine.Completed || got.Output != "done" || got.Metrics.Compactions != 0 {
+		t.Fatalf("result = %#v, want frozen surface without compaction", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	if names := providerToolNames(p.Requests[0].Tools); !slices.Contains(names, "read") || slices.Contains(names, "write") {
+		t.Fatalf("first request tools = %v, want read without write", names)
+	}
+	if len(p.Requests[0].HostedTools) != 0 {
+		t.Fatalf("first request hosted tools = %#v, want none", p.Requests[0].HostedTools)
+	}
+	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
+		t.Fatalf("second request tools = %v, want refreshed write surface", names)
+	}
+	if len(p.Requests[1].HostedTools) != 1 {
+		t.Fatalf("second request hosted tools = %#v, want refreshed hosted surface", p.Requests[1].HostedTools)
+	}
+	if first := p.Requests[0].Messages[0].Content; first != "read only tools are available" {
+		t.Fatalf("first system prompt = %q", first)
+	}
+	if second := p.Requests[1].Messages[0].Content; second != "write tools are available" {
+		t.Fatalf("second system prompt = %q", second)
+	}
+	if p.Requests[1].RawPlan.CompactionGeneration != p.Requests[0].RawPlan.CompactionGeneration || p.Requests[1].TurnSurface.Hash == p.Requests[0].TurnSurface.Hash {
+		t.Fatalf("provider surface did not refresh: first=%#v second=%#v", p.Requests[0].TurnSurface, p.Requests[1].TurnSurface)
+	}
+
+	if p.Requests[0].RawPlan.RenderLineageKey == p.Requests[1].RawPlan.RenderLineageKey || p.Requests[1].PreviousState != nil || p.Requests[1].RawPlan.PreviousResponseID != "" {
+		t.Fatal("changed provider surface reused its previous continuation")
+	}
+	if len(p.Requests[1].Messages) <= len(p.Requests[0].Messages) {
+		t.Fatal("surface refresh lost canonical tool history")
+	}
+}
+
 func TestDynamicToolSurfaceRefreshesBeforeDispatch(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),

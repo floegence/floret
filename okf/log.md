@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-20: Explicit live provider surfaces
+
+* Add an opt-in tool-surface field for refreshing system text and tool definitions within a Turn while fixing model and reasoning configuration.
+* Preserve the default frozen surface, historical checkpoints, canonical history and effect approvals. Reuse existing render-lineage invalidation and schema v12.
+
 ## 2026-09-18: Public API compatibility starts at v7.16.2
 
 * Establish the exact published v7.16.2 API and later compatible additions as the supported compatibility window; earlier release comparisons remain historical evidence only.

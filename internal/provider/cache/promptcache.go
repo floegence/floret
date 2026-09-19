@@ -235,9 +235,9 @@ type ProviderRequestRecord struct {
 	CreatedAt                  time.Time                     `json:"created_at"`
 }
 
-// TurnSurfaceSnapshot is the immutable provider execution surface selected by
-// the first dispatched request of a turn. It is stored on the same atomic
-// request checkpoint and reused by every continuation of that turn.
+// TurnSurfaceSnapshot is the immutable execution surface of one provider
+// checkpoint. The first checkpoint fixes Turn configuration. Hosts may opt into
+// refreshing system text and tools on later checkpoints without rewriting history.
 type TurnSurfaceSnapshot struct {
 	Provider              string                 `json:"provider"`
 	Model                 string                 `json:"model"`
@@ -1034,10 +1034,10 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	return nil
 }
 
-// ResolveTurnSurface returns the first checkpointed surface for a turn. A
-// turn without a provider checkpoint adopts current; callers persist it as
-// part of RecordProviderRequest before dispatch.
-func ResolveTurnSurface(ctx context.Context, store Store, promptScopeID, turnID string, current TurnSurfaceSnapshot) (TurnSurfaceSnapshot, bool, error) {
+// ResolveTurnSurface fixes configuration from the first checkpoint of a Turn.
+// Explicit refresh updates only system text and tools for the next checkpoint.
+// Callers persist the returned snapshot atomically before provider dispatch.
+func ResolveTurnSurface(ctx context.Context, store Store, promptScopeID, turnID string, current TurnSurfaceSnapshot, refreshTools bool) (TurnSurfaceSnapshot, bool, error) {
 	normalized, err := normalizeTurnSurface(current)
 	if err != nil {
 		return TurnSurfaceSnapshot{}, false, err
@@ -1064,6 +1064,16 @@ func ResolveTurnSurface(ctx context.Context, store Store, promptScopeID, turnID 
 		frozen, err := normalizeTurnSurface(request.TurnSurface)
 		if err != nil {
 			return TurnSurfaceSnapshot{}, false, err
+		}
+		if refreshTools {
+			frozen.SystemPrompt = normalized.SystemPrompt
+			frozen.Tools = normalized.Tools
+			frozen.HostedTools = normalized.HostedTools
+			frozen.Hash = ""
+			frozen, err = normalizeTurnSurface(frozen)
+			if err != nil {
+				return TurnSurfaceSnapshot{}, false, err
+			}
 		}
 		return frozen, true, nil
 	}

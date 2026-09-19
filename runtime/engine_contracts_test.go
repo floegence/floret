@@ -116,3 +116,13 @@ func assertProviderToolNames(t *testing.T, request internalprovider.Request, wan
 		t.Fatalf("provider tools = %v, want %v", got, want)
 	}
 }
+
+func TestRuntimeToolSurfaceProviderPreservesRefreshOptIn(t *testing.T) {
+	provider := runtimeToolSurfaceProvider(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
+		return ToolSurface{RefreshProviderSurface: true}, nil
+	})
+	surface, err := provider(t.Context(), engine.ToolSurfaceRequest{})
+	if err != nil || !surface.RefreshProviderSurface {
+		t.Fatalf("surface=%+v error=%v", surface, err)
+	}
+}
