@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v7.17.0 - 2026-09-20
+
+- Add opt-in `ToolSurface.RefreshProviderSurface` for live system text and tool capability changes at provider boundaries. Preserve frozen model/reasoning configuration, immutable historical checkpoints, default behavior, and schema v12.
+- Start a new render lineage and clear opaque provider continuation state when the envelope changes; retain canonical history, approvals and effect ownership.
+
+Compatibility: additive to the published v7.16.2 API.
 
 - Establish published v7.16.2 as the public API compatibility baseline. Retire source/API compatibility promises for earlier releases; protect the new baseline and compatible additions released afterward.
 - Require the published-module comparison even when the local checkout has no baseline tag. Keep the current API snapshot, strict incompatibility failures, and permanent conversation-schema migration lineage.

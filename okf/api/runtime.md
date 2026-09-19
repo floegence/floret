@@ -237,6 +237,17 @@ restart recovery reuse it exactly. Floret keeps the canonical path intact,
 starts or resumes the surface's independent render lineage, and clears
 provider-native continuation state across a surface switch.
 
+
+Hosts that need live capability changes can explicitly return
+`ToolSurface.RefreshProviderSurface: true` from `WithAgentDynamicToolSurface`.
+Each subsequent provider request then uses current system text and local/hosted
+tool definitions. Provider, model, reasoning, context policy and compatibility
+identity remain fixed by the first Turn checkpoint. Changed envelopes establish
+a new render lineage and clear provider continuation state without compaction
+or rewriting earlier checkpoints. The default remains the frozen Turn surface.
+Dispatch-time permission resolution and existing approvals remain independent:
+refreshing model-visible tools does not authorize an invocation or settle a wait.
+
 The provider-context v6 projection establishes one explicit render boundary
 for earlier projectors, including v5. Canonical lineage hashes durable typed
 conversation facts rather than journal entry and parent identities, which may

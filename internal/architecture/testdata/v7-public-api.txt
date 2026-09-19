@@ -1015,6 +1015,7 @@ type ToolCallStream struct
 field ToolCallStream.ID string tag="json:\"id,omitempty\""
 field ToolCallStream.Name string tag="json:\"name,omitempty\""
 type ToolSurface struct
+field ToolSurface.RefreshProviderSurface bool
 field ToolSurface.Tools *github.com/floegence/floret/v7/tools.Registry
 field ToolSurface.ToolDefinitions []github.com/floegence/floret/v7/tools.ToolDefinition
 field ToolSurface.HostedToolDefinitions []github.com/floegence/floret/v7/provider.HostedToolDefinition

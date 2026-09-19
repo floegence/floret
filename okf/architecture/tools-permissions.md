@@ -69,6 +69,17 @@ system prompt text, host context, and audit metadata. The first provider
 checkpoint freezes the complete surface for the Turn; later tool loops, Ask
 User resume, retries, and restart recovery use that same snapshot.
 
+
+Hosts that need live capability changes can explicitly return
+`ToolSurface.RefreshProviderSurface: true` from `WithAgentDynamicToolSurface`.
+Each subsequent provider request then uses current system text and local/hosted
+tool definitions. Provider, model, reasoning, context policy and compatibility
+identity remain fixed by the first Turn checkpoint. Changed envelopes establish
+a new render lineage and clear provider continuation state without compaction
+or rewriting earlier checkpoints. The default remains the frozen Turn surface.
+Dispatch-time permission resolution and existing approvals remain independent:
+refreshing model-visible tools does not authorize an invocation or settle a wait.
+
 Provider-visible system text and tool definitions are part of one render
 lineage's stable envelope. A new Turn may use a changed surface, which starts a
 new render lineage and sends the complete canonical history without compaction

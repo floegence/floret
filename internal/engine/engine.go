@@ -112,13 +112,17 @@ type ToolSurfaceRequest struct {
 }
 
 type ToolSurface struct {
-	Tools                 *tools.Registry
-	ToolDefinitions       []tools.ToolDefinition
-	HostedToolDefinitions []provider.HostedToolDefinition
-	SystemPrompt          string
-	HostContext           map[string]string
-	Epoch                 string
-	Reason                string
+	// RefreshProviderSurface opts into resolving system text and tool definitions
+	// at each provider request. Model, reasoning, context policy and historical
+	// checkpoints stay fixed. The zero value preserves the first Turn surface.
+	RefreshProviderSurface bool
+	Tools                  *tools.Registry
+	ToolDefinitions        []tools.ToolDefinition
+	HostedToolDefinitions  []provider.HostedToolDefinition
+	SystemPrompt           string
+	HostContext            map[string]string
+	Epoch                  string
+	Reason                 string
 }
 
 type ToolSurfaceProvider func(context.Context, ToolSurfaceRequest) (ToolSurface, error)
@@ -193,13 +197,14 @@ type Options struct {
 }
 
 type resolvedToolSurface struct {
-	tools                 *tools.Registry
-	toolDefinitions       []tools.ToolDefinition
-	hostedToolDefinitions []provider.HostedToolDefinition
-	systemPrompt          string
-	hostContext           map[string]string
-	epoch                 string
-	reason                string
+	refreshProviderSurface bool
+	tools                  *tools.Registry
+	toolDefinitions        []tools.ToolDefinition
+	hostedToolDefinitions  []provider.HostedToolDefinition
+	systemPrompt           string
+	hostContext            map[string]string
+	epoch                  string
+	reason                 string
 }
 
 type RunLabels struct {
@@ -1646,13 +1651,14 @@ func cloneTurnSupplementalContext(in []TurnSupplementalContextItem) []TurnSupple
 
 func cloneResolvedToolSurface(surface resolvedToolSurface) resolvedToolSurface {
 	return resolvedToolSurface{
-		tools:                 surface.tools,
-		toolDefinitions:       cloneProviderToolDefinitions(surface.toolDefinitions),
-		hostedToolDefinitions: cloneHostedToolDefinitions(surface.hostedToolDefinitions),
-		systemPrompt:          surface.systemPrompt,
-		hostContext:           cloneStringMap(surface.hostContext),
-		epoch:                 strings.TrimSpace(surface.epoch),
-		reason:                strings.TrimSpace(surface.reason),
+		refreshProviderSurface: surface.refreshProviderSurface,
+		tools:                  surface.tools,
+		toolDefinitions:        cloneProviderToolDefinitions(surface.toolDefinitions),
+		hostedToolDefinitions:  cloneHostedToolDefinitions(surface.hostedToolDefinitions),
+		systemPrompt:           surface.systemPrompt,
+		hostContext:            cloneStringMap(surface.hostContext),
+		epoch:                  strings.TrimSpace(surface.epoch),
+		reason:                 strings.TrimSpace(surface.reason),
 	}
 }
 
@@ -1724,13 +1730,14 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 	opts.toolDefinitions = toolDefs
 	opts.HostedToolDefinitions = hostedDefs
 	opts.toolSurface = resolvedToolSurface{
-		tools:                 surfaceTools,
-		toolDefinitions:       cloneProviderToolDefinitions(toolDefs),
-		hostedToolDefinitions: cloneHostedToolDefinitions(hostedDefs),
-		systemPrompt:          systemPrompt,
-		hostContext:           hostContext,
-		epoch:                 strings.TrimSpace(surface.Epoch),
-		reason:                strings.TrimSpace(surface.Reason),
+		refreshProviderSurface: surface.RefreshProviderSurface,
+		tools:                  surfaceTools,
+		toolDefinitions:        cloneProviderToolDefinitions(toolDefs),
+		hostedToolDefinitions:  cloneHostedToolDefinitions(hostedDefs),
+		systemPrompt:           systemPrompt,
+		hostContext:            hostContext,
+		epoch:                  strings.TrimSpace(surface.Epoch),
+		reason:                 strings.TrimSpace(surface.Reason),
 	}
 	return opts, nil
 }
@@ -2205,7 +2212,7 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 		AdapterVersion:        cache.Version,
 		CacheNamespace:        opts.CacheNamespace,
 		StateCompatibilityKey: opts.StateCompatibilityKey,
-	})
+	}, opts.toolSurface.refreshProviderSurface)
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginContract)
 	}
