@@ -480,3 +480,13 @@ func TestLiveProviderSurfaceOptIn(t *testing.T) {
 		t.Fatal("live surface option lost")
 	}
 }
+
+func TestInitialProviderSurfaceContract(t *testing.T) {
+	request := runtime.ToolSurfaceRequest{InitialProviderSurface: &runtime.ProviderToolSurface{
+		SystemPrompt: "original", ToolDefinitions: []tools.ToolDefinition{{Name: "read"}},
+		HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "search", Type: "web_search"}},
+	}}
+	if request.InitialProviderSurface.SystemPrompt != "original" {
+		t.Fatal("checkpoint surface lost")
+	}
+}

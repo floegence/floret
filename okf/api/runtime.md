@@ -237,7 +237,6 @@ restart recovery reuse it exactly. Floret keeps the canonical path intact,
 starts or resumes the surface's independent render lineage, and clears
 provider-native continuation state across a surface switch.
 
-
 Hosts that need live capability changes can explicitly return
 `ToolSurface.RefreshProviderSurface: true` from `WithAgentDynamicToolSurface`.
 Each subsequent provider request then uses current system text and local/hosted
@@ -247,6 +246,11 @@ a new render lineage and clear provider continuation state without compaction
 or rewriting earlier checkpoints. The default remains the frozen Turn surface.
 Dispatch-time permission resolution and existing approvals remain independent:
 refreshing model-visible tools does not authorize an invocation or settle a wait.
+`ToolSurfaceRequest.InitialProviderSurface` supplies a detached copy of the first
+checkpoint's system text and tool definitions, including after restart; it is nil
+before the first request. Hosts can preserve unrelated capabilities from this
+snapshot while refreshing only their live policy. It contains no executable
+handlers and does not authorize tools or create a second persistence contract.
 
 The provider-context v6 projection establishes one explicit render boundary
 for earlier projectors, including v5. Canonical lineage hashes durable typed

@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.18.0 - 2026-09-20
+
+- Add `ToolSurfaceRequest.InitialProviderSurface`, a detached first-checkpoint snapshot of system text and local/hosted definitions. Dynamic hosts can preserve unrelated capabilities while refreshing live policy, including after restart.
+- Keep earlier request records immutable and reuse existing schema v12 storage. No executable handlers or host persistence mirror are exposed.
+
+Compatibility: additive to the protected v7.16.2 baseline and v7.17.0 additions.
+
 ## v7.17.0 - 2026-09-20
 
 - Add opt-in `ToolSurface.RefreshProviderSurface` for live system text and tool capability changes at provider boundaries. Preserve frozen model/reasoning configuration, immutable historical checkpoints, default behavior, and schema v12.

@@ -1042,42 +1042,46 @@ func ResolveTurnSurface(ctx context.Context, store Store, promptScopeID, turnID 
 	if err != nil {
 		return TurnSurfaceSnapshot{}, false, err
 	}
-	if store == nil || strings.TrimSpace(turnID) == "" {
+	frozen, found, err := InitialTurnSurface(ctx, store, promptScopeID, turnID)
+	if err != nil {
+		return TurnSurfaceSnapshot{}, false, err
+	}
+	if !found {
 		return normalized, false, nil
+	}
+	if refreshTools {
+		frozen.SystemPrompt, frozen.Tools, frozen.HostedTools = normalized.SystemPrompt, normalized.Tools, normalized.HostedTools
+		frozen.Hash = ""
+		frozen, err = normalizeTurnSurface(frozen)
+	}
+	return frozen, true, err
+}
+
+// InitialTurnSurface returns a detached first checkpoint without constructing
+// substitute configuration when the Turn has not dispatched a provider request.
+func InitialTurnSurface(ctx context.Context, store Store, promptScopeID, turnID string) (TurnSurfaceSnapshot, bool, error) {
+	if store == nil || strings.TrimSpace(turnID) == "" {
+		return TurnSurfaceSnapshot{}, false, nil
 	}
 	requests, err := store.ProviderRequests(ctx, promptScopeID)
 	if err != nil {
 		return TurnSurfaceSnapshot{}, false, err
 	}
-	for index := range requests {
-		request := requests[index]
-		requestSurfaceID := strings.TrimSpace(request.TurnID)
-		if requestSurfaceID == "" {
-			requestSurfaceID = strings.TrimSpace(request.RunID)
+	for _, request := range requests {
+		surfaceID := strings.TrimSpace(request.TurnID)
+		if surfaceID == "" {
+			surfaceID = strings.TrimSpace(request.RunID)
 		}
-		if requestSurfaceID != turnID {
+		if surfaceID != turnID {
 			continue
 		}
 		if strings.TrimSpace(request.TurnSurface.Hash) == "" {
 			return TurnSurfaceSnapshot{}, false, errors.New("turn provider checkpoint is missing its execution surface")
 		}
 		frozen, err := normalizeTurnSurface(request.TurnSurface)
-		if err != nil {
-			return TurnSurfaceSnapshot{}, false, err
-		}
-		if refreshTools {
-			frozen.SystemPrompt = normalized.SystemPrompt
-			frozen.Tools = normalized.Tools
-			frozen.HostedTools = normalized.HostedTools
-			frozen.Hash = ""
-			frozen, err = normalizeTurnSurface(frozen)
-			if err != nil {
-				return TurnSurfaceSnapshot{}, false, err
-			}
-		}
-		return frozen, true, nil
+		return frozen, err == nil, err
 	}
-	return normalized, false, nil
+	return TurnSurfaceSnapshot{}, false, nil
 }
 
 func normalizeTurnSurface(surface TurnSurfaceSnapshot) (TurnSurfaceSnapshot, error) {
