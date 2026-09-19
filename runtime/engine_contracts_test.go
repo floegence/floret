@@ -126,3 +126,27 @@ func TestRuntimeToolSurfaceProviderPreservesRefreshOptIn(t *testing.T) {
 		t.Fatalf("surface=%+v error=%v", surface, err)
 	}
 }
+
+func TestRuntimeToolSurfaceProviderPreservesInitialCheckpoint(t *testing.T) {
+	initial := &engine.ProviderToolSurface{
+		SystemPrompt:          "initial",
+		ToolDefinitions:       []tools.ToolDefinition{{Name: "read"}},
+		HostedToolDefinitions: []internalprovider.HostedToolDefinition{{Name: "search", Type: "web_search", Options: map[string]any{"size": "low"}}},
+	}
+	for _, source := range []*engine.ProviderToolSurface{nil, initial} {
+		bridge := runtimeToolSurfaceProvider(func(_ context.Context, request ToolSurfaceRequest) (ToolSurface, error) {
+			got := request.InitialProviderSurface
+			if source == nil {
+				if got != nil {
+					t.Fatal("bridge invented an initial checkpoint")
+				}
+			} else if got == nil || got.SystemPrompt != "initial" || len(got.ToolDefinitions) != 1 || got.ToolDefinitions[0].Name != "read" || len(got.HostedToolDefinitions) != 1 || got.HostedToolDefinitions[0].Options["size"] != "low" {
+				t.Fatalf("initial surface lost: %+v", got)
+			}
+			return ToolSurface{}, nil
+		})
+		if _, err := bridge(t.Context(), engine.ToolSurfaceRequest{InitialProviderSurface: source}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

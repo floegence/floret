@@ -76,16 +76,27 @@ type ManualCompactionSource interface {
 	PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error)
 }
 
+// ProviderToolSurface is detached model-visible configuration from a checkpoint.
+type ProviderToolSurface struct {
+	SystemPrompt          string
+	ToolDefinitions       []tools.ToolDefinition
+	HostedToolDefinitions []publicprovider.HostedToolDefinition
+}
+
 type ToolSurfaceRequest struct {
-	RunID         identity.RunID
-	ThreadID      identity.ThreadID
-	TurnID        identity.TurnID
-	TraceID       identity.TraceID
-	PromptScopeID identity.PromptScopeID
-	Step          int
-	Phase         string
-	Labels        RunLabels
-	HostContext   map[string]string
+	// InitialProviderSurface is the first checkpoint of this Turn, or nil before
+	// the first provider checkpoint. Hosts can retain capabilities unrelated to a live policy change.
+	// Mutating it cannot alter stored requests.
+	InitialProviderSurface *ProviderToolSurface
+	RunID                  identity.RunID
+	ThreadID               identity.ThreadID
+	TurnID                 identity.TurnID
+	TraceID                identity.TraceID
+	PromptScopeID          identity.PromptScopeID
+	Step                   int
+	Phase                  string
+	Labels                 RunLabels
+	HostContext            map[string]string
 }
 
 type ToolSurface struct {
@@ -370,8 +381,16 @@ func runtimeToolSurfaceProvider(surfaceProvider ToolSurfaceProvider) engine.Tool
 		return nil
 	}
 	return func(ctx context.Context, request engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		var initial *ProviderToolSurface
+		if source := request.InitialProviderSurface; source != nil {
+			initial = &ProviderToolSurface{SystemPrompt: source.SystemPrompt, ToolDefinitions: source.ToolDefinitions}
+			for _, tool := range source.HostedToolDefinitions {
+				initial.HostedToolDefinitions = append(initial.HostedToolDefinitions, publicprovider.HostedToolDefinition{Name: tool.Name, Type: tool.Type, Options: tool.Options})
+			}
+		}
 		surface, err := surfaceProvider(ctx, ToolSurfaceRequest{
-			RunID: identity.RunID(request.RunID), ThreadID: identity.ThreadID(request.ThreadID),
+			InitialProviderSurface: initial,
+			RunID:                  identity.RunID(request.RunID), ThreadID: identity.ThreadID(request.ThreadID),
 			TurnID: identity.TurnID(request.TurnID), TraceID: identity.TraceID(request.TraceID),
 			PromptScopeID: identity.PromptScopeID(request.PromptScopeID), Step: request.Step,
 			Phase: strings.TrimSpace(request.Phase), Labels: publicRunLabels(request.Labels),

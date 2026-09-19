@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-20: Initial provider surface for selective live policy
+
+* Expose a detached first-checkpoint surface through the public dynamic callback, including after restart, so hosts can retain unrelated capabilities without tracking another durable snapshot.
+* Keep runtime authorization independent, stored requests immutable and schema v12 unchanged.
+
 ## 2026-09-20: Explicit live provider surfaces
 
 * Add an opt-in tool-surface field for refreshing system text and tool definitions within a Turn while fixing model and reasoning configuration.

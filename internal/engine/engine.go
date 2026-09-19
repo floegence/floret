@@ -99,16 +99,27 @@ type StopHookResult struct {
 	Reason   string
 }
 
+// ProviderToolSurface is detached model-visible configuration from a checkpoint.
+type ProviderToolSurface struct {
+	SystemPrompt          string
+	ToolDefinitions       []tools.ToolDefinition
+	HostedToolDefinitions []provider.HostedToolDefinition
+}
+
 type ToolSurfaceRequest struct {
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	TraceID       string
-	PromptScopeID string
-	Step          int
-	Phase         string
-	Labels        RunLabels
-	HostContext   map[string]string
+	// InitialProviderSurface is the first checkpoint of this Turn, or nil before
+	// the first provider checkpoint. Hosts can retain capabilities unrelated to a live policy change.
+	// Mutating it cannot alter stored requests.
+	InitialProviderSurface *ProviderToolSurface
+	RunID                  string
+	ThreadID               string
+	TurnID                 string
+	TraceID                string
+	PromptScopeID          string
+	Step                   int
+	Phase                  string
+	Labels                 RunLabels
+	HostContext            map[string]string
 }
 
 type ToolSurface struct {
@@ -1689,16 +1700,29 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 		}
 		return opts, nil
 	}
+	turnSurfaceID := strings.TrimSpace(opts.TurnID)
+	if turnSurfaceID == "" {
+		turnSurfaceID = strings.TrimSpace(opts.RunID)
+	}
+	initial, found, err := cache.InitialTurnSurface(ctx, e.prompt, opts.PromptScopeID, turnSurfaceID)
+	if err != nil {
+		return Options{}, err
+	}
+	var initialSurface *ProviderToolSurface
+	if found {
+		initialSurface = &ProviderToolSurface{SystemPrompt: initial.SystemPrompt, ToolDefinitions: cloneProviderToolDefinitions(initial.Tools), HostedToolDefinitions: hostedToolDefinitions(initial.HostedTools)}
+	}
 	surface, err := opts.ToolSurfaceProvider(ctx, ToolSurfaceRequest{
-		RunID:         opts.RunID,
-		ThreadID:      opts.ThreadID,
-		TurnID:        opts.TurnID,
-		TraceID:       opts.TraceID,
-		PromptScopeID: opts.PromptScopeID,
-		Step:          step,
-		Phase:         strings.TrimSpace(phase),
-		Labels:        cloneRunLabels(opts.Labels),
-		HostContext:   cloneStringMap(opts.Labels.Host),
+		InitialProviderSurface: initialSurface,
+		RunID:                  opts.RunID,
+		ThreadID:               opts.ThreadID,
+		TurnID:                 opts.TurnID,
+		TraceID:                opts.TraceID,
+		PromptScopeID:          opts.PromptScopeID,
+		Step:                   step,
+		Phase:                  strings.TrimSpace(phase),
+		Labels:                 cloneRunLabels(opts.Labels),
+		HostContext:            cloneStringMap(opts.Labels.Host),
 	})
 	if err != nil {
 		return Options{}, err

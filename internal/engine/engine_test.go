@@ -924,6 +924,62 @@ func TestDynamicToolSurfaceRefreshesProviderEnvelopeWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestDynamicToolSurfaceReceivesDetachedInitialCheckpoint(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("read-1", "read", `{"value":"first"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("read-2", "read", `{"value":"second"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "content", nil
+	}))
+	e := newTestEngine(p, &event.Recorder{})
+	observed := 0
+	checkInitial := func(initial *engine.ProviderToolSurface) {
+		t.Helper()
+		if initial == nil || initial.SystemPrompt != "initial prompt" || len(initial.ToolDefinitions) != 2 || initial.ToolDefinitions[0].Name != "read" || initial.ToolDefinitions[0].InputSchema["type"] != "object" || len(initial.HostedToolDefinitions) != 1 || initial.HostedToolDefinitions[0].Options["search_context_size"] != "low" {
+			t.Fatalf("initial checkpoint changed: %+v", initial)
+		}
+		initial.SystemPrompt = "mutated"
+		initial.ToolDefinitions[0].InputSchema["type"] = "string"
+		initial.HostedToolDefinitions[0].Options["search_context_size"] = "high"
+		observed++
+	}
+	e.Options.ToolSurfaceProvider = func(_ context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		prompt := "initial prompt"
+		if req.Phase == "init" || (req.Step == 1 && req.Phase == "provider_request") {
+			if req.InitialProviderSurface != nil {
+				t.Fatal("surface exists before the first provider checkpoint")
+			}
+		} else {
+			checkInitial(req.InitialProviderSurface)
+			prompt = "refreshed prompt"
+		}
+		return engine.ToolSurface{
+			RefreshProviderSurface: true, Tools: registry, SystemPrompt: prompt,
+			HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "search", Type: "web_search", Options: map[string]any{"search_context_size": "low"}}},
+		}, nil
+	}
+	if result := e.Run(t.Context(), "inspect"); result.Status != engine.Completed || observed < 4 {
+		t.Fatalf("result=%+v observations=%d", result, observed)
+	}
+	if p.Requests[1].Messages[0].Content != "refreshed prompt" || p.Requests[2].Messages[0].Content != "refreshed prompt" {
+		t.Fatal("provider surface was not refreshed")
+	}
+	// A fresh engine reads the same first checkpoint without a host-side mirror.
+	restarted := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+	restarted.Prompt = e.Prompt
+	stop := errors.New("checkpoint inspected")
+	restarted.Options.ToolSurfaceProvider = func(_ context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		checkInitial(req.InitialProviderSurface)
+		return engine.ToolSurface{}, stop
+	}
+	if result := restarted.Run(t.Context(), "resume"); !errors.Is(result.Err, stop) {
+		t.Fatalf("restart result=%+v", result)
+	}
+}
+
 func TestDynamicToolSurfaceRefreshesBeforeDispatch(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),
