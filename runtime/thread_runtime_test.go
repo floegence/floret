@@ -268,7 +268,7 @@ func (gateway *automaticTitleGateway) Stream(_ context.Context, request provider
 		if gateway.failTitle {
 			events <- provider.Event{Type: provider.EventError, Err: errors.New("title unavailable")}
 		} else {
-			events <- provider.Event{Type: provider.EventDelta, Text: "Provider title"}
+			events <- provider.Event{Type: provider.EventDelta, Text: "Provider generated title"}
 			events <- provider.Event{Type: provider.EventDone, Reason: "stop"}
 		}
 	} else {
@@ -955,7 +955,7 @@ func TestThreadServiceAutomaticTitleReplacesFallbackOnlyAfterSuccess(t *testing.
 		wantTitle string
 		wantState ThreadTitleStatus
 	}{
-		{name: "success", wantTitle: "Provider title", wantState: ThreadTitleStatusReady},
+		{name: "success", wantTitle: "Provider generated title", wantState: ThreadTitleStatusReady},
 		{name: "failure", failTitle: true, wantTitle: "fallback title", wantState: ThreadTitleStatusFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {

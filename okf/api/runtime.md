@@ -134,8 +134,13 @@ tokens remain private. Hosts must not infer titles from runtime current views.
 Automatic title generation uses the admitted user text with a separate title
 prompt that instructs the provider to preserve the request language, explicitly
 including English. Host context and the main agent system prompt do not select
-the title language. See the [title prompt](../../internal/agentharness/title.go)
+the title language. Language preservation takes priority over compression;
+automatic titles allow up to 48 Unicode characters so English phrases remain
+readable. See the [title prompt](../../internal/agentharness/title.go)
 and [automatic title input](../../internal/agentharness/automatic_title.go).
+The opt-in [live DeepSeek test](../../runtime/thread_title_live_test.go) verifies
+real provider output; deterministic prompt checks alone cannot establish model
+language compliance.
 
 ## Effects and shutdown
 

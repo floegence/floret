@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.18.2 - 2026-09-21
+
+- Prioritize the user's language over title compression and allow automatic titles up to 48 Unicode characters. This addresses English requests still producing Chinese titles with DeepSeek under the previous 16-character limit.
+- Add opt-in live DeepSeek qualification through the real automatic-title lifecycle, using isolated storage and no ordinary agent provider calls or tools.
+
 ## v7.18.1 - 2026-09-21
 
 - Require automatic title prompts to preserve the user's request language, explicitly including English. Keep title input isolated from host context and preserve existing title lifecycle behavior.
