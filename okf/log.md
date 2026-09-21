@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-21: Live title language qualification
+
+* Real DeepSeek Vision calls reproduced Chinese titles for English requests despite the language instruction. A length-only comparison produced English after raising the limit from 16 to 48 characters.
+* Prioritize request language, allow readable phrases, and retain an opt-in [live qualification](../runtime/thread_title_live_test.go). Public API and domain schema remain unchanged.
+
 ## 2026-09-21: Automatic title language
 
 * Require the [automatic title prompt](api/runtime.md#title-snapshots) to preserve the user's request language, including English, independently of host context.

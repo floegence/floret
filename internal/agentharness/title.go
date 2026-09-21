@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultThreadTitleMaxRunes        = 16
+	defaultThreadTitleMaxRunes        = 48
 	defaultThreadTitleMaxOutputTokens = 64
 	threadTitlePromptMaxMessages      = 8
 	threadTitlePromptMaxContentRunes  = 600
@@ -183,12 +183,13 @@ func threadTitlePromptMessages(messages []session.Message) ([]session.Message, e
 	}
 	system := strings.Join([]string{
 		"You generate concise thread titles for an interactive AI agent.",
+		"Always use the same language as the user's request.",
+		"For English requests, write the title in English.",
+		"Preserve the request language even when another language would be shorter.",
 		"Return only one plain-text title.",
 		"Do not reason; return only the title.",
 		"The title must summarize the user's primary intent, not quote the raw transcript.",
-		"Keep the title specific, single-line, and no more than 16 Unicode characters.",
-		"Always use the same language as the user's request.",
-		"For English requests, write the title in English.",
+		fmt.Sprintf("Keep the title specific, single-line, and no more than %d Unicode characters.", defaultThreadTitleMaxRunes),
 		"Do not mention chat, thread, assistant, or tools unless central to the request.",
 		"Do not include secrets, credentials, private values, markdown, or extra commentary.",
 	}, "\n")
