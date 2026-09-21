@@ -131,6 +131,12 @@ are idempotent. A higher generation takes precedence even when it is pending.
 Generation is existing durable authority, not another journal revision. Claim
 tokens remain private. Hosts must not infer titles from runtime current views.
 
+Automatic title generation uses the admitted user text with a separate title
+prompt that instructs the provider to preserve the request language, explicitly
+including English. Host context and the main agent system prompt do not select
+the title language. See the [title prompt](../../internal/agentharness/title.go)
+and [automatic title input](../../internal/agentharness/automatic_title.go).
+
 ## Effects and shutdown
 
 Tool effects cross a durable one-shot authorization boundary. If the outcome

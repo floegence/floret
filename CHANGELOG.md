@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.18.1 - 2026-09-21
+
+- Require automatic title prompts to preserve the user's request language, explicitly including English. Keep title input isolated from host context and preserve existing title lifecycle behavior.
+
 ## v7.18.0 - 2026-09-20
 
 - Add `ToolSurfaceRequest.InitialProviderSurface`, a detached first-checkpoint snapshot of system text and local/hosted definitions. Dynamic hosts can preserve unrelated capabilities while refreshing live policy, including after restart.

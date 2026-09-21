@@ -53,9 +53,10 @@ type continuationLiveGateway struct {
 }
 
 type automaticTitleGateway struct {
-	failTitle bool
-	requests  atomic.Int32
-	titles    atomic.Int32
+	failTitle     bool
+	requests      atomic.Int32
+	titles        atomic.Int32
+	titleRequests chan provider.Request
 }
 
 type rejectingRuntimeTurnRepo struct {
@@ -261,6 +262,9 @@ func (gateway *automaticTitleGateway) Stream(_ context.Context, request provider
 	events := make(chan provider.Event, 2)
 	if request.LogicalRequestID == "thread_title" {
 		gateway.titles.Add(1)
+		if gateway.titleRequests != nil {
+			gateway.titleRequests <- request
+		}
 		if gateway.failTitle {
 			events <- provider.Event{Type: provider.EventError, Err: errors.New("title unavailable")}
 		} else {

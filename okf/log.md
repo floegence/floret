@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-09-21: Automatic title language
+
+* Require the [automatic title prompt](api/runtime.md#title-snapshots) to preserve the user's request language, including English, independently of host context.
+* Preserve the public API, title lifecycle, length limit and schema v12.
+
 ## 2026-09-20: Initial provider surface for selective live policy
 
 * Expose a detached first-checkpoint surface through the public dynamic callback, including after restart, so hosts can retain unrelated capabilities without tracking another durable snapshot.

@@ -1,13 +1,71 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage"
 )
+
+func TestThreadServiceAutomaticTitleRequestsUserLanguage(t *testing.T) {
+	for _, test := range []struct{ name, input string }{
+		{"english", "Help me understand the computer I am currently connected to with a brief system health check."},
+		{"chinese", "请检查当前电脑的系统健康状况。"},
+		{"japanese", "現在のコンピューターの状態を確認してください。"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make(chan provider.Request, 1)
+			gateway := &automaticTitleGateway{titleRequests: requests}
+			agent, err := testAgent(gateway, WithAgentThreadTitleMode(ThreadTitleModeProvider))
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			service, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-title-language"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := UserInput{Text: test.input, Context: []MessageContextItem{{Kind: "environment", Title: "Selected device", Text: "本机设备"}}}
+			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: input, RequestKey: "send-title-language"}); err != nil {
+				t.Fatal(err)
+			}
+			var request provider.Request
+			select {
+			case request = <-requests:
+			case <-time.After(3 * time.Second):
+				t.Fatal("automatic title request did not start")
+			}
+			if len(request.Messages) != 2 || request.Messages[0].Role != provider.RoleSystem || request.Messages[1].Role != provider.RoleUser {
+				t.Fatalf("title messages = %#v, want an isolated system prompt and user transcript", request.Messages)
+			}
+			for _, instruction := range []string{
+				"Always use the same language as the user's request.",
+				"For English requests, write the title in English.",
+			} {
+				if !strings.Contains(request.Messages[0].Text, instruction) {
+					t.Errorf("title request is missing language instruction %q", instruction)
+				}
+			}
+			if got, want := request.Messages[1].Text, "Transcript:\nUser: "+test.input; got != want {
+				t.Fatalf("title transcript = %q, want %q without host context", got, want)
+			}
+		})
+	}
+}
 
 func TestThreadSummaryTitleGenerationOrdersIndependentTitleUpdates(t *testing.T) {
 	gateway := newBlockingThreadGateway()
