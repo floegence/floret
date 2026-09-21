@@ -187,7 +187,8 @@ func threadTitlePromptMessages(messages []session.Message) ([]session.Message, e
 		"Do not reason; return only the title.",
 		"The title must summarize the user's primary intent, not quote the raw transcript.",
 		"Keep the title specific, single-line, and no more than 16 Unicode characters.",
-		"Use the same language as the user's request when the request is not in English.",
+		"Always use the same language as the user's request.",
+		"For English requests, write the title in English.",
 		"Do not mention chat, thread, assistant, or tools unless central to the request.",
 		"Do not include secrets, credentials, private values, markdown, or extra commentary.",
 	}, "\n")
