@@ -10,29 +10,34 @@ import (
 )
 
 func fallbackThreadTitle(message session.Message) string {
-	candidates := make([]string, 0, 1+len(message.Attachments)+len(message.References)+len(message.Context))
-	candidates = append(candidates, message.Content)
-	for _, attachment := range message.Attachments {
-		candidates = append(candidates, attachment.Name)
-	}
-	for _, reference := range message.References {
-		candidates = append(candidates, reference.Label)
-	}
-	for _, item := range message.Context {
-		candidates = append(candidates, item.Title)
-	}
-	for _, candidate := range candidates {
-		title := strings.Join(strings.Fields(candidate), " ")
-		if title == "" {
-			continue
-		}
-		runes := []rune(title)
-		if len(runes) > MaxThreadTitleRunes {
-			title = strings.TrimSpace(string(runes[:MaxThreadTitleRunes]))
-		}
+	if title := fallbackTitleCandidate(message.Content); title != "" {
 		return title
 	}
+	for _, attachment := range message.Attachments {
+		if title := fallbackTitleCandidate(attachment.Name); title != "" {
+			return title
+		}
+	}
+	for _, reference := range message.References {
+		if title := fallbackTitleCandidate(reference.Label); title != "" {
+			return title
+		}
+	}
+	for _, item := range message.Context {
+		if title := fallbackTitleCandidate(item.Title); title != "" {
+			return title
+		}
+	}
 	return ""
+}
+
+func fallbackTitleCandidate(candidate string) string {
+	title := strings.Join(strings.Fields(candidate), " ")
+	runes := []rune(title)
+	if len(runes) > MaxThreadTitleRunes {
+		title = strings.TrimSpace(string(runes[:MaxThreadTitleRunes]))
+	}
+	return title
 }
 
 func installFallbackThreadTitle(meta ThreadMeta, message session.Message, now time.Time) (ThreadMeta, bool, error) {
