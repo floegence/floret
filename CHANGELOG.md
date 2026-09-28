@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.18.3 - 2026-09-28
+
+- Select the first usable fallback title directly, preserving source priority and Unicode truncation while avoiding unchecked combined slice-capacity arithmetic and unnecessary candidate allocation.
+
 ## v7.18.2 - 2026-09-21
 
 - Prioritize the user's language over title compression and allow automatic titles up to 48 Unicode characters. This addresses English requests still producing Chinese titles with DeepSeek under the previous 16-character limit.
