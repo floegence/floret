@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.18.4 - 2026-10-02
+
+- Keep graceful cancellation under the stop owner's authority when a projection write is canceled. Pending approvals and tool results now settle together instead of competing with failure finalization and leaving an unresolved approval behind.
+
 ## v7.18.3 - 2026-09-28
 
 - Select the first usable fallback title directly, preserving source priority and Unicode truncation while avoiding unchecked combined slice-capacity arithmetic and unnecessary candidate allocation.
