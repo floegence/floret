@@ -828,11 +828,20 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, result.Status, result.Err, "effect_outcome_unknown", result.FailureOrigin)
 	}
 	projection.ctx = persistCtx
-	if projection.err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error", turnProjectionFailureOrigin(projection.err))
+	projectionErr, projectionDiagnostic := projection.err, "projection_error"
+	if projectionErr == nil {
+		projectionErr = projection.FlushForTurnStatus(result.Status, result.Err)
+		projectionDiagnostic = "projection_flush_error"
 	}
-	if err := projection.FlushForTurnStatus(result.Status, result.Err); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error", turnProjectionFailureOrigin(err))
+	if projectionErr != nil {
+		if _, graceful := gracefulCancellation(ctx); graceful && result.Status == engine.Cancelled && isContextCancellationError(projectionErr) {
+			// A canceled projection write must not compete with the stop owner's
+			// atomic settlement of pending approvals, effects, and the terminal.
+			turn := t.turnResultFromEngine(turnID, runID, result, nil)
+			turn.FailureCode = resultFailureCode
+			return turn, result.Err
+		}
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projectionErr), projectionErr, projectionDiagnostic, turnProjectionFailureOrigin(projectionErr))
 	}
 	current, err := t.Journal(persistCtx)
 	if err != nil {
