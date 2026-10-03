@@ -260,10 +260,10 @@ func TestCapabilityUnmarshalUsesCanonicalFields(t *testing.T) {
 	}
 }
 
-func TestDeepSeekPresetUsesResponsesHostedSearch(t *testing.T) {
+func TestDeepSeekPresetKeepsIgnoredHostedSearchDisabled(t *testing.T) {
 	capability := ProviderPresetCapability(catalog.ProviderDeepSeek)
 	resolved, err := Resolve(ResolveInput{Provider: catalog.ProviderDeepSeek, Capability: capability})
-	if err != nil || !resolved.Available || resolved.WireShape != WireShapeDeepSeekResponsesWebSearch || len(resolved.LocalToolNames) != 0 || len(resolved.HostedTools) != 1 {
+	if err != nil || resolved.Available || resolved.Source != WebSearchDisabled || len(resolved.LocalToolNames) != 0 || len(resolved.HostedTools) != 0 {
 		t.Fatalf("resolved = %+v, error = %v", resolved, err)
 	}
 	if catalog.APIKind(catalog.ProviderDeepSeek) != catalog.APIOpenAIResponses {

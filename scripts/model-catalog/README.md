@@ -13,7 +13,7 @@ Run without arguments to regenerate offline; `--check` verifies reproducibility.
 Python 3.9 or later and the standard library are sufficient.
 
 The generator includes tool-capable text-output models. It excludes deprecated
-models, media-only and specialized agent endpoints, and third-party models on
+models (except still-callable official DeepSeek aliases), media-only and specialized agent endpoints, and third-party models on
 the Qwen endpoint. Public preview models retain a lifecycle label. Input
 modalities are restricted to text and image, which the host adapters understand.
 Model metadata does not expand the attachment contract of the built-in public
@@ -41,3 +41,15 @@ models. Custom endpoints remain explicit host configuration. Catalog changes do
 not choose a host's default or replace a conversation's current model.
 
 The upstream data is MIT licensed; see `models-dev.LICENSE`.
+
+The 2026-10-03 snapshot includes current Sol/Luna, Claude 5.5, GLM FlashX,
+Qwen Flash/Omni, Grok 4.7, and DeepSeek Flash metadata. GPT-6.1 Sol requires
+Responses for tools and is excluded from Floret's built-in Chat transport;
+hosts with a qualified Responses gateway may expose it independently.
+Daybreak models require separate approval/provisioning and are excluded.
+DeepSeek alias overrides preserve existing conversation IDs and explicitly clear
+retired experimental labels. Explicit lifecycle overrides take precedence over
+name-based inference. DeepSeek flat prices are off-peak rates, not peak-hour
+billing estimates. The [official pricing page](https://api-docs.deepseek.com/quick_start/pricing)
+owns current aliases and pricing; output metadata uses the pinned 393,216-token
+value for the documented 384K ceiling.

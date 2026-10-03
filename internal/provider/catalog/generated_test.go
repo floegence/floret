@@ -15,7 +15,8 @@ func TestCurrentAgentCatalog(t *testing.T) {
 		{ProviderOpenAI, "gpt-6-astra", true}, {ProviderOpenAI, "gpt-5.6-sol", true},
 		{ProviderAnthropic, "claude-fable-5-1", true}, {ProviderGoogle, "gemini-3.8-flash", true},
 		{ProviderMoonshot, "kimi-k3", true}, {ProviderChatGLM, "glm-5.3-flash", true},
-		{ProviderDeepSeek, "deepseek-v4-flash-vision-exp", true}, {ProviderQwen, "qwen3.8-max", true},
+		{ProviderDeepSeek, "deepseek-flash", true}, {ProviderDeepSeek, "deepseek-v4-flash", true},
+		{ProviderDeepSeek, "deepseek-v4-flash-vision-exp", true}, {ProviderDeepSeek, "deepseek-v4-pro", false}, {ProviderQwen, "qwen3.8-max", true},
 		{ProviderXAI, "grok-4.6", true}, {ProviderGroq, "qwen/qwen3.8-27b", true},
 	} {
 		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
@@ -29,7 +30,7 @@ func TestCurrentAgentCatalog(t *testing.T) {
 		})
 	}
 	for pid, ids := range map[string][]string{
-		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1"},
+		ProviderOpenAI:   {"gpt-5.2-mini", "gpt-realtime-2.1", "gpt-6.1-sol"},
 		ProviderMoonshot: {"kimi-k2.6-thinking", "kimi-k2.5"},
 		ProviderGoogle:   {"gemini-3.1-flash-preview", "gemini-3.1-flash-live-preview"},
 		ProviderGroq:     {"qwen/qwen3-32b", "llama-3.3-70b-versatile"},

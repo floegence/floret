@@ -1,31 +1,223 @@
 {
-  "checked_at": "2026-09-09",
+  "checked_at": "2026-10-03",
   "exclude_pattern": "realtime|(?:^|-)live(?:-|$)|deep-research|computer-use|safeguard|character",
   "exclude": {
-    "openai": ["gpt-5.3-codex-spark"],
+    "openai": [
+      "gpt-5.3-codex-spark",
+      "gpt-daybreak-blue-latest",
+      "gpt-daybreak-red-latest",
+      "gpt-6.1-sol"
+    ],
     "google": [],
-    "xai": ["grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1"],
-    "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+    "xai": [
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-0309-non-reasoning",
+      "grok-build-0.1"
+    ],
+    "groq": [
+      "llama-3.1-8b-instant",
+      "llama-3.3-70b-versatile"
+    ]
   },
   "sources": {
-    "openai": ["https://developers.openai.com/api/docs/models", "https://developers.openai.com/api/docs/guides/reasoning"],
-    "anthropic": ["https://platform.claude.com/docs/en/models/overview", "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking"],
-    "google": ["https://ai.google.dev/gemini-api/docs/openai", "https://ai.google.dev/gemini-api/docs/thinking"],
-    "moonshot": ["https://platform.kimi.com/docs/models", "https://platform.kimi.com/docs/guide/kimi-k3-quickstart"],
-    "chatglm": ["https://docs.z.ai/guides/overview/migrate-to-glm-new", "https://docs.z.ai/guides/capabilities/thinking-mode"],
-    "deepseek": ["https://api-docs.deepseek.com/guides/responses_api/", "https://api-docs.deepseek.com/guides/thinking_mode"],
-    "qwen": ["https://www.alibabacloud.com/help/en/model-studio/models", "https://www.alibabacloud.com/help/en/model-studio/deep-thinking"],
-    "xai": ["https://docs.x.ai/developers/models", "https://docs.x.ai/developers/model-capabilities/text/reasoning"],
-    "groq": ["https://console.groq.com/docs/models", "https://console.groq.com/docs/reasoning"]
+    "openai": [
+      "https://developers.openai.com/api/docs/models",
+      "https://developers.openai.com/api/docs/guides/reasoning",
+      "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "https://developers.openai.com/api/docs/models/gpt-6-sol"
+    ],
+    "anthropic": [
+      "https://platform.claude.com/docs/en/models/overview",
+      "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
+      "https://platform.claude.com/docs/en/build-with-claude/effort"
+    ],
+    "google": [
+      "https://ai.google.dev/gemini-api/docs/openai",
+      "https://ai.google.dev/gemini-api/docs/thinking"
+    ],
+    "moonshot": [
+      "https://platform.kimi.com/docs/models",
+      "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+      "https://platform.kimi.com/docs/guide/use-reasoning-effort"
+    ],
+    "chatglm": [
+      "https://docs.z.ai/guides/overview/migrate-to-glm-new",
+      "https://docs.z.ai/guides/capabilities/thinking-mode",
+      "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+      "https://docs.z.ai/guides/vlm/glm-4.6v"
+    ],
+    "deepseek": [
+      "https://api-docs.deepseek.com/guides/responses_api/",
+      "https://api-docs.deepseek.com/guides/thinking_mode",
+      "https://api-docs.deepseek.com/quick_start/pricing"
+    ],
+    "qwen": [
+      "https://www.alibabacloud.com/help/en/model-studio/models",
+      "https://www.alibabacloud.com/help/en/model-studio/deep-thinking",
+      "https://www.alibabacloud.com/help/en/model-studio/qwen3-8-omni-flash"
+    ],
+    "xai": [
+      "https://docs.x.ai/developers/models",
+      "https://docs.x.ai/developers/model-capabilities/text/reasoning",
+      "https://docs.x.ai/developers/models/grok-4.7"
+    ],
+    "groq": [
+      "https://console.groq.com/docs/models",
+      "https://console.groq.com/docs/reasoning"
+    ]
   },
   "models": {
-    "moonshot/kimi-k3": {"reasoning": {"disable_supported": false, "default_level": "max"}},
-    "chatglm/glm-5.2": {"reasoning": {"default_level": "max"}},
-    "chatglm/glm-5.3": {"reasoning": {"default_level": "max"}},
-    "chatglm/glm-5.3-flash": {"reasoning": {"default_level": "max"}},
-    "deepseek/deepseek-v4-pro": {"reasoning": {"default_level": "high"}},
-    "deepseek/deepseek-v4-flash": {"reasoning": {"default_level": "high"}},
-    "groq/qwen/qwen3.6-27b": {"metadata": {"status": "beta"}},
-    "groq/qwen/qwen3.8-27b": {"metadata": {"status": "beta"}}
+    "moonshot/kimi-k3": {
+      "reasoning": {
+        "disable_supported": false,
+        "default_level": "max"
+      }
+    },
+    "chatglm/glm-5.2": {
+      "reasoning": {
+        "default_level": "max"
+      }
+    },
+    "chatglm/glm-5.3": {
+      "reasoning": {
+        "default_level": "max"
+      }
+    },
+    "chatglm/glm-5.3-flash": {
+      "reasoning": {
+        "default_level": "max"
+      }
+    },
+    "deepseek/deepseek-v4-pro": {
+      "reasoning": {
+        "default_level": "high"
+      }
+    },
+    "deepseek/deepseek-v4-flash": {
+      "reasoning": {
+        "default_level": "high"
+      },
+      "metadata": {
+        "status": "",
+        "limit": {
+          "context": 1000000,
+          "output": 393216
+        },
+        "name": "DeepSeek Flash (legacy alias)",
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      }
+    },
+    "groq/qwen/qwen3.6-27b": {
+      "metadata": {
+        "status": "beta"
+      }
+    },
+    "groq/qwen/qwen3.8-27b": {
+      "metadata": {
+        "status": "beta"
+      }
+    },
+    "openai/gpt-6-sol": {
+      "reasoning": {
+        "default_level": "medium"
+      }
+    },
+    "openai/gpt-6-luna": {
+      "reasoning": {
+        "default_level": "medium"
+      }
+    },
+    "openai/gpt-6.1-sol": {
+      "reasoning": {
+        "default_level": "medium"
+      }
+    },
+    "anthropic/claude-opus-5-5": {
+      "reasoning": {
+        "default_level": "medium"
+      }
+    },
+    "anthropic/claude-sonnet-5-5": {
+      "reasoning": {
+        "default_level": "high"
+      }
+    },
+    "chatglm/glm-5.3-flashx": {
+      "reasoning": {
+        "default_level": "max"
+      }
+    },
+    "xai/grok-4.7": {
+      "reasoning": {
+        "default_level": "high"
+      }
+    },
+    "deepseek/deepseek-flash": {
+      "reasoning": {
+        "default_level": "high"
+      }
+    },
+    "deepseek/deepseek-v4-flash-vision-exp": {
+      "metadata": {
+        "status": "",
+        "limit": {
+          "context": 1000000,
+          "output": 393216
+        },
+        "name": "DeepSeek Flash (legacy Vision alias)",
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        }
+      },
+      "reasoning": {
+        "default_level": "high"
+      }
+    }
+  },
+  "exclusion_notes": {
+    "openai/gpt-daybreak-blue-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
+    "openai/gpt-daybreak-red-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
+    "openai/gpt-6.1-sol": "Tool calling requires Responses; Floret built-in OpenAI transport uses Chat Completions. Hosts with a qualified Responses gateway may expose this model in their own catalog."
   }
 }
