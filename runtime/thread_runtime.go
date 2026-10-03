@@ -3683,6 +3683,17 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 			found := false
 			for _, item := range actor.state.view.Queue {
 				if item.ID == promotedQueueID {
+					// Resolve the pending input while admitting it, so an edit that
+					// won the actor lock cannot be replaced by a captured old copy.
+					input = item.Input
+					supplemental = item.SupplementalContext
+					inputFingerprint, err = stableFingerprint(input)
+					if err != nil {
+						return err
+					}
+					request.Input = input
+					request.SupplementalContext = cloneTurnSupplementalContext(supplemental)
+					request.InputFingerprint = inputFingerprint
 					found = true
 					break
 				}

@@ -195,6 +195,12 @@ queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent
 identity, so they use the same current-view and command contracts.
 
+The optional `runtime.ThreadQueueController` supports `EditQueued` with a text
+precondition and `SendQueuedNow` to stop gracefully and start one chosen queued
+input. Editing preserves its attachments, context, identity and position.
+Already admitted or concurrently edited input is rejected without replacement.
+See the [queue control contract](okf/api/runtime.md#queued-message-controls).
+
 Each thread has one in-memory runtime owner. `Send` first commits canonical turn
 acceptance, then publishes and returns the user item and active current view
 before provider dispatch. The canonical journal is the only durable fact
