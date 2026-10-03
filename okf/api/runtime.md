@@ -90,6 +90,29 @@ disconnection and restart; it never starts queued input automatically. Historic
 records without provenance do not acquire an inferred source. Stopping does not
 undo effects that already occurred.
 
+## Queued message controls
+
+The service returned by `Host.ThreadService` also implements the optional
+`ThreadQueueController`; the existing `ThreadService` interface is unchanged.
+`EditQueued` requires `ExpectedText` and an edit request key. It changes only
+pending text, preserving queue ID, order, attachments, references, context and
+original request identity. An admitted, deleted or stale item returns
+`ErrRequestConflict`; an empty invalid input is rejected. Replacement uses one
+atomic transaction of existing queue facts, so schema v12 and old readers
+remain valid. Promotion resolves the latest input under the admission lock.
+
+`SendQueuedNow` preserves completed work and starts the selected input in a new
+turn after graceful cancellation settles. This is stop-and-send, not an injected
+message in the current provider request. It waits within the existing bounded
+stop window without holding the actor lock; other input and navigation remain
+available. After Stop is accepted, the transition runs independently of HTTP
+cancellation. Unknown effects remain terminal errors and the chosen input stays
+queued. If the Host shuts down before admission, queued input remains available
+for an explicit retry; restart never infers or executes an unfinished command.
+Replaying an admitted send returns its current view without stopping a newer turn.
+
+See [queue editing and sending](../../runtime/thread_queue_edit_test.go).
+
 ## Input presentation
 
 Validated Ask User fields have one projection into `InputPresentation` for

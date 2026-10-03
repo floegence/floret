@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-03: Queued message controls
+
+* Add optional [queue controls](api/runtime.md#queued-message-controls) for atomic text edits and graceful stop-and-send while retaining the base ThreadService and schema v12.
+
 ## 2026-10-03: Current provider catalog and DeepSeek Flash
 
 * Refresh the pinned catalog and qualify DeepSeek V4.1 Flash, official aliases, images, reasoning efforts, and unchanged opaque replay through the existing [provider boundary](api/provider.md).

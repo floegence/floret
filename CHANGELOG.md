@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.20.0 - 2026-10-03
+
+- Add the optional `runtime.ThreadQueueController` for atomic pending-text edits and graceful stop-and-send of a chosen queued input. Preserve attachments, context, order, existing `ThreadService` implementations, and schema v12.
+- Resolve edited input at canonical admission; reject stale edits and preserve unknown-effect boundaries. Request disconnection cannot abandon an accepted stop-and-send transition.
+
 ## v7.19.0 - 2026-10-03
 
 - Refresh the reviewed Agent catalog and add DeepSeek V4.1 Flash (`deepseek-flash`) through the existing Responses gateway. Preserve both official legacy Flash aliases and their original conversation identities; enable their current image capabilities and Pro low-effort reasoning.
