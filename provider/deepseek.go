@@ -52,7 +52,8 @@ type deepSeekGateway struct {
 }
 
 // NewDeepSeek constructs the single DeepSeek Responses execution path, including
-// native web_search, streaming reasoning, and validated stateless history replay.
+// streaming reasoning and validated stateless history replay. Hosted web_search
+// wire input remains accepted for v7 compatibility; the official API ignores it.
 // Image input is an optional per-model capability resolved by the host.
 func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 	model, ok := catalog.FindModel(catalog.ProviderDeepSeek, strings.TrimSpace(options.Model))

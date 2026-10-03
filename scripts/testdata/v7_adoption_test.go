@@ -188,23 +188,27 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 }
 
 func TestDeepSeekResponsesConstructor(t *testing.T) {
-	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{
-		Model: "deepseek-v4-pro", BaseURL: "https://api.deepseek.com", APIKey: "not-used",
-		StateCompatibilityKey: "adoption:deepseek:responses:v1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gateway.Identity().Provider != "deepseek" {
-		t.Fatal("incorrect DeepSeek identity")
-	}
-	if _, ok := gateway.(provider.RequestPreparer); !ok {
-		t.Fatal("DeepSeek must estimate the complete rendered request")
-	}
-	if _, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "adoption", Name: "Adoption"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, runtime.WithAgentHostedTools(provider.HostedToolDefinition{Name: "web_search", Type: "web_search"})); err != nil {
-		t.Fatal(err)
-	}
+	for _, model := range []string{"deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+		t.Run(model, func(t *testing.T) {
+			gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{
+				Model: model, BaseURL: "https://api.deepseek.com", APIKey: "not-used",
+				StateCompatibilityKey: "adoption:deepseek:responses:v1",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gateway.Identity().Provider != "deepseek" || gateway.Identity().Model != model {
+				t.Fatal("incorrect DeepSeek identity")
+			}
+			if _, ok := gateway.(provider.RequestPreparer); !ok {
+				t.Fatal("DeepSeek must estimate the complete rendered request")
+			}
+			if _, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "adoption", Name: "Adoption"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, runtime.WithAgentHostedTools(provider.HostedToolDefinition{Name: "web_search", Type: "web_search"})); err != nil {
+				t.Fatal(err)
+			}
 
+		})
+	}
 }
 
 func TestPublishedTerminalActivityContract(t *testing.T) {

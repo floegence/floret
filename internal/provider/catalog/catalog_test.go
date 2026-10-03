@@ -60,7 +60,7 @@ func TestReasoningCapabilitiesUseProviderSpecificValues(t *testing.T) {
 		t.Fatalf("openai reasoning capability = %#v", openAI.Reasoning)
 	}
 	deepSeek, _ := FindModel(ProviderDeepSeek, "deepseek-v4-pro")
-	if !slices.Equal(deepSeek.Reasoning.SupportedLevels, []provider.ReasoningLevel{provider.ReasoningLevelHigh, provider.ReasoningLevelMax}) {
+	if !slices.Equal(deepSeek.Reasoning.SupportedLevels, []provider.ReasoningLevel{provider.ReasoningLevelLow, provider.ReasoningLevelHigh, provider.ReasoningLevelMax}) {
 		t.Fatalf("deepseek reasoning levels = %#v", deepSeek.Reasoning.SupportedLevels)
 	}
 	qwen, _ := FindModel(ProviderQwen, "qwen3.6-plus")
@@ -172,8 +172,9 @@ func TestBuiltInCatalogUsesAuditedProviderCapabilities(t *testing.T) {
 		{provider: ProviderOpenAI, model: "gpt-5.4", context: 1050000, max: 128000},
 		{provider: ProviderGoogle, model: "gemini-3.1-pro-preview", context: 1048576, max: 65536},
 		{provider: ProviderGoogle, model: "gemini-2.5-flash", context: 1048576, max: 65536},
-		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1000000, max: 384000},
-		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1000000, max: 384000},
+		{provider: ProviderDeepSeek, model: "deepseek-flash", context: 1000000, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1000000, max: 393216},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1000000, max: 393216},
 		{provider: ProviderXAI, model: "grok-4.3", context: 1000000, max: 30000},
 		{provider: ProviderXAI, model: "grok-4.6", context: 500000, max: 500000},
 	}

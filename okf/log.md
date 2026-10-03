@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-10-03: Current provider catalog and DeepSeek Flash
+
+* Refresh the pinned catalog and qualify DeepSeek V4.1 Flash, official aliases, images, reasoning efforts, and unchanged opaque replay through the existing [provider boundary](api/provider.md).
+* Disable default DeepSeek search because the official service ignores built-in tools; retain published explicit wire compatibility. No public Go shape or domain schema changes.
+
 ## 2026-09-21: Live title language qualification
 
 * Real DeepSeek Vision calls reproduced Chinese titles for English requests despite the language instruction. A length-only comparison produced English after raising the limit from 16 to 48 characters.

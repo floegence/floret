@@ -407,14 +407,20 @@ continues waiting. After completion, every retained handle returns
 
 ## DeepSeek Responses
 
-Use `provider.NewDeepSeek(provider.DeepSeekOptions{...})` for DeepSeek V4 Pro
-and Flash, including the Flash Vision experimental model. Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`,
-and an explicit `StateCompatibilityKey`. The gateway always calls `/responses`,
-streams text and reasoning, and accepts the native hosted tool
-`provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}`.
-For durable Agents, declare it through `runtime.WithAgentHostedTools`
-so Engine admission and provider requests
-share the same tool surface. Short requests without that surface do not search.
+Use `provider.NewDeepSeek(provider.DeepSeekOptions{...})` for `deepseek-flash`
+(DeepSeek V4.1 Flash, text and images) and `deepseek-v4-pro` (text only).
+The official `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` aliases
+remain accepted with Flash capabilities; Floret preserves the selected ID and
+opaque state identity. All support `off`, `low`, `high`, and `max` reasoning
+with `high` as the default. Catalog ceilings are 1,000,000 context tokens and
+393,216 output tokens; callers still choose their request budget.
+
+Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`, and an
+explicit `StateCompatibilityKey`. The gateway calls `/responses` and streams
+text and reasoning. The official API currently ignores built-in tools,
+including `web_search`, so the preset disables hosted search. The previously
+published hosted-tool wire and replay contracts remain accepted within v7;
+acceptance is not evidence that the official service executes search.
 
 Web Activity preserves `Operation` (`search`, `open_page`, `find_in_page`),
 `Query` (ordered queries separated by newlines), `URL`, `Pattern`, and source

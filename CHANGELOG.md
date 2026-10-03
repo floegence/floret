@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.19.0 - 2026-10-03
+
+- Refresh the reviewed Agent catalog and add DeepSeek V4.1 Flash (`deepseek-flash`) through the existing Responses gateway. Preserve both official legacy Flash aliases and their original conversation identities; enable their current image capabilities and Pro low-effort reasoning.
+- Align DeepSeek output ceilings and reasoning defaults with current metadata; disable the default hosted-search preset because the official API ignores built-in tools. Preserve explicit v7 hosted-tool wire and replay compatibility.
+- Keep GPT-6.1 Sol outside the built-in Chat catalog because tool calls require a host Responses gateway. No exported Go API or domain schema change.
+
 ## v7.18.4 - 2026-10-02
 
 - Keep graceful cancellation under the stop owner's authority when a projection write is canceled. Pending approvals and tool results now settle together instead of competing with failure finalization and leaving an unresolved approval behind.

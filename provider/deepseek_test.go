@@ -304,3 +304,40 @@ func TestDeepSeekHostedSearchFailureIsNotSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepSeekCurrentReasoningWire(t *testing.T) {
+	for _, model := range []string{"deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+		t.Run(model, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/responses" {
+					t.Errorf("path = %s", r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n")
+			}))
+			defer server.Close()
+			gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: model, BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "current"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, effort := range []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax} {
+				req := provider.Request{RunID: "run", PromptScopeID: "scope", Messages: []provider.Message{{Role: provider.RoleUser, Text: "Hi"}}, MaxOutputTokens: 393216, Reasoning: config.ReasoningSelection{Level: effort}}
+				for _, event := range collectDeepSeek(t, gateway, req) {
+					if event.Err != nil {
+						t.Fatal(event.Err)
+					}
+				}
+				want := string(effort)
+				if effort == config.ReasoningLevelOff {
+					want = "none"
+				}
+				if string(body["reasoning"]) != `{"effort":"`+want+`"}` || string(body["model"]) != `"`+model+`"` || string(body["max_output_tokens"]) != "393216" {
+					t.Fatalf("wire = %s", body)
+				}
+			}
+		})
+	}
+}

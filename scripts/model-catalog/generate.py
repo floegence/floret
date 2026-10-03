@@ -93,7 +93,8 @@ def generate(data, rules):
             cap = reasoning(pid, model, rules)
             cap.update(rules.get('models', {}).get(pid + '/' + mid, {}).get('reasoning', {}))
             status = model.get('status', '')
-            if not status and re.search(r'preview|experimental|(?:^|-)exp(?:-|$)', mid):
+            explicit_status = 'status' in rules.get('models', {}).get(pid + '/' + mid, {}).get('metadata', {})
+            if not explicit_status and not status and re.search(r'preview|experimental|(?:^|-)exp(?:-|$)', mid):
                 status = 'beta'
             cost = model.get('cost', {})
             output.append({'id': mid, 'name': model['name'], 'status': status,

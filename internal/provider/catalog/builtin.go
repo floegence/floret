@@ -79,7 +79,7 @@ var providers = []Provider{
 		ID:             ProviderDeepSeek,
 		Name:           "DeepSeek",
 		API:            APIOpenAIResponses,
-		WebSearch:      WebSearchCapability{DefaultSource: "provider_hosted", HostedWireShape: "deepseek_responses_web_search", HostedWireShapes: []string{"deepseek_responses_web_search"}},
+		WebSearch:      WebSearchCapability{DefaultSource: "disabled", HostedWireShape: "deepseek_responses_web_search", HostedWireShapes: []string{"deepseek_responses_web_search"}},
 		DefaultBaseURL: "https://api.deepseek.com",
 		DefaultModel:   "deepseek-v4-pro",
 		EnvKeys:        []string{"DEEPSEEK_API_KEY"},
