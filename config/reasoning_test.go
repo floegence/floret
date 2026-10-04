@@ -15,6 +15,7 @@ func TestReasoningCapabilityValidation(t *testing.T) {
 	}{
 		{name: "zero", capability: ReasoningCapability{}},
 		{name: "none", capability: ReasoningCapability{Kind: ReasoningKindNone}},
+		{name: "explicit on", capability: ReasoningCapability{Kind: ReasoningKindToggle, SupportedLevels: []ReasoningLevel{ReasoningLevelOn}, DisableSupported: true}},
 		{name: "effort", capability: ReasoningCapability{Kind: ReasoningKindEffort, SupportedLevels: []ReasoningLevel{ReasoningLevelLow, ReasoningLevelHigh}, DefaultLevel: ReasoningLevelHigh}},
 		{name: "unknown kind", capability: ReasoningCapability{Kind: "typo"}, wantError: "unsupported reasoning capability kind"},
 		{name: "negative minimum", capability: ReasoningCapability{Kind: ReasoningKindBudget, Budget: ReasoningBudget{MinTokens: -1}}, wantError: "cannot be negative"},

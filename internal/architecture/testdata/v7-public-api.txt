@@ -173,6 +173,7 @@ const ReasoningLevelMax github.com/floegence/floret/v7/config.ReasoningLevel = "
 const ReasoningLevelMedium github.com/floegence/floret/v7/config.ReasoningLevel = "medium"
 const ReasoningLevelMinimal github.com/floegence/floret/v7/config.ReasoningLevel = "minimal"
 const ReasoningLevelOff github.com/floegence/floret/v7/config.ReasoningLevel = "off"
+const ReasoningLevelOn github.com/floegence/floret/v7/config.ReasoningLevel = "on"
 const ReasoningLevelXHigh github.com/floegence/floret/v7/config.ReasoningLevel = "xhigh"
 type ReasoningSelection struct
 field ReasoningSelection.Level github.com/floegence/floret/v7/config.ReasoningLevel tag="json:\"level,omitempty\""
@@ -296,6 +297,7 @@ type MessageRole string
 func NewAnthropic func(options github.com/floegence/floret/v7/provider.AnthropicOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewDeepSeek func(options github.com/floegence/floret/v7/provider.DeepSeekOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewOpenAICompatible func(options github.com/floegence/floret/v7/provider.OpenAICompatibleOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
+func OllamaReasoningEffort func(capability github.com/floegence/floret/v7/config.ReasoningCapability, selection github.com/floegence/floret/v7/config.ReasoningSelection) (string, error)
 type OpenAICompatibleOptions struct
 field OpenAICompatibleOptions.Provider string
 field OpenAICompatibleOptions.Model string
@@ -304,6 +306,7 @@ field OpenAICompatibleOptions.APIKey string
 field OpenAICompatibleOptions.StateCompatibilityKey string
 field OpenAICompatibleOptions.HTTPClient *net/http.Client
 field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provider.Capabilities
+func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
 type ProviderHTTPError struct
 field ProviderHTTPError.Provider string

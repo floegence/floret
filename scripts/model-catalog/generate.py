@@ -66,6 +66,8 @@ def reasoning(pid, model, rules):
         cap['wire_shape'] = 'qwen_reasoning_effort' if effort else 'qwen_enable_thinking'
         if budget is not None:
             cap['budget_shape'] = 'qwen_thinking_budget'
+    if cap['kind'] in ['toggle', 'toggle_budget'] and cap['wire_shape'] in ['kimi_thinking_type', 'glm_thinking_type', 'qwen_enable_thinking']:
+        cap['supported_levels'] = ['on']
     cap['fixture'] = cap['wire_shape']
     return cap
 
