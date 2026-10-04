@@ -147,3 +147,17 @@ generic estimate method, without claiming final server rendering. Native usage a
 canonical-prefix calibration remain the pressure authority. See the
 [estimator source and limits](../../scripts/openai-tokenizer/README.md) and
 [public implementation](../../provider/request_estimate.go).
+
+# Ollama Thinking Metadata
+
+`ParseOllamaReasoningCapability` reads the `thinking` object from `/api/show`
+without model-name inference. Boolean pairs expose On/Off, true-only is fixed
+on, false-only is unsupported, and named efforts expose only exactly declared
+standard levels. Unknown names stay provider-managed; they are never mapped to
+an unrelated effort. Missing metadata does not imply toggle support. Malformed
+metadata is an error. The server default is not persisted as explicit intent.
+
+`OllamaReasoningEffort` validates the selection before producing the compatible
+API field. Default is omitted, Off maps to `none`, boolean On uses the documented
+`medium` compatibility alias, and named efforts remain exact. It rejects budget
+requests and unsupported efforts instead of relying on server fallback.

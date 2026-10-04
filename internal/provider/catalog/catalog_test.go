@@ -64,7 +64,7 @@ func TestReasoningCapabilitiesUseProviderSpecificValues(t *testing.T) {
 		t.Fatalf("deepseek reasoning levels = %#v", deepSeek.Reasoning.SupportedLevels)
 	}
 	qwen, _ := FindModel(ProviderQwen, "qwen3.6-plus")
-	if qwen.Reasoning.Kind != provider.ReasoningKindToggleBudget || !qwen.Reasoning.DisableSupported || len(qwen.Reasoning.SupportedLevels) != 0 {
+	if qwen.Reasoning.Kind != provider.ReasoningKindToggleBudget || !qwen.Reasoning.DisableSupported || !slices.Equal(qwen.Reasoning.SupportedLevels, []provider.ReasoningLevel{provider.ReasoningLevelOn}) {
 		t.Fatalf("qwen reasoning capability = %#v", qwen.Reasoning)
 	}
 }

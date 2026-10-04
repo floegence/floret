@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.22.0 - 2026-10-04
+
+- Add explicit `ReasoningLevelOn` without changing Default or Off semantics. Verified toggle catalogs expose On; effort-only models continue to reject it. Existing reasoning selections and schema v12 remain unchanged.
+- Add metadata-driven Ollama thinking capability parsing and validated OpenAI-compatible effort mapping. Advertise only exact supported levels, distinguish boolean controls and fixed states, and retain provider-managed behavior for absent or unknown metadata instead of guessing from model names.
+
 ## v7.21.0 - 2026-10-04
 
 - Add typed context-budget failures for invalid output reservations, fixed input overhead, and requests still oversized after compaction. Preserve these codes in live views, summaries, and restart reads without changing schema v12.

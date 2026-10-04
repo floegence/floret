@@ -11,6 +11,7 @@ type ReasoningLevel string
 const (
 	ReasoningLevelDefault ReasoningLevel = "default"
 	ReasoningLevelOff     ReasoningLevel = "off"
+	ReasoningLevelOn      ReasoningLevel = "on"
 	ReasoningLevelMinimal ReasoningLevel = "minimal"
 	ReasoningLevelLow     ReasoningLevel = "low"
 	ReasoningLevelMedium  ReasoningLevel = "medium"

@@ -35,6 +35,10 @@ rendering provider-specific request fields. `ReasoningLevel`,
 `ReasoningSelection`, `ReasoningBudget`, and `ReasoningCapability` are owned by
 this package; runtime uses them directly and does not provide aliases.
 
+`ReasoningLevelOn` is an explicit enable request, distinct from Default (omit
+provider controls), Off, and effort levels. Only capabilities advertising On
+accept it. Existing stored selections keep their original meaning.
+
 # Context Policy
 
 `Config.ContextPolicy` controls context window, output headroom, automatic

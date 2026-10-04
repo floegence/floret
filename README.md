@@ -487,6 +487,11 @@ rendering. These offline predictions never replace native measurements. See
 
 ## Model metadata
 
+Ollama hosts can use `provider.ParseOllamaReasoningCapability` with `/api/show`
+metadata and `provider.OllamaReasoningEffort` for validated compatible requests.
+Explicit `config.ReasoningLevelOn` is distinct from the omitted Default and from
+effort levels; only declared toggle capabilities accept it.
+
 The engine uses a generated, offline models.dev snapshot with official protocol
 corrections. Hosts own credentials, enabled models, and discovery. Updating the
 snapshot does not select a model for an existing conversation or add a public
