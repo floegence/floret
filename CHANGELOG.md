@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.21.0 - 2026-10-04
+
+- Add typed context-budget failures for invalid output reservations, fixed input overhead, and requests still oversized after compaction. Preserve these codes in live views, summaries, and restart reads without changing schema v12.
+- Reject impossible output budgets and known oversized fixed input before automatic compaction, avoiding futile summary generation. Hosts can offer configuration changes and explicit retry through the existing runtime boundary.
+
 ## v7.20.0 - 2026-10-03
 
 - Add the optional `runtime.ThreadQueueController` for atomic pending-text edits and graceful stop-and-send of a chosen queued input. Preserve attachments, context, order, existing `ThreadService` implementations, and schema v12.

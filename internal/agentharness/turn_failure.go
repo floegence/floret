@@ -64,6 +64,14 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 	if status == engine.Cancelled || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return sessiontree.TurnFailureCancelled, nil
 	}
+	switch {
+	case errors.Is(err, engine.ErrInvalidContextBudget):
+		return sessiontree.TurnFailureContextBudgetInvalid, nil
+	case errors.Is(err, engine.ErrFixedContextOverBudget):
+		return sessiontree.TurnFailureContextFixedOverhead, nil
+	case errors.Is(err, engine.ErrCompactedRequestOverBudget):
+		return sessiontree.TurnFailureContextCompactionLimit, nil
+	}
 	if errors.Is(err, ErrAuthorizationUnavailable) {
 		return sessiontree.TurnFailureAuthorizationUnavailable, nil
 	}

@@ -38,6 +38,7 @@ var (
 	ErrInvalidTokenEstimate       = errors.New("provider token estimate missing source or method")
 	ErrInputTokenBudgetExceeded   = errors.New("provider request exceeds input token budget")
 	ErrCompactedRequestOverBudget = errors.New("compacted provider request still exceeds context budget")
+	ErrInvalidContextBudget       = errors.New("invalid context budget: output reservation must be smaller than the context window")
 	ErrFixedContextOverBudget     = errors.New("provider request fixed context overhead exceeds context budget")
 	ErrCompactionNoop             = errors.New("context compaction is not needed")
 )
@@ -2613,6 +2614,9 @@ func attemptEventMetadata(req provider.Request, base any) map[string]any {
 }
 
 func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, bool, error) {
+	if err := validateContextBudget(opts.ContextPolicy); err != nil {
+		return provider.Request{}, history, false, err
+	}
 	compacted := false
 	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
 		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
@@ -2664,6 +2668,14 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	}
 	if !req.ContextPressure.HardLimitExceeded {
 		return req, history, compacted, nil
+	}
+	validation := compactedRequestValidationForRequest(req)
+	// Before compaction, use only provider-estimated fixed components. A total
+	// without a breakdown cannot prove that history is non-compressible.
+	validation.FixedInputTokens = fixedInputTokens(validation.RequestEstimate)
+	if validation.FixedInputTokens >= validation.RequestSafeLimit {
+		err := fixedContextBudgetError(req, validation)
+		return provider.Request{}, history, compacted, errors.Join(err, closePreparedRequest(req))
 	}
 	if err := closePreparedRequest(req); err != nil {
 		return provider.Request{}, history, compacted, err
@@ -2927,6 +2939,9 @@ func validateConfiguredTools(local []tools.ToolDefinition, hosted []provider.Hos
 }
 
 func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
+	if err := validateContextBudget(opts.ContextPolicy); err != nil {
+		return nil, provider.Request{}, compaction.Result{}, err
+	}
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	lifecycle := compactionLifecycleRequest(operationID, trigger, manual)
 	e.emit(opts, event.Event{
@@ -3111,7 +3126,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		}
 		nextPolicy, ok := nextCompactionPolicyForValidation(policy, validation)
 		if !ok {
-			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d fixed_input_tokens=%d", ErrFixedContextOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, validation.FixedInputTokens)
+			err = fixedContextBudgetError(req, validation)
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
 			break
 		}
