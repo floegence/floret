@@ -159,7 +159,14 @@ prompt that instructs the provider to preserve the request language, explicitly
 including English. Host context and the main agent system prompt do not select
 the title language. Language preservation takes priority over compression;
 automatic titles allow up to 48 Unicode characters so English phrases remain
-readable. See the [title prompt](../../internal/agentharness/title.go)
+readable. Generation disables reasoning when supported, otherwise chooses the
+lowest declared short-request effort. Since provider output limits include
+hidden reasoning, automatic titles allow up to 1,024 output tokens when thinking
+cannot be disabled or its controls are unknown; explicit non-reasoning and
+disable-capable models retain the 64-token limit. The ceiling is not a token
+reservation or a change to visible title length. Truncation still fails without
+publishing a partial title, and the existing timeout and title lifecycle remain
+authoritative. See the [title prompt](../../internal/agentharness/title.go)
 and [automatic title input](../../internal/agentharness/automatic_title.go).
 The opt-in [live DeepSeek test](../../runtime/thread_title_live_test.go) verifies
 real provider output; deterministic prompt checks alone cannot establish model
