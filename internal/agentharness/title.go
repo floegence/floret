@@ -16,6 +16,7 @@ import (
 const (
 	defaultThreadTitleMaxRunes        = 48
 	defaultThreadTitleMaxOutputTokens = 64
+	defaultThreadTitleReasoningTokens = 1024
 	threadTitlePromptMaxMessages      = 8
 	threadTitlePromptMaxContentRunes  = 600
 )
@@ -138,6 +139,11 @@ func (g ProviderTitleGenerator) maxRunes() int {
 func (g ProviderTitleGenerator) maxOutputTokens() int64 {
 	if g.MaxOutputTokens > 0 {
 		return g.MaxOutputTokens
+	}
+	// Provider output limits include hidden reasoning. Keep the visible title
+	// short, but allow thinking models to reach it when reasoning cannot be off.
+	if g.Reasoning.Kind != provider.ReasoningKindNone && provider.ShortRequestReasoningSelection(g.Reasoning).Level != provider.ReasoningLevelOff {
+		return defaultThreadTitleReasoningTokens
 	}
 	return defaultThreadTitleMaxOutputTokens
 }

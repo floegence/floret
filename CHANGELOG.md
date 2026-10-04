@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.22.1 - 2026-10-05
+
+- Reserve up to 1,024 output tokens for automatic titles when reasoning cannot be disabled or its control is unknown. Provider limits count hidden reasoning as output; the visible title remains limited to 48 Unicode characters. Keep the 64-token fast path for explicit non-reasoning and disable-capable models, and preserve explicit budgets, truncation failures, and lifecycle ownership.
+- No public API, wire shape, or domain schema change.
+
 ## v7.22.0 - 2026-10-04
 
 - Add explicit `ReasoningLevelOn` without changing Default or Off semantics. Verified toggle catalogs expose On; effort-only models continue to reject it. Existing reasoning selections and schema v12 remain unchanged.
