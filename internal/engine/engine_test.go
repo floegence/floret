@@ -4155,7 +4155,7 @@ func TestCompactionFailureDoesNotEmitCompleteWhenFixedRequestOverBudget(t *testi
 	p := &estimatingProvider{
 		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("never sent"), harness.Done())),
 		estimates: []provider.TokenEstimate{
-			{PrefixTokens: 800, MessageTokens: 300, ToolDefinitionTokens: 200, EstimatedInputTokens: 1300, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 100, MessageTokens: 1000, ToolDefinitionTokens: 200, EstimatedInputTokens: 1300, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
 			{PrefixTokens: 800, MessageTokens: 10, ToolDefinitionTokens: 200, EstimatedInputTokens: 1010, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
 		},
 	}

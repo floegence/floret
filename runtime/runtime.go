@@ -908,6 +908,9 @@ const (
 	ThreadTurnFailureAuthorizationContract    ThreadTurnFailureCode = "authorization_contract"
 	ThreadTurnFailureStorage                  ThreadTurnFailureCode = "storage"
 	ThreadTurnFailureEngineContract           ThreadTurnFailureCode = "engine_contract"
+	ThreadTurnFailureContextBudgetInvalid     ThreadTurnFailureCode = "context_budget_invalid"
+	ThreadTurnFailureContextFixedOverhead     ThreadTurnFailureCode = "context_fixed_overhead"
+	ThreadTurnFailureContextCompactionLimit   ThreadTurnFailureCode = "context_compaction_limit"
 	ThreadTurnFailureContextPrefixDrift       ThreadTurnFailureCode = "context_prefix_drift"
 	ThreadTurnFailureLegacyUnclassified       ThreadTurnFailureCode = "legacy_unclassified"
 )
@@ -924,6 +927,9 @@ func (c ThreadTurnFailureCode) Valid() bool {
 		ThreadTurnFailureAuthorizationContract,
 		ThreadTurnFailureStorage,
 		ThreadTurnFailureEngineContract,
+		ThreadTurnFailureContextBudgetInvalid,
+		ThreadTurnFailureContextFixedOverhead,
+		ThreadTurnFailureContextCompactionLimit,
 		ThreadTurnFailureContextPrefixDrift,
 		ThreadTurnFailureLegacyUnclassified:
 		return true

@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-04: Context budget failures
+
+* Document typed [budget failures](api/runtime.md#context-budget-failures), pre-compaction guards, and explicit recovery without a schema change.
+
 ## 2026-10-03: Queued message controls
 
 * Add optional [queue controls](api/runtime.md#queued-message-controls) for atomic text edits and graceful stop-and-send while retaining the base ThreadService and schema v12.

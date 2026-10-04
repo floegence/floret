@@ -998,6 +998,9 @@ const ThreadTurnFailureAuthorizationUnavailable github.com/floegence/floret/v7/r
 const ThreadTurnFailureCancelled github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "cancelled"
 type ThreadTurnFailureCode string
 method ThreadTurnFailureCode.Valid func() bool
+const ThreadTurnFailureContextBudgetInvalid github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_budget_invalid"
+const ThreadTurnFailureContextCompactionLimit github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_compaction_limit"
+const ThreadTurnFailureContextFixedOverhead github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_fixed_overhead"
 const ThreadTurnFailureContextPrefixDrift github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_prefix_drift"
 const ThreadTurnFailureControlError github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "control_error"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"

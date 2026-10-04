@@ -393,3 +393,16 @@ Live publication follows canonical commit. Reconnect and restart use the same
 fold. A present empty snapshot clears prior samples; absent samples are unknown.
 The existing `Usage` and `ContextStatus` remain latest-status observations for
 v7 consumers. Hosts must not use a prior confirmation to hide current pressure.
+
+## Context budget failures
+
+`ThreadTurnFailure` distinguishes `context_budget_invalid`,
+`context_fixed_overhead`, and `context_compaction_limit` from engine-contract
+failures. Output headroom must leave positive input capacity. Known fixed input
+that cannot fit must stop before automatic compression; compressible history
+continues through the existing compaction path. Diagnostics contain numeric
+budgets, never request bodies. Live views, summaries, and restart reads preserve
+the canonical failure. Hosts may offer configuration changes and explicit retry;
+no automatic retry or secondary lifecycle is introduced. Schema v12 is unchanged.
+See [budget guards](../../internal/engine/context_budget.go) and
+[restart and retry coverage](../../runtime/context_budget_test.go).

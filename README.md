@@ -328,6 +328,14 @@ reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle
 authority.
 
+Context failures carry distinct `ThreadTurnFailure` codes: `context_budget_invalid`
+when output headroom leaves no input capacity, `context_fixed_overhead` when
+non-compressible input cannot fit, and `context_compaction_limit` when a rebuilt
+request remains too large. Invalid budgets and known fixed overhead fail before
+automatic compression. Hosts should offer budget/model changes before explicit
+retry; the same failure survives restart. These messages contain numeric budget
+diagnostics, never prompt bodies or credentials.
+
 ## Storage
 
 For ordinary hosts, `storage.Source` is an opaque value consumed exclusively by
