@@ -172,6 +172,16 @@ The opt-in [live DeepSeek test](../../runtime/thread_title_live_test.go) verifie
 real provider output; deterministic prompt checks alone cannot establish model
 language compliance.
 
+## Active-history forks
+
+A fork copies conversation history, never active tool execution. Before sealing
+a copied unfinished turn, it pairs each pending ordinary tool call with a
+canceled result explaining that the source thread still owns the execution and
+outcome. This lets the child accept its first mission with valid tool history;
+the original call and result continue normally in the source. Existing completed
+results are preserved. This uses existing v12 facts and changes no schema. See
+the [active-tool fork test](../../runtime/thread_active_fork_test.go).
+
 ## Failed-turn retry and queued interactions
 
 `Retry` resumes a failed turn from its latest existing save point. Canonical tool
