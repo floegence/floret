@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.25.1 - 2026-10-05
+
+- Preserve pure-thinking tool-call reasoning in the public gateway message, emitting complete step reasoning once across parallel calls and hosted assistant fragments. Canonical history stays unchanged.
+- Settle active executions through canonical cancellation before Host shutdown closes actors. Resolve pending approvals, preserve queues and durable input waits, join effects, retain unknown-effect failures, and return settlement errors. No public API or schema change.
+
 ## v7.25.0 - 2026-10-05
 
 - Add opt-in `Capabilities.ReasoningHistory` with `ReasoningHistoryCurrentUser` to omit reasoning before the latest canonical user input from provider transport. Preserve canonical history, visible answers, tool pairs, current-input continuations, and supplemental-answer boundaries; keep all-history replay as the default.

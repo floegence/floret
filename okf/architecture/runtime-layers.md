@@ -42,4 +42,10 @@ still compares complete messages by occurrence: later legitimate reuse of a
 tool-call ID is a new exchange. Forks retain strict history and effect isolation;
 this write-path correction does not migrate existing invalid histories.
 
+The public gateway projects complete tool-call reasoning into assistant reasoning
+once per batch, including calls preceded only by thinking. Already projected
+hosted assistant fragments remain a single prefix; parallel calls must not repeat
+that reasoning. This projection never mutates canonical messages. See the
+[continuation and restart regression](../../runtime/thread_tool_history_test.go).
+
 Testing harnesses remain outside production control flow.

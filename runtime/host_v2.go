@@ -365,10 +365,11 @@ func (host *Host) finishShutdown() {
 	host.threadRuntimeMu.Lock()
 	service := host.threadRuntime
 	host.threadRuntimeMu.Unlock()
+	var shutdownErr error
 	if service != nil {
-		service.close()
+		shutdownErr = service.close()
 	}
-	err := host.store.Close()
+	err := errors.Join(shutdownErr, host.store.Close())
 	host.closeMu.Lock()
 	host.closeErr, host.closed, host.closing = err, true, false
 	close(host.closeDone)

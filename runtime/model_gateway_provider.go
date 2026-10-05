@@ -247,8 +247,12 @@ func (request *modelGatewayPreparedRequest) Close() error {
 
 func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 	result := make([]modelMessage, 0, len(messages))
+	assistantReasoning := ""
 	for index := 0; index < len(messages); {
 		message := messages[index]
+		if message.Role != session.Assistant {
+			assistantReasoning = ""
+		}
 		switch message.Role {
 		case session.System, session.User:
 			projected := modelMessage{Role: modelMessageRole(message.Role), Text: message.Content, Attachments: runtimeMessageAttachments(message.Attachments)}
@@ -265,9 +269,17 @@ func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 			}
 			for index < len(messages) && messages[index].Role == session.Assistant && messages[index].ToolCallID != "" {
 				part := messages[index]
+				// Tool calls retain the complete step reasoning, while hosted
+				// events may already have emitted a prefix as assistant fragments.
+				// Project the remaining reasoning once, including pure-thinking
+				// tool calls, without repeating it for parallel calls.
+				if projected.Reasoning == "" || strings.HasPrefix(part.Reasoning, assistantReasoning+projected.Reasoning) {
+					projected.Reasoning = strings.TrimPrefix(part.Reasoning, assistantReasoning)
+				}
 				projected.ToolCalls = append(projected.ToolCalls, tools.ToolCall{ID: part.ToolCallID, Name: part.ToolName, Args: part.ToolArgs, Reasoning: part.Reasoning})
 				index++
 			}
+			assistantReasoning += projected.Reasoning
 			result = append(result, projected)
 		case session.Tool:
 			var attachments []session.MessageAttachment

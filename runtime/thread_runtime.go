@@ -1580,9 +1580,9 @@ func (service *threadRuntimeService) runtime(threadID identity.ThreadID) *thread
 	return runtime
 }
 
-func (service *threadRuntimeService) close() {
+func (service *threadRuntimeService) close() error {
 	if service == nil {
-		return
+		return nil
 	}
 	service.mu.Lock()
 	subscriptions := make([]*WorkspaceSubscription, 0, len(service.subscribers))
@@ -1604,19 +1604,49 @@ func (service *threadRuntimeService) close() {
 	}
 	service.runtimesMu.Unlock()
 	drains := make([]threadRuntimeDrain, 0, len(runtimes))
+	var closeErr error
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
-		runtime.closed = true
 		drains = append(drains, threadRuntimeDrain{
 			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
 		})
-		if runtime.state.cancel != nil {
-			service.recordCancellation(identity.ThreadID(runtime.threadID), runtime.state.turnID, runtime.state.runID, "runtime_shutdown", "runtime shutdown")
-			runtime.state.cancel(context.Canceled)
+		turnID, runID, cancel := runtime.state.turnID, runtime.state.runID, runtime.state.cancel
+		if runtime.deleted || runtime.deleting || runtime.state.view.Activity != ThreadActivityActive {
+			cancel = nil
+		}
+		for _, interaction := range runtime.state.view.Interactions {
+			if !interaction.Resolved && interaction.Kind == ThreadInteractionInput && len(runtime.state.pendingInteractions) == 0 {
+				// Input requests are durable pauses. The runner may still be
+				// committing its waiting marker after publishing the question;
+				// join that settlement without turning it into a cancellation.
+				cancel = nil
+				break
+			}
 		}
 		runtime.mu.Unlock()
+		// Admission is already fenced by Host.Shutdown. Settle the exact
+		// in-memory execution before closing its actor, so cancellation also
+		// resolves approvals and uncertain effects in canonical storage.
+		// Durable input waits survive reopening.
+		if cancel != nil {
+			key := "shutdown:" + runID.String()
+			fingerprint, _ := stableFingerprint(struct {
+				ThreadID string         `json:"thread_id"`
+				RunID    identity.RunID `json:"run_id"`
+			}{runtime.threadID, runID})
+			_, err := service.settleCancellation(context.Background(), runtime, identity.ThreadID(runtime.threadID), turnID, runID,
+				cancellationRequest{EntryID: "cancel:" + key, RequestKey: key, RequestFingerprint: fingerprint}, "runtime_shutdown", "runtime shutdown")
+			closeErr = errors.Join(closeErr, err)
+			cancel(context.Canceled)
+		}
 	}
-	_ = waitThreadRuntimeDrains(context.Background(), drains)
+	closeErr = errors.Join(closeErr, waitThreadRuntimeDrains(context.Background(), drains))
+	for _, runtime := range runtimes {
+		runtime.mu.Lock()
+		runtime.closed = true
+		runtime.mu.Unlock()
+	}
+	return closeErr
 }
 
 func (service *threadRuntimeService) View(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
