@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.24.0 - 2026-10-05
+
+- Add the optional read-only `ThreadSendReader.LookupSend` contract to recover original admitted input by request key without rebuilding host context or attachment state. Queue editing, promotion, removal, and restart retain the original send identity; no new journal record or schema change is required.
+- Fix replay after an edited queue item is promoted: validate against the original queue admission instead of the edited user message. Changed input remains a request conflict.
+
 ## v7.23.1 - 2026-10-05
 
 - Close copied in-flight tool calls in a fork before its branch boundary, explicitly recording that execution remains owned by the source. Full-history child threads can accept their first mission without an incomplete tool exchange; source execution, completed results, public API, and domain schema v12 remain unchanged.

@@ -1939,14 +1939,9 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	if err != nil {
 		return ThreadView{}, err
 	}
-	for _, entryID := range []string{"user:" + requestKey, "queue:" + requestKey} {
-		entry, readErr := service.host.store.repo.Entry(ctx, threadID.String(), entryID)
-		if readErr != nil {
-			if errors.Is(readErr, sessiontree.ErrEntryNotFound) {
-				continue
-			}
-			return ThreadView{}, runtimeHostError(readErr)
-		}
+	if entry, found, readErr := service.lookupSendEntry(ctx, threadID, requestKey); readErr != nil {
+		return ThreadView{}, readErr
+	} else if found {
 		if entry.RequestKey != requestKey || entry.RequestFingerprint != fingerprint {
 			return ThreadView{}, &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
 		}

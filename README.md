@@ -195,6 +195,11 @@ queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent
 identity, so they use the same current-view and command contracts.
 
+The optional `runtime.ThreadSendReader.LookupSend` returns original admitted
+input for a request key, including after queue edits, promotion, removal, or
+restart. Hosts can validate transport retries against canonical input without
+refreshing context or resolving attachments again.
+
 The optional `runtime.ThreadQueueController` supports `EditQueued` with a text
 precondition and `SendQueuedNow` to stop gracefully and start one chosen queued
 input. Editing preserves its attachments, context, identity and position.
