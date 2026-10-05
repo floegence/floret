@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-05: Task interruption and recovery
+
+* Document checkpoint-preserving retries, queued question recovery after restart, and opt-in subtree stop admission in the [runtime contract](api/runtime.md). Existing schema v12 facts remain authoritative.
+
 ## 2026-10-04: Context budget failures
 
 * Document typed [budget failures](api/runtime.md#context-budget-failures), pre-compaction guards, and explicit recovery without a schema change.

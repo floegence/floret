@@ -327,7 +327,7 @@ func TestPublishedGracefulStopPreservesToolOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sub.Close()
-	accepted, err := service.Cancel(ctx, runtime.CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: runtime.CancelModeGraceful})
+	accepted, err := service.Cancel(ctx, runtime.CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: runtime.CancelModeGraceful, IncludeDescendants: true})
 	if err != nil || accepted.Cancellation == nil || accepted.Cancellation.Source != "user_stop" || accepted.Cancellation.ThreadID != created.ThreadID {
 		t.Fatalf("stop acceptance=%#v err=%v", accepted, err)
 	}

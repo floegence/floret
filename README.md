@@ -213,7 +213,16 @@ In-flight tools share one five-second window to commit confirmed results through
 the normal output and artifact path. The terminal is cancelled when all effects
 are confirmed; real tool errors and completed effects remain visible. A stop does
 not roll back earlier changes. Queued input remains queued until a later explicit
-submission or promotion.
+submission or promotion. `CancelInput.IncludeDescendants` also stops the existing
+child subtree, including children of an idle parent, while preserving independent
+threads. Child creation and stop admission share one boundary; canceled child
+creation cannot run after waiting for that boundary.
+
+Retrying a failed turn uses its latest committed save point and retains completed
+tool results. Repeated failures and restart preserve that context without adding
+another user message. A completed-turn retry retains its regeneration behavior.
+Thread-level queue facts can interleave a waiting turn without invalidating its
+canonical history or preventing a response after restart.
 
 `ThreadView.Cancellation` and `ThreadSummary.Cancellation` carry the canonical
 source, exact execution identity, mode, and request time. Active views with that

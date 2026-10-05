@@ -432,6 +432,7 @@ type AuthorityBusyKind string
 const AuthorityBusyTurn github.com/floegence/floret/v7/runtime.AuthorityBusyKind = "turn"
 type AuthorizedEffect func(context.Context, github.com/floegence/floret/v7/runtime.EffectAuthorizationProof) (github.com/floegence/floret/v7/runtime.EffectDispatchResult, error)
 type CancelInput struct
+field CancelInput.IncludeDescendants bool tag="json:\"include_descendants,omitempty\""
 field CancelInput.Mode github.com/floegence/floret/v7/runtime.CancelMode tag="json:\"mode,omitempty\""
 field CancelInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field CancelInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""

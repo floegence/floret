@@ -174,6 +174,13 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 		StartedEntryID: started.ID, StartedOrdinal: started.PathDepth,
 		RetrySource: cloneCanonicalTurnRetrySource(retrySource), Entries: pathEntries,
 	}
+	linkEntries := make([]Entry, len(pathEntries))
+	for index, item := range pathEntries {
+		linkEntries[index] = item.Entry
+	}
+	if err := r.validateCanonicalTurnLinksLocked(threadID, linkEntries); err != nil {
+		return CanonicalTurn{}, err
+	}
 	if err := ValidateCanonicalTurnReadStructure(turn, threadID); err != nil {
 		return CanonicalTurn{}, err
 	}

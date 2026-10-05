@@ -172,6 +172,23 @@ The opt-in [live DeepSeek test](../../runtime/thread_title_live_test.go) verifie
 real provider output; deterministic prompt checks alone cannot establish model
 language compliance.
 
+## Failed-turn retry and queued interactions
+
+`Retry` resumes a failed turn from its latest existing save point. Canonical tool
+results remain in the next provider request, after repeated failures and restart;
+no duplicate user input is appended. A completed-turn retry still regenerates
+from its original admitted input. Unknown effects remain non-retryable. The
+provider prefix boundary is the last model message projected at the checkpoint,
+which can itself follow non-message context observations.
+
+Queue operations append thread-level facts. Canonical turn readers verify their
+ancestry while permitting those facts between entries of a waiting turn. An
+answer after restart continues that turn, then normal completion drains its queue.
+These fixes use existing journal facts and preserve schema v12.
+
+See the [checkpoint retry test](../../runtime/thread_retry_checkpoint_test.go)
+and [queued question restart test](../../runtime/thread_ask_restart_test.go).
+
 ## Effects and shutdown
 
 Tool effects cross a durable one-shot authorization boundary. If the outcome
@@ -179,6 +196,14 @@ of a dispatched effect cannot be confirmed, Floret atomically closes every
 unfinished tool and interaction, clears provider continuation, and fails the
 turn with `effect_outcome_unknown`. The effect is never replayed and there is
 no retry command. A terminal turn rejects late results.
+
+`CancelInput.IncludeDescendants` opts into stopping the existing selected subtree,
+including active children of an idle parent. Creation and stop admission share
+the Host mutation lock, without waiting for provider or tool completion. Canceled
+Create/Fork calls reject after acquiring that lock. Every descendant keeps its
+normal immediate/graceful effect settlement and queue; unrelated roots are not
+affected. The default remains selected-thread cancellation. See the
+[subtree cancellation tests](../../runtime/thread_subtree_cancel_test.go).
 
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
