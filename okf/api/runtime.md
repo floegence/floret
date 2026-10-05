@@ -227,8 +227,14 @@ affected. The default remains selected-thread cancellation. See the
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
 Late provider output and late effect dispatch are rejected. `Host.Shutdown`
-stops admission, joins Host-managed work, and closes storage only after the
-join; a cancelled shutdown remains in progress for a later caller.
+stops admission, canonically cancels active in-memory executions before closing
+their actors, joins Host-managed work, and closes storage only after the join.
+Pending tool approvals are resolved as cancelled and reject stale answers after
+reopening. Already durable input waits and queued input remain available; an
+uncertain dispatched effect retains `effect_outcome_unknown`. Settlement errors
+are returned alongside storage close errors. A cancelled shutdown remains in
+progress for a later caller. See the
+[shutdown settlement regressions](../../runtime/thread_shutdown_approval_test.go).
 
 ## Views and subscriptions
 

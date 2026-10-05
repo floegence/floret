@@ -19,7 +19,7 @@ import (
 )
 
 func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
-	for _, mode := range []string{"step_reasoning", "no_reasoning", "current_user"} {
+	for _, mode := range []string{"step_reasoning", "no_reasoning", "current_user", "reasoning_only", "hosted_reasoning_only"} {
 		t.Run(mode, func(t *testing.T) {
 			var executions atomic.Int32
 			firstReasoning, secondReasoning := "before search;", "after search;"
@@ -39,6 +39,15 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 				}},
 				{Type: provider.EventDone, Reason: "tool_calls"},
 			}}
+			if mode == "reasoning_only" || mode == "hosted_reasoning_only" {
+				var events []provider.Event
+				for _, event := range callStep.Events {
+					if event.Type != provider.EventDelta && (mode == "hosted_reasoning_only" || event.Type != provider.EventHostedToolCall && event.Type != provider.EventHostedToolResult) {
+						events = append(events, event)
+					}
+				}
+				callStep.Events = events
+			}
 			answer := florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Complete."}, {Type: provider.EventDone, Reason: "stop"}}}
 			capabilities := provider.Capabilities{Reasoning: provider.ReasoningSupported, ReasoningCapability: config.ReasoningCapability{Kind: config.ReasoningKindNone}}
 			if mode == "current_user" {
