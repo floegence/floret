@@ -292,6 +292,16 @@ a new render lineage and clear provider continuation state without compaction
 or rewriting earlier checkpoints. The default remains the frozen Turn surface.
 Dispatch-time permission resolution and existing approvals remain independent:
 refreshing model-visible tools does not authorize an invocation or settle a wait.
+
+Gateways may declare `Capabilities.ReasoningHistory` as
+`provider.ReasoningHistoryCurrentUser` to omit assistant reasoning before the
+latest canonical user message from transport. Visible history and tool pairs
+remain intact; tool loops and truncated output after that input retain their
+reasoning. Ephemeral supplemental answers do not create a replay boundary.
+Canonical storage and earlier checkpoints are unchanged. The default
+`ReasoningHistoryAll` preserves all reasoning. Include the selected policy in
+the gateway's state compatibility identity when changing an existing adapter.
+
 `ToolSurfaceRequest.InitialProviderSurface` supplies a detached copy of the first
 checkpoint's system text and tool definitions, including after restart; it is nil
 before the first request. Hosts can preserve unrelated capabilities from this

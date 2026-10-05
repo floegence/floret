@@ -97,15 +97,33 @@ const (
 	AttachmentExpanded AttachmentPayloadMode = "expanded"
 )
 
+// ReasoningHistoryPolicy selects transient reasoning replay without changing
+// canonical conversation storage, visible answers, or tool call/result pairs.
+type ReasoningHistoryPolicy string
+
+const (
+	// ReasoningHistoryAll preserves reasoning from all messages (the default).
+	ReasoningHistoryAll ReasoningHistoryPolicy = "all"
+	// ReasoningHistoryCurrentUser replays reasoning only after the latest
+	// canonical user message. Ephemeral supplemental input is not a boundary.
+	ReasoningHistoryCurrentUser ReasoningHistoryPolicy = "current_user"
+)
+
 // Capabilities describes provider behavior that affects request validation.
 type Capabilities struct {
 	Reasoning           ReasoningSupport           `json:"reasoning"`
 	ReasoningCapability config.ReasoningCapability `json:"reasoning_capability,omitempty"`
 	AttachmentPayload   AttachmentPayloadMode      `json:"attachment_payload"`
+	ReasoningHistory    ReasoningHistoryPolicy     `json:"reasoning_history,omitempty"`
 }
 
 // Validate verifies an explicit capability declaration.
 func (capabilities Capabilities) Validate() error {
+	switch capabilities.ReasoningHistory {
+	case "", ReasoningHistoryAll, ReasoningHistoryCurrentUser:
+	default:
+		return fmt.Errorf("unsupported reasoning history policy %q", capabilities.ReasoningHistory)
+	}
 	if capabilities.AttachmentPayload == "" {
 		capabilities.AttachmentPayload = AttachmentDescriptors
 	}

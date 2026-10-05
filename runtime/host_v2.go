@@ -582,7 +582,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		},
 		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
 		modelGatewayIdentity:     modelGatewayIdentity(identity),
-		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode},
+		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
 		loopLimits: agent.loopLimits, capabilities: agent.capabilities,

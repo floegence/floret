@@ -20,7 +20,7 @@ func projectedModelProvider(_ runtimeConfig, gateway modelGateway, identity mode
 	if gateway == nil {
 		return nil, errors.New("provider gateway is required")
 	}
-	direct := modelGatewayProvider{gateway: gateway, identity: identity}
+	direct := modelGatewayProvider{gateway: gateway, identity: identity, reasoningHistory: capabilities.ReasoningHistory}
 	if capabilities.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
 		return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
 	}
@@ -63,8 +63,9 @@ func projectedReasoningSelection(requested, fallback config.ReasoningSelection) 
 }
 
 type modelGatewayProvider struct {
-	gateway  modelGateway
-	identity modelGatewayIdentity
+	gateway          modelGateway
+	identity         modelGatewayIdentity
+	reasoningHistory publicprovider.ReasoningHistoryPolicy
 }
 
 type preparedModelGatewayProvider struct{ modelGatewayProvider }
@@ -99,11 +100,47 @@ func (adapter modelGatewayProvider) Stream(ctx context.Context, request provider
 }
 
 func (adapter modelGatewayProvider) EstimateTokens(_ context.Context, request provider.Request) (provider.TokenEstimate, error) {
+	messages, err := adapter.requestMessages(request)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	request.Messages, request.EphemeralUser = messages, nil
 	return provider.GenericRequestEstimate(request)
 }
 
-func (adapter modelGatewayProvider) modelRequest(request provider.Request) (modelRequest, error) {
+// Filter only the detached transport projection. Canonical messages and earlier
+// checkpoints retain reasoning, including reasoning-only interrupted output.
+func (adapter modelGatewayProvider) requestMessages(request provider.Request) ([]session.Message, error) {
 	messagesWithEphemeral, err := provider.MessagesWithEphemeralUser(request.Messages, request.EphemeralUser)
+	if err != nil || adapter.reasoningHistory != publicprovider.ReasoningHistoryCurrentUser {
+		return messagesWithEphemeral, err
+	}
+	boundary := -1
+	for index, message := range request.Messages {
+		if message.Role == session.User && message.Kind == session.MessageKindNormal {
+			boundary = index
+		}
+	}
+	if inserted, err := provider.EphemeralUserMessageIndex(request.Messages, request.EphemeralUser); err != nil {
+		return nil, err
+	} else if inserted >= 0 && inserted <= boundary {
+		boundary++
+	}
+	output := messagesWithEphemeral[:0]
+	for index, message := range messagesWithEphemeral {
+		if index < boundary && message.Role == session.Assistant && message.Reasoning != "" {
+			message.Reasoning = ""
+			if message.Content == "" && message.ToolCallID == "" && len(message.Attachments) == 0 {
+				continue
+			}
+		}
+		output = append(output, message)
+	}
+	return output, nil
+}
+
+func (adapter modelGatewayProvider) modelRequest(request provider.Request) (modelRequest, error) {
+	messagesWithEphemeral, err := adapter.requestMessages(request)
 	if err != nil {
 		return modelRequest{}, err
 	}
