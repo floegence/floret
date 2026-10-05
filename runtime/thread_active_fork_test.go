@@ -34,8 +34,12 @@ func TestActiveToolForkAcceptsFirstChildTurn(t *testing.T) {
 		if err != nil {
 			return tools.Result{}, err
 		}
-		childIDs <- child.ThreadID
 		_, err = svc.Send(ctx, SendInput{ThreadID: child.ThreadID, RequestKey: "child-send", Input: UserInput{Text: "use inherited history"}})
+		// Observe the child's own turn only after admission; the fork alone
+		// still has the inherited branch-boundary outcome.
+		if err == nil {
+			childIDs <- child.ThreadID
+		}
 		return tools.Result{Text: "delegated"}, err
 	})
 	rootAgent, err := testAgent(rootGateway, WithAgentTools(delegate), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {

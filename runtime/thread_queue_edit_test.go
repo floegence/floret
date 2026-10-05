@@ -37,8 +37,23 @@ func TestEditQueuedPreservesCanonicalInputAndOrder(t *testing.T) {
 		t.Fatalf("canonical=%#v err=%v", canonical, err)
 	}
 	replay, err := editor.EditQueued(t.Context(), command)
-	if err != nil || replay.ViewVersion != changed.ViewVersion {
+	// Provider progress can advance the thread view concurrently. The replay
+	// invariant is unchanged queue content and one canonical edit transaction.
+	if err != nil || !reflect.DeepEqual(replay.Queue, changed.Queue) {
 		t.Fatalf("replayed edit: %#v %v", replay, err)
+	}
+	entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	editFacts := 0
+	for _, entry := range entries {
+		if entry.RequestKey == string(command.RequestKey) {
+			editFacts++
+		}
+	}
+	if editFacts != 3 {
+		t.Fatalf("replayed edit wrote %d facts, want one three-fact transaction", editFacts)
 	}
 	command.RequestKey = "stale-edit"
 	if _, err := editor.EditQueued(t.Context(), command); !errors.Is(err, ErrRequestConflict) {
