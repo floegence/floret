@@ -229,6 +229,11 @@ work, waits for execution/effect drains, then commits the canonical tombstone.
 Late provider output and late effect dispatch are rejected. `Host.Shutdown`
 stops admission, canonically cancels active in-memory executions before closing
 their actors, joins Host-managed work, and closes storage only after the join.
+Every settlement path reuses an existing cancel request for the exact Turn/Run
+under the actor lock, preserving its identity, source, mode, and timestamp.
+Shutdown or an immediate stop during graceful cancellation cannot create a
+second cancellation fact. A journal read failure stops settlement without
+substituting a new request.
 Pending tool approvals are resolved as cancelled and reject stale answers after
 reopening. Already durable input waits and queued input remain available; an
 uncertain dispatched effect retains `effect_outcome_unknown`. Settlement errors

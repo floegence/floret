@@ -2955,6 +2955,16 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 		// lock as cancellation. An answered interaction may have advanced it.
 		// Execution-context cancellation still supplies an exact run identity.
 		runID = actor.state.runID
+		entries, err := service.host.store.repo.Entries(ctx, threadID.String())
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.Type == sessiontree.EntryCancelRequested && entry.TurnID == turnID.String() && entry.RunID == runID.String() {
+				request = cancellationRequest{EntryID: entry.ID, RequestKey: entry.RequestKey, RequestFingerprint: entry.RequestFingerprint}
+				break
+			}
+		}
 		terminalID := stableCancellationEntryID(threadID, turnID, runID)
 		metadata := map[string]string{
 			"run_id": runID.String(), "outcome": "cancelled",
@@ -3039,25 +3049,12 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	request := cancellationRequest{}
-	entries, err := service.host.store.repo.Entries(ctx, threadID.String())
-	if err == nil {
-		for index := len(entries) - 1; index >= 0; index-- {
-			entry := entries[index]
-			if entry.Type == sessiontree.EntryCancelRequested && entry.TurnID == turnID.String() && entry.RunID == runID.String() {
-				request = cancellationRequest{EntryID: entry.ID, RequestKey: entry.RequestKey, RequestFingerprint: entry.RequestFingerprint}
-				break
-			}
-		}
-	}
-	if request.EntryID == "" {
-		request.RequestKey = "runtime-cancel:" + turnID.String()
-		request.RequestFingerprint, _ = stableFingerprint(struct {
-			ThreadID identity.ThreadID `json:"thread_id"`
-			TurnID   identity.TurnID   `json:"turn_id"`
-		}{threadID, turnID})
-		request.EntryID = "cancel:" + request.RequestKey
-	}
+	key := "runtime-cancel:" + turnID.String()
+	fingerprint, _ := stableFingerprint(struct {
+		ThreadID identity.ThreadID `json:"thread_id"`
+		TurnID   identity.TurnID   `json:"turn_id"`
+	}{threadID, turnID})
+	request := cancellationRequest{EntryID: "cancel:" + key, RequestKey: key, RequestFingerprint: fingerprint}
 	if _, err := service.settleCancellation(ctx, actor, threadID, turnID, runID, request, "execution_context", "execution context cancelled"); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) {
 		service.host.store.reportBackgroundError(err)
 	}
