@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.25.2 - 2026-10-05
+
+- Reuse the original canonical cancellation request when shutdown, immediate stop, or execution-context settlement follows graceful Stop. Keep one cancellation fact per execution and preserve its source, mode, and timestamp. Centralize lookup under the thread actor lock and propagate journal read errors without fabricating replacement requests. No public API or schema change.
+
 ## v7.25.1 - 2026-10-05
 
 - Preserve pure-thinking tool-call reasoning in the public gateway message, emitting complete step reasoning once across parallel calls and hosted assistant fragments. Canonical history stays unchanged.

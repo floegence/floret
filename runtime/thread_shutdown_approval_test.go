@@ -8,11 +8,90 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
 )
 
+func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
+	for _, boundary := range []string{"shutdown", "immediate_stop", "execution_context"} {
+		t.Run(boundary, func(t *testing.T) {
+			gateway := newBlockingThreadGateway()
+			host, threadService := testThreadService(t, gateway)
+			service := threadService.(*threadRuntimeService)
+			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "wait"}}); err != nil {
+				t.Fatal(err)
+			}
+			waitClosed(t, gateway.started, "provider did not start")
+			actor := service.runtime(created.ThreadID)
+			key := "stop"
+			request := cancellationRequest{EntryID: "cancel:" + key, RequestKey: key}
+			request.RequestFingerprint, err = stableFingerprint(struct {
+				ThreadID string
+				TurnID   string
+				Mode     CancelMode
+			}{created.ThreadID.String(), service.currentView(actor).TurnID.String(), CancelModeGraceful})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = actor.apply(t.Context(), func() error {
+				turnID, runID := actor.state.turnID, actor.state.runID
+				result, err := host.store.repo.(sessiontree.RuntimeTurnRepo).CancelTurn(t.Context(), sessiontree.CancelTurnRequest{
+					RequestOnly: true, ThreadID: created.ThreadID.String(), TurnID: turnID.String(), RunID: runID.String(),
+					CancelEntryID: request.EntryID, RequestKey: request.RequestKey, RequestFingerprint: request.RequestFingerprint,
+					TerminalEntryID: stableCancellationEntryID(created.ThreadID, turnID, runID), OutcomeFingerprint: request.RequestFingerprint,
+					InteractionResolutionPayload: []byte(`{"accepted":false,"outcome":"cancelled"}`),
+					Metadata:                     map[string]string{sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureCancelled},
+					CancellationMetadata:         map[string]string{"cancellation_source": "user_stop", "cancellation_mode": string(CancelModeGraceful)},
+					Now:                          time.Now().UTC(),
+				})
+				if err == nil {
+					actor.state.view.Cancellation = threadCancellationForTurn([]sessiontree.Entry{result.CancelRequest}, turnID)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch boundary {
+			case "immediate_stop":
+				if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop-again", Mode: CancelModeImmediate}); err != nil {
+					t.Fatal(err)
+				}
+			case "execution_context":
+				view := service.currentView(actor)
+				service.finishUnloadedCancellation(actor, created.ThreadID, view.TurnID, view.RunID)
+			}
+			if err := host.Shutdown(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancellations := 0
+			for _, entry := range entries {
+				if entry.Type == sessiontree.EntryCancelRequested {
+					cancellations++
+					if entry.Metadata["cancellation_source"] != "user_stop" || entry.Metadata["cancellation_mode"] != string(CancelModeGraceful) {
+						t.Fatalf("settlement replaced original cancellation metadata: %+v", entry.Metadata)
+					}
+					if entry.ID != request.EntryID {
+						t.Fatalf("settlement used a different cancel request: %s", entry.ID)
+					}
+				}
+			}
+			if cancellations != 1 {
+				t.Fatalf("cancel requests=%d, want one", cancellations)
+			}
+		})
+	}
+}
 func TestShutdownSettlesActiveApprovalBeforeReopen(t *testing.T) {
 	var effects atomic.Int32
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "approval", StateCompatibilityKey: "test:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
