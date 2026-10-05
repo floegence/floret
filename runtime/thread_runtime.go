@@ -127,6 +127,9 @@ type ThreadCancellation struct {
 }
 
 type CancelInput struct {
+	// IncludeDescendants also admits a stop for every existing child in the
+	// selected subtree. Independent threads and pending inputs are preserved.
+	IncludeDescendants bool `json:"include_descendants,omitempty"`
 	// Mode defaults to immediate. Graceful stops admit immediately and allow
 	// in-flight tools up to five seconds to commit their confirmed results.
 	Mode       CancelMode        `json:"mode,omitempty"`
@@ -645,6 +648,9 @@ func (service *threadRuntimeService) Create(ctx context.Context, in CreateThread
 	}
 	service.host.mutationMu.Lock()
 	defer service.host.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ThreadView{}, err
+	}
 	origins, ok := service.host.store.repo.(sessiontree.ThreadOriginRepo)
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
@@ -704,6 +710,9 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 	}
 	service.host.mutationMu.Lock()
 	defer service.host.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return ThreadView{}, err
+	}
 	origins, ok := service.host.store.repo.(sessiontree.ThreadOriginRepo)
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
@@ -1290,7 +1299,30 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 	if in.Mode != "" && in.Mode != CancelModeImmediate && in.Mode != CancelModeGraceful {
 		return ThreadView{}, fmt.Errorf("invalid cancellation mode %q", in.Mode)
 	}
-	return service.cancel(ctx, in.ThreadID, key, in.Mode)
+	if !in.IncludeDescendants {
+		return service.cancel(ctx, in.ThreadID, key, in.Mode)
+	}
+	// Serialize the subtree snapshot and stop admission with child creation.
+	// No provider work or effect settlement is awaited under this lock.
+	service.host.mutationMu.Lock()
+	defer service.host.mutationMu.Unlock()
+	ids, err := service.subtreeThreadIDs(ctx, in.ThreadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	view, err := service.cancel(ctx, in.ThreadID, key, in.Mode)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	for _, id := range ids {
+		if id == in.ThreadID {
+			continue
+		}
+		if _, err := service.cancel(ctx, id, key+":child:"+id.String(), in.Mode); err != nil {
+			return ThreadView{}, err
+		}
+	}
+	return view, nil
 }
 
 func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (ThreadView, error) {
@@ -3433,6 +3465,10 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 	if err != nil {
 		return ThreadView{}, err
 	}
+	sourceEntry, err := service.host.store.repo.Entry(ctx, threadID.String(), sourceEntryID)
+	if err != nil {
+		return ThreadView{}, runtimeHostError(err)
+	}
 	fingerprint, err := stableFingerprint(sourceTurnID)
 	if err != nil {
 		return ThreadView{}, err
@@ -3483,7 +3519,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: sourceInput, CanonicalTurnInput: sourceInput, RetrySource: sourceTurnID})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID,
-		Input: sourceInput, RetrySourceTurnID: sourceTurnID, RetrySourceEntryID: sourceEntryID,
+		Input: sourceInput, RetrySourceTurnID: identity.TurnID(sourceEntry.TurnID), RetrySourceEntryID: sourceEntryID,
 	}
 	go service.acceptAndExecutePreparedSend(executionCtx, actor, prepared, threadID, request, previousExecution, executionDone, requestKey, true)
 	return result, nil
@@ -3520,9 +3556,6 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 	}
 	sourceEntryID := ""
 	if read.Turn.RetrySource != nil {
-		if strings.TrimSpace(read.Turn.RetrySource.EntryID) == "" {
-			return "", UserInput{}, ErrAuthorityCorrupt
-		}
 		sourceEntryID = read.Turn.RetrySource.EntryID
 	} else {
 		for _, item := range read.Turn.Entries {
@@ -3532,17 +3565,35 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 			}
 		}
 	}
-	if sourceEntryID == "" {
-		return "", UserInput{}, errors.New("retry source turn has no canonical user input")
+	failed := false
+	for _, item := range read.Turn.Entries {
+		failed = failed || item.Entry.Type == sessiontree.EntryTurnMarker && item.Entry.TurnStatus == sessiontree.TurnFailed
 	}
-	entry, err := service.host.store.repo.Entry(ctx, threadID.String(), sourceEntryID)
+	if failed {
+		// The harness commits save points after tool results and before a
+		// failed terminal. Retrying from that boundary retains confirmed work.
+		for index := len(read.Turn.Entries) - 1; index >= 0; index-- {
+			entry := read.Turn.Entries[index].Entry
+			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint {
+				sourceEntryID = entry.ParentID
+				break
+			}
+		}
+	}
+	if sourceEntryID == "" {
+		return "", UserInput{}, ErrAuthorityCorrupt
+	}
+	path, err := service.host.store.repo.Path(ctx, threadID.String(), sourceEntryID)
 	if err != nil {
 		return "", UserInput{}, runtimeHostError(err)
 	}
-	if entry.Type != sessiontree.EntryUserMessage || entry.Message.Role != session.User {
-		return "", UserInput{}, ErrAuthorityCorrupt
+	for index := len(path) - 1; index >= 0; index-- {
+		entry := path[index]
+		if entry.Type == sessiontree.EntryUserMessage && entry.Message.Role == session.User {
+			return sourceEntryID, turnInputFromSessionMessage(entry.Message), nil
+		}
 	}
-	return sourceEntryID, turnInputFromSessionMessage(entry.Message), nil
+	return "", UserInput{}, errors.New("retry source turn has no canonical user input")
 }
 
 func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey string) {

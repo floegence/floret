@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.23.0 - 2026-10-05
+
+- Preserve confirmed tool results when retrying a failed turn from its existing durable save point, including repeated failures and restart. Project provider retry boundaries from canonical messages rather than non-message observations.
+- Accept verified thread-level queue records between canonical turn entries so answering a pending question after restart can continue and drain queued inputs.
+- Add opt-in `CancelInput.IncludeDescendants` to stop the existing child subtree under the same admission boundary as child creation. Default selected-thread cancellation, independent threads, queued inputs, and domain schema v12 remain unchanged.
+
 ## v7.22.1 - 2026-10-05
 
 - Reserve up to 1,024 output tokens for automatic titles when reasoning cannot be disabled or its control is unknown. Provider limits count hidden reasoning as output; the visible title remains limited to 48 Unicode characters. Keep the 64-token fast path for explicit non-reasoning and disable-capable models, and preserve explicit budgets, truncation failures, and lifecycle ownership.

@@ -745,8 +745,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
-	if retrySource != nil {
-		engineOptions.RetrySourceEntryID = retrySource.ID
+	if retrySource != nil && len(history) > 0 {
+		// A durable save point may follow non-message context observations.
+		// The provider prefix boundary is the final projected message at that
+		// checked journal checkpoint, not the observation entry itself.
+		engineOptions.RetrySourceEntryID = history[len(history)-1].EntryID
 	}
 	engineOptions.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
 	engineOptions.ThreadID = t.id

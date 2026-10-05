@@ -1269,10 +1269,35 @@ func (r *MemoryRepo) CanonicalTurnEntries(_ context.Context, threadID, turnID, r
 		previous = ordinal
 	}
 	entries = CanonicalTurnEntriesForRead(entries)
+	if err := r.validateCanonicalTurnLinksLocked(threadID, entries); err != nil {
+		return nil, true, err
+	}
 	if err := ValidateCanonicalTurnEntries(entries, threadID, turnID, runID); err != nil {
 		return nil, true, err
 	}
 	return entries, true, nil
+}
+
+func (r *MemoryRepo) validateCanonicalTurnLinksLocked(threadID string, entries []Entry) error {
+	for index := 1; index < len(entries); index++ {
+		entry, previous := entries[index], entries[index-1]
+		if isCanonicalPostTerminalTurnEntry(entry) {
+			continue
+		}
+		parentID := entry.ParentID
+		depth := entry.PathDepth
+		for parentID != previous.ID {
+			parent, _, err := r.canonicalTurnEntryLocked(threadID, parentID)
+			if err != nil {
+				return ErrAuthorityCorrupt
+			}
+			if parent.TurnID != "" || parent.PathDepth <= previous.PathDepth || parent.PathDepth >= depth {
+				return ErrAuthorityCorrupt
+			}
+			parentID, depth = parent.ParentID, parent.PathDepth
+		}
+	}
+	return nil
 }
 
 // CanonicalTurnEntriesForRead excludes retry/fork structural closures when the
@@ -1366,7 +1391,13 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 			continue
 		}
 		if entry.ParentID != entries[index-1].ID {
-			return ErrAuthorityCorrupt
+			// A turn projection omits thread-scoped queue facts. The repository
+			// verifies path membership; this structural check permits only a
+			// forward ordinal gap through a parent outside this projection.
+			_, internal := seenIDs[entry.ParentID]
+			if internal || entry.ParentID == "" || entry.PathDepth <= entries[index-1].PathDepth+1 {
+				return ErrAuthorityCorrupt
+			}
 		}
 	}
 	if storedRunID != runID {
