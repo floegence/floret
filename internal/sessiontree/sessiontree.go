@@ -1620,6 +1620,22 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		return ThreadMeta{}, err
 	}
 	if len(unfinished) != 0 {
+		// A fork copies conversation, never the source's active tool execution.
+		// Close each copied pending call before the branch boundary so the
+		// child's first user input has a complete provider tool exchange.
+		for _, call := range runtimePendingToolCalls(forkedEntries, unfinished[0]) {
+			r.seq++
+			reason := "Tool execution was not inherited by this fork; its outcome remains owned by the source thread."
+			result := PrepareEntry(Entry{
+				ID: fmt.Sprintf("%s-entry-%d", newID, r.seq), ThreadID: newID, ParentID: meta.LeafID,
+				Type: EntryToolResult, TurnID: call.TurnID, RunID: call.RunID, CreatedAt: now,
+				Message: session.Message{Role: session.Tool, Content: reason, ToolCallID: call.Message.ToolCallID,
+					ToolName: call.Message.ToolName, ToolResult: &session.ToolResultView{Status: "canceled"}},
+			})
+			result.PathDepth = int64(len(forkedEntries) + 1)
+			forkedEntries = append(forkedEntries, result)
+			meta.LeafID = result.ID
+		}
 		r.seq++
 		boundary, err := PrepareBranchBoundaryEntry(forkedEntries, newID, meta.LeafID, fmt.Sprintf("%s-entry-%d", newID, r.seq), "fork", now)
 		if err != nil {
