@@ -7,6 +7,7 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -52,6 +53,7 @@ type turnExecutionOptions struct {
 type modelGatewayCapabilities struct {
 	Reasoning         *config.ReasoningCapability
 	AttachmentPayload modelGatewayAttachmentPayloadMode
+	ReasoningHistory  provider.ReasoningHistoryPolicy
 }
 
 type modelGatewayAttachmentPayloadMode string

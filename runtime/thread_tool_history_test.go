@@ -19,7 +19,7 @@ import (
 )
 
 func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
-	for _, mode := range []string{"step_reasoning", "no_reasoning"} {
+	for _, mode := range []string{"step_reasoning", "no_reasoning", "current_user"} {
 		t.Run(mode, func(t *testing.T) {
 			var executions atomic.Int32
 			firstReasoning, secondReasoning := "before search;", "after search;"
@@ -40,7 +40,11 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 				{Type: provider.EventDone, Reason: "tool_calls"},
 			}}
 			answer := florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Complete."}, {Type: provider.EventDone, Reason: "stop"}}}
-			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "tools", StateCompatibilityKey: "tools:v1"}, provider.Capabilities{Reasoning: provider.ReasoningSupported, ReasoningCapability: config.ReasoningCapability{Kind: config.ReasoningKindNone}}, callStep, answer, answer, answer, answer, callStep, answer)
+			capabilities := provider.Capabilities{Reasoning: provider.ReasoningSupported, ReasoningCapability: config.ReasoningCapability{Kind: config.ReasoningKindNone}}
+			if mode == "current_user" {
+				capabilities.ReasoningHistory = provider.ReasoningHistoryCurrentUser
+			}
+			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "tools", StateCompatibilityKey: "tools:v1"}, capabilities, callStep, answer, answer, answer, answer, callStep, answer)
 			fetch := tools.Define[map[string]any](tools.Definition{Name: "fetch", ReadOnly: true, InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(_ context.Context, _ tools.Invocation[map[string]any]) (tools.Result, error) {
 				executions.Add(1)
 				return tools.Result{Text: "page"}, nil
@@ -111,6 +115,14 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 			}
 			send(created.ThreadID, "first")
 			check(created.ThreadID, 2)
+			requests := gateway.Requests()
+			continuedReasoning := ""
+			for _, message := range requests[1].Messages {
+				continuedReasoning += message.Reasoning
+			}
+			if continuedReasoning != wantReasoning {
+				t.Fatalf("tool continuation reasoning=%q want=%q", continuedReasoning, wantReasoning)
+			}
 			ids := []identity.ThreadID{created.ThreadID}
 			for i := 0; i < 2; i++ {
 				fork, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: ids[len(ids)-1], RequestKey: RequestKey(fmt.Sprintf("fork-%d", i))})
@@ -128,6 +140,14 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 				check(id, 2)
 				send(id, "followup")
 				check(id, 2)
+				if mode == "current_user" {
+					requests := gateway.Requests()
+					for _, message := range requests[len(requests)-1].Messages {
+						if message.Reasoning != "" {
+							t.Fatalf("prior thinking replayed after restart/fork: %+v", message)
+						}
+					}
+				}
 			}
 			if executions.Load() != 2 {
 				t.Fatalf("historical tools replayed: %d", executions.Load())

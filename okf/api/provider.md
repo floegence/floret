@@ -14,6 +14,30 @@ timestamp: 2026-07-29T00:00:00Z
 messages, tool calls/results, stream events, usage, sources, opaque state, and
 prepared-request contracts.
 
+## Reasoning replay
+
+`Capabilities.ReasoningHistory` is an additive v7.25 API decision for the
+Redeven Ollama adapter. `ReasoningHistoryCurrentUser` omits assistant reasoning
+before the latest canonical user message from the detached transport projection.
+Historical visible answers and complete tool pairs remain present. Tool loops,
+reasoning-only output truncation, and retry after that input retain their
+reasoning. Ephemeral supplemental answers and compaction summaries do not create
+new user boundaries. Pure reasoning messages made empty by this projection are
+omitted. The canonical journal, forked history, and prior checkpoints keep the
+original reasoning; no schema change or provider-output retry is introduced.
+
+The zero policy and `ReasoningHistoryAll` preserve existing behavior. Unknown
+policies fail capability validation. Gateways that require old reasoning keep
+the default. Hosts changing policy must reflect it in their state compatibility
+identity. Prepared requests estimate and dispatch the same projected payload;
+descriptor gateways use the same projection for generic estimates. This prevents
+expired tool-availability assumptions in old thinking from anchoring a fresh
+request without discarding user-visible facts or disabling current reasoning.
+
+Evidence: [projection and estimation](../../runtime/model_gateway_provider.go),
+[boundary tests](../../runtime/reasoning_history_test.go), and
+[tool, fork, and restart tests](../../runtime/thread_tool_history_test.go).
+
 Official OpenAI-compatible, DeepSeek Responses, and Anthropic adapters implement the same Gateway
 interface. Credentials, base URLs, and transport clients belong to adapter
 construction in the host, never to `config.AgentConfig` or durable state.

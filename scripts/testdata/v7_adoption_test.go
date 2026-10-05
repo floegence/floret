@@ -51,6 +51,9 @@ func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.M
 }
 
 func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
+	if err := (provider.Capabilities{Reasoning: provider.ReasoningUnsupported, ReasoningHistory: provider.ReasoningHistoryCurrentUser}).Validate(); err != nil {
+		t.Fatal(err)
+	}
 	_ = runtime.ThreadTokenUsageTotals{InputTokens: 80, CacheReadTokens: 15, CacheWriteTokens: 5, OutputTokens: 20}
 	_ = runtime.Event{ThreadUsageTotals: &runtime.ThreadTokenUsageTotals{InputTokens: 80}}
 	_ = tools.WebFetchActivityPayload{

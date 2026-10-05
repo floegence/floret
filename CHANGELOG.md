@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.25.0 - 2026-10-05
+
+- Add opt-in `Capabilities.ReasoningHistory` with `ReasoningHistoryCurrentUser` to omit reasoning before the latest canonical user input from provider transport. Preserve canonical history, visible answers, tool pairs, current-input continuations, and supplemental-answer boundaries; keep all-history replay as the default.
+- Apply the same projection to preparation and token estimates, with tool continuation, fork, restart, and immutable-history regressions. No domain schema change.
+
 ## v7.24.0 - 2026-10-05
 
 - Add the optional read-only `ThreadSendReader.LookupSend` contract to recover original admitted input by request key without rebuilding host context or attachment state. Queue editing, promotion, removal, and restart retain the original send identity; no new journal record or schema change is required.
