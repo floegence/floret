@@ -169,6 +169,14 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil || len(summaries) != 1 || summaries[0].TitleGeneration != 1 || summaries[0].Title != "compact then answer" || summaries[0].TitleStatus != runtime.ThreadTitleStatusReady {
 		t.Fatalf("published title snapshot after restart=%#v err=%v", summaries, err)
 	}
+	sendReader, ok := secondService.(runtime.ThreadSendReader)
+	if !ok {
+		t.Fatal("published ThreadService does not expose ThreadSendReader")
+	}
+	input, found, err := sendReader.LookupSend(ctx, runtime.LookupSendInput{ThreadID: created.ThreadID, RequestKey: "send-adoption"})
+	if err != nil || !found || input.Text != "compact then answer" {
+		t.Fatalf("published original input after restart: %#v %v %v", input, found, err)
+	}
 	reader, ok := secondService.(runtime.ThreadContextReader)
 	if !ok {
 		t.Fatal("published ThreadService does not expose ThreadContextReader")

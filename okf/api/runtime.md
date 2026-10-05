@@ -24,6 +24,15 @@ include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
 request key. Replaying the same key and fingerprint returns the committed
 result; changing the input returns `runtime.ErrRequestConflict`.
 
+The optional `ThreadSendReader.LookupSend` reads the original admitted
+`UserInput` by thread and request key. Queue edits and promotion do not change
+that original transport identity; a removed queue item also retains its send
+fact. Hosts authorize the query and compare the submitted content before
+returning a replay, without resolving uploads again or replacing frozen runtime
+context. Missing keys return `found=false`; deleted threads return the normal
+thread error. This query reads existing canonical facts and adds no receipt
+store or lifecycle owner.
+
 Floret allocates `ThreadID`, `TurnID`, and `RunID`. A `LogicalRequestID` is a
 user-visible association only and never replaces those execution identities.
 Child threads are ordinary durable threads with explicit parent metadata.

@@ -660,6 +660,9 @@ field InteractionResolution.Outcome string tag="json:\"outcome,omitempty\""
 field InteractionResolution.Approved *bool tag="json:\"approved,omitempty\""
 field InteractionResolution.Input map[string]string tag="json:\"input,omitempty\""
 field InteractionResolution.At time.Time tag="json:\"at\""
+type LookupSendInput struct
+field LookupSendInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field LookupSendInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type LoopLimits struct
 field LoopLimits.MaxEmptyProviderRetries int
 field LoopLimits.NoProgressLimit int
@@ -946,6 +949,7 @@ type ThreadRunProgress struct
 field ThreadRunProgress.Phase github.com/floegence/floret/v7/runtime.ThreadRunPhase tag="json:\"phase\""
 type ThreadScope struct
 field ThreadScope.ParentID *github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_id,omitempty\""
+type ThreadSendReader interface interface{LookupSend(context.Context, github.com/floegence/floret/v7/runtime.LookupSendInput) (github.com/floegence/floret/v7/runtime.UserInput, bool, error)}
 type ThreadService interface interface{Cancel(context.Context, github.com/floegence/floret/v7/runtime.CancelInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Create(context.Context, github.com/floegence/floret/v7/runtime.CreateThreadInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Delete(context.Context, github.com/floegence/floret/v7/runtime.DeleteThreadInput) error; DeleteQueued(context.Context, github.com/floegence/floret/v7/runtime.DeleteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Fork(context.Context, github.com/floegence/floret/v7/runtime.ForkThreadInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); History(context.Context, github.com/floegence/floret/v7/identity.ThreadID, string, int) (github.com/floegence/floret/v7/runtime.HistoryPage, error); ImportPendingInputs(context.Context, github.com/floegence/floret/v7/runtime.ImportPendingInputsInput) (github.com/floegence/floret/v7/runtime.ImportResult, error); List(context.Context, github.com/floegence/floret/v7/runtime.ThreadScope) ([]github.com/floegence/floret/v7/runtime.ThreadSummary, error); PromoteQueued(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); ReorderQueue(context.Context, github.com/floegence/floret/v7/runtime.ReorderQueueInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Respond(context.Context, github.com/floegence/floret/v7/runtime.RespondInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Retry(context.Context, github.com/floegence/floret/v7/runtime.RetryInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Send(context.Context, github.com/floegence/floret/v7/runtime.SendInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SetTitle(context.Context, github.com/floegence/floret/v7/runtime.SetTitleInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); Subscribe(context.Context) (*github.com/floegence/floret/v7/runtime.WorkspaceSubscription, error); View(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 type ThreadStatus string
 const ThreadStatusCancelled github.com/floegence/floret/v7/runtime.ThreadStatus = "cancelled"
