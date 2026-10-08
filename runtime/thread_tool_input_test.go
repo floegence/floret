@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -23,7 +24,10 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	inspect := tools.Define[map[string]any](tools.Definition{Name: "inspect", InputSchema: tools.StrictObject(map[string]any{}, []string{}), ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil,
 		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
 			calls.Add(1)
-			return tools.Result{Text: "Observation complete; user input required before continuing.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}}}}}, nil
+			return tools.Result{Text: "Observation complete; the external step is unfinished.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{
+				{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}},
+				{ID: "claim", Prompt: "Describe the current state", Kind: "write"},
+			}}}, nil
 		})
 	agent, err := testAgent(gateway, WithAgentTools(inspect), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 		return effect(ctx, EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
@@ -72,7 +76,9 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	if len(restored.Interactions) != 1 || restored.Interactions[0].ID != interaction.ID || restored.Interactions[0].Resolved {
 		t.Fatalf("input not restored: %+v", restored.Interactions)
 	}
-	if _, err := svc.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: interaction.ID, RequestKey: "respond", Answers: []InteractionAnswer{{Input: map[string]string{"ready": "Continue"}}}}); err != nil {
+	answer := map[string]string{"ready": "Continue", "claim": "The external step is complete, please check."}
+	response := RespondInput{ThreadID: created.ThreadID, InteractionID: interaction.ID, RequestKey: "respond", Answers: []InteractionAnswer{{Input: answer}}}
+	if _, err := svc.Respond(t.Context(), response); err != nil {
 		t.Fatal(err)
 	}
 	final := waitThreadView(t, svc, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
@@ -82,12 +88,26 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	if final.TurnID != waiting.TurnID {
 		t.Fatal("input response created another turn")
 	}
+	if final.RunID == waiting.RunID || final.RunID == "" {
+		t.Fatal("input response did not start a fresh run")
+	}
 	requests := gateway.Requests()
 	if len(requests) != 2 {
 		t.Fatalf("requests=%d", len(requests))
 	}
 	var callCount, resultCount int
+	var answerCount int
 	for _, msg := range requests[1].Messages {
+		var response struct {
+			Type    string            `json:"type"`
+			Answers map[string]string `json:"answers"`
+		}
+		if json.Unmarshal([]byte(msg.Text), &response) == nil && response.Type == "interaction_response" {
+			answerCount++
+			if response.Answers["ready"] != answer["ready"] || response.Answers["claim"] != answer["claim"] || len(response.Answers) != len(answer) {
+				t.Fatalf("user statement was changed before reaching the provider: %#v", response.Answers)
+			}
+		}
 		for _, call := range msg.ToolCalls {
 			if call.ID == "inspect-1" {
 				callCount++
@@ -100,6 +120,15 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 
 	if callCount != 1 || resultCount != 1 {
 		t.Fatalf("tool history is unpaired: calls=%d results=%d", callCount, resultCount)
+	}
+	if answerCount != 1 {
+		t.Fatalf("provider received %d canonical answers", answerCount)
+	}
+	if _, err := svc.Respond(t.Context(), response); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || len(gateway.Requests()) != 2 {
+		t.Fatal("duplicate response replayed the tool or provider continuation")
 	}
 }
 
