@@ -43,6 +43,7 @@ type backendDomainSource uint8
 
 const (
 	backendDomainSourceFresh backendDomainSource = iota
+	backendDomainSourceV13
 	backendDomainSourceV12
 	backendDomainSourceV11
 	backendDomainSourceV10
@@ -85,14 +86,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV12 {
+	if source == backendDomainSourceV13 {
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomainV12(ctx, tx, now)
+		memory, found, err := loadBackendDomainV13(ctx, tx, now)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
-			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v12 authority is missing"))
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v13 authority is missing"))
 		}
 		if hasUnknownEffectTurns(memory) {
 			before := memory
@@ -100,13 +101,38 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainV12Changes(tx, before, memory)
+			changed, err := persistBackendDomainV13Changes(tx, before, memory)
 			if err != nil {
 				return nil, err
 			}
 			repo.requiresPersistedStartupVerification = changed
 		}
 		repo.domainMemory = memory
+		return repo, nil
+	}
+	if source == backendDomainSourceV12 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV12(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrAuthorityCorrupt
+		}
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomain(ctx, tx, backendDomainV12Format); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
 		return repo, nil
 	}
 	if source == backendDomainSourceV11 {
@@ -121,10 +147,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV11Format); err != nil {
@@ -149,10 +178,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV10Format); err != nil {
@@ -180,10 +212,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV9Format); err != nil {
@@ -217,7 +252,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV8(ctx, tx); err != nil {
@@ -251,7 +289,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
@@ -288,7 +329,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -344,25 +388,30 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		repo.reportStartupPhase(StartupPhaseVerifying)
 		memory = newMemoryRepo(now)
 	}
-	if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
-		return nil, err
+	if legacyFound {
+		if err := migrateBackendDomainV6ToV7(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV9ToV10(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV10ToV11(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := migrateBackendDomainV12ToV13(ctx, memory); err != nil {
+			return nil, err
+		}
 	}
-	if err := migrateBackendDomainV7ToV8(ctx, memory); err != nil {
-		return nil, err
-	}
-	if err := migrateBackendDomainV8ToV9(ctx, memory); err != nil {
-		return nil, err
-	}
-	if err := migrateBackendDomainV9ToV10(ctx, memory); err != nil {
-		return nil, err
-	}
-	if err := migrateBackendDomainV10ToV11(ctx, memory); err != nil {
-		return nil, err
-	}
-	if err := migrateBackendDomainV11ToV12(ctx, memory); err != nil {
-		return nil, err
-	}
-	if err := saveCompleteBackendDomainV12(tx, memory); err != nil {
+	if err := saveCompleteBackendDomainV13(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -388,17 +437,17 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV12(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV13(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
 	if !found {
 		return errors.Join(ErrAuthorityCorrupt, errors.New("session-tree state is not current after migration"))
 	}
-	if err := rejectPreV12BackendDomain(ctx, tx); err != nil {
+	if err := rejectPreV13BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateBackendDomainV12Memory(memory); err != nil {
+	if err := validateBackendDomainV13Memory(memory); err != nil {
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
@@ -424,6 +473,7 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 		source    backendDomainSource
 		namespace string
 	}{
+		{source: backendDomainSourceV13, namespace: backendDomainV13Namespace},
 		{source: backendDomainSourceV12, namespace: backendDomainV12Namespace},
 		{source: backendDomainSourceV11, namespace: backendDomainV11Namespace},
 		{source: backendDomainSourceV10, namespace: backendDomainV10Namespace},
@@ -473,6 +523,17 @@ func legacyBackendDomainHasRecords(tx spi.ReadTx) (bool, error) {
 		}
 	}
 	return backendNamespaceHasRecords(tx, backendDomainJournalNamespace)
+}
+
+func rejectPreV13BackendDomain(ctx context.Context, tx spi.ReadTx) error {
+	records, err := scanBackendDomainV12(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(records) != 0 {
+		return errors.Join(ErrAuthorityCorrupt, errors.New("current session-tree store retains v12 domain records"))
+	}
+	return rejectPreV12BackendDomain(ctx, tx)
 }
 
 func rejectPreV12BackendDomain(ctx context.Context, tx spi.ReadTx) error {
@@ -716,10 +777,10 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := mutate(memory, tx); err != nil {
 			return err
 		}
-		if err := validateBackendDomainV12Memory(memory); err != nil {
+		if err := validateBackendDomainV13Memory(memory); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if _, err := persistBackendDomainV12Changes(tx, repo.domainMemory, memory); err != nil {
+		if _, err := persistBackendDomainV13Changes(tx, repo.domainMemory, memory); err != nil {
 			return err
 		}
 		committedMemory = memory

@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-10-09
+
+* Add independent typed [thread compaction](api/runtime.md#thread-service), shared
+  atomic installation, canonical divider anchors, and the byte-preserving
+  [v12 -> v13 migration](api/storage.md#domain-migration).
+
+
 ## 2026-10-05: Task interruption and recovery
 
 * Document checkpoint-preserving retries, queued question recovery after restart, and opt-in subtree stop admission in the [runtime contract](api/runtime.md). Existing schema v12 facts remain authoritative.

@@ -288,6 +288,11 @@ type failureOriginError struct {
 func (e *failureOriginError) Error() string { return e.err.Error() }
 func (e *failureOriginError) Unwrap() error { return e.err }
 
+// WithFailureOrigin preserves a source classification across Engine callbacks.
+func WithFailureOrigin(err error, origin FailureOrigin) error {
+	return withFailureOrigin(err, origin)
+}
+
 func withFailureOrigin(err error, origin FailureOrigin) error {
 	if err == nil {
 		return nil
@@ -331,6 +336,7 @@ func failureOrigin(status Status, err error) FailureOrigin {
 }
 
 type ContextCompactionResult struct {
+	FailureOrigin FailureOrigin
 	Status        Status
 	Err           error
 	Metrics       RunMetrics
@@ -433,8 +439,11 @@ type CompactionCommitter interface {
 
 type CompactionCommitRequest struct {
 	CompactionRequest
-	Result         compaction.Result
-	ActiveMessages []session.Message
+	Result          compaction.Result
+	ActiveMessages  []session.Message
+	Completion      event.Event
+	RequestEstimate contextpolicy.RequestEstimate
+	ContextPressure contextpolicy.ContextPressure
 }
 
 type committedCompaction struct {
@@ -681,7 +690,18 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	return runner.run(ctx, "")
 }
 
-func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual ManualCompactionRequest) ContextCompactionResult {
+func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual ManualCompactionRequest) (result ContextCompactionResult) {
+	defer func() {
+		if isContextCancellation(result.Err) {
+			result.Status = Cancelled
+		}
+		if result.Err != nil && result.FailureOrigin == FailureOriginNone {
+			result.FailureOrigin = failureOrigin(result.Status, result.Err)
+			if result.FailureOrigin == FailureOriginNone {
+				result.FailureOrigin = FailureOriginProvider
+			}
+		}
+	}()
 	store := session.NewMemoryStore()
 	opts := optionsForRunInput(e.options, input)
 	if input.RunID != "" {
@@ -1419,6 +1439,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 
 func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequest) ContextCompactionResult {
 	opts := normalizeOptions(e.options)
+	if opts.WallTime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
+		defer cancel()
+	}
 	step := 1
 	var err error
 	opts, err = e.resolveToolSurface(ctx, opts, step, "compact")
@@ -1456,10 +1481,11 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 	}
 	metrics.Compactions = 1
+	// The committed installation is authoritative even if prepared cleanup fails.
 	if err := closePreparedRequest(req); err != nil {
-		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: active, Compaction: compacted, ProviderState: provider.CloneState(opts.PreviousProviderState)}
+		e.emit(opts, event.Event{Type: event.ContextCompactDebug, Step: step, Err: err.Error(), Metadata: map[string]any{"stage": "prepared_cleanup", "status": ContextCompactDebugStatusFailed, "operation_id": compacted.OperationID, "next_action": ContextCompactDebugNextActionReturnCompactedContext}})
 	}
-	return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: active, Compaction: compacted, ProviderState: provider.CloneState(opts.PreviousProviderState)}
+	return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: active, Compaction: compacted}
 }
 
 func exactToolOutputProjection(text string) tools.OutputProjection {
@@ -3186,8 +3212,11 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			ContextUsage:              usage,
 			Details:                   cloneStringMap(baseDetails),
 		},
-		Result:         result,
-		ActiveMessages: active,
+		Result:          result,
+		ActiveMessages:  active,
+		Completion:      event.Event{Type: event.ContextCompact, RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, TraceID: opts.TraceID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: result, Metadata: compactionCompleteMetadata(operationID, result, validation, lifecycle)},
+		RequestEstimate: validation.RequestEstimate,
+		ContextPressure: validation.ContextPressure,
 	})
 	if err != nil {
 		err = errors.Join(err, closePreparedRequest(req))
@@ -3372,7 +3401,7 @@ func (e *Engine) commitValidatedCompaction(ctx context.Context, manager Compacti
 	}
 	result, active, err := committer.CommitCompaction(ctx, req)
 	if err != nil {
-		return committedCompaction{}, err
+		return committedCompaction{}, withFailureOrigin(err, FailureOriginStorage)
 	}
 	return committedCompaction{Result: result, ActiveMessages: active}, nil
 }

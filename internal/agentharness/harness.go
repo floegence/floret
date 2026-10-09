@@ -132,6 +132,7 @@ type AgentHarness struct {
 type ResumeOptions struct{}
 
 type RunOptions struct {
+	TurnKind                    string
 	LogicalRequestID            string
 	RunID                       string
 	TurnID                      string
@@ -616,6 +617,13 @@ func (t *Thread) ExecuteAccepted(ctx context.Context, accepted AcceptedTurn, inp
 	opts.RunID = accepted.RunID
 	opts.AdmissionCommitted = true
 	opts.AdmissionBaseLeafID = canonical.BaseLeafID
+	if opts.TurnKind != canonical.TurnStarted.Metadata[sessiontree.TurnKindMetadataKey] {
+		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if opts.TurnKind == sessiontree.TurnKindContextCompaction {
+		opts.LogicalRequestID = canonical.TurnStarted.RequestKey
+		return t.runAccepted(ctx, "", opts, nil)
+	}
 	if sourceEntryID := strings.TrimSpace(canonical.TurnStarted.Metadata[sessiontree.RetrySourceEntryIDMetadataKey]); sourceEntryID != "" {
 		source, sourceErr := t.harness.options.Repo.Entry(ctx, t.id, sourceEntryID)
 		if sourceErr != nil {
@@ -782,7 +790,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		Prompt:       t.harness.options.PromptStore,
 		SystemPrompt: t.harness.options.SystemPrompt,
 		StopHook:     t.harness.options.StopHook,
-		Compactor:    &durableCompactionManager{thread: t, turnID: turnID},
+		Compactor:    &durableCompactionManager{thread: t, turnID: turnID, finishTurn: opts.TurnKind == sessiontree.TurnKindContextCompaction},
 		Options:      engineOptions,
 	})
 	if err != nil {
@@ -803,7 +811,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	eng.SetSink(projection)
-	result := eng.RunTurn(ctx, engine.RunInput{
+	runInput := engine.RunInput{
 		RunID:               runID,
 		ThreadID:            t.id,
 		TurnID:              turnID,
@@ -812,7 +820,21 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		Labels:              opts.Labels,
 		History:             history,
 		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
-	})
+	}
+	var result engine.Result
+	if opts.TurnKind == sessiontree.TurnKindContextCompaction {
+		compact := eng.CompactContext(ctx, runInput, engine.ManualCompactionRequest{RequestID: opts.LogicalRequestID, Source: "thread_runtime"})
+		result = engine.Result{Status: compact.Status, Err: compact.Err, Metrics: compact.Metrics, Messages: compact.Messages, ProviderState: compact.ProviderState, ProviderStateFresh: compact.ProviderState != nil}
+		result.FailureOrigin = compact.FailureOrigin
+		// Installation and completion are one canonical transaction. A late
+		// cancellation or observation failure cannot replace its result.
+		if compact.Status == engine.Completed && compact.Compaction.CompactionID != "" {
+			t.harness.emit(HarnessEvent{Type: EventTurnCompleted, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(engine.Completed)})
+			return t.turnResultFromEngine(turnID, runID, result, nil), nil
+		}
+	} else {
+		result = eng.RunTurn(ctx, runInput)
+	}
 	result = normalizeCancelledEngineResult(ctx, result)
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
@@ -1556,6 +1578,9 @@ func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string
 	if err != nil {
 		return err
 	}
+	if compact.Phase == string(observation.CompactionPhaseComplete) {
+		return nil
+	}
 	entry, err := t.harness.options.Repo.Append(ctx, pending, sessiontree.AppendOptions{Now: compact.ObservedAt})
 	if err != nil {
 		return err
@@ -1812,10 +1837,9 @@ type retryTargetResult struct {
 }
 
 type durableCompactionManager struct {
-	thread *Thread
-	turnID string
-	manual bool
-	result *compaction.Result
+	thread     *Thread
+	turnID     string
+	finishTurn bool
 }
 
 func (m *durableCompactionManager) Compact(ctx context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
@@ -1824,7 +1848,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	}
 	snap, err := m.thread.Journal(ctx)
 	if err != nil {
-		return compaction.Result{}, nil, err
+		return compaction.Result{}, nil, engine.WithFailureOrigin(err, engine.FailureOriginStorage)
 	}
 	previous := latestCompactionEntry(snap.Path)
 	if strings.TrimSpace(previous.CompactionID) != strings.TrimSpace(req.PreviousCompactionID) ||
@@ -1845,10 +1869,6 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 		}
 	}
 	compactionID := m.thread.harness.nextID("compaction")
-	if m.manual {
-		hash := sessiontree.StableHash(m.thread.id + "\x00" + req.OperationID + "\x00" + req.RequestID)
-		compactionID = "compaction-" + hash[:24]
-	}
 	prep, err := compaction.Prepare(ctx, compaction.Request{
 		CompactionID:              compactionID,
 		SupplementalAnchorEntryID: req.SupplementalAnchorEntryID,
@@ -1869,7 +1889,11 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 		Now:                       m.thread.harness.now(),
 	}, generator)
 	if err != nil {
-		return compaction.Result{}, nil, err
+		origin := engine.FailureOriginProvider
+		if errors.Is(err, compaction.ErrNoCutPoint) || errors.Is(err, compaction.ErrInvalidReference) {
+			origin = engine.FailureOriginContract
+		}
+		return compaction.Result{}, nil, engine.WithFailureOrigin(err, origin)
 	}
 	return prep.Result, prep.ActiveMessages, nil
 }
@@ -1880,21 +1904,49 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	}
 	result := req.Result
 	result.Phase = req.Phase
-	if m.manual {
-		copy := result
-		copy.KeptUserEntryIDs = append([]string(nil), result.KeptUserEntryIDs...)
-		copy.Details = cloneStringMap(result.Details)
-		m.result = &copy
-		return copy, session.CloneMessages(req.ActiveMessages), nil
-	}
-	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, result)
+	pending, err := sessiontree.CompactionEntry(m.thread.id, m.turnID, result)
 	if err != nil {
-		var committed sessiontree.AppendCommittedError
-		if !errors.As(err, &committed) {
-			return compaction.Result{}, nil, err
+		return compaction.Result{}, nil, err
+	}
+	pending.RunID = req.RunID
+	complete, _, err := subAgentContextCompactionFromEvent(req.Completion)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	complete.ObservedAt = m.thread.harness.now()
+	lifecycle, err := sessiontree.NewThreadContextCompactionEntry(complete)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	status := observation.ContextStatusFromRequest(observation.RequestObservation{
+		ThreadID: identity.ThreadID(m.thread.id), TurnID: identity.TurnID(m.turnID), RunID: identity.RunID(req.RunID), Step: req.Step,
+		RequestID: req.OperationID, Provider: req.ProviderName, Model: req.Model, ObservedAt: complete.ObservedAt,
+		RequestEstimate: configbridge.RequestEstimate(req.RequestEstimate), ProjectedPressure: configbridge.PublicContextPressure(req.ContextPressure),
+	})
+	estimate, err := sessiontree.NewThreadContextStatusEntry(status)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	install := sessiontree.ContextCompactionCommit{Summary: pending, Lifecycle: lifecycle, Estimate: estimate}
+	if m.finishTurn {
+		install.Finish = &sessiontree.FinishTurnRequest{
+			ThreadID: m.thread.id, TurnID: m.turnID, RunID: req.RunID, TerminalEntryID: terminalTurnEntryID(m.thread.id, m.turnID, req.RunID),
+			Status: sessiontree.TurnCompleted, Metadata: map[string]string{"run_id": req.RunID},
+			OutcomeFingerprint: sessiontree.StableHash(req.OperationID + "\x00" + result.CompactionID), ClearProviderState: true, Now: complete.ObservedAt,
 		}
 	}
-	m.thread.harness.emitEntryCommitted(entry, req.RunID)
+	repo, ok := m.thread.harness.options.Repo.(sessiontree.ContextCompactionRepo)
+	if !ok {
+		return compaction.Result{}, nil, errors.New("repo does not support atomic context compaction")
+	}
+	committed, err := repo.CommitContextCompaction(ctx, install)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	entry := committed.Summary
+	for _, fact := range committed.Facts {
+		m.thread.harness.emitEntryCommitted(fact, req.RunID)
+	}
 	result.CompactionID = entry.CompactionID
 	result.CompactionGeneration = entry.CompactionGeneration
 	result.CompactionWindowID = entry.CompactionWindowID
@@ -2108,6 +2160,15 @@ func (p *turnProjection) Emit(ev event.Event) {
 		if ok {
 			p.mu.Lock()
 			p.contextUsage.applyCompaction(compact)
+			if compact.Phase == string(observation.CompactionPhaseComplete) {
+				snapshot, readErr := p.thread.harness.ReadThreadContext(context.WithoutCancel(p.ctx), p.thread.id)
+				if readErr != nil {
+					p.err = readErr
+					p.mu.Unlock()
+					return
+				}
+				p.contextUsage.usage = event.CloneThreadContextUsage(snapshot.ContextUsage)
+			}
 			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
 			p.lastCompaction = ev
 			p.mu.Unlock()

@@ -44,6 +44,7 @@ type threadRuntimeData struct {
 }
 
 type beginThreadRunInput struct {
+	turnKind         TurnKind
 	turnID           identity.TurnID
 	runID            identity.RunID
 	logicalRequestID identity.LogicalRequestID
@@ -72,6 +73,7 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.cancelOwner = "run:" + input.runID.String()
 	runtime.state.executionDone = input.executionDone
 	runtime.state.view.Activity = ThreadActivityActive
+	runtime.state.view.TurnKind = input.turnKind
 	runtime.state.view.TurnID = input.turnID
 	runtime.state.view.RunID = input.runID
 	runtime.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}

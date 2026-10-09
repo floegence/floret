@@ -79,6 +79,16 @@ func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, tur
 	return result0, result1, err
 }
 
+func (repo *BackendRepo) CommitContextCompaction(ctx context.Context, req ContextCompactionCommit) (ContextCompactionCommitResult, error) {
+	var result0 ContextCompactionCommitResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.CommitContextCompaction(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
 	var result0 AgentTodoState
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
@@ -195,6 +205,17 @@ func (repo *BackendRepo) FailUnknownEffectTurn(ctx context.Context, req FailUnkn
 		return callErr
 	})
 	return result0, err
+}
+
+func (repo *BackendRepo) FindTurnRequest(ctx context.Context, threadID, requestKey string) (Entry, bool, error) {
+	var result0 Entry
+	var result1 bool
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, result1, callErr = memory.FindTurnRequest(ctx, threadID, requestKey)
+		return callErr
+	})
+	return result0, result1, err
 }
 
 func (repo *BackendRepo) FinishEffectDispatch(ctx context.Context, req FinishEffectDispatchRequest) (FinishEffectDispatchResult, error) {

@@ -400,6 +400,7 @@ func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.Thr
 // turnExecutionRequest describes one provider execution after ThreadID is bound by a
 // turnRunnerHandle.
 type turnExecutionRequest struct {
+	TurnKind                    TurnKind
 	LogicalRequestID            identity.LogicalRequestID
 	RunID                       identity.RunID
 	TurnID                      identity.TurnID
@@ -429,6 +430,7 @@ type resumeInputRequest struct {
 }
 
 type acceptedTurnExecutionRequest struct {
+	TurnKind                    TurnKind
 	Accepted                    acceptedTurn
 	LogicalRequestID            identity.LogicalRequestID
 	RunID                       identity.RunID
@@ -458,6 +460,7 @@ func (runner *turnRunnerHandle) ExecuteAccepted(ctx context.Context, request acc
 		return TurnResult{}, errors.New("turn runner is required")
 	}
 	return runner.inner.ExecuteAcceptedTurn(ctx, request.Accepted, runTurnRequest{
+		TurnKind:         request.TurnKind,
 		LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, ThreadID: runner.threadID, TurnID: request.TurnID,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Signals: request.Signals,

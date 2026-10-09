@@ -529,6 +529,7 @@ type JournalRepo interface {
 	Append(context.Context, Entry, AppendOptions) (Entry, error)
 	Entry(context.Context, string, string) (Entry, error)
 	Entries(context.Context, string) ([]Entry, error)
+	FindTurnRequest(context.Context, string, string) (Entry, bool, error)
 	Path(context.Context, string, string) ([]Entry, error)
 	PathPage(context.Context, string, string, string, int) (PathPage, error)
 }
@@ -1402,6 +1403,13 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 	}
 	if storedRunID != runID {
 		return ErrRequestConflict
+	}
+	kind := entries[0].Metadata[TurnKindMetadataKey]
+	if kind != "" && kind != TurnKindContextCompaction {
+		return ErrAuthorityCorrupt
+	}
+	if kind == TurnKindContextCompaction && (userEntries != 0 || retrySource != nil) {
+		return ErrAuthorityCorrupt
 	}
 	if retrySource != nil && userEntries != 0 {
 		return ErrAuthorityCorrupt

@@ -24,6 +24,25 @@ include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
 request key. Replaying the same key and fingerprint returns the committed
 result; changing the input returns `runtime.ErrRequestConflict`.
 
+The optional `ThreadContextCompactor.CompactContext` takes only `ThreadID` and
+`RequestKey` and admits independent compaction on an idle thread with no queue
+or unresolved interaction. `TurnKindContextCompaction` reaches the AgentFactory,
+current view, and summary; zero kind keeps ordinary execution semantics. The
+Factory resolves configuration without inventing user input. Admission returns
+before provider work. Manual and automatic compaction share summary generation,
+validation, and installation; manual completion is atomic with installation,
+while automatic compaction continues the current task.
+
+Failure, cancellation, and noop preserve effective context and continuation.
+Successful installation invalidates continuation and confirmed usage and installs
+a current estimate. Same-key replay returns the latest view. Failed compactions
+retry through a new compact key; ordinary `Retry` returns `ErrNoRetryTarget`.
+`ThreadContextCompaction.AfterItemID` is derived from Floret's canonical item
+projection at operation start, including after pagination, fork, and restart.
+Hosts use that anchor and existing live updates without another lifecycle store.
+See [domain schema v13](storage.md#domain-migration) and the
+[README behavior contract](../../README.md#independent-context-compaction).
+
 The optional `ThreadSendReader.LookupSend` reads the original admitted
 `UserInput` by thread and request key. Queue edits and promotion do not change
 that original transport identity; a removed queue item also retains its send

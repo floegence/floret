@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.26.0 - 2026-10-09
+
+- Add optional `ThreadContextCompactor.CompactContext` and typed context-only turns. Admit idle-thread compaction without a user command message, ordinary answer, or tool dispatch; return after admission and resolve the configured Agent in the background.
+- Share manual and automatic summary generation, validation, and atomic installation. Commit manual completion with installation; preserve original context on failure, cancellation, and noop, invalidate continuation on success, and expose the canonical `AfterItemID` divider anchor.
+- Append the byte-preserving automatic domain v12 -> v13 migration. Preserve historical slash-command conversations and all earlier migration edges. Reject ordinary retries of context-only turns; request-key replay returns the latest view without duplicate execution.
+- Cover provider failures, bounded truncation retries, preparation cancellation, install/stop races, durable write rollback, restart replay, and published-module adoption.
+
 ## v7.25.2 - 2026-10-05
 
 - Reuse the original canonical cancellation request when shutdown, immediate stop, or execution-context settlement follows graceful Stop. Keep one cancellation fact per execution and preserve its source, mode, and timestamp. Centralize lookup under the thread actor lock and propagate journal read errors without fabricating replacement requests. No public API or schema change.

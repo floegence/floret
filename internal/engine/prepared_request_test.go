@@ -211,7 +211,7 @@ func TestPreparedProviderRequestManualCompactContextDiscardsUnstreamedHandle(t *
 		wantStatus engine.Status
 	}{
 		{name: "success", wantStatus: engine.Completed},
-		{name: "close failure preserves committed compaction", closeErr: errors.New("close failed"), wantStatus: engine.Failed},
+		{name: "close failure preserves committed compaction", closeErr: errors.New("close failed"), wantStatus: engine.Completed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -244,8 +244,8 @@ func TestPreparedProviderRequestManualCompactContextDiscardsUnstreamedHandle(t *
 			if tt.closeErr == nil && got.Err != nil {
 				t.Fatalf("manual compact error = %v", got.Err)
 			}
-			if tt.closeErr != nil && !errors.Is(got.Err, tt.closeErr) {
-				t.Fatalf("manual compact error = %v, want %v", got.Err, tt.closeErr)
+			if got.Err != nil {
+				t.Fatalf("committed compaction was replaced by cleanup error: %v", got.Err)
 			}
 			if countMessagesByKind(got.Messages, session.MessageKindCompactionSummary) != 1 {
 				t.Fatalf("manual compact messages = %#v", got.Messages)

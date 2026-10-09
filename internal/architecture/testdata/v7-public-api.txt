@@ -405,6 +405,7 @@ type AgentFactoryFunc func(context.Context, github.com/floegence/floret/v7/runti
 method AgentFactoryFunc.Agent func(ctx context.Context, request github.com/floegence/floret/v7/runtime.AgentRequest) (*github.com/floegence/floret/v7/runtime.Agent, error)
 type AgentOption struct
 type AgentRequest struct
+field AgentRequest.TurnKind github.com/floegence/floret/v7/runtime.TurnKind
 field AgentRequest.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field AgentRequest.TurnID github.com/floegence/floret/v7/identity.TurnID
 field AgentRequest.RequestKey string
@@ -457,6 +458,9 @@ field CommittedEffectError.EffectAttemptID string
 field CommittedEffectError.Err error
 method *CommittedEffectError.Error func() string
 method *CommittedEffectError.Unwrap func() error
+type CompactContextInput struct
+field CompactContextInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field CompactContextInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type ContractError struct
 field ContractError.Contract string
 field ContractError.Err error
@@ -870,6 +874,7 @@ field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID t
 field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
 type ThreadContextCompaction struct
+field ThreadContextCompaction.AfterItemID string tag="json:\"after_item_id,omitempty\""
 field ThreadContextCompaction.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadContextCompaction.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field ThreadContextCompaction.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
@@ -885,6 +890,7 @@ field ThreadContextCompaction.TokensBefore int64 tag="json:\"tokens_before,omite
 field ThreadContextCompaction.TokensAfterEstimate int64 tag="json:\"tokens_after_estimate,omitempty\""
 field ThreadContextCompaction.Error string tag="json:\"error,omitempty\""
 field ThreadContextCompaction.ObservedAt time.Time tag="json:\"observed_at,omitempty\""
+type ThreadContextCompactor interface interface{CompactContext(context.Context, github.com/floegence/floret/v7/runtime.CompactContextInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 type ThreadContextModel struct
 field ThreadContextModel.Provider string tag="json:\"provider,omitempty\""
 field ThreadContextModel.Model string tag="json:\"model,omitempty\""
@@ -964,6 +970,7 @@ const ThreadStatusInterrupted github.com/floegence/floret/v7/runtime.ThreadStatu
 const ThreadStatusRunning github.com/floegence/floret/v7/runtime.ThreadStatus = "running"
 const ThreadStatusWaiting github.com/floegence/floret/v7/runtime.ThreadStatus = "waiting"
 type ThreadSummary struct
+field ThreadSummary.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadSummary.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadSummary.ID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"id\""
 field ThreadSummary.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id,omitempty\""
@@ -1023,6 +1030,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadView.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadView.RestoredInputs []github.com/floegence/floret/v7/runtime.RestoredInput tag="json:\"restored_inputs,omitempty\""
 field ThreadView.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -1067,6 +1075,8 @@ field TurnInput.Attachments []github.com/floegence/floret/v7/runtime.MessageAtta
 field TurnInput.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
 field TurnInput.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 method TurnInput.Validate func() error
+type TurnKind string
+const TurnKindContextCompaction github.com/floegence/floret/v7/runtime.TurnKind = "context_compaction"
 type TurnLimits struct
 field TurnLimits.MaxInputTokens int64
 field TurnLimits.MaxTotalTokens int64

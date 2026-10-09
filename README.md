@@ -324,6 +324,41 @@ settles.
 cursor. Production hosts leave `runtime.Options.IDSource` nil; deterministic
 identity injection belongs to `florettest.NewIDSource`.
 
+## Independent Context Compaction
+
+The service returned by `Host.ThreadService` implements the optional
+`ThreadContextCompactor`. Call `CompactContext` with only `ThreadID` and
+`RequestKey`; keep slash-command text, drafts, attachments, and transient host
+context outside this operation. It accepts an idle thread with no queued input
+or unresolved interaction and returns after durable admission, before resolving
+its Agent or calling the provider. Busy threads return `ErrThreadBusy`.
+
+`TurnKindContextCompaction` identifies this control turn in `AgentRequest`,
+`ThreadView`, and `ThreadSummary`; the zero kind remains ordinary execution.
+Factories resolve the thread's configured Agent for this kind without requiring
+a user message. Manual compaction has real Turn and Run identities, uses the
+same summary generation and validation as automatic compaction, and finishes
+without an ordinary assistant answer or tool dispatch. Automatic compaction
+continues the admitted task after installing the summary.
+
+Manual compaction need not reach the automatic pressure threshold. Context below
+the configured target (50,000 tokens by default), a missing safe cut point, or
+insufficient savings produces an explicit noop. Failed, cancelled, and noop
+operations preserve the effective context and its provider continuation.
+Installation atomically commits the summary, context lifecycle, new estimate,
+and manual terminal; a committed installation wins later cancellation.
+Success clears old continuation and confirmed usage. The next ordinary request
+supplies a new native measurement.
+
+Replaying a request key returns the latest canonical view without executing or
+installing again; reusing the key for another operation kind conflicts. Retry a
+failed or cancelled compaction with a new compact request key. Ordinary `Retry`
+returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
+result per operation and its canonical `AfterItemID` presentation anchor; an
+empty history has no artificial anchor. Stop, shutdown, restart, and fork use
+the existing thread lifecycle. Domain schema v13 adds the automatic v12 -> v13
+edge without reclassifying historical slash-command conversations.
+
 ## Consistent Reads
 
 `ThreadService.View` returns one complete replaceable current view.

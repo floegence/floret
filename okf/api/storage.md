@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 lineage. Version 12 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 lineage. Version 13 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -46,6 +46,12 @@ The v11 -> v12 edge preserves historical bytes and admits validated input reques
 only on completed tool-result entries with exact execution identity. Older schema
 validators reject this new contract. Input interactions and responses reuse the
 canonical journal; no host-owned lifecycle table is introduced.
+
+The v12 -> v13 edge preserves existing canonical bytes and admits typed
+context-only turns without a user message. Historical `/compact` conversations
+remain ordinary turns. A validated compaction installs its summary, lifecycle,
+estimate, and independent-turn completion in one domain transaction; the same
+installer serves automatic compaction while its ordinary turn remains active.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,

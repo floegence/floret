@@ -24,9 +24,29 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
-// AgentRequest identifies one typed execution whose provider and tool surface
-// must be resolved outside the thread lock. Run identities remain internal.
+// TurnKind distinguishes a conversation turn from a context-only operation.
+// The zero value retains the ordinary conversation contract.
+type TurnKind string
+
+const TurnKindContextCompaction TurnKind = "context_compaction"
+
+// CompactContextInput admits one independent, idle-only context operation.
+type CompactContextInput struct {
+	ThreadID   identity.ThreadID `json:"thread_id"`
+	RequestKey RequestKey        `json:"request_key"`
+}
+
+// ThreadContextCompactor is an optional capability of the typed thread service.
+// Acceptance returns immediately; execution is observed through the workspace
+// subscription and canonical context snapshot.
+type ThreadContextCompactor interface {
+	CompactContext(context.Context, CompactContextInput) (ThreadView, error)
+}
+
+// AgentRequest identifies an admitted execution resolved outside the thread lock.
+// TurnKind tells the factory whether this execution has canonical user input.
 type AgentRequest struct {
+	TurnKind           TurnKind
 	ThreadID           identity.ThreadID
 	TurnID             identity.TurnID
 	RequestKey         string
@@ -181,6 +201,7 @@ type HistoryPage struct {
 }
 
 type ThreadSummary struct {
+	TurnKind        TurnKind            `json:"turn_kind,omitempty"`
 	Cancellation    *ThreadCancellation `json:"cancellation,omitempty"`
 	ID              identity.ThreadID   `json:"id"`
 	ParentThreadID  identity.ThreadID   `json:"parent_thread_id,omitempty"`
@@ -386,6 +407,7 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
+	TurnKind       TurnKind            `json:"turn_kind,omitempty"`
 	Cancellation   *ThreadCancellation `json:"cancellation,omitempty"`
 	RestoredInputs []RestoredInput     `json:"restored_inputs,omitempty"`
 	ThreadID       identity.ThreadID   `json:"thread_id"`
@@ -444,6 +466,7 @@ type ThreadContextPolicy struct {
 }
 
 type ThreadContextCompaction struct {
+	AfterItemID         string            `json:"after_item_id,omitempty"`
 	RunID               identity.RunID    `json:"run_id,omitempty"`
 	ThreadID            identity.ThreadID `json:"thread_id,omitempty"`
 	TurnID              identity.TurnID   `json:"turn_id,omitempty"`
@@ -989,6 +1012,7 @@ func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiont
 		return ThreadSummary{}, err
 	}
 	summary := ThreadSummary{
+		TurnKind:     turnKindFromEntries(path, turnID),
 		Cancellation: threadCancellationForTurn(path, turnID),
 		ID:           identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
@@ -1139,6 +1163,7 @@ func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
 func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {
 	failure := cloneThreadTurnFailure(view.Failure)
 	summary := ThreadSummary{
+		TurnKind:     view.TurnKind,
 		Cancellation: cloneThreadCancellation(view.Cancellation),
 		ID:           identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
 		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
@@ -1243,11 +1268,19 @@ func (service *threadRuntimeService) Context(ctx context.Context, threadID ident
 	if err != nil {
 		return ThreadContextSnapshot{}, runtimeHostError(err)
 	}
+	path, err := service.host.store.repo.Path(ctx, threadID.String(), "")
+	if err != nil {
+		return ThreadContextSnapshot{}, runtimeHostError(err)
+	}
+	anchors := make(map[string]string)
+	if _, _, err := threadRuntimeItemsWithAnchors(path, anchors); err != nil {
+		return ThreadContextSnapshot{}, err
+	}
 	compactions := make([]ThreadContextCompaction, 0, len(contextSnapshot.Compactions))
 	for _, compaction := range contextSnapshot.Compactions {
 		compactions = append(compactions, ThreadContextCompaction{
 			RunID: identity.RunID(compaction.RunID), ThreadID: identity.ThreadID(compaction.ThreadID), TurnID: identity.TurnID(compaction.TurnID),
-			Step: compaction.Step, OperationID: compaction.OperationID, RequestID: compaction.RequestID,
+			Step: compaction.Step, OperationID: compaction.OperationID, RequestID: compaction.RequestID, AfterItemID: anchors[compaction.OperationID],
 			Phase: compaction.Phase, Status: compaction.Status, Trigger: compaction.Trigger,
 			Reason: compaction.Reason, Source: compaction.Source, TokensBefore: compaction.TokensBefore,
 			TokensAfterEstimate: compaction.TokensAfterEstimate, Error: compaction.Error, ObservedAt: compaction.ObservedAt,
@@ -1695,6 +1728,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		var runID identity.RunID
 		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
 		canonical.RunID = runID
+		canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
 		canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
@@ -1740,6 +1774,9 @@ func hydrateThreadRequestKeys(ctx context.Context, repo sessiontree.JournalRepo,
 			continue
 		}
 		fingerprint := strings.TrimSpace(entry.RequestFingerprint)
+		if entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindContextCompaction {
+			fingerprint, _ = stableFingerprint(TurnKindContextCompaction)
+		}
 		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
 			if sourceTurnID := strings.TrimSpace(entry.Metadata[sessiontree.RetrySourceTurnIDMetadataKey]); sourceTurnID != "" {
 				fingerprint, _ = stableFingerprint(identity.TurnID(sourceTurnID))
@@ -1870,6 +1907,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	if err != nil || !found || canonical.Terminal != nil {
 		return
 	}
+	kind := TurnKind(canonical.TurnStarted.Metadata[sessiontree.TurnKindMetadataKey])
 	input := turnInputFromSessionMessage(canonical.UserMessage.Message)
 	requestKey := strings.TrimSpace(canonical.TurnStarted.RequestKey)
 	var retrySourceTurnID identity.TurnID
@@ -1893,7 +1931,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 		canonicalInput = turnInputFromSessionMessage(entry.Message)
 	}
 	agent, err := service.factory.Agent(ctx, AgentRequest{
-		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: canonicalInput,
+		TurnKind: kind, ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: canonicalInput,
 		RetrySource: retrySourceTurnID,
 	})
 	if err != nil || agent == nil {
@@ -1910,7 +1948,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	if err := actor.apply(ctx, func() error {
 		if _, beginErr := actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
-			cancel: cancel, executionDone: done,
+			cancel: cancel, executionDone: done, turnKind: kind,
 		}); beginErr != nil {
 			return beginErr
 		}
@@ -1925,7 +1963,7 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	service.publish(current)
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
-		RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
+		TurnKind: kind, RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
 	}
 	applyAgentExecutionPolicy(&request, agent)
 	accepted := acceptedTurn{ThreadID: threadID, TurnID: turnID, RunID: runID, UserEntryID: canonical.UserMessage.ID, BaseLeafID: canonical.BaseLeafID, Replayed: true}
@@ -1948,11 +1986,26 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 	return input
 }
 
-func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string) (ThreadView, error) {
-	input, err := normalizeTurnInput(input)
+func (service *threadRuntimeService) CompactContext(ctx context.Context, in CompactContextInput) (ThreadView, error) {
+	if err := service.host.requireExecution(); err != nil {
+		return ThreadView{}, err
+	}
+	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
 	}
+	return service.admitThreadExecution(ctx, in.ThreadID, UserInput{}, nil, key, TurnKindContextCompaction)
+}
+
+func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string) (ThreadView, error) {
+	normalized, err := normalizeTurnInput(input)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	return service.admitThreadExecution(ctx, threadID, normalized, supplemental, requestKey, "")
+}
+
+func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind) (ThreadView, error) {
 	requestKey = strings.TrimSpace(requestKey)
 	if requestKey == "" {
 		return ThreadView{}, errors.New("send request key is required")
@@ -1961,6 +2014,9 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		return ThreadView{}, err
 	}
 	fingerprint, err := stableFingerprint(input)
+	if kind == TurnKindContextCompaction {
+		fingerprint, err = stableFingerprint(kind)
+	}
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1968,6 +2024,17 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	canonical, err := service.View(ctx, threadID)
 	if err != nil {
 		return ThreadView{}, err
+	}
+	if entry, found, readErr := service.host.store.repo.FindTurnRequest(ctx, threadID.String(), requestKey); readErr != nil {
+		return ThreadView{}, readErr
+	} else if found {
+		storedKind := TurnKind(entry.Metadata[sessiontree.TurnKindMetadataKey])
+		if storedKind != kind {
+			return ThreadView{}, &RequestConflictError{Operation: "context_compaction", RequestID: requestKey, Err: ErrRequestConflict}
+		}
+		if kind == TurnKindContextCompaction {
+			return canonical, nil
+		}
 	}
 	if entry, found, readErr := service.lookupSendEntry(ctx, threadID, requestKey); readErr != nil {
 		return ThreadView{}, readErr
@@ -1996,6 +2063,9 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		return nil
 	}); err != nil {
 		return ThreadView{}, err
+	}
+	if active && kind == TurnKindContextCompaction {
+		return ThreadView{}, ErrThreadBusy
 	}
 	if active {
 		queued := QueuedInput{ID: "queue:" + requestKey, RequestKey: requestKey, Input: input, SupplementalContext: cloneTurnSupplementalContext(supplemental), CreatedAt: time.Now().UTC()}
@@ -2045,7 +2115,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
 		SupplementalContext: cloneTurnSupplementalContext(supplemental),
-		InputFingerprint:    fingerprint,
+		InputFingerprint:    fingerprint, TurnKind: kind,
 	}
 	var result ThreadView
 	var accepted acceptedTurn
@@ -2063,6 +2133,16 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		if actor.state.view.Activity == ThreadActivityActive {
 			return ErrThreadBusy
 		}
+		if kind == TurnKindContextCompaction {
+			if len(actor.state.view.Queue) != 0 {
+				return ErrThreadBusy
+			}
+			for _, interaction := range actor.state.view.Interactions {
+				if !interaction.Resolved {
+					return ErrThreadBusy
+				}
+			}
+		}
 		var acceptErr error
 		accepted, acceptErr = service.acceptCanonicalTurn(ctx, threadID, request)
 		if acceptErr != nil {
@@ -2071,12 +2151,14 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 		_ = canonical
 		previousExecution, acceptErr = actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
-			cancel: cancel, executionDone: executionDone, clearOutcome: true,
+			cancel: cancel, executionDone: executionDone, clearOutcome: true, turnKind: kind,
 		})
 		if acceptErr != nil {
 			return acceptErr
 		}
-		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
+		if kind == "" {
+			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
+		}
 		result = cloneThreadRuntimeView(actor.state.view)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -2094,7 +2176,7 @@ func (service *threadRuntimeService) send(ctx context.Context, threadID identity
 	}
 	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
-		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input,
+		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input, TurnKind: kind,
 	})
 	go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previousExecution, executionDone)
 	return result, nil
@@ -2155,10 +2237,11 @@ func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, th
 		References:  sessionMessageReferences(request.Input.References),
 		Context:     sessionMessageContext(request.Input.Context),
 	}
-	if request.RetrySourceEntryID != "" {
+	if request.RetrySourceEntryID != "" || request.TurnKind == TurnKindContextCompaction {
 		canonicalInput = session.Message{}
 	}
 	req := sessiontree.AcceptTurnRequest{
+		TurnKind: string(request.TurnKind),
 		ThreadID: threadID.String(), TurnID: request.TurnID.String(), RunID: request.RunID.String(),
 		LogicalRequestID:            request.LogicalRequestID.String(),
 		Input:                       canonicalInput,
@@ -2296,7 +2379,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 		}
 	}
 	completed, err := runner.ExecuteAccepted(ctx, acceptedTurnExecutionRequest{
-		Accepted: accepted, LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, TurnID: request.TurnID,
+		Accepted: accepted, LogicalRequestID: request.LogicalRequestID, RunID: request.RunID, TurnID: request.TurnID, TurnKind: request.TurnKind,
 		Input: request.Input, SupplementalContext: request.SupplementalContext,
 		Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
@@ -2364,7 +2447,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			} else {
 				actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
 			}
-			if outcome == TurnOutcomeCompleted && (refreshErr != nil || !hasTerminalPresentation(actor.state.view.Items, turnID)) {
+			if outcome == TurnOutcomeCompleted && (refreshErr != nil || actor.state.view.TurnKind != TurnKindContextCompaction && !hasTerminalPresentation(actor.state.view.Items, turnID)) {
 				failed := TurnOutcomeFailed
 				actor.state.view.LastOutcome = &failed
 				message := "The turn completed without a visible response."
@@ -2788,6 +2871,7 @@ func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context
 		return ThreadView{}, fmt.Errorf("canonical refresh hydrate items: %w", err)
 	}
 	canonical.TurnID, canonical.RunID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
+	canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
 	canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
 	return canonical, nil
 }
@@ -3558,6 +3642,9 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 		return "", UserInput{}, runtimeHostError(err)
 	}
 	for _, entry := range entries {
+		if entry.TurnID == sourceTurnID.String() && entry.Metadata[sessiontree.TurnKindMetadataKey] == sessiontree.TurnKindContextCompaction {
+			return "", UserInput{}, ErrNoRetryTarget
+		}
 		if entry.TurnID != sourceTurnID.String() {
 			continue
 		}
@@ -4061,6 +4148,10 @@ func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID 
 }
 
 func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, []ThreadInteraction, error) {
+	return threadRuntimeItemsWithAnchors(entries, nil)
+}
+
+func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[string]string) ([]ThreadItem, []ThreadInteraction, error) {
 	redundant, err := sessiontree.RedundantControlResultIDs(entries)
 	if err != nil {
 		return nil, nil, runtimeHostError(err)
@@ -4090,6 +4181,19 @@ func threadRuntimeItemsFromEntries(entries []sessiontree.Entry) ([]ThreadItem, [
 		lastReasoning[executionKey] = text
 	}
 	for _, entry := range entries {
+		if anchors != nil && sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind {
+			compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, found := anchors[compact.OperationID]; !found {
+				anchor := ""
+				if len(items) > 0 {
+					anchor = items[len(items)-1].ID
+				}
+				anchors[compact.OperationID] = anchor
+			}
+		}
 		if redundant[entry.ID] {
 			continue
 		}
@@ -4525,4 +4629,13 @@ func toolInputInteraction(entry sessiontree.Entry, ready map[string]bool) (*Thre
 		input.Questions = append(input.Questions, InputQuestion{ID: q.ID, Prompt: q.Prompt, Kind: q.Kind, Options: append([]string(nil), q.Options...), WriteLabel: q.WriteLabel})
 	}
 	return &ThreadInteraction{toolRequestedInput: true, ID: sessiontree.ToolInputInteractionID(entry.ID), TurnID: turnID, RunID: runID, Kind: ThreadInteractionInput, ToolCallID: entry.Message.ToolCallID, Input: input}, nil
+}
+
+func turnKindFromEntries(entries []sessiontree.Entry, turnID identity.TurnID) TurnKind {
+	for _, entry := range entries {
+		if entry.TurnID == turnID.String() && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+			return TurnKind(entry.Metadata[sessiontree.TurnKindMetadataKey])
+		}
+	}
+	return ""
 }
