@@ -505,3 +505,65 @@ func TestInitialProviderSurfaceContract(t *testing.T) {
 		t.Fatal("checkpoint surface lost")
 	}
 }
+
+func TestPublishedIndependentContextCompaction(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "adoption", Model: "compact", StateCompatibilityKey: "adoption:compact"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported})
+	agent, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "compact", Name: "Compact"}, SystemPrompt: "Follow the task.", Context: config.ContextPolicy{ContextWindowTokens: 256000}}, gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(_ context.Context, request runtime.AgentRequest) (*runtime.Agent, error) {
+		if request.TurnKind != runtime.TurnKindContextCompaction || request.Input.Text != "" {
+			t.Error("invalid context-only factory request")
+		}
+		return agent, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactor, ok := service.(runtime.ThreadContextCompactor)
+	if !ok {
+		t.Fatal("missing optional compaction contract")
+	}
+	admitted, err := compactor.CompactContext(t.Context(), runtime.CompactContextInput{ThreadID: thread.ThreadID, RequestKey: "compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		view, err := service.View(t.Context(), thread.ThreadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Activity == runtime.ThreadActivityIdle && view.LastOutcome != nil {
+			if view.TurnKind != runtime.TurnKindContextCompaction || *view.LastOutcome != runtime.TurnOutcomeCompleted || len(view.Items) != 0 || len(gateway.Requests()) != 0 {
+				t.Fatalf("independent compaction=%+v", view)
+			}
+			snapshot, err := service.(runtime.ThreadContextReader).Context(t.Context(), thread.ThreadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Compactions) != 1 || snapshot.Compactions[0].Status != "noop" || snapshot.Compactions[0].AfterItemID != "" {
+				t.Fatalf("snapshot=%+v", snapshot)
+			}
+			replay, err := compactor.CompactContext(t.Context(), runtime.CompactContextInput{ThreadID: thread.ThreadID, RequestKey: "compact"})
+			if err != nil || replay.TurnID != admitted.TurnID {
+				t.Fatalf("replay=%+v err=%v", replay, err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("compaction did not complete")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

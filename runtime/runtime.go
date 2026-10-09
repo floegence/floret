@@ -561,6 +561,7 @@ func (r MessageReference) Validate() error {
 }
 
 type runTurnRequest struct {
+	TurnKind                    TurnKind
 	LogicalRequestID            identity.LogicalRequestID
 	RunID                       identity.RunID
 	ThreadID                    identity.ThreadID
@@ -1517,6 +1518,7 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		ThreadID: string(accepted.ThreadID), TurnID: string(accepted.TurnID), RunID: string(accepted.RunID),
 		UserEntryID: accepted.UserEntryID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed,
 	}, input.Text, agentharness.RunOptions{
+		TurnKind:         string(req.TurnKind),
 		LogicalRequestID: string(req.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
@@ -1562,9 +1564,20 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 	if strings.TrimSpace(string(req.TurnID)) == "" {
 		return validatedRunTurnRequest{}, errors.New("turn id is required")
 	}
-	input, err := normalizeTurnInput(req.Input)
-	if err != nil {
-		return validatedRunTurnRequest{}, err
+	input := req.Input
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction {
+		return validatedRunTurnRequest{}, errors.New("unknown turn kind")
+	}
+	var err error
+	if req.TurnKind == TurnKindContextCompaction {
+		if input.Text != "" || len(input.Attachments) != 0 || len(input.References) != 0 || len(input.Context) != 0 || len(req.SupplementalContext) != 0 {
+			return validatedRunTurnRequest{}, errors.New("context compaction cannot contain user input")
+		}
+	} else {
+		input, err = normalizeTurnInput(input)
+		if err != nil {
+			return validatedRunTurnRequest{}, err
+		}
 	}
 	supplementalContext, err := normalizeTurnSupplementalContext(req.SupplementalContext)
 	if err != nil {

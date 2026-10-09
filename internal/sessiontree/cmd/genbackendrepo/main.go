@@ -16,7 +16,7 @@ import (
 
 var readMethods = map[string]bool{
 	"ArtifactClosure":      true,
-	"CanonicalTurnEntries": true, "EffectAttempt": true, "Entries": true, "Entry": true,
+	"CanonicalTurnEntries": true, "EffectAttempt": true, "Entries": true, "FindTurnRequest": true, "Entry": true,
 	"ListCanonicalTurns": true, "ListSubAgentInputs": true, "ListThreads": true,
 	"Path": true, "PathPage": true, "PendingAutomaticThreadTitles": true,
 	"ProviderState": true, "ReadAgentTodoState": true,

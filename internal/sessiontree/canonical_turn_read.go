@@ -163,10 +163,11 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 		return CanonicalTurn{}, err
 	}
 	userCount := canonicalTurnUserEntryCount(pathEntries)
-	if retrySource == nil && userCount == 0 {
+	contextOnly := started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction
+	if retrySource == nil && userCount == 0 && !contextOnly {
 		return CanonicalTurn{}, ErrCanonicalTurnNotFound
 	}
-	if retrySource == nil && userCount != 1 || retrySource != nil && userCount != 0 {
+	if !contextOnly && retrySource == nil && userCount != 1 || retrySource != nil && userCount != 0 || contextOnly && (retrySource != nil || userCount != 0) {
 		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	turn := CanonicalTurn{

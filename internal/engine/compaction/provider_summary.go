@@ -66,6 +66,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 		details.RequestBudgetTokens = retry.RequestBudgetTokens
 		if retry.Truncated {
 			details.ProviderTruncated = true
+			return "", details, errors.New("provider truncated both compaction summary attempts")
 		}
 		if retry.Summary != "" {
 			return retry.Summary, details, nil
@@ -128,6 +129,11 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 			return providerSummaryAttempt{Summary: summary, Truncated: ev.Type == provider.Truncated, PromptInputTokens: promptInputTokens, RequestBudgetTokens: promptInputTokens + outputCap}, nil
 		case provider.Empty:
 			return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
+		case provider.Error:
+			if ev.Err != nil {
+				return providerSummaryAttempt{}, ev.Err
+			}
+			return providerSummaryAttempt{}, errors.New("provider failed compaction summary")
 		}
 	}
 }

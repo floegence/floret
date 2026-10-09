@@ -15,6 +15,8 @@ import (
 var ErrProviderStateNotFound = errors.New("provider state not found")
 
 const (
+	TurnKindMetadataKey           = "turn_kind"
+	TurnKindContextCompaction     = "context_compaction"
 	LogicalRequestIDMetadataKey   = "logical_request_id"
 	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
 	RetrySourceEntryIDMetadataKey = "retry_source_entry_id"
@@ -45,6 +47,7 @@ type ProviderStateStore interface {
 }
 
 type AcceptTurnRequest struct {
+	TurnKind                    string
 	ThreadID                    string
 	TurnID                      string
 	RunID                       string
@@ -165,6 +168,15 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 	if err := ValidateAcceptTurnRequestEnvelope(req); err != nil {
 		return err
 	}
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction {
+		return errors.New("unknown turn kind")
+	}
+	if req.TurnKind == TurnKindContextCompaction {
+		if req.RetrySourceTurnID != "" || req.RetrySourceEntryID != "" || req.PromotedQueueID != "" || req.Input.Role != "" || req.Input.Content != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 || len(req.Input.Context) != 0 {
+			return errors.New("context compaction cannot contain user input or a retry source")
+		}
+		return nil
+	}
 	retryTurnID := strings.TrimSpace(req.RetrySourceTurnID)
 	retryEntryID := strings.TrimSpace(req.RetrySourceEntryID)
 	if (retryTurnID == "") != (retryEntryID == "") {
@@ -209,6 +221,7 @@ func ValidateAcceptTurnRequestEnvelope(req AcceptTurnRequest) error {
 
 func TurnAcceptanceRequestFingerprint(req AcceptTurnRequest) (string, error) {
 	payload, err := json.Marshal(struct {
+		TurnKind                    string          `json:"turn_kind,omitempty"`
 		ThreadID                    string          `json:"thread_id"`
 		TurnID                      string          `json:"turn_id"`
 		RunID                       string          `json:"run_id"`
@@ -221,7 +234,7 @@ func TurnAcceptanceRequestFingerprint(req AcceptTurnRequest) (string, error) {
 		PromotionRequestFingerprint string          `json:"promotion_request_fingerprint,omitempty"`
 		InputRequestFingerprint     string          `json:"input_request_fingerprint,omitempty"`
 	}{
-		ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
+		TurnKind: req.TurnKind, ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
 		LogicalRequestID: strings.TrimSpace(req.LogicalRequestID), Input: session.CloneMessage(req.Input),
 		RetrySourceTurnID: strings.TrimSpace(req.RetrySourceTurnID), RetrySourceEntryID: strings.TrimSpace(req.RetrySourceEntryID),
 		PromotedQueueID: strings.TrimSpace(req.PromotedQueueID), PromotionRequestKey: strings.TrimSpace(req.PromotionRequestKey),
