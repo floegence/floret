@@ -2,6 +2,7 @@
 
 ## 2026-10-10
 
+- Align the [quality gate](workflows/quality-gate.md) to Go 1.27.2 across module, CI, local checks, and downstream adoption. Resolve the previous standard-library vulnerability findings and require named task worktrees until cleanup completes.
 - Document complete compaction input, one bounded ordered summary loop, lossless fragments, and validation before atomic installation.
 
 ## 2026-10-09
