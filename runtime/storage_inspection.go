@@ -43,12 +43,16 @@ func InspectSQLite(ctx context.Context, path string) (result StorageInspection, 
 	}
 	defer func() { err = errors.Join(err, backend.Close()) }()
 	err = backend.View(ctx, func(read spi.ReadTx) error {
+		physicalMigration, err := storagebridge.PhysicalMigrationRequired(read)
+		if err != nil {
+			return err
+		}
 		tx := &inspectionOverlay{ReadTx: read, writes: make(map[string]map[string]*[]byte)}
 		logical, err := inspectLogicalSchemaTransaction(tx)
 		if err != nil {
 			return err
 		}
-		kernel, err := internalstorage.NewBackendKernelInTransaction(ctx, backend, tx, time.Now, nil)
+		kernel, err := internalstorage.NewBackendKernelInTransaction(ctx, backend, tx, time.Now, logical != logicalSchemaCurrent, nil)
 		if err != nil {
 			return err
 		}
@@ -58,7 +62,7 @@ func InspectSQLite(ctx context.Context, path string) (result StorageInspection, 
 		if err = kernel.VerifyCurrentStateInTransaction(ctx, tx); err != nil {
 			return err
 		}
-		result.MigrationRequired = len(tx.writes) > 0
+		result.MigrationRequired = len(tx.writes) > 0 || physicalMigration
 		return ctx.Err()
 	})
 	return result, runtimeHostError(err)
@@ -68,6 +72,7 @@ func InspectSQLite(ctx context.Context, path string) (result StorageInspection, 
 type inspectionOverlay struct {
 	spi.ReadTx
 	writes map[string]map[string]*[]byte
+	merged map[string][]spi.Record
 }
 
 func (tx *inspectionOverlay) Get(namespace string, key []byte) ([]byte, error) {
@@ -81,6 +86,7 @@ func (tx *inspectionOverlay) Get(namespace string, key []byte) ([]byte, error) {
 }
 
 func (tx *inspectionOverlay) Put(namespace string, key, value []byte) error {
+	delete(tx.merged, namespace)
 	if tx.writes[namespace] == nil {
 		tx.writes[namespace] = make(map[string]*[]byte)
 	}
@@ -90,6 +96,7 @@ func (tx *inspectionOverlay) Put(namespace string, key, value []byte) error {
 }
 
 func (tx *inspectionOverlay) Delete(namespace string, key []byte) error {
+	delete(tx.merged, namespace)
 	if tx.writes[namespace] == nil {
 		tx.writes[namespace] = make(map[string]*[]byte)
 	}
@@ -104,46 +111,53 @@ func (tx *inspectionOverlay) Scan(request spi.ScanRequest) (spi.ScanPage, error)
 	if len(tx.writes[request.Namespace]) == 0 {
 		return tx.ReadTx.Scan(request)
 	}
-	rows := make(map[string][]byte)
-	readRequest := request
-	readRequest.Limit = 256
-	for {
-		page, err := tx.ReadTx.Scan(readRequest)
-		if err != nil {
-			return spi.ScanPage{}, err
+	if tx.merged == nil {
+		tx.merged = make(map[string][]spi.Record)
+	}
+	merged, found := tx.merged[request.Namespace]
+	if !found {
+		rows := make(map[string][]byte)
+		readRequest := spi.ScanRequest{Namespace: request.Namespace, Limit: 256}
+		for {
+			page, err := tx.ReadTx.Scan(readRequest)
+			if err != nil {
+				return spi.ScanPage{}, err
+			}
+			for _, row := range page.Records {
+				rows[string(row.Key)] = row.Value
+			}
+			if !page.HasMore {
+				break
+			}
+			readRequest.After = page.Next
 		}
-		for _, row := range page.Records {
-			rows[string(row.Key)] = row.Value
+		for key, value := range tx.writes[request.Namespace] {
+			if value == nil {
+				delete(rows, key)
+			} else {
+				rows[key] = *value
+			}
 		}
-		if !page.HasMore {
+		for key, value := range rows {
+			merged = append(merged, spi.Record{Key: []byte(key), Value: value})
+		}
+		sort.Slice(merged, func(i, j int) bool { return bytes.Compare(merged[i].Key, merged[j].Key) < 0 })
+		tx.merged[request.Namespace] = merged
+	}
+	first := sort.Search(len(merged), func(i int) bool {
+		return bytes.Compare(merged[i].Key, request.Start) >= 0 && (len(request.After) == 0 || bytes.Compare(merged[i].Key, request.After) > 0)
+	})
+	page := spi.ScanPage{}
+	for _, row := range merged[first:] {
+		if len(request.End) > 0 && bytes.Compare(row.Key, request.End) >= 0 {
 			break
 		}
-		readRequest.After = page.Next
-	}
-	for key, value := range tx.writes[request.Namespace] {
-		if (len(request.Start) > 0 && bytes.Compare([]byte(key), request.Start) < 0) || (len(request.End) > 0 && bytes.Compare([]byte(key), request.End) >= 0) || (len(request.After) > 0 && bytes.Compare([]byte(key), request.After) <= 0) {
-			continue
+		if len(page.Records) == request.Limit {
+			page.HasMore = true
+			page.Next = bytes.Clone(page.Records[len(page.Records)-1].Key)
+			break
 		}
-		if value == nil {
-			delete(rows, key)
-		} else {
-			rows[key] = bytes.Clone(*value)
-		}
-	}
-	keys := make([]string, 0, len(rows))
-	for key := range rows {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	page := spi.ScanPage{HasMore: len(keys) > request.Limit}
-	if page.HasMore {
-		keys = keys[:request.Limit]
-	}
-	for _, key := range keys {
-		page.Records = append(page.Records, spi.Record{Key: []byte(key), Value: rows[key]})
-	}
-	if page.HasMore {
-		page.Next = []byte(keys[len(keys)-1])
+		page.Records = append(page.Records, spi.Record{Key: bytes.Clone(row.Key), Value: bytes.Clone(row.Value)})
 	}
 	return page, nil
 }

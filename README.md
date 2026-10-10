@@ -427,6 +427,19 @@ conformance suite. SPI records remain opaque Floret data; a backend must not
 decode them into a second Agent model. Memory, SQLite, and third-party backends
 all run the same Floret-owned domain kernel.
 
+Prompt-cache history is stored as append-ordered records per prompt scope and
+category. Dispatch checkpoints commit only new segments, toolsets, requests,
+and pending responses for the affected scopes; repeated request attempts retain
+their original order. Turn settlement and shutdown flush only pending facts.
+Compaction changes the effective model context independently of storage history.
+
+SQLite physical format 2 separates large record values from the primary-key
+index using a rowid records table. `runtime.Open` converts format 1, splits the
+legacy global prompt snapshot, migrates the session tree, updates logical
+storage version 8, and verifies the result in one transaction. The session-tree
+schema remains 13. Inspection reports physical upgrades as migration work and
+reuses each merged namespace across pages without writing the source.
+
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
 without rebuilding the database. A host that owns an older SQLite file may call
 `storage.MaintainSQLite` before `runtime.Open`. The maintenance boundary checks

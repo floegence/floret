@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,129 @@ import (
 	publicstorage "github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/storage/spi"
 )
+
+func TestProviderCheckpointWritesOnlyNewScopeRecords(t *testing.T) {
+	ctx := t.Context()
+	inner, err := storagebridge.Open(ctx, storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inner.Close()
+	backend := &promptCountingBackend{Backend: inner}
+	kernel, err := NewBackendKernel(ctx, backend, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := cache.ProviderRequestRecord{ID: "request", PromptScopeID: "active"}
+	backend.bytes = 0
+	if err := kernel.AppendProviderRequest(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	want := backend.bytes
+	if err := kernel.CheckpointProviderRequest(ctx, []cache.Segment{{ID: "large", PromptScopeID: "unrelated", Raw: strings.Repeat("x", 1<<20)}}, nil, cache.ProviderRequestRecord{ID: "other", PromptScopeID: "unrelated"}); err != nil {
+		t.Fatal(err)
+	}
+	backend.bytes = 0
+	if err := kernel.AppendProviderRequest(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if backend.bytes != want {
+		t.Fatalf("checkpoint wrote %d bytes with unrelated history, want %d", backend.bytes, want)
+	}
+	requests, err := kernel.ProviderRequests(ctx, "active")
+	if err != nil || len(requests) != 2 {
+		t.Fatalf("duplicate attempt history: count=%d err=%v", len(requests), err)
+	}
+	backend.bytes = 0
+	if err := kernel.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if backend.bytes != 0 {
+		t.Fatalf("unchanged cache rewrote %d bytes", backend.bytes)
+	}
+}
+
+type promptCountingBackend struct {
+	spi.Backend
+	bytes int
+}
+
+func (backend *promptCountingBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
+	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error { return mutate(promptCountingTx{WriteTx: tx, backend: backend}) })
+}
+
+type promptCountingTx struct {
+	spi.WriteTx
+	backend *promptCountingBackend
+}
+
+func TestPromptPendingResponseSurvivesFailedCommitAndFlushesOnlyOnce(t *testing.T) {
+	inner, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inner.Close()
+	backend := &promptCommitFailureBackend{Backend: inner}
+	kernel, err := NewBackendKernel(t.Context(), backend, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kernel.AppendProviderResponse(t.Context(), cache.ProviderResponseRecord{RequestID: "previous", PromptScopeID: "active", InputTokens: 42}); err != nil {
+		t.Fatal(err)
+	}
+	backend.fail = true
+	request := cache.ProviderRequestRecord{ID: "new", PromptScopeID: "active"}
+	if err := kernel.AppendProviderRequest(t.Context(), request); err == nil {
+		t.Fatal("commit failure succeeded")
+	}
+	values, err := kernel.ProviderResponses(t.Context(), "active")
+	if err != nil || len(values) != 1 {
+		t.Fatalf("pending lost: %v", err)
+	}
+	requests, err := kernel.ProviderRequests(t.Context(), "active")
+	if err != nil || len(requests) != 0 {
+		t.Fatal("failed candidate published")
+	}
+	backend.fail = false
+	if err := kernel.AppendProviderRequest(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(kernel.pending) != 0 {
+		t.Fatal("committed observations remained pending")
+	}
+	reopened, err := NewBackendKernel(t.Context(), backend, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err = reopened.ProviderResponses(t.Context(), "active")
+	if err != nil || len(values) != 1 || values[0].InputTokens != 42 {
+		t.Fatal("response duplicated or lost")
+	}
+}
+
+type promptCommitFailureBackend struct {
+	spi.Backend
+	fail bool
+}
+
+func (backend *promptCommitFailureBackend) Update(ctx context.Context, update func(spi.WriteTx) error) error {
+	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
+		if err := update(tx); err != nil {
+			return err
+		}
+		if backend.fail {
+			return errors.New("injected commit failure")
+		}
+		return nil
+	})
+}
+
+func (tx promptCountingTx) Put(namespace string, key, value []byte) error {
+	if namespace == "floret.domain" || strings.HasPrefix(namespace, "floret.domain.prompt") {
+		tx.backend.bytes += len(key) + len(value)
+	}
+	return tx.WriteTx.Put(namespace, key, value)
+}
 
 func TestProviderRequestCheckpointSurvivesReopenWithoutTurnTerminal(t *testing.T) {
 	ctx := context.Background()

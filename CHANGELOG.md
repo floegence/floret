@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.27.0 - 2026-10-09
+
+- Separate SQLite record values from primary-key indexes through atomic physical format 1 -> 2 conversion. Reuse exact format recognition for open, inspection, backup, and space maintenance.
+- Replace global prompt snapshots with append-ordered scope/category records and small counters. Dispatch checkpoints write only relevant additions; pending responses settle atomically with turns, and unchanged records are never rewritten.
+- Advance logical storage 7 -> 8 while preserving session-tree schema 13 and every supported logical source. Migrate cache content and duplicate attempts without changing compaction, continuation, usage, or historical conversation behavior.
+- Reuse merged inspection namespaces across pages; cover rollback, replay, opaque preservation, write cost, large cache benchmarks, and isolated startup measurements. Public Go and thread protocol contracts remain unchanged.
+
 ## v7.26.0 - 2026-10-09
 
 - Add optional `ThreadContextCompactor.CompactContext` and typed context-only turns. Admit idle-thread compaction without a user command message, ordinary answer, or tool dispatch; return after admission and resolve the configured Agent in the background.

@@ -2,6 +2,8 @@
 
 ## 2026-10-09
 
+* Document [incremental prompt history and atomic physical upgrades](api/storage.md#runtime-storage-behavior), bounded dispatch writes, and reusable read-only inspection pages. Logical storage advances to 8; session-tree schema stays 13.
+
 * Add independent typed [thread compaction](api/runtime.md#thread-service), shared
   atomic installation, canonical divider anchors, and the byte-preserving
   [v12 -> v13 migration](api/storage.md#domain-migration).
