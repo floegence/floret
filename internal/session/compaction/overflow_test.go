@@ -38,7 +38,7 @@ func TestOverflowRetainsLatestInteractionAndProtectedAnchors(t *testing.T) {
 			input := append(session.CloneMessages(history), tc.suffix...)
 			original := session.CloneMessages(input)
 			prep, err := Prepare(t.Context(), Request{History: input, Trigger: TriggerOverflow, Reason: ReasonProviderOverflow, SupplementalAnchorEntryID: tc.anchor,
-				Policy: contextpolicy.Policy{ContextWindowTokens: 950000}}, ExtractiveSummaryGenerator{})
+				Policy: contextpolicy.Policy{ContextWindowTokens: 950000}}, extractiveSummaryFixture{})
 			if tc.noCut {
 				if err != ErrNoCutPoint {
 					t.Fatalf("protected initial context must fail closed: %v", err)

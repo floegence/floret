@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-10
+
+- Document complete compaction input, one bounded ordered summary loop, lossless fragments, and validation before atomic installation.
+
 ## 2026-10-09
 
 * Document [incremental prompt history and atomic physical upgrades](api/storage.md#runtime-storage-behavior), bounded dispatch writes, and reusable read-only inspection pages. Logical storage advances to 8; session-tree schema stays 13.

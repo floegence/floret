@@ -70,7 +70,7 @@ func compactionCommitFixture(t *testing.T, repo compactionFixtureRepo) ContextCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := compaction.Prepare(ctx, compaction.Request{CompactionID: "summary", OperationID: "operation", RequestID: "compact", Source: "test", History: history, Policy: policy, Trigger: compaction.TriggerManual, Reason: compaction.ReasonManual, Phase: compaction.PhaseInstall}, compaction.ExtractiveSummaryGenerator{})
+	prepared, err := compaction.Prepare(ctx, compaction.Request{CompactionID: "summary", OperationID: "operation", RequestID: "compact", Source: "test", History: history, Policy: policy, Trigger: compaction.TriggerManual, Reason: compaction.ReasonManual, Phase: compaction.PhaseInstall}, commitSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,4 +177,10 @@ func TestContextCompactionTransactionFailureKeepsMemoryAndDurableFacts(t *testin
 	if _, err := NewBackendRepo(t.Context(), failing, time.Now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type commitSummaryFixture struct{}
+
+func (commitSummaryFixture) GenerateSummary(context.Context, compaction.Preparation) (string, error) {
+	return "Durable facts preserved.", nil
 }

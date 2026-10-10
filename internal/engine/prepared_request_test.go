@@ -15,7 +15,6 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/session"
-	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
@@ -171,7 +170,7 @@ func TestPreparedProviderRequestDiscardedAndRepreparedForCompaction(t *testing.T
 	}
 	e := newTestEngine(p, &event.Recorder{})
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20, RecentUserTokens: 20}
 
 	got := e.Run(context.Background(), "")
@@ -195,7 +194,7 @@ func TestPreparedProviderRequestOverflowReplacementTerminatesBothHandles(t *test
 	}
 	e := newTestEngine(p, &event.Recorder{})
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 
 	got := e.Run(context.Background(), "")
 	if got.Status != engine.Completed || got.Output != "after compact" || got.Metrics.Compactions != 1 {
@@ -217,7 +216,7 @@ func TestPreparedProviderRequestManualCompactContextDiscardsUnstreamedHandle(t *
 		t.Run(tt.name, func(t *testing.T) {
 			p := newPreparedLifecycleProvider(preparedBehavior{closeErr: tt.closeErr})
 			e := newTestEngine(p, &event.Recorder{})
-			e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+			e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 			e.Options.ContextPolicy = contextpolicy.Policy{
 				ContextWindowTokens:          256000,
 				ReservedOutputTokens:         64000,

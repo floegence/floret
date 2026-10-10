@@ -40,7 +40,7 @@ func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 400, ReservedOutputTokens: 40, ReservedSummaryTokens: 40, RecentTailTokens: 30},
 		Trigger: TriggerPreRequest,
 		Reason:  ReasonThreshold,
-	}, ExtractiveSummaryGenerator{})
+	}, &recordingSummaryGenerator{summaries: []string{"summary"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPrepareKeepsMultiToolBatchBoundary(t *testing.T) {
 			ReservedSummaryTokens: 1000,
 			RecentTailTokens:      1500,
 		},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testi
 		PreviousSummary:      ExtractCheckpointSummary(previous.Content),
 		History:              history,
 		Policy:               contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
-	}, ExtractiveSummaryGenerator{})
+	}, &recordingSummaryGenerator{summaries: []string{"## Previous Summary\nS1 old summary"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestPrepareRejectsStackedCheckpointMessages(t *testing.T) {
 			{Role: session.User, Content: "tail", EntryID: "u3"},
 		},
 		Policy: contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 12},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err == nil || !strings.Contains(err.Error(), "multiple active compaction summaries") {
 		t.Fatalf("Prepare err = %v, want stacked checkpoint rejection", err)
 	}
@@ -165,7 +165,7 @@ func TestPrepareRejectsMalformedOrImplicitPreviousCheckpointIdentity(t *testing.
 	}
 	policy := contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12}
 
-	if _, err := Prepare(context.Background(), Request{History: history, Policy: policy}, ExtractiveSummaryGenerator{}); err == nil || !strings.Contains(err.Error(), "explicit previous compaction identity") {
+	if _, err := Prepare(context.Background(), Request{History: history, Policy: policy}, extractiveSummaryFixture{}); err == nil || !strings.Contains(err.Error(), "explicit previous compaction identity") {
 		t.Fatalf("Prepare without previous identity err = %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestPrepareRejectsMalformedOrImplicitPreviousCheckpointIdentity(t *testing.
 		PreviousSummary:      ExtractCheckpointSummary(checkpoint.Content),
 		History:              malformed,
 		Policy:               policy,
-	}, ExtractiveSummaryGenerator{}); err == nil || !strings.Contains(err.Error(), "incomplete identity") {
+	}, extractiveSummaryFixture{}); err == nil || !strings.Contains(err.Error(), "incomplete identity") {
 		t.Fatalf("Prepare with malformed checkpoint err = %v", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestExtractiveSummaryKeepsFullPreviousSummary(t *testing.T) {
 		CompactedHead: []session.Message{{Role: session.User, Content: "new work", EntryID: "u1"}},
 	}
 
-	summary, err := ExtractiveSummaryGenerator{}.GenerateSummary(context.Background(), prep)
+	summary, err := extractiveSummaryFixture{}.GenerateSummary(context.Background(), prep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestPrepareKeepsLatestUserAndRecentUsersWithinBudget(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 8},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestPrepareKeepsRecentUsersInOrderWithinBudget(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 8},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestPrepareUsesPolicyRecentUserTokensBudget(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 8, RecentUserTokens: 20},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestPrepareKeepsOversizedLatestUserAsFloor(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 8},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestPrepareRecordsTargetExceededForOversizedLatestUser(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 10000, ReservedOutputTokens: 500, ReservedSummaryTokens: 500, RecentTailTokens: 100, RecentUserTokens: 100},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestPrepareDeduplicatesKeptUsersAlreadyInTail(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 20},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
 		PreviousSummary:      ExtractCheckpointSummary(previous.Content),
 		History:              history,
 		Policy:               contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
-	}, ExtractiveSummaryGenerator{})
+	}, &recordingSummaryGenerator{summaries: []string{"## Previous Summary\nS1 old summary"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,7 @@ func TestPrepareSkipsEntryIDlessUserForKeptUsersButRetainsTail(t *testing.T) {
 			RecentTailTokens:      20,
 			RecentUserTokens:      1000,
 		},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func TestPrepareProtectsExactSupplementalAnchorForEveryCanonicalUserShape(t *tes
 					ContextWindowTokens: 4000, ReservedOutputTokens: 200, ReservedSummaryTokens: 200,
 					RecentTailTokens: 1, RecentUserTokens: 200, CompactedContextTargetTokens: 600,
 				},
-			}, ExtractiveSummaryGenerator{})
+			}, &recordingSummaryGenerator{summaries: []string{"summary"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -670,7 +670,7 @@ func TestPrepareRejectsMissingOrDuplicateSupplementalAnchor(t *testing.T) {
 				SupplementalAnchorEntryID: "anchor",
 				History:                   history,
 				Policy:                    contextpolicy.Policy{ContextWindowTokens: 4000, ReservedOutputTokens: 200, ReservedSummaryTokens: 200},
-			}, ExtractiveSummaryGenerator{})
+			}, extractiveSummaryFixture{})
 			if !errors.Is(err, ErrInvalidReference) {
 				t.Fatalf("Prepare err=%v, want ErrInvalidReference", err)
 			}
@@ -689,7 +689,7 @@ func TestSingleMessageCompactionCheckpointDoesNotClaimRetainedTail(t *testing.T)
 	prep, err := Prepare(context.Background(), Request{
 		History: []session.Message{{Role: session.User, Content: strings.Repeat("single ", 80), EntryID: "u1"}},
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
-	}, ExtractiveSummaryGenerator{})
+	}, &recordingSummaryGenerator{summaries: []string{"summary"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestCompactionPromptOptionsCustomizeWriterAndTitle(t *testing.T) {
 	if !strings.Contains(prompt, "# Acme Conversation Checkpoint") || strings.Contains(prompt, "# Context Compaction Summary") {
 		t.Fatalf("custom summary title not applied: %q", prompt)
 	}
-	summary, err := ExtractiveSummaryGenerator{PromptOptions: options}.GenerateSummary(context.Background(), Preparation{
+	summary, err := extractiveSummaryFixture{PromptOptions: options}.GenerateSummary(context.Background(), Preparation{
 		CompactedHead: []session.Message{{Role: session.User, Content: "old request", EntryID: "u1"}},
 	})
 	if err != nil {
@@ -802,39 +802,15 @@ func TestSummaryPromptKeepsFullPreviousSummaryWithinReservedBudget(t *testing.T)
 	}
 }
 
-func TestSummaryPromptTrimsTranscriptNotPreviousSummaryWhenPrefixConsumesBudget(t *testing.T) {
-	outputCap := int64(120)
-	previousSummary := "prev-start " + strings.Repeat("durable detail ", 26) + "prev-end"
-	basePolicy := contextpolicy.Normalize(contextpolicy.Policy{
-		ContextWindowTokens:   100000,
-		ReservedOutputTokens:  100,
-		ReservedSummaryTokens: outputCap,
-		RecentTailTokens:      100,
-	})
-	headKeep := session.Message{Role: session.User, Content: "head-keep", EntryID: "u1"}
-	headDrop := session.Message{Role: session.User, Content: "head-drop " + strings.Repeat("x", 2000), EntryID: "u2"}
-	prefix := SummaryPrompt(Preparation{Request: Request{PreviousSummary: previousSummary}}, basePolicy, outputCap)
-	prefixInput := contextpolicy.EstimateTextTokens(SummaryWriterSystemPrompt()) + contextpolicy.EstimateTextTokens(prefix)
-	keepTokens := contextpolicy.EstimateTextTokens(renderForSummaryPrompt(headKeep))
-	policy := basePolicy
-	policy.ContextWindowTokens = prefixInput + outputCap + keepTokens + 1
-
-	prompt := SummaryPrompt(Preparation{
-		Request:       Request{PreviousSummary: previousSummary},
-		CompactedHead: []session.Message{headKeep, headDrop},
-	}, policy, outputCap)
-	block := summaryPromptPreviousBlock(t, prompt)
-	if !strings.Contains(block, "prev-end") || strings.Contains(block, "...[trimmed]") {
-		t.Fatalf("previous summary should remain complete while transcript is budgeted: %q", block)
-	}
-	if !strings.Contains(prompt, "head-keep") {
-		t.Fatalf("first transcript line should fit: %q", prompt)
-	}
-	if strings.Contains(prompt, "head-drop") {
-		t.Fatalf("oversized transcript line should be trimmed, not previous summary: %q", prompt)
-	}
-	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
-		t.Fatalf("prompt should record transcript trimming: %q", prompt)
+func TestSummaryPromptNeverDropsHistoryAtWindowBudget(t *testing.T) {
+	previous := "previous facts"
+	first := "first " + strings.Repeat("a", 2000)
+	last := "last " + strings.Repeat("正文", 1000) + " END_FACT"
+	prompt := SummaryPrompt(Preparation{Request: Request{PreviousSummary: previous}, CompactedHead: []session.Message{{Role: session.User, Content: first}, {Role: session.Assistant, Content: last}}}, contextpolicy.Policy{ContextWindowTokens: 260, ReservedSummaryTokens: 80}, 80)
+	for _, want := range []string{previous, first, last} {
+		if !strings.Contains(prompt, want) {
+			t.Fatal("summary renderer dropped history; budgeting belongs to the generator")
+		}
 	}
 }
 
@@ -857,7 +833,7 @@ func TestSummaryPromptTranscriptBudgetIgnoresOrdinaryOutputHeadroom(t *testing.T
 	}
 }
 
-func TestSummaryPromptTranscriptBudgetUsesSummaryRequestBudget(t *testing.T) {
+func TestSummaryPromptRenderingDoesNotSilentlyEnforceRequestBudget(t *testing.T) {
 	policy := contextpolicy.Normalize(contextpolicy.Policy{
 		ContextWindowTokens:   260,
 		MaxOutputTokens:       10,
@@ -871,8 +847,8 @@ func TestSummaryPromptTranscriptBudgetUsesSummaryRequestBudget(t *testing.T) {
 			{Role: session.User, Content: strings.Repeat("b", 800), EntryID: "u2"},
 		},
 	}, policy, 80)
-	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
-		t.Fatalf("summary prompt should trim transcript using summary request budget: %q", prompt)
+	if !strings.Contains(prompt, strings.Repeat("b", 800)) {
+		t.Fatal("summary renderer dropped the last message")
 	}
 }
 
@@ -918,7 +894,7 @@ func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
 		Policy:  contextpolicy.Policy{ContextWindowTokens: 500, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 120},
-	}, ExtractiveSummaryGenerator{})
+	}, &recordingSummaryGenerator{summaries: []string{"summary"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +925,7 @@ func TestPrepareRecordsContextBudgetDetails(t *testing.T) {
 			ReservedSummaryTokens: 20000,
 			RecentTailTokens:      12,
 		},
-	}, ExtractiveSummaryGenerator{})
+	}, extractiveSummaryFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -361,7 +361,12 @@ and runtime facts must not use it. It must not become durable history, provider
 continuation state, or a source for rebuilding canonical references.
 
 The provider preparation boundary freezes the complete rendered canonical
-history, including references and admitted context. Compaction, canonical retry,
+history, including references and admitted context. Compaction must read the
+complete eligible projection without fixed message previews or silent transcript
+truncation. One budgeted generator owns ordered batching and lossless UTF-8
+fragments; intermediate candidates stay in memory and install only after full
+input coverage and final validation. Incomplete or over-budget summaries fail
+without installing a partial checkpoint. Compaction, canonical retry,
 projection upgrades, and execution-configuration changes have explicit observable
 boundaries. Presentation filtering must never remove canonical model messages.
 Schema-invalid model tool arguments receive paired validation feedback with at

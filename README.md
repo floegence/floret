@@ -341,6 +341,17 @@ same summary generation and validation as automatic compaction, and finishes
 without an ordinary assistant answer or tool dispatch. Automatic compaction
 continues the admitted task after installing the summary.
 
+Summary generation reads the complete eligible provider-history projection,
+including message formatting, tool arguments, references, and admitted runtime
+facts. It never replaces ordinary messages with fixed-length previews. One
+ordered batching loop carries only the latest candidate summary; oversized
+messages use lossless UTF-8 fragments with their message/tool metadata. Rendered
+request estimates and bounded overflow recovery determine batch size. All
+batches must succeed before installation, and incomplete or over-budget summaries
+fail without truncating or changing the effective context. Intermediate summaries
+are in memory only. The default summary ceiling remains 20,000 tokens; the
+50,000-token compacted-context target is not a minimum summary length.
+
 Manual compaction need not reach the automatic pressure threshold. Context below
 the configured target (50,000 tokens by default), a missing safe cut point, or
 insufficient savings produces an explicit noop. Failed, cancelled, and noop
