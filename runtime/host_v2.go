@@ -23,8 +23,10 @@ import (
 const (
 	logicalSchemaNamespace           = "floret.system"
 	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "7"
-	logicalSchemaFingerprint         = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
+	logicalSchemaVersion             = "8"
+	logicalSchemaFingerprint         = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
+	legacyV7LogicalSchemaVersion     = "7"
+	legacyV7LogicalSchemaFingerprint = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
 	previousLogicalSchemaVersion     = "6"
 	previousLogicalSchemaFingerprint = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
 	legacyV5LogicalSchemaVersion     = "5"
@@ -233,19 +235,37 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		return nil, errors.New("runtime storage source returned a nil backend")
 	}
 	coordinatedBackend := &serializedBackend{backend: backend}
+	transferred := false
+	defer func() {
+		if !transferred {
+			_ = coordinatedBackend.Close()
+		}
+	}()
 	var kernel *internalstorage.BackendKernel
 	var startupProgress internalstorage.StartupProgress
 	if options.StartupProgress != nil {
+		var previousPhase internalstorage.StartupPhase
 		startupProgress = func(phase internalstorage.StartupPhase) {
+			if previousPhase == phase {
+				return
+			}
+			previousPhase = phase
 			options.StartupProgress.OnStartupPhase(StartupPhase(phase))
 		}
 	}
 	err = coordinatedBackend.Update(ctx, func(tx spi.WriteTx) error {
+		if _, err := storagebridge.PrepareStartup(tx, func() {
+			if startupProgress != nil {
+				startupProgress(internalstorage.StartupPhaseMigrating)
+			}
+		}); err != nil {
+			return err
+		}
 		logicalState, inspectErr := inspectLogicalSchemaTransaction(tx)
 		if inspectErr != nil {
 			return inspectErr
 		}
-		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, startupProgress)
+		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, logicalState != logicalSchemaCurrent, startupProgress)
 		if inspectErr != nil {
 			return inspectErr
 		}
@@ -255,12 +275,10 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		return kernel.VerifyCurrentStateInTransaction(ctx, tx)
 	})
 	if err != nil {
-		_ = coordinatedBackend.Close()
 		return nil, runtimeHostError(err)
 	}
 	store, err := newBackendRuntimeStoreWithKernel(coordinatedBackend, kernel)
 	if err != nil {
-		_ = coordinatedBackend.Close()
 		return nil, err
 	}
 	idSource := options.IDSource
@@ -270,6 +288,7 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	host := &Host{
 		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
 	}
+	transferred = true
 	return host, nil
 }
 
@@ -485,6 +504,7 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV7      logicalSchemaState = "v7"
 	logicalSchemaV6      logicalSchemaState = "v6"
 	logicalSchemaV5      logicalSchemaState = "v5"
 	logicalSchemaV3      logicalSchemaState = "v3"
@@ -523,6 +543,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV7LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV7LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version %q fingerprint %q", ErrUnsupportedSchema, envelope.Version, envelope.Fingerprint)
+		}
+		return logicalSchemaV7, nil
 	}
 	if envelope.Version == previousLogicalSchemaVersion {
 		if envelope.Fingerprint != previousLogicalSchemaFingerprint {

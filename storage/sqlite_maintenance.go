@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -217,31 +216,8 @@ func validateSQLiteMaintenanceDatabase(ctx context.Context, query sqliteQueryer)
 	if integrity != "ok" {
 		return fmt.Errorf("%w: %s", ErrSQLiteIntegrity, integrity)
 	}
-	var tableCount, exactTableCount int
-	if err := query.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
-		return err
-	}
-	if err := query.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('floret_backend_metadata', 'floret_backend_records')`).Scan(&exactTableCount); err != nil {
-		return err
-	}
-	if tableCount != 2 || exactTableCount != 2 {
-		return ErrUnsupportedSQLiteFormat
-	}
-	var physicalSchema []byte
-	if err := query.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name = 'physical_schema'`).Scan(&physicalSchema); err != nil {
-		return fmt.Errorf("invalid Floret backend metadata: %w", err)
-	}
-	if !bytesEqualString(physicalSchema, "1") {
-		if version, err := strconv.Atoi(string(physicalSchema)); err == nil && version > 1 {
-			return fmt.Errorf("%w: %w: version %q", ErrUnsupportedSQLiteFormat, ErrSQLiteTooNew, physicalSchema)
-		}
-		return fmt.Errorf("%w: version %q", ErrUnsupportedSQLiteFormat, physicalSchema)
-	}
-	return nil
-}
-
-func bytesEqualString(value []byte, want string) bool {
-	return string(value) == want
+	_, err := inspectSQLitePhysicalSchema(ctx, query)
+	return err
 }
 
 func readSQLiteSpaceUsage(ctx context.Context, query sqliteQueryer, path string) (SQLiteSpaceUsage, error) {

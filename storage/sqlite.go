@@ -157,8 +157,8 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 				key BLOB NOT NULL,
 				value BLOB NOT NULL,
 				PRIMARY KEY (namespace, key)
-			) WITHOUT ROWID`,
-			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('1' AS BLOB))`,
+			)`,
+			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('2' AS BLOB))`,
 		}
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -166,26 +166,8 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 			}
 		}
 	} else {
-		var exactTables int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM sqlite_master
-			WHERE type = 'table'
-			  AND name IN ('floret_backend_metadata', 'floret_backend_records')
-		`).Scan(&exactTables); err != nil {
-			return err
-		}
-		if tableCount != 2 || exactTables != 2 {
-			return fmt.Errorf("%w: database is not a Floret backend", spi.ErrInvalidArgument)
-		}
-		var physicalSchema []byte
-		if err := tx.QueryRowContext(ctx, `
-			SELECT value FROM floret_backend_metadata WHERE name = 'physical_schema'
-		`).Scan(&physicalSchema); err != nil {
-			return fmt.Errorf("%w: invalid backend metadata: %v", spi.ErrInvalidArgument, err)
-		}
-		if !bytes.Equal(physicalSchema, []byte("1")) {
-			return fmt.Errorf("%w: unsupported backend physical schema %q", spi.ErrInvalidArgument, physicalSchema)
+		if _, err := inspectSQLitePhysicalSchema(ctx, tx); err != nil {
+			return fmt.Errorf("%w: %w", spi.ErrInvalidArgument, err)
 		}
 	}
 	return tx.Commit()

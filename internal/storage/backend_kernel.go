@@ -2,25 +2,22 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
-	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const backendDomainNamespace = "floret.domain"
 
-var promptStateKey = storagecodec.Tuple(storagecodec.TupleString("prompt"), storagecodec.TupleString("state"))
-
 // BackendKernel is the single domain kernel shared by every public Backend.
 type BackendKernel struct {
 	*sessiontree.BackendRepo
-	promptMu sync.Mutex
-	prompt   *cache.MemoryStore
+	promptMu      sync.Mutex
+	promptBackend spi.Backend
+	pending       map[string]promptBatch
 }
 
 type StartupPhase = sessiontree.StartupPhase
@@ -31,12 +28,11 @@ const (
 	StartupPhaseVerifying = sessiontree.StartupPhaseVerifying
 )
 
-// NewBackendKernel opens all canonical Floret domain state.
 func NewBackendKernel(ctx context.Context, backend spi.Backend, now func() time.Time) (*BackendKernel, error) {
 	var kernel *BackendKernel
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 		var err error
-		kernel, err = NewBackendKernelInTransaction(ctx, backend, tx, now, nil)
+		kernel, err = NewBackendKernelInTransaction(ctx, backend, tx, now, true, nil)
 		if err != nil {
 			return err
 		}
@@ -47,272 +43,273 @@ func NewBackendKernel(ctx context.Context, backend spi.Backend, now func() time.
 	return kernel, nil
 }
 
-// NewBackendKernelInTransaction opens all canonical Floret domain state in
-// the caller's startup transaction.
-func NewBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendKernel, error) {
+func NewBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, allowPromptMigration bool, progress StartupProgress) (*BackendKernel, error) {
+	if err := preparePromptRecords(ctx, tx, allowPromptMigration, progress); err != nil {
+		return nil, err
+	}
 	repo, err := sessiontree.NewBackendRepoInTransaction(ctx, backend, tx, now, progress)
 	if err != nil {
 		return nil, err
 	}
-	kernel := &BackendKernel{BackendRepo: repo}
-	prompt, found, err := loadPromptState(tx)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		kernel.prompt = prompt
-	} else {
-		kernel.prompt = cache.NewMemoryStore()
-		if err := savePromptState(tx, kernel.prompt); err != nil {
-			return nil, err
-		}
-	}
-	return kernel, nil
+	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, nil
 }
 
-func loadPromptState(tx spi.ReadTx) (*cache.MemoryStore, bool, error) {
-	encoded, err := tx.Get(backendDomainNamespace, promptStateKey)
-	if errors.Is(err, spi.ErrNotFound) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	payload, err := storagecodec.DecodeEnvelope(encoded, "prompt")
-	if err != nil {
-		return nil, false, err
-	}
-	state, err := cache.DecodeMemoryState(payload)
-	return state, true, err
-}
-
-func savePromptState(tx spi.WriteTx, state *cache.MemoryStore) error {
-	payload, err := state.EncodeMemoryState()
-	if err != nil {
+func (kernel *BackendKernel) VerifyCurrentStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if err := kernel.BackendRepo.VerifyCurrentStateInTransaction(ctx, tx); err != nil {
 		return err
 	}
-	encoded, err := storagecodec.EncodeEnvelope("prompt", payload)
-	if err != nil {
-		return err
-	}
-	return tx.Put(backendDomainNamespace, promptStateKey, encoded)
+	return verifyPromptRecords(tx)
 }
 
-func (kernel *BackendKernel) updatePrompt(ctx context.Context, mutate func(*cache.MemoryStore) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	kernel.promptMu.Lock()
-	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return errors.New("prompt state is missing")
-	}
-	return mutate(kernel.prompt)
-}
-
-func (kernel *BackendKernel) viewPrompt(ctx context.Context, read func(*cache.MemoryStore) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	kernel.promptMu.Lock()
-	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return errors.New("prompt state is missing")
-	}
-	return read(kernel.prompt)
-}
-
-func clonePromptState(state *cache.MemoryStore) (*cache.MemoryStore, error) {
-	if state == nil {
-		return nil, errors.New("prompt state is missing")
-	}
-	payload, err := state.EncodeMemoryState()
-	if err != nil {
-		return nil, err
-	}
-	return cache.DecodeMemoryState(payload)
-}
-
-// FinishTurn commits the terminal semantic state and accumulated prompt
-// observations in one transaction. Provider request checkpoints are already
-// durable; this boundary adds response diagnostics and terminal state.
 func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return sessiontree.FinishTurnResult{}, errors.New("prompt state is missing")
-	}
 	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.FinishTurn(ctx, request)
 		if err != nil {
 			return err
 		}
-		return savePromptState(tx, kernel.prompt)
+		return kernel.flushPrompt(tx, request.ThreadID)
 	})
+	if err == nil {
+		kernel.clearPending(request.ThreadID)
+	}
 	return result, err
 }
 
-// FailUnknownEffectTurn commits the fixed unknown-effect terminal together
-// with the current prompt-cache checkpoint. Provider continuation is removed
-// by the session-tree mutation in the same transaction.
 func (kernel *BackendKernel) FailUnknownEffectTurn(ctx context.Context, request sessiontree.FailUnknownEffectTurnRequest) (result sessiontree.FailUnknownEffectTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return sessiontree.FailUnknownEffectTurnResult{}, errors.New("prompt state is missing")
-	}
 	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.FailUnknownEffectTurn(ctx, request)
 		if err != nil {
 			return err
 		}
-		return savePromptState(tx, kernel.prompt)
+		return kernel.flushPrompt(tx, request.ThreadID)
 	})
+	if err == nil {
+		kernel.clearPending(request.ThreadID)
+	}
 	return result, err
 }
 
-// CancelTurn commits the user Stop terminal and clears prompt continuation in
-// the same transaction. It is the cancellation counterpart of FinishTurn.
 func (kernel *BackendKernel) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (result sessiontree.CancelTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return sessiontree.CancelTurnResult{}, errors.New("prompt state is missing")
-	}
 	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
 		result, err = memory.CancelTurn(ctx, request)
 		if err != nil {
 			return err
 		}
-		return savePromptState(tx, kernel.prompt)
+		return kernel.flushPrompt(tx, request.ThreadID)
 	})
+	if err == nil {
+		kernel.clearPending(request.ThreadID)
+	}
 	return result, err
 }
 
-// Checkpoint flushes both canonical domain state and memory-resident prompt
-// observations during graceful shutdown or an explicit recovery barrier.
+// Checkpoint flushes only facts not committed by a provider or turn boundary.
 func (kernel *BackendKernel) Checkpoint(ctx context.Context) error {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	if kernel.prompt == nil {
-		return errors.New("prompt state is missing")
+	scopes := kernel.pendingScopes()
+	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error { return kernel.flushPrompt(tx, scopes...) })
+	if err == nil {
+		kernel.clearPending(scopes...)
 	}
-	return kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
-		return savePromptState(tx, kernel.prompt)
-	})
+	return err
+}
+
+func (kernel *BackendKernel) appendPrompt(ctx context.Context, scope string, category int, value any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	record, err := makePromptRecord(scope, category, value)
+	if err != nil {
+		return err
+	}
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	kernel.pending[scope] = append(kernel.pending[scope], record)
+	return nil
 }
 
 func (kernel *BackendKernel) AppendSegment(ctx context.Context, value cache.Segment) error {
-	return kernel.updatePrompt(ctx, func(state *cache.MemoryStore) error { return state.AppendSegment(ctx, value) })
+	return kernel.appendPrompt(ctx, value.PromptScopeID, promptSegment, value)
 }
-
-func (kernel *BackendKernel) Segments(ctx context.Context, scopeID, provider, model string) (result []cache.Segment, err error) {
-	err = kernel.viewPrompt(ctx, func(state *cache.MemoryStore) error {
-		result, err = state.Segments(ctx, scopeID, provider, model)
-		return err
-	})
-	return result, err
-}
-
 func (kernel *BackendKernel) AppendToolset(ctx context.Context, value cache.ToolsetSnapshot) error {
-	return kernel.updatePrompt(ctx, func(state *cache.MemoryStore) error { return state.AppendToolset(ctx, value) })
+	return kernel.appendPrompt(ctx, value.PromptScopeID, promptToolset, value)
 }
-
-func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scopeID, provider, model string) (result cache.ToolsetSnapshot, found bool, err error) {
-	err = kernel.viewPrompt(ctx, func(state *cache.MemoryStore) error {
-		result, found, err = state.ActiveToolset(ctx, scopeID, provider, model)
-		return err
-	})
-	return result, found, err
+func (kernel *BackendKernel) AppendProviderResponse(ctx context.Context, value cache.ProviderResponseRecord) error {
+	return kernel.appendPrompt(ctx, value.PromptScopeID, promptResponse, value)
 }
-
 func (kernel *BackendKernel) AppendProviderRequest(ctx context.Context, value cache.ProviderRequestRecord) error {
 	return kernel.CheckpointProviderRequest(ctx, nil, nil, value)
 }
 
-func (kernel *BackendKernel) CheckpointProviderRequest(ctx context.Context, segments []cache.Segment, toolsets []cache.ToolsetSnapshot, value cache.ProviderRequestRecord) error {
+func (kernel *BackendKernel) Segments(ctx context.Context, scope, provider, model string) ([]cache.Segment, error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	batch, err := kernel.readPromptCategory(ctx, scope, promptSegment)
+	if err != nil {
+		return nil, err
+	}
+	values, err := decodePromptBatch[cache.Segment](batch)
+	if err != nil {
+		return nil, err
+	}
+	var result []cache.Segment
+	for _, value := range values {
+		if (provider == "" || value.Provider == provider) && (model == "" || value.Model == model) {
+			result = append(result, value)
+		}
+	}
+	return result, nil
+}
+
+func (kernel *BackendKernel) ActiveToolset(ctx context.Context, scope, provider, model string) (cache.ToolsetSnapshot, bool, error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	batch, err := kernel.readPromptCategory(ctx, scope, promptToolset)
+	if err != nil {
+		return cache.ToolsetSnapshot{}, false, err
+	}
+	values, err := decodePromptBatch[cache.ToolsetSnapshot](batch)
+	if err != nil {
+		return cache.ToolsetSnapshot{}, false, err
+	}
+	for index := len(values) - 1; index >= 0; index-- {
+		value := values[index]
+		if value.Provider == provider && value.Model == model {
+			return value, true, nil
+		}
+	}
+	return cache.ToolsetSnapshot{}, false, nil
+}
+
+func (kernel *BackendKernel) ProviderRequests(ctx context.Context, scope string) ([]cache.ProviderRequestRecord, error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	batch, err := kernel.readPromptCategory(ctx, scope, promptRequest)
+	if err != nil {
+		return nil, err
+	}
+	return decodePromptBatch[cache.ProviderRequestRecord](batch)
+}
+
+func (kernel *BackendKernel) ProviderResponses(ctx context.Context, scope string) ([]cache.ProviderResponseRecord, error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	batch, err := kernel.readPromptCategory(ctx, scope, promptResponse)
+	if err != nil {
+		return nil, err
+	}
+	return decodePromptBatch[cache.ProviderResponseRecord](batch)
+}
+
+func (kernel *BackendKernel) LatestPressureAnchor(ctx context.Context, scope, provider, model string) (cache.PressureAnchorState, bool, error) {
+	values, err := kernel.ProviderResponses(ctx, scope)
+	if err != nil {
+		return cache.PressureAnchorState{}, false, err
+	}
+	for index := len(values) - 1; index >= 0; index-- {
+		anchor := values[index].PressureAnchor
+		if anchor.WindowInputTokens > 0 && (scope == "" || anchor.PromptScopeID == scope) && (provider == "" || anchor.Provider == provider) && (model == "" || anchor.Model == model) {
+			return anchor, true, nil
+		}
+	}
+	return cache.PressureAnchorState{}, false, nil
+}
+
+// Candidate facts stay local until the dispatch checkpoint commits. Existing
+// pending observations survive a failed checkpoint and are safe to retry.
+func (kernel *BackendKernel) CheckpointProviderRequest(ctx context.Context, segments []cache.Segment, toolsets []cache.ToolsetSnapshot, request cache.ProviderRequestRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	kernel.promptMu.Lock()
-	defer kernel.promptMu.Unlock()
-	nextPrompt, err := clonePromptState(kernel.prompt)
-	if err != nil {
+	var candidate promptBatch
+	add := func(scope string, category int, value any) error {
+		record, err := makePromptRecord(scope, category, value)
+		if err == nil {
+			candidate = append(candidate, record)
+		}
 		return err
 	}
-	for _, segment := range segments {
-		if err := nextPrompt.AppendSegment(ctx, segment); err != nil {
+	for _, value := range segments {
+		if err := add(value.PromptScopeID, promptSegment, value); err != nil {
 			return err
 		}
 	}
-	for _, toolset := range toolsets {
-		if err := nextPrompt.AppendToolset(ctx, toolset); err != nil {
+	for _, value := range toolsets {
+		if err := add(value.PromptScopeID, promptToolset, value); err != nil {
 			return err
 		}
 	}
-	if err := nextPrompt.AppendProviderRequest(ctx, value); err != nil {
+	if err := add(request.PromptScopeID, promptRequest, request); err != nil {
 		return err
 	}
-	if err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
-		return savePromptState(tx, nextPrompt)
-	}); err != nil {
-		return err
-	}
-	kernel.prompt = nextPrompt
-	return nil
-}
-
-func (kernel *BackendKernel) ProviderRequests(ctx context.Context, scopeID string) (result []cache.ProviderRequestRecord, err error) {
-	err = kernel.viewPrompt(ctx, func(state *cache.MemoryStore) error {
-		result, err = state.ProviderRequests(ctx, scopeID)
-		return err
-	})
-	return result, err
-}
-
-func (kernel *BackendKernel) AppendProviderResponse(ctx context.Context, value cache.ProviderResponseRecord) error {
-	return kernel.updatePrompt(ctx, func(state *cache.MemoryStore) error { return state.AppendProviderResponse(ctx, value) })
-}
-
-func (kernel *BackendKernel) ProviderResponses(ctx context.Context, scopeID string) (result []cache.ProviderResponseRecord, err error) {
-	err = kernel.viewPrompt(ctx, func(state *cache.MemoryStore) error {
-		result, err = state.ProviderResponses(ctx, scopeID)
-		return err
-	})
-	return result, err
-}
-
-func (kernel *BackendKernel) LatestPressureAnchor(ctx context.Context, scopeID, provider, model string) (result cache.PressureAnchorState, found bool, err error) {
-	err = kernel.viewPrompt(ctx, func(state *cache.MemoryStore) error {
-		result, found, err = state.LatestPressureAnchor(ctx, scopeID, provider, model)
-		return err
-	})
-	return result, found, err
-}
-
-func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopeIDs ...string) error {
-	return kernel.updatePrompt(ctx, func(state *cache.MemoryStore) error { return state.DeletePromptScopes(ctx, scopeIDs...) })
-}
-
-func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, rootThreadID string) (result sessiontree.DeleteRootTreeResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	nextPrompt, err := clonePromptState(kernel.prompt)
-	if err != nil {
-		return sessiontree.DeleteRootTreeResult{}, err
+	selected := map[string]bool{}
+	var scopes []string
+	for _, record := range candidate {
+		if !selected[record.ScopeID] {
+			selected[record.ScopeID] = true
+			scopes = append(scopes, record.ScopeID)
+		}
 	}
+	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
+		var batch promptBatch
+		for _, scope := range scopes {
+			batch = append(batch, kernel.pending[scope]...)
+		}
+		batch = append(batch, candidate...)
+		return writePromptBatch(tx, batch)
+	})
+	if err == nil {
+		kernel.clearPending(scopes...)
+	}
+	return err
+}
+
+func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopes ...string) error {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
+	err := kernel.CheckpointDomain(ctx, func(tx spi.WriteTx) error {
+		for _, scope := range scopes {
+			if err := deletePromptScope(tx, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		kernel.clearPending(scopes...)
+	}
+	return err
+}
+
+func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, root string) (result sessiontree.DeleteRootTreeResult, err error) {
+	kernel.promptMu.Lock()
+	defer kernel.promptMu.Unlock()
 	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		result, err = memory.DeleteRootTree(ctx, rootThreadID)
+		result, err = memory.DeleteRootTree(ctx, root)
 		if err != nil {
 			return err
 		}
-		if err := nextPrompt.DeletePromptScopes(ctx, result.ThreadIDs...); err != nil {
-			return err
+		for _, scope := range result.ThreadIDs {
+			if err := deletePromptScope(tx, scope); err != nil {
+				return err
+			}
 		}
-		return savePromptState(tx, nextPrompt)
+		return nil
 	})
 	if err == nil {
-		kernel.prompt = nextPrompt
+		kernel.clearPending(result.ThreadIDs...)
 	}
 	return result, err
 }

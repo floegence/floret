@@ -35,3 +35,24 @@ func OpenReadOnly(ctx context.Context, source Source) (spi.Backend, error) {
 	}
 	return reader.OpenReadOnly(ctx)
 }
+
+// StartupAccess keeps physical migration hooks inside Floret's startup owner.
+type StartupAccess struct{ OnMigration func() }
+
+func PrepareStartup(tx spi.WriteTx, onMigration func()) (bool, error) {
+	if preparer, ok := tx.(interface {
+		PrepareFloretStorage(StartupAccess) (bool, error)
+	}); ok {
+		return preparer.PrepareFloretStorage(StartupAccess{OnMigration: onMigration})
+	}
+	return false, nil
+}
+
+func PhysicalMigrationRequired(tx spi.ReadTx) (bool, error) {
+	if inspector, ok := tx.(interface {
+		FloretPhysicalMigrationRequired(StartupAccess) (bool, error)
+	}); ok {
+		return inspector.FloretPhysicalMigrationRequired(StartupAccess{})
+	}
+	return false, nil
+}

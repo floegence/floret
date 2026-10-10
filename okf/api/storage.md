@@ -78,7 +78,7 @@ that survive restart are committed as affected canonical records; a failed
 transaction never replaces the validated in-memory authority.
 
 Terminal turn settlement writes its affected session-tree records and prompt
-state in one transaction. Ordinary mutations do not encode unrelated threads,
+additions in one transaction. Ordinary mutations do not encode unrelated threads,
 diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
 exists only in the v5 -> v6 migration reader and is deleted after migration.
 
@@ -88,6 +88,23 @@ in one prompt checkpoint. The in-memory prompt authority advances only after
 that transaction succeeds. Restart can therefore restore the exact execution
 surface and render prefix even when no terminal turn was written; write failure
 or cancellation leaves both memory and storage unchanged.
+
+Logical storage version 8 uses `floret.domain.prompt.v2`: an explicit schema
+marker, small per-scope counters, and records keyed by prompt scope, category,
+and append ordinal. Segments, toolsets, request attempts, and responses retain
+their complete values and ordering. A repeated RequestID is a separate attempt,
+not an overwrite. The kernel reads the requested scope and overlays only its
+uncommitted facts; successful dispatch and turn boundaries clear those pending
+facts after commit. Shutdown flushes remaining additions. The legacy global
+snapshot decoder lives only in [startup migration](../../internal/storage/prompt_migration.go).
+
+SQLite physical format 2 uses a rowid records table with the same unique
+`(namespace, key)` primary key; metadata retains its original layout. Format 1
+conversion copies opaque records with SQL, verifies their content, and commits
+with cache splitting, session-tree migration, and logical version update. No
+extra database or recovery log is introduced. Unknown, mixed, future, and
+drifted formats fail closed. Current startup does not rewrite history, and
+compaction continues to change only effective model context.
 
 ## SQLite space maintenance
 
@@ -115,6 +132,11 @@ retains `ErrUnsupportedSchema` classification for newer logical formats.
 Physical checks report `storage.ErrUnsupportedSQLiteFormat`,
 `storage.ErrSQLiteTooNew`, and `storage.ErrSQLiteIntegrity`. Driver and operating
 system errors retain their original identities, including temporary lock errors.
+
+Physical format conversion contributes to `MigrationRequired`. A transaction-local
+inspection overlay merges and sorts each modified namespace once; writes invalidate
+that namespace, and subsequent pages reuse the merged records. Phase order stays
+`migrating`, then `verifying`; fresh and current stores report only `verifying`.
 
 `storage.BackupSQLite` exclusively creates a destination containing committed
 SQLite state, including WAL records. It rejects a live Host, existing destination,
