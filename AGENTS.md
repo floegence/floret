@@ -20,6 +20,7 @@ Goals:
 - `main` is only for `pull --ff-only` and final integration.
 - Do not leave uncommitted changes in the `main` worktree.
 - Do not create backup branches unless the user explicitly asks for one.
+- Do not leave task-owned worktrees in detached HEAD state as a substitute for cleanup. Keep work on a named feature branch, resolve cleanup blockers, and remove the merged task worktree and branch.
 - If local `main` is pushed, push the full current local `main` tip together with all of its latest commits.
 - Do not partial-push `main`, and do not update `origin/main` through another branch while newer local `main` commits remain unpublished.
 - One feature equals one dedicated worktree plus one local private branch.
@@ -521,6 +522,9 @@ invent near-synonyms when a concept below already fits.
 - Problem-analysis conclusions and solution designs must use concise, plain, and clear language.
 
 ## Quality Gate
+
+`go.mod` is the Go toolchain version authority. Build, test, CI, and release
+checks must use its patch version; maintained build instructions must match.
 
 Run before integration:
 

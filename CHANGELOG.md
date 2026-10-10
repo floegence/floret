@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.27.2 - 2026-10-10
+
+- Align the module, CI, local checks, and build instructions to Go 1.27.2, matching the downstream toolchain and resolving the Go 1.27.1 standard-library vulnerability findings.
+- Require named task worktrees until cleanup completes; do not leave detached checkouts as a substitute for removing merged work.
+- Public API, domain schema, and compaction behavior remain unchanged.
+
 ## v7.27.1 - 2026-10-10
 
 - Preserve complete compaction input, including formatting, tool arguments, canonical references, and runtime facts. Remove fixed message previews and silent transcript/output truncation.

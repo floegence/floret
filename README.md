@@ -14,7 +14,7 @@ product persistence layer.
 
 ## Install
 
-Build with Go 1.27.1.
+Build with Go 1.27.2.
 
 ```bash
 go get github.com/floegence/floret/v7@v7.3.2
