@@ -781,7 +781,7 @@ func TestDynamicToolSurfaceIsFrozenForTheTurn(t *testing.T) {
 		return "written", nil
 	}))
 	e := newTestEngine(p, rec)
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{
 		Name: "default_search",
 		Type: "web_search",
@@ -857,7 +857,7 @@ func TestDynamicToolSurfaceRefreshesProviderEnvelopeWhenEnabled(t *testing.T) {
 		return "written", nil
 	}))
 	e := newTestEngine(p, rec)
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{
 		Name: "default_search",
 		Type: "web_search",
@@ -1045,7 +1045,7 @@ func TestPromptCacheActivatesNewToolsetWithoutCompaction(t *testing.T) {
 	second.Store = store
 	second.Prompt = promptStore
 	second.Tools = reg
-	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	second.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	second.Options.RunID = "turn-2"
 	second.Options.ThreadID = "thread"
 	if err := store.AppendTranscript("turn-2", firstResult.Messages...); err != nil {
@@ -1085,7 +1085,7 @@ func TestLegacyPromptScopeDriftCompactsBeforeProviderDispatch(t *testing.T) {
 	e := newTestEngine(p, &event.Recorder{})
 	e.Store = store
 	e.Prompt = promptStore
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.PreviousProviderState = &provider.State{Kind: "response_id", ID: "legacy-response"}
 
 	got := e.Run(context.Background(), "new question")
@@ -1250,7 +1250,7 @@ func TestPromptCacheSwitchToSmallerModelCompactsOnlyForTargetPressure(t *testing
 	second := newTestEngine(providerB, &event.Recorder{})
 	second.Store = transcripts
 	second.Prompt = promptStore
-	second.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	second.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	second.Options.RunID = "run-b"
 	second.Options.TurnID = "turn-b"
 	second.Options.ThreadID = "thread"
@@ -3793,7 +3793,7 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	if _, err := buildProviderRequestForTest(context.Background(), e, 0, []session.Message{
 		{Role: session.User, Content: "older"},
 		{Role: session.User, Content: "newer"},
@@ -3901,7 +3901,7 @@ func TestPreRequestThresholdCompactsWithAppendOnlyStore(t *testing.T) {
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1400, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
 
 	got := e.Run(context.Background(), "")
@@ -3933,7 +3933,7 @@ func TestPreRequestThresholdCompactsWithAppendOnlyStore(t *testing.T) {
 func TestManualCompactBelowThresholdNoopsWithoutCheckpoint(t *testing.T) {
 	rec := &event.Recorder{}
 	e := newTestEngine(harness.NewScriptedProvider(), rec)
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	policy := contextpolicy.Normalize(e.Options.ContextPolicy)
 	history := []session.Message{
 		{Role: session.User, Content: "first request " + strings.Repeat("alpha ", 500), EntryID: "u1"},
@@ -4049,7 +4049,7 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20, RecentUserTokens: 20}
 
 	got := e.Run(context.Background(), "")
@@ -4097,7 +4097,7 @@ func TestCompactionConvergesBeforeEmittingComplete(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}}
+	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}}
 	e := newTestEngine(p, rec)
 	e.Store = store
 	e.Compactor = compactor
@@ -4168,7 +4168,7 @@ func TestCompactionFailureDoesNotEmitCompleteWhenFixedRequestOverBudget(t *testi
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20, RecentUserTokens: 20}
 
 	got := e.Run(context.Background(), "")
@@ -4221,7 +4221,7 @@ func TestPostResponsePressureCompactsNextRequestAndContinues(t *testing.T) {
 		},
 	}
 	e := newTestEngine(p, rec)
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 60, RecentUserTokens: 40}
 	mustRegister(t, e.Tools, stringTool("read", "read large output", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
 		return strings.Repeat("large output ", 300), nil
@@ -4271,7 +4271,7 @@ func TestOverflowRetryCompactionConvergesBeforeRetry(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}}
+	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}}
 	e := newTestEngine(p, rec)
 	e.Store = store
 	e.Compactor = compactor
@@ -4408,7 +4408,7 @@ func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{
 		ContextWindowTokens:   1000000,
 		MaxOutputTokens:       384000,
@@ -4521,7 +4521,7 @@ func TestTruncatedProviderOutputContinuesWithoutFullCompactWhenInputPressureIsLo
 		},
 	)
 	e := newTestEngine(p, rec)
-	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 8000, ReservedOutputTokens: 8, ReservedSummaryTokens: 8, RecentTailTokens: 8}
 
 	got := e.Run(context.Background(), "work")
@@ -5318,7 +5318,7 @@ type bloatedSummaryGenerator struct {
 }
 
 func (g bloatedSummaryGenerator) GenerateSummary(context.Context, compaction.Preparation) (string, error) {
-	return strings.Repeat("summary ", int(g.tokens)), nil
+	return strings.Repeat("s", int(g.tokens*3)), nil
 }
 
 func firstNonSystemMessageIndex(messages []session.Message) int {
@@ -5389,4 +5389,10 @@ func TestMixedControlCorrectionIsBounded(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		assertValidationPair(t, messages, fmt.Sprintf("ask-%d", i))
 	}
+}
+
+type boundedSummaryFixture struct{}
+
+func (boundedSummaryFixture) GenerateSummary(_ context.Context, prep compaction.Preparation) (string, error) {
+	return strings.Repeat("s", int(min(prep.Request.Policy.ReservedSummaryTokens, 200)*3)), nil
 }

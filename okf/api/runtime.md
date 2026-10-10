@@ -43,6 +43,16 @@ Hosts use that anchor and existing live updates without another lifecycle store.
 See [domain schema v13](storage.md#domain-migration) and the
 [README behavior contract](../../README.md#independent-context-compaction).
 
+The shared generator reads complete eligible canonical text, formatting, tool
+arguments, references, and runtime facts. A single ordered loop batches by request
+budget, carries the latest candidate summary, and fragments oversized message
+bodies without dropping bytes. Rendered-request checks and overflow retries are
+bounded; every prepared handle is closed. Candidates are never durable and only
+the fully consumed, validated result reaches installation. Failed, incomplete,
+or over-budget output preserves the original effective context. The 20,000-token
+summary ceiling is separate from the 50,000-token compacted-context target.
+
+
 The optional `ThreadSendReader.LookupSend` reads the original admitted
 `UserInput` by thread and request key. Queue edits and promotion do not change
 that original transport identity; a removed queue item also retains its send

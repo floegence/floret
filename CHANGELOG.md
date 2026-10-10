@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.27.1 - 2026-10-10
+
+- Preserve complete compaction input, including formatting, tool arguments, canonical references, and runtime facts. Remove fixed message previews and silent transcript/output truncation.
+- Use one ordered, budgeted summary loop for manual and automatic compaction. Carry the latest summary through lossless Unicode fragments; validate rendered requests, close prepared handles, and bound overflow/output retries before one atomic installation.
+- Keep intermediate candidates in memory and leave effective context unchanged on failure or cancellation. Move the extractive fixture out of production, and cover long-message facts, exact fragment coverage, request budgets, and failed generation. Public API and domain schema remain unchanged.
+
 ## v7.27.0 - 2026-10-09
 
 - Separate SQLite record values from primary-key indexes through atomic physical format 1 -> 2 conversion. Reuse exact format recognition for open, inspection, backup, and space maintenance.
