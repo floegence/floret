@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-03",
+  "checked_at": "2026-10-12",
   "exclude_pattern": "realtime|(?:^|-)live(?:-|$)|deep-research|computer-use|safeguard|character",
   "exclude": {
     "openai": [
@@ -68,6 +68,11 @@
     ]
   },
   "models": {
+    "anthropic/claude-haiku-5-5": {
+      "reasoning": {
+        "default_level": "medium"
+      }
+    },
     "moonshot/kimi-k3": {
       "reasoning": {
         "disable_supported": false,

@@ -42,7 +42,10 @@ not choose a host's default or replace a conversation's current model.
 
 The upstream data is MIT licensed; see `models-dev.LICENSE`.
 
-The 2026-10-03 snapshot includes current Sol/Luna, Claude 5.5, GLM FlashX,
+The 2026-10-12 snapshot adds Claude Haiku 5.5 with adaptive thinking and corrects
+Sonnet 4.5 to its current 200K context capacity. All nine embedded provider
+inventories were reviewed; host choices and thread identities remain unchanged.
+The snapshot includes current Sol/Luna, Claude 5.5, GLM FlashX,
 Qwen Flash/Omni, Grok 4.7, and DeepSeek Flash metadata. GPT-6.1 Sol requires
 Responses for tools and is excluded from Floret's built-in Chat transport;
 hosts with a qualified Responses gateway may expose it independently.

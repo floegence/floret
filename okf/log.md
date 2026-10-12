@@ -2,6 +2,10 @@
 
 ## 2026-10-12
 
+- Refresh the nine-provider offline model catalog, add Claude Haiku 5.5, and
+  correct Sonnet 4.5 context capacity. [Catalog maintenance](../scripts/model-catalog/README.md)
+  preserves host selection ownership and reproducible source provenance.
+
 - Document the [canonical run-identity migration](api/storage.md#domain-migration):
   schema v14 validates explicit marker identities, repairs only unambiguous
   historical markers, preserves custom observations, and fails closed on

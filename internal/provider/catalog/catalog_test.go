@@ -69,6 +69,22 @@ func TestReasoningCapabilitiesUseProviderSpecificValues(t *testing.T) {
 	}
 }
 
+func TestOctoberCatalogClaudeCapabilities(t *testing.T) {
+	model, ok := FindModel(ProviderAnthropic, "claude-haiku-5-5")
+	if !ok || model.ContextWindow != 1000000 || model.MaxTokens != 128000 || !slices.Contains(model.Input, "image") {
+		t.Fatalf("Haiku 5.5 capabilities = %#v", model)
+	}
+	if model.Reasoning.Kind != provider.ReasoningKindEffort || model.Reasoning.DefaultLevel != provider.ReasoningLevelMedium || !model.Reasoning.DisableSupported {
+		t.Fatalf("Haiku 5.5 reasoning = %#v", model.Reasoning)
+	}
+	for _, id := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"} {
+		model, ok := FindModel(ProviderAnthropic, id)
+		if !ok || model.ContextWindow != 200000 {
+			t.Fatalf("%s context window = %d", id, model.ContextWindow)
+		}
+	}
+}
+
 func TestCatalogPredefinedModelsUseSupportedContextBaseline(t *testing.T) {
 	for _, p := range Providers() {
 		for _, model := range p.Models {

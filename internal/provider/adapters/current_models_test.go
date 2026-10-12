@@ -73,3 +73,27 @@ func TestAdaptiveClaudeRequest(t *testing.T) {
 		t.Fatal("adaptive-only model accepted a budget")
 	}
 }
+
+func TestHaikuAdaptiveAndDisabledRequests(t *testing.T) {
+	model, ok := catalog.FindModel(catalog.ProviderAnthropic, "claude-haiku-5-5")
+	if !ok {
+		t.Fatal("Haiku 5.5 is missing")
+	}
+	p := AnthropicProvider{Model: model.ID, CostModel: model}
+	for _, level := range []provider.ReasoningLevel{provider.ReasoningLevelMedium, provider.ReasoningLevelOff} {
+		var out anthropicRequest
+		if err := p.applyAnthropicReasoning(&out, provider.Request{Reasoning: provider.ReasoningSelection{Level: level}}, 8192); err != nil {
+			t.Fatal(err)
+		}
+		want := "adaptive"
+		if level == provider.ReasoningLevelOff {
+			want = "disabled"
+		}
+		if out.Thinking == nil || out.Thinking.Type != want {
+			t.Fatalf("%s thinking = %#v", level, out.Thinking)
+		}
+	}
+	if err := p.applyAnthropicReasoning(&anthropicRequest{}, provider.Request{Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelMedium, BudgetTokens: 1024}}, 8192); err == nil {
+		t.Fatal("adaptive Haiku accepted a manual thinking budget")
+	}
+}
