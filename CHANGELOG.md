@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.29.0 - 2026-10-11
+
+- Add canonical `ThreadView.Turns` and `HistoryPage.Turns` with historical outcomes, exact run identity, elapsed time, unioned user/approval waiting time, and work duration. Queue time and parallel tool totals are excluded.
+- Record accepted natural-stop assistant entry references in existing terminal metadata. Preserve length-continuation segments and stable live item IDs; tool and hook continuations discard draft candidates. Missing legacy boundaries remain unavailable rather than inferred.
+- Preserve original occurrence times and rewrite final references across nested forks. Optional journal metadata keeps domain schema 13 and does not rewrite existing stores on open.
+
 ## v7.28.0 - 2026-10-11
 
 - Stage, validate, and persist only affected domain records during normal writes. Preserve complete startup and migration validation, schema 13, durable bytes, and rollback on callback, cancellation, panic, or backend commit failure.

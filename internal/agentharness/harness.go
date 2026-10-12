@@ -889,6 +889,29 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		t.harness.emitEntryCommitted(entry, runID)
 	}
 	terminalMetadata := markerMetadata(runID, result)
+	if result.Status == engine.Completed && projection.acceptedFinal {
+		finalJournal, readErr := t.Journal(persistCtx)
+		if readErr != nil {
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, readErr, "final_boundary_read_error", engine.FailureOriginStorage)
+		}
+		segmented, complete := false, true
+		for _, entry := range finalJournal.Path {
+			if entry.TurnID != turnID {
+				continue
+			}
+			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+				segmented = entry.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"
+			}
+			if entry.RunID == runID && entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Content != "" && !projection.projectedAssistantIDs[entry.ID] {
+				complete = false
+			}
+		}
+		if segmented && complete {
+			ids := append([]string{}, projection.finalCandidate...)
+			encoded, _ := json.Marshal(ids)
+			terminalMetadata[sessiontree.FinalResponseEntriesMetadataKey] = string(encoded)
+		}
+	}
 	mergeTerminalMetadata(terminalMetadata, opts.TerminalMetadata)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		mergeTerminalMetadata(terminalMetadata, opts.DeadlineMetadata)
@@ -999,7 +1022,7 @@ func mergeTerminalMetadata(dst, src map[string]string) {
 	for key, value := range src {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		if key != "" && value != "" {
+		if key != "" && value != "" && key != sessiontree.FinalResponseEntriesMetadataKey {
 			dst[key] = value
 		}
 	}
@@ -1398,15 +1421,20 @@ func (t *Thread) appendMessage(ctx context.Context, turnID string, runID string,
 }
 
 func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) error {
+	_, err := t.appendMessageEntryAt(ctx, turnID, runID, msg, observedAt)
+	return err
+}
+
+func (t *Thread) appendMessageEntryAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) (sessiontree.Entry, error) {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
 	entry, err := sessiontree.AppendRunMessageAt(ctx, t.harness.options.Repo, t.id, turnID, runID, msg, observedAt)
 	if err != nil {
-		return err
+		return sessiontree.Entry{}, err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
-	return nil
+	return entry, nil
 }
 
 func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
@@ -2033,24 +2061,27 @@ func (r *HarnessRecorder) Snapshot() []HarnessEvent {
 }
 
 type turnProjection struct {
-	thread            *Thread
-	ctx               context.Context
-	turnID            string
-	runID             string
-	downstream        event.Sink
-	emitMu            sync.Mutex
-	mu                sync.Mutex
-	text              string
-	reasoning         string
-	pendingCalls      []pendingToolMessage
-	pendingResults    []pendingToolMessage
-	pendingBatchSize  int
-	pendingCallsSent  bool
-	lastCompaction    event.Event
-	activeAttempt     providerAttemptIdentity
-	threadUsageTotals ThreadTokenUsageTotals
-	contextUsage      contextUsageProjection
-	err               error
+	thread                *Thread
+	ctx                   context.Context
+	turnID                string
+	runID                 string
+	downstream            event.Sink
+	emitMu                sync.Mutex
+	mu                    sync.Mutex
+	text                  string
+	reasoning             string
+	pendingCalls          []pendingToolMessage
+	pendingResults        []pendingToolMessage
+	pendingBatchSize      int
+	pendingCallsSent      bool
+	lastCompaction        event.Event
+	activeAttempt         providerAttemptIdentity
+	threadUsageTotals     ThreadTokenUsageTotals
+	contextUsage          contextUsageProjection
+	finalCandidate        []string
+	acceptedFinal         bool
+	projectedAssistantIDs map[string]bool
+	err                   error
 }
 
 type providerAttemptIdentity struct {
@@ -2212,6 +2243,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+		p.finalCandidate = nil
 		safe := event.Sanitize(ev)
 		metadata, _ := safe.Metadata.(map[string]any)
 		entry, err := sessiontree.NewHostedToolEntry(observation.Event{
@@ -2235,6 +2267,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+		p.finalCandidate = nil
 		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{
 			message:    message,
 			observedAt: ev.Timestamp,
@@ -2267,6 +2300,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+		p.finalCandidate = nil
 		p.pendingResults = append(p.pendingResults, pendingToolMessage{
 			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
 			observedAt:       ev.Timestamp,
@@ -2298,6 +2332,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+		p.finalCandidate = nil
 		p.err = p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.User, Content: ev.Message})
 		if p.err != nil {
 			return
@@ -2312,11 +2347,14 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	case event.StepEnd:
-		if ev.ContinuationReason != "" {
-			if err := p.flushPendingAssistantText(true); err != nil {
-				p.err = err
-				return
-			}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
+		}
+		if ev.CompletionReason == string(engine.CompletionReasonNaturalStop) {
+			p.acceptedFinal = true
+		} else if ev.ContinuationReason != string(engine.ContinueProviderTruncated) && ev.ContinuationReason != string(engine.ContinueRetryEmpty) {
+			p.finalCandidate = nil
 		}
 	}
 }
@@ -2475,9 +2513,15 @@ func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
 		}
 		return nil
 	}
-	if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
+	entry, err := p.thread.appendMessageEntryAt(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}, time.Time{})
+	if err != nil {
 		return err
 	}
+	if p.projectedAssistantIDs == nil {
+		p.projectedAssistantIDs = map[string]bool{}
+	}
+	p.projectedAssistantIDs[entry.ID] = true
+	p.finalCandidate = append(p.finalCandidate, entry.ID)
 	p.text = ""
 	if resetReasoning {
 		p.reasoning = ""
