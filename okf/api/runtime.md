@@ -309,6 +309,23 @@ Domain migration permanently fills released v5 message rows that predate
 durable message `RunID` when canonical lifecycle markers identify one exact
 run segment. Runtime projection never infers a missing identity.
 
+`ThreadView.Turns` and `HistoryPage.Turns` retain each admitted turn's exact
+identity, kind, historical outcome, original start/end timestamps, elapsed time,
+unioned user/approval waiting time, and work duration in milliseconds. Only
+terminal turns settle durations; queue time is excluded and parallel waits are
+deducted once. Model latency, tools, and retries count as work.
+
+Accepted natural-stop response segments are recorded as canonical entry
+references in terminal metadata and mapped to stable `FinalItemIDs`.
+`FinalBoundaryComplete` means the full boundary was recorded, including a known
+empty boundary. Length continuations remain one final response; tools and hook
+continuation discard the preceding candidate. Legacy boundaries are unavailable,
+never inferred from text, timestamp, or the last assistant message. Hosts should
+collapse work only for completed turns with a complete, nonempty final boundary
+and the complete accepted detail. Summary notifications cannot author this fact.
+Nested forks remap references and preserve original occurrence timestamps.
+Optional journal metadata leaves schema 13 and existing on-open bytes unchanged.
+
 `ThreadView.RunID` is the exact current execution identity and never aliases
 `TurnID`. `RunProgress` is the actor-owned, process-local phase for active
 provider and tool work. An active view with no unresolved interaction always

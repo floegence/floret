@@ -31,6 +31,7 @@ type threadRuntimeData struct {
 	attemptEpoch        int
 	openTextSegmentID   string
 	openTextKind        ThreadItemKind
+	responseSegmented   bool
 	view                ThreadView
 	cancel              context.CancelCauseFunc
 	cancelOwner         string
@@ -65,6 +66,12 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.turnID = input.turnID
 	runtime.state.runID = input.runID
 	runtime.state.logicalRequestID = input.logicalRequestID
+	runtime.state.responseSegmented = input.clearOutcome
+	for _, turn := range runtime.state.view.Turns {
+		if turn.TurnID == input.turnID {
+			runtime.state.responseSegmented = turn.segmented
+		}
+	}
 	runtime.state.attemptID = ""
 	runtime.state.attemptEpoch = 0
 	runtime.state.openTextSegmentID = ""
@@ -156,6 +163,9 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		}
 		runtime.state.attemptID = attemptID
 		runtime.state.attemptEpoch = attemptEpoch
+	}
+	if runtime.state.responseSegmented && event.Type == observation.EventTypeStepEnd {
+		runtime.finishLiveTextSegment()
 	}
 	if event.Type == observation.EventTypeHostedToolCall || event.Type == observation.EventTypeHostedToolResult {
 		runtime.finishLiveTextSegment()

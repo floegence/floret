@@ -433,6 +433,9 @@ func TestPublishedToolInputSurvivesRestartWithoutReplay(t *testing.T) {
 	if final.Failure != nil || *final.LastOutcome != runtime.TurnOutcomeCompleted || calls.Load() != 1 {
 		t.Fatalf("resume failed or replayed tool: failure=%+v outcome=%v calls=%d", final.Failure, final.LastOutcome, calls.Load())
 	}
+	if len(final.Turns) != 1 || !final.Turns[0].FinalBoundaryComplete || len(final.Turns[0].FinalItemIDs) != 1 || final.Turns[0].RunID != final.RunID || final.Turns[0].Outcome == nil || *final.Turns[0].Outcome != runtime.TurnOutcomeCompleted {
+		t.Fatalf("accepted final presentation missing: %+v", final.Turns)
+	}
 	if final.TurnID != waiting.TurnID {
 		t.Fatal("input response created another turn")
 	}

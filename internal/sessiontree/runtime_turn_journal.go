@@ -83,7 +83,7 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 	started := Entry{
 		ID: startedID, ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,
 		RequestKey: req.LogicalRequestID, RequestFingerprint: req.RequestFingerprint, TurnStatus: TurnStarted, CreatedAt: now,
-		Metadata: map[string]string{"run_id": req.RunID},
+		Metadata: map[string]string{"run_id": req.RunID, ResponseSegmentsMetadataKey: "1"},
 	}
 	if req.RetrySourceEntryID != "" {
 		started.Metadata[RetrySourceTurnIDMetadataKey] = req.RetrySourceTurnID

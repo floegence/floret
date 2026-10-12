@@ -326,6 +326,13 @@ original tool item. Canonical reload derives the same sequence without a
 presentation ledger or draft mirror fields.
 Every item and interaction carries its exact `TurnID` and `RunID`, so multi-turn
 history and same-turn continuation never borrow identity from the current run.
+`ThreadView.Turns` and `HistoryPage.Turns` expose canonical per-turn outcome,
+start/end times, elapsed milliseconds, waiting milliseconds, and work duration.
+Waiting deducts the union of user-input and approval intervals; queue time is
+excluded. `FinalBoundaryComplete` distinguishes recorded accepted final-response
+item IDs from unavailable legacy boundaries. Render every `FinalItemIDs` segment
+in order; never infer final answers from text or the latest assistant item.
+
 `ThreadView.RunID` identifies only the current execution; hosts must never use
 it to fill historical items. `RunProgress` is the actor-owned, process-local phase
 for an advancing run and is absent while awaiting interaction or after the run

@@ -7,6 +7,13 @@ tags: [workflow, adoption, projection, events, ui]
 timestamp: 2026-08-18T00:00:00Z
 ---
 
+# Summary
+
+The typed ThreadService owns canonical presentation facts. Hosts preserve ordered
+item identity and apply only complete accepted views. Historical failures and
+unavailable final boundaries must remain inspectable; reconnect refreshes facts
+without fabricating success.
+
 # Goal
 
 Build a polished thread UI that updates immediately during a turn and converges
@@ -37,7 +44,11 @@ arrival time.
 7. Render the cumulative Activity presentation supplied for each stable tool
    item. Result facts may add status and output without removing safe display
    facts authored by the matching tool call.
-8. Keep stable row geometry while text and progress change, including narrow
+8. Use per-turn canonical outcome and complete final-item boundaries for work
+   disclosure. Keep all final segments and user/input dialogue visible; legacy
+   boundaries remain expanded. Preserve selection, focus, inspection, and scroll
+   anchors when successful terminal detail arrives.
+9. Keep stable row geometry while text and progress change, including narrow
    layouts.
 
 # Verify

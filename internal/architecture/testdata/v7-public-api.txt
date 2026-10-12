@@ -617,6 +617,7 @@ field ForkThreadInput.HostProfileRef string tag="json:\"host_profile_ref,omitemp
 field ForkThreadInput.ForkMode string tag="json:\"fork_mode,omitempty\""
 field ForkThreadInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type HistoryPage struct
+field HistoryPage.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
 field HistoryPage.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items\""
 field HistoryPage.Before string tag="json:\"before,omitempty\""
 field HistoryPage.HasMore bool tag="json:\"has_more,omitempty\""
@@ -1015,6 +1016,18 @@ field ThreadTokenUsageTotals.InputTokens int64 tag="json:\"input_tokens,omitempt
 field ThreadTokenUsageTotals.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
 field ThreadTokenUsageTotals.CacheReadTokens int64 tag="json:\"cache_read_tokens,omitempty\""
 field ThreadTokenUsageTotals.CacheWriteTokens int64 tag="json:\"cache_write_tokens,omitempty\""
+type ThreadTurn struct
+field ThreadTurn.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadTurn.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadTurn.Kind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"kind,omitempty\""
+field ThreadTurn.StartedAt time.Time tag="json:\"started_at\""
+field ThreadTurn.EndedAt *time.Time tag="json:\"ended_at,omitempty\""
+field ThreadTurn.Outcome *github.com/floegence/floret/v7/runtime.TurnOutcome tag="json:\"outcome,omitempty\""
+field ThreadTurn.ElapsedMS int64 tag="json:\"elapsed_ms\""
+field ThreadTurn.WaitingMS int64 tag="json:\"waiting_ms\""
+field ThreadTurn.WorkDurationMS int64 tag="json:\"work_duration_ms\""
+field ThreadTurn.FinalItemIDs []string tag="json:\"final_item_ids\""
+field ThreadTurn.FinalBoundaryComplete bool tag="json:\"final_boundary_complete\""
 type ThreadTurnFailure struct
 field ThreadTurnFailure.Code github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode tag="json:\"code\""
 field ThreadTurnFailure.Message string tag="json:\"message\""
@@ -1037,6 +1050,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
 field ThreadView.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadView.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
 field ThreadView.RestoredInputs []github.com/floegence/floret/v7/runtime.RestoredInput tag="json:\"restored_inputs,omitempty\""

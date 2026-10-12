@@ -1608,6 +1608,28 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew)
+		if entry.Type == EntryTurnMarker || entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryToolCall || entry.Type == EntryToolResult {
+			if next.Metadata == nil {
+				next.Metadata = map[string]string{}
+			}
+			if _, exists := next.Metadata[OccurrenceTimeMetadataKey]; !exists {
+				next.Metadata[OccurrenceTimeMetadataKey] = entry.CreatedAt.Format(time.RFC3339Nano)
+			}
+		}
+		refs, known, refErr := FinalResponseEntryIDs(entry)
+		if refErr != nil {
+			return ThreadMeta{}, refErr
+		}
+		if known {
+			for i, id := range refs {
+				if oldToNew[id] == "" {
+					return ThreadMeta{}, ErrAuthorityCorrupt
+				}
+				refs[i] = oldToNew[id]
+			}
+			encoded, _ := json.Marshal(refs)
+			next.Metadata[FinalResponseEntriesMetadataKey] = string(encoded)
+		}
 		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)

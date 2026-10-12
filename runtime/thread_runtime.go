@@ -195,6 +195,7 @@ type ImportResult struct {
 }
 
 type HistoryPage struct {
+	Turns   []ThreadTurn `json:"turns"`
 	Items   []ThreadItem `json:"items"`
 	Before  string       `json:"before,omitempty"`
 	HasMore bool         `json:"has_more,omitempty"`
@@ -299,9 +300,10 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
-	ID     string          `json:"id"`
-	TurnID identity.TurnID `json:"turn_id,omitempty"`
-	RunID  identity.RunID  `json:"run_id"`
+	sourceEntryIDs []string
+	ID             string          `json:"id"`
+	TurnID         identity.TurnID `json:"turn_id,omitempty"`
+	RunID          identity.RunID  `json:"run_id"`
 	// Ordinal is the stable one-based position in the thread presentation.
 	Ordinal uint64         `json:"ordinal"`
 	Kind    ThreadItemKind `json:"kind"`
@@ -407,6 +409,7 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
+	Turns          []ThreadTurn        `json:"turns"`
 	TurnKind       TurnKind            `json:"turn_kind,omitempty"`
 	Cancellation   *ThreadCancellation `json:"cancellation,omitempty"`
 	RestoredInputs []RestoredInput     `json:"restored_inputs,omitempty"`
@@ -1253,7 +1256,11 @@ func (service *threadRuntimeService) History(ctx context.Context, threadID ident
 	if start < 0 {
 		start = 0
 	}
-	result := HistoryPage{Items: cloneThreadItems(items[start:end]), HasMore: start > 0}
+	turns, err := threadRuntimeTurnsFromEntries(entries, items)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	result := HistoryPage{Turns: turns, Items: cloneThreadItems(items[start:end]), HasMore: start > 0}
 	if result.HasMore {
 		result.Before = items[start].ID
 	}
@@ -1706,6 +1713,10 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	}
 	canonical := ThreadView{ThreadID: threadID, Activity: ThreadActivityIdle}
 	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	canonical.Turns, err = threadRuntimeTurnsFromEntries(entries, canonical.Items)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -2415,6 +2426,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.state.view.Activity = ThreadActivityIdle
 		actor.state.view.RunProgress = nil
 		if refreshErr == nil {
+			actor.state.view.Turns = canonical.Turns
 			actor.state.view.Items = canonical.Items
 			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
@@ -2843,6 +2855,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		}
 		actor.state.view.ViewVersion++
 		actor.state.view.Items = reconciled
+		actor.state.view.Turns = canonical.Turns
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		normalizeActiveThreadRunProgress(&actor.state.view)
@@ -2869,6 +2882,10 @@ func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context
 	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, fmt.Errorf("canonical refresh hydrate items: %w", err)
+	}
+	canonical.Turns, err = threadRuntimeTurnsFromEntries(entries, canonical.Items)
+	if err != nil {
+		return ThreadView{}, err
 	}
 	canonical.TurnID, canonical.RunID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
 	canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
@@ -3920,6 +3937,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 			view.Attention.InputCount++
 		}
 	}
+	view.Turns = cloneThreadTurns(view.Turns)
 	view.Items = cloneThreadItems(view.Items)
 	view.Queue = append([]QueuedInput(nil), view.Queue...)
 	for index := range view.Queue {
@@ -3981,6 +3999,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		out[index].sourceEntryIDs = append([]string(nil), item.sourceEntryIDs...)
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
 		out[index].References = append([]MessageReference(nil), item.References...)
 		out[index].Context = append([]MessageContextItem(nil), item.Context...)
@@ -4164,6 +4183,12 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 	toolItemIndex := make(map[string]int)
 	thinkingCounts := make(map[identity.TurnID]int)
 	assistantCounts := make(map[identity.TurnID]int)
+	segmented := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+			segmented[entry.TurnID] = entry.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"
+		}
+	}
 	reasoningOpen := make(map[string]bool)
 	lastReasoning := make(map[string]string)
 	failedControls := make(map[string]threadControlIdentity)
@@ -4236,15 +4261,16 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if entry.Message.Content == "" {
 					continue
 				}
-				if len(items) > 0 {
+				if !segmented[entry.TurnID] && len(items) > 0 {
 					previous := &items[len(items)-1]
 					if previous.Kind == ThreadItemAssistant && previous.TurnID == turnID && previous.RunID == runID {
 						previous.Text += entry.Message.Content
+						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
 						continue
 					}
 				}
 				assistantCounts[turnID]++
-				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: entry.CreatedAt})
+				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: entry.CreatedAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
 			if entry.TurnStatus != sessiontree.TurnCompleted && entry.TurnStatus != sessiontree.TurnFailed && entry.TurnStatus != sessiontree.TurnAborted {
@@ -4378,7 +4404,10 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			if err := json.Unmarshal(entry.Payload, &resolution); err != nil {
 				return nil, nil, fmt.Errorf("decode interaction resolution %q: %w", entry.ID, err)
 			}
-			resolution.At = entry.CreatedAt
+			resolution.At, err = sessiontree.EntryOccurrenceTime(entry)
+			if err != nil {
+				return nil, nil, err
+			}
 			interactions[index].Resolved = true
 			interactions[index].Resolution = &resolution
 			if resolution.Approved != nil {
