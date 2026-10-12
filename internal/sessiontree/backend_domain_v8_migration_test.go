@@ -41,7 +41,7 @@ func TestBackendDomainV7ToV8ClassifiesContextContinueWithoutChangingCanonicalInp
 		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
 			return errors.Join(err, errors.New("v7 records remain after migration"))
 		}
-		_, found, err := loadBackendDomainV13(ctx, tx, time.Now)
+		_, found, err := loadBackendDomainV14(ctx, tx, time.Now)
 		if err != nil || !found {
 			return errors.Join(err, errors.New("current records are missing"))
 		}
@@ -234,7 +234,7 @@ func v7ContextContinueFixture(t *testing.T, now time.Time) (*MemoryRepo, string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AppendTurnMarker(ctx, memory, "thread", "turn", TurnSavePoint, map[string]string{
+	if _, err := AppendTurnMarker(ctx, memory, "thread", "turn", "run", TurnSavePoint, map[string]string{
 		"reason": "context_continue", "continuation_reason": "hook", "run_id": "run",
 	}); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ type migrationCorruptingWriteTx struct {
 }
 
 func (tx migrationCorruptingWriteTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV13Namespace && string(key) == string(backendDomainV13Key(backendDomainRecordRootIndex)) {
+	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace) && (string(key) == string(backendDomainV13Key(backendDomainRecordRootIndex)) || string(key) == string(backendDomainV14Key(backendDomainRecordRootIndex))) {
 		value = []byte("corrupt")
 	}
 	return tx.WriteTx.Put(namespace, key, value)

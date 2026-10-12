@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-10-12
+
+- Document the [canonical run-identity migration](api/storage.md#domain-migration):
+  schema v14 validates explicit marker identities, repairs only unambiguous
+  historical markers, preserves custom observations, and fails closed on
+  metadata conflicts or missing ancestry.
+
 ## 2026-10-11
 
 - Add [canonical media retention](api/runtime.md#thread-service), including archived and inactive journal history and an explicit idle maintenance boundary. Hosts retain byte-store ownership; typed image tools and schema 13 remain unchanged.

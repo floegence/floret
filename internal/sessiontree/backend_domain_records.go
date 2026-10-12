@@ -254,7 +254,11 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			}
 			ordered[ordinal] = entry
 		}
-		if err := memory.replaceIndexedEntriesLocked(threadID, ordered); err != nil {
+		replace := memory.replaceIndexedEntriesLocked
+		if format.version < backendDomainV14Version {
+			replace = memory.replaceLegacyIndexedEntriesLocked
+		}
+		if err := replace(threadID, ordered); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 	}
@@ -284,10 +288,10 @@ func validateBackendDomainMemory(memory *MemoryRepo, label string, validateConte
 				return fmt.Errorf("thread %q leaf is missing from its canonical journal", threadID)
 			}
 			for _, entry := range threadEntries {
-				if label != "v13" && entry.Metadata[TurnKindMetadataKey] != "" {
+				if label != "v13" && label != "v14" && entry.Metadata[TurnKindMetadataKey] != "" {
 					return fmt.Errorf("session-tree %s contains a v13 turn kind", label)
 				}
-				if label != "v12" && label != "v13" && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+				if label != "v12" && label != "v13" && label != "v14" && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 					return fmt.Errorf("session-tree %s contains a v12 tool input request", label)
 				}
 				if err := ValidateEntryIntegrity(entry); err != nil {

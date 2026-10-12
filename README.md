@@ -384,8 +384,10 @@ failed or cancelled compaction with a new compact request key. Ordinary `Retry`
 returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
 result per operation and its canonical `AfterItemID` presentation anchor; an
 empty history has no artificial anchor. Stop, shutdown, restart, and fork use
-the existing thread lifecycle. Domain schema v13 adds the automatic v12 -> v13
-edge without reclassifying historical slash-command conversations.
+the existing thread lifecycle. Domain schema v14 adds the automatic v12 -> v13
+typed-turn edge and v13 -> v14 canonical run-identity edge without
+reclassifying historical slash-command conversations or using observation
+metadata as runtime authority.
 
 ## Consistent Reads
 

@@ -265,7 +265,7 @@ func loadBackendDomainV7(ctx context.Context, tx spi.ReadTx, now func() time.Tim
 			}
 			ordered[ordinal] = entry
 		}
-		if err := memory.replaceIndexedEntriesLocked(threadID, ordered); err != nil {
+		if err := memory.replaceLegacyIndexedEntriesLocked(threadID, ordered); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 	}

@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 lineage. Version 13 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 lineage. Version 14 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -52,6 +52,16 @@ context-only turns without a user message. Historical `/compact` conversations
 remain ordinary turns. A validated compaction installs its summary, lifecycle,
 estimate, and independent-turn completion in one domain transaction; the same
 installer serves automatic compaction while its ordinary turn remains active.
+
+The v13 -> v14 edge makes explicit `Entry.RunID` on canonical lifecycle markers
+the only runtime execution identity. Historical markers missing that field are
+repaired only from a validated marker identity or an unambiguous ancestor path
+for the same turn. Conflicting metadata, missing ancestry, invalid identities,
+and redacted observation values fail closed. Custom observation entries retain
+their original content and never advance execution identity. The migration
+preserves entry IDs, ordering, timestamps, Raw/RawHash, final-output
+references, provider state, and all earlier migration edges; it writes the v14
+records and removes v13 records in one transaction.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
@@ -88,7 +98,7 @@ dependencies, rather than cloning or revalidating unrelated history. The reposit
 lock isolates staging, the working maps are restored before the backend callback
 returns, and successful backend commit installs the staged values once. Failure,
 cancellation, and panic preserve both prior memory and durable records. Startup,
-migration, and explicit verification retain complete domain validation; schema 13
+migration, and explicit verification retain complete domain validation; schema 14
 and canonical history bytes are unchanged.
 
 Immediately before an ordinary provider dispatch, the backend kernel commits

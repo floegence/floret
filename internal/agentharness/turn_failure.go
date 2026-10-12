@@ -16,16 +16,15 @@ func validateTurnTerminalOutcome(threadID, turnID, runID string, outcome *sessio
 		return errors.New("turn terminal outcome is required")
 	}
 	terminal := outcome.Terminal
-	markerRunID := strings.TrimSpace(terminal.Metadata["run_id"])
 	if terminal.Type != sessiontree.EntryTurnMarker || terminal.ThreadID != threadID || terminal.TurnID != turnID ||
-		(markerRunID != "" && markerRunID != runID) {
+		terminal.RunID != runID {
 		return errors.New("turn terminal identity is invalid")
 	}
 	failureCode := strings.TrimSpace(terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey])
 	failureMessage := ""
 	if outcome.Failure != nil {
 		failure := *outcome.Failure
-		if failure.Type != sessiontree.EntryRunFailure || failure.ThreadID != threadID || failure.TurnID != turnID ||
+		if failure.Type != sessiontree.EntryRunFailure || failure.ThreadID != threadID || failure.TurnID != turnID || failure.RunID != runID ||
 			strings.TrimSpace(failure.Error) == "" || terminal.ParentID != failure.ID {
 			return errors.New("turn failure entry is invalid")
 		}

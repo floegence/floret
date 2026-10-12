@@ -133,9 +133,9 @@ func (h *AgentHarness) canonicalTurnDetail(ctx context.Context, turn sessiontree
 	for _, item := range turn.Entries {
 		entries = append(entries, item.Entry)
 	}
-	activityContext := threadDetailActivityContext{
-		resultCallIDs: threadDetailResultCallIDs(entries),
-		runIDs:        threadDetailTurnRunIDs(entries),
+	activityContext := newThreadDetailActivityContext(entries)
+	if activityContext.err != nil {
+		return CanonicalTurnDetail{}, nil, activityContext.err
 	}
 	detail := CanonicalTurnDetail{
 		TurnID: turn.TurnID, RunID: turn.RunID, StartedOrdinal: turn.StartedOrdinal,

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sync"
 	"testing"
@@ -31,6 +32,10 @@ func TestThreadServiceShowsCommandWhileToolAndProviderAreBlocked(t *testing.T) {
 			return &tools.ActivityPresentation{Label: "Inspect environment", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Operation: "exec", Command: inv.Args.(map[string]string)["command"]}}, nil
 		},
 	}, nil, nil, func(ctx context.Context, inv tools.Invocation[map[string]string]) (tools.Result, error) {
+		inv.UpdateActivity(tools.ActivityUpdate{
+			Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Output: ""}},
+			Metadata: map[string]any{"run_id": inv.RunID.String()},
+		})
 		close(toolStarted)
 		select {
 		case <-releaseTool:
@@ -222,6 +227,9 @@ func assertLiveCommandSubscription(t *testing.T, subscription *WorkspaceSubscrip
 		view, err := subscription.Next(ctx)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if _, err := json.Marshal(view); err != nil {
+			t.Fatalf("live snapshot version %d cannot encode: %v", view.ViewVersion, err)
 		}
 		if view.ThreadID != expected.ThreadID || view.ViewVersion < expected.ViewVersion {
 			continue
