@@ -17,6 +17,19 @@ in-process actor for each active thread.
 
 ## Thread service
 
+`Host.MediaInventory` is the read-only canonical retention boundary for
+host-owned media byte stores. It returns `MediaReference` values with explicit
+`ThreadID` and attachment descriptors from all retained journals: archived
+threads, inactive paths, and queue facts remain covered. Deleted threads are
+excluded. Descriptors stay opaque and are never authorization evidence. Hosts
+must hold the tool-media write gate before reading the snapshot and collect only
+when `Idle` is true, or before deferred execution is activated. `Idle` remains
+false for unfinished executions, including waits and archived threads. Upload
+owners retain their existing protection before admission. Current `ThreadView`
+and root-list results are insufficient
+for garbage collection. This additive v7.28 API does not change image-tool
+contracts, storage bytes, or domain schema 13.
+
 `ThreadService` is the current host-facing lifecycle contract. Its commands
 include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
 `Retry`, queue operations, and `Subscribe`; queries include

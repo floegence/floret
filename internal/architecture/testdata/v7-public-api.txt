@@ -623,6 +623,7 @@ field HistoryPage.HasMore bool tag="json:\"has_more,omitempty\""
 type Host struct
 method *Host.Activate func(ctx context.Context) error
 method *Host.Shutdown func(ctx context.Context) error
+method *Host.MediaInventory func(ctx context.Context) (github.com/floegence/floret/v7/runtime.MediaInventory, error)
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
@@ -710,6 +711,12 @@ const MaxTurnSupplementalMetadataKeyBytes untyped int = 128
 const MaxTurnSupplementalMetadataPairs untyped int = 32
 const MaxTurnSupplementalMetadataValueRunes untyped int = 4096
 const MaxTurnSupplementalPayloadBytes untyped int = 262144
+type MediaInventory struct
+field MediaInventory.References []github.com/floegence/floret/v7/runtime.MediaReference
+field MediaInventory.Idle bool
+type MediaReference struct
+field MediaReference.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field MediaReference.Attachment github.com/floegence/floret/v7/runtime.MessageAttachment
 type MessageAttachment struct
 field MessageAttachment.ResourceRef string tag="json:\"resource_ref\""
 field MessageAttachment.Name string tag="json:\"name\""

@@ -62,6 +62,14 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 		t.Fatalf("tool did not stop model for input: interactions=%+v requests=%d outcome=%v", waiting.Interactions, len(gateway.Requests()), waiting.LastOutcome)
 	}
 	interaction := waiting.Interactions[0]
+	assertMediaIdle := func(want bool) {
+		t.Helper()
+		inventory, err := host.MediaInventory(t.Context())
+		if err != nil || inventory.Idle != want {
+			t.Fatalf("media inventory idle=%v, want %v: %v", inventory.Idle, want, err)
+		}
+	}
+	assertMediaIdle(false)
 	if interaction.ToolCallID != "inspect-1" || interaction.Input == nil || interaction.Input.Summary != "Complete the external step" {
 		t.Fatalf("input lost source identity: %+v", interaction)
 	}
@@ -77,6 +85,7 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 		t.Fatalf("input not restored: %+v", restored.Interactions)
 	}
 	answer := map[string]string{"ready": "Continue", "claim": "The external step is complete, please check."}
+	assertMediaIdle(false)
 	response := RespondInput{ThreadID: created.ThreadID, InteractionID: interaction.ID, RequestKey: "respond", Answers: []InteractionAnswer{{Input: answer}}}
 	if _, err := svc.Respond(t.Context(), response); err != nil {
 		t.Fatal(err)
@@ -92,6 +101,7 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 		t.Fatal("input response did not start a fresh run")
 	}
 	requests := gateway.Requests()
+	assertMediaIdle(true)
 	if len(requests) != 2 {
 		t.Fatalf("requests=%d", len(requests))
 	}

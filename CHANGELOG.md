@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.28.0 - 2026-10-11
+
+- Stage, validate, and persist only affected domain records during normal writes. Preserve complete startup and migration validation, schema 13, durable bytes, and rollback on callback, cancellation, panic, or backend commit failure.
+- Add the read-only `Host.MediaInventory` canonical inventory for immutable host media retention, including archived threads, inactive paths, forked history, and queue facts. Current views cannot safely decide byte-store collection; descriptors grant no resource access.
+- Keep existing typed multimodal tool results and provider contracts unchanged. Cover large unrelated history, bounded write work, shared media ownership, restart, and deletion.
+
 ## v7.27.2 - 2026-10-10
 
 - Align the module, CI, local checks, and build instructions to Go 1.27.2, matching the downstream toolchain and resolving the Go 1.27.1 standard-library vulnerability findings.

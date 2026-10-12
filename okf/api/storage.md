@@ -82,6 +82,15 @@ additions in one transaction. Ordinary mutations do not encode unrelated threads
 diff whole JSON documents, or rewrite full active paths. The v5 recovery journal
 exists only in the v5 -> v6 migration reader and is deleted after migration.
 
+Ordinary session-tree writes stage only changed keys and affected journal indexes.
+They validate new canonical entries and their exact thread, turn, and artifact
+dependencies, rather than cloning or revalidating unrelated history. The repository
+lock isolates staging, the working maps are restored before the backend callback
+returns, and successful backend commit installs the staged values once. Failure,
+cancellation, and panic preserve both prior memory and durable records. Startup,
+migration, and explicit verification retain complete domain validation; schema 13
+and canonical history bytes are unchanged.
+
 Immediately before an ordinary provider dispatch, the backend kernel commits
 the current raw segments, toolsets, immutable Turn surface, and request lineage
 in one prompt checkpoint. The in-memory prompt authority advances only after
