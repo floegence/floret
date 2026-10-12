@@ -200,6 +200,16 @@ input for a request key, including after queue edits, promotion, removal, or
 restart. Hosts can validate transport retries against canonical input without
 refreshing context or resolving attachments again.
 
+`Host.MediaInventory(ctx)` exposes opaque media descriptors retained by every
+canonical journal, including archived threads, inactive paths, and queue facts,
+and reports whether every retained execution is terminal.
+Hosts use this read-only inventory to retain their immutable media bytes instead
+of inferring absence from a current view. It grants no resource access. Hosts
+must hold their tool-media write gate before reading this snapshot and collect
+only when `Idle` is true, or before deferred execution is activated. Other
+not-yet-admitted uploads require their existing owner protection. Floret owns no
+media byte store.
+
 The optional `runtime.ThreadQueueController` supports `EditQueued` with a text
 precondition and `SendQueuedNow` to stop gracefully and start one chosen queued
 input. Editing preserves its attachments, context, identity and position.

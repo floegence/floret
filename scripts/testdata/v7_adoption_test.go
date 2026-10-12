@@ -101,6 +101,10 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	media, err := firstHost.MediaInventory(ctx)
+	if err != nil || !media.Idle || len(media.References) != 0 {
+		t.Fatalf("fresh canonical media inventory=%+v, error=%v", media, err)
+	}
 	created, err := firstService.Create(ctx, runtime.CreateThreadInput{RequestKey: "create-adoption"})
 	if err != nil {
 		t.Fatal(err)

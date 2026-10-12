@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
@@ -14,11 +15,12 @@ import (
 
 func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 	ref := "host-frame://target/" + strings.Repeat("a", 64)
+	finish := make(chan struct{})
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "vision", StateCompatibilityKey: "test:vision"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "capture-1", Name: "capture", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
-		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
+		florettest.Step{BlockUntil: finish, Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}},
 	)
 	capture := tools.Define[map[string]any](tools.Definition{
 		Name: "capture", InputSchema: tools.StrictObject(map[string]any{}, []string{}), ReadOnly: true,
@@ -57,6 +59,33 @@ func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send-media", Input: UserInput{Text: "capture"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := gateway.WaitForRequests(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
+	activeInventory, err := host.MediaInventory(t.Context())
+	if err != nil || activeInventory.Idle {
+		t.Fatalf("active media inventory must prevent collection: %+v, %v", activeInventory, err)
+	}
+	queuedRef := "host-queued://" + strings.Repeat("b", 64)
+	queued, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "queue-media", Input: UserInput{Text: "queued image", Attachments: []MessageAttachment{{ResourceRef: queuedRef, Name: "queued.png", MIMEType: "image/png", SizeBytes: 1}}}})
+	if err != nil || len(queued.Queue) != 1 {
+		t.Fatalf("enqueue media: %+v, %v", queued.Queue, err)
+	}
+	activeInventory, err = host.MediaInventory(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundQueued := false
+	for _, media := range activeInventory.References {
+		foundQueued = foundQueued || media.Attachment.ResourceRef == queuedRef
+	}
+	if !foundQueued {
+		t.Fatal("inventory lost queued media")
+	}
+	if _, err := service.DeleteQueued(t.Context(), DeleteQueuedInput{ThreadID: created.ThreadID, QueueItemID: queued.Queue[0].ID, RequestKey: "delete-queued-media"}); err != nil {
+		t.Fatal(err)
+	}
+	close(finish)
 	view := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.Activity == ThreadActivityIdle && view.LastOutcome != nil })
 	check := func(view ThreadView) {
 		t.Helper()
@@ -71,6 +100,31 @@ func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 		t.Fatal("runtime view lost media resource reference")
 	}
 	check(view)
+	checkInventory := func(want map[identity.ThreadID]bool) {
+		t.Helper()
+		inventory, err := host.MediaInventory(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := make(map[identity.ThreadID]bool)
+		if !inventory.Idle {
+			t.Fatal("completed threads must permit media maintenance")
+		}
+		for _, media := range inventory.References {
+			if media.Attachment.ResourceRef == ref {
+				found[media.ThreadID] = true
+			}
+		}
+		if len(found) != len(want) {
+			t.Fatalf("media owners: %v, want %v", found, want)
+		}
+		for threadID := range want {
+			if !found[threadID] {
+				t.Fatalf("missing media owner %s", threadID)
+			}
+		}
+	}
+	checkInventory(map[identity.ThreadID]bool{created.ThreadID: true})
 	requests := gateway.Requests()
 	found := false
 	for _, request := range requests {
@@ -93,4 +147,31 @@ func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(view)
+	forked, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork-media"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := host.store.repo.Thread(t.Context(), created.ThreadID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Archived = true
+	if err := host.store.repo.UpdateThread(t.Context(), meta); err != nil {
+		t.Fatal(err)
+	}
+	checkInventory(map[identity.ThreadID]bool{created.ThreadID: true, forked.ThreadID: true})
+	// A retained inactive path is still conversation history, even when the
+	// visible leaf precedes the image-producing tool.
+	if err := host.store.repo.MoveLeaf(t.Context(), created.ThreadID.String(), "user:send-media"); err != nil {
+		t.Fatal(err)
+	}
+	checkInventory(map[identity.ThreadID]bool{created.ThreadID: true, forked.ThreadID: true})
+	if err := service.Delete(t.Context(), DeleteThreadInput{ThreadID: created.ThreadID, RequestKey: "delete-media"}); err != nil {
+		t.Fatal(err)
+	}
+	checkInventory(map[identity.ThreadID]bool{forked.ThreadID: true})
+	if err := service.Delete(t.Context(), DeleteThreadInput{ThreadID: forked.ThreadID, RequestKey: "delete-fork-media"}); err != nil {
+		t.Fatal(err)
+	}
+	checkInventory(map[identity.ThreadID]bool{})
 }

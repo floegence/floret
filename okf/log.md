@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-10-11
+
+- Add [canonical media retention](api/runtime.md#thread-service), including archived and inactive journal history and an explicit idle maintenance boundary. Hosts retain byte-store ownership; typed image tools and schema 13 remain unchanged.
+
+- Document [scoped session-tree mutations](api/storage.md#runtime-storage-behavior): stage and validate affected records, install after backend commit, and retain complete startup and migration verification without changing schema 13.
+
 ## 2026-10-10
 
 - Align the [quality gate](workflows/quality-gate.md) to Go 1.27.2 across module, CI, local checks, and downstream adoption. Resolve the previous standard-library vulnerability findings and require named task worktrees until cleanup completes.
