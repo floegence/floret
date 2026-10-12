@@ -90,7 +90,7 @@ func repairLegacyFallbackThreadTitles(repo *MemoryRepo) (bool, error) {
 				return false, err
 			}
 			if changed {
-				repo.threads[threadID] = updated
+				repo.setThreadLocked(threadID, updated)
 				repaired = true
 			}
 			break

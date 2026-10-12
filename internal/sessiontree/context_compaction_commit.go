@@ -86,11 +86,11 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 		r.entryDepths[threadID] = previousDepths
 		r.turnEntryOrdinals[threadID] = previousTurnOrdinals
 		r.turnEntryCounts[threadID] = previousTurnCounts
-		r.threads[threadID] = previousMeta
+		r.setThreadLocked(threadID, previousMeta)
 		if stateFound {
-			r.providerStates[threadID] = previousState
+			r.setProviderStateLocked(threadID, previousState)
 		} else {
-			delete(r.providerStates, threadID)
+			r.deleteProviderStateLocked(threadID)
 		}
 		r.seq = previousSequence
 	}()
@@ -105,7 +105,7 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 		}
 		out.Facts = append(out.Facts, entry)
 	}
-	delete(r.providerStates, threadID)
+	r.deleteProviderStateLocked(threadID)
 	if req.Finish != nil {
 		finish, err := r.finishTurnLocked(*req.Finish)
 		if err != nil {

@@ -417,7 +417,7 @@ func deleteAllBackendDomainV7(ctx context.Context, tx spi.WriteTx) error {
 	return nil
 }
 
-func cloneMemoryRepoForBackendUpdate(source *MemoryRepo) *MemoryRepo {
+func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 	source.mu.Lock()
 	defer source.mu.Unlock()
 	clone := &MemoryRepo{

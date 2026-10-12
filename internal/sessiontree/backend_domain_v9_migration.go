@@ -19,7 +19,7 @@ func migrateBackendDomainV8ToV9(ctx context.Context, memory *MemoryRepo) error {
 	if err != nil {
 		return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("validate session-tree v8 fork lineage: %w", err))
 	}
-	original := cloneMemoryRepoForBackendUpdate(memory)
+	original := cloneMemoryRepoForStartup(memory)
 	threadIDs := make([]string, 0, len(memory.threads))
 	for threadID := range memory.threads {
 		threadIDs = append(threadIDs, threadID)

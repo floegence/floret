@@ -340,7 +340,7 @@ func (r *MemoryRepo) appendEffectAttemptLocked(meta *ThreadMeta, attempt EffectA
 	}
 	r.appendIndexedEntriesLocked(meta.ID, entry)
 	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
-	r.threads[meta.ID] = *meta
+	r.setThreadLocked(meta.ID, *meta)
 	return nil
 }
 
@@ -538,12 +538,12 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		}
 		entry.Message.ToolResult.FullOutput, committedRef = &ref, &ref
 		full := artifact.NormalizeFullOutput(*req.FullOutput)
-		r.artifacts[artifactRecordKey(meta.ID, ref.ID)] = artifact.Record{ThreadID: meta.ID, Ref: ref, Text: full.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt}
+		r.setArtifactLocked(artifactRecordKey(meta.ID, ref.ID), artifact.Record{ThreadID: meta.ID, Ref: ref, Text: full.Text, CanonicalEntryID: entry.ID, CreatedAt: entry.CreatedAt})
 	}
 	entry.Raw, entry.RawHash = rawForEntry(entry), StableHash(rawForEntry(entry))
 	r.appendIndexedEntriesLocked(meta.ID, entry)
 	meta.LeafID, meta.UpdatedAt = entry.ID, entry.CreatedAt
-	r.threads[meta.ID] = meta
+	r.setThreadLocked(meta.ID, meta)
 	attempt.State, attempt.TerminalFingerprint, attempt.ResultEntryID, attempt.UpdatedAt = wantState, strings.TrimSpace(req.OutcomeFingerprint), entry.ID, entry.CreatedAt
 	if err := r.appendEffectAttemptLocked(&meta, attempt); err != nil {
 		return FinishEffectDispatchResult{}, err

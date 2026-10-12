@@ -402,7 +402,7 @@ func (r *MemoryRepo) PutProviderState(_ context.Context, record ProviderStateRec
 		return ErrThreadNotFound
 	}
 	record.State = *provider.CloneState(&record.State)
-	r.providerStates[record.ThreadID] = record
+	r.setProviderStateLocked(record.ThreadID, record)
 	return nil
 }
 
@@ -413,6 +413,6 @@ func (r *MemoryRepo) DeleteProviderState(_ context.Context, threadID string) err
 	if _, ok := r.threads[threadID]; !ok {
 		return ErrThreadNotFound
 	}
-	delete(r.providerStates, threadID)
+	r.deleteProviderStateLocked(threadID)
 	return nil
 }
