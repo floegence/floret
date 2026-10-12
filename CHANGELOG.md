@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.29.2 - 2026-10-12
+
+- Refresh the reviewed nine-provider model catalog from one pinned models.dev
+  response. Add Claude Haiku 5.5 with adaptive thinking, image input, 1M context,
+  128K output, and medium default effort; correct Sonnet 4.5 context to 200K.
+- Preserve host model selections and conversation identities. Public Go APIs,
+  provider ownership, and domain schemas remain unchanged.
+
 ## v7.29.1 - 2026-10-12
 
 - Make canonical marker `Entry.RunID` the sole runtime execution identity and

@@ -145,6 +145,60 @@
         "release_date": "2025-10-15",
         "tool_call": true
       },
+      "claude-haiku-5-5": {
+        "cost": {
+          "cache_read": 0.01,
+          "cache_write": 0.125,
+          "input": 0.1,
+          "output": 0.5,
+          "tiers": [
+            {
+              "cache_read": 0.05,
+              "cache_write": 0.625,
+              "input": 0.5,
+              "output": 2.5,
+              "tier": {
+                "size": 100000,
+                "type": "context"
+              }
+            }
+          ]
+        },
+        "id": "claude-haiku-5-5",
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "name": "Claude Haiku 5.5",
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          },
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "release_date": "2026-10-07",
+        "tool_call": true
+      },
       "claude-opus-4-5": {
         "cost": {
           "cache_read": 0.5,
@@ -434,7 +488,7 @@
         },
         "id": "claude-sonnet-4-5",
         "limit": {
-          "context": 1000000,
+          "context": 200000,
           "output": 64000
         },
         "modalities": {
@@ -467,7 +521,7 @@
         },
         "id": "claude-sonnet-4-5-20250929",
         "limit": {
-          "context": 1000000,
+          "context": 200000,
           "output": 64000
         },
         "modalities": {
@@ -577,7 +631,7 @@
       },
       "claude-sonnet-5-5": {
         "cost": {
-          "cache_read": 0.2,
+          "cache_read": 0.1,
           "cache_write": 2.5,
           "input": 2,
           "output": 10
@@ -3175,6 +3229,7 @@
       "kimi-k3": {
         "cost": {
           "cache_read": 0.3,
+          "cache_write": 3,
           "input": 3,
           "output": 15
         },
@@ -5580,8 +5635,8 @@
       },
       "qwen-vl-ocr": {
         "cost": {
-          "input": 0.72,
-          "output": 0.72
+          "input": 0.07,
+          "output": 0.16
         },
         "id": "qwen-vl-ocr",
         "limit": {
@@ -7528,6 +7583,6 @@
       }
     }
   },
-  "sha256": "81ad3b1d6cef0e1c0895d0fe5f493b45114e799b22ac3f1d376d1d5a5e955e96",
+  "sha256": "a6af79756a8a8efb5fd3144a83bd01f333e503043998d5f26f3c98bf9181d36c",
   "source": "https://models.dev/api.json"
 }
