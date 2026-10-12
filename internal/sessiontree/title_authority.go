@@ -384,7 +384,7 @@ func (r *MemoryRepo) mutateThreadTitle(ctx context.Context, threadID string, mut
 	if err := ValidateThreadTitleState(updated); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
-	r.threads[threadID] = updated
+	r.setThreadLocked(threadID, updated)
 	return ThreadTitleMutationResult{Thread: updated, Changed: true}, nil
 }
 

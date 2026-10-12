@@ -97,7 +97,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		}
 		if hasUnknownEffectTurns(memory) {
 			before := memory
-			memory = cloneMemoryRepoForBackendUpdate(before)
+			memory = cloneMemoryRepoForStartup(before)
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
@@ -768,26 +768,29 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	var committedMemory *MemoryRepo
+	var committed *backendDomainMutation
 	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
 		if repo.domainMemory == nil {
 			return errors.New("session-tree state is missing")
 		}
-		memory := cloneMemoryRepoForBackendUpdate(repo.domainMemory)
-		if err := mutate(memory, tx); err != nil {
+		mutation := newBackendDomainMutation(repo.domainMemory)
+		// Restore the borrowed maps before the callback returns, including on a
+		// panic. A failed backend commit must leave the prior memory authoritative.
+		defer mutation.install(repo.domainMemory)
+		if err := mutate(mutation.memory, tx); err != nil {
 			return err
 		}
-		if err := validateBackendDomainV13Memory(memory); err != nil {
+		if err := mutation.validate(); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if _, err := persistBackendDomainV13Changes(tx, repo.domainMemory, memory); err != nil {
+		if err := mutation.persist(tx); err != nil {
 			return err
 		}
-		committedMemory = memory
+		committed = mutation.snapshot()
 		return nil
 	})
 	if err == nil {
-		repo.domainMemory = committedMemory
+		committed.install(repo.domainMemory)
 	}
 	return err
 }

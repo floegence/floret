@@ -218,20 +218,20 @@ func (r *MemoryRepo) deleteRootTree(rootThreadID, requestKey, fingerprint string
 	for _, threadID := range threadIDs {
 		meta := r.threads[threadID]
 		rootID := rootThreadID
-		r.tombstones[threadID] = ThreadTombstone{
+		r.setTombstoneLocked(threadID, ThreadTombstone{
 			ThreadID: threadID, RootThreadID: rootID, ParentThreadID: meta.ParentThreadID,
 			OriginRequestKey: meta.OriginRequestKey, OriginFingerprint: meta.OriginFingerprint,
 			DeleteRequestKey: requestKey, DeleteFingerprint: fingerprint,
 			ForkedFromThreadID: meta.ForkedFromThreadID, ForkedFromEntryID: meta.ForkedFromEntryID,
 			DeletedAt: now,
-		}
-		delete(r.threads, threadID)
+		})
+		r.deleteThreadLocked(threadID)
 		r.deleteIndexedEntriesLocked(threadID)
-		delete(r.todos, threadID)
-		delete(r.providerStates, threadID)
+		r.deleteTodoLocked(threadID)
+		r.deleteProviderStateLocked(threadID)
 		for key, record := range r.artifacts {
 			if record.ThreadID == threadID {
-				delete(r.artifacts, key)
+				r.deleteArtifactLocked(key)
 			}
 		}
 	}

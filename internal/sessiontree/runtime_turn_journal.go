@@ -113,7 +113,7 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 		}
 	}
 	meta.UpdatedAt = now
-	r.threads[meta.ID] = meta
+	r.setThreadLocked(meta.ID, meta)
 	return AcceptTurnResult{TurnStarted: cloneEntry(started), UserMessage: cloneEntry(user), BaseLeafID: admissionBaseLeafID}, nil
 }
 
@@ -242,11 +242,11 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 	terminal.Raw, terminal.RawHash = rawForEntry(terminal), stableHash(rawForEntry(terminal))
 	r.appendIndexedEntriesLocked(meta.ID, terminal)
 	meta.LeafID, meta.UpdatedAt = terminal.ID, now
-	r.threads[meta.ID] = meta
+	r.setThreadLocked(meta.ID, meta)
 	if req.ProviderState != nil {
 		record := *req.ProviderState
 		record.State = *provider.CloneState(&record.State)
-		r.providerStates[meta.ID] = record
+		r.setProviderStateLocked(meta.ID, record)
 	} else if req.ClearProviderState {
 		r.settleContextOnlyProviderStateLocked(meta.ID, req.TurnID, req.RunID, terminal.ID, now)
 	}
@@ -311,14 +311,14 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
 		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
 		if previousMetaFound {
-			r.threads[req.ThreadID] = previousMeta
+			r.setThreadLocked(req.ThreadID, previousMeta)
 		} else {
-			delete(r.threads, req.ThreadID)
+			r.deleteThreadLocked(req.ThreadID)
 		}
 		if previousProviderStateFound {
-			r.providerStates[req.ThreadID] = previousProviderState
+			r.setProviderStateLocked(req.ThreadID, previousProviderState)
 		} else {
-			delete(r.providerStates, req.ThreadID)
+			r.deleteProviderStateLocked(req.ThreadID)
 		}
 		r.seq = previousSequence
 	}()
@@ -444,8 +444,8 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	r.appendIndexedEntriesLocked(req.ThreadID, terminal)
 	meta = r.threads[req.ThreadID]
 	meta.LeafID, meta.UpdatedAt = terminal.ID, now
-	r.threads[req.ThreadID] = meta
-	delete(r.providerStates, req.ThreadID)
+	r.setThreadLocked(req.ThreadID, meta)
+	r.deleteProviderStateLocked(req.ThreadID)
 	result.Failure, result.Terminal = cloneEntry(failure), cloneEntry(terminal)
 	committed = true
 	return result, nil
@@ -488,14 +488,14 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
 		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
 		if previousMetaFound {
-			r.threads[req.ThreadID] = previousMeta
+			r.setThreadLocked(req.ThreadID, previousMeta)
 		} else {
-			delete(r.threads, req.ThreadID)
+			r.deleteThreadLocked(req.ThreadID)
 		}
 		if previousProviderStateFound {
-			r.providerStates[req.ThreadID] = previousProviderState
+			r.setProviderStateLocked(req.ThreadID, previousProviderState)
 		} else {
-			delete(r.providerStates, req.ThreadID)
+			r.deleteProviderStateLocked(req.ThreadID)
 		}
 		r.seq = previousSequence
 	}()
@@ -620,7 +620,7 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	terminal.Raw, terminal.RawHash = rawForEntry(terminal), stableHash(rawForEntry(terminal))
 	r.appendIndexedEntriesLocked(req.ThreadID, terminal)
 	meta.LeafID, meta.UpdatedAt = terminal.ID, now
-	r.threads[req.ThreadID] = meta
+	r.setThreadLocked(req.ThreadID, meta)
 	if req.ClearProviderState {
 		r.settleContextOnlyProviderStateLocked(req.ThreadID, req.TurnID, req.RunID, terminal.ID, now)
 	}
@@ -875,14 +875,14 @@ func (r *MemoryRepo) FindTurnRequest(ctx context.Context, threadID, requestKey s
 func (r *MemoryRepo) settleContextOnlyProviderStateLocked(threadID, turnID, runID, terminalID string, now time.Time) {
 	started, found := findEntry(r.entries[threadID], runtimeTurnStartedEntryID(turnID))
 	if !found || started.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
-		delete(r.providerStates, threadID)
+		r.deleteProviderStateLocked(threadID)
 		return
 	}
 	// A failed, cancelled, or noop operation leaves the effective model context
 	// unchanged. Reanchor its existing optimization across the control terminal.
 	if record, found := r.providerStates[threadID]; found {
 		record.LeafEntryID, record.CreatedByRunID, record.CreatedByTurnID, record.UpdatedAt = terminalID, runID, turnID, now
-		r.providerStates[threadID] = record
+		r.setProviderStateLocked(threadID, record)
 	}
 }
 

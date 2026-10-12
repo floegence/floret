@@ -716,6 +716,7 @@ type AgentTodoStateRepo interface {
 
 type MemoryRepo struct {
 	mu                sync.Mutex
+	mutation          *backendDomainMutation
 	threads           map[string]ThreadMeta
 	entries           map[string][]Entry
 	entryOrdinals     map[string]map[string]int
@@ -801,7 +802,7 @@ func (r *MemoryRepo) createThreadLocked(meta ThreadMeta) (ThreadMeta, error) {
 			return ThreadMeta{}, err
 		}
 	}
-	r.threads[meta.ID] = meta
+	r.setThreadLocked(meta.ID, meta)
 	return meta, nil
 }
 
@@ -816,9 +817,9 @@ func (r *MemoryRepo) CreateThreadWithInitialEntry(ctx context.Context, meta Thre
 	initial.ThreadID = created.ID
 	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: created.CreatedAt})
 	if err != nil {
-		delete(r.threads, created.ID)
+		r.deleteThreadLocked(created.ID)
 		r.deleteIndexedEntriesLocked(created.ID)
-		delete(r.todos, created.ID)
+		r.deleteTodoLocked(created.ID)
 		r.seq = seqBefore
 		return ThreadMeta{}, Entry{}, err
 	}
@@ -860,7 +861,7 @@ func (r *MemoryRepo) CompareAndSwapAgentTodoState(ctx context.Context, state Age
 		state.UpdatedAt = time.Now()
 	}
 	state = cloneAgentTodoState(state)
-	r.todos[state.ThreadID] = state
+	r.setTodoLocked(state.ThreadID, state)
 	return cloneAgentTodoState(state), nil
 }
 
@@ -911,7 +912,7 @@ func (r *MemoryRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
 	}
 	_ = ctx
 	meta.UpdatedAt = nonZeroTime(meta.UpdatedAt)
-	r.threads[meta.ID] = meta
+	r.setThreadLocked(meta.ID, meta)
 	return nil
 }
 
@@ -979,7 +980,7 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		r.entryDepths[threadID] = previousDepths
 		r.turnEntryOrdinals[threadID] = previousTurnOrdinals
 		r.turnEntryCounts[threadID] = previousTurnCounts
-		r.threads[threadID] = previousMeta
+		r.setThreadLocked(threadID, previousMeta)
 		r.seq = previousSequence
 	}
 	out := make([]Entry, 0, len(entries))
@@ -1071,7 +1072,7 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	r.appendIndexedEntriesLocked(entry.ThreadID, entry)
 	meta.LeafID = entry.ID
 	meta.UpdatedAt = entry.CreatedAt
-	r.threads[entry.ThreadID] = meta
+	r.setThreadLocked(entry.ThreadID, meta)
 	return cloneEntry(entry), nil
 }
 
@@ -1089,6 +1090,7 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 	if len(entries) == 0 {
 		return
 	}
+	r.stageJournalLocked(threadID, false)
 	if r.turnEntryOrdinals[threadID] == nil {
 		r.turnEntryOrdinals[threadID] = map[string][]int{}
 	}
@@ -1108,6 +1110,7 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 		if copy.ParentID != "" {
 			copy.PathDepth = r.entryDepths[threadID][copy.ParentID] + 1
 		}
+		r.stageEntryIndexesLocked(threadID, copy)
 		r.entries[threadID] = append(r.entries[threadID], copy)
 		r.entryOrdinals[threadID][copy.ID] = ordinal
 		r.entryDepths[threadID][copy.ID] = copy.PathDepth
@@ -1175,6 +1178,7 @@ func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entr
 		}
 		indexed[turnID] = append(indexed[turnID], ordinal)
 	}
+	r.stageJournalLocked(threadID, true)
 	r.entries[threadID] = cloned
 	r.entryOrdinals[threadID] = entryOrdinals
 	r.entryDepths[threadID] = entryDepths
@@ -1188,6 +1192,7 @@ func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entr
 }
 
 func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
+	r.stageJournalLocked(threadID, true)
 	delete(r.entries, threadID)
 	delete(r.entryOrdinals, threadID)
 	delete(r.entryDepths, threadID)
@@ -1484,7 +1489,7 @@ func (r *MemoryRepo) MoveLeaf(_ context.Context, threadID, entryID string) error
 	}
 	meta.LeafID = entryID
 	meta.UpdatedAt = time.Now()
-	r.threads[threadID] = meta
+	r.setThreadLocked(threadID, meta)
 	return nil
 }
 
@@ -1673,12 +1678,12 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	if err := r.replaceIndexedEntriesLocked(newID, forkedEntries); err != nil {
 		return ThreadMeta{}, err
 	}
-	r.threads[newID] = meta
+	r.setThreadLocked(newID, meta)
 	for key, record := range stagedArtifacts {
-		r.artifacts[key] = record
+		r.setArtifactLocked(key, record)
 	}
 	if hasForkedTodo {
-		r.todos[newID] = forkedTodo
+		r.setTodoLocked(newID, forkedTodo)
 	}
 	_ = ctx
 	return meta, nil
@@ -1695,12 +1700,12 @@ func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions,
 	initial.ThreadID = forked.ID
 	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: opts.Now})
 	if err != nil {
-		delete(r.threads, forked.ID)
+		r.deleteThreadLocked(forked.ID)
 		r.deleteIndexedEntriesLocked(forked.ID)
-		delete(r.todos, forked.ID)
+		r.deleteTodoLocked(forked.ID)
 		for key, record := range r.artifacts {
 			if record.ThreadID == forked.ID {
-				delete(r.artifacts, key)
+				r.deleteArtifactLocked(key)
 			}
 		}
 		r.seq = seqBefore
