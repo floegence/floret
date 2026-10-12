@@ -28,14 +28,14 @@ func TestBackendDomainV8ToV9MigratesResumedAndNestedForkContext(t *testing.T) {
 	if got := migrationTestNamespaceRecords(t, backend, backendDomainV8Namespace); len(got) != 0 {
 		t.Fatalf("v8 records survived migration: %d", len(got))
 	}
-	current := migrationTestNamespaceRecords(t, backend, backendDomainV13Namespace)
+	current := migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace)
 	if len(current) == 0 {
 		t.Fatal("v11 records are missing after migration")
 	}
 	if _, err := NewBackendRepo(t.Context(), backend, func() time.Time { return fixture.now }); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationTestNamespaceRecords(t, backend, backendDomainV13Namespace); !reflect.DeepEqual(got, current) {
+	if got := migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace); !reflect.DeepEqual(got, current) {
 		t.Fatal("current v11 restart rewrote canonical bytes")
 	}
 }
@@ -451,7 +451,7 @@ type migrationPanickingTx struct {
 }
 
 func (tx migrationPanickingTx) Put(namespace string, key, value []byte) error {
-	if namespace == backendDomainV13Namespace && bytes.Equal(key, backendDomainV13Key(backendDomainRecordRootIndex)) {
+	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace) && (bytes.Equal(key, backendDomainV13Key(backendDomainRecordRootIndex)) || bytes.Equal(key, backendDomainV14Key(backendDomainRecordRootIndex))) {
 		panic("injected v9 migration panic")
 	}
 	return tx.WriteTx.Put(namespace, key, value)

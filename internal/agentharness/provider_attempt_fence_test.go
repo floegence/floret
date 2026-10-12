@@ -21,7 +21,7 @@ func TestTurnProjectionDropsSupersededProviderAttemptFromLiveAndCanonicalOutput(
 	if _, err := repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(t.Context(), repo, "thread", "turn", sessiontree.TurnStarted, map[string]string{"run_id": "run"}); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(t.Context(), repo, "thread", "turn", "run", sessiontree.TurnStarted, map[string]string{"run_id": "run"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendMessage(t.Context(), repo, "thread", "turn", session.Message{Role: session.User, Content: "work"}); err != nil {
@@ -240,7 +240,7 @@ func newUsageProjectionThread(t *testing.T) (*sessiontree.MemoryRepo, *Thread) {
 	if _, err := repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(t.Context(), repo, "thread", "turn", sessiontree.TurnStarted, map[string]string{"run_id": "run"}); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(t.Context(), repo, "thread", "turn", "run", sessiontree.TurnStarted, map[string]string{"run_id": "run"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendMessage(t.Context(), repo, "thread", "turn", session.Message{Role: session.User, Content: "work"}); err != nil {

@@ -184,7 +184,7 @@ func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID str
 			userTurns[turnID] = struct{}{}
 		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			runID := strings.TrimSpace(entry.RunID)
 			if turnID == "" || runID == "" {
 				return CanonicalTurnsPage{}, ErrAuthorityCorrupt
 			}
@@ -297,7 +297,7 @@ func (r *MemoryRepo) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchor
 		entry := item.Entry
 		turnID := strings.TrimSpace(entry.TurnID)
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			runID := strings.TrimSpace(entry.RunID)
 			if turnID == "" || runID == "" {
 				return CanonicalTurnsPage{}, ErrAuthorityCorrupt
 			}
@@ -394,7 +394,7 @@ func (r *MemoryRepo) canonicalTurnPrefixLocked(threadID string, anchor Entry, an
 		}
 		prefixNewestFirst = append(prefixNewestFirst, CanonicalTurnPathEntry{Entry: entry, Ordinal: depth})
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			runID := strings.TrimSpace(entry.RunID)
 			if runID == "" {
 				return nil, canonicalTurnCandidate{}, ErrAuthorityCorrupt
 			}
@@ -573,7 +573,7 @@ func ValidateRetryStartedEntry(entry Entry, threadID, turnID, runID, startedEntr
 	}
 	if entry.ID != startedEntryID || entry.ThreadID != threadID || entry.TurnID != turnID ||
 		entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || strings.TrimSpace(entry.ParentID) == "" ||
-		entry.Metadata["run_id"] != runID {
+		entry.RunID != runID {
 		return ErrAuthorityCorrupt
 	}
 	stored, err := CanonicalTurnRetrySourceForStartedEntry(entry)
@@ -623,7 +623,7 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 	if started.Type != EntryTurnMarker || started.TurnStatus != TurnStarted {
 		return false, nil, "", "", ErrAuthorityCorrupt
 	}
-	runID := strings.TrimSpace(started.Metadata["run_id"])
+	runID := strings.TrimSpace(started.RunID)
 	if err := ValidateCanonicalTurnEntries(entries, threadID, turnID, runID); err != nil {
 		return false, nil, "", "", err
 	}

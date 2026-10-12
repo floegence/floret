@@ -1,5 +1,17 @@
 # Changelog
 
+## v7.29.1 - 2026-10-12
+
+- Make canonical marker `Entry.RunID` the sole runtime execution identity and
+  remove normal-path observation metadata fallbacks. Add the atomic schema 13 ->
+  14 migration for historical markers, preserving journal content, entry
+  Raw/hash, provider state, and execution lineage while rejecting conflicting or
+  ambiguous sources.
+- Preserve live `ThreadView` JSON encoding for tool activity and continuation
+  runs, including waiting-input, approval, retry, fork, cancellation, and
+  restart paths. This compatibility patch adds no public API or unsupported
+  identity fallback.
+
 ## v7.29.0 - 2026-10-11
 
 - Add canonical `ThreadView.Turns` and `HistoryPage.Turns` with historical outcomes, exact run identity, elapsed time, unioned user/approval waiting time, and work duration. Queue time and parallel tool totals are excluded.

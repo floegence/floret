@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -267,6 +268,9 @@ func (h *AgentHarness) threadDetailActivityTimeline(entries []sessiontree.Entry,
 }
 
 func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext threadDetailActivityContext, generatedAt time.Time) (ThreadContextSnapshot, error) {
+	if activityContext.err != nil {
+		return ThreadContextSnapshot{}, activityContext.err
+	}
 	out := ThreadContextSnapshot{}
 	usageProjection := contextUsageProjection{}
 	compactions := make([]ThreadContextCompaction, 0)
@@ -395,6 +399,9 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 	entries := journal.Path
 	retainedFrom := threadDetailRetainedFrom(entries)
 	activityContext := newThreadDetailActivityContext(entries)
+	if activityContext.err != nil {
+		return ThreadDetailEvents{}, activityContext.err
+	}
 	events := make([]ThreadDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -425,6 +432,9 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 
 func (h *AgentHarness) detailEventsForCanonicalEntries(ctx context.Context, entries []sessiontree.Entry, includeRaw bool) ([]ThreadDetailEvent, error) {
 	activityContext := newThreadDetailActivityContext(entries)
+	if activityContext.err != nil {
+		return nil, activityContext.err
+	}
 	events := make([]ThreadDetailEvent, 0, len(entries))
 	for index, entry := range entries {
 		event, ok := h.threadDetailEvent(entry, int64(index+1), includeRaw, activityContext)
@@ -494,7 +504,7 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 				continue
 			}
 			candidateTurnID := strings.TrimSpace(entry.TurnID)
-			if candidateTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+			if candidateTurnID == "" || strings.TrimSpace(entry.RunID) == "" {
 				return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
 			}
 			retrySource, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(entry)
@@ -535,6 +545,9 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 		entries = append(entries, item.entry)
 	}
 	activityContext := newThreadDetailActivityContext(entries)
+	if activityContext.err != nil {
+		return ThreadDetailEvents{}, activityContext.err
+	}
 	events := make([]ThreadDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	for _, item := range selected {
@@ -564,7 +577,7 @@ func (h *AgentHarness) latestThreadDetailEventsFromPath(ctx context.Context, pat
 			continue
 		}
 		latestTurnID = strings.TrimSpace(entry.TurnID)
-		if latestTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+		if latestTurnID == "" || strings.TrimSpace(entry.RunID) == "" {
 			return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
 		}
 		latestStartedIndex = index
@@ -592,6 +605,9 @@ func (h *AgentHarness) latestThreadDetailEventsFromPath(ctx context.Context, pat
 	}
 	entries := path[latestStartedIndex:]
 	activityContext := newThreadDetailActivityContext(entries)
+	if activityContext.err != nil {
+		return ThreadDetailEvents{}, activityContext.err
+	}
 	events := make([]ThreadDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	for offset, entry := range entries {
@@ -745,9 +761,10 @@ func threadDetailRawAvailable(event ThreadDetailEvent) bool {
 }
 
 type threadDetailActivityContext struct {
-	resultCallIDs map[string]struct{}
-	runIDs        map[string]string
-	presentations map[threadDetailActivityKey]*tools.ActivityPresentation
+	resultCallIDs  map[string]struct{}
+	invocationRuns map[threadDetailActivityKey]string
+	err            error
+	presentations  map[threadDetailActivityKey]*tools.ActivityPresentation
 }
 
 type threadDetailActivityKey struct {
@@ -756,11 +773,39 @@ type threadDetailActivityKey struct {
 }
 
 func newThreadDetailActivityContext(entries []sessiontree.Entry) threadDetailActivityContext {
-	return threadDetailActivityContext{
-		resultCallIDs: threadDetailResultCallIDs(entries),
-		runIDs:        threadDetailTurnRunIDs(entries),
-		presentations: threadDetailToolPresentations(entries),
+	out := threadDetailActivityContext{
+		resultCallIDs:  threadDetailResultCallIDs(entries),
+		presentations:  threadDetailToolPresentations(entries),
+		invocationRuns: map[threadDetailActivityKey]string{},
 	}
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryToolCall {
+			continue
+		}
+		key := threadDetailActivityKey{turnID: entry.TurnID, callID: entry.Message.ToolCallID}
+		if key.turnID == "" || key.callID == "" || entry.RunID == "" {
+			continue
+		}
+		if prior := out.invocationRuns[key]; prior != "" && prior != entry.RunID {
+			out.err = errors.Join(sessiontree.ErrAuthorityCorrupt, errors.New("tool activity has ambiguous canonical invocation identity"))
+			return out
+		}
+		out.invocationRuns[key] = entry.RunID
+	}
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryCustom || entry.RunID != "" {
+			continue
+		}
+		switch entry.Metadata[threadDetailKindKey] {
+		case toolDispatchEntryKind, toolActivityEntryKind, subAgentApprovalEntryKind, pendingToolSettlementEntryKind:
+			callID := firstThreadDetailNonEmpty(entry.Message.ToolCallID, entry.Metadata["tool_id"])
+			if out.invocationRuns[threadDetailActivityKey{turnID: entry.TurnID, callID: callID}] == "" {
+				out.err = errors.Join(sessiontree.ErrAuthorityCorrupt, fmt.Errorf("tool observation %q has no exact canonical invocation", entry.ID))
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func (c threadDetailActivityContext) hasResult(callID string) bool {
@@ -770,13 +815,6 @@ func (c threadDetailActivityContext) hasResult(callID string) bool {
 	}
 	_, ok := c.resultCallIDs[callID]
 	return ok
-}
-
-func (c threadDetailActivityContext) runIDForTurn(turnID string) string {
-	if len(c.runIDs) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(c.runIDs[strings.TrimSpace(turnID)])
 }
 
 func (c threadDetailActivityContext) presentation(turnID, callID string) *tools.ActivityPresentation {
@@ -803,25 +841,6 @@ func threadDetailToolPresentations(entries []sessiontree.Entry) map[threadDetail
 			continue
 		}
 		out[key] = observationActivityPresentation(entry.Message.Activity)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func threadDetailTurnRunIDs(entries []sessiontree.Entry) map[string]string {
-	out := map[string]string{}
-	for _, entry := range entries {
-		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
-			continue
-		}
-		turnID := strings.TrimSpace(entry.TurnID)
-		runID := strings.TrimSpace(entry.Metadata["run_id"])
-		if turnID == "" || runID == "" {
-			continue
-		}
-		out[turnID] = runID
 	}
 	if len(out) == 0 {
 		return nil
@@ -858,7 +877,7 @@ func threadDetailActivityTimeline(detail ThreadDetailEvent, entry sessiontree.En
 	if !ok {
 		return nil
 	}
-	runID := threadDetailRunID(detail, activityContext)
+	runID := threadDetailRunID(entry, activityContext)
 	timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
 		RunID:    identity.RunID(runID),
 		ThreadID: identity.ThreadID(detail.ThreadID),
@@ -876,7 +895,7 @@ func threadDetailObservationEvent(detail ThreadDetailEvent, entry sessiontree.En
 		return observed, err == nil
 	}
 	base := observation.Event{
-		RunID:      identity.RunID(threadDetailRunID(detail, activityContext)),
+		RunID:      identity.RunID(threadDetailRunID(entry, activityContext)),
 		ThreadID:   identity.ThreadID(detail.ThreadID),
 		TurnID:     identity.TurnID(detail.TurnID),
 		Step:       int(detail.Ordinal),
@@ -1007,18 +1026,15 @@ func threadDetailObservationEvent(detail ThreadDetailEvent, entry sessiontree.En
 	}
 }
 
-func threadDetailRunID(detail ThreadDetailEvent, activityContext threadDetailActivityContext) string {
-	if detail.Metadata != nil {
-		if runID := strings.TrimSpace(detail.Metadata["run_id"]); runID != "" {
-			return runID
-		}
+func threadDetailRunID(entry sessiontree.Entry, activityContext threadDetailActivityContext) string {
+	if runID := strings.TrimSpace(entry.RunID); runID != "" {
+		return runID
 	}
-	if detail.TurnMarker != nil {
-		if runID := strings.TrimSpace(detail.TurnMarker.Metadata["run_id"]); runID != "" {
-			return runID
-		}
+	if entry.Type != sessiontree.EntryCustom {
+		return ""
 	}
-	return activityContext.runIDForTurn(detail.TurnID)
+	callID := firstThreadDetailNonEmpty(entry.Message.ToolCallID, entry.Metadata["tool_id"])
+	return activityContext.invocationRuns[threadDetailActivityKey{turnID: entry.TurnID, callID: callID}]
 }
 
 func threadDetailToolResultActivityMetadata(result *ThreadDetailToolResult) map[string]any {

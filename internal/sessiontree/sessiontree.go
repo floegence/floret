@@ -225,9 +225,13 @@ func PrepareBranchBoundaryEntry(path []Entry, threadID, parentEntryID, entryID, 
 	if threadID == "" || entryID == "" || reason == "" {
 		return Entry{}, errors.New("branch boundary requires thread, entry, and reason identities")
 	}
+	runID, err := CurrentRunID(path, unfinished[0])
+	if err != nil {
+		return Entry{}, err
+	}
 	entry := Entry{
 		ID: entryID, ThreadID: threadID, ParentID: strings.TrimSpace(parentEntryID), Type: EntryTurnMarker,
-		TurnID: unfinished[0], TurnStatus: TurnAborted, CreatedAt: now.UTC(),
+		TurnID: unfinished[0], RunID: runID, TurnStatus: TurnAborted, CreatedAt: now.UTC(),
 		Metadata: map[string]string{
 			"authority_kind": "branch_boundary", "reason": reason,
 			TurnFailureCodeMetadataKey: TurnFailureInterrupted, "failure_reason": BranchBoundaryTurnFailureMessage,
@@ -1024,8 +1028,11 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	if err := ValidateEntryMessageReferences(entry); err != nil {
 		return Entry{}, err
 	}
+	if err := validateCanonicalEntryRunIdentity(entry); err != nil {
+		return Entry{}, err
+	}
 	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-		runID := strings.TrimSpace(entry.Metadata["run_id"])
+		runID := strings.TrimSpace(entry.RunID)
 		if runID == "" {
 			return Entry{}, fmt.Errorf("%w: started turn requires run identity", ErrInvalidThreadAuthority)
 		}
@@ -1122,6 +1129,12 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 }
 
 func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entry) error {
+	return r.replaceIndexedEntriesWithStartedRunIdentityLocked(threadID, entries, func(entry Entry) (string, error) {
+		return strings.TrimSpace(entry.RunID), nil
+	})
+}
+
+func (r *MemoryRepo) replaceIndexedEntriesWithStartedRunIdentityLocked(threadID string, entries []Entry, startedRunIdentity func(Entry) (string, error)) error {
 	entryOrdinals := make(map[string]int, len(entries))
 	entryDepths := make(map[string]int64, len(entries))
 	indexed := map[string][]int{}
@@ -1170,7 +1183,10 @@ func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entr
 			if _, duplicate := started[turnID]; duplicate {
 				return ErrAuthorityCorrupt
 			}
-			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			runID, err := startedRunIdentity(entry)
+			if err != nil {
+				return err
+			}
 			if runID == "" {
 				return ErrAuthorityCorrupt
 			}
@@ -1362,7 +1378,7 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 				return ErrAuthorityCorrupt
 			}
 			startedIndex = index
-			storedRunID = strings.TrimSpace(entry.Metadata["run_id"])
+			storedRunID = strings.TrimSpace(entry.RunID)
 			var err error
 			retrySource, err = CanonicalTurnRetrySourceForStartedEntry(entry)
 			if err != nil {
@@ -2649,12 +2665,8 @@ func CompactionEntry(threadID, turnID string, result compaction.Result) (Entry, 
 	}, nil
 }
 
-func AppendTurnMarker(ctx context.Context, repo JournalRepo, threadID, turnID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
-	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{})
-}
-
-func AppendTurnMarkerWithID(ctx context.Context, repo JournalRepo, threadID, turnID, entryID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
-	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{ID: entryID})
+func AppendTurnMarker(ctx context.Context, repo JournalRepo, threadID, turnID, runID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
+	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, RunID: runID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{})
 }
 
 func AppendActiveTools(ctx context.Context, repo JournalRepo, threadID string, metadata map[string]string) (Entry, error) {

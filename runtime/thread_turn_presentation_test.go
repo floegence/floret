@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/florettest"
@@ -14,6 +15,23 @@ import (
 
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
+
+func TestThreadTurnIdentityIgnoresObservationMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []sessiontree.Entry{
+		{Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, TurnID: "turn", RunID: "run-initial", CreatedAt: now},
+		{Type: sessiontree.EntryAssistantMessage, TurnID: "turn", RunID: "run-resumed", CreatedAt: now},
+		{Type: sessiontree.EntryCustom, TurnID: "turn", Metadata: map[string]string{"run_id": "[redacted]#9766ed77b53a"}, CreatedAt: now},
+		{Type: sessiontree.EntryCustom, TurnID: "turn", RunID: "run-observation", CreatedAt: now},
+	}
+	turns, err := threadRuntimeTurnsFromEntries(entries, nil)
+	if err != nil || len(turns) != 1 || turns[0].RunID != "run-resumed" {
+		t.Fatalf("canonical resumed identity lost: turns=%+v err=%v", turns, err)
+	}
+	if _, err := json.Marshal(ThreadView{ThreadID: "thread", Turns: turns}); err != nil {
+		t.Fatalf("canonical view cannot be encoded: %v", err)
+	}
+}
 
 func TestThreadTurnPresentationPreservesHistoricalOutcomesAndWaitUnion(t *testing.T) {
 	start := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)

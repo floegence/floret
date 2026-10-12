@@ -171,7 +171,7 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	turn := CanonicalTurn{
-		TurnID: turnID, RunID: strings.TrimSpace(started.Metadata["run_id"]),
+		TurnID: turnID, RunID: strings.TrimSpace(started.RunID),
 		StartedEntryID: started.ID, StartedOrdinal: started.PathDepth,
 		RetrySource: cloneCanonicalTurnRetrySource(retrySource), Entries: pathEntries,
 	}
@@ -223,7 +223,7 @@ func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (strin
 			userTurns[turnID] = struct{}{}
 		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-			if turnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+			if turnID == "" || strings.TrimSpace(entry.RunID) == "" {
 				return "", ErrAuthorityCorrupt
 			}
 			if _, duplicate := seenTurns[turnID]; duplicate {

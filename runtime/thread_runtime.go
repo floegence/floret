@@ -4591,9 +4591,7 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 		if entry.TurnID != turnID.String() {
 			continue
 		}
-		if value := strings.TrimSpace(entry.RunID); value != "" {
-			runID = identity.RunID(value)
-		} else if value := strings.TrimSpace(entry.Metadata["run_id"]); value != "" {
+		if value := strings.TrimSpace(entry.RunID); entry.Type != sessiontree.EntryCustom && value != "" {
 			runID = identity.RunID(value)
 		}
 		if entry.Type == sessiontree.EntryRunFailure {

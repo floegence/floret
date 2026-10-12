@@ -28,7 +28,7 @@ false for unfinished executions, including waits and archived threads. Upload
 owners retain their existing protection before admission. Current `ThreadView`
 and root-list results are insufficient
 for garbage collection. This additive v7.28 API does not change image-tool
-contracts, storage bytes, or domain schema 13.
+contracts, storage bytes, or the domain migration lineage.
 
 `ThreadService` is the current host-facing lifecycle contract. Its commands
 include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
@@ -53,7 +53,7 @@ retry through a new compact key; ordinary `Retry` returns `ErrNoRetryTarget`.
 `ThreadContextCompaction.AfterItemID` is derived from Floret's canonical item
 projection at operation start, including after pagination, fork, and restart.
 Hosts use that anchor and existing live updates without another lifecycle store.
-See [domain schema v13](storage.md#domain-migration) and the
+See [domain schema v14](storage.md#domain-migration) and the
 [README behavior contract](../../README.md#independent-context-compaction).
 
 The shared generator reads complete eligible canonical text, formatting, tool
@@ -324,7 +324,10 @@ never inferred from text, timestamp, or the last assistant message. Hosts should
 collapse work only for completed turns with a complete, nonempty final boundary
 and the complete accepted detail. Summary notifications cannot author this fact.
 Nested forks remap references and preserve original occurrence timestamps.
-Optional journal metadata leaves schema 13 and existing on-open bytes unchanged.
+Optional journal metadata was introduced without rewriting existing stores in
+v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
+retains those records and their canonical bytes after explicit marker identities
+are validated.
 
 `ThreadView.RunID` is the exact current execution identity and never aliases
 `TurnID`. `RunProgress` is the actor-owned, process-local phase for active
