@@ -1,5 +1,16 @@
 # Changelog
 
+## v7.30.0 - 2026-10-13
+
+- Preserve creation times for live text, tool, and input-interaction items and
+  canonical historical items, including the original occurrence time in forks.
+- Add optional read-only `ThreadToolResultReader.LookupToolResult` for confirmed
+  local tool arguments and output on the active journal path. Exact thread,
+  turn, run, and tool-call identity is required; hosts retain authorization and
+  interpretation. No new store, execution, or domain schema is introduced.
+- Cover live publication, completed results, SQLite restart, fork, deletion,
+  and mismatched execution identity.
+
 ## v7.29.2 - 2026-10-12
 
 - Refresh the reviewed nine-provider model catalog from one pinned models.dev

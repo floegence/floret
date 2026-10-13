@@ -37,6 +37,20 @@ include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
 request key. Replaying the same key and fingerprint returns the committed
 result; changing the input returns `runtime.ErrRequestConflict`.
 
+The optional `ThreadToolResultReader.LookupToolResult` reads a confirmed local
+tool's original arguments, visible output, tool name, and status from the active
+canonical path. The query requires exact thread, turn, run, and tool-call
+identity. An unfinished, absent, or different execution returns `found=false`;
+deleted threads return the normal thread error. Hosts authorize the request and
+interpret their own output without reconstructing provider history, dispatching
+a tool, or creating another result store. These private values must not be
+included in public presentation by default.
+
+Live text items use their first delta's occurrence time, and tool items use the
+Activity start time. Updates preserve that creation time. Historical items use
+the journal's original occurrence time, including copied entries in forks;
+timestamps do not define item ordering or replace the canonical ordinal.
+
 The optional `ThreadContextCompactor.CompactContext` takes only `ThreadID` and
 `RequestKey` and admits independent compaction on an idle thread with no queue
 or unresolved interaction. `TurnKindContextCompaction` reaches the AgentFactory,
