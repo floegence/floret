@@ -101,6 +101,10 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resultReader, ok := firstService.(runtime.ThreadToolResultReader)
+	if !ok {
+		t.Fatal("published thread service is missing canonical tool result lookup")
+	}
 	media, err := firstHost.MediaInventory(ctx)
 	if err != nil || !media.Idle || len(media.References) != 0 {
 		t.Fatalf("fresh canonical media inventory=%+v, error=%v", media, err)
@@ -108,6 +112,9 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	created, err := firstService.Create(ctx, runtime.CreateThreadInput{RequestKey: "create-adoption"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, found, err := resultReader.LookupToolResult(ctx, runtime.LookupToolResultInput{ThreadID: created.ThreadID, TurnID: "missing-turn", RunID: "missing-run", ToolCallID: "missing-call"}); err != nil || found {
+		t.Fatalf("absent published tool result found=%t error=%v", found, err)
 	}
 	if _, err := firstService.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, Input: runtime.UserInput{Text: "compact then answer"}, RequestKey: "send-adoption"}); err != nil {
 		t.Fatal(err)

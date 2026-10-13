@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/observation"
@@ -173,9 +174,9 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if event.Stream != nil {
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:
-			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text)
+			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text, event.Timestamp)
 		case StreamObservationReasoningDelta:
-			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text)
+			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text, event.Timestamp)
 		case StreamObservationToolCallStart, StreamObservationToolCallDelta:
 			runtime.finishLiveTextSegment()
 		case StreamObservationToolCallEnd:
@@ -228,7 +229,7 @@ func (runtime *threadRuntimeState) releaseEffectDispatch() {
 // The Engine's Activity projection already owns validation, presentation merging,
 // and tool status. Apply that snapshot in the actor before dispatch can proceed;
 // provider argument streams are not admitted tool executions.
-func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.ActivityTimeline) bool {
+func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.ActivityTimeline, observedAt time.Time) bool {
 	if timeline == nil {
 		return false
 	}
@@ -251,8 +252,15 @@ func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.Activ
 			item.Activity, item.Live = &activity, live
 		} else {
 			runtime.finishLiveTextSegment()
+			createdAt := observedAt
+			if activity.StartedAtUnixMS > 0 {
+				createdAt = time.UnixMilli(activity.StartedAtUnixMS).UTC()
+			}
+			if createdAt.IsZero() {
+				createdAt = time.Now().UTC()
+			}
 			runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-				ID: id, TurnID: timeline.TurnID, RunID: timeline.RunID, Kind: ThreadItemTool, Live: live, Activity: &activity,
+				ID: id, TurnID: timeline.TurnID, RunID: timeline.RunID, Kind: ThreadItemTool, Live: live, Activity: &activity, CreatedAt: createdAt,
 			})
 		}
 		changed = true
@@ -269,7 +277,7 @@ func threadToolActivityTerminal(status observation.ActivityStatus) bool {
 	}
 }
 
-func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string) {
+func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time) {
 	if runtime == nil || text == "" {
 		return
 	}
@@ -277,10 +285,13 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		runtime.finishLiveTextSegment()
 	}
 	if runtime.state.openTextSegmentID == "" {
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
 		runtime.state.openTextSegmentID = nextThreadTextSegmentID(runtime.state.view.Items, runtime.state.turnID, kind)
 		runtime.state.openTextKind = kind
 		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true,
+			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true, CreatedAt: createdAt,
 		})
 	}
 	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {

@@ -195,6 +195,12 @@ queue, import, and `Subscribe` methods all operate on stable thread and request
 identities. Child agents are ordinary child threads with explicit parent
 identity, so they use the same current-view and command contracts.
 
+The optional `runtime.ThreadToolResultReader.LookupToolResult` reads confirmed
+local tool arguments and output from the active journal path using exact thread,
+turn, run, and tool-call identity. Hosts authorize and interpret that private
+output; the query neither runs a tool nor changes history. Live and historical
+items retain their creation times, including original occurrence times in forks.
+
 The optional `runtime.ThreadSendReader.LookupSend` returns original admitted
 input for a request key, including after queue edits, promotion, removal, or
 restart. Hosts can validate transport retries against canonical input without
