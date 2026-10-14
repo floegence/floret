@@ -674,6 +674,9 @@ field InteractionResolution.Outcome string tag="json:\"outcome,omitempty\""
 field InteractionResolution.Approved *bool tag="json:\"approved,omitempty\""
 field InteractionResolution.Input map[string]string tag="json:\"input,omitempty\""
 field InteractionResolution.At time.Time tag="json:\"at\""
+type LookupQueuedEditInput struct
+field LookupQueuedEditInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field LookupQueuedEditInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type LookupSendInput struct
 field LookupSendInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field LookupSendInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
@@ -783,6 +786,10 @@ field QueuedInput.RequestKey string tag="json:\"request_key\""
 field QueuedInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
 field QueuedInput.SupplementalContext []github.com/floegence/floret/v7/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
 field QueuedInput.CreatedAt time.Time tag="json:\"created_at\""
+type QueuedInputEdit struct
+field QueuedInputEdit.QueueItemID string tag="json:\"queue_item_id\""
+field QueuedInputEdit.ExpectedInput github.com/floegence/floret/v7/runtime.UserInput tag="json:\"expected_input\""
+field QueuedInputEdit.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
 type ReorderQueueInput struct
 field ReorderQueueInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ReorderQueueInput.OrderedItemIDs []string tag="json:\"ordered_item_ids\""
@@ -969,6 +976,7 @@ const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle
 const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn"
 type ThreadQueryReader interface interface{Aggregate(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.AggregateInput) (github.com/floegence/floret/v7/threadquery.AggregatePage, error); Query(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.QueryInput) (github.com/floegence/floret/v7/threadquery.Page, error); Read(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.ReadInput) (github.com/floegence/floret/v7/threadquery.ReadPage, error)}
 type ThreadQueueController interface interface{EditQueued(context.Context, github.com/floegence/floret/v7/runtime.EditQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SendQueuedNow(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
+type ThreadQueueEditReader interface interface{LookupQueuedEdit(context.Context, github.com/floegence/floret/v7/runtime.LookupQueuedEditInput) (github.com/floegence/floret/v7/runtime.QueuedInputEdit, bool, error)}
 type ThreadRunPhase string
 const ThreadRunPhaseFinalizing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "finalizing"
 const ThreadRunPhasePreparing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "preparing"

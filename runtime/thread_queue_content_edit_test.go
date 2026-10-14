@@ -63,6 +63,13 @@ func TestEditQueuedReplacesCompleteInputAtomically(t *testing.T) {
 	if _, err := reopened.(ThreadQueueController).EditQueued(t.Context(), command); !errors.Is(err, ErrRequestConflict) {
 		t.Fatalf("deleted edit err=%v", err)
 	}
+	edit, found, err := reopened.(ThreadQueueEditReader).LookupQueuedEdit(t.Context(), LookupQueuedEditInput{ThreadID: created.ThreadID, RequestKey: "edit-content"})
+	if err != nil || !found || edit.QueueItemID != "queue:content" || !reflect.DeepEqual(edit.ExpectedInput, original) || !reflect.DeepEqual(edit.Input, replacement) {
+		t.Fatalf("edit lookup=%#v found=%v err=%v", edit, found, err)
+	}
+	if _, found, err := reopened.(ThreadQueueEditReader).LookupQueuedEdit(t.Context(), LookupQueuedEditInput{ThreadID: created.ThreadID, RequestKey: "missing-edit"}); err != nil || found {
+		t.Fatalf("missing=%v %v", found, err)
+	}
 }
 
 func TestEditQueuedRejectsInvalidOrAmbiguousReplacementWithoutMutation(t *testing.T) {

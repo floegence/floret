@@ -5,6 +5,8 @@
 - Extend `EditQueuedInput` with paired `ExpectedInput` and `Input` for atomic
   complete queued-input editing. Reject stale attachments and references even
   when text is unchanged; preserve queue identity, order and supplemental context.
+- Add read-only `ThreadQueueEditReader.LookupQueuedEdit` for immutable edit
+  replay validation from existing journal facts without another receipt store.
 - Preserve existing text edits, original-send replay, canonical media retention
   and schema 15. Cover complete edits, validation, SQLite restart and adoption.
 
