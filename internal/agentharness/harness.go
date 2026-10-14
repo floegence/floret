@@ -15,6 +15,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/engine"
 	enginecompaction "github.com/floegence/floret/v7/internal/engine/compaction"
@@ -2067,7 +2068,15 @@ func (r *HarnessRecorder) Snapshot() []HarnessEvent {
 	return slices.Clone(r.Events)
 }
 
+type pendingHostedObservation struct {
+	event        event.Event
+	textEnd      int
+	reasoningEnd int
+}
+
 type turnProjection struct {
+	sources               []citation.Source
+	hosted                []pendingHostedObservation
 	thread                *Thread
 	ctx                   context.Context
 	turnID                string
@@ -2232,38 +2241,17 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+		// Hosted search boundaries stay in the in-memory assistant segment until
+		// the response sources arrive at step finalization.
 		p.text += ev.Message
 	case event.ProviderReasoning:
 		p.reasoning += ev.Message
+	case event.ProviderSources:
+		p.sources = citation.Normalize(append(p.sources, ev.Sources...))
 	case event.HostedToolCall, event.HostedToolResult:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
-		if p.text == "" && p.reasoning != "" {
-			if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Reasoning: p.reasoning}); err != nil {
-				p.err = err
-				return
-			}
-		}
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
-		p.finalCandidate = nil
-		safe := event.Sanitize(ev)
-		metadata, _ := safe.Metadata.(map[string]any)
-		entry, err := sessiontree.NewHostedToolEntry(observation.Event{
-			Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID),
-			ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: safe.Activity, Metadata: metadata,
-		})
-		if err == nil {
-			entry, err = p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
-		}
-		p.err = err
-		if err == nil {
-			p.thread.harness.emitEntryCommitted(entry, p.runID)
-		}
+		// Annotations can arrive at the end of the response. Commit its assistant
+		// fragments and hosted observations together in their original order.
+		p.hosted = append(p.hosted, pendingHostedObservation{ev, len(p.text), len(p.reasoning)})
 	case event.ToolCall:
 		message, err := canonicalToolCallMessage(ev)
 		if err != nil {
@@ -2368,7 +2356,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 
 func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, error) {
 	tracked := ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
-		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderToolCallStart ||
+		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderSources || ev.Type == event.ProviderToolCallStart ||
 		ev.Type == event.ProviderToolCallDelta || ev.Type == event.ProviderToolCallEnd
 	if !tracked {
 		return true, nil
@@ -2396,6 +2384,8 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 			}
 			p.text = ""
 			p.reasoning = ""
+			p.sources = nil
+			p.hosted = nil
 			p.activeAttempt = identity
 		}
 		return true, nil
@@ -2514,22 +2504,49 @@ func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) e
 }
 
 func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
-	if p.text == "" {
-		if resetReasoning {
-			p.reasoning = ""
+	textStart, reasoningStart := 0, 0
+	boundaries := make([]int, len(p.hosted))
+	for i, hosted := range p.hosted {
+		boundaries[i] = hosted.textEnd
+	}
+	appendFragment := func(textEnd, reasoningEnd int, keepReasoning bool) error {
+		text, reasoning := p.text[textStart:textEnd], p.reasoning[reasoningStart:reasoningEnd]
+		sources := citation.Fragment(p.sources, p.text, textStart, textEnd, textEnd == len(p.text) && textStart < textEnd, boundaries)
+		textStart, reasoningStart = textEnd, reasoningEnd
+		if text == "" && (!keepReasoning || reasoning == "") {
+			return nil
 		}
+		entry, err := p.thread.appendMessageEntryAt(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources}, time.Time{})
+		if err != nil {
+			return err
+		}
+		if p.projectedAssistantIDs == nil {
+			p.projectedAssistantIDs = map[string]bool{}
+		}
+		p.projectedAssistantIDs[entry.ID] = true
+		p.finalCandidate = append(p.finalCandidate, entry.ID)
 		return nil
 	}
-	entry, err := p.thread.appendMessageEntryAt(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}, time.Time{})
-	if err != nil {
+	for _, hosted := range p.hosted {
+		if err := appendFragment(hosted.textEnd, hosted.reasoningEnd, true); err != nil {
+			return err
+		}
+		p.finalCandidate = nil
+		ev := event.Sanitize(hosted.event)
+		metadata, _ := ev.Metadata.(map[string]any)
+		entry, err := sessiontree.NewHostedToolEntry(observation.Event{Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID), ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: ev.Activity, Metadata: metadata})
+		if err == nil {
+			entry, err = p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
+		}
+		if err != nil {
+			return err
+		}
+		p.thread.harness.emitEntryCommitted(entry, p.runID)
+	}
+	if err := appendFragment(len(p.text), len(p.reasoning), false); err != nil {
 		return err
 	}
-	if p.projectedAssistantIDs == nil {
-		p.projectedAssistantIDs = map[string]bool{}
-	}
-	p.projectedAssistantIDs[entry.ID] = true
-	p.finalCandidate = append(p.finalCandidate, entry.ID)
-	p.text = ""
+	p.text, p.sources, p.hosted = "", nil, nil
 	if resetReasoning {
 		p.reasoning = ""
 	}

@@ -327,11 +327,12 @@ func providerToolCalls(values []tools.ToolCall) []provider.ToolCall {
 }
 
 func providerSourceRefs(values []publicprovider.Source) []provider.SourceRef {
-	result := make([]provider.SourceRef, 0, len(values))
-	for _, value := range values {
-		if value.Title != "" || value.URL != "" {
-			result = append(result, provider.SourceRef{Title: strings.TrimSpace(value.Title), URL: strings.TrimSpace(value.URL)})
-		}
+	if values == nil {
+		return nil
+	}
+	result := make([]provider.SourceRef, len(values))
+	for i, value := range values {
+		result[i] = provider.SourceRef(value)
 	}
 	return result
 }

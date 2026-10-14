@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
@@ -164,6 +165,7 @@ type ThreadDetailEvent struct {
 }
 
 type ThreadDetailMessage struct {
+	Sources     []citation.Source            `json:"sources,omitempty"`
 	Role        string                       `json:"role,omitempty"`
 	Kind        string                       `json:"kind,omitempty"`
 	Preview     string                       `json:"preview,omitempty"`
@@ -1242,6 +1244,7 @@ func threadDetailMessage(msg session.Message, includeRaw bool) *ThreadDetailMess
 		Activity:    activity,
 	}
 	if includeRaw {
+		out.Sources = citation.Clone(msg.Sources)
 		out.Content = msg.Content
 		out.Reasoning = msg.Reasoning
 	}

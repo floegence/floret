@@ -74,7 +74,7 @@ methods:
     errors_is: [ErrHostClosed, ErrThreadNotFound, ErrThreadDeleted]
     errors_as: []
     retryability: retry not-found only after an independently observed create
-    commit: read-only complete replacement view
+    commit: read-only complete replacement view; assistant sources are detached canonical message facts with end-exclusive Unicode ranges
     replay: unchanged state returns equivalent content; view_version is process-local ordering only
     concurrency: one per-thread mutex snapshots active state
     cancellation: returns ctx.Err without a partial view

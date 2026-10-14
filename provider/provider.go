@@ -414,10 +414,14 @@ type HostedToolResultError struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Source is one provider citation.
+// Source is one provider citation. Positions, when both are present, are
+// end-exclusive Unicode code-point indices in the complete response text.
+// Hosts must use exact ranges rather than infer links from provider marker IDs.
 type Source struct {
-	Title string `json:"title,omitempty"`
-	URL   string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+	URL        string `json:"url,omitempty"`
+	StartIndex *int   `json:"start_index,omitempty"`
+	EndIndex   *int   `json:"end_index,omitempty"`
 }
 
 // Usage is normalized provider token and cost usage.

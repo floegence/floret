@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/memory"
@@ -359,6 +360,7 @@ type RunDecision struct {
 }
 
 type StepOutput struct {
+	Sources             []citation.Source
 	Text                string
 	Reasoning           string
 	Calls               []provider.ToolCall
@@ -386,7 +388,12 @@ func (output StepOutput) assistantMessages() []session.Message {
 	appendFragment := func(boundary assistantBoundary, keepReasoningOnly bool) {
 		text, reasoning := output.Text[textStart:boundary.textEnd], output.Reasoning[reasoningStart:boundary.reasoningEnd]
 		if text != "" || (reasoning != "" && keepReasoningOnly) {
-			messages = append(messages, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning})
+			var boundaries []int
+			for _, b := range output.assistantBoundaries {
+				boundaries = append(boundaries, b.textEnd)
+			}
+			sources := citation.Fragment(output.Sources, output.Text, textStart, boundary.textEnd, boundary.textEnd == len(output.Text) && textStart < boundary.textEnd, boundaries)
+			messages = append(messages, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources})
 		}
 		textStart, reasoningStart = boundary.textEnd, boundary.reasoningEnd
 	}
@@ -3823,6 +3830,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				out.Usage = out.Usage.Add(ev.Usage)
 				emitAttemptEvent(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
 			case provider.SourcesEvent:
+				out.Sources = citation.Normalize(append(out.Sources, ev.Sources...))
 				emitAttemptEvent(event.Event{Type: event.ProviderSources, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Sources: eventSourceRefs(ev.Sources)})
 			case provider.Empty:
 				out.Retry = true
@@ -3871,14 +3879,7 @@ func providerStreamCloseError(ctx context.Context, validator *provider.StreamVal
 }
 
 func eventSourceRefs(in []provider.SourceRef) []event.SourceRef {
-	out := make([]event.SourceRef, 0, len(in))
-	for _, ref := range in {
-		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
-			continue
-		}
-		out = append(out, event.SourceRef{Title: strings.TrimSpace(ref.Title), URL: strings.TrimSpace(ref.URL)})
-	}
-	return out
+	return citation.Normalize(in)
 }
 
 func looksLikeProviderOverflowReason(value string) bool {

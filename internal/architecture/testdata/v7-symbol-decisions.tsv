@@ -36,3 +36,6 @@ runtime.MessageReferenceThread	add	runtime.MessageReference	canonical lightweigh
 runtime.MessageReference.ReferencedThreadID	add-fields	runtime.MessageReference	target identity is separate from owning ThreadID and never inferred from text
 runtime.ThreadQueryReader	add	runtime optional capability	host-authorized canonical indexing without widening ThreadService
 threadquery	add	public query types	shared typed scope filters records and pages without exposing storage internals
+provider.Source.StartIndex	add	optional Unicode code-point range	v7.32 Redeven Flower binds exact end-exclusive citation positions
+provider.Source.EndIndex	add	optional Unicode code-point range	v7.32 range endpoint excludes the final code point
+runtime.ThreadItem.Sources	add	canonical assistant sources	v7.32 detached sources replace host-only collectors

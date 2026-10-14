@@ -1411,3 +1411,6 @@
 Document canonical context calibration, committed measurement/estimate snapshots, and official DeepSeek tokenizer provenance and uncertainty.
 
 Record the tokenizer dependency idle-clock fix and input-free error boundary in v7.15.1.
+
+- 2026-10-14: Document canonical assistant citation ownership, Unicode ranges,
+  late annotation segmentation and the additive v7.32 host projection.

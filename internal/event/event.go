@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
@@ -138,10 +139,7 @@ type ThreadUsageTotals struct {
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 }
 
-type SourceRef struct {
-	Title string `json:"title,omitempty"`
-	URL   string `json:"url,omitempty"`
-}
+type SourceRef = citation.Source
 
 type Artifact struct {
 	ID        string `json:"id,omitempty"`
@@ -296,9 +294,10 @@ func sanitizeSourceRefs(in []SourceRef) []SourceRef {
 		if title == "" && url == "" {
 			continue
 		}
-		out = append(out, SourceRef{Title: title, URL: url})
+		ref.Title, ref.URL = title, url
+		out = append(out, ref)
 	}
-	return out
+	return citation.Normalize(out)
 }
 
 func safeSourceURL(value string) string {

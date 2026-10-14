@@ -235,10 +235,13 @@ func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.Activ
 	}
 	changed := false
 	for _, activity := range observation.CloneActivityTimeline(timeline).Items {
-		if activity.Kind != observation.ActivityKindTool || activity.ToolID == "" {
+		if (activity.Kind != observation.ActivityKindTool && activity.Kind != observation.ActivityKindHosted) || activity.ToolID == "" {
 			continue
 		}
 		id := threadToolSegmentID(timeline.TurnID, activity.ToolID)
+		if activity.Kind == observation.ActivityKindHosted {
+			id = "hosted:" + threadToolKey(timeline.TurnID, timeline.RunID, activity.ToolID)
+		}
 		index := threadItemIndexByID(runtime.state.view.Items, id)
 		live := !threadToolActivityTerminal(activity.Status)
 		if index >= 0 {

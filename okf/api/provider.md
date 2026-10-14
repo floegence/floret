@@ -185,3 +185,20 @@ metadata is an error. The server default is not persisted as explicit intent.
 API field. Default is omitted, Off maps to `none`, boolean On uses the documented
 `medium` compatibility alias, and named efforts remain exact. It rejects budget
 requests and unsupported efforts instead of relying on server fallback.
+
+## Canonical assistant citations
+
+The additive v7.32 decision serves Redeven Flower: `provider.Source.StartIndex`
+and `EndIndex` are optional end-exclusive Unicode code-point positions. Gateways
+report positions in complete response text, including leading/trailing whitespace.
+The Engine collects annotations; the harness commits assistant fragments after
+response completion so late annotations do not require journal mutation. Hosted
+activity continues through the existing live actor projection while its canonical
+observations retain their original ordering.
+
+`runtime.ThreadItem.Sources` is the detached canonical projection. Invalid URLs
+are discarded; invalid or cross-fragment ranges become unlocated sources. The
+optional message field preserves historical raw/hash bytes and schema 15. No host
+collector, second citation store or provider-state rewrite is required. See the
+[range owner](../../internal/citation/source.go) and
+[restart/fork tests](../../runtime/thread_citations_test.go).
