@@ -50,6 +50,14 @@ Live text items use their first delta's occurrence time, and tool items use the
 Activity start time. Updates preserve that creation time. Historical items use
 the journal's original occurrence time, including copied entries in forks;
 timestamps do not define item ordering or replace the canonical ordinal.
+Local-tool Activity uses the original canonical dispatch occurrence for
+`StartedAtUnixMS` and the result occurrence for `EndedAtUnixMS`, keyed by exact
+turn, run and tool-call identity. Current terminal views, History and fork/restart
+reads preserve that interval. Admission and approval waits are excluded; a
+missing dispatch leaves the execution start unavailable. An observation can
+supply timing only for a matching canonical invocation and never owns Run
+identity. Hosts display management-tool duration independently of the current
+lifecycle of a referenced child thread.
 
 The optional `ThreadContextCompactor.CompactContext` takes only `ThreadID` and
 `RequestKey` and admits independent compaction on an idle thread with no queue
