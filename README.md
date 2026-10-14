@@ -360,6 +360,12 @@ original tool item. Canonical reload derives the same sequence without a
 presentation ledger or draft mirror fields.
 Every item and interaction carries its exact `TurnID` and `RunID`, so multi-turn
 history and same-turn continuation never borrow identity from the current run.
+Local-tool Activity execution starts at its recorded dispatch and ends at its
+canonical result. These existing timestamps survive terminal refresh, history
+reads, restart and forks; admission and approval waits do not become execution
+time. A missing dispatch leaves the execution interval unavailable. SubAgent
+management Activity describes the invocation's outcome and elapsed execution,
+while a target's saved status describes the child at that operation's boundary.
 `ThreadView.Turns` and `HistoryPage.Turns` expose canonical per-turn outcome,
 start/end times, elapsed milliseconds, waiting milliseconds, and work duration.
 Waiting deducts the union of user-input and approval intervals; queue time is

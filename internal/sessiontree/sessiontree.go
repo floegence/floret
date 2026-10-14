@@ -1626,7 +1626,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew)
-		if entry.Type == EntryTurnMarker || entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryToolCall || entry.Type == EntryToolResult {
+		if entry.Type == EntryTurnMarker || entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryToolCall || entry.Type == EntryToolResult || (entry.Type == EntryCustom && entry.Metadata["kind"] == "tool_dispatch") {
 			if next.Metadata == nil {
 				next.Metadata = map[string]string{}
 			}

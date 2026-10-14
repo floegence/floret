@@ -4215,6 +4215,17 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 		if err != nil {
 			return nil, nil, runtimeHostError(err)
 		}
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == "tool_dispatch" {
+			toolIndex, err := canonicalToolDispatchIndex(items, toolItemIndex, entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			activity := items[toolIndex].Activity
+			if activity.StartedAtUnixMS == 0 && activity.EndedAtUnixMS == 0 {
+				activity.StartedAtUnixMS = occurredAt.UnixMilli()
+			}
+			continue
+		}
 		if anchors != nil && sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind {
 			compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
 			if err != nil {
@@ -4341,10 +4352,11 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			if entry.Type == sessiontree.EntryToolCall {
 				appendReasoning(turnID, runID, entry.Message.Reasoning, occurredAt)
 			}
-			activity := activityItemFromCanonicalEntry(entry)
+			activity := activityItemFromCanonicalEntry(entry, occurredAt)
 			toolKey := threadToolKey(turnID, runID, entry.Message.ToolCallID)
 			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
+				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				items[previous].Activity = &activity
 				items[previous].Live = false
 				reasoningOpen[threadExecutionKey(turnID, runID)] = false
@@ -4467,10 +4479,40 @@ func threadToolKey(turnID identity.TurnID, runID identity.RunID, toolCallID stri
 	return threadExecutionKey(turnID, runID) + ":" + strings.TrimSpace(toolCallID)
 }
 
-func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.ActivityItem {
+func canonicalToolDispatchIndex(items []ThreadItem, byInvocation map[string]int, entry sessiontree.Entry) (int, error) {
+	callID := entry.Message.ToolCallID
+	if callID == "" {
+		callID = entry.Metadata["tool_id"]
+	}
+	if entry.RunID != "" {
+		if index, found := byInvocation[threadToolKey(identity.TurnID(entry.TurnID), identity.RunID(entry.RunID), callID)]; found {
+			return index, nil
+		}
+		return 0, ErrAuthorityCorrupt
+	}
+	// An observation can supply timing only for one canonical invocation;
+	// its metadata never establishes or advances execution identity.
+	index := -1
+	for i, item := range items {
+		if item.TurnID.String() == entry.TurnID && item.Activity != nil && item.Activity.Kind == observation.ActivityKindTool && item.Activity.ToolID == callID {
+			if index != -1 {
+				return 0, ErrAuthorityCorrupt
+			}
+			index = i
+		}
+	}
+	if index == -1 {
+		return 0, ErrAuthorityCorrupt
+	}
+	return index, nil
+}
+
+func activityItemFromCanonicalEntry(entry sessiontree.Entry, occurredAt time.Time) observation.ActivityItem {
 	status := observation.ActivityStatusRunning
+	endedAt := int64(0)
 	if entry.Type == sessiontree.EntryToolResult {
 		status = observation.ActivityStatusSuccess
+		endedAt = occurredAt.UnixMilli()
 		if entry.Message.ToolResult != nil {
 			switch strings.ToLower(strings.TrimSpace(entry.Message.ToolResult.Status)) {
 			case "error":
@@ -4499,7 +4541,7 @@ func activityItemFromCanonicalEntry(entry sessiontree.Entry) observation.Activit
 			},
 		}
 	}
-	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation}
+	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation, EndedAtUnixMS: endedAt}
 }
 
 func threadToolSegmentID(turnID identity.TurnID, toolCallID string) string {

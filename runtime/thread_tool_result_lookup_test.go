@@ -10,6 +10,7 @@ import (
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/threadquery"
@@ -83,9 +84,38 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 	}
 	check(service.(ThreadToolResultReader), lookup)
 	checkThreadQueryToolResult(t, service, lookup, args, content)
+	page, err := service.History(t.Context(), created.ThreadID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var timing observation.ActivityItem
+	for _, item := range page.Items {
+		if item.Activity != nil && item.Activity.ToolID == lookup.ToolCallID {
+			timing = *item.Activity
+		}
+	}
+	if timing.StartedAtUnixMS <= 0 || timing.EndedAtUnixMS < timing.StartedAtUnixMS {
+		t.Fatalf("completed tool has no settled historical interval while provider remains active: %+v", timing)
+	}
+	checkTiming := func(view ThreadView) {
+		t.Helper()
+		found := false
+		for _, item := range view.Items {
+			if item.Activity != nil && item.Activity.ToolID == lookup.ToolCallID {
+				found = true
+				if item.Activity.StartedAtUnixMS != timing.StartedAtUnixMS || item.Activity.EndedAtUnixMS != timing.EndedAtUnixMS {
+					t.Fatalf("canonical execution interval changed after settlement, restart or fork: got=%+v want=%+v", item.Activity, timing)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("settled tool activity missing")
+		}
+	}
 
 	finish()
 	view = waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+	checkTiming(view)
 	for _, item := range view.Items {
 		if item.CreatedAt.IsZero() || item.CreatedAt.UnixMilli() <= 0 {
 			t.Fatalf("invalid completed item timestamp: %+v", item)
@@ -98,6 +128,16 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 		t.Fatal(err)
 	}
 	_, service = open()
+	view, err = service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkTiming(view)
+	page, err = service.History(t.Context(), created.ThreadID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkTiming(ThreadView{Items: page.Items})
 	check(service.(ThreadToolResultReader), lookup)
 	checkThreadQueryToolResult(t, service, lookup, args, content)
 
@@ -105,6 +145,12 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkTiming(fork)
+	nestedFork, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: fork.ThreadID, RequestKey: "nested-fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkTiming(nestedFork)
 	for _, item := range fork.Items {
 		if item.Kind == ThreadItemTool {
 			forkLookup := LookupToolResultInput{ThreadID: fork.ThreadID, TurnID: item.TurnID, RunID: item.RunID, ToolCallID: item.Activity.ToolID}

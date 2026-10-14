@@ -1,5 +1,14 @@
 # Changelog
 
+## v7.32.1 - 2026-10-14
+
+- Preserve canonical local-tool execution start and end times in current and
+  history views, including terminal refresh, SQLite restart and forks. Dispatch
+  time excludes admission and approval waits; absent dispatch facts leave the
+  execution interval unavailable rather than inventing a start.
+- Bind timing observations to exact canonical invocations without deriving Run
+  identity from observation metadata. Preserve existing public API and schema 15.
+
 ## v7.32.0 - 2026-10-14
 
 - Persist provider-neutral assistant citations with optional end-exclusive Unicode

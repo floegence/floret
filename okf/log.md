@@ -2,6 +2,10 @@
 
 ## 2026-10-14
 
+- Document [canonical local-tool execution timing](api/runtime.md): dispatch/result
+  boundaries survive terminal refresh, History, restart and forks without
+  including admission waits or borrowing a referenced child thread's lifecycle.
+
 - Add [thread references and canonical index queries](api/thread-query.md), host scope ownership, frozen pagination and full-content read limits. Append schema 14 -> 15 without resetting the permanent migration lineage.
 
 ## 2026-10-12
