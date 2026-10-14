@@ -237,7 +237,9 @@ media byte store.
 
 The optional `runtime.ThreadQueueController` supports `EditQueued` with a text
 precondition and `SendQueuedNow` to stop gracefully and start one chosen queued
-input. Editing preserves its attachments, context, identity and position.
+input. Text editing preserves attachments, references and context. Complete editing
+uses paired `ExpectedInput` and `Input` to replace text, attachments, references
+and context atomically while preserving identity and position.
 Already admitted or concurrently edited input is rejected without replacement.
 See the [queue control contract](okf/api/runtime.md#queued-message-controls).
 

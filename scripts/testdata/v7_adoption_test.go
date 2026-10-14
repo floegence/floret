@@ -3,7 +3,9 @@ package adoption_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +24,69 @@ import (
 
 type oneShotCompaction struct {
 	consumed atomic.Bool
+}
+
+func TestPublishedCompleteQueueEditSurvivesSQLiteRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.db")
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		t.Helper()
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			return nil, errors.New("execution not expected")
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	host, service := open()
+	created, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create-queue-edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := runtime.UserInput{Text: "original", Attachments: []runtime.MessageAttachment{{ResourceRef: "host:old", Name: "old.png", MIMEType: "image/png"}}}
+	if _, err := service.ImportPendingInputs(t.Context(), runtime.ImportPendingInputsInput{ThreadID: created.ThreadID, Items: []runtime.ImportedPendingInput{{RequestKey: "queued", Input: original}}}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := runtime.UserInput{References: []runtime.MessageReference{{ReferenceID: "text", Kind: runtime.MessageReferenceText, Label: "Snapshot", Text: "replacement"}}, Attachments: []runtime.MessageAttachment{{ResourceRef: "host:new", Name: "new.png", MIMEType: "image/png"}}}
+	command := runtime.EditQueuedInput{ThreadID: created.ThreadID, QueueItemID: "queue:queued", ExpectedInput: &original, Input: &replacement, RequestKey: "edit"}
+	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	host, service = open()
+	defer host.Shutdown(context.Background())
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil || len(view.Queue) != 1 || !reflect.DeepEqual(view.Queue[0].Input, replacement) {
+		t.Fatalf("queue=%#v err=%v", view.Queue, err)
+	}
+	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); err != nil {
+		t.Fatalf("replay=%v", err)
+	}
+	command.RequestKey = "stale"
+	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); !errors.Is(err, runtime.ErrRequestConflict) {
+		t.Fatalf("stale=%v", err)
+	}
+	inventory, err := host.MediaInventory(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := map[string]bool{}
+	for _, ref := range inventory.References {
+		refs[ref.Attachment.ResourceRef] = true
+	}
+	if !refs["host:old"] || !refs["host:new"] {
+		t.Fatalf("missing durable media: %#v", refs)
+	}
+	input, found, err := service.(runtime.ThreadSendReader).LookupSend(t.Context(), runtime.LookupSendInput{ThreadID: created.ThreadID, RequestKey: "queued"})
+	if err != nil || !found || !reflect.DeepEqual(input, original) {
+		t.Fatalf("original send=%#v %v %v", input, found, err)
+	}
 }
 
 type usageEventRecorder struct {
