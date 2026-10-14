@@ -94,7 +94,7 @@ type startupScanCounts struct {
 }
 
 func (counts *startupScanCounts) record(request spi.ScanRequest) {
-	if request.Namespace != "floret.domain.sessiontree.v14" || request.Limit != 256 {
+	if request.Namespace != "floret.domain.sessiontree.v15" || request.Limit != 256 {
 		return
 	}
 	counts.mu.Lock()

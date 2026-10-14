@@ -41,7 +41,7 @@ func TestBackendDomainV7ToV8ClassifiesContextContinueWithoutChangingCanonicalInp
 		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
 			return errors.Join(err, errors.New("v7 records remain after migration"))
 		}
-		_, found, err := loadBackendDomainV14(ctx, tx, time.Now)
+		_, found, err := loadBackendDomainV15(ctx, tx, time.Now)
 		if err != nil || !found {
 			return errors.Join(err, errors.New("current records are missing"))
 		}
@@ -266,7 +266,7 @@ type migrationCorruptingWriteTx struct {
 }
 
 func (tx migrationCorruptingWriteTx) Put(namespace string, key, value []byte) error {
-	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace) && (string(key) == string(backendDomainV13Key(backendDomainRecordRootIndex)) || string(key) == string(backendDomainV14Key(backendDomainRecordRootIndex))) {
+	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace || namespace == backendDomainV15Namespace) && (string(key) == string(backendDomainV13Key(backendDomainRecordRootIndex)) || string(key) == string(backendDomainV14Key(backendDomainRecordRootIndex)) || string(key) == string(backendDomainV15Key(backendDomainRecordRootIndex))) {
 		value = []byte("corrupt")
 	}
 	return tx.WriteTx.Put(namespace, key, value)

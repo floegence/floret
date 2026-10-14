@@ -201,6 +201,25 @@ turn, run, and tool-call identity. Hosts authorize and interpret that private
 output; the query neither runs a tool nor changes history. Live and historical
 items retain their creation times, including original occurrence times in forks.
 
+The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and
+`Aggregate` using `threadquery` types. It searches canonical active-path threads,
+user/assistant messages, and persisted local/hosted tool facts through the
+canonical owner's in-memory index. Hosts provide an exact readable ThreadID set
+and an authority key on **every** call; reference snapshots never grant access.
+Filters combine with AND (values within one field use OR), support literal
+Unicode substring/keyword/phrase search, and use UTC half-open time ranges.
+All sorts use stable identity ties. Queries default to 50 records (maximum 200);
+`Read` explicitly continues UTF-8 chunks up to 16 KiB in responses up to 64 KiB.
+Counts and grouping use the same authorized filter. Cursor snapshots last up to
+five minutes within a 64 MiB global budget, survive append/completion/rename,
+and fail explicitly after scope changes, deletion, expiration or restart.
+See the [thread query contract](okf/api/thread-query.md) for keys and limits.
+
+`runtime.MessageReferenceThread` adds a lightweight admitted snapshot using
+`ReferencedThreadID`, `Label`, and `Text`. The provider receives the explicit
+referenced identity as data; hosts retain read authorization. Existing reference
+rendering and input fingerprints stay byte-identical when this field is absent.
+
 The optional `runtime.ThreadSendReader.LookupSend` returns original admitted
 input for a request key, including after queue edits, promotion, removal, or
 restart. Hosts can validate transport retries against canonical input without
@@ -390,10 +409,11 @@ failed or cancelled compaction with a new compact request key. Ordinary `Retry`
 returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
 result per operation and its canonical `AfterItemID` presentation anchor; an
 empty history has no artificial anchor. Stop, shutdown, restart, and fork use
-the existing thread lifecycle. Domain schema v14 adds the automatic v12 -> v13
+the existing thread lifecycle. Domain schema v15 retains the automatic v12 -> v13
 typed-turn edge and v13 -> v14 canonical run-identity edge without
 reclassifying historical slash-command conversations or using observation
-metadata as runtime authority.
+metadata as runtime authority. The v14 -> v15 edge adds typed thread references
+without rewriting historical messages or request fingerprints.
 
 ## Consistent Reads
 

@@ -37,6 +37,9 @@ func loadBackendDomainV14(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV14Memory(memory *MemoryRepo) error {
+	if err := validatePreThreadReferenceMemory(memory); err != nil {
+		return err
+	}
 	if err := validateBackendDomainMemory(memory, "v14", true); err != nil {
 		return err
 	}

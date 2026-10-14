@@ -721,6 +721,7 @@ type AgentTodoStateRepo interface {
 type MemoryRepo struct {
 	mu                sync.Mutex
 	mutation          *backendDomainMutation
+	queryIndex        *queryIndex
 	threads           map[string]ThreadMeta
 	entries           map[string][]Entry
 	entryOrdinals     map[string]map[string]int

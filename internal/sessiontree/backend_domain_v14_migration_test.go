@@ -161,14 +161,14 @@ func TestBackendDomainV13ToV14RepairsCanonicalRunMarkers(t *testing.T) {
 	if len(migrationTestNamespaceRecords(t, backend, backendDomainV13Namespace)) != 0 {
 		t.Fatal("v13 records survived migration")
 	}
-	current := migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace)
+	current := migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace)
 	if len(current) == 0 {
 		t.Fatal("v14 records are missing after migration")
 	}
 	if _, err := NewBackendRepo(t.Context(), backend, memory.now); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace), current) {
+	if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace), current) {
 		t.Fatal("current restart rewrote migrated bytes")
 	}
 	// The v13 source is consumed atomically; a failed attempt below must still
@@ -335,7 +335,7 @@ func TestBackendDomainV14FreshAndEmptySourceAreIdempotent(t *testing.T) {
 			if _, err := NewBackendRepo(t.Context(), backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if len(migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace)) == 0 {
+			if len(migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace)) == 0 {
 				t.Fatal("current schema records are missing")
 			}
 			before := cloneMigrationRecords(backend.records)
@@ -390,7 +390,7 @@ func TestLegacyDomainV2ThroughV4ReachesV14(t *testing.T) {
 			if _, err := NewBackendRepo(t.Context(), backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if len(migrationTestNamespaceRecords(t, backend, backendDomainV14Namespace)) == 0 {
+			if len(migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace)) == 0 {
 				t.Fatal("contiguous migration did not reach v14")
 			}
 			before := cloneMigrationRecords(backend.records)

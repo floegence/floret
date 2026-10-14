@@ -745,6 +745,7 @@ field MessageReference.Label string tag="json:\"label\""
 field MessageReference.Text string tag="json:\"text,omitempty\""
 field MessageReference.ResourceRef string tag="json:\"resource_ref,omitempty\""
 field MessageReference.Truncated bool tag="json:\"truncated,omitempty\""
+field MessageReference.ReferencedThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"referenced_thread_id,omitempty\""
 method MessageReference.Validate func() error
 const MessageReferenceDirectory github.com/floegence/floret/v7/runtime.MessageReferenceKind = "directory"
 const MessageReferenceFile github.com/floegence/floret/v7/runtime.MessageReferenceKind = "file"
@@ -752,6 +753,7 @@ type MessageReferenceKind string
 const MessageReferenceProcess github.com/floegence/floret/v7/runtime.MessageReferenceKind = "process"
 const MessageReferenceTerminal github.com/floegence/floret/v7/runtime.MessageReferenceKind = "terminal"
 const MessageReferenceText github.com/floegence/floret/v7/runtime.MessageReferenceKind = "text"
+const MessageReferenceThread github.com/floegence/floret/v7/runtime.MessageReferenceKind = "thread"
 type MigrationRequiredError struct
 field MigrationRequiredError.Version string
 method *MigrationRequiredError.Error func() string
@@ -960,6 +962,7 @@ const ThreadItemUser github.com/floegence/floret/v7/runtime.ThreadItemKind = "us
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn"
+type ThreadQueryReader interface interface{Aggregate(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.AggregateInput) (github.com/floegence/floret/v7/threadquery.AggregatePage, error); Query(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.QueryInput) (github.com/floegence/floret/v7/threadquery.Page, error); Read(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.ReadInput) (github.com/floegence/floret/v7/threadquery.ReadPage, error)}
 type ThreadQueueController interface interface{EditQueued(context.Context, github.com/floegence/floret/v7/runtime.EditQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SendQueuedNow(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 type ThreadRunPhase string
 const ThreadRunPhaseFinalizing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "finalizing"
@@ -1184,6 +1187,111 @@ func WithAgentTools func(items ...github.com/floegence/floret/v7/tools.Tool) git
 type WorkspaceSubscription struct
 method *WorkspaceSubscription.Next func(ctx context.Context) (github.com/floegence/floret/v7/runtime.ThreadView, error)
 method *WorkspaceSubscription.Close func()
+
+package github.com/floegence/floret/v7/threadquery
+type AggregateInput struct
+field AggregateInput.Object github.com/floegence/floret/v7/threadquery.Object tag="json:\"object\""
+field AggregateInput.Filter github.com/floegence/floret/v7/threadquery.Filter tag="json:\"filter,omitempty\""
+field AggregateInput.GroupBy string tag="json:\"group_by,omitempty\""
+field AggregateInput.Sort github.com/floegence/floret/v7/threadquery.Sort tag="json:\"sort,omitempty\""
+field AggregateInput.Limit int tag="json:\"limit,omitempty\""
+field AggregateInput.Cursor string tag="json:\"cursor,omitempty\""
+type AggregatePage struct
+field AggregatePage.Total int tag="json:\"total\""
+field AggregatePage.Groups []github.com/floegence/floret/v7/threadquery.Group tag="json:\"groups\""
+field AggregatePage.NextCursor string tag="json:\"next_cursor,omitempty\""
+field AggregatePage.ExpiresAt time.Time tag="json:\"expires_at\""
+type Chunk struct
+field Chunk.Field string tag="json:\"field\""
+field Chunk.Offset int tag="json:\"offset\""
+field Chunk.Text string tag="json:\"text\""
+var ErrCursorInvalid error
+var ErrInvalidQuery error
+var ErrRecordUnavailable error
+var ErrSnapshotLimit error
+type Filter struct
+field Filter.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_ids,omitempty\""
+field Filter.ParentThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_ids,omitempty\""
+field Filter.TurnIDs []github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_ids,omitempty\""
+field Filter.RunIDs []github.com/floegence/floret/v7/identity.RunID tag="json:\"run_ids,omitempty\""
+field Filter.Roles []string tag="json:\"roles,omitempty\""
+field Filter.ToolNames []string tag="json:\"tool_names,omitempty\""
+field Filter.ToolKinds []string tag="json:\"tool_kinds,omitempty\""
+field Filter.Statuses []string tag="json:\"statuses,omitempty\""
+field Filter.Activities []string tag="json:\"activities,omitempty\""
+field Filter.Outcomes []string tag="json:\"outcomes,omitempty\""
+field Filter.Text github.com/floegence/floret/v7/threadquery.TextMatch tag="json:\"text,omitempty\""
+field Filter.Title github.com/floegence/floret/v7/threadquery.TextMatch tag="json:\"title,omitempty\""
+field Filter.Arguments github.com/floegence/floret/v7/threadquery.TextMatch tag="json:\"arguments,omitempty\""
+field Filter.Result github.com/floegence/floret/v7/threadquery.TextMatch tag="json:\"result,omitempty\""
+field Filter.Time github.com/floegence/floret/v7/threadquery.TimeRange tag="json:\"time,omitempty\""
+field Filter.Created github.com/floegence/floret/v7/threadquery.TimeRange tag="json:\"created,omitempty\""
+field Filter.Updated github.com/floegence/floret/v7/threadquery.TimeRange tag="json:\"updated,omitempty\""
+field Filter.Completed github.com/floegence/floret/v7/threadquery.TimeRange tag="json:\"completed,omitempty\""
+type Group struct
+field Group.Key string tag="json:\"key\""
+field Group.Count int tag="json:\"count\""
+const Messages github.com/floegence/floret/v7/threadquery.Object = "messages"
+type Object string
+type Page struct
+field Page.Records []github.com/floegence/floret/v7/threadquery.Record tag="json:\"records\""
+field Page.Total int tag="json:\"total\""
+field Page.NextCursor string tag="json:\"next_cursor,omitempty\""
+field Page.ExpiresAt time.Time tag="json:\"expires_at\""
+type QueryInput struct
+field QueryInput.Object github.com/floegence/floret/v7/threadquery.Object tag="json:\"object\""
+field QueryInput.Filter github.com/floegence/floret/v7/threadquery.Filter tag="json:\"filter,omitempty\""
+field QueryInput.Sort github.com/floegence/floret/v7/threadquery.Sort tag="json:\"sort,omitempty\""
+field QueryInput.Limit int tag="json:\"limit,omitempty\""
+field QueryInput.Cursor string tag="json:\"cursor,omitempty\""
+type ReadInput struct
+field ReadInput.Ref github.com/floegence/floret/v7/threadquery.RecordRef tag="json:\"ref\""
+field ReadInput.Cursor string tag="json:\"cursor,omitempty\""
+type ReadPage struct
+field ReadPage.Record github.com/floegence/floret/v7/threadquery.Record tag="json:\"record\""
+field ReadPage.Chunks []github.com/floegence/floret/v7/threadquery.Chunk tag="json:\"chunks\""
+field ReadPage.NextCursor string tag="json:\"next_cursor,omitempty\""
+field ReadPage.ExpiresAt time.Time tag="json:\"expires_at\""
+type Record struct
+field Record.Ref github.com/floegence/floret/v7/threadquery.RecordRef tag="json:\"ref\""
+field Record.Object github.com/floegence/floret/v7/threadquery.Object tag="json:\"object\""
+field Record.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field Record.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id,omitempty\""
+field Record.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
+field Record.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field Record.ToolCallID string tag="json:\"tool_call_id,omitempty\""
+field Record.Title string tag="json:\"title,omitempty\""
+field Record.Role string tag="json:\"role,omitempty\""
+field Record.ToolName string tag="json:\"tool_name,omitempty\""
+field Record.ToolKind string tag="json:\"tool_kind,omitempty\""
+field Record.Status string tag="json:\"status,omitempty\""
+field Record.Activity string tag="json:\"activity,omitempty\""
+field Record.Outcome string tag="json:\"outcome,omitempty\""
+field Record.Time time.Time tag="json:\"time\""
+field Record.CreatedAt time.Time tag="json:\"created_at,omitempty\""
+field Record.UpdatedAt time.Time tag="json:\"updated_at,omitempty\""
+field Record.CompletedAt time.Time tag="json:\"completed_at,omitempty\""
+field Record.Elapsed time.Duration tag="json:\"elapsed_ns,omitempty\""
+field Record.Order int64 tag="json:\"order,omitempty\""
+field Record.Snippet string tag="json:\"snippet,omitempty\""
+type RecordRef string
+type Scope struct
+field Scope.Authority string tag="json:\"-\""
+field Scope.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"-\""
+type Sort struct
+field Sort.Key string tag="json:\"key,omitempty\""
+field Sort.Descending bool tag="json:\"descending,omitempty\""
+type TextMatch struct
+field TextMatch.Contains string tag="json:\"contains,omitempty\""
+field TextMatch.Keywords []string tag="json:\"keywords,omitempty\""
+field TextMatch.AnyKeyword bool tag="json:\"any_keyword,omitempty\""
+field TextMatch.Phrase string tag="json:\"phrase,omitempty\""
+field TextMatch.CaseSensitive bool tag="json:\"case_sensitive,omitempty\""
+const Threads github.com/floegence/floret/v7/threadquery.Object = "threads"
+type TimeRange struct
+field TimeRange.From time.Time tag="json:\"from,omitempty\""
+field TimeRange.To time.Time tag="json:\"to,omitempty\""
+const ToolCalls github.com/floegence/floret/v7/threadquery.Object = "tool_calls"
 
 package github.com/floegence/floret/v7/storage
 func BackupSQLite func(ctx context.Context, path string, destination string) (err error)

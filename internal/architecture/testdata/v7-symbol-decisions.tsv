@@ -32,3 +32,7 @@ tools.StructuredActivityPayload.Inputs	add	structured tool display	preserve sani
 tools.StructuredActivityPayload.RowsProvided	add	structured tool display	distinguish explicit empty output from absent historical data
 tools.StructuredActivityRow.Language	add	code presentation	bounded syntax identifier without execution authority
 tools.StructuredActivityRow.Truncated	add	bounded output presentation	expose preview limits instead of implying complete content
+runtime.MessageReferenceThread	add	runtime.MessageReference	canonical lightweight thread snapshots with explicit target identity and no authorization
+runtime.MessageReference.ReferencedThreadID	add-fields	runtime.MessageReference	target identity is separate from owning ThreadID and never inferred from text
+runtime.ThreadQueryReader	add	runtime optional capability	host-authorized canonical indexing without widening ThreadService
+threadquery	add	public query types	shared typed scope filters records and pages without exposing storage internals

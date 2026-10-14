@@ -1992,7 +1992,7 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 	}
 	input.Context = runtimeMessageContext(message.Context)
 	for _, reference := range message.References {
-		input.References = append(input.References, MessageReference{ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label, Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated})
+		input.References = append(input.References, MessageReference{ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label, Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated, ReferencedThreadID: identity.ThreadID(reference.ReferencedThreadID)})
 	}
 	return input
 }
@@ -4194,7 +4194,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 	failedControls := make(map[string]threadControlIdentity)
 	appendReasoning := func(turnID identity.TurnID, runID identity.RunID, text string, createdAt time.Time) {
 		executionKey := threadExecutionKey(turnID, runID)
-		if text == "" || reasoningOpen[executionKey] && lastReasoning[executionKey] == text {
+		if !sessiontree.AppendReasoningSegment(text, lastReasoning[executionKey], reasoningOpen[executionKey]) {
 			return
 		}
 		thinkingCounts[turnID]++
@@ -4265,9 +4265,9 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if entry.Message.Content == "" {
 					continue
 				}
-				if !segmented[entry.TurnID] && len(items) > 0 {
+				if len(items) > 0 {
 					previous := &items[len(items)-1]
-					if previous.Kind == ThreadItemAssistant && previous.TurnID == turnID && previous.RunID == runID {
+					if sessiontree.MergeAssistantSegment(segmented[entry.TurnID], previous.Kind == ThreadItemAssistant, previous.TurnID.String(), previous.RunID.String(), entry.TurnID, entry.RunID) {
 						previous.Text += entry.Message.Content
 						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
 						continue
