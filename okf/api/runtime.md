@@ -169,9 +169,14 @@ The service returned by `Host.ThreadService` also implements the optional
 `ThreadQueueController`; the existing `ThreadService` interface is unchanged.
 `EditQueued` requires `ExpectedText` and an edit request key. It changes only
 pending text, preserving queue ID, order, attachments, references, context and
-original request identity. An admitted, deleted or stale item returns
+original request identity. For complete content editing, supply paired
+`ExpectedInput` and `Input`, leaving both text-edit fields empty. The complete
+input precondition detects attachment, reference and context changes even when
+text is unchanged; replacement validates the same input contract as admission.
+Supplemental context, queue identity and position remain intact.
+An admitted, deleted or stale item returns
 `ErrRequestConflict`; an empty invalid input is rejected. Replacement uses one
-atomic transaction of existing queue facts, so schema v12 and old readers
+atomic transaction of existing queue facts, so schema v15 and existing readers
 remain valid. Promotion resolves the latest input under the admission lock.
 
 `SendQueuedNow` preserves completed work and starts the selected input in a new

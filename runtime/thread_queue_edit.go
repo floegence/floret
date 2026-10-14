@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/floegence/floret/v7/identity"
@@ -10,7 +11,7 @@ import (
 )
 
 // ThreadQueueController is an optional extension implemented by Host.ThreadService.
-// It edits pending text or gracefully stops a response to send a chosen input.
+// It edits pending input or gracefully stops a response to send a chosen input.
 // Existing ThreadService implementations remain source-compatible.
 type ThreadQueueController interface {
 	EditQueued(context.Context, EditQueuedInput) (ThreadView, error)
@@ -19,14 +20,19 @@ type ThreadQueueController interface {
 
 // EditQueuedInput uses ExpectedText to reject edits made against stale content.
 // RequestKey identifies one edit, independently of the original send request.
-// Attachments, context, identity and queue position remain intact. Already
-// admitted turns cannot be edited through this boundary.
+// Text edits preserve attachments, references and context. To replace complete
+// content, supply both ExpectedInput and Input, leaving ExpectedText and Text
+// empty. The complete expected input rejects concurrent content changes even
+// when text is unchanged. Both modes preserve identity, supplemental context and
+// queue position. Already admitted turns cannot be edited through this boundary.
 type EditQueuedInput struct {
-	ThreadID     identity.ThreadID `json:"thread_id"`
-	QueueItemID  string            `json:"queue_item_id"`
-	ExpectedText string            `json:"expected_text"`
-	Text         string            `json:"text"`
-	RequestKey   RequestKey        `json:"request_key"`
+	ThreadID      identity.ThreadID `json:"thread_id"`
+	QueueItemID   string            `json:"queue_item_id"`
+	ExpectedText  string            `json:"expected_text"`
+	Text          string            `json:"text"`
+	RequestKey    RequestKey        `json:"request_key"`
+	ExpectedInput *UserInput        `json:"expected_input,omitempty"`
+	Input         *UserInput        `json:"input,omitempty"`
 }
 
 var _ ThreadQueueController = (*threadRuntimeService)(nil)
@@ -41,6 +47,32 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 	}
 	queueID := strings.TrimSpace(in.QueueItemID)
 	fingerprint, err := stableFingerprint(struct{ ID, Expected, Text string }{queueID, in.ExpectedText, in.Text})
+	var expectedFingerprint string
+	var replacement UserInput
+	fullInput := in.ExpectedInput != nil || in.Input != nil
+	if fullInput {
+		if in.ExpectedInput == nil || in.Input == nil || in.ExpectedText != "" || in.Text != "" {
+			return ThreadView{}, errors.New("complete queue edits require expected_input and input without text edit fields")
+		}
+		if err := in.ExpectedInput.Validate(); err != nil {
+			return ThreadView{}, err
+		}
+		if err := in.Input.Validate(); err != nil {
+			return ThreadView{}, err
+		}
+		expectedFingerprint, err = stableFingerprint(*in.ExpectedInput)
+		if err != nil {
+			return ThreadView{}, err
+		}
+		replacement = *in.Input
+		replacement.Attachments = cloneMessageAttachments(replacement.Attachments)
+		replacement.References = append([]MessageReference(nil), replacement.References...)
+		replacement.Context = append([]MessageContextItem(nil), replacement.Context...)
+		fingerprint, err = stableFingerprint(struct {
+			ID              string
+			Expected, Input UserInput
+		}{queueID, *in.ExpectedInput, replacement})
+	}
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -63,10 +95,21 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 			return ErrRequestConflict
 		}
 		item := actor.state.view.Queue[index]
-		if item.Input.Text != in.ExpectedText {
-			return ErrRequestConflict
+		if fullInput {
+			currentFingerprint, err := stableFingerprint(item.Input)
+			if err != nil {
+				return err
+			}
+			if currentFingerprint != expectedFingerprint {
+				return ErrRequestConflict
+			}
+			item.Input = replacement
+		} else {
+			if item.Input.Text != in.ExpectedText {
+				return ErrRequestConflict
+			}
+			item.Input.Text = in.Text
 		}
-		item.Input.Text = in.Text
 		if err := item.Input.Validate(); err != nil {
 			return err
 		}
@@ -75,7 +118,7 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 			order[i] = queued.ID
 		}
 		// A single journal transaction reuses existing queue facts. There is no
-		// externally visible deletion, attachment re-admission or schema change.
+		// externally visible deletion or schema change.
 		payloads := []any{queueID, item, order}
 		kinds := []sessiontree.EntryType{sessiontree.EntryQueueDeleted, sessiontree.EntryQueueAdded, sessiontree.EntryQueueReordered}
 		suffixes := []string{"remove", "replace", "order"}

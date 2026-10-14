@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.33.0 - 2026-10-14
+
+- Extend `EditQueuedInput` with paired `ExpectedInput` and `Input` for atomic
+  complete queued-input editing. Reject stale attachments and references even
+  when text is unchanged; preserve queue identity, order and supplemental context.
+- Preserve existing text edits, original-send replay, canonical media retention
+  and schema 15. Cover complete edits, validation, SQLite restart and adoption.
+
 ## v7.32.1 - 2026-10-14
 
 - Preserve canonical local-tool execution start and end times in current and

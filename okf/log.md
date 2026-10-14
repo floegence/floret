@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-10-14 — Complete queued-input editing
+
+- Extend the optional queue controller with a complete input precondition and
+  replacement. One canonical owner commits existing queue facts atomically;
+  preserve text-only callers, queue identity, original sends and schema 15.
+
+
 ## 2026-10-14
 
 - Document [canonical local-tool execution timing](api/runtime.md): dispatch/result
