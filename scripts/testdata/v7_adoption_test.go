@@ -51,6 +51,13 @@ func (source *oneShotCompaction) PollManualCompaction(context.Context, runtime.M
 	return runtime.ManualCompactionRequest{RequestID: "adoption-compact", Source: "adoption_test"}, true, nil
 }
 
+func TestThreadReferenceDirectValidation(t *testing.T) {
+	reference := runtime.MessageReference{ReferenceID: "source", Kind: runtime.MessageReferenceThread, ReferencedThreadID: "source-thread", Label: "Source", Text: "Captured facts"}
+	if err := reference.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err := (provider.Capabilities{Reasoning: provider.ReasoningUnsupported, ReasoningHistory: provider.ReasoningHistoryCurrentUser}).Validate(); err != nil {
 		t.Fatal(err)

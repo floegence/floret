@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.31.1 - 2026-10-14
+
+- Preserve the referenced ThreadID in direct public `MessageReference.Validate`
+  calls. Accept valid thread snapshots and reject target identities on other
+  reference kinds consistently with canonical admission.
+
 ## v7.31.0 - 2026-10-14
 
 - Add typed `MessageReferenceThread` and optional `ReferencedThreadID`, rendered
