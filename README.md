@@ -305,6 +305,15 @@ capabilities, reasoning policy, and execution policy. The first provider
 checkpoint freezes that complete execution surface for one Turn. Ask User,
 ordinary tool loops, retries, and restart recovery reuse it exactly. Provider
 natural stop completes the Turn; there is no second completion protocol.
+Assistant citations are canonical message facts. `provider.Source` keeps optional
+`StartIndex` and `EndIndex` as end-exclusive Unicode code-point positions in the
+complete response text. `runtime.ThreadItem.Sources` exposes detached, message-relative
+ranges in current/history views. Unsafe URLs are dropped; malformed or cross-segment
+ranges become unlocated sources. Hosts render exact citations and list unlocated
+sources without inferring URLs from provider markers. Sources events remain live
+observations; they are not a second durable source store. Existing schema-15 bytes
+without sources remain unchanged.
+
 Provider credentials and editable profile sources remain in the host.
 
 An `AgentFactory` may select a new system prompt, tool surface, provider, model,

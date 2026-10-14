@@ -14,8 +14,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/config"
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/deepseektokenizer"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
@@ -441,9 +443,11 @@ type deepSeekOutput struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		Annotations []struct {
-			Type  string `json:"type"`
-			URL   string `json:"url"`
-			Title string `json:"title"`
+			Type       string `json:"type"`
+			URL        string `json:"url"`
+			Title      string `json:"title"`
+			StartIndex *int   `json:"start_index"`
+			EndIndex   *int   `json:"end_index"`
 		} `json:"annotations"`
 	} `json:"content"`
 	Action struct {
@@ -652,10 +656,19 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 							fail(fmt.Errorf("unsupported DeepSeek message part %q", part.Type))
 							return true
 						}
+						offset := utf8.RuneCountInString(finalText.String())
 						finalText.WriteString(part.Text)
 						for _, a := range part.Annotations {
 							if a.Type == "url_citation" && a.URL != "" {
-								sources = append(sources, Source{Title: a.Title, URL: a.URL})
+								source := citation.Source{Title: a.Title, URL: a.URL, StartIndex: a.StartIndex, EndIndex: a.EndIndex}
+								refs := citation.Fragment([]citation.Source{source}, part.Text, 0, len(part.Text), true, nil)
+								for _, ref := range refs {
+									if ref.StartIndex != nil {
+										*ref.StartIndex += offset
+										*ref.EndIndex += offset
+									}
+									sources = append(sources, Source(ref))
+								}
 							}
 						}
 					}
@@ -711,6 +724,14 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 				emit(Event{Type: EventDelta, Text: delta})
 			}
 			if len(sources) > 0 {
+				refs := make([]citation.Source, len(sources))
+				for i, s := range sources {
+					refs[i] = citation.Source(s)
+				}
+				sources = nil
+				for _, s := range citation.Normalize(refs) {
+					sources = append(sources, Source(s))
+				}
 				emit(Event{Type: EventSources, Sources: sources})
 			}
 			if u := r.Usage; u != nil {

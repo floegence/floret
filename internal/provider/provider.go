@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
@@ -279,10 +280,7 @@ type StreamEvent struct {
 	Err            error
 }
 
-type SourceRef struct {
-	Title string
-	URL   string
-}
+type SourceRef = citation.Source
 
 func CloneState(in *State) *State {
 	if in == nil {

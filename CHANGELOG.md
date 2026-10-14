@@ -1,5 +1,15 @@
 # Changelog
 
+## v7.32.0 - 2026-10-14
+
+- Persist provider-neutral assistant citations with optional end-exclusive Unicode
+  ranges; project them through current/history/detail views and preserve them in
+  Memory/SQLite, continuations, forks and restarts.
+- Keep hosted activity live while waiting for late response annotations before
+  committing immutable assistant segments. Reject unsafe links and remove invalid
+  positional claims without guessing bindings.
+- Preserve schema 15, historical canonical bytes and opaque provider replay.
+
 ## v7.31.1 - 2026-10-14
 
 - Preserve the referenced ThreadID in direct public `MessageReference.Validate`

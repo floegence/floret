@@ -235,7 +235,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 	}
 	sources := make([]Source, len(event.Sources))
 	for index, source := range event.Sources {
-		sources[index] = Source{Title: source.Title, URL: source.URL}
+		sources[index] = Source(source)
 	}
 	var stream *ToolCallStream
 	if event.ToolCallStream.ID != "" || event.ToolCallStream.Name != "" {

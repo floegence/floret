@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/session"
@@ -2938,6 +2939,21 @@ func PrepareEntry(entry Entry) Entry {
 }
 
 func ValidateEntryMessageReferences(entry Entry) error {
+	if len(entry.Message.Sources) > 0 {
+		if entry.Type != EntryAssistantMessage || entry.Message.Role != session.Assistant {
+			return errors.New("sources require canonical assistant text")
+		}
+		normalized := citation.Fragment(entry.Message.Sources, entry.Message.Content, 0, len(entry.Message.Content), true, nil)
+		if len(normalized) != len(entry.Message.Sources) {
+			return errors.New("invalid assistant sources")
+		}
+		for i, source := range normalized {
+			if !citation.Equal(source, entry.Message.Sources[i]) {
+				return errors.New("invalid assistant source range")
+			}
+		}
+	}
+
 	if entry.Message.Kind == session.MessageKindToolValidationError {
 		if (entry.Type != EntryToolCall && entry.Type != EntryToolResult) || entry.Message.ToolCallID == "" || entry.Message.ControlSignal != nil || entry.Message.Activity != nil {
 			return errors.New("tool validation feedback requires an unexecuted call/result without control ownership or activity")

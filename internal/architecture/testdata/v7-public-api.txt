@@ -358,6 +358,8 @@ const RoleUser github.com/floegence/floret/v7/provider.MessageRole = "user"
 type Source struct
 field Source.Title string tag="json:\"title,omitempty\""
 field Source.URL string tag="json:\"url,omitempty\""
+field Source.StartIndex *int tag="json:\"start_index,omitempty\""
+field Source.EndIndex *int tag="json:\"end_index,omitempty\""
 type State struct
 field State.Kind string tag="json:\"kind,omitempty\""
 field State.ID string tag="json:\"id,omitempty\""
@@ -940,6 +942,7 @@ const ThreadInteractionApproval github.com/floegence/floret/v7/runtime.ThreadInt
 const ThreadInteractionInput github.com/floegence/floret/v7/runtime.ThreadInteractionKind = "input"
 type ThreadInteractionKind string
 type ThreadItem struct
+field ThreadItem.Sources []github.com/floegence/floret/v7/provider.Source tag="json:\"sources,omitempty\""
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
 field ThreadItem.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""

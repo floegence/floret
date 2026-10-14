@@ -3,6 +3,7 @@ package session
 import (
 	"sync"
 
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -96,6 +97,7 @@ type MessageReference struct {
 }
 
 type Message struct {
+	Sources              []citation.Source `json:"sources,omitempty"`
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
@@ -157,6 +159,7 @@ func CloneMessages(messages []Message) []Message {
 }
 
 func CloneMessage(msg Message) Message {
+	msg.Sources = citation.Clone(msg.Sources)
 	msg.Attachments = CloneMessageAttachments(msg.Attachments)
 	msg.References = append([]MessageReference(nil), msg.References...)
 	msg.Context = append([]MessageContextItem(nil), msg.Context...)

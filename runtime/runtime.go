@@ -2379,15 +2379,12 @@ func runtimeModelToolCallStream(ev event.Event) *ToolCallStream {
 }
 
 func runtimeSourceRefs(in []event.SourceRef) []publicprovider.Source {
-	out := make([]publicprovider.Source, 0, len(in))
-	for _, ref := range in {
-		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
-			continue
-		}
-		out = append(out, publicprovider.Source{
-			Title: strings.TrimSpace(ref.Title),
-			URL:   strings.TrimSpace(ref.URL),
-		})
+	if in == nil {
+		return nil
+	}
+	out := make([]publicprovider.Source, len(in))
+	for i, value := range in {
+		out[i] = publicprovider.Source(value)
 	}
 	return out
 }

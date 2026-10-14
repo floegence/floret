@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	publicprovider "github.com/floegence/floret/v7/provider"
 	"maps"
 	"slices"
 	"sort"
@@ -13,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/agentharness"
+	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessionlifecycle"
@@ -300,6 +303,7 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
+	Sources        []publicprovider.Source `json:"sources,omitempty"`
 	sourceEntryIDs []string
 	ID             string          `json:"id"`
 	TurnID         identity.TurnID `json:"turn_id,omitempty"`
@@ -3999,6 +4003,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		out[index].Sources = runtimeSourceRefs(citation.Clone(providerSourceRefs(item.Sources)))
 		out[index].sourceEntryIDs = append([]string(nil), item.sourceEntryIDs...)
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
 		out[index].References = append([]MessageReference(nil), item.References...)
@@ -4268,13 +4273,21 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if len(items) > 0 {
 					previous := &items[len(items)-1]
 					if sessiontree.MergeAssistantSegment(segmented[entry.TurnID], previous.Kind == ThreadItemAssistant, previous.TurnID.String(), previous.RunID.String(), entry.TurnID, entry.RunID) {
+						offset := utf8.RuneCountInString(previous.Text)
+						for _, source := range citation.Clone(entry.Message.Sources) {
+							if source.StartIndex != nil {
+								*source.StartIndex += offset
+								*source.EndIndex += offset
+							}
+							previous.Sources = append(previous.Sources, publicprovider.Source(source))
+						}
 						previous.Text += entry.Message.Content
 						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
 						continue
 					}
 				}
 				assistantCounts[turnID]++
-				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
+				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
 			if entry.TurnStatus != sessiontree.TurnCompleted && entry.TurnStatus != sessiontree.TurnFailed && entry.TurnStatus != sessiontree.TurnAborted {
