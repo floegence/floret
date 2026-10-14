@@ -179,6 +179,12 @@ An admitted, deleted or stale item returns
 atomic transaction of existing queue facts, so schema v15 and existing readers
 remain valid. Promotion resolves the latest input under the admission lock.
 
+The optional `ThreadQueueEditReader.LookupQueuedEdit` returns the immutable
+before/after content for one edit key, including after later edits, promotion,
+deletion and restart. It reads existing queue facts, persists no second receipt
+and grants no authorization. Hosts must authorize the thread before looking up
+a key and compare the submitted content before acknowledging a replay.
+
 `SendQueuedNow` preserves completed work and starts the selected input in a new
 turn after graceful cancellation settles. This is stop-and-send, not an injected
 message in the current provider request. It waits within the existing bounded

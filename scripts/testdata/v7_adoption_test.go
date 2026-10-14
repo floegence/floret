@@ -68,6 +68,10 @@ func TestPublishedCompleteQueueEditSurvivesSQLiteRestart(t *testing.T) {
 	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); err != nil {
 		t.Fatalf("replay=%v", err)
 	}
+	edit, found, err := service.(runtime.ThreadQueueEditReader).LookupQueuedEdit(t.Context(), runtime.LookupQueuedEditInput{ThreadID: created.ThreadID, RequestKey: "edit"})
+	if err != nil || !found || !reflect.DeepEqual(edit.Input, replacement) || !reflect.DeepEqual(edit.ExpectedInput, original) {
+		t.Fatalf("edit lookup=%#v %v %v", edit, found, err)
+	}
 	command.RequestKey = "stale"
 	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); !errors.Is(err, runtime.ErrRequestConflict) {
 		t.Fatalf("stale=%v", err)
