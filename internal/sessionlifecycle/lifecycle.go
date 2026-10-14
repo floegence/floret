@@ -119,64 +119,13 @@ func Running(latestTurnID string) Lifecycle {
 // recoverability, and appendability. Do not derive these decisions directly from
 // engine status, thread phase, sessiontree markers, or inspector transitions.
 func Derive(path []sessiontree.Entry, rawPhase string) Lifecycle {
-	lifecycle := Lifecycle{status: statusIdle, phase: normalizePhase(rawPhase)}
-	started := map[string]bool{}
-	terminal := map[string]bool{}
-	for _, entry := range path {
-		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus == "" {
-			continue
-		}
-		if entry.TurnID != "" {
-			lifecycle.latestTurnID = entry.TurnID
-		}
-		switch entry.TurnStatus {
-		case sessiontree.TurnStarted:
-			if entry.TurnID != "" {
-				started[entry.TurnID] = true
-			}
-			lifecycle.status = statusForStarted(lifecycle.phase)
-			lifecycle.waitingPrompt = ""
-			lifecycle.recoverable = lifecycle.status == statusInterrupted
-		case sessiontree.TurnCompleted:
-			if entry.TurnID != "" {
-				terminal[entry.TurnID] = true
-			}
-			lifecycle.status = statusCompleted
-			lifecycle.waitingPrompt = ""
-			lifecycle.recoverable = false
-		case sessiontree.TurnWaiting:
-			if entry.TurnID != "" {
-				terminal[entry.TurnID] = true
-			}
-			lifecycle.status = statusWaiting
-			lifecycle.waitingPrompt = waitingPromptForTurn(path, entry.TurnID)
-			lifecycle.recoverable = false
-		case sessiontree.TurnFailed:
-			if entry.TurnID != "" {
-				terminal[entry.TurnID] = true
-			}
-			lifecycle.status = statusFailed
-			lifecycle.waitingPrompt = ""
-			lifecycle.recoverable = false
-		case sessiontree.TurnAborted:
-			if entry.TurnID != "" {
-				terminal[entry.TurnID] = true
-			}
-			lifecycle.waitingPrompt = ""
-			lifecycle.recoverable = entry.Metadata["recoverable"] == "true" || entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureInterrupted
-			if lifecycle.recoverable {
-				lifecycle.status = statusInterrupted
-			} else {
-				lifecycle.status = statusCancelled
-			}
-		}
+	phase := normalizePhase(rawPhase)
+	facts := sessiontree.DeriveCanonicalLifecycle(path, phase == phaseTurn)
+	result := Lifecycle{status: status(facts.Status), phase: phase, latestTurnID: facts.LatestTurnID, recoverable: facts.Recoverable}
+	if result.status == statusWaiting {
+		result.waitingPrompt = waitingPromptForTurn(path, facts.LatestTurnID)
 	}
-	if lifecycle.latestTurnID != "" && started[lifecycle.latestTurnID] && !terminal[lifecycle.latestTurnID] {
-		lifecycle.status = statusForStarted(lifecycle.phase)
-		lifecycle.waitingPrompt = ""
-		lifecycle.recoverable = lifecycle.status == statusInterrupted
-	}
-	return lifecycle
+	return result
 }
 
 func IsRunningStatus(rawStatus, rawPhase string) bool {
@@ -256,13 +205,6 @@ func strictStatus(raw string) (status, bool) {
 
 func isRunning(currentStatus status, currentPhase phase) bool {
 	return currentStatus == statusRunning || currentPhase == phaseTurn
-}
-
-func statusForStarted(current phase) status {
-	if current == phaseTurn {
-		return statusRunning
-	}
-	return statusInterrupted
 }
 
 func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {

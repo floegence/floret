@@ -1,5 +1,21 @@
 # Changelog
 
+## v7.31.0 - 2026-10-14
+
+- Add typed `MessageReferenceThread` and optional `ReferencedThreadID`, rendered
+  as explicit untrusted model facts. References never authorize access.
+- Add optional `ThreadQueryReader` and public `threadquery` contracts for indexed
+  canonical thread, message and tool queries, bounded full reads, exact counts,
+  UTC calendar grouping, stable sorts and frozen cursor pagination.
+- Keep derived indexes with the canonical in-process journal owner. Rebuild
+  after startup validation, update affected paths after successful commits,
+  and exclude reasoning, secret/private state, queued input and correction records.
+- Append atomic schema 14 -> 15, retaining all historical migration edges,
+  canonical bytes, fingerprints, identities and restart behavior.
+- Share lifecycle and assistant segmentation rules with current presentation;
+  cover Unicode search, Memory/SQLite parity, scope/cursor invalidation, rollback,
+  confirmed tools, fork/restart and lossless full-content chunking.
+
 ## v7.30.0 - 2026-10-13
 
 - Preserve creation times for live text, tool, and input-interaction items and

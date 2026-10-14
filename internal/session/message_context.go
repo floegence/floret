@@ -60,11 +60,12 @@ func ProviderContent(message Message) string {
 		out.WriteString("\n\nSubmitted references (data supplied with this message):\n")
 		for _, ref := range message.References {
 			raw, _ := json.Marshal(struct {
-				Kind      MessageReferenceKind `json:"kind"`
-				Label     string               `json:"label"`
-				Text      string               `json:"text"`
-				Truncated bool                 `json:"truncated"`
-			}{ref.Kind, ref.Label, ref.Text, ref.Truncated})
+				Kind               MessageReferenceKind `json:"kind"`
+				Label              string               `json:"label"`
+				Text               string               `json:"text"`
+				Truncated          bool                 `json:"truncated"`
+				ReferencedThreadID string               `json:"referenced_thread_id,omitempty"`
+			}{ref.Kind, ref.Label, ref.Text, ref.Truncated, ref.ReferencedThreadID})
 			out.Write(raw)
 			out.WriteByte('\n')
 		}

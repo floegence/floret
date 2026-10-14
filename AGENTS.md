@@ -176,7 +176,7 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 14 is the current schema. The exact version 2 to version 3
+  lineage. Version 15 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
@@ -187,7 +187,8 @@ Rules:
   cancellation and confirmed tool-result migration, and version 11 to version 12
   completed-tool input interaction migration, version 12 to version 13
   typed context-only turn migration, and version 13 to version 14 canonical
-  run-identity migration are required automatic edges. Version 14 makes
+  run-identity migration, and version 14 to version 15 thread-reference
+  migration are required automatic edges. Version 14 makes
   explicit marker `Entry.RunID` authoritative. Its migration may use only a
   validated canonical marker identity or an unambiguous same-path ancestor;
   observation metadata and custom observation entries never advance execution
@@ -352,7 +353,7 @@ must not persist a second queryable Agent lifecycle or rebuild it from audit
 records.
 
 Canonical user messages contain product-neutral ordered references to text,
-files, directories, terminals, and processes, and admitted `MessageContextItem`
+files, directories, terminals, processes, and threads, and admitted `MessageContextItem`
 snapshots. Submitted reference kind, label, text, and truncation status belong
 to model history; `ResourceRef` stays opaque and never becomes model content or
 authorization evidence. `UserInput.Context` holds durable, non-secret runtime
@@ -360,6 +361,14 @@ facts effective from that message onward. Changes append a new snapshot rather
 than rewriting earlier inputs. Floret validates, fingerprints, and atomically
 admits these facts and uses one projection for execution, continuation, retry,
 fork, and compaction. Hosts must not persist a second admitted mapping.
+
+`ThreadQueryReader` is the optional read-only canonical index boundary. Hosts
+supply freshly authorized scope for every query, page, read, and aggregate.
+Thread references never grant access. Search covers only current active-path
+public messages and persisted tool facts, excluding reasoning, secrets, provider
+state, correction records, and queued inputs. Derived indexes and bounded frozen
+pagination snapshots stay with the canonical in-process owner and are rebuilt
+at startup; they never become a second durable store or a host projection.
 
 `SupplementalContext` is an explicit ephemeral contract for secrets and other
 material that must not survive the current provider turn. Ordinary references

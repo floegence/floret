@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/runtime"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -113,10 +114,26 @@ func TestPublishedThreadContextReaderSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	queryReader, ok := firstService.(runtime.ThreadQueryReader)
+	if !ok {
+		t.Fatal("published service is missing canonical query capability")
+	}
+	queryScope := threadquery.Scope{Authority: "adoption-user-runtime", ThreadIDs: []identity.ThreadID{created.ThreadID}}
+	query, err := queryReader.Query(ctx, queryScope, threadquery.QueryInput{Object: threadquery.Threads})
+	if err != nil || query.Total != 1 {
+		t.Fatalf("published index=%#v error=%v", query, err)
+	}
+	if _, err := queryReader.Read(ctx, queryScope, threadquery.ReadInput{Ref: query.Records[0].Ref}); err != nil {
+		t.Fatal(err)
+	}
+	count, err := queryReader.Aggregate(ctx, queryScope, threadquery.AggregateInput{Object: threadquery.Threads})
+	if err != nil || count.Total != 1 {
+		t.Fatalf("published count=%#v error=%v", count, err)
+	}
 	if _, found, err := resultReader.LookupToolResult(ctx, runtime.LookupToolResultInput{ThreadID: created.ThreadID, TurnID: "missing-turn", RunID: "missing-run", ToolCallID: "missing-call"}); err != nil || found {
 		t.Fatalf("absent published tool result found=%t error=%v", found, err)
 	}
-	if _, err := firstService.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, Input: runtime.UserInput{Text: "compact then answer"}, RequestKey: "send-adoption"}); err != nil {
+	if _, err := firstService.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, Input: runtime.UserInput{Text: "compact then answer", References: []runtime.MessageReference{{ReferenceID: "source", Kind: runtime.MessageReferenceThread, ReferencedThreadID: "referenced-thread", Label: "Frozen title", Text: "Captured thread metadata"}}}, RequestKey: "send-adoption"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)

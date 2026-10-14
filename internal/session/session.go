@@ -79,6 +79,7 @@ const (
 	MessageReferenceDirectory MessageReferenceKind = "directory"
 	MessageReferenceTerminal  MessageReferenceKind = "terminal"
 	MessageReferenceProcess   MessageReferenceKind = "process"
+	MessageReferenceThread    MessageReferenceKind = "thread"
 )
 
 // MessageReference is one durable, user-visible reference associated with a
@@ -90,6 +91,8 @@ type MessageReference struct {
 	Text        string               `json:"text,omitempty"`
 	ResourceRef string               `json:"resource_ref,omitempty"`
 	Truncated   bool                 `json:"truncated,omitempty"`
+	// ReferencedThreadID identifies the referenced conversation, never the owning thread.
+	ReferencedThreadID string `json:"referenced_thread_id,omitempty"`
 }
 
 type Message struct {

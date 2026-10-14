@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-14
+
+- Add [thread references and canonical index queries](api/thread-query.md), host scope ownership, frozen pagination and full-content read limits. Append schema 14 -> 15 without resetting the permanent migration lineage.
+
 ## 2026-10-12
 
 - Refresh the nine-provider offline model catalog, add Claude Haiku 5.5, and

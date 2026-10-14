@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -53,7 +55,7 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "inspect"}})
+	view, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "inspect", References: []MessageReference{{ReferenceID: "source", Kind: MessageReferenceThread, ReferencedThreadID: "source-thread", Label: "Frozen source", Text: "Captured thread metadata"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +82,8 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 		}
 	}
 	check(service.(ThreadToolResultReader), lookup)
+	checkThreadQueryToolResult(t, service, lookup, args, content)
+
 	finish()
 	view = waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
 	for _, item := range view.Items {
@@ -88,18 +92,24 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 		}
 	}
 	check(service.(ThreadToolResultReader), lookup)
+	checkThreadQueryToolResult(t, service, lookup, args, content)
+
 	if err := host.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	_, service = open()
 	check(service.(ThreadToolResultReader), lookup)
+	checkThreadQueryToolResult(t, service, lookup, args, content)
+
 	fork, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range fork.Items {
 		if item.Kind == ThreadItemTool {
-			check(service.(ThreadToolResultReader), LookupToolResultInput{ThreadID: fork.ThreadID, TurnID: item.TurnID, RunID: item.RunID, ToolCallID: item.Activity.ToolID})
+			forkLookup := LookupToolResultInput{ThreadID: fork.ThreadID, TurnID: item.TurnID, RunID: item.RunID, ToolCallID: item.Activity.ToolID}
+			check(service.(ThreadToolResultReader), forkLookup)
+			checkThreadQueryToolResult(t, service, forkLookup, args, content)
 		}
 	}
 	if _, _, err := service.(ThreadToolResultReader).LookupToolResult(t.Context(), LookupToolResultInput{ThreadID: created.ThreadID}); err == nil {
@@ -110,5 +120,30 @@ func TestLookupToolResultUsesCanonicalExecutionAcrossRestartAndFork(t *testing.T
 	}
 	if _, _, err := service.(ThreadToolResultReader).LookupToolResult(t.Context(), lookup); !errors.Is(err, ErrThreadDeleted) && !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("deleted result accessible: %v", err)
+	}
+}
+
+func checkThreadQueryToolResult(t *testing.T, service ThreadService, input LookupToolResultInput, args, content string) {
+	t.Helper()
+	reader := service.(ThreadQueryReader)
+	scope := threadquery.Scope{Authority: "authorized-test", ThreadIDs: []identity.ThreadID{input.ThreadID}}
+	result, err := reader.Query(t.Context(), scope, threadquery.QueryInput{Object: threadquery.ToolCalls, Filter: threadquery.Filter{TurnIDs: []identity.TurnID{input.TurnID}, RunIDs: []identity.RunID{input.RunID}, ToolNames: []string{"inspect"}, Statuses: []string{"success"}}})
+	if err != nil || result.Total != 1 || result.Records[0].ToolCallID != input.ToolCallID {
+		t.Fatalf("query=%#v err=%v", result, err)
+	}
+	page, err := reader.Read(t.Context(), scope, threadquery.ReadInput{Ref: result.Records[0].Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, chunk := range page.Chunks {
+		fields[chunk.Field] += chunk.Text
+	}
+	if fields["arguments"] != args || fields["result"] != content {
+		t.Fatalf("read lost original private facts: %#v", fields)
+	}
+	refs, err := reader.Query(t.Context(), scope, threadquery.QueryInput{Object: threadquery.Messages, Filter: threadquery.Filter{Text: threadquery.TextMatch{Contains: "source-thread"}}})
+	if err != nil || refs.Total != 1 {
+		t.Fatalf("thread reference lost across canonical query: %#v %v", refs, err)
 	}
 }

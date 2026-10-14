@@ -369,6 +369,7 @@ const (
 	MessageReferenceDirectory MessageReferenceKind = "directory"
 	MessageReferenceTerminal  MessageReferenceKind = "terminal"
 	MessageReferenceProcess   MessageReferenceKind = "process"
+	MessageReferenceThread    MessageReferenceKind = "thread"
 
 	MaxMessageReferencesPerTurn           = 128
 	MaxMessageReferenceIDBytes            = 128
@@ -402,6 +403,8 @@ type MessageReference struct {
 	Text        string               `json:"text,omitempty"`
 	ResourceRef string               `json:"resource_ref,omitempty"`
 	Truncated   bool                 `json:"truncated,omitempty"`
+	// ReferencedThreadID identifies the referenced conversation, never the owning thread.
+	ReferencedThreadID identity.ThreadID `json:"referenced_thread_id,omitempty"`
 }
 
 type EffectAuthorizationRequest struct {
@@ -1697,7 +1700,7 @@ func runtimeMessageReferences(in []session.MessageReference) []MessageReference 
 	for _, reference := range in {
 		out = append(out, MessageReference{
 			ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label,
-			Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated,
+			Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated, ReferencedThreadID: identity.ThreadID(reference.ReferencedThreadID),
 		})
 	}
 	return out
@@ -1710,12 +1713,13 @@ func sessionMessageReferences(in []MessageReference) []session.MessageReference 
 	out := make([]session.MessageReference, 0, len(in))
 	for _, reference := range in {
 		out = append(out, session.MessageReference{
-			ReferenceID: reference.ReferenceID,
-			Kind:        session.MessageReferenceKind(reference.Kind),
-			Label:       reference.Label,
-			Text:        reference.Text,
-			ResourceRef: reference.ResourceRef,
-			Truncated:   reference.Truncated,
+			ReferenceID:        reference.ReferenceID,
+			Kind:               session.MessageReferenceKind(reference.Kind),
+			Label:              reference.Label,
+			Text:               reference.Text,
+			ResourceRef:        reference.ResourceRef,
+			Truncated:          reference.Truncated,
+			ReferencedThreadID: reference.ReferencedThreadID.String(),
 		})
 	}
 	return out

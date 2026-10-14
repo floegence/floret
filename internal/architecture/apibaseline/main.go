@@ -20,6 +20,7 @@ var publicPackages = []string{
 	"github.com/floegence/floret/v7/config",
 	"github.com/floegence/floret/v7/provider",
 	"github.com/floegence/floret/v7/runtime",
+	"github.com/floegence/floret/v7/threadquery",
 	"github.com/floegence/floret/v7/storage",
 	"github.com/floegence/floret/v7/storage/spi",
 	"github.com/floegence/floret/v7/tools",

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/floegence/floret/v7/identity"
 )
 
 const (
@@ -46,7 +48,17 @@ func (r MessageReference) Validate() error {
 	if len(r.ResourceRef) > MaxMessageReferenceResourceRefBytes {
 		return fmt.Errorf("reference resource ref exceeds %d bytes", MaxMessageReferenceResourceRefBytes)
 	}
+	if r.Kind != MessageReferenceThread && r.ReferencedThreadID != "" {
+		return errors.New("only a thread reference can contain a referenced thread id")
+	}
 	switch r.Kind {
+	case MessageReferenceThread:
+		if _, err := identity.ParseThreadID(r.ReferencedThreadID); err != nil {
+			return fmt.Errorf("thread reference identity: %w", err)
+		}
+		if strings.TrimSpace(r.Text) == "" || r.ResourceRef != "" {
+			return errors.New("thread reference requires snapshot text and cannot contain a resource ref")
+		}
 	case MessageReferenceText, MessageReferenceTerminal, MessageReferenceProcess:
 		if strings.TrimSpace(r.Text) == "" {
 			return fmt.Errorf("%s reference requires text", r.Kind)

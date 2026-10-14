@@ -4,6 +4,7 @@
 * [provider](provider.md) - The single model Gateway and provider request/event contracts.
 * [identity](../architecture/identities.md) - Canonical lifecycle and correlation identities.
 * [runtime](runtime.md) - Immutable Agents, durable Hosts, bound threads, commands, queries, and subscriptions.
+* [threadquery](thread-query.md) - Authorized indexed queries, exact counts, and bounded canonical reads.
 * [storage](storage.md) - Opaque ordinary-host sources and the advanced physical storage SPI.
 * [tools](tools.md) - Local tool schemas, handlers, permissions, and output.
 * [tools/webfetch](webfetch.md) - Secure public-text HTTP/HTTPS fetching.

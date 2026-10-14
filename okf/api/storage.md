@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 lineage. Version 14 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 lineage. Version 15 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -63,6 +63,13 @@ preserves entry IDs, ordering, timestamps, Raw/RawHash, final-output
 references, provider state, and all earlier migration edges; it writes the v14
 records and removes v13 records in one transaction.
 
+The v14 -> v15 edge adds typed thread references and the optional referenced
+ThreadID. It validates exact v14 authority, preserves all canonical bytes,
+request fingerprints and execution identities, and installs v15 in the same
+startup transaction. v14 rejects new thread-reference shapes, including queued
+input; current v15 opens without rewriting records. The derived search index
+has no storage namespace and is rebuilt from the validated current journal.
+
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
 schema drift, corrupt state, and future versions roll back or fail closed with
@@ -98,8 +105,8 @@ dependencies, rather than cloning or revalidating unrelated history. The reposit
 lock isolates staging, the working maps are restored before the backend callback
 returns, and successful backend commit installs the staged values once. Failure,
 cancellation, and panic preserve both prior memory and durable records. Startup,
-migration, and explicit verification retain complete domain validation; schema 14
-and canonical history bytes are unchanged.
+migration, and explicit verification retain complete domain validation; schema 15
+adds thread references while preserving existing canonical history bytes.
 
 Immediately before an ordinary provider dispatch, the backend kernel commits
 the current raw segments, toolsets, immutable Turn surface, and request lineage
