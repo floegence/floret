@@ -323,7 +323,7 @@ Provider credentials and editable profile sources remain in the host.
 An `AgentFactory` may select a new system prompt, tool surface, provider, model,
 or reasoning policy for each new Turn. The canonical conversation remains
 append-only. Floret maintains a content-addressed render lineage for each exact
-execution surface, clears opaque continuation state when the surface changes,
+execution surface, invalidates exact-surface continuation when that surface changes,
 and compacts only when explicitly requested or when the selected model's
 context window needs it. A waiting interaction, tool continuation, retry, or
 restart remains frozen to the surface recorded for that Turn. Historical tool
@@ -336,8 +336,16 @@ Hosts that need live capability changes can explicitly return
 Each subsequent provider request then uses current system text and local/hosted
 tool definitions. Provider, model, reasoning, context policy and compatibility
 identity remain fixed by the first Turn checkpoint. Changed envelopes establish
-a new render lineage and clear provider continuation state without compaction
-or rewriting earlier checkpoints. The default remains the frozen Turn surface.
+a new render lineage without compaction or rewriting earlier checkpoints.
+The zero-valued `provider.State.ReusePolicy` requires an exact surface. Adapters
+may declare `provider.StateReuseCanonicalHistory` when they validate the complete
+canonical prefix before replaying native history across tool or permission changes.
+Unknown policies fail explicitly. Model/account identity changes, canonical
+lineage resets, installed compaction and supplemental secret input still fence state.
+Completed response state commits atomically with its canonical assistant and
+tool-call output before tool dispatch or another provider request. Failure, Stop
+and restart retain the last committed compatible state and its source Run/Turn;
+terminal settlement never reinstalls a pre-compaction result. The default remains the frozen Turn surface.
 Dispatch-time permission resolution and existing approvals remain independent:
 refreshing model-visible tools does not authorize an invocation or settle a wait.
 

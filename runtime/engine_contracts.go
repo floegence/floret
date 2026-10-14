@@ -262,9 +262,10 @@ func (message modelMessage) validateAttachments(validate func([]session.MessageA
 }
 
 type modelStateEnvelope struct {
-	Kind       string            `json:"kind,omitempty"`
-	ID         string            `json:"id,omitempty"`
-	Attributes map[string]string `json:"attributes,omitempty"`
+	ReusePolicy publicprovider.StateReusePolicy `json:"reuse_policy,omitempty"`
+	Kind        string                          `json:"kind,omitempty"`
+	ID          string                          `json:"id,omitempty"`
+	Attributes  map[string]string               `json:"attributes,omitempty"`
 }
 
 type modelEventType string

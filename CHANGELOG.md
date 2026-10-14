@@ -1,5 +1,17 @@
 # Changelog
 
+## v7.34.0 - 2026-10-14
+
+- Add optional `provider.State.ReusePolicy`: preserve exact-surface semantics by
+  default and allow verified canonical native-history replay across tool and
+  permission changes. Reject unknown policies and retain identity/secret fences.
+- Commit completed provider state with canonical assistant/tool-call output
+  before dispatch. Preserve the last valid state and source Run/Turn across
+  provider failures, immediate/graceful Stop and restart; reject late responses.
+- Reanchor canonical state at terminal settlement instead of saving stale Engine
+  results. Installed compaction and unknown effects continue to invalidate state.
+- Preserve schema 15, every migration edge, and unchanged historical record bytes.
+
 ## v7.33.0 - 2026-10-14
 
 - Extend `EditQueuedInput` with paired `ExpectedInput` and `Input` for atomic

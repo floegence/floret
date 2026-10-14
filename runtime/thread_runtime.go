@@ -3094,8 +3094,8 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 			RequestKey: request.RequestKey, RequestFingerprint: request.RequestFingerprint,
 			OutcomeFingerprint:           sessiontree.StableHash(string(outcomePayload)),
 			InteractionResolutionPayload: resolutionPayload, Metadata: metadata,
-			CancellationMetadata: map[string]string{"cancellation_source": source, "cancellation_mode": string(CancelModeImmediate)},
-			ClearProviderState:   true, Now: time.Now().UTC(),
+			CancellationMetadata:  map[string]string{"cancellation_source": source, "cancellation_mode": string(CancelModeImmediate)},
+			PreserveProviderState: true, Now: time.Now().UTC(),
 		})
 		if err != nil {
 			return err

@@ -58,8 +58,23 @@ new Turn keeps the complete canonical path without treating the new envelope as
 drift. Switching back reuses that model's earlier raw prefix and renders the
 intervening canonical messages as a suffix.
 
+`provider.State.ReusePolicy` defaults to exact provider-surface reuse. An adapter
+may opt into `StateReuseCanonicalHistory` only when it verifies the canonical
+prefix before replaying its opaque native history. Tool and permission changes
+then preserve that history while changing the actual cache prefix as necessary.
+Unknown policies fail explicitly; Floret never parses adapter-private state.
+
+Completed provider state and canonical assistant/tool-call output commit in one
+journal transaction before dispatch or the next request. Normal and failed
+terminal settlement, immediate/graceful Stop, and restart reanchor the last
+committed state without changing its source Run/Turn. A late response cannot
+write after Stop. Installed compaction clears state atomically; terminal results
+cannot reinstall an older state. Schema 15 and historical record bytes remain
+unchanged because the policy is an optional additive field.
+
 Opaque provider state, response IDs, and native continuation metadata never
-cross a provider/model change. A smaller target model triggers normal
+cross a provider/model or account identity change. Canonical lineage resets,
+supplemental secret input and unknown tool effects remain invalidation fences. A smaller target model triggers normal
 pre-request compaction only when its own context policy reports pressure.
 
 `provider.NewDeepSeek` owns the stateless DeepSeek Responses transport. The

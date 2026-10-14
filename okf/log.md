@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-10-14 — Completed provider context
+
+- Document optional [native-history reuse](api/provider.md), atomic completed
+  output/state commits, Stop/restart preservation and permanent invalidation
+  fences without changing schema 15 or parsing adapter-private bytes.
+
 ## 2026-10-14 — Complete queued-input editing
 
 - Extend the optional queue controller with a complete input precondition and

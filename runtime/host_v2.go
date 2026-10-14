@@ -738,7 +738,7 @@ func gatewayProviderState(state *modelStateEnvelope) *provider.State {
 	for key, value := range state.Attributes {
 		attributes[key] = value
 	}
-	return &provider.State{Kind: state.Kind, ID: state.ID, Attributes: attributes}
+	return &provider.State{ReusePolicy: state.ReusePolicy, Kind: state.Kind, ID: state.ID, Attributes: attributes}
 }
 
 func modelEventStream(ctx context.Context, source <-chan provider.Event) <-chan modelEvent {
@@ -780,7 +780,7 @@ func projectModelEvent(event provider.Event) modelEvent {
 		for key, value := range event.ResponseState.Attributes {
 			attributes[key] = value
 		}
-		state = &modelStateEnvelope{Kind: event.ResponseState.Kind, ID: event.ResponseState.ID, Attributes: attributes}
+		state = &modelStateEnvelope{ReusePolicy: event.ResponseState.ReusePolicy, Kind: event.ResponseState.Kind, ID: event.ResponseState.ID, Attributes: attributes}
 	}
 	var hostedCall *provider.ToolCall
 	if event.HostedToolCall != nil {

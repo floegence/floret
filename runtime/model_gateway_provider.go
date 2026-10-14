@@ -365,14 +365,14 @@ func modelState(value *provider.State) *modelStateEnvelope {
 	if value == nil {
 		return nil
 	}
-	return &modelStateEnvelope{Kind: value.Kind, ID: value.ID, Attributes: cloneStringMap(value.Attributes)}
+	return &modelStateEnvelope{ReusePolicy: publicprovider.StateReusePolicy(value.ReusePolicy), Kind: value.Kind, ID: value.ID, Attributes: cloneStringMap(value.Attributes)}
 }
 
 func providerState(value *modelStateEnvelope) *provider.State {
 	if value == nil {
 		return nil
 	}
-	return &provider.State{Kind: value.Kind, ID: value.ID, Attributes: cloneStringMap(value.Attributes)}
+	return &provider.State{ReusePolicy: provider.StateReusePolicy(value.ReusePolicy), Kind: value.Kind, ID: value.ID, Attributes: cloneStringMap(value.Attributes)}
 }
 
 func providerRequestLabels(value provider.RequestLabels) RunLabels {
