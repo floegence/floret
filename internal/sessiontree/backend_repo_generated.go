@@ -89,6 +89,16 @@ func (repo *BackendRepo) CommitContextCompaction(ctx context.Context, req Contex
 	return result0, err
 }
 
+func (repo *BackendRepo) CommitProviderContext(ctx context.Context, req ProviderContextCommit) ([]Entry, error) {
+	var result0 []Entry
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.CommitProviderContext(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
 	var result0 AgentTodoState
 	err := repo.update(ctx, func(memory *MemoryRepo) error {

@@ -324,11 +324,25 @@ type HostedToolDefinition struct {
 	Options     map[string]any `json:"options,omitempty"`
 }
 
-// State is opaque provider continuation state persisted by Floret.
+// StateReusePolicy describes which request changes preserve opaque state.
+type StateReusePolicy string
+
+const (
+	// StateReuseExactSurface requires an unchanged provider surface.
+	// The zero value preserves the default continuation behavior.
+	StateReuseExactSurface StateReusePolicy = ""
+	// StateReuseCanonicalHistory allows a provider to replay native history
+	// across surface changes after validating its canonical message prefix.
+	StateReuseCanonicalHistory StateReusePolicy = "canonical_history"
+)
+
+// State is opaque provider continuation state persisted by Floret. ReusePolicy
+// never bypasses model/account identity, canonical lineage, or secret fences.
 type State struct {
-	Kind       string            `json:"kind,omitempty"`
-	ID         string            `json:"id,omitempty"`
-	Attributes map[string]string `json:"attributes,omitempty"`
+	ReusePolicy StateReusePolicy  `json:"reuse_policy,omitempty"`
+	Kind        string            `json:"kind,omitempty"`
+	ID          string            `json:"id,omitempty"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
 }
 
 // EventType is one streamed provider event kind.

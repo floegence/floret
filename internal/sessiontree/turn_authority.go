@@ -78,17 +78,19 @@ type TurnTerminalOutcome struct {
 }
 
 type FinishTurnRequest struct {
-	ThreadID           string
-	TurnID             string
-	RunID              string
-	TerminalEntryID    string
-	Status             TurnMarkerStatus
-	Metadata           map[string]string
-	FailureMessage     string
-	ProviderState      *ProviderStateRecord
-	ClearProviderState bool
-	OutcomeFingerprint string
-	Now                time.Time
+	PreserveProviderState bool
+	StateCompatibilityKey string
+	ThreadID              string
+	TurnID                string
+	RunID                 string
+	TerminalEntryID       string
+	Status                TurnMarkerStatus
+	Metadata              map[string]string
+	FailureMessage        string
+	ProviderState         *ProviderStateRecord
+	ClearProviderState    bool
+	OutcomeFingerprint    string
+	Now                   time.Time
 }
 
 type FinishTurnResult struct {
@@ -121,6 +123,7 @@ type FailUnknownEffectTurnResult struct {
 // stop. The cancellation fact, pending interaction resolutions, unfinished
 // tool closures, effect fences, and aborted terminal share one transaction.
 type CancelTurnRequest struct {
+	PreserveProviderState bool
 	// RequestOnly admits the stop without sealing in-flight results.
 	RequestOnly                  bool
 	CancellationMetadata         map[string]string
@@ -333,7 +336,7 @@ func ValidateFinishTurnRequest(req FinishTurnRequest) error {
 			return errors.New("successful or waiting turn must not include a failure")
 		}
 	}
-	if req.ProviderState != nil && req.ClearProviderState {
+	if req.ProviderState != nil && (req.ClearProviderState || req.PreserveProviderState) || req.ClearProviderState && req.PreserveProviderState {
 		return errors.New("turn finish provider state mutation is ambiguous")
 	}
 	if req.ProviderState != nil {
@@ -368,11 +371,14 @@ func ValidateCancelTurnRequest(req CancelTurnRequest) error {
 		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID,
 		TerminalEntryID: req.TerminalEntryID, Status: TurnAborted,
 		Metadata: req.Metadata, OutcomeFingerprint: req.OutcomeFingerprint,
-		ClearProviderState: req.ClearProviderState, Now: req.Now,
+		ClearProviderState: req.ClearProviderState, PreserveProviderState: req.PreserveProviderState, Now: req.Now,
 	})
 }
 
 func validateProviderStateRecord(record ProviderStateRecord) error {
+	if err := provider.ValidateState(&record.State); err != nil {
+		return err
+	}
 	if strings.TrimSpace(record.ThreadID) == "" || strings.TrimSpace(record.LeafEntryID) == "" || strings.TrimSpace(record.CompatibilityKey) == "" ||
 		strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" || strings.TrimSpace(record.CreatedByRunID) == "" ||
 		strings.TrimSpace(record.CreatedByTurnID) == "" || record.UpdatedAt.IsZero() {

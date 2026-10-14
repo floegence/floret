@@ -1131,18 +1131,22 @@ func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, 
 	return nil
 }
 
-func ProviderSurfaceChanged(ctx context.Context, store Store, promptScopeID, renderLineageKey string) (bool, error) {
+// ProviderSurfaceChanges separates native-history compatibility from exact
+// rendered-envelope reuse. Both derive from the same last request boundary.
+func ProviderSurfaceChanges(ctx context.Context, store Store, promptScopeID, renderLineageKey string, surface TurnSurfaceSnapshot) (changed, identityChanged bool, err error) {
 	if store == nil {
-		return false, nil
+		return false, false, nil
 	}
 	requests, err := store.ProviderRequests(ctx, promptScopeID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if len(requests) == 0 {
-		return false, nil
+		return false, false, nil
 	}
-	return requests[len(requests)-1].RenderLineageKey != renderLineageKey, nil
+	previous := requests[len(requests)-1]
+	return previous.RenderLineageKey != renderLineageKey,
+		previous.Provider != surface.Provider || previous.Model != surface.Model || previous.TurnSurface.StateCompatibilityKey != surface.StateCompatibilityKey, nil
 }
 
 func cloneProviderRequestRecord(record ProviderRequestRecord) ProviderRequestRecord {

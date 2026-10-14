@@ -674,3 +674,56 @@ func TestPublishedIndependentContextCompaction(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestPublishedNativeHistorySurvivesStopAndSQLiteRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "native", StateCompatibilityKey: "account:model"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Completed prefix"}, {Type: provider.EventDone, Reason: "length", ResponseState: &provider.State{Kind: "native", ID: "completed", ReusePolicy: provider.StateReuseCanonicalHistory}}}},
+		florettest.Step{WaitForCancellation: true},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Continued"}, {Type: provider.EventDone, Reason: "stop"}}})
+	path := filepath.Join(t.TempDir(), "native.db")
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		host, err := runtime.Open(ctx, runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			return runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "native", Name: "Native"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway)
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	host, service := open()
+	created, err := service.Create(ctx, runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: runtime.UserInput{Text: "inspect"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.WaitForRequests(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Cancel(ctx, runtime.CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: runtime.CancelModeImmediate}); err != nil {
+		t.Fatal(err)
+	}
+	waitPublishedToolInputView(t, service, created.ThreadID, func(v runtime.ThreadView) bool { return v.Activity == runtime.ThreadActivityIdle })
+	if err := host.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	host, service = open()
+	defer host.Shutdown(context.Background())
+	if _, err := service.Send(ctx, runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "probe", Input: runtime.UserInput{Text: "continue"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.WaitForRequests(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	state := gateway.Requests()[2].PreviousState
+	if state == nil || state.ID != "completed" || state.ReusePolicy != provider.StateReuseCanonicalHistory {
+		t.Fatalf("native history=%+v", state)
+	}
+}

@@ -201,7 +201,7 @@ func cloneProviderState(state *provider.State) *provider.State {
 	if state == nil {
 		return nil
 	}
-	return &provider.State{Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
+	return &provider.State{ReusePolicy: state.ReusePolicy, Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

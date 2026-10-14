@@ -361,9 +361,13 @@ field Source.URL string tag="json:\"url,omitempty\""
 field Source.StartIndex *int tag="json:\"start_index,omitempty\""
 field Source.EndIndex *int tag="json:\"end_index,omitempty\""
 type State struct
+field State.ReusePolicy github.com/floegence/floret/v7/provider.StateReusePolicy tag="json:\"reuse_policy,omitempty\""
 field State.Kind string tag="json:\"kind,omitempty\""
 field State.ID string tag="json:\"id,omitempty\""
 field State.Attributes map[string]string tag="json:\"attributes,omitempty\""
+const StateReuseCanonicalHistory github.com/floegence/floret/v7/provider.StateReusePolicy = "canonical_history"
+const StateReuseExactSurface github.com/floegence/floret/v7/provider.StateReusePolicy = ""
+type StateReusePolicy string
 type TokenEstimate struct
 field TokenEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field TokenEstimate.MessageTokens int64 tag="json:\"message_tokens,omitempty\""

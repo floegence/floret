@@ -219,6 +219,9 @@ func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID,
 	if strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
 		return nil, errors.New("stored provider state is incomplete")
 	}
+	if err := provider.ValidateState(&record.State); err != nil {
+		return nil, err
+	}
 	return provider.CloneState(&record.State), nil
 }
 
@@ -597,6 +600,11 @@ func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer s
 	// the provider state, even though resolving input advances the journal leaf.
 	opts.AdmissionBaseLeafID = terminalTurnEntryID(t.id, turnID, waitingRunID)
 	opts.SkipContextPolicyEvent = true
+	entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, map[string]string{"reason": "input_resume"})
+	if err != nil {
+		return TurnResult{}, err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
 	return t.runAccepted(ctx, "", opts, nil)
 }
 
@@ -789,6 +797,19 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error", engine.FailureOriginStorage)
 		}
 	}
+	downstream := t.harness.options.Sink
+	if opts.Sink != nil {
+		downstream = opts.Sink
+	}
+	projection := &turnProjection{
+		thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream, stateCompatibilityKey: stateCompatibilityKey,
+		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
+		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
+	}
+	if !opts.SkipContextPolicyEvent {
+		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
+	}
+	engineOptions.CommitProviderContext = projection.commitProviderContext
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
@@ -802,18 +823,6 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "engine_config_error", engine.FailureOriginContract)
-	}
-	downstream := t.harness.options.Sink
-	if opts.Sink != nil {
-		downstream = opts.Sink
-	}
-	projection := &turnProjection{
-		thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream,
-		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
-		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
-	}
-	if !opts.SkipContextPolicyEvent {
-		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	eng.SetSink(projection)
 	runInput := engine.RunInput{
@@ -932,15 +941,11 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		}
 	}
 	terminalEntryID := terminalTurnEntryID(t.id, turnID, runID)
-	var stateToSave *provider.State
-	if result.ProviderStateFresh {
-		stateToSave = result.ProviderState
-	}
 	failureMessage := ""
 	if result.Err != nil {
 		failureMessage = result.Err.Error()
 	}
-	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave, stateCompatibilityKey); err != nil {
+	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateCompatibilityKey); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error", engine.FailureOriginStorage)
 	}
 	eventType := EventTurnCompleted
@@ -965,7 +970,7 @@ func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) e
 	return result
 }
 
-func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State, stateCompatibilityKey string) (sessiontree.FinishTurnResult, error) {
+func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, stateCompatibilityKey string) (sessiontree.FinishTurnResult, error) {
 	repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return sessiontree.FinishTurnResult{}, errors.New("session tree repo does not support canonical turn finish")
@@ -978,13 +983,11 @@ func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID 
 		Status           sessiontree.TurnMarkerStatus `json:"status"`
 		Metadata         map[string]string            `json:"metadata,omitempty"`
 		FailureMessage   string                       `json:"failure_message,omitempty"`
-		ProviderState    *provider.State              `json:"provider_state,omitempty"`
 		CompatibilityKey string                       `json:"compatibility_key,omitempty"`
 	}{
 		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID),
 		TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status, Metadata: cloneStringMap(metadata),
 		FailureMessage:   strings.TrimSpace(failureMessage),
-		ProviderState:    provider.CloneState(providerState),
 		CompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
 	})
 	if err != nil {
@@ -994,16 +997,7 @@ func (t *Thread) finishTurn(ctx context.Context, turnID, runID, terminalEntryID 
 		ThreadID: t.id, TurnID: strings.TrimSpace(turnID), RunID: strings.TrimSpace(runID), TerminalEntryID: strings.TrimSpace(terminalEntryID), Status: status,
 		Metadata: cloneStringMap(metadata), FailureMessage: strings.TrimSpace(failureMessage),
 		OutcomeFingerprint: sessiontree.StableHash(string(payload)), Now: t.harness.now(),
-		ClearProviderState: providerState == nil && strings.TrimSpace(stateCompatibilityKey) != "",
-	}
-	if providerState != nil {
-		if strings.TrimSpace(stateCompatibilityKey) == "" {
-			return sessiontree.FinishTurnResult{}, errors.New("provider state compatibility key is required")
-		}
-		request.ProviderState = &sessiontree.ProviderStateRecord{
-			ThreadID: t.id, LeafEntryID: strings.TrimSpace(terminalEntryID), CompatibilityKey: strings.TrimSpace(stateCompatibilityKey),
-			State: *provider.CloneState(providerState), CreatedByRunID: strings.TrimSpace(runID), CreatedByTurnID: strings.TrimSpace(turnID), UpdatedAt: t.harness.now(),
-		}
+		PreserveProviderState: true, StateCompatibilityKey: stateCompatibilityKey,
 	}
 	result, err := repo.FinishTurn(ctx, request)
 	if err != nil {
@@ -1089,7 +1083,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if err != nil {
 		failureMessage = err.Error()
 	}
-	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, nil, t.harness.options.StateCompatibilityKey); finishErr != nil {
+	if _, finishErr := t.finishTurn(ctx, turnID, runID, terminalTurnEntryID(t.id, turnID, runID), markerForStatus(status), metadata, failureMessage, t.harness.options.StateCompatibilityKey); finishErr != nil {
 		return TurnResult{}, finishErr
 	}
 	eventType := EventTurnFailed
@@ -2078,6 +2072,7 @@ type turnProjection struct {
 	sources               []citation.Source
 	hosted                []pendingHostedObservation
 	thread                *Thread
+	stateCompatibilityKey string
 	ctx                   context.Context
 	turnID                string
 	runID                 string
@@ -2263,6 +2258,23 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		p.finalCandidate = nil
+		if p.pendingCallsSent {
+			found := false
+			for _, call := range p.pendingCalls {
+				if call.message.ToolCallID == message.ToolCallID {
+					if durableSignature(call.message) != durableSignature(message) {
+						p.err = newTurnProjectionContractError("committed tool call differs from event")
+						return
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				p.err = newTurnProjectionContractError("event references an uncommitted tool call")
+			}
+			return
+		}
 		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{
 			message:    message,
 			observedAt: ev.Timestamp,
@@ -2503,7 +2515,8 @@ func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) e
 	return nil
 }
 
-func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
+func (p *turnProjection) pendingAssistantEntries(keepFinalReasoning bool) ([]sessiontree.Entry, error) {
+	var entries []sessiontree.Entry
 	textStart, reasoningStart := 0, 0
 	boundaries := make([]int, len(p.hosted))
 	for i, hosted := range p.hosted {
@@ -2516,40 +2529,108 @@ func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
 		if text == "" && (!keepReasoning || reasoning == "") {
 			return nil
 		}
-		entry, err := p.thread.appendMessageEntryAt(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources}, time.Time{})
-		if err != nil {
-			return err
+		entries = append(entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources}, time.Time{}))
+		return nil
+	}
+	for _, hosted := range p.hosted {
+		if err := appendFragment(hosted.textEnd, hosted.reasoningEnd, true); err != nil {
+			return nil, err
 		}
+		ev := event.Sanitize(hosted.event)
+		metadata, _ := ev.Metadata.(map[string]any)
+		entry, err := sessiontree.NewHostedToolEntry(observation.Event{Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID), ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: ev.Activity, Metadata: metadata})
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := appendFragment(len(p.text), len(p.reasoning), keepFinalReasoning); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (p *turnProjection) recordAssistantEntries(entries []sessiontree.Entry) {
+	for _, entry := range entries {
+		p.thread.harness.emitEntryCommitted(entry, p.runID)
+		if entry.Type != sessiontree.EntryAssistantMessage {
+			p.finalCandidate = nil
+			continue
+		}
+		p.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: p.runID, ThreadID: p.thread.id, TurnID: p.turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 		if p.projectedAssistantIDs == nil {
 			p.projectedAssistantIDs = map[string]bool{}
 		}
 		p.projectedAssistantIDs[entry.ID] = true
 		p.finalCandidate = append(p.finalCandidate, entry.ID)
-		return nil
 	}
-	for _, hosted := range p.hosted {
-		if err := appendFragment(hosted.textEnd, hosted.reasoningEnd, true); err != nil {
-			return err
-		}
-		p.finalCandidate = nil
-		ev := event.Sanitize(hosted.event)
-		metadata, _ := ev.Metadata.(map[string]any)
-		entry, err := sessiontree.NewHostedToolEntry(observation.Event{Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID), ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: ev.Activity, Metadata: metadata})
-		if err == nil {
-			entry, err = p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
-		}
-		if err != nil {
-			return err
-		}
-		p.thread.harness.emitEntryCommitted(entry, p.runID)
-	}
-	if err := appendFragment(len(p.text), len(p.reasoning), false); err != nil {
-		return err
-	}
+}
+
+func (p *turnProjection) resetAssistant(resetReasoning bool) {
 	p.text, p.sources, p.hosted = "", nil, nil
 	if resetReasoning {
 		p.reasoning = ""
 	}
+}
+
+func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
+	entries, err := p.pendingAssistantEntries(false)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		saved, err := p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
+		if err != nil {
+			return err
+		}
+		p.recordAssistantEntries([]sessiontree.Entry{saved})
+	}
+	p.resetAssistant(resetReasoning)
+	return nil
+}
+
+func (p *turnProjection) commitProviderContext(ctx context.Context, state *provider.State, calls []session.Message, clear bool) error {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	repo, ok := p.thread.harness.options.Repo.(sessiontree.ProviderContextRepo)
+	if !ok {
+		return errors.New("session tree repo does not support provider context commit")
+	}
+	request := sessiontree.ProviderContextCommit{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, State: state, Clear: clear, CompatibilityKey: p.stateCompatibilityKey, Now: p.thread.harness.now()}
+	if !clear {
+		if err := p.flushPendingToolBatch(true); err != nil {
+			return err
+		}
+		var err error
+		request.Entries, err = p.pendingAssistantEntries(len(calls) == 0)
+		if err != nil {
+			return err
+		}
+		for _, call := range calls {
+			request.Entries = append(request.Entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, call, time.Time{}))
+		}
+	}
+	entries, err := repo.CommitProviderContext(ctx, request)
+	if err != nil {
+		return err
+	}
+	if clear {
+		return nil
+	}
+	p.recordAssistantEntries(entries)
+	p.resetAssistant(true)
+	for _, call := range calls {
+		if call.Kind == session.MessageKindControlSignal {
+			continue
+		}
+		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{message: call, observedAt: request.Now})
+	}
+	p.pendingBatchSize, p.pendingCallsSent = len(p.pendingCalls), len(p.pendingCalls) > 0
 	return nil
 }
 

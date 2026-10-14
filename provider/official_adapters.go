@@ -225,7 +225,7 @@ func internalState(state *State) *internalprovider.State {
 	if state == nil {
 		return nil
 	}
-	return &internalprovider.State{Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
+	return &internalprovider.State{ReusePolicy: internalprovider.StateReusePolicy(state.ReusePolicy), Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
 }
 
 func publicEvent(event internalprovider.StreamEvent) Event {
@@ -281,7 +281,7 @@ func publicState(state *internalprovider.State) *State {
 	if state == nil {
 		return nil
 	}
-	return &State{Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
+	return &State{ReusePolicy: StateReusePolicy(state.ReusePolicy), Kind: state.Kind, ID: state.ID, Attributes: cloneStringMap(state.Attributes)}
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

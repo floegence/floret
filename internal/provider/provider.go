@@ -105,10 +105,22 @@ type RequestLabels struct {
 	Host        map[string]string
 }
 
+type StateReusePolicy string
+
+const (
+	StateReuseExactSurface     StateReusePolicy = ""
+	StateReuseCanonicalHistory StateReusePolicy = "canonical_history"
+)
+
+func (policy StateReusePolicy) Valid() bool {
+	return policy == StateReuseExactSurface || policy == StateReuseCanonicalHistory
+}
+
 type State struct {
-	Kind       string            `json:"kind,omitempty"`
-	ID         string            `json:"id,omitempty"`
-	Attributes map[string]string `json:"attributes,omitempty"`
+	ReusePolicy StateReusePolicy  `json:"reuse_policy,omitempty"`
+	Kind        string            `json:"kind,omitempty"`
+	ID          string            `json:"id,omitempty"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
 }
 
 type HostedToolDefinition struct {
@@ -281,6 +293,13 @@ type StreamEvent struct {
 }
 
 type SourceRef = citation.Source
+
+func ValidateState(state *State) error {
+	if state != nil && !state.ReusePolicy.Valid() {
+		return fmt.Errorf("unknown provider state reuse policy %q", state.ReusePolicy)
+	}
+	return nil
+}
 
 func CloneState(in *State) *State {
 	if in == nil {

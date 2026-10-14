@@ -194,6 +194,8 @@ type Options struct {
 	HostedToolDefinitions    []provider.HostedToolDefinition
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
+	CommitProviderContext    func(context.Context, *provider.State, []session.Message, bool) error
+	providerState            *runProviderState
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
 	ManualCompactions        ManualCompactionSource
@@ -354,8 +356,6 @@ type RunDecision struct {
 	FinishInferred     bool
 	Detail             string
 	ControlSignal      *ControlSignal
-	ProviderState      *provider.State
-	ProviderStateFresh bool
 	Metadata           map[string]any
 }
 
@@ -803,9 +803,29 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 	}, nil
 }
 
-func (e *Engine) run(ctx context.Context, userText string) Result {
+func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	state := &turnState{internalValidationCorrections: map[string]bool{}}
 	opts := normalizeOptions(e.options)
+	owner := &runProviderState{state: provider.CloneState(opts.PreviousProviderState), commit: opts.CommitProviderContext}
+	opts.providerState = owner
+	defer func() {
+		result.ProviderState, result.ProviderStateFresh = provider.CloneState(owner.state), owner.fresh
+	}()
+	if err := provider.ValidateState(owner.state); err != nil {
+		owner.state = nil
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
+	}
+	if len(opts.SupplementalContext) > 0 {
+		owner.state = nil
+	}
+	if owner.state == nil {
+		if err := owner.clear(ctx); err != nil {
+			if isContextCancellation(err) {
+				return Result{Status: Cancelled, FailureOrigin: FailureOriginCancelled, Err: err}
+			}
+			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
+		}
+	}
 	if opts.WallTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
@@ -823,11 +843,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	supplementalTurn := len(opts.SupplementalContext) > 0
-	latestProviderState := provider.CloneState(opts.PreviousProviderState)
-	if supplementalTurn {
-		latestProviderState = nil
-	}
-	providerStateFresh := false
 	activeHistory, err := e.store.Transcript(opts.RunID)
 	if err != nil {
 		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
@@ -872,12 +887,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	}
 
 	for step := 1; ; step++ {
-		opts.PreviousProviderState = provider.CloneState(latestProviderState)
+		opts.PreviousProviderState = provider.CloneState(owner.state)
 		if supplementalTurn {
 			opts.PreviousProviderState = nil
 		}
 		if ctx.Err() != nil {
-			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{ProviderState: latestProviderState, ProviderStateFresh: providerStateFresh})
+			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{})
 		}
 		metrics.Steps = step
 		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
@@ -950,11 +965,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			})
 		}
 		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: attemptEventMetadata(req, providerUsageContextStatus(req, normalizedUsage, nativePressure))})
-		if !supplementalTurn && stepOutput.ResponseState != nil {
-			latestProviderState = provider.CloneState(stepOutput.ResponseState)
-			providerStateFresh = true
-		}
-		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, ProviderState: provider.CloneState(latestProviderState), ProviderStateFresh: providerStateFresh}
+		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred}
 		if stepOutput.FinishReason != "" {
 			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, Metadata: attemptMetadata})
 		}
@@ -982,6 +993,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			activeHistory = append(activeHistory, msg)
 			state.activeMessages = append([]session.Message(nil), activeHistory...)
+		}
+		if len(calls) == 0 {
+			if err := owner.complete(ctx, stepOutput.ResponseState, nil, supplementalTurn); err != nil {
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+			}
 		}
 		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
 			lengthContinuations++
@@ -1197,6 +1213,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			activeHistory = append(activeHistory, msg)
 		}
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
+		if err := owner.complete(ctx, stepOutput.ResponseState, callMessages, supplementalTurn); err != nil {
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+		}
 		if len(validationErrors) > 0 {
 			state.validationCorrectionCount++
 			decision.Metadata = mergeAnyMetadata(decision.Metadata, map[string]any{
@@ -2334,7 +2353,7 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 	if plan.CanonicalLineageReset {
 		plan.PreviousResponseID = ""
 	}
-	surfaceChanged, err := cache.ProviderSurfaceChanged(ctx, promptStore, opts.PromptScopeID, plan.RenderLineageKey)
+	surfaceChanged, identityChanged, err := cache.ProviderSurfaceChanges(ctx, promptStore, opts.PromptScopeID, plan.RenderLineageKey, turnSurface)
 	if err != nil {
 		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
@@ -2400,11 +2419,16 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 	if ephemeralUser != nil {
 		req.PreviousState = nil
 	}
-	if plan.CanonicalLineageReset {
+	if plan.CanonicalLineageReset || identityChanged {
 		req.PreviousState = nil
 	}
-	if surfaceChanged {
+	if surfaceChanged && req.PreviousState != nil && req.PreviousState.ReusePolicy == provider.StateReuseExactSurface {
 		req.PreviousState = nil
+	}
+	if opts.providerState != nil && req.PreviousState == nil && opts.providerState.state != nil {
+		if err := opts.providerState.clear(ctx); err != nil {
+			return provider.Request{}, err
+		}
 	}
 	return req, nil
 }
@@ -3125,7 +3149,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			"compaction_generation":          result.CompactionGeneration,
 			"compaction_window_id":           result.CompactionWindowID,
 		}, nil, time.Time{})
-		req, err = e.buildProjectedProviderRequest(ctx, opts, step, active, tracker, attempt, overflowRetried)
+		candidateOptions := opts
+		candidateOptions.PreviousProviderState, candidateOptions.providerState = nil, nil
+		req, err = e.buildProjectedProviderRequest(ctx, candidateOptions, step, active, tracker, attempt, overflowRetried)
 		if err != nil {
 			status := ContextCompactDebugStatusFailed
 			if isContextCancellation(err) {
@@ -3241,6 +3267,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		}
 		return nil, provider.Request{}, compaction.Result{}, err
+	}
+	if opts.providerState != nil {
+		opts.providerState.state, opts.providerState.fresh = nil, false
 	}
 	result = committed.Result
 	if err := validateCompactionResultIdentity(result, CompactionRequest{
@@ -4341,7 +4370,7 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 		messages, _ = e.store.Transcript(opts.RunID)
 	}
 
-	return Result{Status: status, FailureOrigin: failureOrigin(status, err), Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState), ProviderStateFresh: decision.ProviderStateFresh}
+	return Result{Status: status, FailureOrigin: failureOrigin(status, err), Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal)}
 }
 
 func (e *Engine) emit(opts Options, ev event.Event) {

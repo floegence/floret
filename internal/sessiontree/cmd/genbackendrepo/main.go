@@ -27,7 +27,7 @@ var readMethods = map[string]bool{
 }
 
 var handwritten = map[string]bool{
-	"Query": true, "Read": true, "Aggregate": true,
+	"Query": true, "Read": true, "Aggregate": true, "CanonicalMediaEntries": true,
 	"EncodeMemoryState":       true,
 	"ListRootThreadInventory": true, "AcceptTurn": true, "ReadAcceptedTurn": true,
 }

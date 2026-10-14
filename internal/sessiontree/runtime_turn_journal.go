@@ -247,6 +247,8 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 		record := *req.ProviderState
 		record.State = *provider.CloneState(&record.State)
 		r.setProviderStateLocked(meta.ID, record)
+	} else if req.PreserveProviderState {
+		r.reanchorProviderStateLocked(meta.ID, terminal.ID, req.StateCompatibilityKey, now)
 	} else if req.ClearProviderState {
 		r.settleContextOnlyProviderStateLocked(meta.ID, req.TurnID, req.RunID, terminal.ID, now)
 	}
@@ -621,7 +623,9 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	r.appendIndexedEntriesLocked(req.ThreadID, terminal)
 	meta.LeafID, meta.UpdatedAt = terminal.ID, now
 	r.setThreadLocked(req.ThreadID, meta)
-	if req.ClearProviderState {
+	if req.PreserveProviderState {
+		r.reanchorProviderStateLocked(req.ThreadID, terminal.ID, "", now)
+	} else if req.ClearProviderState {
 		r.settleContextOnlyProviderStateLocked(req.ThreadID, req.TurnID, req.RunID, terminal.ID, now)
 	}
 	result.Terminal = cloneEntry(terminal)
