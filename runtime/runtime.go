@@ -554,12 +554,13 @@ func validateMessageReferences(references []MessageReference) error {
 
 func (r MessageReference) Validate() error {
 	return session.MessageReference{
-		ReferenceID: r.ReferenceID,
-		Kind:        session.MessageReferenceKind(r.Kind),
-		Label:       r.Label,
-		Text:        r.Text,
-		ResourceRef: r.ResourceRef,
-		Truncated:   r.Truncated,
+		ReferenceID:        r.ReferenceID,
+		ReferencedThreadID: r.ReferencedThreadID.String(),
+		Kind:               session.MessageReferenceKind(r.Kind),
+		Label:              r.Label,
+		Text:               r.Text,
+		ResourceRef:        r.ResourceRef,
+		Truncated:          r.Truncated,
 	}.Validate()
 }
 
