@@ -585,6 +585,10 @@ open and `storage.BackupSQLite` while all writers are stopped. Inspection checks
 the supported migration path in memory without creating a runtime Host. A backup
 includes committed WAL records and never overwrites its destination.
 
+Inspection retains complete canonical and projection validation while omitting
+disposable text-search postings. `runtime.Open` prepares the full in-memory search
+index before exposing the Host; neither path persists a derived search index.
+
 Open with `runtime.Options{Storage: source, DeferExecution: true}` when product
 stores or authorization must be prepared first. Reads and pending-input import
 cannot start execution until `host.Activate(ctx)` succeeds. Default startup

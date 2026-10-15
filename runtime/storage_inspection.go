@@ -59,7 +59,7 @@ func InspectSQLite(ctx context.Context, path string) (result StorageInspection, 
 		if err = commitLogicalSchemaTransaction(tx, logical); err != nil {
 			return err
 		}
-		if err = kernel.VerifyCurrentStateInTransaction(ctx, tx); err != nil {
+		if err = kernel.VerifyInspectionStateInTransaction(ctx, tx); err != nil {
 			return err
 		}
 		result.MigrationRequired = len(tx.writes) > 0 || physicalMigration

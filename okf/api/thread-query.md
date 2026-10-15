@@ -15,6 +15,11 @@ only affected records before a read after successful canonical commit. Normal
 append processes only the new path tail; a branch change rebuilds that thread.
 No derived index, search body or cursor is persisted.
 
+Read-only SQLite inspection runs the same canonical projection checks without
+building text postings. Formal startup builds the complete index. Construction
+deduplicates Unicode n-gram fragments before allocating posting keys; lowercase,
+punctuation, Chinese, and code-fragment matching retain the same semantics.
+
 Hosts reconstruct `Scope` before every call. `Authority` identifies the user,
 runtime and namespace; `ThreadIDs` is the exact authorized set, including
 readable children and archived threads when host policy permits them. Empty sets

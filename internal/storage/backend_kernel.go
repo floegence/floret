@@ -61,6 +61,13 @@ func (kernel *BackendKernel) VerifyCurrentStateInTransaction(ctx context.Context
 	return verifyPromptRecords(tx)
 }
 
+func (kernel *BackendKernel) VerifyInspectionStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if err := kernel.BackendRepo.VerifyInspectionStateInTransaction(ctx, tx); err != nil {
+		return err
+	}
+	return verifyPromptRecords(tx)
+}
+
 func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()

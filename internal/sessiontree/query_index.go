@@ -44,6 +44,7 @@ type queryTimeRow struct {
 	record *queryRecord
 }
 type queryIndex struct {
+	omitTextPostings bool
 	timeCounts       map[string]int
 	recordsByID      []*queryRecord
 	freeRecordSlots  []uint32
@@ -337,19 +338,31 @@ func (idx *queryIndex) replace(state *queryThread, record *queryRecord) {
 	idx.records[record.key] = record
 	state.records[record.key] = record
 	values := map[string]string{"object": string(record.row.Object), "thread": record.row.ThreadID.String(), "parent": record.row.ParentThreadID.String(), "turn": record.row.TurnID.String(), "run": record.row.RunID.String(), "role": record.row.Role, "tool_name": record.row.ToolName, "tool_kind": record.row.ToolKind, "status": record.row.Status, "activity": record.row.Activity, "outcome": record.row.Outcome}
-	keys := map[string]bool{}
 	for field, value := range values {
-		keys["f\x00"+field+"\x00"+value] = true
+		idx.addPosting("f\x00"+field+"\x00"+value, record)
 	}
 	// N-grams cover punctuation, Chinese, code and fragments inside words. Word
 	// positions additionally preserve Unicode token locations for diagnostics.
 	record.positions = map[string][]int{}
 	for _, field := range []string{"text", "title", "arguments", "result"} {
+		if idx.omitTextPostings {
+			continue
+		}
 		runes := []rune(strings.ToLower(record.text(field)))
+		text := string(runes)
+		offsets := make([]int, 0, len(runes)+1)
+		for offset := range text {
+			offsets = append(offsets, offset)
+		}
+		offsets = append(offsets, len(text))
+		grams := map[string]struct{}{}
 		for n := 1; n <= 3; n++ {
 			for i := 0; i+n <= len(runes); i++ {
-				keys["g\x00"+field+"\x00"+string(runes[i:i+n])] = true
+				grams[text[offsets[i]:offsets[i+n]]] = struct{}{}
 			}
+		}
+		for gram := range grams {
+			idx.addPosting("g\x00"+field+"\x00"+gram, record)
 		}
 		start := -1
 		for i := 0; i <= len(runes); i++ {
@@ -364,10 +377,6 @@ func (idx *queryIndex) replace(state *queryThread, record *queryRecord) {
 			}
 		}
 	}
-	for key := range keys {
-		idx.addPosting(key, record)
-	}
-
 	for field, at := range record.times() {
 		if at.IsZero() {
 			continue
