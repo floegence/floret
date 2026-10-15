@@ -25,6 +25,7 @@ type Agent struct {
 	eventSink           EventSink
 	toolSurface         ToolSurfaceProvider
 	idGenerator         func(string) string
+	providerRetryPolicy ProviderRetryPolicy
 	loopLimits          LoopLimits
 	runLabels           RunLabels
 	capabilities        CapabilityOptions

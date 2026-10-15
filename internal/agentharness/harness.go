@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"slices"
 	"strconv"
 	"strings"
@@ -92,6 +93,7 @@ type Options struct {
 	TitleGenerator           TitleGenerator
 	Reasoning                provider.ReasoningCapability
 	TurnPolicy               TurnPolicy
+	ProviderRetryPolicy      providerretry.Policy
 	LoopLimits               LoopLimits
 	SubAgentRunTimeout       time.Duration
 	AutomaticTitleTimeout    time.Duration
@@ -1125,7 +1127,7 @@ func statusForError(err error) engine.Status {
 }
 
 func (h *AgentHarness) engineOptions() engine.Options {
-	engineOptions := engine.Options{StateCompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey)}
+	engineOptions := engine.Options{ProviderRetryPolicy: h.options.ProviderRetryPolicy, StateCompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey)}
 	policy := h.options.TurnPolicy
 	limits := h.options.LoopLimits
 	if policy.ContextPolicy.ContextWindowTokens > 0 ||
@@ -1922,6 +1924,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	generator := m.thread.harness.options.CompactionGenerator
 	if generator == nil {
 		generator = enginecompaction.ProviderSummaryGenerator{
+			RetryPolicy:   m.thread.harness.options.ProviderRetryPolicy,
 			Provider:      req.Provider,
 			ProviderName:  req.ProviderName,
 			Model:         req.Model,
@@ -2119,6 +2122,7 @@ type turnProjection struct {
 	pendingCallsSent      bool
 	lastCompaction        event.Event
 	activeAttempt         providerAttemptIdentity
+	retiredAttempt        bool
 	threadUsageTotals     ThreadTokenUsageTotals
 	contextUsage          contextUsageProjection
 	finalCandidate        []string
@@ -2399,7 +2403,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 }
 
 func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, error) {
-	tracked := ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
+	tracked := ev.Type == event.ProviderRetry || ev.Type == event.HostedToolCall || ev.Type == event.HostedToolResult || ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
 		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderSources || ev.Type == event.ProviderToolCallStart ||
 		ev.Type == event.ProviderToolCallDelta || ev.Type == event.ProviderToolCallEnd
 	if !tracked {
@@ -2412,6 +2416,7 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 		}
 		if p.activeAttempt.empty() {
 			p.activeAttempt = identity
+			p.retiredAttempt = false
 			return true, nil
 		}
 		if identity.logicalRequestID != p.activeAttempt.logicalRequestID {
@@ -2431,6 +2436,7 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 			p.sources = nil
 			p.hosted = nil
 			p.activeAttempt = identity
+			p.retiredAttempt = false
 		}
 		return true, nil
 	}
@@ -2454,6 +2460,20 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 	}
 	if identity.attemptEpoch > p.activeAttempt.attemptEpoch {
 		return false, newTurnProjectionContractError("provider event arrived for inactive future attempt")
+	}
+
+	if p.retiredAttempt {
+		return false, nil
+	}
+	if ev.Type == event.ProviderRetry && ev.Retry != nil {
+		if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
+			return false, newTurnProjectionContractError("cannot retire attempt with confirmed pending tools")
+		}
+		p.text = ""
+		p.reasoning = ""
+		p.sources = nil
+		p.hosted = nil
+		p.retiredAttempt = true
 	}
 	return true, nil
 }

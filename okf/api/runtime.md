@@ -569,3 +569,12 @@ Conditional queue removal uses `DeleteQueuedInput.ExpectedInputSHA256` to compar
 ### Immediate steering
 
 The optional `ThreadSteeringController` accepts full `UserInput` through `Steer`, or atomically consumes exact queued content through `SteerQueued`. Active executions keep their TurnID and RunID; suspended input uses the existing continuation boundary and a new RunID. One thread actor owns admission, fragment cancellation and completion sealing. Requests are durable typed journal facts, with one reference-only applied or cancelled resolution. Pending instructions are excluded from model history. Provider attempts remain fenced; confirmed tool results keep their existing finalizer, while unknown side effects terminate without replay. Stop always wins over deferred continuation. Standalone compaction returns `ErrThreadBusy`.
+
+## Provider recovery progress
+
+`WithAgentProviderRetryPolicy` validates an explicit `ProviderRetryPolicy`.
+`DefaultProviderRetryPolicy` describes the shared defaults. `Event.Retry` and
+`ThreadRunProgress.Retry` contain detached `ProviderRetryProgress` snapshots,
+including absolute `NextAttemptAt` for reopening views and local countdowns.
+The thread stays active and existing cancellation/steering remains authoritative.
+See [provider recovery ownership](../decisions/provider-retry.md).

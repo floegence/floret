@@ -144,7 +144,7 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 		if errors.Is(err, internalprovider.ErrContextOverflow) {
 			return nil, ErrContextOverflow
 		}
-		return nil, err
+		return nil, publicRetryError(err)
 	}
 	output := make(chan Event)
 	go func() {
@@ -229,7 +229,7 @@ func internalHostedToolDefinitions(definitions []HostedToolDefinition) []interna
 	output := make([]internalprovider.HostedToolDefinition, len(definitions))
 	for index, definition := range definitions {
 		output[index] = internalprovider.HostedToolDefinition{
-			Name: definition.Name, Type: definition.Type, Description: definition.Description,
+			ReplaySafe: definition.ReplaySafe, Name: definition.Name, Type: definition.Type, Description: definition.Description,
 			Parameters: definition.Parameters, Options: definition.Options,
 		}
 	}
@@ -274,7 +274,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 			CostUSD: event.Usage.CostUSD, Source: string(event.Usage.Source), Available: event.Usage.Available,
 			WindowInputTokens: event.Usage.WindowInputTokens,
 		},
-		ResponseID: event.ResponseID, ResponseState: publicState(event.ResponseState), Err: event.Err,
+		ResponseID: event.ResponseID, ResponseState: publicState(event.ResponseState), Err: publicRetryError(event.Err),
 	}
 }
 

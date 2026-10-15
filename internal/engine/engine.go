@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"math"
 	"sort"
 	"strings"
@@ -184,6 +185,7 @@ type Options struct {
 	CacheRetention           cache.Retention
 	ContextPolicy            contextpolicy.Policy
 	Reasoning                provider.ReasoningSelection
+	ProviderRetryPolicy      providerretry.Policy
 	MaxEmptyProviderRetries  int
 	NoProgressLimit          int
 	DuplicateToolLimit       int
@@ -312,7 +314,7 @@ func failureOrigin(status Status, err error) FailureOrigin {
 	if err == nil {
 		return FailureOriginNone
 	}
-	if status == Cancelled || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if status == Cancelled {
 		return FailureOriginCancelled
 	}
 	var classified *failureOriginError
@@ -955,7 +957,7 @@ steps:
 		}
 		attemptMetadata := providerAttemptMetadata(req)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
 					continue
 				}
@@ -975,6 +977,7 @@ steps:
 		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, providerHistory, usage)
 		if !supplementalTurn {
 			_ = e.prompt.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
+				AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch,
 				RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
 				PromptScopeID:      opts.PromptScopeID,
 				RunID:              opts.RunID,
@@ -2875,7 +2878,7 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 }
 
 func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, step int, req provider.Request, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, StepOutput, int64, bool, error) {
-	stepOutput, latency, overflow, err := e.sendProviderAttempt(ctx, opts, step, req, metrics)
+	req, stepOutput, latency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, req, metrics)
 	if err == nil || !overflow {
 		return req, history, stepOutput, latency, false, err
 	}
@@ -2885,7 +2888,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 		return req, history, StepOutput{}, latency, false, compactErr
 	}
 	history = next
-	stepOutput, retryLatency, overflow, err := e.sendProviderAttempt(ctx, opts, step, retryReq, metrics)
+	retryReq, stepOutput, retryLatency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, retryReq, metrics)
 	latency += retryLatency
 	if overflow {
 		return retryReq, history, stepOutput, latency, true, fmt.Errorf("provider context overflow retry exhausted: %w", provider.ErrContextOverflow)
@@ -2893,11 +2896,11 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	return retryReq, history, stepOutput, latency, true, err
 }
 
-func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (out StepOutput, latency int64, overflow bool, retErr error) {
+func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (out StepOutput, latency int64, overflow bool, retErr error) {
 	if req.Prepared != nil {
 		defer func() {
 			if closeErr := closePreparedRequest(req); closeErr != nil {
-				retErr = errors.Join(retErr, closeErr)
+				retErr = &failureOriginError{origin: FailureOriginContract, err: errors.Join(retErr, closeErr)}
 				overflow = false
 			}
 		}()
@@ -2907,7 +2910,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 		var err error
 		releaseProviderStart, err = opts.ProviderRequestGate(ctx)
 		if err != nil {
-			return StepOutput{}, 0, false, err
+			return StepOutput{}, 0, false, withFailureOrigin(err, FailureOriginContract)
 		}
 	}
 	releaseProviderGate := func() {
@@ -4127,6 +4130,7 @@ func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []cache.
 	out := make([]cache.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		out = append(out, cache.HostedToolDefinition{
+			ReplaySafe:  def.ReplaySafe,
 			Name:        def.Name,
 			Type:        def.Type,
 			Description: def.Description,
@@ -4158,6 +4162,7 @@ func hostedToolDefinitions(defs []cache.HostedToolDefinition) []provider.HostedT
 	out := make([]provider.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		out = append(out, provider.HostedToolDefinition{
+			ReplaySafe:  def.ReplaySafe,
 			Name:        def.Name,
 			Type:        def.Type,
 			Description: def.Description,

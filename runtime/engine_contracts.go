@@ -388,7 +388,7 @@ func runtimeToolSurfaceProvider(surfaceProvider ToolSurfaceProvider) engine.Tool
 		if source := request.InitialProviderSurface; source != nil {
 			initial = &ProviderToolSurface{SystemPrompt: source.SystemPrompt, ToolDefinitions: source.ToolDefinitions}
 			for _, tool := range source.HostedToolDefinitions {
-				initial.HostedToolDefinitions = append(initial.HostedToolDefinitions, publicprovider.HostedToolDefinition{Name: tool.Name, Type: tool.Type, Options: tool.Options})
+				initial.HostedToolDefinitions = append(initial.HostedToolDefinitions, publicprovider.HostedToolDefinition{ReplaySafe: tool.ReplaySafe, Name: tool.Name, Type: tool.Type, Options: tool.Options})
 			}
 		}
 		surface, err := surfaceProvider(ctx, ToolSurfaceRequest{
@@ -487,7 +487,7 @@ func providerHostedToolDefinitions(definitions []publicprovider.HostedToolDefini
 			continue
 		}
 		result = append(result, provider.HostedToolDefinition{
-			Name: strings.TrimSpace(definition.Name), Type: strings.TrimSpace(definition.Type),
+			ReplaySafe: definition.ReplaySafe, Name: strings.TrimSpace(definition.Name), Type: strings.TrimSpace(definition.Type),
 			Description: strings.TrimSpace(definition.Description), Parameters: cloneAnyMap(definition.Parameters),
 			Options: cloneAnyMap(definition.Options),
 		})

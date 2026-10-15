@@ -350,6 +350,8 @@ type ToolResult struct {
 // HostedToolDefinition is one provider-native capability that the local tool
 // runtime must not dispatch.
 type HostedToolDefinition struct {
+	// ReplaySafe permits repeating the entire model request after uncertain dispatch.
+	ReplaySafe  bool           `json:"replay_safe,omitempty"`
 	Name        string         `json:"name"`
 	Type        string         `json:"type"`
 	Description string         `json:"description,omitempty"`

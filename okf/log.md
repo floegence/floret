@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Provider recovery
+
+- Document [shared model retry ownership](decisions/provider-retry.md), typed advice, frozen request replay, draft retirement and live progress without changing schema 16.
+
 ## 2026-10-15 — Waiting execution settlement
 
 - Early answers may claim the next Run while the previous waiting execution drains. The old execution settles normally; graceful Stop respects the same actor completion boundary before cancelling a still-waiting Turn.

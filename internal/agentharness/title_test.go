@@ -2,8 +2,11 @@ package agentharness
 
 import (
 	"context"
+	"errors"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/provider"
@@ -82,5 +85,35 @@ func TestProviderTitlePreservesExplicitBudgetAndTruncationFailure(t *testing.T) 
 		} else if err != nil || result.Title == "" || utf8.RuneCountInString(result.Title) > 48 {
 			t.Fatalf("title length contract changed: %+v, %v", result, err)
 		}
+	}
+}
+
+func TestProviderTitleRecoveryKeepsItsOwnIdentityAndDeadline(t *testing.T) {
+	retry := providerretry.DefaultPolicy()
+	retry.BaseDelay = time.Microsecond
+	retry.MaxDelay = time.Microsecond
+	retry.Jitter = 0
+	var requests []provider.Request
+	p := titleProviderFunc(func(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+		requests = append(requests, req)
+		if len(requests) == 1 {
+			return nil, providerretry.WithAdvice(errors.New("overloaded"), providerretry.Advice{Category: providerretry.Transient})
+		}
+		events := make(chan provider.StreamEvent, 2)
+		events <- provider.StreamEvent{Type: provider.Delta, Text: "Recovered title"}
+		events <- provider.StreamEvent{Type: provider.Done}
+		close(events)
+		return events, nil
+	})
+	got, err := (ProviderTitleGenerator{Provider: p, RetryPolicy: retry}).GenerateTitle(t.Context(), TitleRequest{ThreadID: "thread", TurnID: "turn", Messages: []session.Message{{Role: session.User, Content: "title"}}})
+	if err != nil || got.Title != "Recovered title" || len(requests) != 2 || requests[0].RunID != requests[1].RunID || requests[1].LogicalRequestID != ThreadTitleLogicalRequestID || requests[1].AttemptEpoch != 2 {
+		t.Fatalf("title=%+v err=%v requests=%+v", got, err, requests)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	before := len(requests)
+	_, err = (ProviderTitleGenerator{Provider: p, RetryPolicy: retry}).GenerateTitle(ctx, TitleRequest{Messages: []session.Message{{Role: session.User, Content: "title"}}})
+	if !errors.Is(err, context.Canceled) || len(requests) != before {
+		t.Fatal("cancelled title sent request")
 	}
 }

@@ -33,6 +33,8 @@ type threadRuntimeData struct {
 	logicalRequestID    identity.LogicalRequestID
 	attemptID           string
 	attemptEpoch        int
+	retiredAttempt      bool
+	attemptDraftIDs     map[string]bool
 	openTextSegmentID   string
 	openTextKind        ThreadItemKind
 	responseSegmented   bool
@@ -81,6 +83,8 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.steering = nil
 	runtime.state.attemptID = ""
 	runtime.state.attemptEpoch = 0
+	runtime.state.retiredAttempt = false
+	runtime.state.attemptDraftIDs = nil
 	runtime.state.openTextSegmentID = ""
 	runtime.state.openTextKind = ""
 	runtime.state.cancel = input.cancel
@@ -166,10 +170,19 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		case attemptEpoch == runtime.state.attemptEpoch && runtime.state.attemptID != "" && attemptID != runtime.state.attemptID:
 			return false
 		case attemptEpoch > runtime.state.attemptEpoch:
+			runtime.state.retiredAttempt = false
+			runtime.state.attemptDraftIDs = nil
 			runtime.finishLiveTextSegment()
 		}
 		runtime.state.attemptID = attemptID
 		runtime.state.attemptEpoch = attemptEpoch
+	}
+	if hasAttempt && runtime.state.retiredAttempt {
+		return false
+	}
+	if event.Retry != nil {
+		runtime.discardAttemptDraft()
+		runtime.state.retiredAttempt = true
 	}
 	if runtime.state.responseSegmented && event.Type == observation.EventTypeStepEnd {
 		runtime.finishLiveTextSegment()
@@ -247,6 +260,12 @@ func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.Activ
 		id := threadToolSegmentID(timeline.TurnID, activity.ToolID)
 		if activity.Kind == observation.ActivityKindHosted {
 			id = "hosted:" + threadToolKey(timeline.TurnID, timeline.RunID, activity.ToolID)
+			if threadItemIndexByID(runtime.state.view.Items, id) < 0 {
+				if runtime.state.attemptDraftIDs == nil {
+					runtime.state.attemptDraftIDs = make(map[string]bool)
+				}
+				runtime.state.attemptDraftIDs[id] = true
+			}
 		}
 		index := threadItemIndexByID(runtime.state.view.Items, id)
 		live := !threadToolActivityTerminal(activity.Status)
@@ -299,6 +318,10 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		}
 		runtime.state.openTextSegmentID = nextThreadTextSegmentID(runtime.state.view.Items, runtime.state.turnID, kind)
 		runtime.state.openTextKind = kind
+		if runtime.state.attemptDraftIDs == nil {
+			runtime.state.attemptDraftIDs = make(map[string]bool)
+		}
+		runtime.state.attemptDraftIDs[runtime.state.openTextSegmentID] = true
 		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
 			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true, CreatedAt: createdAt,
 		})
@@ -374,4 +397,18 @@ func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, i
 	attemptID := strings.TrimSpace(stringFromMetadata(metadata, "attempt_id"))
 	attemptEpoch := intFromMetadata(metadata, "attempt_epoch")
 	return logicalRequestID, attemptID, attemptEpoch, attemptEpoch > 0 && attemptID != ""
+}
+
+func (runtime *threadRuntimeState) discardAttemptDraft() {
+	runtime.state.openTextSegmentID = ""
+	runtime.state.openTextKind = ""
+	items := runtime.state.view.Items[:0]
+	for _, item := range runtime.state.view.Items {
+		if runtime.state.attemptDraftIDs[item.ID] && len(item.sourceEntryIDs) == 0 {
+			continue
+		}
+		items = append(items, item)
+	}
+	runtime.state.view.Items = items
+	runtime.state.attemptDraftIDs = nil
 }

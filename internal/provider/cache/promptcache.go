@@ -171,6 +171,8 @@ type MessageSnapshot struct {
 type ToolDefinition = tools.ToolDefinition
 
 type HostedToolDefinition struct {
+	// ReplaySafe permits repeating the entire model request after uncertain dispatch.
+	ReplaySafe  bool           `json:"replay_safe,omitempty"`
 	Name        string         `json:"name"`
 	Type        string         `json:"type"`
 	Description string         `json:"description,omitempty"`
@@ -254,6 +256,8 @@ type TurnSurfaceSnapshot struct {
 }
 
 type ProviderResponseRecord struct {
+	AttemptID          string                        `json:"attempt_id,omitempty"`
+	AttemptEpoch       int                           `json:"attempt_epoch,omitempty"`
 	RequestID          string                        `json:"request_id"`
 	PromptScopeID      string                        `json:"prompt_scope_id"`
 	RunID              string                        `json:"run_id,omitempty"`

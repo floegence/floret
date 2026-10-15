@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -68,19 +69,20 @@ const (
 )
 
 type Event struct {
-	Type          Type   `json:"type"`
-	TraceID       string `json:"trace_id,omitempty"`
-	RunID         string `json:"run_id"`
-	ThreadID      string `json:"thread_id,omitempty"`
-	TurnID        string `json:"turn_id,omitempty"`
-	PromptScopeID string `json:"prompt_scope_id,omitempty"`
-	Step          int    `json:"step,omitempty"`
-	Provider      string `json:"provider,omitempty"`
-	Model         string `json:"model,omitempty"`
-	Message       string `json:"message,omitempty"`
-	ToolID        string `json:"tool_id,omitempty"`
-	ToolName      string `json:"tool_name,omitempty"`
-	ToolKind      string `json:"tool_kind,omitempty"`
+	Retry         *providerretry.Info `json:"retry,omitempty"`
+	Type          Type                `json:"type"`
+	TraceID       string              `json:"trace_id,omitempty"`
+	RunID         string              `json:"run_id"`
+	ThreadID      string              `json:"thread_id,omitempty"`
+	TurnID        string              `json:"turn_id,omitempty"`
+	PromptScopeID string              `json:"prompt_scope_id,omitempty"`
+	Step          int                 `json:"step,omitempty"`
+	Provider      string              `json:"provider,omitempty"`
+	Model         string              `json:"model,omitempty"`
+	Message       string              `json:"message,omitempty"`
+	ToolID        string              `json:"tool_id,omitempty"`
+	ToolName      string              `json:"tool_name,omitempty"`
+	ToolKind      string              `json:"tool_kind,omitempty"`
 	// ToolCallMessage is the Engine's authoritative local call for journal projection.
 	// It never crosses an observation boundary.
 	ToolCallMessage *session.Message `json:"-"`
@@ -185,6 +187,10 @@ func SanitizePathRefs(e Event) Event {
 }
 
 func sanitize(e Event, policy SinkPolicy) Event {
+	if e.Retry != nil {
+		copy := *e.Retry
+		e.Retry = &copy
+	}
 	e = sanitizePathRefs(e)
 	if policy.AllowRaw {
 		if policy.Redactor != nil {

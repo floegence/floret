@@ -9,6 +9,7 @@ import (
 	"fmt"
 	publicprovider "github.com/floegence/floret/v7/provider"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -277,7 +278,8 @@ const (
 // ThreadRunProgress is the process-local presentation of an advancing run.
 // It is absent while the thread is idle, terminal, or waiting for interaction.
 type ThreadRunProgress struct {
-	Phase ThreadRunPhase `json:"phase"`
+	Retry *ProviderRetryProgress `json:"retry,omitempty"`
+	Phase ThreadRunPhase         `json:"phase"`
 }
 
 // TurnOutcome is a terminal outcome rendered on one turn, never as thread failure.
@@ -2868,11 +2870,11 @@ func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
 	default:
 		return nil, false
 	}
-	return &ThreadRunProgress{Phase: phase}, true
+	return &ThreadRunProgress{Phase: phase, Retry: cloneProviderRetryProgress(event.Retry)}, true
 }
 
 func sameThreadRunProgress(left, right *ThreadRunProgress) bool {
-	return left == nil && right == nil || left != nil && right != nil && left.Phase == right.Phase
+	return left == nil && right == nil || left != nil && right != nil && left.Phase == right.Phase && reflect.DeepEqual(left.Retry, right.Retry)
 }
 
 var errCanonicalRefreshDiscarded = errors.New("canonical refresh snapshot discarded")
@@ -4052,6 +4054,7 @@ func cloneThreadRunProgress(progress *ThreadRunProgress) *ThreadRunProgress {
 		return nil
 	}
 	copy := *progress
+	copy.Retry = cloneProviderRetryProgress(progress.Retry)
 	return &copy
 }
 

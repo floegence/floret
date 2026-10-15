@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/provider"
@@ -254,7 +256,7 @@ func TestProviderSummaryRejectsMissingTerminalAndEmptyOutput(t *testing.T) {
 				close(ch)
 				return ch, nil
 			})
-			summary, details, err := (ProviderSummaryGenerator{Provider: p, Policy: contextpolicy.Policy{ContextWindowTokens: 4000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{{Role: session.User, Content: "facts"}}})
+			summary, details, err := (ProviderSummaryGenerator{RetryPolicy: providerretry.Policy{Disabled: true}, Provider: p, Policy: contextpolicy.Policy{ContextWindowTokens: 4000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{{Role: session.User, Content: "facts"}}})
 			if err == nil || summary != "" || details.Attempts != 1 {
 				t.Fatalf("summary=%q details=%+v err=%v", summary, details, err)
 			}
@@ -263,4 +265,34 @@ func TestProviderSummaryRejectsMissingTerminalAndEmptyOutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProviderSummaryRetriesOnlyFailedBatch(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 4000, ReservedSummaryTokens: 100}
+	retry := providerretry.DefaultPolicy()
+	retry.BaseDelay = time.Microsecond
+	retry.MaxDelay = time.Microsecond
+	retry.Jitter = 0
+	var accepted []provider.Request
+	var failed *provider.Request
+	calls := 0
+	p := summaryProviderFunc(func(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+		calls++
+		if calls == 2 {
+			snapshot := req
+			failed = &snapshot
+			return nil, providerretry.WithAdvice(errors.New("overload"), providerretry.Advice{Category: providerretry.Transient})
+		}
+		if calls == 3 && (failed.Messages[1].Content != req.Messages[1].Content || req.AttemptEpoch != failed.AttemptEpoch+1) {
+			t.Fatal("failed batch changed or attempt did not advance")
+		}
+		accepted = append(accepted, req)
+		return summaryEvents("summary"), nil
+	})
+	messages := []session.Message{{Role: session.User, Content: strings.Repeat("retained facts ", 4000)}}
+	summary, details, err := (ProviderSummaryGenerator{Provider: p, Policy: policy, RetryPolicy: retry}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: messages})
+	if err != nil || summary != "summary" || details.Attempts != details.Batches+1 || failed == nil {
+		t.Fatalf("summary=%q details=%+v err=%v", summary, details, err)
+	}
+	assertCompleteSummaryTranscript(t, accepted, messages)
 }

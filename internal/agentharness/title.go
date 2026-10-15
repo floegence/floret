@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -50,6 +51,7 @@ type TitleResult struct {
 }
 
 type ProviderTitleGenerator struct {
+	RetryPolicy     providerretry.Policy
 	Provider        provider.Provider
 	ProviderName    string
 	Model           string
@@ -66,7 +68,7 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 	if err != nil {
 		return TitleResult{}, err
 	}
-	stream, err := g.Provider.Stream(ctx, provider.Request{
+	request := provider.Request{
 		RunID:            threadTitleRunID(req.TurnID),
 		ThreadID:         strings.TrimSpace(req.ThreadID),
 		TurnID:           strings.TrimSpace(req.TurnID),
@@ -78,7 +80,16 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 		Messages:         prompt,
 		MaxOutputTokens:  g.maxOutputTokens(),
 		Reasoning:        provider.ShortRequestReasoningSelection(g.Reasoning),
-	})
+	}
+	return providerretry.Run(ctx, g.RetryPolicy, func(attemptCtx context.Context, n int) (TitleResult, error) {
+		request.Attempt = n + 1
+		request.AttemptEpoch = n + 1
+		request.AttemptID = fmt.Sprintf("%s:attempt:%d", request.RunID, n+1)
+		return g.generateTitleAttempt(attemptCtx, request)
+	}, nil)
+}
+func (g ProviderTitleGenerator) generateTitleAttempt(ctx context.Context, request provider.Request) (TitleResult, error) {
+	stream, err := g.Provider.Stream(ctx, request)
 	if err != nil {
 		return TitleResult{}, err
 	}
@@ -95,7 +106,7 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 			return TitleResult{}, err
 		}
 		if !ok {
-			return g.titleResult(text.String())
+			return TitleResult{}, providerretry.WithAdvice(provider.ErrStreamMissingTerminal, providerretry.Advice{Category: providerretry.Interrupted})
 		}
 		switch ev.Type {
 		case provider.Delta:

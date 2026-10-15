@@ -42,7 +42,18 @@ func (s ContextDisplayStatus) Valid() bool {
 	}
 }
 
+// ProviderRetryProgress is memory-only progress for a scheduled model attempt.
+type ProviderRetryProgress struct {
+	Retry                int       `json:"retry"`
+	MaxRetries           int       `json:"max_retries"`
+	NextAttemptAt        time.Time `json:"next_attempt_at"`
+	Reason               string    `json:"reason"`
+	ReplacedAttemptID    string    `json:"replaced_attempt_id,omitempty"`
+	ReplacedAttemptEpoch int       `json:"replaced_attempt_epoch,omitempty"`
+}
+
 type Event struct {
+	Retry              *ProviderRetryProgress      `json:"retry,omitempty"`
 	Type               EventType                   `json:"type"`
 	TraceID            identity.TraceID            `json:"trace_id,omitempty"`
 	RunID              identity.RunID              `json:"run_id,omitempty"`

@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.38.0 - 2026-10-15
+
+- Add validated Agent provider retry policy, structured protocol advice and live retry progress. Recover temporary HTTP, transport and interrupted-stream failures with one bounded, cancellable budget shared by ordinary requests, compaction and titles.
+- Preserve execution identities and confirmed tools; fence and replace failed streaming drafts immediately. Require explicit hosted-tool replay safety and frozen replay for expanded prepared requests. Preserve error causes, schema 16 and all published migration edges.
+
 ## v7.37.2 - 2026-10-15
 
 - Republish the v7.37.1 waiting-execution fixes under a fresh patch tag after a premature public module lookup cached the earlier tag as unavailable. Runtime behavior, public API, and schema are unchanged from v7.37.1.

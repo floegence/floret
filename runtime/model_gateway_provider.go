@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	publicprovider "github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/tools"
@@ -71,7 +72,7 @@ type modelGatewayProvider struct {
 type preparedModelGatewayProvider struct{ modelGatewayProvider }
 
 func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, request provider.Request) (provider.PreparedRequest, error) {
-	modelRequest, err := adapter.modelRequest(request)
+	projectedRequest, err := adapter.modelRequest(request)
 	if err != nil {
 		return nil, err
 	}
@@ -79,14 +80,34 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 	if !ok {
 		return nil, errors.New("expanded model gateway requires prepared request support")
 	}
-	prepared, err := preparer.PrepareModelRequest(ctx, modelRequest)
+	prepared, err := preparer.PrepareModelRequest(ctx, projectedRequest)
 	if err != nil {
 		return nil, err
 	}
 	if prepared == nil {
 		return nil, errors.New("model gateway returned a nil prepared request")
 	}
-	return newModelGatewayPreparedRequest(prepared), nil
+	wrapped := newModelGatewayPreparedRequest(prepared)
+	wrapped.retry = func(ctx context.Context, next provider.Request) (provider.PreparedRequest, error) {
+		replayer, ok := prepared.(interface {
+			PrepareRetryModel(context.Context, modelRequest) (preparedModelRequest, error)
+		})
+		if !ok {
+			return nil, errors.New("provider request lacks frozen retry preparation")
+		}
+		projected, err := adapter.modelRequest(next)
+		if err != nil {
+			return nil, err
+		}
+		replay, err := replayer.PrepareRetryModel(ctx, projected)
+		if err != nil {
+			return nil, err
+		}
+		result := newModelGatewayPreparedRequest(replay)
+		result.retry = wrapped.retry
+		return result, nil
+	}
+	return wrapped, nil
 }
 
 func (adapter modelGatewayProvider) Stream(ctx context.Context, request provider.Request) (<-chan provider.StreamEvent, error) {
@@ -195,6 +216,11 @@ func streamModelGateway(ctx context.Context, start func(context.Context) (<-chan
 // this single boundary for synchronous failures and streamed errors alike;
 // retain the original cause for host errors.Is/errors.As diagnostics.
 func engineProviderError(err error) error {
+	var adviser publicprovider.RetryAdviser
+	if errors.As(err, &adviser) {
+		a := adviser.ProviderRetryAdvice()
+		err = providerretry.WithAdvice(err, providerretry.Advice{Category: providerretry.Category(a.Category), NotBefore: a.NotBefore, Forbidden: a.Forbidden})
+	}
 	if errors.Is(err, publicprovider.ErrContextOverflow) && !errors.Is(err, provider.ErrContextOverflow) {
 		return errors.Join(err, provider.ErrContextOverflow)
 	}
@@ -208,6 +234,7 @@ type modelGatewayPreparedRequest struct {
 	closed    bool
 	closeErr  error
 	prepared  preparedModelRequest
+	retry     func(context.Context, provider.Request) (provider.PreparedRequest, error)
 }
 
 func newModelGatewayPreparedRequest(prepared preparedModelRequest) *modelGatewayPreparedRequest {
@@ -302,7 +329,7 @@ func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 func runtimeHostedToolDefinitions(values []provider.HostedToolDefinition) []publicprovider.HostedToolDefinition {
 	result := make([]publicprovider.HostedToolDefinition, 0, len(values))
 	for _, value := range values {
-		result = append(result, publicprovider.HostedToolDefinition{Name: value.Name, Type: value.Type, Description: value.Description, Parameters: cloneAnyMap(value.Parameters), Options: cloneAnyMap(value.Options)})
+		result = append(result, publicprovider.HostedToolDefinition{ReplaySafe: value.ReplaySafe, Name: value.Name, Type: value.Type, Description: value.Description, Parameters: cloneAnyMap(value.Parameters), Options: cloneAnyMap(value.Options)})
 	}
 	return result
 }
@@ -381,4 +408,11 @@ func providerState(value *modelStateEnvelope) *provider.State {
 
 func providerRequestLabels(value provider.RequestLabels) RunLabels {
 	return RunLabels{Correlation: cloneStringMap(value.Correlation), Host: cloneStringMap(value.Host)}
+}
+
+func (request *modelGatewayPreparedRequest) PrepareRetry(ctx context.Context, next provider.Request) (provider.PreparedRequest, error) {
+	if request.retry == nil {
+		return nil, errors.New("provider request lacks frozen retry preparation")
+	}
+	return request.retry(ctx, next)
 }

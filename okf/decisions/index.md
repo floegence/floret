@@ -4,3 +4,5 @@
 * [Prompt Scope Identity](prompt-scope-identity.md) - Use `PromptScopeID` as the prompt-cache reuse boundary.
 * [No Host Product Concerns](no-host-product-concerns.md) - Keep product policy and UI semantics outside Floret core.
 * [Replayable Thread Forks](replayable-thread-forks.md) - Fix a durable operation plan before creating fork targets.
+
+* [Provider Request Recovery](provider-retry.md) - One bounded owner for temporary model failures and attempt replacement.

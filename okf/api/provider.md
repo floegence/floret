@@ -227,3 +227,15 @@ optional message field preserves historical raw/hash bytes and schema 15. No hos
 collector, second citation store or provider-state rewrite is required. See the
 [range owner](../../internal/citation/source.go) and
 [restart/fork tests](../../runtime/thread_citations_test.go).
+
+## Temporary failures
+
+`RetryAdvice`, `RetryAdviser`, `WithRetryAdvice` and `HTTPRetryAdvice` carry
+structured error classes and response-time server deadlines while preserving
+errors.Is/errors.As causes. Unknown errors stay terminal. Gateways disable SDK
+retries; the [Engine recovery owner](../decisions/provider-retry.md) applies one
+budget across HTTP and stream failures. `PreparedRequestReplay.PrepareRetry`
+returns a fresh single-use handle from retained immutable rendering, including
+after the previous handle closes. It must never reread mutable attachments.
+`HostedToolDefinition.ReplaySafe` defaults false and requires verified safe
+repetition of provider-native capabilities.
