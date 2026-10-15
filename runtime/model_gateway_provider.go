@@ -89,15 +89,25 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 	}
 	wrapped := newModelGatewayPreparedRequest(prepared)
 	wrapped.retry = func(ctx context.Context, next provider.Request) (provider.PreparedRequest, error) {
+		projected, err := adapter.modelRequest(next)
+		if err != nil {
+			return nil, err
+		}
+		if preparer, ok := adapter.gateway.(modelGatewayRequestPreparer); ok {
+			replay, err := preparer.PrepareModelRequest(ctx, projected)
+			if err != nil {
+				return nil, err
+			}
+			result := newModelGatewayPreparedRequest(replay)
+			result.retry = wrapped.retry
+			return result, nil
+		}
+
 		replayer, ok := prepared.(interface {
 			PrepareRetryModel(context.Context, modelRequest) (preparedModelRequest, error)
 		})
 		if !ok {
 			return nil, errors.New("provider request lacks frozen retry preparation")
-		}
-		projected, err := adapter.modelRequest(next)
-		if err != nil {
-			return nil, err
 		}
 		replay, err := replayer.PrepareRetryModel(ctx, projected)
 		if err != nil {
