@@ -93,15 +93,6 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 		if err != nil {
 			return nil, err
 		}
-		if preparer, ok := adapter.gateway.(modelGatewayRequestPreparer); ok {
-			replay, err := preparer.PrepareModelRequest(ctx, projected)
-			if err != nil {
-				return nil, err
-			}
-			result := newModelGatewayPreparedRequest(replay)
-			result.retry = wrapped.retry
-			return result, nil
-		}
 
 		replayer, ok := prepared.(interface {
 			PrepareRetryModel(context.Context, modelRequest) (preparedModelRequest, error)
