@@ -314,7 +314,7 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
 		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
 		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
-		ProviderRetryPolicy: opts.providerRetryPolicy, LoopLimits: opts.loopLimits, RunLabels: opts.runLabels, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
+		ProviderRequestTimeoutPolicy: opts.providerRequestTimeoutPolicy, ProviderRetryPolicy: opts.providerRetryPolicy, LoopLimits: opts.loopLimits, RunLabels: opts.runLabels, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
 	})
 	if err != nil {
 		return nil, err
@@ -617,7 +617,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
-		providerRetryPolicy: agent.providerRetryPolicy, loopLimits: agent.loopLimits, capabilities: agent.capabilities,
+		providerRequestTimeoutPolicy: agent.providerRequestTimeoutPolicy, providerRetryPolicy: agent.providerRetryPolicy, loopLimits: agent.loopLimits, capabilities: agent.capabilities,
 		runLabels:       cloneRunLabels(agent.runLabels),
 		threadTitleMode: agent.threadTitleMode, initialized: true,
 	}

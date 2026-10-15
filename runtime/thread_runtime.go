@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	publicprovider "github.com/floegence/floret/v7/provider"
 	"maps"
 	"reflect"
 	"slices"
@@ -22,10 +21,12 @@ import (
 	"github.com/floegence/floret/v7/internal/agentharness"
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessionlifecycle"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/observation"
+	publicprovider "github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -2870,7 +2871,7 @@ func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
 	switch event.Type {
 	case observation.EventTypeStepStart:
 		phase = ThreadRunPhasePreparing
-	case observation.EventTypeProviderRequest:
+	case observation.EventTypeProviderRequest, observation.EventTypeHostedToolResult:
 		phase = ThreadRunPhaseWaitingResponse
 	case observation.EventTypeProviderDelta,
 		observation.EventTypeProviderReasoning,
@@ -4081,6 +4082,10 @@ func cloneThreadRunProgress(progress *ThreadRunProgress) *ThreadRunProgress {
 	copy.Retry = cloneProviderRetryProgress(progress.Retry)
 	if progress.Request != nil {
 		request := *progress.Request
+		if request.LastProgressAt != nil {
+			at := *request.LastProgressAt
+			request.LastProgressAt = &at
+		}
 		if request.FirstOutputAt != nil {
 			at := *request.FirstOutputAt
 			request.FirstOutputAt = &at
@@ -4775,6 +4780,7 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 	var runID identity.RunID
 	failureMessage := ""
 	failureCode := ThreadTurnFailureCode("")
+	var timeoutDetails *publicprovider.RequestTimeoutDetails
 	for _, entry := range path {
 		if entry.TurnID != turnID.String() {
 			continue
@@ -4787,6 +4793,12 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 		}
 		if failureMessage == "" {
 			failureMessage = strings.TrimSpace(entry.Metadata["failure_reason"])
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.Metadata["provider_timeout"] != "" {
+			var details publicprovider.RequestTimeoutDetails
+			if json.Unmarshal([]byte(entry.Metadata["provider_timeout"]), &details) == nil && details.Validate() == nil {
+				timeoutDetails = &details
+			}
 		}
 		if value := strings.TrimSpace(entry.Metadata[sessiontree.TurnFailureCodeMetadataKey]); value != "" {
 			failureCode = ThreadTurnFailureCode(value)
@@ -4815,6 +4827,9 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 			failureCode = ThreadTurnFailureLegacyUnclassified
 		}
 		failure = &ThreadTurnFailure{Code: failureCode, Message: failureMessage}
+		if failureCode == ThreadTurnFailureProvider {
+			failure.ProviderTimeout = providerattempt.CloneTimeoutDetails(timeoutDetails)
+		}
 	}
 	return turnID, runID, activity, outcome, failure
 }
@@ -4824,6 +4839,7 @@ func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
 		return nil
 	}
 	cloned := *failure
+	cloned.ProviderTimeout = providerattempt.CloneTimeoutDetails(failure.ProviderTimeout)
 	return &cloned
 }
 

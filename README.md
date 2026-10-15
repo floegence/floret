@@ -375,6 +375,24 @@ a five-minute window from the first failure. `WithAgentProviderRetryPolicy`
 accepts an explicit validated policy; use `ProviderRetryPolicy{Disabled: true}`
 to disable recovery. SDK transport retries must be disabled.
 
+`WithAgentProviderRequestTimeoutPolicy` configures one physical request clock,
+shared by ordinary requests, compaction and titles. Zero fields use
+`DefaultProviderRequestTimeoutPolicy`: five minutes without first semantic output,
+two minutes without further output, five minutes while a provider-hosted tool is
+active, and fifteen minutes total per attempt. Negative durations are invalid.
+Text, reasoning, argument fragments and accepted tool transitions advance the
+clock; heartbeats, empty deltas and usage do not. Connection opening and reading
+are bounded; local tools, approvals and user input are outside this boundary.
+
+A deadline cancels only that attempt and enters the same recovery budget.
+`provider.RequestTimeoutError` matches `provider.ErrRequestTimeout` and
+`context.DeadlineExceeded`; it does not establish execution cancellation.
+`ThreadTurnFailure.ProviderTimeout` optionally retains the stage, timing and
+attempt identity through canonical terminal metadata and restart. It is an
+additive diagnostic contract; schema 17 and all historical migrations remain
+unchanged. `ProviderRequestProgress.LastProgressAt` lets hosts display stalled
+output using their own presentation clock without inventing lifecycle timers.
+
 Gateways expose structured `provider.RetryAdvice` through `RetryAdviser` and
 `WithRetryAdvice`, preserving the original error cause. `HTTPRetryAdvice`
 parses response-time server deadlines, exact machine codes and HTTP status.

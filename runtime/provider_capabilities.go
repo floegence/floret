@@ -44,11 +44,14 @@ type turnExecutionOptions struct {
 	toolSurfaceProvider      ToolSurfaceProvider
 	idGenerator              func(string) string
 	providerRetryPolicy      ProviderRetryPolicy
-	loopLimits               LoopLimits
-	runLabels                RunLabels
-	capabilities             CapabilityOptions
-	threadTitleMode          ThreadTitleMode
-	initialized              bool
+
+	providerRequestTimeoutPolicy ProviderRequestTimeoutPolicy
+
+	loopLimits      LoopLimits
+	runLabels       RunLabels
+	capabilities    CapabilityOptions
+	threadTitleMode ThreadTitleMode
+	initialized     bool
 }
 
 type modelGatewayCapabilities struct {

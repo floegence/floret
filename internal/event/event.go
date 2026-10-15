@@ -69,6 +69,7 @@ const (
 )
 
 type Event struct {
+	ProviderLastProgressAt *time.Time             `json:"provider_last_progress_at,omitempty"`
 	EstimatedOutputTokens  int64                  `json:"estimated_output_tokens,omitempty"`
 	ArgumentPreview        *tools.ArgumentPreview `json:"argument_preview,omitempty"`
 	ArgumentPreviewUpdated bool                   `json:"argument_preview_updated,omitempty"`

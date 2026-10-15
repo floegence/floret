@@ -3,11 +3,13 @@ package providerretry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -159,6 +161,42 @@ func TestRetryWindowServerWaitAndCancellation(t *testing.T) {
 			} else if calls != 1 {
 				t.Fatalf("calls=%d waits=%d", calls, waits)
 			}
+		})
+	}
+}
+
+func TestRecoveryDeadlinePreservesLastFailureAndIndependentPriority(t *testing.T) {
+	for _, independent := range []bool{false, true} {
+		t.Run(fmt.Sprint(independent), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				first := errors.New("first request timed out")
+				storage := WithAdvice(errors.New("storage unavailable"), Advice{Category: Permanent})
+				p := DefaultPolicy()
+				p.RecoveryWindow = time.Minute
+				p.BaseDelay = time.Second
+				calls := 0
+				_, err := Run(t.Context(), p, func(ctx context.Context, n int) (int, error) {
+					calls++
+					if n == 0 {
+						return 0, WithAdvice(first, Advice{Category: Timeout})
+					}
+					<-ctx.Done()
+					if independent {
+						return 0, storage
+					}
+					return 0, ctx.Err()
+				}, nil)
+				if calls != 2 {
+					t.Fatalf("calls=%d", calls)
+				}
+				if independent {
+					if err != storage {
+						t.Fatalf("independent failure replaced: %v", err)
+					}
+				} else if !errors.Is(err, first) || !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("timeout evidence lost: %v", err)
+				}
+			})
 		})
 	}
 }

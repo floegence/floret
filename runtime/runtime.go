@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/compaction"
@@ -318,12 +319,15 @@ type providerHostOptions struct {
 	Sink                     EventSink
 	ToolSurfaceProvider      ToolSurfaceProvider
 	IDGenerator              func(string) string
-	ProviderRetryPolicy      ProviderRetryPolicy
-	LoopLimits               LoopLimits
-	RunLabels                RunLabels
-	SubAgentRunTimeout       time.Duration
-	Capabilities             CapabilityOptions
-	ThreadTitleMode          ThreadTitleMode
+
+	ProviderRequestTimeoutPolicy ProviderRequestTimeoutPolicy
+
+	ProviderRetryPolicy ProviderRetryPolicy
+	LoopLimits          LoopLimits
+	RunLabels           RunLabels
+	SubAgentRunTimeout  time.Duration
+	Capabilities        CapabilityOptions
+	ThreadTitleMode     ThreadTitleMode
 }
 
 type LoopLimits struct {
@@ -668,6 +672,8 @@ type EventSink interface {
 }
 
 type Event struct {
+	ProviderLastProgressAt *time.Time `json:"provider_last_progress_at,omitempty"`
+
 	Retry              *ProviderRetryProgress         `json:"retry,omitempty"`
 	Type               observation.EventType          `json:"type"`
 	TraceID            identity.TraceID               `json:"trace_id,omitempty"`
@@ -957,11 +963,20 @@ func (c ThreadTurnFailureCode) Valid() bool {
 }
 
 type ThreadTurnFailure struct {
-	Code    ThreadTurnFailureCode `json:"code"`
-	Message string                `json:"message"`
+	ProviderTimeout *publicprovider.RequestTimeoutDetails `json:"provider_timeout,omitempty"`
+	Code            ThreadTurnFailureCode                 `json:"code"`
+	Message         string                                `json:"message"`
 }
 
 func (f ThreadTurnFailure) Validate() error {
+	if f.ProviderTimeout != nil {
+		if f.Code != ThreadTurnFailureProvider {
+			return errors.New("provider timeout requires provider failure")
+		}
+		if err := f.ProviderTimeout.Validate(); err != nil {
+			return err
+		}
+	}
 	if !f.Code.Valid() {
 		return fmt.Errorf("unsupported thread turn failure code %q", f.Code)
 	}
@@ -1327,20 +1342,21 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	}
 	runtimeSink := newRuntimeEventSink(opts.Sink)
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		store:                    store,
-		Tools:                    opts.Tools,
-		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
-		Sink:                     runtimeSink,
-		SinkPolicy:               runtimeHarnessSinkPolicy(),
-		ToolSurfaceProvider:      runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
-		NewID:                    opts.IDGenerator,
-		ProviderRetryPolicy:      opts.ProviderRetryPolicy,
-		LoopLimits:               opts.LoopLimits,
-		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
-		Capabilities:             opts.Capabilities,
-		ThreadTitleMode:          titleMode,
-		modelGatewayCapabilities: opts.modelGatewayCapabilities,
-		StateCompatibilityKey:    runtimeStateCompatibilityKey(cfg, opts),
+		store:                        store,
+		Tools:                        opts.Tools,
+		EffectAuthorizationGate:      opts.EffectAuthorizationGate,
+		Sink:                         runtimeSink,
+		SinkPolicy:                   runtimeHarnessSinkPolicy(),
+		ToolSurfaceProvider:          runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
+		NewID:                        opts.IDGenerator,
+		ProviderRequestTimeoutPolicy: opts.ProviderRequestTimeoutPolicy,
+		ProviderRetryPolicy:          opts.ProviderRetryPolicy,
+		LoopLimits:                   opts.LoopLimits,
+		SubAgentRunTimeout:           opts.SubAgentRunTimeout,
+		Capabilities:                 opts.Capabilities,
+		ThreadTitleMode:              titleMode,
+		modelGatewayCapabilities:     opts.modelGatewayCapabilities,
+		StateCompatibilityKey:        runtimeStateCompatibilityKey(cfg, opts),
 	})
 	if err != nil {
 		return nil, err
@@ -1785,6 +1801,9 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 			Code:    ThreadTurnFailureCode(strings.TrimSpace(in.FailureCode)),
 			Message: in.Err.Error(),
 		}
+		if out.Failure.Code == ThreadTurnFailureProvider {
+			out.Failure.ProviderTimeout = providerattempt.TimeoutDetails(in.Err)
+		}
 	}
 	return out
 }
@@ -1799,12 +1818,15 @@ type harnessOptions struct {
 	ThreadTitleMode          ThreadTitleMode
 	modelGatewayCapabilities modelGatewayCapabilities
 	NewID                    func(string) string
-	ProviderRetryPolicy      ProviderRetryPolicy
-	LoopLimits               LoopLimits
-	SubAgentRunTimeout       time.Duration
-	Capabilities             CapabilityOptions
-	ToolSurfaceProvider      engine.ToolSurfaceProvider
-	StateCompatibilityKey    string
+
+	ProviderRequestTimeoutPolicy ProviderRequestTimeoutPolicy
+
+	ProviderRetryPolicy   ProviderRetryPolicy
+	LoopLimits            LoopLimits
+	SubAgentRunTimeout    time.Duration
+	Capabilities          CapabilityOptions
+	ToolSurfaceProvider   engine.ToolSurfaceProvider
+	StateCompatibilityKey string
 }
 
 func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
@@ -1855,36 +1877,38 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 	titleGenerator := opts.Title
 	if titleGenerator == nil && opts.ThreadTitleMode == ThreadTitleModeProvider {
 		titleGenerator = agentharness.ProviderTitleGenerator{
-			Provider:     p,
-			ProviderName: cfg.Provider,
-			Model:        cfg.Model,
-			Reasoning:    model.Reasoning,
-			RetryPolicy:  providerretry.Policy(opts.ProviderRetryPolicy),
+			Provider:      p,
+			ProviderName:  cfg.Provider,
+			Model:         cfg.Model,
+			Reasoning:     model.Reasoning,
+			TimeoutPolicy: providerattempt.RequestTimeoutPolicy(opts.ProviderRequestTimeoutPolicy),
+			RetryPolicy:   providerretry.Policy(opts.ProviderRetryPolicy),
 		}
 	}
 	harness := agentharness.New(agentharness.Options{
-		Provider:                 p,
-		ProviderName:             cfg.Provider,
-		Model:                    cfg.Model,
-		SystemPrompt:             effectivePrompt,
-		Tools:                    registry,
-		PromptStore:              store.prompt,
-		Repo:                     store.repo,
-		StateCompatibilityKey:    opts.StateCompatibilityKey,
-		Sink:                     opts.Sink,
-		SinkPolicy:               opts.SinkPolicy,
-		EffectAuthorizationGate:  runtimeEffectAuthorizationGate(opts.EffectAuthorizationGate),
-		ToolSurfaceProvider:      opts.ToolSurfaceProvider,
-		TitleGenerator:           titleGenerator,
-		CompactionPrompt:         compaction.PromptOptions{},
-		Reasoning:                model.Reasoning,
-		TurnPolicy:               turnPolicy,
-		ProviderRetryPolicy:      providerretry.Policy(opts.ProviderRetryPolicy),
-		LoopLimits:               loopLimits,
-		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
-		BeginBackgroundExecution: store.beginLifetimeOperationContext,
-		ReportBackgroundError:    store.reportBackgroundError,
-		NewID:                    opts.NewID,
+		Provider:                     p,
+		ProviderName:                 cfg.Provider,
+		Model:                        cfg.Model,
+		SystemPrompt:                 effectivePrompt,
+		Tools:                        registry,
+		PromptStore:                  store.prompt,
+		Repo:                         store.repo,
+		StateCompatibilityKey:        opts.StateCompatibilityKey,
+		Sink:                         opts.Sink,
+		SinkPolicy:                   opts.SinkPolicy,
+		EffectAuthorizationGate:      runtimeEffectAuthorizationGate(opts.EffectAuthorizationGate),
+		ToolSurfaceProvider:          opts.ToolSurfaceProvider,
+		TitleGenerator:               titleGenerator,
+		CompactionPrompt:             compaction.PromptOptions{},
+		Reasoning:                    model.Reasoning,
+		TurnPolicy:                   turnPolicy,
+		ProviderRequestTimeoutPolicy: providerattempt.RequestTimeoutPolicy(opts.ProviderRequestTimeoutPolicy),
+		ProviderRetryPolicy:          providerretry.Policy(opts.ProviderRetryPolicy),
+		LoopLimits:                   loopLimits,
+		SubAgentRunTimeout:           opts.SubAgentRunTimeout,
+		BeginBackgroundExecution:     store.beginLifetimeOperationContext,
+		ReportBackgroundError:        store.reportBackgroundError,
+		NewID:                        opts.NewID,
 	})
 	if err := store.recoverPendingAutomaticThreadTitles(harness); err != nil {
 		return nil, err
@@ -2038,45 +2062,51 @@ func runtimeEvent(ev event.Event) Event {
 	// Attempt identity is an execution fence, not descriptive metadata. Keep the
 	// exact engine-issued values so the thread actor can reject stale runs and
 	// attempts without comparing redacted aliases.
+	var lastProgressAt *time.Time
+	if ev.ProviderLastProgressAt != nil {
+		at := *ev.ProviderLastProgressAt
+		lastProgressAt = &at
+	}
 	stream := runtimeStreamObservation(ev, ev.Metadata)
 	ev = sanitized
 	return Event{
-		Type:               ev.Type,
-		Retry:              cloneProviderRetryProgress(ev.Retry),
-		TraceID:            identity.TraceID(ev.TraceID),
-		RunID:              identity.RunID(ev.RunID),
-		ThreadID:           identity.ThreadID(ev.ThreadID),
-		TurnID:             identity.TurnID(ev.TurnID),
-		Step:               ev.Step,
-		Provider:           ev.Provider,
-		Model:              ev.Model,
-		Message:            ev.Message,
-		Result:             ev.Result,
-		Error:              ev.Err,
-		ToolID:             ev.ToolID,
-		ToolName:           ev.ToolName,
-		ToolKind:           ev.ToolKind,
-		ArgsHash:           ev.ArgsHash,
-		DurationMS:         ev.Duration,
-		FinishReason:       observation.FinishReason(ev.FinishReason),
-		RawFinishReason:    ev.RawFinishReason,
-		FinishInferred:     ev.FinishInferred,
-		CompletionReason:   observation.CompletionReason(ev.CompletionReason),
-		ContinuationReason: observation.ContinuationReason(ev.ContinuationReason),
-		Activity:           cloneActivityPresentation(ev.Activity),
-		Stream:             stream,
-		ContextStatus:      contextStatus,
-		ContextUsage:       runtimeThreadContextUsage(ev.ContextUsage),
-		ThreadUsageTotals:  runtimeThreadUsageTotals(ev.ThreadUsageTotals),
-		Compaction:         compactionEvent,
-		CompactionDebug:    compactionDebugEvent,
-		Sources:            runtimeSourceRefs(ev.Sources),
-		Metadata:           safeMetadata(ev.Metadata),
-		Timestamp:          ev.Timestamp,
-		committed:          committed,
-		attemptLogicalID:   attemptLogicalID,
-		attemptID:          attemptID,
-		attemptEpoch:       attemptEpoch,
+		ProviderLastProgressAt: lastProgressAt,
+		Type:                   ev.Type,
+		Retry:                  cloneProviderRetryProgress(ev.Retry),
+		TraceID:                identity.TraceID(ev.TraceID),
+		RunID:                  identity.RunID(ev.RunID),
+		ThreadID:               identity.ThreadID(ev.ThreadID),
+		TurnID:                 identity.TurnID(ev.TurnID),
+		Step:                   ev.Step,
+		Provider:               ev.Provider,
+		Model:                  ev.Model,
+		Message:                ev.Message,
+		Result:                 ev.Result,
+		Error:                  ev.Err,
+		ToolID:                 ev.ToolID,
+		ToolName:               ev.ToolName,
+		ToolKind:               ev.ToolKind,
+		ArgsHash:               ev.ArgsHash,
+		DurationMS:             ev.Duration,
+		FinishReason:           observation.FinishReason(ev.FinishReason),
+		RawFinishReason:        ev.RawFinishReason,
+		FinishInferred:         ev.FinishInferred,
+		CompletionReason:       observation.CompletionReason(ev.CompletionReason),
+		ContinuationReason:     observation.ContinuationReason(ev.ContinuationReason),
+		Activity:               cloneActivityPresentation(ev.Activity),
+		Stream:                 stream,
+		ContextStatus:          contextStatus,
+		ContextUsage:           runtimeThreadContextUsage(ev.ContextUsage),
+		ThreadUsageTotals:      runtimeThreadUsageTotals(ev.ThreadUsageTotals),
+		Compaction:             compactionEvent,
+		CompactionDebug:        compactionDebugEvent,
+		Sources:                runtimeSourceRefs(ev.Sources),
+		Metadata:               safeMetadata(ev.Metadata),
+		Timestamp:              ev.Timestamp,
+		committed:              committed,
+		attemptLogicalID:       attemptLogicalID,
+		attemptID:              attemptID,
+		attemptEpoch:           attemptEpoch,
 	}
 }
 

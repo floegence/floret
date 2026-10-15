@@ -3,9 +3,11 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/providerretry"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -116,4 +118,18 @@ func TestProviderTitleRecoveryKeepsItsOwnIdentityAndDeadline(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || len(requests) != before {
 		t.Fatal("cancelled title sent request")
 	}
+}
+
+func TestTitlePhysicalDeadlineCoversSynchronousOpen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := ProviderTitleGenerator{RetryPolicy: providerretry.Policy{Disabled: true}, TimeoutPolicy: providerattempt.RequestTimeoutPolicy{FirstOutputTimeout: time.Minute}, Provider: titleProviderFunc(func(ctx context.Context, _ provider.Request) (<-chan provider.StreamEvent, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})}
+		_, err := g.GenerateTitle(t.Context(), TitleRequest{Messages: []session.Message{{Role: session.User, Content: "title me"}}})
+		var timeout *provider.RequestTimeoutError
+		if !errors.As(err, &timeout) || timeout.Details.Stage != "first_output" {
+			t.Fatalf("error=%v", err)
+		}
+	})
 }

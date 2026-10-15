@@ -128,16 +128,17 @@ func writeType(output *strings.Builder, object *types.TypeName) {
 	name := object.Name()
 	if object.IsAlias() {
 		fmt.Fprintf(output, "type %s = %s\n", name, typeString(object.Type()))
-		return
 	}
-	named, ok := object.Type().(*types.Named)
+	named, ok := types.Unalias(object.Type()).(*types.Named)
 	if !ok {
 		fmt.Fprintf(output, "type %s %s\n", name, typeString(object.Type().Underlying()))
 		return
 	}
 	switch underlying := named.Underlying().(type) {
 	case *types.Struct:
-		fmt.Fprintf(output, "type %s struct\n", name)
+		if !object.IsAlias() {
+			fmt.Fprintf(output, "type %s struct\n", name)
+		}
 		for index := 0; index < underlying.NumFields(); index++ {
 			field := underlying.Field(index)
 			if !field.Exported() {
@@ -155,9 +156,13 @@ func writeType(output *strings.Builder, object *types.TypeName) {
 			output.WriteByte('\n')
 		}
 	case *types.Interface:
-		fmt.Fprintf(output, "type %s interface %s\n", name, typeString(underlying))
+		if !object.IsAlias() {
+			fmt.Fprintf(output, "type %s interface %s\n", name, typeString(underlying))
+		}
 	default:
-		fmt.Fprintf(output, "type %s %s\n", name, typeString(underlying))
+		if !object.IsAlias() {
+			fmt.Fprintf(output, "type %s %s\n", name, typeString(underlying))
+		}
 	}
 	for index := 0; index < named.NumMethods(); index++ {
 		method := named.Method(index)

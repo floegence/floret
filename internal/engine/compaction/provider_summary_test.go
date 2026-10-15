@@ -3,10 +3,12 @@ package compaction
 import (
 	"context"
 	"errors"
+	"github.com/floegence/floret/v7/internal/providerattempt"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/floegence/floret/v7/internal/provider"
@@ -350,4 +352,15 @@ func TestProviderSummaryReadsCompleteCanonicalHistory(t *testing.T) {
 	if strings.Contains(prompt, "opaque-secret-locator") {
 		t.Fatal("opaque resource locator entered summary")
 	}
+}
+
+func TestSummaryPhysicalDeadlineCoversUnfinishedStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := ProviderSummaryGenerator{Provider: &neverClosingSummaryProvider{started: make(chan struct{})}, TimeoutPolicy: providerattempt.RequestTimeoutPolicy{FirstOutputTimeout: time.Minute}}
+		_, _, err := g.streamSummary(t.Context(), provider.Request{}, nil)
+		var timeout *provider.RequestTimeoutError
+		if !errors.As(err, &timeout) || timeout.Details.Stage != "first_output" {
+			t.Fatalf("error=%v", err)
+		}
+	})
 }

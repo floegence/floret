@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/floegence/floret/v7/internal/providerretry"
 	"math"
 	"sort"
 	"strings"
@@ -21,6 +20,8 @@ import (
 	"github.com/floegence/floret/v7/internal/memory"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/providerattempt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
@@ -172,21 +173,24 @@ type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest
 type Options struct {
 	Steering *SteeringControl
 	// RetrySourceEntryID is supplied only by the canonical harness retry admission.
-	RetrySourceEntryID       string
-	RunID                    string
-	LogicalRequestID         string
-	ThreadID                 string
-	TurnID                   string
-	TraceID                  string
-	PromptScopeID            string
-	ProviderName             string
-	Model                    string
-	StateCompatibilityKey    string
-	Labels                   RunLabels
-	CacheNamespace           string
-	CacheRetention           cache.Retention
-	ContextPolicy            contextpolicy.Policy
-	Reasoning                provider.ReasoningSelection
+	RetrySourceEntryID    string
+	RunID                 string
+	LogicalRequestID      string
+	ThreadID              string
+	TurnID                string
+	TraceID               string
+	PromptScopeID         string
+	ProviderName          string
+	Model                 string
+	StateCompatibilityKey string
+	Labels                RunLabels
+	CacheNamespace        string
+	CacheRetention        cache.Retention
+	ContextPolicy         contextpolicy.Policy
+	Reasoning             provider.ReasoningSelection
+
+	ProviderRequestTimeoutPolicy providerattempt.RequestTimeoutPolicy
+
 	ProviderRetryPolicy      providerretry.Policy
 	MaxEmptyProviderRetries  int
 	NoProgressLimit          int
@@ -2956,6 +2960,9 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 		messageCount++
 	}
 	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", messageCount, len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: mergeAnyMetadata(providerRequestMetadata(req), toolSurfaceMetadata(opts))})
+	attempt := providerattempt.StartAttempt(ctx, opts.ProviderRequestTimeoutPolicy, req)
+	defer attempt.Close()
+	ctx = attempt.Context()
 	started := time.Now()
 	var stream <-chan provider.StreamEvent
 	var err error
@@ -2965,6 +2972,7 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 		stream, err = e.provider.Stream(ctx, req)
 	}
 	releaseProviderGate()
+	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return StepOutput{}, latency, true, err
@@ -2972,7 +2980,8 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	if err != nil {
 		return StepOutput{}, latency, false, withFailureOrigin(err, FailureOriginProvider)
 	}
-	out, err = e.consume(ctx, opts, step, stream, req)
+	out, err = e.consume(ctx, opts, step, stream, req, attempt)
+	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return out, latency, true, err
@@ -3864,8 +3873,9 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 	return renderer
 }
 
-func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request) (StepOutput, error) {
+func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request, attempt *providerattempt.Attempt) (StepOutput, error) {
 	out := StepOutput{}
+	var lastProgressAt *time.Time
 	var estimate outputEstimate
 	registry := opts.toolSurface.tools
 	if registry == nil {
@@ -3889,6 +3899,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	streamedToolCallEnds := map[string]struct{}{}
 	attemptMetadata := map[string]any{"logical_request_id": req.LogicalRequestID, "attempt_id": req.AttemptID, "attempt_epoch": req.AttemptEpoch, "attempt": req.Attempt}
 	emitAttemptEvent := func(ev event.Event) {
+		ev.ProviderLastProgressAt = lastProgressAt
 		ev.EstimatedOutputTokens = estimate.tokens()
 		base, _ := ev.Metadata.(map[string]any)
 		ev.Metadata = mergeAnyMetadata(attemptMetadata, base)
@@ -3927,6 +3938,9 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					return out, ErrDuplicateToolCallID
 				}
 				return out, err
+			}
+			if attempt != nil {
+				lastProgressAt = attempt.Observe(ev)
 			}
 			switch ev.Type {
 			case provider.Delta:

@@ -243,3 +243,12 @@ returns a fresh single-use handle from retained immutable rendering, including
 after the previous handle closes. It must never reread mutable attachments.
 `HostedToolDefinition.ReplaySafe` defaults false and requires verified safe
 repetition of provider-native capabilities.
+
+## Request deadline diagnostics
+
+`provider.RequestTimeoutError` exposes `RequestTimeoutDetails` and matches
+`ErrRequestTimeout` plus `context.DeadlineExceeded`. The runtime authors stage,
+chronological timestamps and logical/physical attempt identity; provider text is
+never parsed into this contract. Hosts configure the Agent's
+`ProviderRequestTimeoutPolicy`, pass cancellation into transport opening and
+reading, and leave automatic recovery to Floret.

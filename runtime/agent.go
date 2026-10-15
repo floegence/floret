@@ -26,12 +26,15 @@ type Agent struct {
 	toolSurface         ToolSurfaceProvider
 	idGenerator         func(string) string
 	providerRetryPolicy ProviderRetryPolicy
-	loopLimits          LoopLimits
-	runLabels           RunLabels
-	capabilities        CapabilityOptions
-	threadTitleMode     ThreadTitleMode
-	subAgentRunTimeout  time.Duration
-	manualCompactions   ManualCompactionSource
+
+	providerRequestTimeoutPolicy ProviderRequestTimeoutPolicy
+
+	loopLimits         LoopLimits
+	runLabels          RunLabels
+	capabilities       CapabilityOptions
+	threadTitleMode    ThreadTitleMode
+	subAgentRunTimeout time.Duration
+	manualCompactions  ManualCompactionSource
 }
 
 // AgentOption configures one immutable Agent capability at construction time.

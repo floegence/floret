@@ -800,3 +800,27 @@ func TestPublishedProviderRetryContracts(t *testing.T) {
 	}
 	_ = runtime.ThreadRunProgress{Phase: runtime.ThreadRunPhaseRetrying, Retry: &runtime.ProviderRetryProgress{Retry: 1, MaxRetries: 4, Reason: string(provider.RetryTransient), NextAttemptAt: time.Now()}}
 }
+
+func TestPublishedPhysicalRequestTimeoutContract(t *testing.T) {
+	policy := runtime.DefaultProviderRequestTimeoutPolicy()
+	if err := policy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if policy.FirstOutputTimeout != 5*time.Minute || policy.IdleTimeout != 2*time.Minute || policy.HostedToolTimeout != 5*time.Minute || policy.MaxAttemptDuration != 15*time.Minute {
+		t.Fatalf("defaults=%+v", policy)
+	}
+	now := time.Now()
+	details := provider.RequestTimeoutDetails{Stage: "first_output", LogicalRequestID: "logical", AttemptID: "attempt", AttemptEpoch: 1, StartedAt: now, TimedOutAt: now.Add(5 * time.Minute)}
+	if err := details.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	failure := &provider.RequestTimeoutError{Details: details}
+	if !errors.Is(failure, provider.ErrRequestTimeout) || !errors.Is(failure, context.DeadlineExceeded) {
+		t.Fatal("timeout classification")
+	}
+	if err := (runtime.ThreadTurnFailure{Code: runtime.ThreadTurnFailureProvider, Message: failure.Error(), ProviderTimeout: &details}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	_ = runtime.WithAgentProviderRequestTimeoutPolicy(policy)
+	_ = runtime.ProviderRequestProgress{LastProgressAt: &now}
+}
