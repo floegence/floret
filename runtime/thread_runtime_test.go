@@ -4115,7 +4115,7 @@ func waitThreadView(t *testing.T, service ThreadService, threadID identity.Threa
 		time.Sleep(5 * time.Millisecond)
 	}
 	view, err := service.View(t.Context(), threadID)
-	t.Fatalf("thread view did not converge: view=%#v err=%v", view, err)
+	t.Fatalf("thread view did not converge: view=%#v failure=%+v err=%v", view, view.Failure, err)
 	return ThreadView{}
 }
 
