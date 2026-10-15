@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.40.1 - 2026-10-15
+
+- Validate provider-hosted tool events against the exact frozen request rather than independently advancing run options. Preserve rejection of unrequested tools, provider failure classification, public API, and domain schema 17.
+
 ## v7.40.0 - 2026-10-15
 
 - Add compatible managed model-context snapshots at user admission and dynamic request preparation, with bounded validation, canonical full-record storage, stable user-role change projection and authorized current-context reads. Preserve published message-attached context semantics.
