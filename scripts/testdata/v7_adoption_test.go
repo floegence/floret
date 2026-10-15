@@ -768,7 +768,7 @@ func TestPublishedEffectiveReusePolicy(t *testing.T) {
 	if err := policy.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(provider.Request{ReusePolicy: &policy})
+	raw, err := json.Marshal(provider.Request{RunID: identity.RunID("run"), PromptScopeID: identity.PromptScopeID("scope"), ReusePolicy: &policy})
 	if err != nil {
 		t.Fatal(err)
 	}
