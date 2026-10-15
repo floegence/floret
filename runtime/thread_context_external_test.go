@@ -79,6 +79,8 @@ func TestThreadContextReaderAccumulatesFinalProviderUsageFromEngineEvents(t *tes
 		t.Fatalf("first live totals=%#v", got)
 	}
 
+	waitForUsageTurnSettlement(t, service, created.ThreadID)
+
 	if _, err := service.Send(t.Context(), runtime.SendInput{
 		ThreadID: created.ThreadID, Input: runtime.UserInput{Text: "measure again"}, RequestKey: "send-context-usage-again",
 	}); err != nil {
@@ -93,6 +95,7 @@ func TestThreadContextReaderAccumulatesFinalProviderUsageFromEngineEvents(t *tes
 		t.Fatalf("cumulative live totals=%#v", got)
 	}
 
+	waitForUsageTurnSettlement(t, service, created.ThreadID)
 	if err := host.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +113,26 @@ func TestThreadContextReaderAccumulatesFinalProviderUsageFromEngineEvents(t *tes
 	waitForThreadUsageTotals(t, reopenedService.(runtime.ThreadContextReader), created.ThreadID, want)
 	if got := recorder.snapshot(); len(got) != 2 {
 		t.Fatalf("restart emitted duplicate live totals=%#v", got)
+	}
+}
+
+// Usage commits before the terminal outcome. Independent sends and orderly
+// restart assertions must wait for that boundary instead of racing shutdown.
+func waitForUsageTurnSettlement(t *testing.T, service runtime.ThreadService, threadID identity.ThreadID) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		view, err := service.View(t.Context(), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Activity == runtime.ThreadActivityIdle && view.LastOutcome != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("usage turn did not settle")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
