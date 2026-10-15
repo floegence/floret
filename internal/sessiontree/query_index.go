@@ -141,6 +141,20 @@ func (r *MemoryRepo) updateQueryThread(id string) error {
 		idx.threads[id] = state
 	}
 	for _, entry := range tail {
+		if entry.Type == EntrySteeringApplied {
+			resolution, err := DecodeSteeringResolution(entry)
+			if err != nil {
+				return err
+			}
+			ordinal, exists := r.entryOrdinals[id][resolution.SteeringID]
+			if !exists {
+				return ErrAuthorityCorrupt
+			}
+			source := r.entries[id][ordinal]
+			entry.Type = EntryUserMessage
+			entry.Message = source.Message
+			entry.ID = source.ID
+		}
 		if err := idx.observe(state, id, entry); err != nil {
 			return err
 		}

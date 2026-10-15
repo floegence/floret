@@ -565,3 +565,7 @@ See [budget guards](../../internal/engine/context_budget.go) and
 [restart and retry coverage](../../runtime/context_budget_test.go).
 
 Conditional queue removal uses `DeleteQueuedInput.ExpectedInputSHA256` to compare the complete pending input inside the runtime owner. Missing, started or changed input returns `ErrRequestConflict`; exact committed retries succeed after restart. This additive public API supports host take-back-to-draft flows without introducing another durable owner or changing schema 15.
+
+### Immediate steering
+
+The optional `ThreadSteeringController` accepts full `UserInput` through `Steer`, or atomically consumes exact queued content through `SteerQueued`. Active executions keep their TurnID and RunID; suspended input uses the existing continuation boundary and a new RunID. One thread actor owns admission, fragment cancellation and completion sealing. Requests are durable typed journal facts, with one reference-only applied or cancelled resolution. Pending instructions are excluded from model history. Provider attempts remain fenced; confirmed tool results keep their existing finalizer, while unknown side effects terminate without replay. Stop always wins over deferred continuation. Standalone compaction returns `ErrThreadBusy`.

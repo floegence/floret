@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.36.0 - 2026-10-15
+
+- Add optional `runtime.ThreadSteeringController` for immediate parent guidance of active threads. Steering preserves the current turn, safely settles cancellable work, withdraws pending interactions, rejects unknown side effects, and keeps ordinary queued `Send` behavior unchanged.
+- Add typed steering journal facts and schema 15 -> 16 migration with restart-safe pending/applied/cancelled projections.
+
 ## v7.35.0 - 2026-10-14
 
 - Add optional `DeleteQueuedInput.ExpectedInputSHA256` for atomic conditional removal of complete pending input. Reject changed or started messages and preserve exact retry behavior across restart. Existing unconditional deletion remains available; schema 15 is unchanged.

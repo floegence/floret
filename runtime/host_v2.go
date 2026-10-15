@@ -319,6 +319,7 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 	if err != nil {
 		return nil, err
 	}
+	provider.steering = agent.steering
 	return &turnRunnerHandle{inner: &turnExecutionCapability{threadID: threadID, host: provider}, threadID: threadID}, nil
 }
 
@@ -441,6 +442,7 @@ type turnExecutionRequest struct {
 // ResumeInputRequest continues an existing waiting turn without admitting a
 // second canonical user message.
 type resumeInputRequest struct {
+	Steering     bool
 	TurnID       identity.TurnID
 	RunID        identity.RunID
 	WaitingRunID identity.RunID

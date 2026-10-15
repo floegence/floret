@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/engine"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 // Agent is an immutable assistant persona and execution-capability snapshot.
 // It contains no durable conversation identity or storage ownership.
 type Agent struct {
+	steering            *engine.SteeringControl
 	configuration       config.AgentConfig
 	gateway             provider.Gateway
 	tools               *tools.Registry

@@ -301,11 +301,11 @@ func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace)
+			stateAfterFirstOpen := migrationTestNamespaceRecords(t, backend, backendDomainV16Namespace)
 			if _, err := NewBackendRepo(ctx, backend, time.Now); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV15Namespace), stateAfterFirstOpen) {
+			if !reflect.DeepEqual(migrationTestNamespaceRecords(t, backend, backendDomainV16Namespace), stateAfterFirstOpen) {
 				t.Fatal("repaired state was rewritten during idempotent reopen")
 			}
 		})
@@ -664,7 +664,7 @@ type migrationFailingTx struct {
 }
 
 func (tx migrationFailingTx) Put(namespace string, key, value []byte) error {
-	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace || namespace == backendDomainV15Namespace) && (bytes.Equal(key, backendDomainV13Key(backendDomainRecordRootIndex)) || bytes.Equal(key, backendDomainV14Key(backendDomainRecordRootIndex)) || bytes.Equal(key, backendDomainV15Key(backendDomainRecordRootIndex))) {
+	if (namespace == backendDomainV13Namespace || namespace == backendDomainV14Namespace || namespace == backendDomainV16Namespace) && (bytes.Equal(key, backendDomainV13Key(backendDomainRecordRootIndex)) || bytes.Equal(key, backendDomainV14Key(backendDomainRecordRootIndex)) || bytes.Equal(key, backendDomainV16Key(backendDomainRecordRootIndex))) {
 		return tx.err
 	}
 	return tx.WriteTx.Put(namespace, key, value)

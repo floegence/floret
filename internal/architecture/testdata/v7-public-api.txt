@@ -852,6 +852,15 @@ const StartupPhaseVerifying github.com/floegence/floret/v7/runtime.StartupPhase 
 type StartupProgress interface interface{OnStartupPhase(github.com/floegence/floret/v7/runtime.StartupPhase)}
 type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)
 method StartupProgressFunc.OnStartupPhase func(phase github.com/floegence/floret/v7/runtime.StartupPhase)
+type SteerInput struct
+field SteerInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field SteerInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
+field SteerInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type SteerQueuedInput struct
+field SteerQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field SteerQueuedInput.QueueItemID string tag="json:\"queue_item_id\""
+field SteerQueuedInput.ExpectedInput github.com/floegence/floret/v7/runtime.UserInput tag="json:\"expected_input\""
+field SteerQueuedInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 type StorageInspection struct
 field StorageInspection.Exists bool tag="json:\"exists\""
 field StorageInspection.MigrationRequired bool tag="json:\"migration_required\""
@@ -956,6 +965,7 @@ const ThreadInteractionApproval github.com/floegence/floret/v7/runtime.ThreadInt
 const ThreadInteractionInput github.com/floegence/floret/v7/runtime.ThreadInteractionKind = "input"
 type ThreadInteractionKind string
 type ThreadItem struct
+field ThreadItem.Steering *github.com/floegence/floret/v7/runtime.ThreadSteering tag="json:\"steering,omitempty\""
 field ThreadItem.Sources []github.com/floegence/floret/v7/provider.Source tag="json:\"sources,omitempty\""
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
@@ -973,6 +983,7 @@ field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInter
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
 const ThreadItemInteraction github.com/floegence/floret/v7/runtime.ThreadItemKind = "interaction"
 type ThreadItemKind string
+const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
 const ThreadItemThinking github.com/floegence/floret/v7/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v7/runtime.ThreadItemKind = "tool"
 const ThreadItemUser github.com/floegence/floret/v7/runtime.ThreadItemKind = "user"
@@ -1003,6 +1014,14 @@ const ThreadStatusIdle github.com/floegence/floret/v7/runtime.ThreadStatus = "id
 const ThreadStatusInterrupted github.com/floegence/floret/v7/runtime.ThreadStatus = "interrupted"
 const ThreadStatusRunning github.com/floegence/floret/v7/runtime.ThreadStatus = "running"
 const ThreadStatusWaiting github.com/floegence/floret/v7/runtime.ThreadStatus = "waiting"
+type ThreadSteering struct
+field ThreadSteering.Status github.com/floegence/floret/v7/runtime.ThreadSteeringStatus tag="json:\"status\""
+field ThreadSteering.Reason string tag="json:\"reason,omitempty\""
+const ThreadSteeringApplied github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "applied"
+const ThreadSteeringCancelled github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "cancelled"
+type ThreadSteeringController interface interface{Steer(context.Context, github.com/floegence/floret/v7/runtime.SteerInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SteerQueued(context.Context, github.com/floegence/floret/v7/runtime.SteerQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
+const ThreadSteeringPending github.com/floegence/floret/v7/runtime.ThreadSteeringStatus = "pending"
+type ThreadSteeringStatus string
 type ThreadSummary struct
 field ThreadSummary.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadSummary.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""

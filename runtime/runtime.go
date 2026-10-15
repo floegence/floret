@@ -261,6 +261,7 @@ func (e *CommittedEffectError) Unwrap() error {
 }
 
 type providerHost struct {
+	steering                  *engine.SteeringControl
 	cfg                       runtimeConfig
 	runLabels                 RunLabels
 	store                     *runtimeStore
@@ -1470,7 +1471,14 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 	if err != nil {
 		return TurnResult{}, err
 	}
-	result, runErr := thread.ResumeInput(ctx, string(req.TurnID), string(req.WaitingRunID), req.Answer, agentharness.RunOptions{
+	resume := func(ctx context.Context, turnID, waitingRunID, answer string, opts agentharness.RunOptions) (agentharness.TurnResult, error) {
+		if req.Steering {
+			return thread.ResumeSteering(ctx, turnID, waitingRunID, opts)
+		}
+		return thread.ResumeInput(ctx, turnID, waitingRunID, answer, opts)
+	}
+	result, runErr := resume(ctx, string(req.TurnID), string(req.WaitingRunID), req.Answer, agentharness.RunOptions{
+		Steering:         h.steering,
 		LogicalRequestID: string(req.Options.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
@@ -1522,6 +1530,7 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		ThreadID: string(accepted.ThreadID), TurnID: string(accepted.TurnID), RunID: string(accepted.RunID),
 		UserEntryID: accepted.UserEntryID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed,
 	}, input.Text, agentharness.RunOptions{
+		Steering:         h.steering,
 		TurnKind:         string(req.TurnKind),
 		LogicalRequestID: string(req.LogicalRequestID),
 		RunID:            string(req.RunID), TurnID: string(req.TurnID),
