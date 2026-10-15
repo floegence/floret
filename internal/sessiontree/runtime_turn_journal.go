@@ -55,17 +55,7 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 		return AcceptTurnResult{}, ErrActiveTurn
 	}
 	baseLeafID := meta.LeafID
-	admissionBaseLeafID := baseLeafID
-	if req.RetrySourceEntryID != "" {
-		path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
-		if err != nil {
-			return AcceptTurnResult{}, err
-		}
-		if _, err := ValidateRetrySourcePath(path, req.RetrySourceTurnID, req.RetrySourceEntryID); err != nil {
-			return AcceptTurnResult{}, err
-		}
-		admissionBaseLeafID = req.RetrySourceEntryID
-	}
+	var promotion *Entry
 	now := canonicalTime(req.Now, r.now)
 	if req.PromotedQueueID != "" {
 		if req.PromotionRequestKey == "" || req.PromotionRequestFingerprint == "" {
@@ -77,7 +67,7 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 		payload, _ := json.Marshal(req.PromotedQueueID)
 		promoted := Entry{ID: "queue-promoted:" + req.PromotedQueueID, ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryQueuePromoted, RequestKey: req.PromotionRequestKey, RequestFingerprint: req.PromotionRequestFingerprint, Payload: payload, CreatedAt: now}
 		promoted.Raw, promoted.RawHash = rawForEntry(promoted), stableHash(rawForEntry(promoted))
-		r.appendIndexedEntriesLocked(meta.ID, promoted)
+		promotion = &promoted
 		baseLeafID = promoted.ID
 	}
 	started := Entry{
@@ -94,6 +84,13 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 	}
 	started.Raw = rawForEntry(started)
 	started.RawHash = stableHash(started.Raw)
+	admissionBaseLeafID, err := r.runtimeAdmissionBaseLeafLocked(started, promotion)
+	if err != nil {
+		return AcceptTurnResult{}, err
+	}
+	if promotion != nil {
+		r.appendIndexedEntriesLocked(meta.ID, *promotion)
+	}
 	r.appendIndexedEntriesLocked(meta.ID, started)
 	meta.LeafID = started.ID
 	var user Entry
@@ -122,18 +119,20 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 		started.RequestKey != req.LogicalRequestID || started.RequestFingerprint != req.RequestFingerprint {
 		return AcceptTurnResult{}, ErrRequestConflict
 	}
-	result := AcceptTurnResult{TurnStarted: cloneEntry(started), Replayed: true}
+	if started.Metadata[RetrySourceEntryIDMetadataKey] != req.RetrySourceEntryID || started.Metadata[RetrySourceTurnIDMetadataKey] != req.RetrySourceTurnID || started.Metadata[TurnKindMetadataKey] != req.TurnKind {
+		return AcceptTurnResult{}, ErrRequestConflict
+	}
+	base, err := r.runtimeAdmissionBaseLeafLocked(started, nil)
+	if err != nil {
+		return AcceptTurnResult{}, err
+	}
+	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
 	if req.RetrySourceEntryID == "" && req.TurnKind == "" {
 		user, found := findEntry(r.entries[req.ThreadID], userID)
 		if !found || user.ParentID != started.ID || user.RequestFingerprint != req.InputRequestFingerprint || !sameCanonicalUserInput(user.Message, req.Input) {
 			return AcceptTurnResult{}, ErrAuthorityCorrupt
 		}
 		result.UserMessage = cloneEntry(user)
-		result.BaseLeafID = started.ParentID
-	} else if req.TurnKind == TurnKindContextCompaction {
-		result.BaseLeafID = started.ParentID
-	} else {
-		result.BaseLeafID = req.RetrySourceEntryID
 	}
 	if terminal, found := runtimeTurnTerminal(r.entries[req.ThreadID], req.TurnID); found {
 		copy := cloneEntry(terminal)
@@ -160,15 +159,18 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 	if started.RunID != runID {
 		return AcceptTurnResult{}, true, ErrRequestConflict
 	}
-	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: started.ParentID, Replayed: true}
-	if retryEntryID := strings.TrimSpace(started.Metadata[RetrySourceEntryIDMetadataKey]); retryEntryID != "" {
-		result.BaseLeafID = retryEntryID
-	} else if started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction {
-		// Context-only turns have no user message.
-	} else {
+	base, err := r.runtimeAdmissionBaseLeafLocked(started, nil)
+	if err != nil {
+		return AcceptTurnResult{}, true, err
+	}
+	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
+	if started.Metadata[RetrySourceEntryIDMetadataKey] == "" && started.Metadata[TurnKindMetadataKey] == "" {
 		user, ok := findEntry(r.entries[threadID], runtimeUserEntryID(started.RequestKey))
-		if !ok {
+		if !ok || user.Type != EntryUserMessage || user.ParentID != started.ID || user.TurnID != turnID || user.RunID != runID || user.RequestKey != started.RequestKey {
 			return AcceptTurnResult{}, true, ErrAuthorityCorrupt
+		}
+		if err := ValidateEntryIntegrity(user); err != nil {
+			return AcceptTurnResult{}, true, err
 		}
 		result.UserMessage = cloneEntry(user)
 	}
@@ -177,6 +179,79 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
 	}
 	return result, true, nil
+}
+
+// runtimeAdmissionBaseLeafLocked resolves only the canonical admission edge.
+// A pending promotion lets fresh acceptance validate before changing the journal.
+func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entry) (string, error) {
+	if started.Type != EntryTurnMarker || started.TurnStatus != TurnStarted || started.ID != runtimeTurnStartedEntryID(started.TurnID) || started.RunID == "" {
+		return "", ErrAuthorityCorrupt
+	}
+	if err := ValidateEntryIntegrity(started); err != nil {
+		return "", err
+	}
+	entries := r.entries[started.ThreadID]
+	limit := len(entries)
+	if ordinal, ok := r.entryOrdinals[started.ThreadID][started.ID]; ok {
+		limit = ordinal
+	}
+	lookup := func(id string, before int) (Entry, int, error) {
+		if pending != nil && pending.ID == id {
+			if before < len(entries) {
+				return Entry{}, 0, ErrAuthorityCorrupt
+			}
+			return *pending, len(entries), ValidateEntryIntegrity(*pending)
+		}
+		ordinal, ok := r.entryOrdinals[started.ThreadID][id]
+		if !ok || ordinal >= before || ordinal < 0 || ordinal >= len(entries) {
+			return Entry{}, 0, ErrAuthorityCorrupt
+		}
+		entry := entries[ordinal]
+		if entry.ThreadID != started.ThreadID || entry.ID != id {
+			return Entry{}, 0, ErrAuthorityCorrupt
+		}
+		return entry, ordinal, ValidateEntryIntegrity(entry)
+	}
+	base := started.ParentID
+	if base != "" {
+		parent, ordinal, err := lookup(base, limit)
+		if err != nil {
+			return "", err
+		}
+		if parent.Type == EntryQueuePromoted {
+			var queueID string
+			if json.Unmarshal(parent.Payload, &queueID) != nil || queueID == "" || parent.ID != "queue-promoted:"+queueID || parent.RequestKey == "" || parent.RequestFingerprint == "" || !runtimeQueueContains(entries[:ordinal], queueID) {
+				return "", ErrAuthorityCorrupt
+			}
+			base = parent.ParentID
+			if base != "" {
+				if _, _, err := lookup(base, ordinal); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	retryID, retryTurnID := started.Metadata[RetrySourceEntryIDMetadataKey], started.Metadata[RetrySourceTurnIDMetadataKey]
+	if (retryID == "") != (retryTurnID == "") {
+		return "", ErrAuthorityCorrupt
+	}
+	if retryID != "" {
+		if started.Metadata[TurnKindMetadataKey] != "" || base == "" {
+			return "", ErrAuthorityCorrupt
+		}
+		path, err := pathLocked(r.threads, r.entries, started.ThreadID, base)
+		if err != nil {
+			return "", err
+		}
+		if _, err := ValidateRetrySourcePath(path, retryTurnID, retryID); err != nil {
+			return "", err
+		}
+		return retryID, nil
+	}
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction {
+		return "", ErrAuthorityCorrupt
+	}
+	return base, nil
 }
 
 // FinishTurn settles one active turn using the stable terminal entry as the

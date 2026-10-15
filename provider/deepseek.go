@@ -372,10 +372,10 @@ func (g *deepSeekGateway) Stream(ctx context.Context, req Request) (<-chan Event
 	if err != nil {
 		return nil, err
 	}
-	return g.streamRendered(ctx, body, history)
+	return g.streamRendered(ctx, body, history, req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed)
 }
 
-func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, history deepSeekHistory) (<-chan Event, error) {
+func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, history deepSeekHistory, stateAllowed bool) (<-chan Event, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -413,7 +413,11 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 		return nil, failure
 	}
 	out := make(chan Event, 32)
-	go func() { defer close(out); defer response.Body.Close(); g.readStream(ctx, response.Body, history, out) }()
+	go func() {
+		defer close(out)
+		defer response.Body.Close()
+		g.readStream(ctx, response.Body, history, out, stateAllowed)
+	}()
 	return out, nil
 }
 
@@ -483,7 +487,7 @@ type deepSeekResponse struct {
 	} `json:"usage"`
 }
 
-func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, history deepSeekHistory, out chan<- Event) {
+func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, history deepSeekHistory, out chan<- Event, stateAllowed bool) {
 	emit := func(event Event) bool {
 		select {
 		case <-ctx.Done():
@@ -774,7 +778,9 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 					history.Input = append(history.Input, raw)
 				}
 				raw, _ := json.Marshal(history)
-				terminal.ResponseState = &State{Kind: deepSeekStateKind, ID: r.ID, Attributes: map[string]string{"history": string(raw)}}
+				if stateAllowed {
+					terminal.ResponseState = &State{Kind: deepSeekStateKind, ID: r.ID, Attributes: map[string]string{"history": string(raw)}}
+				}
 			}
 			emit(terminal)
 			return true
@@ -819,7 +825,7 @@ func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedReq
 	if err != nil {
 		return nil, err
 	}
-	return &deepSeekPrepared{gateway: g, body: body, history: history, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
+	return &deepSeekPrepared{gateway: g, body: body, history: history, stateAllowed: req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
 }
 
 // Count the complete rendered request with the offline official V4 vocabulary.
@@ -892,6 +898,7 @@ func deepSeekRenderedEstimate(body []byte) (TokenEstimate, error) {
 }
 
 type deepSeekPrepared struct {
+	stateAllowed bool
 	mu           sync.Mutex
 	gateway      *deepSeekGateway
 	body         []byte
@@ -910,7 +917,7 @@ func (p *deepSeekPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 	p.used = true
 	body, history := p.body, p.history
 	p.mu.Unlock()
-	return p.gateway.streamRendered(ctx, body, history)
+	return p.gateway.streamRendered(ctx, body, history, p.stateAllowed)
 }
 func (p *deepSeekPrepared) TokenEstimate() TokenEstimate       { return p.estimate }
 func (p *deepSeekPrepared) RenderedPayloadFingerprint() string { return p.fingerprint }

@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.37.0 - 2026-10-15
+
+- Add optional `provider.Request.ReusePolicy` for Engine-owned prompt-cache and native-state decisions through direct, prepared and serialized gateways. Supplemental context cannot enable application reuse or retain native state.
+- Resolve queue admission bases consistently for acceptance, replay and restart. Preserve native history across queue-only edits with exact-anchor validation and transactional rollback. Keep schema 16 and historical records unchanged.
+
 ## v7.36.1 - 2026-10-15
 
 - Accept complete steering inputs with validated attachments, references, and runtime context in the canonical journal. Preserve them through application, fork, retry, and restart without broadening assistant or control-entry placement.

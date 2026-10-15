@@ -58,6 +58,16 @@ new Turn keeps the complete canonical path without treating the new envelope as
 drift. Switching back reuses that model's earlier raw prefix and renders the
 intervening canonical messages as a suffix.
 
+`provider.Request.ReusePolicy` is an additive public API decision for Redeven's
+OpenAI transport. The Engine alone decides cache enablement/namespace, native
+state permission, and continuation preference. Direct, prepared and JSON paths
+preserve it; gateways cannot broaden it. Nil retains existing external-caller
+defaults. Supplemental context forbids application reuse and native-state
+retention. Canonical queue acceptance, replay and reads resolve the same validated
+admission base. Queue-only mutations advance only an exactly matching native
+state anchor; no ancestor search, durable schema change or checkpoint rewrite
+is introduced.
+
 `provider.State.ReusePolicy` defaults to exact provider-surface reuse. An adapter
 may opt into `StateReuseCanonicalHistory` only when it verifies the canonical
 prefix before replaying its opaque native history. Tool and permission changes

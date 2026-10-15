@@ -170,6 +170,7 @@ type modelRequest struct {
 	HostedTools      []publicprovider.HostedToolDefinition
 	MaxOutputTokens  int64
 	Reasoning        config.ReasoningSelection
+	ReusePolicy      *publicprovider.RequestReusePolicy
 	PreviousState    *modelStateEnvelope
 	Labels           RunLabels
 }
@@ -196,6 +197,7 @@ func (request modelRequest) MarshalJSON() ([]byte, error) {
 		HostedTools      []publicprovider.HostedToolDefinition
 		MaxOutputTokens  int64
 		Reasoning        config.ReasoningSelection
+		ReusePolicy      *publicprovider.RequestReusePolicy
 		PreviousState    *modelStateEnvelope
 		Labels           RunLabels
 	}{
@@ -204,7 +206,7 @@ func (request modelRequest) MarshalJSON() ([]byte, error) {
 		AttemptEpoch: request.AttemptEpoch, Step: request.Step, Provider: request.Provider, Model: request.Model,
 		Messages: request.Messages, Tools: request.Tools, HostedTools: request.HostedTools,
 		MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
-		PreviousState: request.PreviousState, Labels: request.Labels,
+		PreviousState: request.PreviousState, ReusePolicy: request.ReusePolicy, Labels: request.Labels,
 	})
 }
 
