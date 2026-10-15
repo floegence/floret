@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Effective request reuse
+
+- Document the [Engine-owned reuse policy](api/provider.md), supplemental isolation,
+  and canonical queue admission/state continuity without changing schema 16.
+
 ## 2026-10-15 — Complete immediate steering input
 
 - Canonical steering requests retain validated attachments, references and runtime context; application facts expand the original complete input for fork, retry and provider context.

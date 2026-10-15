@@ -696,7 +696,7 @@ func providerRequest(request modelRequest) provider.Request {
 		RunID: identity.RunID(request.RunID), ThreadID: identity.ThreadID(request.ThreadID), TurnID: identity.TurnID(request.TurnID),
 		TraceID: identity.TraceID(request.TraceID), PromptScopeID: identity.PromptScopeID(request.PromptScopeID), LogicalRequestID: identity.LogicalRequestID(request.LogicalRequestID), AttemptID: request.AttemptID, AttemptEpoch: request.AttemptEpoch, Step: request.Step,
 		Messages: messages, Tools: definitions, HostedTools: hosted, MaxOutputTokens: request.MaxOutputTokens,
-		Reasoning: request.Reasoning, PreviousState: gatewayProviderState(request.PreviousState),
+		Reasoning: request.Reasoning, PreviousState: gatewayProviderState(request.PreviousState), ReusePolicy: request.ReusePolicy,
 		Labels: provider.Labels{Correlation: request.Labels.Correlation, Host: request.Labels.Host},
 	}
 }

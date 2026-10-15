@@ -172,6 +172,10 @@ func cloneProviderEvent(event provider.Event) provider.Event {
 
 func cloneProviderRequest(request provider.Request) provider.Request {
 	cloned := request
+	if request.ReusePolicy != nil {
+		policy := *request.ReusePolicy
+		cloned.ReusePolicy = &policy
+	}
 	cloned.Messages = make([]provider.Message, len(request.Messages))
 	for index, message := range request.Messages {
 		cloned.Messages[index] = message

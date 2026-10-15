@@ -174,6 +174,10 @@ func TestSupplementalTurnFailureCannotRestoreEarlierNativeState(t *testing.T) {
 	}
 	waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.TurnID == admitted.TurnID && v.Activity == ThreadActivityIdle })
 	sendNativeTurn(t, service, created.ThreadID, "probe")
+	policy := gateway.Requests()[1].ReusePolicy
+	if policy == nil || policy.PromptCacheEnabled || policy.ProviderStateAllowed || policy.PreferContinuation {
+		t.Fatalf("secret reuse policy=%+v", policy)
+	}
 	for _, index := range []int{1, 2} {
 		if gateway.Requests()[index].PreviousState != nil {
 			t.Fatalf("secret fence reused state in request %d", index)

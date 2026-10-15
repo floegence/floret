@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/v7/internal/configbridge"
 	internalprovider "github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/adapters"
+	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/tools"
@@ -156,6 +157,9 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 				if !ok {
 					return
 				}
+				if request.ReusePolicy != nil && !request.ReusePolicy.ProviderStateAllowed {
+					event.ResponseState = nil
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -168,7 +172,18 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 }
 
 func internalRequest(request Request, identity Identity) internalprovider.Request {
+	var policy cache.CachePolicy
+	if request.ReusePolicy != nil {
+		policy.Enabled = request.ReusePolicy.PromptCacheEnabled
+		policy.Namespace = request.ReusePolicy.PromptCacheNamespace
+		policy.PreferContinuation = request.ReusePolicy.PreferContinuation
+		policy.Retention = cache.RetentionNone
+		if policy.Enabled {
+			policy.Retention = cache.RetentionInMemory
+		}
+	}
 	return internalprovider.Request{
+		Cache: policy,
 		RunID: request.RunID.String(), ThreadID: request.ThreadID.String(), TurnID: request.TurnID.String(),
 		TraceID: request.TraceID.String(), PromptScopeID: request.PromptScopeID.String(), Step: request.Step,
 		Provider: identity.Provider, Model: identity.Model, Messages: internalMessages(request.Messages),

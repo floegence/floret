@@ -150,6 +150,27 @@ func (capabilities Capabilities) Validate() error {
 	return nil
 }
 
+// RequestReusePolicy is the Engine's effective application reuse decision.
+// Gateways must not broaden it. Prompt caching and native provider state are
+// independent: disabling cache hints alone does not discard native history.
+type RequestReusePolicy struct {
+	PromptCacheEnabled   bool   `json:"prompt_cache_enabled"`
+	PromptCacheNamespace string `json:"prompt_cache_namespace,omitempty"`
+	ProviderStateAllowed bool   `json:"provider_state_allowed"`
+	PreferContinuation   bool   `json:"prefer_continuation"`
+}
+
+// Validate rejects inconsistent effective reuse decisions.
+func (policy RequestReusePolicy) Validate() error {
+	if policy.PromptCacheEnabled && strings.TrimSpace(policy.PromptCacheNamespace) == "" {
+		return errors.New("enabled prompt caching requires a namespace")
+	}
+	if policy.PreferContinuation && !policy.ProviderStateAllowed {
+		return errors.New("continuation requires provider state permission")
+	}
+	return nil
+}
+
 // Request is one complete provider-visible model request.
 type Request struct {
 	RunID            identity.RunID            `json:"run_id"`
@@ -167,7 +188,10 @@ type Request struct {
 	MaxOutputTokens  int64                     `json:"max_output_tokens,omitempty"`
 	Reasoning        config.ReasoningSelection `json:"reasoning,omitempty"`
 	PreviousState    *State                    `json:"previous_state,omitempty"`
-	Labels           Labels                    `json:"labels,omitempty"`
+	// ReusePolicy is always set by the runtime. Nil preserves gateway defaults
+	// for callers constructing requests outside the Engine.
+	ReusePolicy *RequestReusePolicy `json:"reuse_policy,omitempty"`
+	Labels      Labels              `json:"labels,omitempty"`
 }
 
 // MarshalJSON omits the optional logical request identity when a low-level
@@ -194,13 +218,14 @@ func (request Request) MarshalJSON() ([]byte, error) {
 		MaxOutputTokens  int64                     `json:"max_output_tokens,omitempty"`
 		Reasoning        config.ReasoningSelection `json:"reasoning,omitempty"`
 		PreviousState    *State                    `json:"previous_state,omitempty"`
+		ReusePolicy      *RequestReusePolicy       `json:"reuse_policy,omitempty"`
 		Labels           Labels                    `json:"labels,omitempty"`
 	}{
 		RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID, TraceID: request.TraceID,
 		PromptScopeID: request.PromptScopeID, LogicalRequestID: logical, AttemptID: request.AttemptID,
 		AttemptEpoch: request.AttemptEpoch, Step: request.Step, Messages: request.Messages, Tools: request.Tools,
 		HostedTools: request.HostedTools, MaxOutputTokens: request.MaxOutputTokens, Reasoning: request.Reasoning,
-		PreviousState: request.PreviousState, Labels: request.Labels,
+		PreviousState: request.PreviousState, ReusePolicy: request.ReusePolicy, Labels: request.Labels,
 	})
 }
 
@@ -211,6 +236,14 @@ func (request Request) Validate() error {
 	}
 	if request.Step < 0 || request.MaxOutputTokens < 0 {
 		return errors.New("provider request limits cannot be negative")
+	}
+	if request.ReusePolicy != nil {
+		if err := request.ReusePolicy.Validate(); err != nil {
+			return err
+		}
+		if !request.ReusePolicy.ProviderStateAllowed && request.PreviousState != nil {
+			return errors.New("provider state is forbidden by request reuse policy")
+		}
 	}
 	if len(request.Messages) == 0 {
 		return errors.New("provider request requires messages")

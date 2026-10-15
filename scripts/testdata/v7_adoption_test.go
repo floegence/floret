@@ -762,3 +762,21 @@ func TestPublishedSteeringCapability(t *testing.T) {
 		t.Fatal("unstable steering status")
 	}
 }
+
+func TestPublishedEffectiveReusePolicy(t *testing.T) {
+	policy := provider.RequestReusePolicy{PromptCacheEnabled: true, PromptCacheNamespace: "scope", ProviderStateAllowed: true, PreferContinuation: true}
+	if err := policy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(provider.Request{ReusePolicy: &policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored provider.Request
+	if err = json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.ReusePolicy == nil || *restored.ReusePolicy != policy {
+		t.Fatalf("policy lost: %s", raw)
+	}
+}

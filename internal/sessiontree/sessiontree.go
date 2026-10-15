@@ -990,6 +990,7 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 	previousTurnCounts := maps.Clone(r.turnEntryCounts[threadID])
 	previousMeta := r.threads[threadID]
 	previousSequence := r.seq
+	previousState, hadState := r.providerStates[threadID]
 	rollback := func() {
 		r.entries[threadID] = previousEntries
 		r.entryOrdinals[threadID] = previousOrdinals
@@ -998,6 +999,11 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		r.turnEntryCounts[threadID] = previousTurnCounts
 		r.setThreadLocked(threadID, previousMeta)
 		r.seq = previousSequence
+		if hadState {
+			r.setProviderStateLocked(threadID, previousState)
+		} else {
+			r.deleteProviderStateLocked(threadID)
+		}
 	}
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
@@ -1006,6 +1012,15 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		if err != nil {
 			rollback()
 			return nil, err
+		}
+		// Queue metadata never enters model history. Advance only an exact
+		// current anchor; this cannot revive state invalidated by another fact.
+		switch saved.Type {
+		case EntryQueueAdded, EntryQueueReordered, EntryQueueDeleted:
+			if record, ok := r.providerStates[threadID]; ok && record.LeafEntryID == saved.ParentID {
+				record.LeafEntryID, record.UpdatedAt = saved.ID, saved.CreatedAt
+				r.setProviderStateLocked(threadID, record)
+			}
 		}
 		out = append(out, saved)
 	}

@@ -363,6 +363,13 @@ Canonical storage and earlier checkpoints are unchanged. The default
 `ReasoningHistoryAll` preserves all reasoning. Include the selected policy in
 the gateway's state compatibility identity when changing an existing adapter.
 
+`provider.Request.ReusePolicy` carries the Engine's effective cache namespace,
+native-state permission, and continuation preference through direct and prepared
+gateways. Gateways must not broaden this policy. Supplemental context disables
+application reuse and native-state retention; nil preserves defaults for callers
+outside the Engine. Queue admission and replay share one validated canonical
+base, so queue-only edits preserve native history without ancestor fallback.
+
 `ToolSurfaceRequest.InitialProviderSurface` supplies a detached copy of the first
 checkpoint's system text and tool definitions, including after restart; it is nil
 before the first request. Hosts can preserve unrelated capabilities from this

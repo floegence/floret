@@ -156,6 +156,10 @@ func (adapter modelGatewayProvider) modelRequest(request provider.Request) (mode
 		Provider: adapter.identity.Provider, Model: adapter.identity.Model, Messages: messages,
 		Tools: normalizeToolDefinitions(request.Tools), HostedTools: runtimeHostedToolDefinitions(request.HostedTools),
 		MaxOutputTokens: request.MaxOutputTokens, Reasoning: configbridge.PublicReasoningSelection(request.Reasoning),
+		ReusePolicy: &publicprovider.RequestReusePolicy{
+			PromptCacheEnabled: request.Cache.Enabled, PromptCacheNamespace: request.Cache.Namespace,
+			ProviderStateAllowed: request.EphemeralUser == nil, PreferContinuation: request.Cache.PreferContinuation,
+		},
 		PreviousState: modelState(request.PreviousState), Labels: providerRequestLabels(request.Labels),
 	}, nil
 }
