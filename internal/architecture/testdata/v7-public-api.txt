@@ -805,6 +805,13 @@ field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v7/tools.ToolCall) (github.com/floegence/floret/v7/runtime.TurnSignal, bool, error)
 type PromoteQueuedInput = github.com/floegence/floret/v7/runtime.PromoteQueuedInput
+type ProviderRequestProgress struct
+field ProviderRequestProgress.LogicalRequestID github.com/floegence/floret/v7/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field ProviderRequestProgress.AttemptID string tag="json:\"attempt_id\""
+field ProviderRequestProgress.AttemptEpoch int tag="json:\"attempt_epoch\""
+field ProviderRequestProgress.StartedAt time.Time tag="json:\"started_at\""
+field ProviderRequestProgress.FirstOutputAt *time.Time tag="json:\"first_output_at,omitempty\""
+field ProviderRequestProgress.EstimatedOutputTokens int64 tag="json:\"estimated_output_tokens\""
 type ProviderRetryPolicy struct
 field ProviderRetryPolicy.Disabled bool tag="json:\"disabled,omitempty\""
 field ProviderRetryPolicy.MaxRetries int tag="json:\"max_retries\""
@@ -916,6 +923,9 @@ field StorageResetResult.OperationID string
 field StorageResetResult.OwnershipManifestSHA256 string
 field StorageResetResult.PreviousDataRemoved bool
 type StreamObservation struct
+field StreamObservation.EstimatedOutputTokens int64 tag="json:\"estimated_output_tokens,omitempty\""
+field StreamObservation.ArgumentPreview *github.com/floegence/floret/v7/tools.ArgumentPreview tag="json:\"argument_preview,omitempty\""
+field StreamObservation.ArgumentPreviewUpdated bool tag="json:\"argument_preview_updated,omitempty\""
 field StreamObservation.Type github.com/floegence/floret/v7/runtime.StreamObservationType tag="json:\"type\""
 field StreamObservation.Text string tag="json:\"text,omitempty\""
 field StreamObservation.ToolCallStream *github.com/floegence/floret/v7/runtime.ToolCallStream tag="json:\"tool_call_stream,omitempty\""
@@ -1037,6 +1047,7 @@ const ThreadRunPhaseStreaming github.com/floegence/floret/v7/runtime.ThreadRunPh
 const ThreadRunPhaseToolExecution github.com/floegence/floret/v7/runtime.ThreadRunPhase = "tool_execution"
 const ThreadRunPhaseWaitingResponse github.com/floegence/floret/v7/runtime.ThreadRunPhase = "waiting_response"
 type ThreadRunProgress struct
+field ThreadRunProgress.Request *github.com/floegence/floret/v7/runtime.ProviderRequestProgress tag="json:\"request,omitempty\""
 field ThreadRunProgress.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field ThreadRunProgress.Phase github.com/floegence/floret/v7/runtime.ThreadRunPhase tag="json:\"phase\""
 type ThreadScope struct
@@ -1098,6 +1109,17 @@ field ThreadTokenUsageTotals.InputTokens int64 tag="json:\"input_tokens,omitempt
 field ThreadTokenUsageTotals.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
 field ThreadTokenUsageTotals.CacheReadTokens int64 tag="json:\"cache_read_tokens,omitempty\""
 field ThreadTokenUsageTotals.CacheWriteTokens int64 tag="json:\"cache_write_tokens,omitempty\""
+type ThreadToolCallPreview struct
+field ThreadToolCallPreview.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadToolCallPreview.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadToolCallPreview.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadToolCallPreview.LogicalRequestID github.com/floegence/floret/v7/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field ThreadToolCallPreview.AttemptID string tag="json:\"attempt_id\""
+field ThreadToolCallPreview.AttemptEpoch int tag="json:\"attempt_epoch\""
+field ThreadToolCallPreview.CallID string tag="json:\"call_id\""
+field ThreadToolCallPreview.Name string tag="json:\"name\""
+field ThreadToolCallPreview.ArgumentsComplete bool tag="json:\"arguments_complete\""
+field ThreadToolCallPreview.Preview *github.com/floegence/floret/v7/tools.ArgumentPreview tag="json:\"preview\""
 type ThreadToolResult struct
 field ThreadToolResult.ToolName string tag="json:\"tool_name\""
 field ThreadToolResult.Arguments string tag="json:\"arguments\""
@@ -1138,6 +1160,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.ToolCallPreviews []github.com/floegence/floret/v7/runtime.ThreadToolCallPreview tag="json:\"tool_call_previews,omitempty\""
 field ThreadView.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
 field ThreadView.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
 field ThreadView.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
@@ -1471,6 +1494,12 @@ field ActivityUpdate.Activity *github.com/floegence/floret/v7/tools.ActivityPres
 field ActivityUpdate.Metadata map[string]any
 const AnnotationRepeatIdentityIgnoredArguments untyped string = "repeat_identity_ignored_arguments"
 const AnnotationRepeatPolicy untyped string = "repeat_policy"
+type ArgumentPreview struct
+field ArgumentPreview.DisplayName string tag="json:\"display_name,omitempty\""
+field ArgumentPreview.Additions *int tag="json:\"additions,omitempty\""
+field ArgumentPreview.Deletions *int tag="json:\"deletions,omitempty\""
+method *ArgumentPreview.Clone func() *github.com/floegence/floret/v7/tools.ArgumentPreview
+type ArgumentPreviewer func(delta string, complete bool) (*github.com/floegence/floret/v7/tools.ArgumentPreview, error)
 func Array func(items map[string]any, description string) map[string]any
 type ArtifactRef struct
 field ArtifactRef.ID string tag="json:\"id,omitempty\""
@@ -1499,6 +1528,7 @@ const DefaultToolVisibleMaxBytes untyped int = 65536
 const DefaultToolVisibleMaxLines untyped int = 0
 func Define func[T any](def github.com/floegence/floret/v7/tools.Definition, decode func([]byte) (T, error), resources func(github.com/floegence/floret/v7/tools.Invocation[T]) ([]github.com/floegence/floret/v7/tools.ResourceRef, error), handler func(context.Context, github.com/floegence/floret/v7/tools.Invocation[T]) (github.com/floegence/floret/v7/tools.Result, error)) github.com/floegence/floret/v7/tools.Tool
 type Definition struct
+field Definition.NewArgumentPreview func() github.com/floegence/floret/v7/tools.ArgumentPreviewer
 field Definition.Name string
 field Definition.Title string
 field Definition.Description string

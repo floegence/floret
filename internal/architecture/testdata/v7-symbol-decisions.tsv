@@ -44,3 +44,7 @@ runtime.SteerInput	add	ThreadSteeringController.Steer	full durable instruction w
 runtime.SteerQueuedInput	add	ThreadSteeringController.SteerQueued	atomic exact-content queue consumption
 runtime.ThreadSteering	add	ThreadItem.Steering	canonical pending applied and cancelled instruction status
 runtime.ThreadItemSteering	add	ThreadItem.Kind	stable visible instruction identity distinct from initial turn input
+runtime.ProviderRequestProgress	keep	ThreadRunProgress.Request	memory-only timing and received-output estimate for the exact provider attempt
+runtime.ThreadToolCallPreview	keep	ThreadView.ToolCallPreviews	unvalidated display data has no canonical ordinal or execution authority
+tools.ArgumentPreview	keep	Definition.NewArgumentPreview	safe display name and optional known line counts without raw argument exposure
+tools.ArgumentPreviewer	keep	Definition.NewArgumentPreview	bounded per-call incremental display parser without effects

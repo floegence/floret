@@ -94,6 +94,7 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 	runtime.state.view.TurnKind = input.turnKind
 	runtime.state.view.TurnID = input.turnID
 	runtime.state.view.RunID = input.runID
+	runtime.state.view.ToolCallPreviews = nil
 	runtime.state.view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 	if input.clearOutcome {
 		runtime.state.view.LastOutcome = nil

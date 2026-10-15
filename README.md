@@ -422,6 +422,21 @@ in order; never infer final answers from text or the latest assistant item.
 it to fill historical items. `RunProgress` is the actor-owned, process-local phase
 for an advancing run and is absent while awaiting interaction or after the run
 settles.
+`ThreadRunProgress.Request` reports the current provider attempt's start, first
+output and estimated received output tokens (text, reasoning and local tool
+arguments). Estimates are incremental ASCII/non-ASCII character heuristics, not
+billable usage. Hosts can render waiting duration from the start timestamp without
+asking the runtime to publish timer ticks.
+
+`ThreadView.ToolCallPreviews` contains memory-only, unvalidated argument previews.
+Tools may opt in through `tools.Definition.NewArgumentPreview`, a per-call bounded,
+side-effect-free parser returning a safe display name and optional line counts.
+Unknown counts remain absent; known zero remains explicit. Preview errors only
+remove the preview. They never authorize, dispatch, read resources, reserve item
+ordinals or enter the journal. Match admitted calls by exact execution identity
+and CallID; actual results replace preview counts, including zero. Both request
+progress and previews are attempt-fenced and discarded on replacement or finish.
+
 `ViewVersion` is process-local notification ordering, not a durable replay
 cursor. Production hosts leave `runtime.Options.IDSource` nil; deterministic
 identity injection belongs to `florettest.NewIDSource`.

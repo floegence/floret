@@ -6,3 +6,5 @@
 * [Replayable Thread Forks](replayable-thread-forks.md) - Fix a durable operation plan before creating fork targets.
 
 * [Provider Request Recovery](provider-retry.md) - One bounded owner for temporary model failures and attempt replacement.
+
+* [Provider Output Progress](provider-output-progress.md) - Transient received-output estimates and unvalidated argument previews.

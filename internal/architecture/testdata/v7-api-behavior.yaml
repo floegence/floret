@@ -6,6 +6,8 @@ defaults:
   durable_request_key: thread_id+request_key
   active_state_owner: one ThreadRuntime mutex per thread
   durable_fact_source: canonical journal
+  provider_progress: attempt-fenced in-memory timing and character estimate; never billable usage
+  argument_preview: bounded side-effect-free parser; errors discard preview only; actual results replace counts including zero
 methods:
   - method: Event.Validate
     errors_is: []

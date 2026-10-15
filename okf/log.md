@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Received output and argument previews
+
+- Document [memory-only request feedback](decisions/provider-output-progress.md), bounded tool-authored argument previews, actual-result replacement and unchanged canonical storage.
+
 ## 2026-10-15 — Provider recovery
 
 - Document [shared model retry ownership](decisions/provider-retry.md), typed advice, frozen request replay, draft retirement and live progress without changing schema 16.
