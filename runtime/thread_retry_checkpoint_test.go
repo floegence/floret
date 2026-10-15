@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -18,8 +17,8 @@ import (
 func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "scripted", StateCompatibilityKey: "test:scripted:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "write-once", Name: "write", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
-		florettest.Step{ReturnError: errors.New("stream lost after confirmed write")},
-		florettest.Step{ReturnError: errors.New("another stream loss")},
+		florettest.Step{ReturnError: context.DeadlineExceeded},
+		florettest.Step{ReturnError: context.Canceled},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "next"}, {Type: provider.EventDone, Reason: "stop"}}},
 	)
@@ -29,7 +28,7 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 		return tools.Result{Text: "EFFECT_COMMITTED"}, nil
 	})
 	var revision atomic.Int32
-	agent, err := testAgent(gateway, WithAgentTools(tool), WithAgentDynamicToolSurface(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
+	agent, err := testAgent(gateway, WithAgentProviderRetryPolicy(ProviderRetryPolicy{Disabled: true}), WithAgentTools(tool), WithAgentDynamicToolSurface(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
 		return ToolSurface{Tools: tools.NewRegistry(tool), ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "repository", Title: "Repository", Text: fmt.Sprintf("MANAGED_RETRY_%d", revision.Load())}}}}, nil
 	}), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 		return effect(ctx, EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
@@ -62,13 +61,20 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 	current := waitThreadView(t, svc, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
 	for _, key := range []RequestKey{"retry-first", "retry-second"} {
 		revision.Add(1)
-		if current.Failure == nil {
-			t.Fatal("expected provider failure")
+		if current.Failure == nil || current.Failure.Code != ThreadTurnFailureProvider || current.Cancellation != nil {
+			t.Fatalf("expected provider failure without cancellation: failure=%+v cancellation=%+v", current.Failure, current.Cancellation)
 		}
 		if err := host.Shutdown(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		host, svc = open()
+		restored, err := svc.View(t.Context(), created.ThreadID)
+		if err != nil || restored.Failure == nil || restored.Failure.Code != ThreadTurnFailureProvider || restored.Cancellation != nil {
+			t.Fatalf("restored failure=%+v cancellation=%+v err=%v", restored.Failure, restored.Cancellation, err)
+		}
+		if len(svc.(*threadRuntimeService).cancellationDiagnostics()) != 0 {
+			t.Fatal("provider failure recorded as cancellation")
+		}
 		if _, err := svc.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: current.TurnID, RequestKey: key}); err != nil {
 			t.Fatal(err)
 		}

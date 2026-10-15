@@ -661,7 +661,7 @@ func (t *Thread) ExecuteAccepted(ctx context.Context, accepted AcceptedTurn, inp
 	automaticTitleExecution, titleErr := t.startAutomaticTitle(ctx, accepted.TurnID, accepted.RunID, canonical.UserMessage.ID, message)
 	if titleErr != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
-		result, runErr := t.finalizeFailedTurn(persistCtx, accepted.TurnID, accepted.RunID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
+		result, runErr := t.finalizeFailedTurn(persistCtx, accepted.TurnID, accepted.RunID, statusForExecutionError(ctx, titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
 		cancelPersist()
 		return result, runErr
 	}
@@ -735,32 +735,32 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "thread_read_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "thread_read_error", engine.FailureOriginStorage)
 	}
 	providerStateLeafID := strings.TrimSpace(opts.AdmissionBaseLeafID)
 	stateCompatibilityKey, err := t.harness.turnStateCompatibilityKey(ctx, t.id, turnID)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_surface_load_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "turn_surface_load_error", engine.FailureOriginStorage)
 	}
 	previousProviderState, err := t.harness.providerState(ctx, t.id, providerStateLeafID, stateCompatibilityKey)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "provider_state_load_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "provider_state_load_error", engine.FailureOriginStorage)
 	}
 	snap, err := t.Journal(ctx)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "snapshot_error", engine.FailureOriginStorage)
 	}
 	canonicalContext, err := t.harness.threadDetailContext(snap.Path, threadDetailRetainedFrom(snap.Path), threadDetailActivityContext{}, time.Time{})
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "context_snapshot_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "context_snapshot_error", engine.FailureOriginStorage)
 	}
 	historyPath := snap.Path
 	if retrySource != nil {
@@ -768,7 +768,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		if err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
 			defer cancelPersist()
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "retry_source_path_error", engine.FailureOriginStorage)
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "retry_source_path_error", engine.FailureOriginStorage)
 		}
 	}
 	if retrySource != nil {
@@ -778,7 +778,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "context_projection_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "context_projection_error", engine.FailureOriginStorage)
 	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
@@ -819,7 +819,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
 			defer cancelPersist()
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error", engine.FailureOriginStorage)
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForExecutionError(ctx, err), err, "append_context_policy_error", engine.FailureOriginStorage)
 		}
 	}
 	downstream := t.harness.options.Sink
@@ -891,13 +891,13 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		resultFailureCode, classificationErr = turnFailureCode(result.Status, result.Err, result.FailureOrigin)
 		if classificationErr != nil {
 			contractErr := fmt.Errorf("engine returned invalid failure classification: %w", classificationErr)
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, contractErr, "engine_failure_classification_error", engine.FailureOriginContract)
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, contractErr, "engine_failure_classification_error", engine.FailureOriginContract, &result)
 		}
 	}
 	if resultFailureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
 		// Effect convergence already owns the complete terminal journal.
 		// Flushing a second result would replace its error with a write conflict.
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, result.Status, result.Err, "effect_outcome_unknown", result.FailureOrigin)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, result.Status, result.Err, "effect_outcome_unknown", result.FailureOrigin, &result)
 	}
 	projection.ctx = persistCtx
 	projectionErr, projectionDiagnostic := projection.err, "projection_error"
@@ -913,14 +913,14 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			turn.FailureCode = resultFailureCode
 			return turn, result.Err
 		}
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projectionErr), projectionErr, projectionDiagnostic, turnProjectionFailureOrigin(projectionErr))
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, projectionErr, projectionDiagnostic, turnProjectionFailureOrigin(projectionErr), &result)
 	}
 	current, err := t.Journal(persistCtx)
 	if err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "snapshot_error", engine.FailureOriginStorage, &result)
 	}
 	if err := t.appendDelta(persistCtx, turnID, runID, history, result.Messages, current.Path); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "append_delta_error", engine.FailureOriginStorage, &result)
 	}
 	if _, graceful := gracefulCancellation(ctx); graceful && result.Status == engine.Cancelled {
 		turn := t.turnResultFromEngine(turnID, runID, result, nil)
@@ -931,7 +931,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	savePointMetadata := markerMetadata(runID, result)
 	savePointMetadata["reason"] = "run_result"
 	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "save_point_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "save_point_error", engine.FailureOriginStorage, &result)
 	} else {
 		t.harness.emitEntryCommitted(entry, runID)
 	}
@@ -939,7 +939,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if result.Status == engine.Completed && projection.acceptedFinal {
 		finalJournal, readErr := t.Journal(persistCtx)
 		if readErr != nil {
-			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, readErr, "final_boundary_read_error", engine.FailureOriginStorage)
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, readErr, "final_boundary_read_error", engine.FailureOriginStorage, &result)
 		}
 		segmented, complete := false, true
 		for _, entry := range finalJournal.Path {
@@ -979,7 +979,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		failureMessage = result.Err.Error()
 	}
 	if _, err := t.finishTurn(persistCtx, turnID, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateCompatibilityKey); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error", engine.FailureOriginStorage)
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "turn_finalization_error", engine.FailureOriginStorage, &result)
 	}
 	eventType := EventTurnCompleted
 	if result.Status == engine.Failed {
@@ -994,6 +994,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	return turn, result.Err
 }
 
+// Only the original execution context can establish cancellation. In-flight
+// writes may observe that cancellation too; finalization uses a separate context
+// and never passes through this execution boundary.
 func normalizeCancelledEngineResult(ctx context.Context, result engine.Result) engine.Result {
 	if cancellation := contextCancellationError(ctx); cancellation != nil && (result.Err == nil || isContextCancellationError(result.Err) || result.FailureOrigin == engine.FailureOriginProvider) && !errors.Is(result.Err, sessiontree.ErrEffectOutcomeUnknown) {
 		result.Status = engine.Cancelled
@@ -1060,9 +1063,9 @@ func mergeTerminalMetadata(dst, src map[string]string) {
 	}
 }
 
-func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string, origin engine.FailureOrigin) (TurnResult, error) {
+func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string, origin engine.FailureOrigin, execution ...*engine.Result) (TurnResult, error) {
 	if status == "" {
-		status = statusForError(err)
+		status = engine.Failed
 	}
 	failureCode, classificationErr := turnFailureCode(status, err, origin)
 	if classificationErr != nil {
@@ -1075,6 +1078,15 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		status, origin = engine.Failed, engine.FailureOriginToolDispatch
 	}
 	result := engine.Result{Status: status, FailureOrigin: origin, Err: err}
+	diagnostics := map[string]string{"diagnostic": diagnostic}
+	if len(execution) > 0 && execution[0] != nil {
+		original := execution[0]
+		diagnostics["execution_status"] = string(original.Status)
+		diagnostics["execution_failure_origin"] = string(original.FailureOrigin)
+		if original.Err != nil {
+			diagnostics["execution_error"] = original.Err.Error()
+		}
+	}
 	if failureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
 		repo, ok := t.harness.options.Repo.(sessiontree.RuntimeTurnRepo)
 		if !ok {
@@ -1089,7 +1101,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 			return TurnResult{}, finishErr
 		}
 		t.harness.emit(HarnessEvent{Type: EventTurnFailed, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(engine.Failed)})
-		turn := t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic})
+		turn := t.turnResultFromEngine(turnID, runID, result, diagnostics)
 		turn.FailureCode = failureCode
 		return turn, err
 	}
@@ -1105,6 +1117,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		return TurnResult{}, closeErr
 	}
 	metadata := markerMetadata(runID, result)
+	mergeTerminalMetadata(metadata, diagnostics)
 	if err != nil {
 		metadata["failure_reason"] = err.Error()
 	}
@@ -1123,14 +1136,14 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if status == engine.Cancelled {
 		eventType = EventTurnAborted
 	}
-	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(status)})
-	turn := t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic})
+	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(status), Metadata: cloneStringMap(diagnostics)})
+	turn := t.turnResultFromEngine(turnID, runID, result, diagnostics)
 	turn.FailureCode = strings.TrimSpace(metadata[sessiontree.TurnFailureCodeMetadataKey])
 	return turn, err
 }
 
-func statusForError(err error) engine.Status {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+func statusForExecutionError(ctx context.Context, err error) engine.Status {
+	if contextCancellationError(ctx) != nil && isContextCancellationError(err) {
 		return engine.Cancelled
 	}
 	return engine.Failed

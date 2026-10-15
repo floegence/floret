@@ -6,6 +6,7 @@ import (
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
 	"strings"
 	"sync/atomic"
@@ -202,5 +203,66 @@ func TestExpandedGatewayRetriesFrozenPreparationAfterClose(t *testing.T) {
 	reqs := g.Requests()
 	if len(reqs) != 2 || reqs[0].AttemptID == reqs[1].AttemptID || reqs[0].RunID != reqs[1].RunID {
 		t.Fatalf("attempt identities: %+v", reqs)
+	}
+}
+
+func TestProviderRecoveryWindowExhaustionRemainsProviderFailure(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "window", StateCompatibilityKey: "window:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{ReturnError: context.DeadlineExceeded}, florettest.Step{WaitForCancellation: true})
+	policy := DefaultProviderRetryPolicy()
+	policy.BaseDelay, policy.MaxDelay, policy.Jitter, policy.RecoveryWindow = time.Microsecond, time.Microsecond, 0, 50*time.Millisecond
+	agent, err := testAgent(gateway, WithAgentProviderRetryPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, service := testThreadServiceWithAgent(t, agent)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-window"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send-window", Input: UserInput{Text: "work"}}); err != nil {
+		t.Fatal(err)
+	}
+	current := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	if *current.LastOutcome != TurnOutcomeFailed || current.Failure == nil || current.Failure.Code != ThreadTurnFailureProvider || current.Cancellation != nil {
+		t.Fatalf("current=%+v", current)
+	}
+	if got := service.(*threadRuntimeService).cancellationDiagnostics(); len(got) != 0 {
+		t.Fatalf("false cancellation diagnostics=%+v", got)
+	}
+	if len(gateway.Requests()) != 2 {
+		t.Fatalf("attempts=%d", len(gateway.Requests()))
+	}
+}
+
+func TestPreparationContextErrorsDoNotCancelActiveExecution(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			service, err := host.ThreadService(AgentFactoryFunc(func(ctx context.Context, _ AgentRequest) (*Agent, error) {
+				if ctx.Err() != nil {
+					t.Fatalf("execution was canceled before preparation: %v", ctx.Err())
+				}
+				return nil, cause
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-preparation-error"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send-preparation-error", Input: UserInput{Text: "work"}}); err != nil {
+				t.Fatal(err)
+			}
+			current := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+			if *current.LastOutcome != TurnOutcomeFailed || current.Failure == nil || current.Failure.Code != ThreadTurnFailureEngineContract || current.Cancellation != nil {
+				t.Fatalf("current=%+v", current)
+			}
+		})
 	}
 }

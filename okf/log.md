@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Terminal failure authority
+
+- Clarify [Provider recovery outcome ownership](decisions/provider-retry.md): request-local deadlines remain Provider failures, execution cancellation is explicit, and finalization retains both failure diagnostics without changing schema 17.
+
 ## 2026-10-15 — Hosted request authority
 
 - Bind [hosted event validation](api/provider.md) to the exact frozen request; retain provider failure boundaries and local unknown-tool feedback without a schema or public API change.
