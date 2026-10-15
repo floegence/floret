@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.36.1 - 2026-10-15
+
+- Accept complete steering inputs with validated attachments, references, and runtime context in the canonical journal. Preserve them through application, fork, retry, and restart without broadening assistant or control-entry placement.
+
 ## v7.36.0 - 2026-10-15
 
 - Add optional `runtime.ThreadSteeringController` for immediate parent guidance of active threads. Steering preserves the current turn, safely settles cancellable work, withdraws pending interactions, rejects unknown side effects, and keeps ordinary queued `Send` behavior unchanged.

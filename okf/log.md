@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Complete immediate steering input
+
+- Canonical steering requests retain validated attachments, references and runtime context; application facts expand the original complete input for fork, retry and provider context.
+
 ## 2026-10-14 — Completed provider context
 
 - Document optional [native-history reuse](api/provider.md), atomic completed

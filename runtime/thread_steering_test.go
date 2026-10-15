@@ -3,16 +3,17 @@ package runtime
 import (
 	"context"
 	"errors"
-	"github.com/floegence/floret/v7/florettest"
-	"github.com/floegence/floret/v7/internal/session"
-	"github.com/floegence/floret/v7/internal/sessiontree"
-	"github.com/floegence/floret/v7/storage"
-	"github.com/floegence/floret/v7/tools"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/tools"
 )
 
 type steeringGateway struct {
@@ -60,7 +61,7 @@ func TestSteerInterruptsProviderAndContinuesSameExecution(t *testing.T) {
 	if !ok {
 		t.Fatal("thread steering capability is missing")
 	}
-	command := SteerInput{ThreadID: child.ThreadID, Input: UserInput{Text: "new direction"}, RequestKey: "guide"}
+	command := SteerInput{ThreadID: child.ThreadID, Input: UserInput{Text: "new direction", References: []MessageReference{{ReferenceID: "source", Kind: MessageReferenceText, Label: "Source", Text: "complete source"}}, Context: []MessageContextItem{{Kind: "facts", Title: "Facts", Text: "frozen context"}}}, RequestKey: "guide"}
 	accepted, err := controller.Steer(t.Context(), command)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +82,7 @@ func TestSteerInterruptsProviderAndContinuesSameExecution(t *testing.T) {
 	}
 	found := false
 	for _, message := range requests[1].Messages {
-		if message.Text == "new direction" {
+		if strings.Contains(message.Text, "new direction") && strings.Contains(message.Text, "complete source") && strings.Contains(message.Text, "frozen context") {
 			found = true
 		}
 	}
@@ -345,9 +346,9 @@ func TestSteerRecoversPendingAdmissionFromSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guide := UserInput{Text: "recover this instruction"}
+	guide := UserInput{Text: "recover this instruction", References: []MessageReference{{ReferenceID: "source", Kind: MessageReferenceText, Label: "Source", Text: "complete source"}}, Context: []MessageContextItem{{Kind: "facts", Title: "Facts", Text: "frozen context"}}}
 	guideFingerprint, _ := stableFingerprint(guide)
-	_, err = host.store.repo.(sessiontree.RuntimeJournalRepo).AppendRuntimeFacts(t.Context(), created.ThreadID.String(), []sessiontree.Entry{{ID: "steer:guide", Type: sessiontree.EntrySteeringRequested, ThreadID: created.ThreadID.String(), TurnID: turnID.String(), RunID: runID.String(), RequestKey: "guide", RequestFingerprint: guideFingerprint, Message: session.Message{Role: session.User, Content: guide.Text}}})
+	_, err = host.store.repo.(sessiontree.RuntimeJournalRepo).AppendRuntimeFacts(t.Context(), created.ThreadID.String(), []sessiontree.Entry{{ID: "steer:guide", Type: sessiontree.EntrySteeringRequested, ThreadID: created.ThreadID.String(), TurnID: turnID.String(), RunID: runID.String(), RequestKey: "guide", RequestFingerprint: guideFingerprint, Message: session.Message{Role: session.User, Content: guide.Text, References: sessionMessageReferences(guide.References), Context: sessionMessageContext(guide.Context)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +365,7 @@ func TestSteerRecoversPendingAdmissionFromSQLite(t *testing.T) {
 		t.Fatalf("recovery failed: %#v", final)
 	}
 	requests := gateway.Requests()
-	if len(requests) != 1 || requests[0].Messages[len(requests[0].Messages)-1].Text != guide.Text {
+	if len(requests) != 1 || !strings.Contains(requests[0].Messages[len(requests[0].Messages)-1].Text, "complete source") || !strings.Contains(requests[0].Messages[len(requests[0].Messages)-1].Text, "frozen context") {
 		t.Fatalf("recovered history=%#v", requests)
 	}
 	if _, err := service.(ThreadSteeringController).Steer(t.Context(), SteerInput{ThreadID: created.ThreadID, Input: guide, RequestKey: "guide"}); err != nil {
