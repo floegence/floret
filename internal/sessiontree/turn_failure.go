@@ -17,6 +17,7 @@ const (
 	TurnFailureContextFixedOverhead     = "context_fixed_overhead"
 	TurnFailureContextCompactionLimit   = "context_compaction_limit"
 	TurnFailureContextPrefixDrift       = "context_prefix_drift"
+	TurnFailureModelContextUnavailable  = "model_context_unavailable"
 	TurnFailureLegacyUnclassified       = "legacy_unclassified"
 )
 
@@ -36,6 +37,7 @@ func ValidTurnFailureCode(code string) bool {
 		TurnFailureContextFixedOverhead,
 		TurnFailureContextCompactionLimit,
 		TurnFailureContextPrefixDrift,
+		TurnFailureModelContextUnavailable,
 		TurnFailureLegacyUnclassified:
 		return true
 	default:

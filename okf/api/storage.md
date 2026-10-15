@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 lineage. Version 16 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 lineage. Version 17 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -200,3 +200,8 @@ current invariant atomically. Current v10 opens without rewriting bytes; failure
 cancellation, panic, mixed formats, and future versions leave the store unchanged.
 
 Schema 16 appends the automatic 15 -> 16 edge for typed steering request and resolution facts. Historical input and queued facts remain unchanged; pending input is not model history until its application fact.
+
+Schema 16 -> 17 adds managed snapshots and exact compaction baselines. Historical
+facts remain byte-identical; prose and queues are not inferred. The current
+envelope upgrades in the existing namespace, ensuring older programs fail closed.
+See [managed context](../decisions/managed-model-context.md).

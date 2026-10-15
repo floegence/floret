@@ -2,8 +2,10 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -37,6 +39,23 @@ func loadBackendDomainV16(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV16Memory(memory *MemoryRepo) error {
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if entry.Type == EntryQueueAdded {
+				var queued struct {
+					Input struct {
+						ModelContextSnapshot *session.ModelContextSnapshot `json:"model_context_snapshot"`
+					} `json:"input"`
+				}
+				if err := json.Unmarshal(entry.Payload, &queued); err != nil || queued.Input.ModelContextSnapshot != nil {
+					return ErrAuthorityCorrupt
+				}
+			}
+			if entry.Type == EntryModelContext || entry.Message.ModelContextSnapshot != nil || entry.ModelContextBaseline != nil {
+				return ErrAuthorityCorrupt
+			}
+		}
+	}
 	if err := validateBackendDomainMemory(memory, "v16", true); err != nil {
 		return err
 	}

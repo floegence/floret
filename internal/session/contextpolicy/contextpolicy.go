@@ -440,7 +440,8 @@ func EstimateMessageContext(systemPrompt string, history []session.Message, poli
 	if systemPrompt != "" {
 		estimate.PrefixTokens += EstimateTextTokens(systemPrompt)
 	}
-	for _, msg := range history {
+	projected, _, _ := session.ProjectProviderHistory(history, "")
+	for _, msg := range projected {
 		estimate.MessageTokens += EstimateMessageTokens(msg)
 	}
 	estimate.InputTokens = estimate.PrefixTokens + estimate.MessageTokens

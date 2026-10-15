@@ -786,7 +786,16 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		// A durable save point may follow non-message context observations.
 		// The provider prefix boundary is the final projected message at that
 		// checked journal checkpoint, not the observation entry itself.
-		engineOptions.RetrySourceEntryID = history[len(history)-1].EntryID
+		projected, _, projectionErr := session.ProjectProviderHistory(history, "")
+		if projectionErr != nil {
+			return TurnResult{}, projectionErr
+		}
+		for i := len(projected) - 1; i >= 0; i-- {
+			if projected[i].EntryID != "" {
+				engineOptions.RetrySourceEntryID = projected[i].EntryID
+				break
+			}
+		}
 	}
 	engineOptions.LogicalRequestID = strings.TrimSpace(opts.LogicalRequestID)
 	engineOptions.ThreadID = t.id
@@ -826,6 +835,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
+	engineOptions.AdmitModelContext = projection.admitModelContext
 	if opts.Steering != nil {
 		control := *opts.Steering
 		control.Begin = func(ctx context.Context, _ func() error) (context.Context, []session.Message, error) {
@@ -1338,6 +1348,7 @@ type durableMessageCounter struct {
 }
 
 type durableMessageSignature struct {
+	ModelContext         string
 	Role                 session.Role
 	Content              string
 	Reasoning            string
@@ -1364,7 +1375,7 @@ func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableM
 			continue
 		}
 		switch entry.Type {
-		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext:
 			counter.record(entry.Message)
 		case sessiontree.EntrySteeringApplied:
 			resolution, err := sessiontree.DecodeSteeringResolution(entry)
@@ -1430,7 +1441,9 @@ func (c *durableMessageCounter) assistantSuffix(msg session.Message) (session.Me
 func durableSignature(msg session.Message) durableMessageSignature {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
+	snapshot, _ := json.Marshal(msg.ModelContextSnapshot)
 	return durableMessageSignature{
+		ModelContext:         string(snapshot),
 		Role:                 msg.Role,
 		Content:              msg.Content,
 		Reasoning:            msg.Reasoning,

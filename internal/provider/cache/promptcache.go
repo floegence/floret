@@ -201,6 +201,7 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
+	ModelContextEntryID        string                        `json:"model_context_entry_id,omitempty"`
 	ID                         string                        `json:"id"`
 	PromptScopeID              string                        `json:"prompt_scope_id"`
 	RunID                      string                        `json:"run_id"`
@@ -980,7 +981,13 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	}
 	previous := requests[len(requests)-1]
 	if plan.RetrySourceEntryID != "" && plan.RetryRunID != "" && previous.RunID != plan.RetryRunID {
-		if len(history) == 0 || history[len(history)-1].EntryID != plan.RetrySourceEntryID {
+		// Managed facts may be admitted after the retry checkpoint. They are
+		// typed context messages, never a replacement for its canonical source.
+		boundary := len(history) - 1
+		for boundary >= 0 && history[boundary].EntryID != plan.RetrySourceEntryID && history[boundary].Kind == session.MessageKindModelContext {
+			boundary--
+		}
+		if boundary < 0 || history[boundary].EntryID != plan.RetrySourceEntryID {
 			return fmt.Errorf("%w: retry history does not end at its canonical source", ErrContextPrefixDrift)
 		}
 		plan.CanonicalLineageReset = true
@@ -1578,6 +1585,7 @@ func RecordRequest(ctx context.Context, store Store, ref PromptScopeRef, step in
 }
 
 type ProviderRequestSnapshot struct {
+	ModelContextEntryID string
 	PromptScopeID       string
 	RunID               string
 	ThreadID            string
@@ -1605,6 +1613,7 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		return ProviderRequestRecord{}, err
 	}
 	record := ProviderRequestRecord{
+		ModelContextEntryID:        req.ModelContextEntryID,
 		ID:                         fmt.Sprintf("%s:req:%d", ref.RunID, req.Step),
 		PromptScopeID:              ref.PromptScopeID,
 		RunID:                      ref.RunID,

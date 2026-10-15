@@ -577,6 +577,7 @@ var ErrInterruptedTurnNotFound error
 var ErrInvalidAuthorizationProof error
 var ErrJournalInvariant error
 var ErrMigrationRequired error
+var ErrModelContextUnavailable error
 var ErrNoRetryTarget error
 var ErrPendingToolNotActive error
 var ErrPendingToolNotFound error
@@ -795,6 +796,13 @@ type MigrationRequiredError struct
 field MigrationRequiredError.Version string
 method *MigrationRequiredError.Error func() string
 method *MigrationRequiredError.Is func(target error) bool
+type ModelContextSection struct
+field ModelContextSection.Key string tag="json:\"key\""
+field ModelContextSection.Title string tag="json:\"title\""
+field ModelContextSection.Text string tag="json:\"text\""
+type ModelContextSnapshot struct
+field ModelContextSnapshot.Sections []github.com/floegence/floret/v7/runtime.ModelContextSection tag="json:\"sections\""
+method ModelContextSnapshot.Validate func() error
 func NewAgent func(configuration github.com/floegence/floret/v7/config.AgentConfig, gateway github.com/floegence/floret/v7/provider.Gateway, options ...github.com/floegence/floret/v7/runtime.AgentOption) (*github.com/floegence/floret/v7/runtime.Agent, error)
 func Open func(ctx context.Context, options github.com/floegence/floret/v7/runtime.Options) (*github.com/floegence/floret/v7/runtime.Host, error)
 type Options struct
@@ -986,6 +994,7 @@ field ThreadContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,om
 field ThreadContextPolicy.ReservedOutputTokens int64 tag="json:\"reserved_output_tokens,omitempty\""
 type ThreadContextReader interface interface{Context(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadContextSnapshot, error)}
 type ThreadContextSnapshot struct
+field ThreadContextSnapshot.ModelContext *github.com/floegence/floret/v7/runtime.ThreadModelContext tag="json:\"model_context,omitempty\""
 field ThreadContextSnapshot.ContextUsage *github.com/floegence/floret/v7/runtime.ThreadContextUsage tag="json:\"context_usage,omitempty\""
 field ThreadContextSnapshot.Model github.com/floegence/floret/v7/runtime.ThreadContextModel tag="json:\"model,omitempty\""
 field ThreadContextSnapshot.Policy github.com/floegence/floret/v7/runtime.ThreadContextPolicy tag="json:\"policy,omitempty\""
@@ -1033,6 +1042,19 @@ const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind =
 const ThreadItemThinking github.com/floegence/floret/v7/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v7/runtime.ThreadItemKind = "tool"
 const ThreadItemUser github.com/floegence/floret/v7/runtime.ThreadItemKind = "user"
+type ThreadModelContext struct
+field ThreadModelContext.Snapshot github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"snapshot\""
+field ThreadModelContext.EntryID string tag="json:\"entry_id\""
+field ThreadModelContext.PathDepth int64 tag="json:\"path_depth\""
+field ThreadModelContext.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadModelContext.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadModelContext.UpdatedAt time.Time tag="json:\"updated_at\""
+field ThreadModelContext.ChangedKeys []string tag="json:\"changed_keys\""
+field ThreadModelContext.RemovedKeys []string tag="json:\"removed_keys\""
+field ThreadModelContext.UsedByRequestID string tag="json:\"used_by_request_id,omitempty\""
+field ThreadModelContext.UsedByTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"used_by_turn_id,omitempty\""
+field ThreadModelContext.UsedByRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"used_by_run_id,omitempty\""
+field ThreadModelContext.UsedAt *time.Time tag="json:\"used_at,omitempty\""
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn"
@@ -1156,6 +1178,7 @@ const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v7/runti
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "engine_contract"
 const ThreadTurnFailureInterrupted github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "interrupted"
 const ThreadTurnFailureLegacyUnclassified github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "legacy_unclassified"
+const ThreadTurnFailureModelContextUnavailable github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "model_context_unavailable"
 const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "provider"
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
@@ -1181,6 +1204,7 @@ type ToolCallStream struct
 field ToolCallStream.ID string tag="json:\"id,omitempty\""
 field ToolCallStream.Name string tag="json:\"name,omitempty\""
 type ToolSurface struct
+field ToolSurface.ModelContextSnapshot *github.com/floegence/floret/v7/runtime.ModelContextSnapshot
 field ToolSurface.RefreshProviderSurface bool
 field ToolSurface.Tools *github.com/floegence/floret/v7/tools.Registry
 field ToolSurface.ToolDefinitions []github.com/floegence/floret/v7/tools.ToolDefinition
@@ -1202,6 +1226,7 @@ field ToolSurfaceRequest.Phase string
 field ToolSurfaceRequest.Labels github.com/floegence/floret/v7/runtime.RunLabels
 field ToolSurfaceRequest.HostContext map[string]string
 type TurnInput struct
+field TurnInput.ModelContextSnapshot *github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"model_context_snapshot,omitempty\""
 field TurnInput.Text string tag="json:\"text,omitempty\""
 field TurnInput.Attachments []github.com/floegence/floret/v7/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
 field TurnInput.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""

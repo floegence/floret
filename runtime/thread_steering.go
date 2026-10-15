@@ -165,7 +165,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 			}
 			now := time.Now().UTC()
 			request := sessiontree.Entry{ID: "steer:" + key, Type: sessiontree.EntrySteeringRequested, ThreadID: in.ThreadID.String(), TurnID: actor.state.turnID.String(), RunID: actor.state.runID.String(), RequestKey: key, RequestFingerprint: fingerprint, CreatedAt: now,
-				Message: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References), Context: sessionMessageContext(input.Context)}}
+				Message: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References), Context: sessionMessageContext(input.Context), ModelContextSnapshot: sessionModelContext(input.ModelContextSnapshot)}}
 			entries = append(entries, request)
 			if err := service.appendRuntimeFactsError(ctx, in.ThreadID, entries); err != nil {
 				return err

@@ -19,6 +19,7 @@ var ErrStreamMissingTerminal = errors.New("provider stream closed without termin
 var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close after terminal event")
 
 type Request struct {
+	ModelContextEntryID  string `json:"-"`
 	PressureAnchorReason string `json:"-"`
 
 	RunID            string

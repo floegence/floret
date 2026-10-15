@@ -112,7 +112,7 @@ func (r *MemoryRepo) cancelPendingSteeringLocked(meta *ThreadMeta, turnID, runID
 }
 
 // RetainAppliedSteering carries accepted task corrections into canonical retry
-// context without replaying the superseded assistant/tool execution. Pending and
+// context, including accepted model facts, without replaying superseded execution. Pending and
 // cancelled requests are deliberately excluded.
 func RetainAppliedSteering(prefix, source []Entry, turnID string) []Entry {
 	out := append([]Entry(nil), prefix...)
@@ -122,6 +122,11 @@ func RetainAppliedSteering(prefix, source []Entry, turnID string) []Entry {
 		present[entry.ID] = true
 	}
 	for _, entry := range source {
+		if entry.Type == EntryModelContext && entry.TurnID == turnID && !present[entry.ID] {
+			out = append(out, entry)
+			present[entry.ID] = true
+			continue
+		}
 		if entry.Type == EntrySteeringRequested {
 			requests[entry.ID] = entry
 		}

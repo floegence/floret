@@ -176,7 +176,7 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 16 is the current schema. The exact version 2 to version 3
+  lineage. Version 17 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
@@ -188,8 +188,9 @@ Rules:
   completed-tool input interaction migration, version 12 to version 13
   typed context-only turn migration, and version 13 to version 14 canonical
   run-identity migration, and version 14 to version 15 thread-reference
-  migration, and version 15 to version 16 typed steering
-  migration are required automatic edges. Version 14 makes
+  migration, version 15 to version 16 typed steering migration, and version
+  16 to version 17 managed model-context snapshot migration are required
+  automatic edges. Version 14 makes
   explicit marker `Entry.RunID` authoritative. Its migration may use only a
   validated canonical marker identity or an unambiguous same-path ancestor;
   observation metadata and custom observation entries never advance execution
@@ -370,6 +371,18 @@ public messages and persisted tool facts, excluding reasoning, secrets, provider
 state, correction records, and queued inputs. Derived indexes and bounded frozen
 pagination snapshots stay with the canonical in-process owner and are rebuilt
 at startup; they never become a second durable store or a host projection.
+
+`ModelContextSnapshot` is the complete managed runtime fact collection. Nil
+means no update; an empty collection clears managed facts. Admission copies,
+validates and sorts unique keys. Dynamic `ToolSurface` supplies snapshots at
+logical provider preparation boundaries. Floret appends changed full snapshots
+and derives user-role change messages through one chronological projection.
+Managed facts are not user requests, title inputs, retry anchors or authorization.
+Hosts do not deduplicate, persist or reconstruct these facts. Compaction retains
+an exact snapshot at the cut and applies tail updates in order; transport retries
+replay frozen requests. Required collection failures settle with
+`model_context_unavailable`. Schema 17 uses a new envelope in the existing
+physical namespace so older writers reject upgraded stores.
 
 `SupplementalContext` is an explicit ephemeral contract for secrets and other
 material that must not survive the current provider turn. Ordinary references

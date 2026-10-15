@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,7 +28,10 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 		writes.Add(1)
 		return tools.Result{Text: "EFFECT_COMMITTED"}, nil
 	})
-	agent, err := testAgent(gateway, WithAgentTools(tool), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	var revision atomic.Int32
+	agent, err := testAgent(gateway, WithAgentTools(tool), WithAgentDynamicToolSurface(func(context.Context, ToolSurfaceRequest) (ToolSurface, error) {
+		return ToolSurface{Tools: tools.NewRegistry(tool), ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "repository", Title: "Repository", Text: fmt.Sprintf("MANAGED_RETRY_%d", revision.Load())}}}}, nil
+	}), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 		return effect(ctx, EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})
 	})))
 	if err != nil {
@@ -57,6 +61,7 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 	}
 	current := waitThreadView(t, svc, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
 	for _, key := range []RequestKey{"retry-first", "retry-second"} {
+		revision.Add(1)
 		if current.Failure == nil {
 			t.Fatal("expected provider failure")
 		}
@@ -78,6 +83,15 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("%s discarded the confirmed tool result", key)
+		}
+		var latest string
+		for _, message := range req.Messages {
+			if strings.Contains(message.Text, "Model context update") {
+				latest = message.Text
+			}
+		}
+		if !strings.Contains(latest, fmt.Sprintf("MANAGED_RETRY_%d", revision.Load())) {
+			t.Fatalf("retry lost refreshed snapshot: %s", latest)
 		}
 	}
 	if current.Failure != nil || writes.Load() != 1 || countThreadItems(current.Items, ThreadItemUser) != 1 {

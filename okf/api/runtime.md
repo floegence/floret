@@ -578,3 +578,12 @@ The optional `ThreadSteeringController` accepts full `UserInput` through `Steer`
 including absolute `NextAttemptAt` for reopening views and local countdowns.
 The thread stays active and existing cancellation/steering remains authoritative.
 See [provider recovery ownership](../decisions/provider-retry.md).
+
+## Managed runtime facts
+
+`TurnInput.ModelContextSnapshot` and `ToolSurface.ModelContextSnapshot` admit
+complete keyed facts. Collect at logical provider preparation or manual compaction
+using the same resolved permission state. `ThreadContextSnapshot.ModelContext`
+reports admitted facts and latest request usage. Required failure wraps
+`runtime.ErrModelContextUnavailable`; safe Retry follows normal effect rules.
+See [ownership and compaction](../decisions/managed-model-context.md).

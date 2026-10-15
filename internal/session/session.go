@@ -21,6 +21,7 @@ type MessageKind string
 
 const (
 	MessageKindNormal              MessageKind = ""
+	MessageKindModelContext        MessageKind = "model_context"
 	MessageKindToolValidationError MessageKind = "tool_validation_error"
 	MessageKindCompactionSummary   MessageKind = "compaction_summary"
 	MessageKindControlSignal       MessageKind = "control_signal"
@@ -101,8 +102,9 @@ type Message struct {
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
-	References           []MessageReference   `json:"References,omitempty"`
-	Context              []MessageContextItem `json:"Context,omitempty"`
+	References           []MessageReference    `json:"References,omitempty"`
+	Context              []MessageContextItem  `json:"Context,omitempty"`
+	ModelContextSnapshot *ModelContextSnapshot `json:"model_context_snapshot,omitempty"`
 	Reasoning            string
 	ToolCallID           string
 	ToolName             string
@@ -163,6 +165,7 @@ func CloneMessage(msg Message) Message {
 	msg.Attachments = CloneMessageAttachments(msg.Attachments)
 	msg.References = append([]MessageReference(nil), msg.References...)
 	msg.Context = append([]MessageContextItem(nil), msg.Context...)
+	msg.ModelContextSnapshot = CloneModelContext(msg.ModelContextSnapshot)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult
 		view.InputRequired = tools.CloneInputRequest(view.InputRequired)

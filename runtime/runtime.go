@@ -532,10 +532,11 @@ func (item MessageContextItem) Validate() error {
 }
 
 type TurnInput struct {
-	Text        string               `json:"text,omitempty"`
-	Attachments []MessageAttachment  `json:"attachments,omitempty"`
-	References  []MessageReference   `json:"references,omitempty"`
-	Context     []MessageContextItem `json:"context,omitempty"`
+	ModelContextSnapshot *ModelContextSnapshot `json:"model_context_snapshot,omitempty"`
+	Text                 string                `json:"text,omitempty"`
+	Attachments          []MessageAttachment   `json:"attachments,omitempty"`
+	References           []MessageReference    `json:"references,omitempty"`
+	Context              []MessageContextItem  `json:"context,omitempty"`
 }
 
 func (i TurnInput) Validate() error {
@@ -547,6 +548,9 @@ func (i TurnInput) Validate() error {
 	}
 	if err := validateMessageReferences(i.References); err != nil {
 		return err
+	}
+	if _, err := session.NormalizeModelContext(sessionModelContext(i.ModelContextSnapshot)); err != nil {
+		return fmt.Errorf("turn input: %w", err)
 	}
 	return session.ValidateMessageContext(sessionMessageContext(i.Context))
 }
@@ -924,6 +928,7 @@ const (
 	ThreadTurnFailureContextFixedOverhead     ThreadTurnFailureCode = "context_fixed_overhead"
 	ThreadTurnFailureContextCompactionLimit   ThreadTurnFailureCode = "context_compaction_limit"
 	ThreadTurnFailureContextPrefixDrift       ThreadTurnFailureCode = "context_prefix_drift"
+	ThreadTurnFailureModelContextUnavailable  ThreadTurnFailureCode = "model_context_unavailable"
 	ThreadTurnFailureLegacyUnclassified       ThreadTurnFailureCode = "legacy_unclassified"
 )
 
@@ -943,6 +948,7 @@ func (c ThreadTurnFailureCode) Valid() bool {
 		ThreadTurnFailureContextFixedOverhead,
 		ThreadTurnFailureContextCompactionLimit,
 		ThreadTurnFailureContextPrefixDrift,
+		ThreadTurnFailureModelContextUnavailable,
 		ThreadTurnFailureLegacyUnclassified:
 		return true
 	default:
@@ -1617,6 +1623,11 @@ func normalizeTurnInput(input TurnInput) (TurnInput, error) {
 	input.Attachments = cloneMessageAttachments(input.Attachments)
 	input.References = append([]MessageReference(nil), input.References...)
 	input.Context = append([]MessageContextItem(nil), input.Context...)
+	snapshot, err := session.NormalizeModelContext(sessionModelContext(input.ModelContextSnapshot))
+	if err != nil {
+		return TurnInput{}, err
+	}
+	input.ModelContextSnapshot = runtimeModelContext(snapshot)
 	if err := input.Validate(); err != nil {
 		return TurnInput{}, err
 	}

@@ -13,11 +13,11 @@ func TestEditQueuedReplacesCompleteInputAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := UserInput{Text: "same text", Attachments: []MessageAttachment{{Name: "old.png", MIMEType: "image/png", ResourceRef: "host:old"}}, References: []MessageReference{{ReferenceID: "old", Kind: MessageReferenceFile, Label: "old.go", Text: "old snapshot", ResourceRef: "host:old-file"}}, Context: []MessageContextItem{{Kind: "cwd", Title: "Directory", Text: "/project"}}}
+	original := UserInput{ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "repository", Title: "Repository", Text: "old repository"}}}, Text: "same text", Attachments: []MessageAttachment{{Name: "old.png", MIMEType: "image/png", ResourceRef: "host:old"}}, References: []MessageReference{{ReferenceID: "old", Kind: MessageReferenceFile, Label: "old.go", Text: "old snapshot", ResourceRef: "host:old-file"}}, Context: []MessageContextItem{{Kind: "cwd", Title: "Directory", Text: "/project"}}}
 	if _, err := service.ImportPendingInputs(t.Context(), ImportPendingInputsInput{ThreadID: created.ThreadID, Items: []ImportedPendingInput{{RequestKey: "first", Input: UserInput{Text: "first"}}, {RequestKey: "content", Input: original}, {RequestKey: "last", Input: UserInput{Text: "last"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	replacement := UserInput{Text: original.Text, Attachments: []MessageAttachment{{Name: "new.png", MIMEType: "image/png", ResourceRef: "host:new"}}, References: []MessageReference{{ReferenceID: "new", Kind: MessageReferenceDirectory, Label: "src", Text: "new snapshot", ResourceRef: "host:new-dir"}}, Context: original.Context}
+	replacement := UserInput{ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "repository", Title: "Repository", Text: "new repository"}}}, Text: original.Text, Attachments: []MessageAttachment{{Name: "new.png", MIMEType: "image/png", ResourceRef: "host:new"}}, References: []MessageReference{{ReferenceID: "new", Kind: MessageReferenceDirectory, Label: "src", Text: "new snapshot", ResourceRef: "host:new-dir"}}, Context: original.Context}
 	command := EditQueuedInput{ThreadID: created.ThreadID, QueueItemID: "queue:content", ExpectedInput: &original, Input: &replacement, RequestKey: "edit-content"}
 	updated, err := service.(ThreadQueueController).EditQueued(t.Context(), command)
 	if err != nil {

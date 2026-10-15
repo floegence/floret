@@ -79,3 +79,27 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 		t.Fatalf("retry disabled prefix checks: %v", err)
 	}
 }
+
+func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
+	for _, kind := range []session.MessageKind{session.MessageKindModelContext, session.MessageKindNormal} {
+		store := NewMemoryStore()
+		history := []session.Message{{Role: session.User, EntryID: "source", Content: "input"}}
+		first := lineagePlan("test", "model", "ns", "source")
+		if err := ValidateCanonicalLineage(t.Context(), store, "thread", &first, "system", nil, nil, nil, history); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "first"}, 1, "test", "model", CachePolicy{}, first); err != nil {
+			t.Fatal(err)
+		}
+		next := append(session.CloneMessages(history), session.Message{Role: session.User, Kind: kind, EntryID: "new", Content: "fresh runtime facts"})
+		retry := lineagePlan("test", "model", "ns", "source", "new")
+		retry.RetryRunID, retry.RetrySourceEntryID = "retry", "source"
+		err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next)
+		if kind == session.MessageKindModelContext && err != nil {
+			t.Fatal(err)
+		}
+		if kind == session.MessageKindNormal && !errors.Is(err, ErrContextPrefixDrift) {
+			t.Fatalf("ordinary suffix accepted: %v", err)
+		}
+	}
+}

@@ -54,12 +54,15 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 		if in.ExpectedInput == nil || in.Input == nil || in.ExpectedText != "" || in.Text != "" {
 			return ThreadView{}, errors.New("complete queue edits require expected_input and input without text edit fields")
 		}
-		if err := in.ExpectedInput.Validate(); err != nil {
-			return ThreadView{}, err
+		expected, normalizeErr := normalizeTurnInput(*in.ExpectedInput)
+		if normalizeErr != nil {
+			return ThreadView{}, normalizeErr
 		}
-		if err := in.Input.Validate(); err != nil {
-			return ThreadView{}, err
+		next, normalizeErr := normalizeTurnInput(*in.Input)
+		if normalizeErr != nil {
+			return ThreadView{}, normalizeErr
 		}
+		in.ExpectedInput, in.Input = &expected, &next
 		expectedFingerprint, err = stableFingerprint(*in.ExpectedInput)
 		if err != nil {
 			return ThreadView{}, err
@@ -68,6 +71,7 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 		replacement.Attachments = cloneMessageAttachments(replacement.Attachments)
 		replacement.References = append([]MessageReference(nil), replacement.References...)
 		replacement.Context = append([]MessageContextItem(nil), replacement.Context...)
+		replacement.ModelContextSnapshot = runtimeModelContext(sessionModelContext(replacement.ModelContextSnapshot))
 		fingerprint, err = stableFingerprint(struct {
 			ID              string
 			Expected, Input UserInput
