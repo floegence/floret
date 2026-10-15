@@ -227,6 +227,7 @@ field DeepSeekOptions.TopP *float64
 field DeepSeekOptions.ResponseFormat string
 field DeepSeekOptions.ResolveAttachment func(context.Context, github.com/floegence/floret/v7/provider.Attachment) ([]byte, error)
 var ErrContextOverflow error
+var ErrRequestTimeout error
 func EstimateRenderedRequest func(request github.com/floegence/floret/v7/provider.RenderedRequest) (github.com/floegence/floret/v7/provider.TokenEstimate, error)
 type Event struct
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""
@@ -362,6 +363,22 @@ field RequestReusePolicy.PromptCacheNamespace string tag="json:\"prompt_cache_na
 field RequestReusePolicy.ProviderStateAllowed bool tag="json:\"provider_state_allowed\""
 field RequestReusePolicy.PreferContinuation bool tag="json:\"prefer_continuation\""
 method RequestReusePolicy.Validate func() error
+type RequestTimeoutDetails = github.com/floegence/floret/v7/provider.RequestTimeoutDetails
+field RequestTimeoutDetails.Stage string tag="json:\"stage\""
+field RequestTimeoutDetails.LogicalRequestID github.com/floegence/floret/v7/identity.LogicalRequestID tag="json:\"logical_request_id,omitempty\""
+field RequestTimeoutDetails.AttemptID string tag="json:\"attempt_id,omitempty\""
+field RequestTimeoutDetails.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
+field RequestTimeoutDetails.StartedAt time.Time tag="json:\"started_at\""
+field RequestTimeoutDetails.LastProgressAt *time.Time tag="json:\"last_progress_at,omitempty\""
+field RequestTimeoutDetails.TimedOutAt time.Time tag="json:\"timed_out_at\""
+method RequestTimeoutDetails.Validate func() error
+type RequestTimeoutError = github.com/floegence/floret/v7/provider.RequestTimeoutError
+field RequestTimeoutError.Details github.com/floegence/floret/v7/internal/provider.RequestTimeoutDetails
+method *RequestTimeoutError.Error func() string
+method *RequestTimeoutError.Unwrap func() error
+method *RequestTimeoutError.Is func(target error) bool
+method *RequestTimeoutError.Timeout func() bool
+method *RequestTimeoutError.Temporary func() bool
 type RetryAdvice struct
 field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""
 field RetryAdvice.NotBefore time.Time tag="json:\"not_before,omitempty\""
@@ -506,6 +523,7 @@ field CreateThreadInput.TaskDescription string tag="json:\"task_description,omit
 field CreateThreadInput.HostProfileRef string tag="json:\"host_profile_ref,omitempty\""
 field CreateThreadInput.ForkMode string tag="json:\"fork_mode,omitempty\""
 field CreateThreadInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+func DefaultProviderRequestTimeoutPolicy func() github.com/floegence/floret/v7/runtime.ProviderRequestTimeoutPolicy
 func DefaultProviderRetryPolicy func() github.com/floegence/floret/v7/runtime.ProviderRetryPolicy
 type DeleteQueuedInput struct
 field DeleteQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -606,6 +624,7 @@ var ErrTurnNotFound error
 var ErrUnsupportedSchema error
 var ErrUnsupportedStoreCapability error
 type Event struct
+field Event.ProviderLastProgressAt *time.Time tag="json:\"provider_last_progress_at,omitempty\""
 field Event.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field Event.Type github.com/floegence/floret/v7/observation.EventType tag="json:\"type\""
 field Event.TraceID github.com/floegence/floret/v7/identity.TraceID tag="json:\"trace_id,omitempty\""
@@ -813,13 +832,24 @@ field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v7/tools.ToolCall) (github.com/floegence/floret/v7/runtime.TurnSignal, bool, error)
 type PromoteQueuedInput = github.com/floegence/floret/v7/runtime.PromoteQueuedInput
+field PromoteQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field PromoteQueuedInput.QueueItemID string tag="json:\"queue_item_id\""
+field PromoteQueuedInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+field PromoteQueuedInput.ExpectedInputSHA256 string tag="json:\"expected_input_sha256,omitempty\""
 type ProviderRequestProgress struct
 field ProviderRequestProgress.LogicalRequestID github.com/floegence/floret/v7/identity.LogicalRequestID tag="json:\"logical_request_id\""
 field ProviderRequestProgress.AttemptID string tag="json:\"attempt_id\""
 field ProviderRequestProgress.AttemptEpoch int tag="json:\"attempt_epoch\""
 field ProviderRequestProgress.StartedAt time.Time tag="json:\"started_at\""
+field ProviderRequestProgress.LastProgressAt *time.Time tag="json:\"last_progress_at,omitempty\""
 field ProviderRequestProgress.FirstOutputAt *time.Time tag="json:\"first_output_at,omitempty\""
 field ProviderRequestProgress.EstimatedOutputTokens int64 tag="json:\"estimated_output_tokens\""
+type ProviderRequestTimeoutPolicy struct
+field ProviderRequestTimeoutPolicy.FirstOutputTimeout time.Duration tag="json:\"first_output_timeout\""
+field ProviderRequestTimeoutPolicy.IdleTimeout time.Duration tag="json:\"idle_timeout\""
+field ProviderRequestTimeoutPolicy.HostedToolTimeout time.Duration tag="json:\"hosted_tool_timeout\""
+field ProviderRequestTimeoutPolicy.MaxAttemptDuration time.Duration tag="json:\"max_attempt_duration\""
+method ProviderRequestTimeoutPolicy.Validate func() error
 type ProviderRetryPolicy struct
 field ProviderRetryPolicy.Disabled bool tag="json:\"disabled,omitempty\""
 field ProviderRetryPolicy.MaxRetries int tag="json:\"max_retries\""
@@ -831,6 +861,12 @@ field ProviderRetryPolicy.RecoveryWindow time.Duration tag="json:\"recovery_wind
 field ProviderRetryPolicy.MaxServerWait time.Duration tag="json:\"max_server_wait\""
 method ProviderRetryPolicy.Validate func() error
 type ProviderRetryProgress = github.com/floegence/floret/v7/runtime.ProviderRetryProgress
+field ProviderRetryProgress.Retry int tag="json:\"retry\""
+field ProviderRetryProgress.MaxRetries int tag="json:\"max_retries\""
+field ProviderRetryProgress.NextAttemptAt time.Time tag="json:\"next_attempt_at\""
+field ProviderRetryProgress.Reason string tag="json:\"reason\""
+field ProviderRetryProgress.ReplacedAttemptID string tag="json:\"replaced_attempt_id,omitempty\""
+field ProviderRetryProgress.ReplacedAttemptEpoch int tag="json:\"replaced_attempt_epoch,omitempty\""
 func ProviderSafeCoreControlText func(signal github.com/floegence/floret/v7/runtime.TurnSignal) string
 type ProviderToolSurface struct
 field ProviderToolSurface.SystemPrompt string
@@ -1161,6 +1197,7 @@ field ThreadTurn.WorkDurationMS int64 tag="json:\"work_duration_ms\""
 field ThreadTurn.FinalItemIDs []string tag="json:\"final_item_ids\""
 field ThreadTurn.FinalBoundaryComplete bool tag="json:\"final_boundary_complete\""
 type ThreadTurnFailure struct
+field ThreadTurnFailure.ProviderTimeout *github.com/floegence/floret/v7/provider.RequestTimeoutDetails tag="json:\"provider_timeout,omitempty\""
 field ThreadTurnFailure.Code github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode tag="json:\"code\""
 field ThreadTurnFailure.Message string tag="json:\"message\""
 method ThreadTurnFailure.Validate func() error
@@ -1294,6 +1331,12 @@ field TurnSupplementalContextItem.Metadata map[string]string
 field TurnSupplementalContextItem.Sensitive bool
 field TurnSupplementalContextItem.Truncated bool
 type UserInput = github.com/floegence/floret/v7/runtime.UserInput
+field UserInput.ModelContextSnapshot *github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"model_context_snapshot,omitempty\""
+field UserInput.Text string tag="json:\"text,omitempty\""
+field UserInput.Attachments []github.com/floegence/floret/v7/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
+field UserInput.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
+field UserInput.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
+method UserInput.Validate func() error
 func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runtime.CapabilityOptions) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v7/runtime.EffectAuthorizationGate) github.com/floegence/floret/v7/runtime.AgentOption
@@ -1302,6 +1345,7 @@ func WithAgentHostedTools func(definitions ...github.com/floegence/floret/v7/pro
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v7/runtime.LoopLimits) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentManualCompactions func(source github.com/floegence/floret/v7/runtime.ManualCompactionSource) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentProviderRequestTimeoutPolicy func(policy github.com/floegence/floret/v7/runtime.ProviderRequestTimeoutPolicy) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentProviderRetryPolicy func(policy github.com/floegence/floret/v7/runtime.ProviderRetryPolicy) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentRunLabels func(labels github.com/floegence/floret/v7/runtime.RunLabels) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v7/runtime.AgentOption

@@ -17,6 +17,7 @@ type ProviderRequestProgress struct {
 	AttemptID             string                    `json:"attempt_id"`
 	AttemptEpoch          int                       `json:"attempt_epoch"`
 	StartedAt             time.Time                 `json:"started_at"`
+	LastProgressAt        *time.Time                `json:"last_progress_at,omitempty"`
 	FirstOutputAt         *time.Time                `json:"first_output_at,omitempty"`
 	EstimatedOutputTokens int64                     `json:"estimated_output_tokens"`
 }
@@ -52,6 +53,10 @@ func mergeRequestProgress(previous, next *ThreadRunProgress, event Event) *Threa
 			next.Request = nil
 		}
 	default:
+		if next.Request != nil && event.ProviderLastProgressAt != nil {
+			at := *event.ProviderLastProgressAt
+			next.Request.LastProgressAt = &at
+		}
 		if next.Request != nil && event.Stream != nil {
 			stream := event.Stream
 			meaningful := stream.Text != "" || stream.ToolCallStream != nil

@@ -38,4 +38,18 @@ live memory, never a durable retry queue or separate lifecycle.
 
 [Provider contracts](../api/provider.md) carry typed advice and optional frozen
 prepared-request replay. Hosted tools require explicit ReplaySafe permission.
-Schema 16 and its complete migration lineage are unchanged.
+Schema 17 and its complete migration lineage are unchanged.
+
+One [physical request owner](/internal/providerattempt/attempt.go) bounds opening
+and reading for ordinary, compaction and title requests. The public Agent policy
+uses first-output, output-idle, hosted-tool and absolute deadlines. Semantic
+progress alone renews the idle deadline; duplicate lifecycle events, empty
+fragments and usage never renew it. Hosted completion restores the ordinary idle
+phase. Timers and transport resources close at the attempt boundary, including
+synchronous opening failures.
+
+Typed timeout details are optional canonical terminal annotations for Provider
+failures, retained through restart. They do not control lifecycle. Recovery-window
+exhaustion preserves the originating failure evidence, while independent contract
+and storage errors retain priority. Actual execution cancellation remains the
+only Stop authority. No persistent retry queue or new schema is introduced.

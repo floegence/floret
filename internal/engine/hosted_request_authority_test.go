@@ -27,7 +27,7 @@ func TestHostedEventsUseFrozenRequestAuthority(t *testing.T) {
 				stream <- provider.StreamEvent{Type: provider.Delta, Text: "verified"}
 				stream <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
 				close(stream)
-				_, err := (&Engine{}).consume(t.Context(), Options{HostedToolDefinitions: tc.configured}, 1, stream, provider.Request{HostedTools: tc.requested})
+				_, err := (&Engine{}).consume(t.Context(), Options{HostedToolDefinitions: tc.configured}, 1, stream, provider.Request{HostedTools: tc.requested}, nil)
 				if (err != nil) != tc.wantError {
 					t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
 				}

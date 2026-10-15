@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/floegence/floret/v7/internal/providerretry"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/providerattempt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	sessioncompaction "github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
@@ -21,6 +22,7 @@ const (
 )
 
 type ProviderSummaryGenerator struct {
+	TimeoutPolicy providerattempt.RequestTimeoutPolicy
 	RetryPolicy   providerretry.Policy
 	Provider      provider.Provider
 	ProviderName  string
@@ -311,6 +313,10 @@ func (g ProviderSummaryGenerator) prepareSummaryRequest(ctx context.Context, req
 }
 
 func (g ProviderSummaryGenerator) streamSummary(ctx context.Context, req provider.Request, prepared provider.PreparedRequest) (summary string, truncated bool, err error) {
+	attempt := providerattempt.StartAttempt(ctx, g.TimeoutPolicy, req)
+	defer attempt.Close()
+	defer func() { err = attempt.Error(err) }()
+	ctx = attempt.Context()
 	var stream <-chan provider.StreamEvent
 	if prepared != nil {
 		stream, err = prepared.Stream(ctx)
@@ -335,6 +341,7 @@ func (g ProviderSummaryGenerator) streamSummary(ctx context.Context, req provide
 		if !ok {
 			return "", false, provider.ErrStreamMissingTerminal
 		}
+		attempt.Observe(event)
 		switch event.Type {
 		case provider.Delta:
 			text.WriteString(event.Text)

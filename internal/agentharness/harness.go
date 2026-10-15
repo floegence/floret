@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/floegence/floret/v7/internal/providerretry"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +22,8 @@ import (
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/providerattempt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
@@ -93,6 +94,9 @@ type Options struct {
 	TitleGenerator           TitleGenerator
 	Reasoning                provider.ReasoningCapability
 	TurnPolicy               TurnPolicy
+
+	ProviderRequestTimeoutPolicy providerattempt.RequestTimeoutPolicy
+
 	ProviderRetryPolicy      providerretry.Policy
 	LoopLimits               LoopLimits
 	SubAgentRunTimeout       time.Duration
@@ -966,6 +970,12 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	if result.Err != nil {
 		terminalMetadata["failure_reason"] = result.Err.Error()
 		terminalMetadata[sessiontree.TurnFailureCodeMetadataKey] = resultFailureCode
+		if resultFailureCode == sessiontree.TurnFailureProvider {
+			if details := providerattempt.TimeoutDetails(result.Err); details != nil {
+				raw, _ := json.Marshal(details)
+				terminalMetadata["provider_timeout"] = string(raw)
+			}
+		}
 	}
 	if result.Status == engine.Waiting {
 		terminalMetadata["interrupt_reason"] = "ask_user"
@@ -1150,7 +1160,7 @@ func statusForExecutionError(ctx context.Context, err error) engine.Status {
 }
 
 func (h *AgentHarness) engineOptions() engine.Options {
-	engineOptions := engine.Options{ProviderRetryPolicy: h.options.ProviderRetryPolicy, StateCompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey)}
+	engineOptions := engine.Options{ProviderRequestTimeoutPolicy: h.options.ProviderRequestTimeoutPolicy, ProviderRetryPolicy: h.options.ProviderRetryPolicy, StateCompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey)}
 	policy := h.options.TurnPolicy
 	limits := h.options.LoopLimits
 	if policy.ContextPolicy.ContextWindowTokens > 0 ||
@@ -1950,6 +1960,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	generator := m.thread.harness.options.CompactionGenerator
 	if generator == nil {
 		generator = enginecompaction.ProviderSummaryGenerator{
+			TimeoutPolicy: m.thread.harness.options.ProviderRequestTimeoutPolicy,
 			RetryPolicy:   m.thread.harness.options.ProviderRetryPolicy,
 			Provider:      req.Provider,
 			ProviderName:  req.ProviderName,

@@ -51,3 +51,9 @@ snapshots correlation and opaque host maps on an immutable Agent. One
 provider-host boundary applies those labels to fresh and resumed execution;
 they do not become conversation identity, durable state, or authorization by
 themselves.
+
+The v7.42 request-timeout API deliberately exports aliases for the one canonical
+error and details type. This preserves `errors.As` across internal execution and
+public callers without a second error translation or lifecycle path. Details use
+the public typed logical identity; future changes must preserve these aliases,
+their fields and error classifications throughout v7.

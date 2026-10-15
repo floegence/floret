@@ -201,12 +201,16 @@ func run[T any](ctx context.Context, p Policy, attempt func(context.Context, int
 			return result, lastErr
 		}
 		if err := ctx.Err(); err != nil {
+			if parentCtx.Err() == nil && lastErr != nil {
+				return result, lastErr
+			}
 			return result, err
 		}
 		attemptCtx, closeAttempt := context.WithCancel(ctx)
 		value, err := attempt(attemptCtx, n)
 		closeAttempt()
 		result = value
+		previousErr := lastErr
 		lastErr = err
 		if err == nil {
 			return result, nil
@@ -214,6 +218,9 @@ func run[T any](ctx context.Context, p Policy, attempt func(context.Context, int
 		if ctx.Err() != nil {
 			if parentCtx.Err() != nil {
 				return result, parentCtx.Err()
+			}
+			if previousErr != nil && errors.Is(err, ctx.Err()) && AdviceFor(err).Category != Permanent {
+				return result, errors.Join(previousErr, err)
 			}
 			if lastErr != nil {
 				return result, lastErr

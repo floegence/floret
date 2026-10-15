@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.42.0 - 2026-10-15
+
+- Add validated Agent physical-request deadlines shared by normal requests, compaction and titles. Bound first output, semantic output pauses, hosted-tool waits and total attempt duration while preserving the existing frozen recovery budget and execution cancellation authority.
+- Add typed timeout errors, detached last-progress timestamps and optional canonical terminal timeout diagnostics surviving restart. Preserve all v7 contracts, schema 17, historical migrations, storage-failure priority and safe tool retry boundaries.
+
 ## v7.41.0 - 2026-10-15
 
 - Add optional per-row and per-mutation Activity targets with validation and deep-copy isolation. Preserve existing fields, comparability, canonical history and domain schema 17; resource paths never authorize host navigation.

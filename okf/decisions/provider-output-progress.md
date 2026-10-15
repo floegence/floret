@@ -37,3 +37,8 @@ restart rebuilds only durable facts and never replays these observations.
 See [the public runtime boundary](/README.md#runtime-boundary),
 [the API change workflow](../workflows/change-public-api.md) and
 [the tool contracts](/tools/argument_preview.go).
+
+`ProviderRequestProgress.LastProgressAt` is the detached timestamp authored by the
+same attempt owner that enforces request deadlines. Hosts may show waiting time
+while retaining received token estimates; display timers never cancel requests
+or decide retries. Native hosted completion restores the waiting-response phase.

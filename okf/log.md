@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Physical request deadlines
+
+- Document [one semantic-progress clock](decisions/provider-retry.md), compatible typed timeout diagnostics, canonical restart readback and [host waiting feedback](decisions/provider-output-progress.md). Preserve schema 17 and execution cancellation authority.
+
 ## 2026-10-15 — Terminal failure authority
 
 - Clarify [Provider recovery outcome ownership](decisions/provider-retry.md): request-local deadlines remain Provider failures, execution cancellation is explicit, and finalization retains both failure diagnostics without changing schema 17.
