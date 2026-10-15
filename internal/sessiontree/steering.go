@@ -61,6 +61,9 @@ func projectSteering(path []Entry) ([]Entry, error) {
 			if err != nil {
 				return nil, err
 			}
+			if entry.Type == EntrySteeringApplied && resolution.Reason != "" || entry.Type == EntrySteeringCancelled && resolution.Reason != "stopped" && resolution.Reason != "effect_outcome_unknown" && resolution.Reason != "task_ended" && resolution.Reason != "fork" {
+				return nil, fmt.Errorf("%w: invalid steering cancellation reason", ErrAuthorityCorrupt)
+			}
 			request, exists := requests[resolution.SteeringID]
 			if !exists || resolved[request.ID] || request.TurnID != entry.TurnID || entry.RunID == "" {
 				return nil, fmt.Errorf("%w: invalid steering resolution authority", ErrAuthorityCorrupt)

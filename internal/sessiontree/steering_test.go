@@ -71,3 +71,13 @@ func TestSteeringProjectionForkAndRetry(t *testing.T) {
 		t.Fatal("retry dropped applied steering")
 	}
 }
+
+func TestSteeringProjectionRejectsMalformedResolution(t *testing.T) {
+	request := Entry{ID: "guide", Type: EntrySteeringRequested, TurnID: "turn", RunID: "run", RequestKey: "guide", RequestFingerprint: "guide", Message: session.Message{Role: session.User, Content: "instruction"}}
+	for _, payload := range []string{`{"steering_id":"missing"}`, `{"steering_id":"guide","unknown":true}`, `{"steering_id":"guide"} {}`, `{"steering_id":"guide","reason":"stopped"}`} {
+		_, err := projectSteering([]Entry{request, {Type: EntrySteeringApplied, TurnID: "turn", RunID: "run", Payload: json.RawMessage(payload)}})
+		if err == nil {
+			t.Fatalf("accepted malformed resolution: %s", payload)
+		}
+	}
+}

@@ -48,7 +48,8 @@ const (
 
 type ThreadSteering struct {
 	Status ThreadSteeringStatus `json:"status"`
-	Reason string               `json:"reason,omitempty"`
+	// Reason classifies cancelled input: stopped, effect_outcome_unknown, task_ended, or fork.
+	Reason string `json:"reason,omitempty"`
 }
 
 var _ ThreadSteeringController = (*threadRuntimeService)(nil)
@@ -381,7 +382,7 @@ func steeringProjection(entries []sessiontree.Entry) (map[string]ThreadSteering,
 	}
 	for _, entry := range entries {
 		if entry.Type == sessiontree.EntrySteeringRequested && states[entry.ID].Status == ThreadSteeringPending && terminal[entry.TurnID] {
-			states[entry.ID] = ThreadSteering{Status: ThreadSteeringCancelled, Reason: "The task ended before this instruction was applied."}
+			states[entry.ID] = ThreadSteering{Status: ThreadSteeringCancelled, Reason: "task_ended"}
 		}
 	}
 	return states, nil

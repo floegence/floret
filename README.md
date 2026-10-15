@@ -695,4 +695,4 @@ changes use the existing observable request boundary.
 
 ### Immediate thread steering
 
-Hosts may opt into `runtime.ThreadSteeringController`. `Steer` durably accepts an instruction and interrupts the current provider attempt or cancellable tool batch while preserving the same task and execution identity. `SteerQueued` atomically consumes an exact queued item. Ordinary `Send` remains queued while a thread is active; steering requests are idempotent by request key and stale queue content returns `ErrRequestConflict`.
+Hosts may opt into `runtime.ThreadSteeringController`. `Steer` durably accepts an instruction and interrupts the current provider attempt or cancellable tool batch while preserving the same task and execution identity. `SteerQueued` atomically consumes an exact queued item. Cancelled steering carries a reason code (`stopped`, `effect_outcome_unknown`, `task_ended`, or `fork`); hosts may offer explicit resubmission after `stopped`, and must not automatically replay uncertain effects. Ordinary `Send` remains queued while a thread is active; steering requests are idempotent by request key and stale queue content returns `ErrRequestConflict`.
