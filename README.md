@@ -301,6 +301,11 @@ choices for external user actions; collect passwords and tokens outside the
 agent. `Pending` remains asynchronous host work and cannot be combined with input.
 Domain schema v12 appends the v11 to v12 migration, preserving historical facts.
 
+Ask User `runtime.InputPresentation` exposes optional `ReasonCode`,
+`RequiredFromUser`, and `EvidenceRefs` from the validated control signal in current,
+summary, and historical views. Evidence associates facts; it grants no access or
+permission. Absent historical fields remain absent.
+
 Ask User `runtime.InputQuestion` preserves optional `Header`, `WritePlaceholder`,
 `ChoicesExhaustive`, and rich `Choices` from the original validated call across
 live updates, reads, and restart. Each `InputChoice` has an original `ChoiceID`,

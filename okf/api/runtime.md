@@ -201,7 +201,11 @@ See [queue editing and sending](../../runtime/thread_queue_edit_test.go).
 
 Validated Ask User fields have one projection into `InputPresentation` for
 subscriptions, current views, workspace summaries, restart, and historical
-interactions. Optional `InputQuestion.Header`, `WritePlaceholder`, and
+interactions. Optional `ReasonCode`, `RequiredFromUser`, and `EvidenceRefs`
+preserve validated reason, requested input and evidence associations. Hosts must
+validate associations against authorized canonical facts; references never grant
+access or permission. Absent historical fields remain absent.
+Optional `InputQuestion.Header`, `WritePlaceholder`, and
 `ChoicesExhaustive` preserve source intent; absent metadata remains absent.
 `Choices` contains `InputChoice` entries with original `ChoiceID`, display
 `Label` and `Description`, and the established submitted `Value`.

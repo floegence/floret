@@ -824,3 +824,18 @@ func TestPublishedPhysicalRequestTimeoutContract(t *testing.T) {
 	_ = runtime.WithAgentProviderRequestTimeoutPolicy(policy)
 	_ = runtime.ProviderRequestProgress{LastProgressAt: &now}
 }
+
+func TestPublishedInputEvidenceContract(t *testing.T) {
+	input := runtime.InputPresentation{ReasonCode: "missing_external_input", RequiredFromUser: []string{"ready"}, EvidenceRefs: []string{"inspect-1"}}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded runtime.InputPresentation
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ReasonCode != input.ReasonCode || len(decoded.RequiredFromUser) != 1 || decoded.RequiredFromUser[0] != "ready" || len(decoded.EvidenceRefs) != 1 || decoded.EvidenceRefs[0] != "inspect-1" {
+		t.Fatalf("input evidence lost: %s", encoded)
+	}
+}
