@@ -17,7 +17,7 @@ product persistence layer.
 Build with Go 1.27.2.
 
 ```bash
-go get github.com/floegence/floret/v7@v7.3.2
+go get github.com/floegence/floret/v7@v7.40.0
 ```
 
 Production integrations must resolve the published module. Do not use a local
@@ -484,11 +484,49 @@ failed or cancelled compaction with a new compact request key. Ordinary `Retry`
 returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
 result per operation and its canonical `AfterItemID` presentation anchor; an
 empty history has no artificial anchor. Stop, shutdown, restart, and fork use
-the existing thread lifecycle. Domain schema v16 retains the automatic v12 -> v13
+the existing thread lifecycle. Domain schema v17 retains the automatic v12 -> v13
 typed-turn edge and v13 -> v14 canonical run-identity edge without
 reclassifying historical slash-command conversations or using observation
 metadata as runtime authority. The v14 -> v15 edge adds typed thread references
 without rewriting historical messages or request fingerprints.
+
+## Managed Runtime Facts
+
+`runtime.ModelContextSnapshot` contains complete `ModelContextSection` values
+with stable `Key`, display `Title`, and full `Text`. Supply an optional snapshot
+in `TurnInput.ModelContextSnapshot` for atomic user-input admission, and in
+`ToolSurface.ModelContextSnapshot` at `provider_request` or `compact` boundaries
+through `WithAgentDynamicToolSurface`. Use one host collector with the same
+resolved permissions as the tool surface. Network retries replay frozen input.
+
+Nil supplies no update; a non-nil empty collection clears all managed sections.
+Missing keys remove prior facts. Floret copies, sorts unique keys, and rejects
+more than 128 sections, 64,000 characters per section or 256 KiB of encoded data.
+Facts cannot contain secrets or grant resource access. Existing `UserInput.Context`
+keeps its message-attached semantics; managed snapshots are a separate contract.
+
+One canonical owner appends changed full snapshots and projects a full baseline,
+then changed sections and explicit removals as marked user-role context messages.
+They never become user bubbles, title inputs or retry anchors. System text keeps
+stable behavior rules. Each logical request applies steering, resolves the live
+surface, admits changes, budgets/compacts and freezes rendering. Storage failure
+prevents dispatch; physical retries replay frozen requests. Ordinary updates take
+effect at the next request without interrupting generation.
+
+Compaction stores the exact snapshot at its cut and replays retained updates in
+order. That baseline consumes fixed input capacity and cannot be summarized or
+dropped. Retry, fork and restart use the same projection. Domain migration
+16 -> 17 preserves historical bytes and never infers sections from old prose;
+the next live request admits a typed baseline. Old writers reject the upgraded
+envelope in the existing physical namespace.
+
+`ThreadContextSnapshot.ModelContext` exposes admitted facts, canonical position,
+changed/removed keys and the latest request using that exact record. Hosts read
+it through the existing authorized boundary and normal thread subscriptions.
+Wrap required failures with `runtime.ErrModelContextUnavailable`; the terminal
+`model_context_unavailable` failure releases execution and permits safe explicit
+retry after repair. Confirmed effects remain committed and unknown effects remain
+non-retryable.
 
 ## Consistent Reads
 

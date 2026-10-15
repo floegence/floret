@@ -446,6 +446,7 @@ type ThreadView struct {
 // ThreadContextSnapshot is the canonical context and compaction projection for
 // one thread. Compactions contain one latest lifecycle record per operation.
 type ThreadContextSnapshot struct {
+	ModelContext *ThreadModelContext        `json:"model_context,omitempty"`
 	ContextUsage *ThreadContextUsage        `json:"context_usage,omitempty"`
 	Model        ThreadContextModel         `json:"model,omitempty"`
 	Policy       ThreadContextPolicy        `json:"policy,omitempty"`
@@ -1309,7 +1310,12 @@ func (service *threadRuntimeService) Context(ctx context.Context, threadID ident
 			TokensAfterEstimate: compaction.TokensAfterEstimate, Error: compaction.Error, ObservedAt: compaction.ObservedAt,
 		})
 	}
+	modelContext, err := service.readModelContext(ctx, threadID, path)
+	if err != nil {
+		return ThreadContextSnapshot{}, runtimeHostError(err)
+	}
 	return ThreadContextSnapshot{
+		ModelContext: modelContext,
 		ContextUsage: runtimeThreadContextUsage(contextSnapshot.ContextUsage),
 		Model:        ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
 		Policy: ThreadContextPolicy{
@@ -2046,6 +2052,7 @@ func turnInputFromSessionMessage(message session.Message) UserInput {
 		input.Attachments = append(input.Attachments, item)
 	}
 	input.Context = runtimeMessageContext(message.Context)
+	input.ModelContextSnapshot = runtimeModelContext(message.ModelContextSnapshot)
 	for _, reference := range message.References {
 		input.References = append(input.References, MessageReference{ReferenceID: reference.ReferenceID, Kind: MessageReferenceKind(reference.Kind), Label: reference.Label, Text: reference.Text, ResourceRef: reference.ResourceRef, Truncated: reference.Truncated, ReferencedThreadID: identity.ThreadID(reference.ReferencedThreadID)})
 	}
@@ -2299,9 +2306,10 @@ func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, th
 	}
 	canonicalInput := session.Message{
 		Role: session.User, Content: request.Input.Text,
-		Attachments: sessionMessageAttachments(request.Input.Attachments),
-		References:  sessionMessageReferences(request.Input.References),
-		Context:     sessionMessageContext(request.Input.Context),
+		Attachments:          sessionMessageAttachments(request.Input.Attachments),
+		References:           sessionMessageReferences(request.Input.References),
+		Context:              sessionMessageContext(request.Input.Context),
+		ModelContextSnapshot: sessionModelContext(request.Input.ModelContextSnapshot),
 	}
 	if request.RetrySourceEntryID != "" || request.TurnKind == TurnKindContextCompaction {
 		canonicalInput = session.Message{}
@@ -4044,6 +4052,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 		view.Queue[index].Input.Attachments = cloneMessageAttachments(view.Queue[index].Input.Attachments)
 		view.Queue[index].Input.References = append([]MessageReference(nil), view.Queue[index].Input.References...)
 		view.Queue[index].Input.Context = append([]MessageContextItem(nil), view.Queue[index].Input.Context...)
+		view.Queue[index].Input.ModelContextSnapshot = runtimeModelContext(sessionModelContext(view.Queue[index].Input.ModelContextSnapshot))
 		view.Queue[index].SupplementalContext = cloneTurnSupplementalContext(view.Queue[index].SupplementalContext)
 	}
 	if view.RestoredInputs != nil {
@@ -4053,6 +4062,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 			items[i].Input.Attachments = cloneMessageAttachments(item.Input.Attachments)
 			items[i].Input.References = append([]MessageReference(nil), item.Input.References...)
 			items[i].Input.Context = append([]MessageContextItem(nil), item.Input.Context...)
+			items[i].Input.ModelContextSnapshot = runtimeModelContext(sessionModelContext(item.Input.ModelContextSnapshot))
 		}
 		view.RestoredInputs = items
 	}

@@ -57,6 +57,9 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 	if errors.Is(err, sessiontree.ErrEffectOutcomeUnknown) {
 		return sessiontree.TurnFailureEffectOutcomeUnknown, nil
 	}
+	if errors.Is(err, engine.ErrModelContextUnavailable) {
+		return sessiontree.TurnFailureModelContextUnavailable, nil
+	}
 	if errors.Is(err, cache.ErrContextPrefixDrift) {
 		return sessiontree.TurnFailureContextPrefixDrift, nil
 	}

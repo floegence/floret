@@ -100,6 +100,8 @@ type ToolSurfaceRequest struct {
 }
 
 type ToolSurface struct {
+	ModelContextSnapshot *ModelContextSnapshot
+
 	// RefreshProviderSurface opts into resolving system text and tool definitions
 	// at each provider request. Model, reasoning, context policy and historical
 	// checkpoints stay fixed. The zero value preserves the first Turn surface.
@@ -404,6 +406,7 @@ func runtimeToolSurfaceProvider(surfaceProvider ToolSurfaceProvider) engine.Tool
 		}
 		return engine.ToolSurface{
 			RefreshProviderSurface: surface.RefreshProviderSurface,
+			ModelContextSnapshot:   sessionModelContext(surface.ModelContextSnapshot),
 			Tools:                  surface.Tools, ToolDefinitions: normalizeToolDefinitions(surface.ToolDefinitions),
 			HostedToolDefinitions: providerHostedToolDefinitions(surface.HostedToolDefinitions),
 			SystemPrompt:          surface.SystemPrompt, HostContext: cloneStringMap(surface.HostContext),

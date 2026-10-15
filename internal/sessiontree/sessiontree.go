@@ -34,6 +34,7 @@ const (
 	EntryThreadInfo       EntryType = "thread_info"
 	EntryTurnMarker       EntryType = "turn_marker"
 	EntryUserMessage      EntryType = "user_message"
+	EntryModelContext     EntryType = "model_context"
 	EntryAssistantMessage EntryType = "assistant_message"
 	EntryToolCall         EntryType = "tool_call"
 	EntryToolResult       EntryType = "tool_result"
@@ -415,44 +416,45 @@ func ThreadAuthorityTreeIDs(threads []ThreadMeta, rootThreadID string) ([]string
 }
 
 type Entry struct {
-	ID                      string              `json:"id"`
-	ThreadID                string              `json:"thread_id"`
-	ParentID                string              `json:"parent_id,omitempty"`
-	PathDepth               int64               `json:"path_depth"`
-	Type                    EntryType           `json:"type"`
-	TurnID                  string              `json:"turn_id,omitempty"`
-	RunID                   string              `json:"run_id,omitempty"`
-	RequestKey              string              `json:"request_key,omitempty"`
-	RequestFingerprint      string              `json:"request_fingerprint,omitempty"`
-	Payload                 json.RawMessage     `json:"payload,omitempty"`
-	CreatedAt               time.Time           `json:"created_at"`
-	Message                 session.Message     `json:"message,omitempty"`
-	Raw                     string              `json:"raw,omitempty"`
-	RawHash                 string              `json:"raw_hash,omitempty"`
-	TurnStatus              TurnMarkerStatus    `json:"turn_status,omitempty"`
-	Provider                string              `json:"provider,omitempty"`
-	Model                   string              `json:"model,omitempty"`
-	CompactionID            string              `json:"compaction_id,omitempty"`
-	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
-	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
-	SummarySchemaVersion    string              `json:"summary_schema_version,omitempty"`
-	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
-	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
-	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
-	Summary                 string              `json:"summary,omitempty"`
-	CompactionTrigger       string              `json:"compaction_trigger,omitempty"`
-	CompactionReason        string              `json:"compaction_reason,omitempty"`
-	CompactionPhase         string              `json:"compaction_phase,omitempty"`
-	CompactionOperationID   string              `json:"compaction_operation_id,omitempty"`
-	CompactionRequestID     string              `json:"compaction_request_id,omitempty"`
-	CompactionSource        string              `json:"compaction_source,omitempty"`
-	TokensBefore            int64               `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
-	ContextUsageBefore      contextpolicy.Usage `json:"context_usage_before,omitempty"`
-	ContextUsageAfter       contextpolicy.Usage `json:"context_usage_after,omitempty"`
-	Error                   string              `json:"error,omitempty"`
-	Metadata                map[string]string   `json:"metadata,omitempty"`
+	ID                      string                        `json:"id"`
+	ThreadID                string                        `json:"thread_id"`
+	ParentID                string                        `json:"parent_id,omitempty"`
+	PathDepth               int64                         `json:"path_depth"`
+	Type                    EntryType                     `json:"type"`
+	TurnID                  string                        `json:"turn_id,omitempty"`
+	RunID                   string                        `json:"run_id,omitempty"`
+	RequestKey              string                        `json:"request_key,omitempty"`
+	RequestFingerprint      string                        `json:"request_fingerprint,omitempty"`
+	Payload                 json.RawMessage               `json:"payload,omitempty"`
+	CreatedAt               time.Time                     `json:"created_at"`
+	Message                 session.Message               `json:"message,omitempty"`
+	Raw                     string                        `json:"raw,omitempty"`
+	RawHash                 string                        `json:"raw_hash,omitempty"`
+	TurnStatus              TurnMarkerStatus              `json:"turn_status,omitempty"`
+	Provider                string                        `json:"provider,omitempty"`
+	Model                   string                        `json:"model,omitempty"`
+	CompactionID            string                        `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string                        `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string                        `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string                        `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string                        `json:"first_kept_entry_id,omitempty"`
+	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
+	KeptUserEntryIDs        []string                      `json:"kept_user_entry_ids,omitempty"`
+	Summary                 string                        `json:"summary,omitempty"`
+	CompactionTrigger       string                        `json:"compaction_trigger,omitempty"`
+	CompactionReason        string                        `json:"compaction_reason,omitempty"`
+	CompactionPhase         string                        `json:"compaction_phase,omitempty"`
+	CompactionOperationID   string                        `json:"compaction_operation_id,omitempty"`
+	CompactionRequestID     string                        `json:"compaction_request_id,omitempty"`
+	CompactionSource        string                        `json:"compaction_source,omitempty"`
+	TokensBefore            int64                         `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64                         `json:"tokens_after_estimate,omitempty"`
+	ContextUsageBefore      contextpolicy.Usage           `json:"context_usage_before,omitempty"`
+	ContextUsageAfter       contextpolicy.Usage           `json:"context_usage_after,omitempty"`
+	Error                   string                        `json:"error,omitempty"`
+	Metadata                map[string]string             `json:"metadata,omitempty"`
 }
 
 type AppendOptions struct {
@@ -974,7 +976,7 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		return replayed, nil
 	}
 	for _, entry := range entries {
-		if entry.Type != EntrySteeringRequested && entry.Type != EntrySteeringApplied {
+		if entry.Type != EntrySteeringRequested && entry.Type != EntrySteeringApplied && entry.Type != EntryModelContext {
 			continue
 		}
 		turnID, active := runtimeActiveTurn(r.entries[threadID])
@@ -1016,7 +1018,7 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		// Queue metadata never enters model history. Advance only an exact
 		// current anchor; this cannot revive state invalidated by another fact.
 		switch saved.Type {
-		case EntryQueueAdded, EntryQueueReordered, EntryQueueDeleted:
+		case EntryQueueAdded, EntryQueueReordered, EntryQueueDeleted, EntryModelContext:
 			if record, ok := r.providerStates[threadID]; ok && record.LeafEntryID == saved.ParentID {
 				record.LeafEntryID, record.UpdatedAt = saved.ID, saved.CreatedAt
 				r.setProviderStateLocked(threadID, record)
@@ -2457,6 +2459,7 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 		if compactionEntry.Summary != "" {
 			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
 			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, tail)
+			msg.ModelContextSnapshot = session.CloneModelContext(compactionEntry.ModelContextBaseline)
 			msg.EntryID = compactionEntry.ID
 			msg.ParentEntryID = compactionEntry.ParentID
 			msg.CompactionID = compactionEntry.CompactionID
@@ -2572,7 +2575,7 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
+	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)
 			msg.EntryID = entry.ID
@@ -2714,6 +2717,7 @@ func CompactionEntry(threadID, turnID string, result compaction.Result) (Entry, 
 		CompactionWindowID:      result.CompactionWindowID,
 		FirstKeptEntryID:        result.FirstKeptEntryID,
 		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
+		ModelContextBaseline:    session.CloneModelContext(result.ModelContextBaseline),
 		Summary:                 result.Summary,
 		CompactionTrigger:       string(result.Trigger),
 		CompactionReason:        string(result.Reason),
@@ -2826,6 +2830,9 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string)
 }
 
 func typeForMessage(msg session.Message) EntryType {
+	if msg.Kind == session.MessageKindModelContext {
+		return EntryModelContext
+	}
 	switch msg.Role {
 	case session.User:
 		return EntryUserMessage
@@ -3001,6 +3008,24 @@ func PrepareEntry(entry Entry) Entry {
 }
 
 func ValidateEntryMessageReferences(entry Entry) error {
+	if entry.ModelContextBaseline != nil {
+		normalized, err := session.NormalizeModelContext(entry.ModelContextBaseline)
+		if entry.Type != EntryCompaction || err != nil || !session.EqualModelContext(normalized, entry.ModelContextBaseline) {
+			return errors.New("invalid model context compaction baseline")
+		}
+	}
+	if entry.Message.ModelContextSnapshot != nil {
+		if (entry.Type != EntryUserMessage && entry.Type != EntrySteeringRequested && entry.Type != EntryModelContext) || entry.Message.Role != session.User {
+			return errors.New("model context requires canonical input or a typed snapshot record")
+		}
+		normalized, err := session.NormalizeModelContext(entry.Message.ModelContextSnapshot)
+		if err != nil || !session.EqualModelContext(normalized, entry.Message.ModelContextSnapshot) {
+			return errors.New("invalid or noncanonical model context")
+		}
+	}
+	if entry.Type == EntryModelContext && (entry.ThreadID == "" || entry.TurnID == "" || entry.RunID == "" || entry.Message.Kind != session.MessageKindModelContext || entry.Message.ModelContextSnapshot == nil || entry.Message.Content != "" || entry.Message.ToolCallID != "" || len(entry.Message.Context) != 0 || len(entry.Message.Attachments) != 0 || len(entry.Message.References) != 0) {
+		return errors.New("invalid typed model context record")
+	}
 	if len(entry.Message.Sources) > 0 {
 		if entry.Type != EntryAssistantMessage || entry.Message.Role != session.Assistant {
 			return errors.New("sources require canonical assistant text")
@@ -3092,28 +3117,29 @@ func StableHash(value string) string {
 }
 
 type canonicalEntryRaw struct {
-	Type                    EntryType         `json:"type"`
-	TurnStatus              TurnMarkerStatus  `json:"turn_status,omitempty"`
-	Message                 session.Message   `json:"message,omitempty"`
-	Provider                string            `json:"provider,omitempty"`
-	Model                   string            `json:"model,omitempty"`
-	CompactionID            string            `json:"compaction_id,omitempty"`
-	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
-	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
-	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
-	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
-	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
-	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
-	Summary                 string            `json:"summary,omitempty"`
-	CompactionTrigger       string            `json:"compaction_trigger,omitempty"`
-	CompactionReason        string            `json:"compaction_reason,omitempty"`
-	CompactionPhase         string            `json:"compaction_phase,omitempty"`
-	TokensBefore            int64             `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
-	Error                   string            `json:"error,omitempty"`
-	Metadata                map[string]string `json:"metadata,omitempty"`
-	Payload                 json.RawMessage   `json:"payload,omitempty"`
+	Type                    EntryType                     `json:"type"`
+	TurnStatus              TurnMarkerStatus              `json:"turn_status,omitempty"`
+	Message                 session.Message               `json:"message,omitempty"`
+	Provider                string                        `json:"provider,omitempty"`
+	Model                   string                        `json:"model,omitempty"`
+	CompactionID            string                        `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string                        `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string                        `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string                        `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string                        `json:"first_kept_entry_id,omitempty"`
+	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
+	KeptUserEntryIDs        []string                      `json:"kept_user_entry_ids,omitempty"`
+	Summary                 string                        `json:"summary,omitempty"`
+	CompactionTrigger       string                        `json:"compaction_trigger,omitempty"`
+	CompactionReason        string                        `json:"compaction_reason,omitempty"`
+	CompactionPhase         string                        `json:"compaction_phase,omitempty"`
+	TokensBefore            int64                         `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64                         `json:"tokens_after_estimate,omitempty"`
+	Error                   string                        `json:"error,omitempty"`
+	Metadata                map[string]string             `json:"metadata,omitempty"`
+	Payload                 json.RawMessage               `json:"payload,omitempty"`
 }
 
 func rawForEntry(entry Entry) string {
@@ -3131,6 +3157,7 @@ func rawForEntry(entry Entry) string {
 		CompactionWindowID:      entry.CompactionWindowID,
 		FirstKeptEntryID:        entry.FirstKeptEntryID,
 		KeptUserEntryIDs:        entry.KeptUserEntryIDs,
+		ModelContextBaseline:    entry.ModelContextBaseline,
 		Summary:                 entry.Summary,
 		CompactionTrigger:       entry.CompactionTrigger,
 		CompactionReason:        entry.CompactionReason,
@@ -3159,6 +3186,7 @@ func cloneEntries(entries []Entry) []Entry {
 
 func cloneEntry(entry Entry) Entry {
 	entry.Message = session.CloneMessage(entry.Message)
+	entry.ModelContextBaseline = session.CloneModelContext(entry.ModelContextBaseline)
 	entry.Payload = bytes.Clone(entry.Payload)
 	if entry.Metadata != nil {
 		entry.Metadata = mapsClone(entry.Metadata)

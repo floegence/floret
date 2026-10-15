@@ -101,27 +101,28 @@ type Request struct {
 }
 
 type Result struct {
-	CompactionID            string              `json:"compaction_id"`
-	OperationID             string              `json:"operation_id"`
-	RequestID               string              `json:"request_id"`
-	Source                  string              `json:"source"`
-	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
-	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
-	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
-	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
-	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
-	Summary                 string              `json:"summary"`
-	SummarySchemaVersion    string              `json:"summary_schema_version"`
-	Trigger                 Trigger             `json:"trigger"`
-	Reason                  Reason              `json:"reason"`
-	Phase                   Phase               `json:"phase"`
-	TokensBefore            int64               `json:"tokens_before"`
-	TokensAfterEstimate     int64               `json:"tokens_after_estimate"`
-	UsageBefore             contextpolicy.Usage `json:"usage_before"`
-	UsageAfter              contextpolicy.Usage `json:"usage_after"`
-	Details                 map[string]string   `json:"details,omitempty"`
-	CreatedAt               time.Time           `json:"created_at"`
+	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
+	CompactionID            string                        `json:"compaction_id"`
+	OperationID             string                        `json:"operation_id"`
+	RequestID               string                        `json:"request_id"`
+	Source                  string                        `json:"source"`
+	PreviousCompactionID    string                        `json:"previous_compaction_id,omitempty"`
+	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string                        `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string                      `json:"kept_user_entry_ids,omitempty"`
+	CompactedThroughEntryID string                        `json:"compacted_through_entry_id,omitempty"`
+	Summary                 string                        `json:"summary"`
+	SummarySchemaVersion    string                        `json:"summary_schema_version"`
+	Trigger                 Trigger                       `json:"trigger"`
+	Reason                  Reason                        `json:"reason"`
+	Phase                   Phase                         `json:"phase"`
+	TokensBefore            int64                         `json:"tokens_before"`
+	TokensAfterEstimate     int64                         `json:"tokens_after_estimate"`
+	UsageBefore             contextpolicy.Usage           `json:"usage_before"`
+	UsageAfter              contextpolicy.Usage           `json:"usage_after"`
+	Details                 map[string]string             `json:"details,omitempty"`
+	CreatedAt               time.Time                     `json:"created_at"`
 }
 
 type Preparation struct {
@@ -162,6 +163,12 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		req.Phase = PhaseGenerate
 	}
 	history := stripEmptyMessages(req.History)
+	var previousBaseline *session.ModelContextSnapshot
+	for _, msg := range history {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			previousBaseline = session.CloneModelContext(msg.ModelContextSnapshot)
+		}
+	}
 	history, err := removeActiveCompactionSummary(history, req)
 	if err != nil {
 		return Preparation{}, err
@@ -187,6 +194,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			PreviousCompactionID:    req.PreviousCompactionID,
 			KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 			CompactedThroughEntryID: lastEntryID(history),
+			ModelContextBaseline:    snapshotAtCut(previousBaseline, history),
 			SummarySchemaVersion:    SummarySchemaVersion,
 			Trigger:                 req.Trigger,
 			Reason:                  req.Reason,
@@ -284,6 +292,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		FirstKeptEntryID:        firstKept,
 		KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 		CompactedThroughEntryID: compactedThrough,
+		ModelContextBaseline:    snapshotAtCut(previousBaseline, head),
 		SummarySchemaVersion:    SummarySchemaVersion,
 		Trigger:                 req.Trigger,
 		Reason:                  req.Reason,
@@ -462,6 +471,7 @@ func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy c
 
 func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
 	checkpoint := BuildCheckpointMessage(result.Summary, keptUsers, tail)
+	checkpoint.ModelContextSnapshot = session.CloneModelContext(result.ModelContextBaseline)
 	checkpoint.CompactionID = result.CompactionID
 	checkpoint.CompactionGeneration = result.CompactionGeneration
 	checkpoint.CompactionWindowID = result.CompactionWindowID
@@ -745,7 +755,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	}
 	latest := -1
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == session.User && history[i].EntryID != "" {
+		if history[i].Role == session.User && history[i].Kind == session.MessageKindNormal && history[i].EntryID != "" {
 			latest = i
 			break
 		}
@@ -756,7 +766,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	var selected []session.Message
 	total := contextpolicy.EstimateMessageTokens(history[latest])
 	for i := latest - 1; i >= 0; i-- {
-		if history[i].Role != session.User || history[i].EntryID == "" {
+		if history[i].Role != session.User || history[i].Kind != session.MessageKindNormal || history[i].EntryID == "" {
 			continue
 		}
 		msgTokens := contextpolicy.EstimateMessageTokens(history[i])
@@ -1027,4 +1037,14 @@ func SummaryPromptWithTranscript(previousSummary, transcript string, policy cont
 	out.WriteString("\nTranscript to compact:\n")
 	out.WriteString(transcript)
 	return out.String()
+}
+
+func snapshotAtCut(baseline *session.ModelContextSnapshot, head []session.Message) *session.ModelContextSnapshot {
+	current := session.CloneModelContext(baseline)
+	for _, msg := range head {
+		if msg.ModelContextSnapshot != nil {
+			current = session.CloneModelContext(msg.ModelContextSnapshot)
+		}
+	}
+	return current
 }

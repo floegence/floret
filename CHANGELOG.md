@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.40.0 - 2026-10-15
+
+- Add compatible managed model-context snapshots at user admission and dynamic request preparation, with bounded validation, canonical full-record storage, stable user-role change projection and authorized current-context reads. Preserve published message-attached context semantics.
+- Preserve exact cut-point facts across compaction, retry, fork and restart; freeze transport retries and fail required collection with `model_context_unavailable`. Facts never authorize tools or become conversation/title anchors.
+- Append domain migration 16 -> 17 without rewriting historical facts or parsing opaque prose. Upgrade the envelope in the existing physical namespace so older writers reject upgraded stores.
+
+
 ## v7.39.2 - 2026-10-15
 
 - Avoid building disposable text-search postings during read-only SQLite inspection while retaining complete canonical and projection validation. Formal runtime startup still prepares the full search index.

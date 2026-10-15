@@ -43,13 +43,15 @@ func TestDurableContextSurvivesCorrectionResponseRestartForkAndRetry(t *testing.
 		t.Fatal(err)
 	}
 	input := UserInput{
-		References: []MessageReference{{ReferenceID: "device", Kind: MessageReferenceText, Label: "udesk26", Text: "User-selected device: ssh:host:udesk26"}, {ReferenceID: "file", Kind: MessageReferenceFile, Label: "README.md", Text: "Relevant file", ResourceRef: "opaque-locator-never-send", Truncated: true}},
-		Context:    []MessageContextItem{{Kind: "runtime", Title: "Tool execution environment", Text: "Actual tool runtime: local. Working directory: /project"}},
+		References:           []MessageReference{{ReferenceID: "device", Kind: MessageReferenceText, Label: "udesk26", Text: "User-selected device: ssh:host:udesk26"}, {ReferenceID: "file", Kind: MessageReferenceFile, Label: "README.md", Text: "Relevant file", ResourceRef: "opaque-locator-never-send", Truncated: true}},
+		Context:              []MessageContextItem{{Kind: "runtime", Title: "Tool execution environment", Text: "Actual tool runtime: local. Working directory: /project"}},
+		ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "date", Title: "Date", Text: "MANAGED_ORIGINAL_DATE"}}},
 	}
 	started, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: input, RequestKey: "send"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	input.ModelContextSnapshot.Sections[0].Text = "mutated caller snapshot"
 	input.Context[0].Text = "mutated caller slice"
 	input.References[0].Text = "mutated caller reference"
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: input, RequestKey: "send"}); !errors.Is(err, ErrRequestConflict) {
@@ -120,6 +122,15 @@ func TestDurableContextSurvivesCorrectionResponseRestartForkAndRetry(t *testing.
 	}
 	var original string
 	for index, request := range requests {
+		managed := 0
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text, "MANAGED_ORIGINAL_DATE") {
+				managed++
+			}
+		}
+		if managed != 1 {
+			t.Fatalf("request %d has %d managed baselines", index, managed)
+		}
 		found := 0
 		for _, message := range request.Messages {
 			if strings.Contains(message.Text, "opaque-locator-never-send") || strings.Contains(message.Text, "mutated caller") {

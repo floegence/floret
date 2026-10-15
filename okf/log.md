@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Managed model context
+
+- Document [canonical live snapshots](decisions/managed-model-context.md), exact cut baselines, authorized reads, safe failures and permanent schema 16 -> 17 migration.
+
 ## 2026-10-15 — Startup search-index construction
 
 - Document [inspection validation and runtime indexing](api/thread-query.md): read-only inspection omits disposable text postings, while formal startup builds the complete index without changing canonical storage or migration lineage.

@@ -8,3 +8,5 @@
 * [Provider Request Recovery](provider-retry.md) - One bounded owner for temporary model failures and attempt replacement.
 
 * [Provider Output Progress](provider-output-progress.md) - Transient received-output estimates and unvalidated argument previews.
+
+* [Managed Model Context](managed-model-context.md) - Canonical live snapshots, request freezing and exact compaction baselines.

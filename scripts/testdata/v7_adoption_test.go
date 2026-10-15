@@ -50,11 +50,11 @@ func TestPublishedCompleteQueueEditSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := runtime.UserInput{Text: "original", Attachments: []runtime.MessageAttachment{{ResourceRef: "host:old", Name: "old.png", MIMEType: "image/png"}}}
+	original := runtime.UserInput{ModelContextSnapshot: &runtime.ModelContextSnapshot{Sections: []runtime.ModelContextSection{{Key: "date", Title: "Date", Text: "2026-10-15"}}}, Text: "original", Attachments: []runtime.MessageAttachment{{ResourceRef: "host:old", Name: "old.png", MIMEType: "image/png"}}}
 	if _, err := service.ImportPendingInputs(t.Context(), runtime.ImportPendingInputsInput{ThreadID: created.ThreadID, Items: []runtime.ImportedPendingInput{{RequestKey: "queued", Input: original}}}); err != nil {
 		t.Fatal(err)
 	}
-	replacement := runtime.UserInput{References: []runtime.MessageReference{{ReferenceID: "text", Kind: runtime.MessageReferenceText, Label: "Snapshot", Text: "replacement"}}, Attachments: []runtime.MessageAttachment{{ResourceRef: "host:new", Name: "new.png", MIMEType: "image/png"}}}
+	replacement := runtime.UserInput{ModelContextSnapshot: &runtime.ModelContextSnapshot{Sections: []runtime.ModelContextSection{{Key: "date", Title: "Date", Text: "2026-10-16"}}}, References: []runtime.MessageReference{{ReferenceID: "text", Kind: runtime.MessageReferenceText, Label: "Snapshot", Text: "replacement"}}, Attachments: []runtime.MessageAttachment{{ResourceRef: "host:new", Name: "new.png", MIMEType: "image/png"}}}
 	command := runtime.EditQueuedInput{ThreadID: created.ThreadID, QueueItemID: "queue:queued", ExpectedInput: &original, Input: &replacement, RequestKey: "edit"}
 	if _, err := service.(runtime.ThreadQueueController).EditQueued(t.Context(), command); err != nil {
 		t.Fatal(err)

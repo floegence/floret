@@ -126,6 +126,8 @@ type ToolSurfaceRequest struct {
 }
 
 type ToolSurface struct {
+	ModelContextSnapshot *session.ModelContextSnapshot
+
 	// RefreshProviderSurface opts into resolving system text and tool definitions
 	// at each provider request. Model, reasoning, context policy and historical
 	// checkpoints stay fixed. The zero value preserves the first Turn surface.
@@ -197,6 +199,7 @@ type Options struct {
 	HostedToolDefinitions    []provider.HostedToolDefinition
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
+	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
 	CommitProviderContext    func(context.Context, *provider.State, []session.Message, bool) error
 	providerState            *runProviderState
 	MaxLengthContinuations   int
@@ -215,6 +218,7 @@ type Options struct {
 }
 
 type resolvedToolSurface struct {
+	modelContextSnapshot   *session.ModelContextSnapshot
 	refreshProviderSurface bool
 	tools                  *tools.Registry
 	toolDefinitions        []tools.ToolDefinition
@@ -930,6 +934,10 @@ steps:
 		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
+		activeHistory, err = e.admitModelContext(ctx, opts, activeHistory)
+		if err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
 			if isContextCancellation(err) {
@@ -1562,11 +1570,18 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	if err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
+	activeHistory, err = e.admitModelContext(ctx, opts, activeHistory)
+	if err != nil {
+		return ContextCompactionResult{Status: Failed, FailureOrigin: failureOrigin(Failed, err), Err: err, Messages: activeHistory}
+	}
 	tracker := NewContextPressureTracker(opts.PromptScopeID)
 	if err := e.restorePressureAnchor(ctx, tracker, opts); err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
 
+	if modelContextFixedTokens(activeHistory) >= contextpolicy.RequestSafeLimitTokens(opts.ContextPolicy) {
+		return ContextCompactionResult{Status: Failed, FailureOrigin: FailureOriginContract, Err: ErrFixedContextOverBudget, Messages: activeHistory}
+	}
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 	active, req, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
@@ -1789,6 +1804,7 @@ func cloneTurnSupplementalContext(in []TurnSupplementalContextItem) []TurnSupple
 func cloneResolvedToolSurface(surface resolvedToolSurface) resolvedToolSurface {
 	return resolvedToolSurface{
 		refreshProviderSurface: surface.refreshProviderSurface,
+		modelContextSnapshot:   session.CloneModelContext(surface.modelContextSnapshot),
 		tools:                  surface.tools,
 		toolDefinitions:        cloneProviderToolDefinitions(surface.toolDefinitions),
 		hostedToolDefinitions:  cloneHostedToolDefinitions(surface.hostedToolDefinitions),
@@ -1832,7 +1848,7 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 	}
 	initial, found, err := cache.InitialTurnSurface(ctx, e.prompt, opts.PromptScopeID, turnSurfaceID)
 	if err != nil {
-		return Options{}, err
+		return opts, err
 	}
 	var initialSurface *ProviderToolSurface
 	if found {
@@ -1851,7 +1867,7 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 		HostContext:            cloneStringMap(opts.Labels.Host),
 	})
 	if err != nil {
-		return Options{}, err
+		return opts, err
 	}
 	surfaceTools := surface.Tools
 	if surfaceTools == nil {
@@ -1881,6 +1897,7 @@ func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int,
 	opts.HostedToolDefinitions = hostedDefs
 	opts.toolSurface = resolvedToolSurface{
 		refreshProviderSurface: surface.RefreshProviderSurface,
+		modelContextSnapshot:   session.CloneModelContext(surface.ModelContextSnapshot),
 		tools:                  surfaceTools,
 		toolDefinitions:        cloneProviderToolDefinitions(toolDefs),
 		hostedToolDefinitions:  cloneHostedToolDefinitions(hostedDefs),
@@ -2172,7 +2189,7 @@ func stableMessageEntryID(runID string, index int, msg session.Message) string {
 func currentTurnUserEntryID(history []session.Message) string {
 	for index := len(history) - 1; index >= 0; index-- {
 		message := history[index]
-		if message.Role == session.User && message.Kind != session.MessageKindCompactionSummary && message.Kind != session.MessageKindControlSignal && strings.TrimSpace(message.EntryID) != "" {
+		if message.Role == session.User && message.Kind == session.MessageKindNormal && strings.TrimSpace(message.EntryID) != "" {
 			return message.EntryID
 		}
 	}
@@ -2468,26 +2485,27 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 		return provider.Request{}, errors.New("supplemental context cache fence was weakened by provider normalization")
 	}
 	req := provider.Request{
-		RunID:           opts.RunID,
-		ThreadID:        opts.ThreadID,
-		TurnID:          opts.TurnID,
-		PromptScopeID:   opts.PromptScopeID,
-		TraceID:         opts.TraceID,
-		Step:            step,
-		Provider:        opts.ProviderName,
-		Model:           opts.Model,
-		Messages:        messages,
-		EphemeralUser:   ephemeralUser,
-		Tools:           activeTools,
-		HostedTools:     activeHostedTools,
-		RawPlan:         plan,
-		Cache:           cachePolicy,
-		ContextPolicy:   opts.ContextPolicy,
-		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
-		Reasoning:       opts.Reasoning,
-		TurnSurface:     turnSurface,
-		PreviousState:   provider.CloneState(opts.PreviousProviderState),
-		Labels:          providerRequestLabels(opts.Labels),
+		ModelContextEntryID: modelContextEntryID(history),
+		RunID:               opts.RunID,
+		ThreadID:            opts.ThreadID,
+		TurnID:              opts.TurnID,
+		PromptScopeID:       opts.PromptScopeID,
+		TraceID:             opts.TraceID,
+		Step:                step,
+		Provider:            opts.ProviderName,
+		Model:               opts.Model,
+		Messages:            messages,
+		EphemeralUser:       ephemeralUser,
+		Tools:               activeTools,
+		HostedTools:         activeHostedTools,
+		RawPlan:             plan,
+		Cache:               cachePolicy,
+		ContextPolicy:       opts.ContextPolicy,
+		MaxOutputTokens:     opts.ContextPolicy.MaxOutputTokens,
+		Reasoning:           opts.Reasoning,
+		TurnSurface:         turnSurface,
+		PreviousState:       provider.CloneState(opts.PreviousProviderState),
+		Labels:              providerRequestLabels(opts.Labels),
 	}
 	if ephemeralUser != nil {
 		req.PreviousState = nil
@@ -2747,6 +2765,9 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	if err := validateContextBudget(opts.ContextPolicy); err != nil {
 		return provider.Request{}, history, false, err
 	}
+	if modelContextFixedTokens(history) >= contextpolicy.RequestSafeLimitTokens(opts.ContextPolicy) {
+		return provider.Request{}, history, false, ErrFixedContextOverBudget
+	}
 	compacted := false
 	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
 		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
@@ -2802,7 +2823,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	validation := compactedRequestValidationForRequest(req)
 	// Before compaction, use only provider-estimated fixed components. A total
 	// without a breakdown cannot prove that history is non-compressible.
-	validation.FixedInputTokens = fixedInputTokens(validation.RequestEstimate)
+	validation.FixedInputTokens = fixedInputTokens(validation.RequestEstimate) + modelContextFixedTokens(history)
 	if validation.FixedInputTokens >= validation.RequestSafeLimit {
 		err := fixedContextBudgetError(req, validation)
 		return provider.Request{}, history, compacted, errors.Join(err, closePreparedRequest(req))
@@ -3023,6 +3044,7 @@ func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot
 		plan.RequestShape = cache.RequestShapeHashes{}
 	}
 	return cache.ProviderRequestSnapshot{
+		ModelContextEntryID: req.ModelContextEntryID,
 		PromptScopeID:       req.PromptScopeID,
 		RunID:               req.RunID,
 		ThreadID:            req.ThreadID,
@@ -3573,6 +3595,7 @@ func validateCompactionResultIdentity(result compaction.Result, req CompactionRe
 
 func providerRequestWithCommittedCompaction(req provider.Request, committed committedCompaction) provider.Request {
 	result := committed.Result
+	req.ModelContextEntryID = modelContextEntryID(committed.ActiveMessages)
 	checkpoint := committedCompactionSummary(committed.ActiveMessages)
 	for i := range req.Messages {
 		if req.Messages[i].Kind != session.MessageKindCompactionSummary {
