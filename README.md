@@ -243,6 +243,11 @@ and context atomically while preserving identity and position.
 Already admitted or concurrently edited input is rejected without replacement.
 `ThreadQueueEditReader.LookupQueuedEdit` reads immutable before/after content
 from those canonical facts to validate retries after promotion or restart.
+`DeleteQueuedInput.ExpectedInputSHA256` optionally requires the complete pending input
+to match the lowercase SHA-256 hex digest of its `encoding/json` representation
+before removal, returning `ErrRequestConflict` for missing, started or
+changed items. Hosts can use this boundary to take a queued message back into an
+ordinary draft without racing automatic promotion. Exact committed retries succeed.
 See the [queue control contract](okf/api/runtime.md#queued-message-controls).
 
 Each thread has one in-memory runtime owner. `Send` first commits canonical turn

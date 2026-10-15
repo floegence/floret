@@ -1431,3 +1431,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 
 - 2026-10-14: Document canonical assistant citation ownership, Unicode ranges,
   late annotation segmentation and the additive v7.32 host projection.
+
+- 2026-10-14: Document conditional complete-input queue deletion and exact replay for host draft take-back.

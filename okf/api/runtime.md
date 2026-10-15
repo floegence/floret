@@ -563,3 +563,5 @@ the canonical failure. Hosts may offer configuration changes and explicit retry;
 no automatic retry or secondary lifecycle is introduced. Schema v12 is unchanged.
 See [budget guards](../../internal/engine/context_budget.go) and
 [restart and retry coverage](../../runtime/context_budget_test.go).
+
+Conditional queue removal uses `DeleteQueuedInput.ExpectedInputSHA256` to compare the complete pending input inside the runtime owner. Missing, started or changed input returns `ErrRequestConflict`; exact committed retries succeed after restart. This additive public API supports host take-back-to-draft flows without introducing another durable owner or changing schema 15.
