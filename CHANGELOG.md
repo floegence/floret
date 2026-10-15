@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.37.2 - 2026-10-15
+
+- Republish the v7.37.1 waiting-execution fixes under a fresh patch tag after a premature public module lookup cached the earlier tag as unavailable. Runtime behavior, public API, and schema are unchanged from v7.37.1.
+
 ## v7.37.1 - 2026-10-15
 
 - Preserve waiting Run settlement when an early answer starts its continuation. Serialize graceful Stop with the actor completion boundary so a pending question cannot become a failed, unresolved interaction.
