@@ -780,3 +780,23 @@ func TestPublishedEffectiveReusePolicy(t *testing.T) {
 		t.Fatalf("policy lost: %s", raw)
 	}
 }
+
+func TestPublishedProviderRetryContracts(t *testing.T) {
+	cause := &provider.ProviderHTTPError{StatusCode: 500, Code: "server_error"}
+	advice := provider.HTTPRetryAdvice(500, cause.Code, nil, time.Now())
+	wrapped := provider.WithRetryAdvice(cause, advice)
+	var retry provider.RetryAdviser
+	if !errors.Is(wrapped, cause) || !errors.As(wrapped, &retry) || retry.ProviderRetryAdvice().Category != provider.RetryTransient {
+		t.Fatal("retry advice or cause lost")
+	}
+	policy := runtime.DefaultProviderRetryPolicy()
+	if policy.MaxRetries != 4 || policy.MaxTimeoutRetries != 3 || policy.Validate() != nil {
+		t.Fatal("invalid defaults")
+	}
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "retry", StateCompatibilityKey: "retry:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported})
+	_, err := runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "retry", Name: "Retry"}, SystemPrompt: "Test", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway, runtime.WithAgentProviderRetryPolicy(policy), runtime.WithAgentHostedTools(provider.HostedToolDefinition{Name: "search", Type: "web_search", ReplaySafe: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = runtime.ThreadRunProgress{Phase: runtime.ThreadRunPhaseRetrying, Retry: &runtime.ProviderRetryProgress{Retry: 1, MaxRetries: 4, Reason: string(provider.RetryTransient), NextAttemptAt: time.Now()}}
+}

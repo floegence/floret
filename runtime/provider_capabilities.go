@@ -43,6 +43,7 @@ type turnExecutionOptions struct {
 	sink                     EventSink
 	toolSurfaceProvider      ToolSurfaceProvider
 	idGenerator              func(string) string
+	providerRetryPolicy      ProviderRetryPolicy
 	loopLimits               LoopLimits
 	runLabels                RunLabels
 	capabilities             CapabilityOptions

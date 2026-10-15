@@ -314,7 +314,7 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
 		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
 		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
-		LoopLimits: opts.loopLimits, RunLabels: opts.runLabels, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
+		ProviderRetryPolicy: opts.providerRetryPolicy, LoopLimits: opts.loopLimits, RunLabels: opts.runLabels, Capabilities: opts.capabilities, ThreadTitleMode: opts.threadTitleMode,
 	})
 	if err != nil {
 		return nil, err
@@ -617,7 +617,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
-		loopLimits: agent.loopLimits, capabilities: agent.capabilities,
+		providerRetryPolicy: agent.providerRetryPolicy, loopLimits: agent.loopLimits, capabilities: agent.capabilities,
 		runLabels:       cloneRunLabels(agent.runLabels),
 		threadTitleMode: agent.threadTitleMode, initialized: true,
 	}
@@ -810,4 +810,19 @@ func projectModelEvent(event provider.Event) modelEvent {
 		Usage:      event.Usage,
 		ResponseID: event.ResponseID, ResponseState: state, Err: event.Err,
 	}
+}
+
+func (request agentPreparedRequest) PrepareRetryModel(ctx context.Context, next modelRequest) (preparedModelRequest, error) {
+	replayer, ok := request.prepared.(provider.PreparedRequestReplay)
+	if !ok {
+		return nil, errors.New("expanded provider request does not support frozen retry preparation")
+	}
+	prepared, err := replayer.PrepareRetry(ctx, providerRequest(next))
+	if err != nil {
+		return nil, err
+	}
+	if prepared == nil {
+		return nil, errors.New("provider returned nil retry preparation")
+	}
+	return agentPreparedRequest{prepared: prepared}, nil
 }

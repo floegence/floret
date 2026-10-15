@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
@@ -317,6 +318,7 @@ type providerHostOptions struct {
 	Sink                     EventSink
 	ToolSurfaceProvider      ToolSurfaceProvider
 	IDGenerator              func(string) string
+	ProviderRetryPolicy      ProviderRetryPolicy
 	LoopLimits               LoopLimits
 	RunLabels                RunLabels
 	SubAgentRunTimeout       time.Duration
@@ -662,6 +664,7 @@ type EventSink interface {
 }
 
 type Event struct {
+	Retry              *ProviderRetryProgress         `json:"retry,omitempty"`
 	Type               observation.EventType          `json:"type"`
 	TraceID            identity.TraceID               `json:"trace_id,omitempty"`
 	RunID              identity.RunID                 `json:"run_id,omitempty"`
@@ -1322,6 +1325,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		SinkPolicy:               runtimeHarnessSinkPolicy(),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
 		NewID:                    opts.IDGenerator,
+		ProviderRetryPolicy:      opts.ProviderRetryPolicy,
 		LoopLimits:               opts.LoopLimits,
 		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
 		Capabilities:             opts.Capabilities,
@@ -1781,6 +1785,7 @@ type harnessOptions struct {
 	ThreadTitleMode          ThreadTitleMode
 	modelGatewayCapabilities modelGatewayCapabilities
 	NewID                    func(string) string
+	ProviderRetryPolicy      ProviderRetryPolicy
 	LoopLimits               LoopLimits
 	SubAgentRunTimeout       time.Duration
 	Capabilities             CapabilityOptions
@@ -1840,6 +1845,7 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 			ProviderName: cfg.Provider,
 			Model:        cfg.Model,
 			Reasoning:    model.Reasoning,
+			RetryPolicy:  providerretry.Policy(opts.ProviderRetryPolicy),
 		}
 	}
 	harness := agentharness.New(agentharness.Options{
@@ -1859,6 +1865,7 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 		CompactionPrompt:         compaction.PromptOptions{},
 		Reasoning:                model.Reasoning,
 		TurnPolicy:               turnPolicy,
+		ProviderRetryPolicy:      providerretry.Policy(opts.ProviderRetryPolicy),
 		LoopLimits:               loopLimits,
 		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
 		BeginBackgroundExecution: store.beginLifetimeOperationContext,
@@ -2021,6 +2028,7 @@ func runtimeEvent(ev event.Event) Event {
 	ev = sanitized
 	return Event{
 		Type:               ev.Type,
+		Retry:              cloneProviderRetryProgress(ev.Retry),
 		TraceID:            identity.TraceID(ev.TraceID),
 		RunID:              identity.RunID(ev.RunID),
 		ThreadID:           identity.ThreadID(ev.ThreadID),
@@ -2534,6 +2542,7 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.Sanitize(ev)
 	return observation.Event{
 		Type:               sanitized.Type,
+		Retry:              cloneProviderRetryProgress(sanitized.Retry),
 		TraceID:            identity.TraceID(sanitized.TraceID),
 		RunID:              identity.RunID(sanitized.RunID),
 		ThreadID:           identity.ThreadID(sanitized.ThreadID),
@@ -2585,6 +2594,17 @@ func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
 	var timeline *observation.ActivityTimeline
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if ev.Retry != nil {
+		kept := r.events[:0]
+		for _, previous := range r.events {
+			_, attempt, epoch := runtimeAttemptIdentity(previous.Metadata)
+			if (previous.Type == observation.EventTypeHostedToolCall || previous.Type == observation.EventTypeHostedToolResult) && attempt == ev.Retry.ReplacedAttemptID && epoch == ev.Retry.ReplacedAttemptEpoch {
+				continue
+			}
+			kept = append(kept, previous)
+		}
+		r.events = kept
+	}
 	r.events = append(r.events, observed)
 	if runtimeActivityTimelineEvent(ev.Type) {
 		built := observation.BuildActivityTimeline(observation.ActivityRunMeta{

@@ -363,6 +363,27 @@ Canonical storage and earlier checkpoints are unchanged. The default
 `ReasoningHistoryAll` preserves all reasoning. Include the selected policy in
 the gateway's state compatibility identity when changing an existing adapter.
 
+Automatic provider recovery belongs to Floret. Agents default to four additional
+attempts, with at most three timeout retries, jittered 2/4/8/10-second backoff and
+a five-minute window from the first failure. `WithAgentProviderRetryPolicy`
+accepts an explicit validated policy; use `ProviderRetryPolicy{Disabled: true}`
+to disable recovery. SDK transport retries must be disabled.
+
+Gateways expose structured `provider.RetryAdvice` through `RetryAdviser` and
+`WithRetryAdvice`, preserving the original error cause. `HTTPRetryAdvice`
+parses response-time server deadlines, exact machine codes and HTTP status.
+Authentication, billing, invalid contracts, unknown errors and unsafe hosted
+requests are never automatically replayed. Declare `HostedToolDefinition.ReplaySafe`
+only for verified read-only provider capabilities. Expanded prepared gateways
+implement `PreparedRequestReplay` to create fresh single-use attempts from the
+original immutable rendering without reopening attachments.
+
+Recovery retains the same turn, run and agent step. It replaces only the failed
+streaming draft, never confirmed tool effects. `Event.Retry` and
+`ThreadRunProgress.Retry` expose count, limit, absolute next-attempt time, reason
+and replaced attempt identity for a shared host countdown and working Stop.
+Retry state is memory-only; restart uses existing interrupted/manual Retry rules.
+
 `provider.Request.ReusePolicy` carries the Engine's effective cache namespace,
 native-state permission, and continuation preference through direct and prepared
 gateways. Gateways must not broaden this policy. Supplemental context disables

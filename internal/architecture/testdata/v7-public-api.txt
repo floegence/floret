@@ -257,7 +257,9 @@ const EventTruncated github.com/floegence/floret/v7/provider.EventType = "trunca
 type EventType string
 const EventUsage github.com/floegence/floret/v7/provider.EventType = "usage"
 type Gateway interface interface{Capabilities() github.com/floegence/floret/v7/provider.Capabilities; Identity() github.com/floegence/floret/v7/provider.Identity; Stream(context.Context, github.com/floegence/floret/v7/provider.Request) (<-chan github.com/floegence/floret/v7/provider.Event, error)}
+func HTTPRetryAdvice func(status int, code string, headers net/http.Header, receivedAt time.Time) github.com/floegence/floret/v7/provider.RetryAdvice
 type HostedToolDefinition struct
+field HostedToolDefinition.ReplaySafe bool tag="json:\"replay_safe,omitempty\""
 field HostedToolDefinition.Name string tag="json:\"name\""
 field HostedToolDefinition.Type string tag="json:\"type\""
 field HostedToolDefinition.Description string tag="json:\"description,omitempty\""
@@ -309,12 +311,14 @@ field OpenAICompatibleOptions.HTTPClient *net/http.Client
 field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provider.Capabilities
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
+type PreparedRequestReplay interface interface{PrepareRetry(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type ProviderHTTPError struct
 field ProviderHTTPError.Provider string
 field ProviderHTTPError.StatusCode int
 field ProviderHTTPError.Code string
 field ProviderHTTPError.Message string
 method *ProviderHTTPError.Error func() string
+method *ProviderHTTPError.ProviderRetryAdvice func() github.com/floegence/floret/v7/provider.RetryAdvice
 const ReasoningHistoryAll github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy = "all"
 const ReasoningHistoryCurrentUser github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy = "current_user"
 type ReasoningHistoryPolicy string
@@ -358,6 +362,17 @@ field RequestReusePolicy.PromptCacheNamespace string tag="json:\"prompt_cache_na
 field RequestReusePolicy.ProviderStateAllowed bool tag="json:\"provider_state_allowed\""
 field RequestReusePolicy.PreferContinuation bool tag="json:\"prefer_continuation\""
 method RequestReusePolicy.Validate func() error
+type RetryAdvice struct
+field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""
+field RetryAdvice.NotBefore time.Time tag="json:\"not_before,omitempty\""
+field RetryAdvice.Forbidden bool tag="json:\"forbidden,omitempty\""
+type RetryAdviser interface interface{ProviderRetryAdvice() github.com/floegence/floret/v7/provider.RetryAdvice}
+type RetryCategory string
+const RetryPermanent github.com/floegence/floret/v7/provider.RetryCategory = "permanent"
+const RetryRateLimit github.com/floegence/floret/v7/provider.RetryCategory = "rate_limit"
+const RetryStreamInterrupted github.com/floegence/floret/v7/provider.RetryCategory = "stream_interrupted"
+const RetryTimeout github.com/floegence/floret/v7/provider.RetryCategory = "timeout"
+const RetryTransient github.com/floegence/floret/v7/provider.RetryCategory = "transient"
 const RoleAssistant github.com/floegence/floret/v7/provider.MessageRole = "assistant"
 const RoleSystem github.com/floegence/floret/v7/provider.MessageRole = "system"
 const RoleTool github.com/floegence/floret/v7/provider.MessageRole = "tool"
@@ -407,6 +422,7 @@ field Usage.CostUSD float64 tag="json:\"cost_usd,omitempty\""
 field Usage.Source string tag="json:\"source,omitempty\""
 field Usage.Available bool tag="json:\"available,omitempty\""
 field Usage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
+func WithRetryAdvice func(cause error, advice github.com/floegence/floret/v7/provider.RetryAdvice) error
 
 package github.com/floegence/floret/v7/runtime
 type Agent struct
@@ -490,6 +506,7 @@ field CreateThreadInput.TaskDescription string tag="json:\"task_description,omit
 field CreateThreadInput.HostProfileRef string tag="json:\"host_profile_ref,omitempty\""
 field CreateThreadInput.ForkMode string tag="json:\"fork_mode,omitempty\""
 field CreateThreadInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+func DefaultProviderRetryPolicy func() github.com/floegence/floret/v7/runtime.ProviderRetryPolicy
 type DeleteQueuedInput struct
 field DeleteQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field DeleteQueuedInput.QueueItemID string tag="json:\"queue_item_id\""
@@ -588,6 +605,7 @@ var ErrTurnNotFound error
 var ErrUnsupportedSchema error
 var ErrUnsupportedStoreCapability error
 type Event struct
+field Event.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field Event.Type github.com/floegence/floret/v7/observation.EventType tag="json:\"type\""
 field Event.TraceID github.com/floegence/floret/v7/identity.TraceID tag="json:\"trace_id,omitempty\""
 field Event.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
@@ -787,6 +805,17 @@ field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v7/tools.ToolCall) (github.com/floegence/floret/v7/runtime.TurnSignal, bool, error)
 type PromoteQueuedInput = github.com/floegence/floret/v7/runtime.PromoteQueuedInput
+type ProviderRetryPolicy struct
+field ProviderRetryPolicy.Disabled bool tag="json:\"disabled,omitempty\""
+field ProviderRetryPolicy.MaxRetries int tag="json:\"max_retries\""
+field ProviderRetryPolicy.MaxTimeoutRetries int tag="json:\"max_timeout_retries\""
+field ProviderRetryPolicy.BaseDelay time.Duration tag="json:\"base_delay\""
+field ProviderRetryPolicy.MaxDelay time.Duration tag="json:\"max_delay\""
+field ProviderRetryPolicy.Jitter float64 tag="json:\"jitter\""
+field ProviderRetryPolicy.RecoveryWindow time.Duration tag="json:\"recovery_window\""
+field ProviderRetryPolicy.MaxServerWait time.Duration tag="json:\"max_server_wait\""
+method ProviderRetryPolicy.Validate func() error
+type ProviderRetryProgress = github.com/floegence/floret/v7/runtime.ProviderRetryProgress
 func ProviderSafeCoreControlText func(signal github.com/floegence/floret/v7/runtime.TurnSignal) string
 type ProviderToolSurface struct
 field ProviderToolSurface.SystemPrompt string
@@ -1008,6 +1037,7 @@ const ThreadRunPhaseStreaming github.com/floegence/floret/v7/runtime.ThreadRunPh
 const ThreadRunPhaseToolExecution github.com/floegence/floret/v7/runtime.ThreadRunPhase = "tool_execution"
 const ThreadRunPhaseWaitingResponse github.com/floegence/floret/v7/runtime.ThreadRunPhase = "waiting_response"
 type ThreadRunProgress struct
+field ThreadRunProgress.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field ThreadRunProgress.Phase github.com/floegence/floret/v7/runtime.ThreadRunPhase tag="json:\"phase\""
 type ThreadScope struct
 field ThreadScope.ParentID *github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_id,omitempty\""
@@ -1224,6 +1254,7 @@ func WithAgentHostedTools func(definitions ...github.com/floegence/floret/v7/pro
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v7/runtime.LoopLimits) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentManualCompactions func(source github.com/floegence/floret/v7/runtime.ManualCompactionSource) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentProviderRetryPolicy func(policy github.com/floegence/floret/v7/runtime.ProviderRetryPolicy) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentRunLabels func(labels github.com/floegence/floret/v7/runtime.RunLabels) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentSubAgentTimeout func(timeout time.Duration) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentThreadTitleMode func(mode github.com/floegence/floret/v7/runtime.ThreadTitleMode) github.com/floegence/floret/v7/runtime.AgentOption
@@ -2109,6 +2140,7 @@ const ContinuationReasonProviderTruncated github.com/floegence/floret/v7/observa
 const ContinuationReasonRetryEmpty github.com/floegence/floret/v7/observation.ContinuationReason = "retry_empty"
 const ContinuationReasonToolResults github.com/floegence/floret/v7/observation.ContinuationReason = "tool_results"
 type Event struct
+field Event.Retry *github.com/floegence/floret/v7/observation.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field Event.Type github.com/floegence/floret/v7/observation.EventType tag="json:\"type\""
 field Event.TraceID github.com/floegence/floret/v7/identity.TraceID tag="json:\"trace_id,omitempty\""
 field Event.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
@@ -2191,6 +2223,13 @@ const FinishReasonLength github.com/floegence/floret/v7/observation.FinishReason
 const FinishReasonStop github.com/floegence/floret/v7/observation.FinishReason = "stop"
 const FinishReasonToolCalls github.com/floegence/floret/v7/observation.FinishReason = "tool_calls"
 const FinishReasonUnknown github.com/floegence/floret/v7/observation.FinishReason = "unknown"
+type ProviderRetryProgress struct
+field ProviderRetryProgress.Retry int tag="json:\"retry\""
+field ProviderRetryProgress.MaxRetries int tag="json:\"max_retries\""
+field ProviderRetryProgress.NextAttemptAt time.Time tag="json:\"next_attempt_at\""
+field ProviderRetryProgress.Reason string tag="json:\"reason\""
+field ProviderRetryProgress.ReplacedAttemptID string tag="json:\"replaced_attempt_id,omitempty\""
+field ProviderRetryProgress.ReplacedAttemptEpoch int tag="json:\"replaced_attempt_epoch,omitempty\""
 type ProviderUsage struct
 field ProviderUsage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
 field ProviderUsage.OutputTokens int64 tag="json:\"output_tokens,omitempty\""

@@ -137,7 +137,11 @@ func TestProviderNativeHistorySurvivesNextStepFailure(t *testing.T) {
 	for _, cause := range []error{errors.New("network unavailable"), context.DeadlineExceeded} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "native", StateCompatibilityKey: "account:model"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, nativeHistoryStep("first", true), florettest.Step{ReturnError: cause}, nativeHistoryStep("probe", false))
-			host, service := testThreadService(t, gateway)
+			agent, agentErr := testAgent(gateway, WithAgentProviderRetryPolicy(ProviderRetryPolicy{Disabled: true}))
+			if agentErr != nil {
+				t.Fatal(agentErr)
+			}
+			host, service := testThreadServiceWithAgent(t, agent)
 			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
 			if err != nil {
 				t.Fatal(err)

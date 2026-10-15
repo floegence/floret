@@ -124,6 +124,8 @@ type State struct {
 }
 
 type HostedToolDefinition struct {
+	// ReplaySafe permits repeating the entire model request after uncertain dispatch.
+	ReplaySafe  bool `json:"replay_safe,omitempty"`
 	Name        string
 	Type        string
 	Description string
@@ -669,4 +671,9 @@ func usageHasValues(u Usage) bool {
 		u.TotalTokens != 0 ||
 		u.CostUSD != 0 ||
 		u.WindowInputTokens != 0
+}
+
+// PreparedRequestReplay preserves the frozen rendering across attempts.
+type PreparedRequestReplay interface {
+	PrepareRetry(context.Context, Request) (PreparedRequest, error)
 }

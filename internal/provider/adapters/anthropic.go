@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
@@ -140,6 +141,7 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 		client = http.DefaultClient
 	}
 	httpResp, err := client.Do(httpReq)
+	receivedAt := time.Now()
 	if err != nil {
 		return nil, err
 	}
@@ -151,15 +153,15 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if httpResp.StatusCode == http.StatusRequestEntityTooLarge || httpResp.StatusCode == http.StatusBadRequest && looksLikeContextOverflow(respBody) {
 		return nil, provider.ErrContextOverflow
 	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, protocolFailure("anthropic", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
+	}
 	var parsed anthropicResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
 	}
 	if parsed.Error != nil {
-		return nil, fmt.Errorf("anthropic provider error: %s", parsed.Error.Message)
-	}
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, fmt.Errorf("anthropic provider status %d", httpResp.StatusCode)
+		return nil, protocolFailure("anthropic", httpResp.StatusCode, httpResp.Header, respBody, receivedAt)
 	}
 	ch := make(chan provider.StreamEvent, len(parsed.Content)+4)
 	if len(parsed.Content) == 0 {

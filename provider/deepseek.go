@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/config"
@@ -384,6 +385,7 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	response, err := g.client.Do(request)
+	receivedAt := time.Now()
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +412,7 @@ func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, histo
 			// whether the server rejected transport bytes (413) or model context.
 			return nil, errors.Join(failure, ErrContextOverflow)
 		}
-		return nil, failure
+		return nil, WithRetryAdvice(failure, HTTPRetryAdvice(response.StatusCode, envelope.Error.Code, response.Header, receivedAt))
 	}
 	out := make(chan Event, 32)
 	go func() {
@@ -925,8 +927,6 @@ func (p *deepSeekPrepared) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
-	p.body = nil
-	p.history = deepSeekHistory{}
 	return nil
 }
 
@@ -940,4 +940,11 @@ func validDeepSeekToolName(name string) bool {
 		}
 	}
 	return true
+}
+
+func (p *deepSeekPrepared) PrepareRetry(ctx context.Context, _ Request) (PreparedRequest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &deepSeekPrepared{gateway: p.gateway, body: p.body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: p.fingerprint, estimate: p.estimate}, nil
 }

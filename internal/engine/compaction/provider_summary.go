@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providerretry"
 	"strings"
 	"unicode/utf8"
 
@@ -20,6 +21,7 @@ const (
 )
 
 type ProviderSummaryGenerator struct {
+	RetryPolicy   providerretry.Policy
 	Provider      provider.Provider
 	ProviderName  string
 	Model         string
@@ -68,6 +70,10 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			}
 			details.Attempts++
 			req := g.summaryRequest(prep, previous, batch.transcript, policy, cap)
+			req.Attempt = 1
+			req.AttemptEpoch = details.Attempts
+			req.LogicalRequestID = fmt.Sprintf("%s:batch:%d", req.RunID, details.Batches)
+			req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
 			prepared, inputTokens, err := g.prepareSummaryRequest(ctx, req)
 			if err != nil {
 				return "", details, err
@@ -92,12 +98,48 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			if details.RequestBudgetTokens > details.PeakRequestBudgetTokens {
 				details.PeakRequestBudgetTokens = details.RequestBudgetTokens
 			}
-			summary, truncated, err := g.streamSummary(ctx, req, prepared)
-			if prepared != nil {
-				if closeErr := prepared.Close(); closeErr != nil {
-					return "", details, errors.Join(err, closeErr)
-				}
+
+			type summaryOutput struct {
+				text      string
+				truncated bool
 			}
+			output, err := providerretry.Run(ctx, g.RetryPolicy, func(attemptCtx context.Context, n int) (summaryOutput, error) {
+				current := prepared
+				if n > 0 {
+					if details.Attempts >= maxSummaryRequests {
+						return summaryOutput{}, errors.New("compaction summary request limit exceeded")
+					}
+					details.Attempts++
+					req.Attempt = n + 1
+					req.AttemptEpoch = details.Attempts
+					req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
+					var err error
+					current, _, err = g.prepareSummaryRequest(attemptCtx, req)
+					if err != nil {
+						return summaryOutput{}, err
+					}
+					if current != nil && prepared != nil && current.PayloadFingerprint() != prepared.PayloadFingerprint() {
+						current.Close()
+						return summaryOutput{}, errors.New("compaction retry changed frozen input")
+					}
+				}
+				req.Attempt = n + 1
+				req.AttemptEpoch = details.Attempts
+				req.LogicalRequestID = fmt.Sprintf("%s:batch:%d", req.RunID, details.Batches)
+				req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
+				text, truncated, err := g.streamSummary(attemptCtx, req, current)
+				if current != nil {
+					if closeErr := current.Close(); closeErr != nil {
+						return summaryOutput{}, providerretry.WithAdvice(errors.Join(err, closeErr), providerretry.Advice{Category: providerretry.Permanent})
+					}
+				}
+				if errors.Is(err, provider.ErrStreamMissingTerminal) {
+					err = providerretry.WithAdvice(err, providerretry.Advice{Category: providerretry.Interrupted})
+				}
+				return summaryOutput{text, truncated}, err
+			}, nil)
+			summary, truncated := output.text, output.truncated
+
 			if errors.Is(err, provider.ErrContextOverflow) {
 				details.OverflowRetries++
 				if batch.bytes <= 1 {
