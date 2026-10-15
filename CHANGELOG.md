@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.40.2 - 2026-10-15
+
+- Keep canonical acceptance fault injection installed before concurrent runtime work starts. Remove a race in the promotion regression fixture without changing runtime behavior, public API, or domain schema.
+
 ## v7.40.1 - 2026-10-15
 
 - Validate provider-hosted tool events against the exact frozen request rather than independently advancing run options. Preserve rejection of unrequested tools, provider failure classification, public API, and domain schema 17.
