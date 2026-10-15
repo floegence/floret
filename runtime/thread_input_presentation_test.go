@@ -17,7 +17,7 @@ import (
 // Exercise the public view, workspace summary, subscription, and durable recovery
 // with provider tool arguments rather than hand-constructed presentation objects.
 func TestThreadServicePreservesAskUserPresentationAndAnswerValues(t *testing.T) {
-	const arguments = `{"reason_code":"missing_external_input","required_from_user":["route","note"],"evidence_refs":[],"questions":[{"id":"route","header":"Choose a route","question":"Which route should the deployment use?","response_mode":"select_or_write","is_secret":false,"choices_exhaustive":false,"write_label":"Another route","write_placeholder":"Describe your route","choices":[{"choice_id":"safe","label":"Staged rollout","description":"Deploy to a small group first.","kind":"select"},{"choice_id":"all","label":"Full rollout","kind":"select"}]},{"id":"note","header":"Deployment note","question":"What should the release note say?","response_mode":"write","is_secret":false}]}`
+	const arguments = `{"reason_code":"missing_external_input","required_from_user":["route","note"],"evidence_refs":["inspect-1"],"questions":[{"id":"route","header":"Choose a route","question":"Which route should the deployment use?","response_mode":"select_or_write","is_secret":false,"choices_exhaustive":false,"write_label":"Another route","write_placeholder":"Describe your route","choices":[{"choice_id":"safe","label":"Staged rollout","description":"Deploy to a small group first.","kind":"select"},{"choice_id":"all","label":"Full rollout","kind":"select"}]},{"id":"note","header":"Deployment note","question":"What should the release note say?","response_mode":"write","is_secret":false}]}`
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "presentation", StateCompatibilityKey: "test:presentation:v1"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
@@ -66,6 +66,8 @@ func TestThreadServicePreservesAskUserPresentationAndAnswerValues(t *testing.T) 
 	}
 	expected := assertRichInputPresentation(t, waiting.Interactions[0].Input)
 	corrupt := func(input *InputPresentation) {
+		input.RequiredFromUser[0] = "caller mutation"
+		input.EvidenceRefs[0] = "caller mutation"
 		input.Questions[0].Options[0] = "caller mutation"
 		input.Questions[0].Choices[0].Description = "caller mutation"
 		*input.Questions[0].ChoicesExhaustive = true
@@ -130,6 +132,9 @@ func TestThreadServicePreservesAskUserPresentationAndAnswerValues(t *testing.T) 
 
 func assertRichInputPresentation(t *testing.T, input *InputPresentation) map[string]any {
 	t.Helper()
+	if input.ReasonCode != "missing_external_input" || !reflect.DeepEqual(input.RequiredFromUser, []string{"route", "note"}) || !reflect.DeepEqual(input.EvidenceRefs, []string{"inspect-1"}) {
+		t.Fatalf("source evidence metadata lost: %#v", input)
+	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +168,9 @@ func TestAskUserPresentationLeavesAbsentHistoricalMetadataUnset(t *testing.T) {
 	}}})
 	if len(input.Questions) != 1 {
 		t.Fatal("historical question lost")
+	}
+	if input.ReasonCode != "" || input.RequiredFromUser != nil || input.EvidenceRefs != nil {
+		t.Fatalf("invented historical evidence: %#v", input)
 	}
 	question := input.Questions[0]
 	if question.Header != "" || question.WritePlaceholder != "" || question.ChoicesExhaustive != nil || question.Choices != nil {

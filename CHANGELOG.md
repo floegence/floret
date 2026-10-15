@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.43.0 - 2026-10-15
+
+- Expose optional Ask User reason, required-input and evidence references through one detached canonical input presentation across subscriptions, current views, summaries, history and restart. References never grant access or permission. Preserve existing tool-requested input, answer semantics, historical records and domain schema 17.
+
 ## v7.42.0 - 2026-10-15
 
 - Add validated Agent physical-request deadlines shared by normal requests, compaction and titles. Bound first output, semantic output pauses, hosted-tool waits and total attempt duration while preserving the existing frozen recovery budget and execution cancellation authority.

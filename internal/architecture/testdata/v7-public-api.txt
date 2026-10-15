@@ -699,6 +699,9 @@ field InputChoice.Value string tag="json:\"value\""
 field InputChoice.Label string tag="json:\"label\""
 field InputChoice.Description string tag="json:\"description,omitempty\""
 type InputPresentation struct
+field InputPresentation.ReasonCode string tag="json:\"reason_code,omitempty\""
+field InputPresentation.RequiredFromUser []string tag="json:\"required_from_user,omitempty\""
+field InputPresentation.EvidenceRefs []string tag="json:\"evidence_refs,omitempty\""
 field InputPresentation.Summary string tag="json:\"summary\""
 field InputPresentation.Questions []github.com/floegence/floret/v7/runtime.InputQuestion tag="json:\"questions\""
 type InputQuestion struct

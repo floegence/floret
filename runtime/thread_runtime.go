@@ -369,8 +369,13 @@ type ApprovalPresentation struct {
 }
 
 type InputPresentation struct {
-	Summary   string          `json:"summary"`
-	Questions []InputQuestion `json:"questions"`
+	// ReasonCode, RequiredFromUser and EvidenceRefs preserve validated ask_user
+	// intent. Evidence references express association, never access or permission.
+	ReasonCode       string          `json:"reason_code,omitempty"`
+	RequiredFromUser []string        `json:"required_from_user,omitempty"`
+	EvidenceRefs     []string        `json:"evidence_refs,omitempty"`
+	Summary          string          `json:"summary"`
+	Questions        []InputQuestion `json:"questions"`
 }
 
 // InputChoice preserves display metadata alongside the established v7 answer value.
@@ -4182,6 +4187,8 @@ func cloneInputPresentation(input *InputPresentation) *InputPresentation {
 		return nil
 	}
 	out := *input
+	out.RequiredFromUser = slices.Clone(input.RequiredFromUser)
+	out.EvidenceRefs = slices.Clone(input.EvidenceRefs)
 	out.Questions = slices.Clone(input.Questions)
 	for index := range out.Questions {
 		question := &out.Questions[index]
@@ -4707,6 +4714,19 @@ func inputPresentationFromControlSignal(text string, payload map[string]any) *In
 	presentation := &InputPresentation{Summary: strings.TrimSpace(text)}
 	if payload == nil {
 		return presentation
+	}
+	presentation.ReasonCode = optionalString(payload["reason_code"])
+	for _, field := range []struct {
+		name string
+		out  *[]string
+	}{{"required_from_user", &presentation.RequiredFromUser}, {"evidence_refs", &presentation.EvidenceRefs}} {
+		if values, ok := payload[field.name].([]any); ok {
+			for _, value := range values {
+				if text, ok := value.(string); ok {
+					*field.out = append(*field.out, text)
+				}
+			}
+		}
 	}
 	if summary := strings.TrimSpace(fmt.Sprint(payload["summary"])); summary != "" && summary != "<nil>" {
 		presentation.Summary = summary
