@@ -195,12 +195,6 @@ func run[T any](ctx context.Context, p Policy, attempt func(context.Context, int
 	var result T
 	var lastErr error
 	var deadline time.Time
-	var cancel context.CancelFunc
-	defer func() {
-		if cancel != nil {
-			cancel()
-		}
-	}()
 	timeoutRetries := 0
 	for n := 0; ; n++ {
 		if !deadline.IsZero() && !now().Before(deadline) {
@@ -243,7 +237,9 @@ func run[T any](ctx context.Context, p Policy, attempt func(context.Context, int
 		current := now()
 		if deadline.IsZero() {
 			deadline = current.Add(p.RecoveryWindow)
-			ctx, cancel = context.WithDeadline(ctx, deadline)
+			recoveryCtx, cancelRecovery := context.WithDeadline(ctx, deadline)
+			defer cancelRecovery()
+			ctx = recoveryCtx
 		}
 		delay := p.BaseDelay
 		for i := 0; i < n && delay < p.MaxDelay; i++ {

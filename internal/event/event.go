@@ -69,20 +69,23 @@ const (
 )
 
 type Event struct {
-	Retry         *providerretry.Info `json:"retry,omitempty"`
-	Type          Type                `json:"type"`
-	TraceID       string              `json:"trace_id,omitempty"`
-	RunID         string              `json:"run_id"`
-	ThreadID      string              `json:"thread_id,omitempty"`
-	TurnID        string              `json:"turn_id,omitempty"`
-	PromptScopeID string              `json:"prompt_scope_id,omitempty"`
-	Step          int                 `json:"step,omitempty"`
-	Provider      string              `json:"provider,omitempty"`
-	Model         string              `json:"model,omitempty"`
-	Message       string              `json:"message,omitempty"`
-	ToolID        string              `json:"tool_id,omitempty"`
-	ToolName      string              `json:"tool_name,omitempty"`
-	ToolKind      string              `json:"tool_kind,omitempty"`
+	EstimatedOutputTokens  int64                  `json:"estimated_output_tokens,omitempty"`
+	ArgumentPreview        *tools.ArgumentPreview `json:"argument_preview,omitempty"`
+	ArgumentPreviewUpdated bool                   `json:"argument_preview_updated,omitempty"`
+	Retry                  *providerretry.Info    `json:"retry,omitempty"`
+	Type                   Type                   `json:"type"`
+	TraceID                string                 `json:"trace_id,omitempty"`
+	RunID                  string                 `json:"run_id"`
+	ThreadID               string                 `json:"thread_id,omitempty"`
+	TurnID                 string                 `json:"turn_id,omitempty"`
+	PromptScopeID          string                 `json:"prompt_scope_id,omitempty"`
+	Step                   int                    `json:"step,omitempty"`
+	Provider               string                 `json:"provider,omitempty"`
+	Model                  string                 `json:"model,omitempty"`
+	Message                string                 `json:"message,omitempty"`
+	ToolID                 string                 `json:"tool_id,omitempty"`
+	ToolName               string                 `json:"tool_name,omitempty"`
+	ToolKind               string                 `json:"tool_kind,omitempty"`
 	// ToolCallMessage is the Engine's authoritative local call for journal projection.
 	// It never crosses an observation boundary.
 	ToolCallMessage *session.Message `json:"-"`
@@ -274,6 +277,16 @@ func withoutMetadataKey(value any, key string) any {
 
 func sanitizePathRefs(e Event) Event {
 	e.ToolCallMessage = nil
+	e.ArgumentPreview = e.ArgumentPreview.Clone()
+	if e.ArgumentPreview != nil {
+		e.ArgumentPreview.DisplayName = safeActivityText(e.ArgumentPreview.DisplayName, 200)
+		if e.ArgumentPreview.Additions != nil && *e.ArgumentPreview.Additions < 0 {
+			e.ArgumentPreview.Additions = nil
+		}
+		if e.ArgumentPreview.Deletions != nil && *e.ArgumentPreview.Deletions < 0 {
+			e.ArgumentPreview.Deletions = nil
+		}
+	}
 	e.Message = SafePathRefsText(e.Message)
 	e.Args = SafePathRefsText(e.Args)
 	e.Result = SafePathRefsText(e.Result)

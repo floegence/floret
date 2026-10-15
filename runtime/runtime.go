@@ -829,18 +829,21 @@ func (t StreamObservationType) Valid() bool {
 // StreamObservation is a provider-neutral, engine-confirmed streaming fact for
 // hosts that render live assistant output from Floret runtime events.
 type StreamObservation struct {
-	Type             StreamObservationType     `json:"type"`
-	Text             string                    `json:"text,omitempty"`
-	ToolCallStream   *ToolCallStream           `json:"tool_call_stream,omitempty"`
-	Reason           string                    `json:"reason,omitempty"`
-	FinishReason     observation.FinishReason  `json:"finish_reason,omitempty"`
-	RawFinishReason  string                    `json:"raw_finish_reason,omitempty"`
-	FinishInferred   bool                      `json:"finish_inferred,omitempty"`
-	Attempt          int                       `json:"attempt,omitempty"`
-	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
-	AttemptID        string                    `json:"attempt_id,omitempty"`
-	AttemptEpoch     int                       `json:"attempt_epoch,omitempty"`
-	Labels           RunLabels                 `json:"labels,omitempty"`
+	EstimatedOutputTokens  int64                     `json:"estimated_output_tokens,omitempty"`
+	ArgumentPreview        *tools.ArgumentPreview    `json:"argument_preview,omitempty"`
+	ArgumentPreviewUpdated bool                      `json:"argument_preview_updated,omitempty"`
+	Type                   StreamObservationType     `json:"type"`
+	Text                   string                    `json:"text,omitempty"`
+	ToolCallStream         *ToolCallStream           `json:"tool_call_stream,omitempty"`
+	Reason                 string                    `json:"reason,omitempty"`
+	FinishReason           observation.FinishReason  `json:"finish_reason,omitempty"`
+	RawFinishReason        string                    `json:"raw_finish_reason,omitempty"`
+	FinishInferred         bool                      `json:"finish_inferred,omitempty"`
+	Attempt                int                       `json:"attempt,omitempty"`
+	LogicalRequestID       identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	AttemptID              string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch           int                       `json:"attempt_epoch,omitempty"`
+	Labels                 RunLabels                 `json:"labels,omitempty"`
 }
 
 func (s StreamObservation) Validate() error {
@@ -2363,19 +2366,23 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	default:
 		return nil
 	}
+	safe := event.Sanitize(ev)
 	out := &StreamObservation{
-		Type:             streamType,
-		Text:             text,
-		ToolCallStream:   toolCallStream,
-		Reason:           reason,
-		FinishReason:     observation.FinishReason(ev.FinishReason),
-		RawFinishReason:  ev.RawFinishReason,
-		FinishInferred:   ev.FinishInferred,
-		Attempt:          streamAttemptFromMetadata(safeMetadata),
-		LogicalRequestID: identity.LogicalRequestID(streamStringFromMetadata(safeMetadata, "logical_request_id")),
-		AttemptID:        streamStringFromMetadata(safeMetadata, "attempt_id"),
-		AttemptEpoch:     streamIntFromMetadata(safeMetadata, "attempt_epoch"),
-		Labels:           streamLabelsFromMetadata(safeMetadata),
+		EstimatedOutputTokens:  ev.EstimatedOutputTokens,
+		ArgumentPreview:        safe.ArgumentPreview,
+		ArgumentPreviewUpdated: ev.ArgumentPreviewUpdated,
+		Type:                   streamType,
+		Text:                   text,
+		ToolCallStream:         toolCallStream,
+		Reason:                 reason,
+		FinishReason:           observation.FinishReason(ev.FinishReason),
+		RawFinishReason:        ev.RawFinishReason,
+		FinishInferred:         ev.FinishInferred,
+		Attempt:                streamAttemptFromMetadata(safeMetadata),
+		LogicalRequestID:       identity.LogicalRequestID(streamStringFromMetadata(safeMetadata, "logical_request_id")),
+		AttemptID:              streamStringFromMetadata(safeMetadata, "attempt_id"),
+		AttemptEpoch:           streamIntFromMetadata(safeMetadata, "attempt_epoch"),
+		Labels:                 streamLabelsFromMetadata(safeMetadata),
 	}
 	if out.Reason == "" && ev.Err != "" {
 		out.Reason = ev.Err

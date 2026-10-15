@@ -3843,6 +3843,18 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 
 func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request) (StepOutput, error) {
 	out := StepOutput{}
+	var estimate outputEstimate
+	registry := opts.toolSurface.tools
+	if registry == nil {
+		registry = e.tools
+	}
+	previews := map[string]*argumentPreviewCall{}
+	previewFor := func(id, name string) *argumentPreviewCall {
+		if previews[id] == nil {
+			previews[id] = newArgumentPreviewCall(registry, name)
+		}
+		return previews[id]
+	}
 	hostedTools := map[string]struct{}{}
 	for _, def := range opts.HostedToolDefinitions {
 		name := strings.TrimSpace(def.Name)
@@ -3854,6 +3866,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	streamedToolCallEnds := map[string]struct{}{}
 	attemptMetadata := map[string]any{"logical_request_id": req.LogicalRequestID, "attempt_id": req.AttemptID, "attempt_epoch": req.AttemptEpoch, "attempt": req.Attempt}
 	emitAttemptEvent := func(ev event.Event) {
+		ev.EstimatedOutputTokens = estimate.tokens()
 		base, _ := ev.Metadata.(map[string]any)
 		ev.Metadata = mergeAnyMetadata(attemptMetadata, base)
 		e.emit(opts, ev)
@@ -3895,20 +3908,41 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			switch ev.Type {
 			case provider.Delta:
 				out.Text += ev.Text
+				estimate.append("text", ev.Text)
 				emitAttemptEvent(event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
 				out.Reasoning += ev.Text
+				estimate.append("reasoning", ev.Text)
 				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCallStart:
+				previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name)
 				emitAttemptEvent(event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
 			case provider.ToolCallDelta:
-				emitAttemptEvent(event.Event{Type: event.ProviderToolCallDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				estimate.append("tool:"+ev.ToolCallStream.ID, ev.Text)
+				preview, updated, failed := previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name).append(ev.Text, false)
+				emitAttemptEvent(event.Event{Type: event.ProviderToolCallDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name, ArgumentPreview: preview, ArgumentPreviewUpdated: updated, Metadata: map[string]any{"argument_preview_unavailable": failed}})
 			case provider.ToolCallEnd:
-				emitAttemptEvent(event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				var preview *tools.ArgumentPreview
+				var updated, failed bool
+				if call := previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name); call.bytes > 0 {
+					preview, updated, failed = call.append("", true)
+				}
+				emitAttemptEvent(event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name, ArgumentPreview: preview, ArgumentPreviewUpdated: updated, Metadata: map[string]any{"argument_preview_unavailable": failed}})
 				streamedToolCallEnds[ev.ToolCallStream.ID] = struct{}{}
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 				for _, call := range ev.ToolCalls {
+					pc := previewFor(call.ID, call.Name)
+					if pc.bytes == 0 && call.Args != "" {
+						estimate.append("tool:"+call.ID, call.Args)
+						preview, updated, failed := pc.append(call.Args, true)
+						kind := event.ProviderToolCallEnd
+						if _, ended := streamedToolCallEnds[call.ID]; ended {
+							kind = event.ProviderToolCallDelta
+						}
+						streamedToolCallEnds[call.ID] = struct{}{}
+						emitAttemptEvent(event.Event{Type: kind, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ArgumentPreview: preview, ArgumentPreviewUpdated: updated, Metadata: map[string]any{"argument_preview_unavailable": failed}})
+					}
 					if _, ok := streamedToolCallEnds[call.ID]; ok {
 						continue
 					}

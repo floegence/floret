@@ -278,8 +278,9 @@ const (
 // ThreadRunProgress is the process-local presentation of an advancing run.
 // It is absent while the thread is idle, terminal, or waiting for interaction.
 type ThreadRunProgress struct {
-	Retry *ProviderRetryProgress `json:"retry,omitempty"`
-	Phase ThreadRunPhase         `json:"phase"`
+	Request *ProviderRequestProgress `json:"request,omitempty"`
+	Retry   *ProviderRetryProgress   `json:"retry,omitempty"`
+	Phase   ThreadRunPhase           `json:"phase"`
 }
 
 // TurnOutcome is a terminal outcome rendered on one turn, never as thread failure.
@@ -423,22 +424,23 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
-	Turns          []ThreadTurn        `json:"turns"`
-	TurnKind       TurnKind            `json:"turn_kind,omitempty"`
-	Cancellation   *ThreadCancellation `json:"cancellation,omitempty"`
-	RestoredInputs []RestoredInput     `json:"restored_inputs,omitempty"`
-	ThreadID       identity.ThreadID   `json:"thread_id"`
-	ViewVersion    uint64              `json:"view_version"`
-	Activity       ThreadActivity      `json:"activity"`
-	Attention      AttentionSummary    `json:"attention"`
-	LastOutcome    *TurnOutcome        `json:"last_outcome,omitempty"`
-	Failure        *ThreadTurnFailure  `json:"failure,omitempty"`
-	TurnID         identity.TurnID     `json:"turn_id,omitempty"`
-	RunID          identity.RunID      `json:"run_id,omitempty"`
-	RunProgress    *ThreadRunProgress  `json:"run_progress,omitempty"`
-	Items          []ThreadItem        `json:"items,omitempty"`
-	Queue          []QueuedInput       `json:"queue,omitempty"`
-	Interactions   []ThreadInteraction `json:"interactions,omitempty"`
+	ToolCallPreviews []ThreadToolCallPreview `json:"tool_call_previews,omitempty"`
+	Turns            []ThreadTurn            `json:"turns"`
+	TurnKind         TurnKind                `json:"turn_kind,omitempty"`
+	Cancellation     *ThreadCancellation     `json:"cancellation,omitempty"`
+	RestoredInputs   []RestoredInput         `json:"restored_inputs,omitempty"`
+	ThreadID         identity.ThreadID       `json:"thread_id"`
+	ViewVersion      uint64                  `json:"view_version"`
+	Activity         ThreadActivity          `json:"activity"`
+	Attention        AttentionSummary        `json:"attention"`
+	LastOutcome      *TurnOutcome            `json:"last_outcome,omitempty"`
+	Failure          *ThreadTurnFailure      `json:"failure,omitempty"`
+	TurnID           identity.TurnID         `json:"turn_id,omitempty"`
+	RunID            identity.RunID          `json:"run_id,omitempty"`
+	RunProgress      *ThreadRunProgress      `json:"run_progress,omitempty"`
+	Items            []ThreadItem            `json:"items,omitempty"`
+	Queue            []QueuedInput           `json:"queue,omitempty"`
+	Interactions     []ThreadInteraction     `json:"interactions,omitempty"`
 }
 
 // ThreadContextSnapshot is the canonical context and compaction projection for
@@ -2365,6 +2367,7 @@ func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntim
 		actor.state.view.TurnID = ""
 		actor.state.view.RunID = ""
 		actor.state.view.RunProgress = nil
+		actor.state.view.ToolCallPreviews = nil
 		actor.state.view.ViewVersion++
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -2482,6 +2485,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.executionSealed = false
 		}
 		actor.state.view.RunProgress = nil
+		actor.state.view.ToolCallPreviews = nil
 		if refreshErr == nil {
 			actor.state.view.Turns = canonical.Turns
 			actor.state.view.Items = canonical.Items
@@ -2826,12 +2830,16 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 			return nil
 		}
 		activityChanged := actor.applyToolActivity(event.ActivityTimeline, event.Timestamp)
+		previewChanged := actor.applyArgumentPreview(event)
 		progress, progressEvent := threadRunProgressForEvent(event)
+		if progressEvent {
+			progress = mergeRequestProgress(actor.state.view.RunProgress, progress, event)
+		}
 		progressChanged := progressEvent && !threadRuntimeViewNeedsAttention(actor.state.view) && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
 		if progressChanged {
 			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
 		}
-		if event.Stream != nil || progressChanged || activityChanged {
+		if event.Stream != nil || progressChanged || activityChanged || previewChanged {
 			actor.state.view.ViewVersion++
 			current = cloneThreadRuntimeView(actor.state.view)
 			changed = true
@@ -2847,6 +2855,9 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 }
 
 func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
+	if (event.Type == observation.EventTypeProviderDelta || event.Type == observation.EventTypeProviderReasoning) && (event.Stream != nil && event.Stream.Text == "") {
+		return nil, false
+	}
 	var phase ThreadRunPhase
 	switch event.Type {
 	case observation.EventTypeStepStart:
@@ -2874,7 +2885,7 @@ func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
 }
 
 func sameThreadRunProgress(left, right *ThreadRunProgress) bool {
-	return left == nil && right == nil || left != nil && right != nil && left.Phase == right.Phase && reflect.DeepEqual(left.Retry, right.Retry)
+	return left == nil && right == nil || left != nil && right != nil && reflect.DeepEqual(left, right)
 }
 
 var errCanonicalRefreshDiscarded = errors.New("canonical refresh snapshot discarded")
@@ -2914,6 +2925,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		}
 		actor.state.view.ViewVersion++
 		actor.state.view.Items = reconciled
+		actor.pruneArgumentPreviews()
 		actor.state.view.Turns = canonical.Turns
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
@@ -3806,6 +3818,7 @@ func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRunti
 		actor.state.view.TurnID = ""
 		actor.state.view.RunID = ""
 		actor.state.view.RunProgress = nil
+		actor.state.view.ToolCallPreviews = nil
 		actor.state.view.ViewVersion++
 		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
@@ -4045,6 +4058,7 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	}
 	view.Interactions = cloneThreadInteractions(view.Interactions)
 	view.Failure = cloneThreadTurnFailure(view.Failure)
+	view.ToolCallPreviews = cloneToolCallPreviews(view.ToolCallPreviews)
 	view.RunProgress = cloneThreadRunProgress(view.RunProgress)
 	return view
 }
@@ -4055,6 +4069,14 @@ func cloneThreadRunProgress(progress *ThreadRunProgress) *ThreadRunProgress {
 	}
 	copy := *progress
 	copy.Retry = cloneProviderRetryProgress(progress.Retry)
+	if progress.Request != nil {
+		request := *progress.Request
+		if request.FirstOutputAt != nil {
+			at := *request.FirstOutputAt
+			request.FirstOutputAt = &at
+		}
+		copy.Request = &request
+	}
 	return &copy
 }
 

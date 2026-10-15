@@ -558,6 +558,7 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 			id      string
 			name    string
 			args    string
+			sent    int
 			started bool
 			ended   bool
 		}
@@ -616,7 +617,10 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 							ch <- provider.StreamEvent{Type: provider.ToolCallStart, ToolCallStream: stream}
 							item.started = true
 						}
-						ch <- provider.StreamEvent{Type: provider.ToolCallDelta, ToolCallStream: stream}
+						ch <- provider.StreamEvent{Type: provider.ToolCallDelta, Text: item.args[item.sent:], ToolCallStream: stream}
+					}
+					if item.started {
+						item.sent = len(item.args)
 					}
 					tools[call.Index] = item
 				}

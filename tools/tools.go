@@ -28,12 +28,14 @@ const (
 )
 
 type Definition struct {
-	Name         string
-	Title        string
-	Description  string
-	InputSchema  map[string]any
-	OutputSchema map[string]any
-	Activity     func(Invocation[any]) (*ActivityPresentation, error)
+	// NewArgumentPreview creates an optional, isolated display parser for one streamed call.
+	NewArgumentPreview func() ArgumentPreviewer
+	Name               string
+	Title              string
+	Description        string
+	InputSchema        map[string]any
+	OutputSchema       map[string]any
+	Activity           func(Invocation[any]) (*ActivityPresentation, error)
 	// InvalidActivity may derive presentation-only metadata from a JSON object
 	// rejected by InputSchema. It never participates in permission or dispatch.
 	InvalidActivity func(Invocation[map[string]any]) (*ActivityPresentation, error)
