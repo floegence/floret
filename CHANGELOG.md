@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.37.1 - 2026-10-15
+
+- Preserve waiting Run settlement when an early answer starts its continuation. Serialize graceful Stop with the actor completion boundary so a pending question cannot become a failed, unresolved interaction.
+
 ## v7.37.0 - 2026-10-15
 
 - Add optional `provider.Request.ReusePolicy` for Engine-owned prompt-cache and native-state decisions through direct, prepared and serialized gateways. Supplemental context cannot enable application reuse or retain native state.

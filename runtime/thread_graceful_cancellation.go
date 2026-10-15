@@ -46,8 +46,15 @@ func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Con
 	var runID identity.RunID
 	var request cancellationRequest
 	var deadline time.Time
+	var sealedExecution <-chan struct{}
 	err := actor.apply(ctx, func() error {
 		if actor.state.turnID != turnID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
+			return nil
+		}
+		if actor.state.executionSealed {
+			// Completion already won the actor decision. Let its canonical
+			// result settle before stopping a still-waiting turn.
+			sealedExecution = actor.state.executionDone
 			return nil
 		}
 		runID = actor.state.runID
@@ -88,6 +95,14 @@ func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Con
 	})
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
+	}
+	if sealedExecution != nil {
+		select {
+		case <-ctx.Done():
+			return ThreadView{}, ctx.Err()
+		case <-sealedExecution:
+		}
+		return service.requestGracefulCancellation(ctx, actor, threadID, turnID, key)
 	}
 	current := service.currentView(actor)
 	if deadline.IsZero() {

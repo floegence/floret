@@ -295,7 +295,13 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 		Finish: func(ctx context.Context) (bool, error) {
 			sealed := false
 			err := actor.apply(ctx, func() error {
-				if actor.state.runID != runID || actor.state.view.Cancellation != nil {
+				if actor.state.runID != runID {
+					// An answered input may claim its continuation before this
+					// waiting execution drains. Its old result must still settle.
+					sealed = true
+					return nil
+				}
+				if actor.state.view.Cancellation != nil {
 					return context.Canceled
 				}
 				if len(actor.state.steering) > 0 {

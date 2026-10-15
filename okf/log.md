@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Waiting execution settlement
+
+- Early answers may claim the next Run while the previous waiting execution drains. The old execution settles normally; graceful Stop respects the same actor completion boundary before cancelling a still-waiting Turn.
+
 ## 2026-10-15 — Effective request reuse
 
 - Document the [Engine-owned reuse policy](api/provider.md), supplemental isolation,
