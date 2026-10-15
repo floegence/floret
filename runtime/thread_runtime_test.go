@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
@@ -60,9 +61,10 @@ type automaticTitleGateway struct {
 }
 
 type rejectingRuntimeTurnRepo struct {
-	sessiontree.Repo
-	turns sessiontree.RuntimeTurnRepo
-	err   error
+	*internalstorage.BackendKernel
+	turns  sessiontree.RuntimeTurnRepo
+	err    error
+	reject *atomic.Bool
 }
 
 type blockingCanonicalPathRepo struct {
@@ -127,7 +129,10 @@ func (repo *blockingInteractionAppendRepo) AppendRuntimeFacts(ctx context.Contex
 	return appended, nil
 }
 
-func (repo rejectingRuntimeTurnRepo) AcceptTurn(context.Context, sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
+func (repo rejectingRuntimeTurnRepo) AcceptTurn(ctx context.Context, request sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
+	if repo.reject != nil && !repo.reject.Load() {
+		return repo.turns.AcceptTurn(ctx, request)
+	}
 	return sessiontree.AcceptTurnResult{}, repo.err
 }
 
@@ -718,7 +723,7 @@ func TestThreadServiceSendFailsBeforePublishingWhenCanonicalAcceptanceFails(t *t
 	}
 	original := host.store.repo
 	turns := original.(sessiontree.RuntimeTurnRepo)
-	host.store.repo = rejectingRuntimeTurnRepo{Repo: original, turns: turns, err: errors.New("injected canonical acceptance failure")}
+	host.store.repo = rejectingRuntimeTurnRepo{BackendKernel: original.(*internalstorage.BackendKernel), turns: turns, err: errors.New("injected canonical acceptance failure")}
 	t.Cleanup(func() { host.store.repo = original })
 
 	if _, err := service.Send(t.Context(), SendInput{
@@ -738,6 +743,9 @@ func TestThreadServiceSendFailsBeforePublishingWhenCanonicalAcceptanceFails(t *t
 func TestThreadServicePromoteFailsBeforePublishingWhenCanonicalAcceptanceFails(t *testing.T) {
 	gateway := newBlockingThreadGateway()
 	host, service := testThreadService(t, gateway)
+	original := host.store.repo
+	var reject atomic.Bool
+	host.store.repo = rejectingRuntimeTurnRepo{BackendKernel: original.(*internalstorage.BackendKernel), turns: original.(sessiontree.RuntimeTurnRepo), err: errors.New("injected promote acceptance failure"), reject: &reject}
 	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-rejected-promote"})
 	if err != nil {
 		t.Fatal(err)
@@ -755,10 +763,7 @@ func TestThreadServicePromoteFailsBeforePublishingWhenCanonicalAcceptanceFails(t
 		return view.Activity == ThreadActivityIdle && len(view.Queue) == 1
 	})
 	waitThreadExecutionDone(t, service.(*threadRuntimeService), created.ThreadID)
-	original := host.store.repo
-	turns := original.(sessiontree.RuntimeTurnRepo)
-	host.store.repo = rejectingRuntimeTurnRepo{Repo: original, turns: turns, err: errors.New("injected promote acceptance failure")}
-	t.Cleanup(func() { host.store.repo = original })
+	reject.Store(true)
 	if _, err := service.PromoteQueued(t.Context(), PromoteQueuedInput{
 		ThreadID: created.ThreadID, QueueItemID: "queue:send-rejected-promote-queued", RequestKey: "promote-rejected",
 	}); err == nil || !strings.Contains(err.Error(), "injected promote acceptance failure") {
