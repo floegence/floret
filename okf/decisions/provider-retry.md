@@ -20,6 +20,16 @@ An absolute server deadline is never shortened. Server waits over one minute,
 authentication, billing, contract, unknown-effect and unclassified errors end
 recovery. Parent cancellation and deadlines interrupt requests and waits.
 
+The Engine status owns the execution outcome. A Provider request timeout or
+recovery-window deadline remains a Provider failure while its execution context
+is active, even when the error chain matches a context sentinel. The Harness
+maps that typed outcome once; runtime presentation and cancellation diagnostics
+must not reclassify it from the error text or chain. Before Engine execution,
+preparation cancellation requires the actual execution context to be canceled.
+Persistence settlement uses its own bounded context and reports storage failure
+without replacing it with user cancellation. Unknown effects remain terminal
+failures, and a committed terminal always retains authority.
+
 Failed streaming drafts are retired immediately when recovery is scheduled.
 The canonical projection and current view reject late events from that attempt;
 committed conversation and confirmed tools remain. Exhaustion retains only the

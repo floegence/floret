@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.40.3 - 2026-10-15
+
+- Preserve typed Provider failures when a request or recovery window times out while execution remains active. Remove competing error-chain cancellation inference from Harness and runtime settlement; actual Stop and execution deadlines retain cancellation authority.
+- Keep storage failures distinct from cancellation and retain original execution diagnostics when finalization fails. Preserve confirmed-tool checkpoints, unknown-effect rejection, public API, schema 17 and every migration edge.
+
 ## v7.40.2 - 2026-10-15
 
 - Keep canonical acceptance fault injection installed before concurrent runtime work starts. Remove a race in the promotion regression fixture without changing runtime behavior, public API, or domain schema.

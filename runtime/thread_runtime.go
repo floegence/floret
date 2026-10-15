@@ -2427,7 +2427,7 @@ func (service *threadRuntimeService) executePreparedSend(
 	case execution := <-prepared:
 		if execution.err != nil {
 			close(executionDone)
-			service.finishUnloadedTerminal(actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{}, execution.err)
+			service.finishUnloadedTerminal(ctx, actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{}, execution.err)
 			return
 		}
 		request.ManualCompactions = agentManualCompactions(execution.agent)
@@ -2448,7 +2448,7 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 		select {
 		case <-ctx.Done():
 			service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", ctx.Err().Error())
-			service.finishUnloadedTerminal(actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{Status: TurnStatusCancelled}, ctx.Err())
+			service.finishUnloadedTerminal(ctx, actor, accepted.ThreadID, request.TurnID, request.RunID, TurnResult{Status: TurnStatusCancelled}, ctx.Err())
 			return
 		case <-previousExecution:
 		}
@@ -2459,8 +2459,8 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 		Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 	})
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", err.Error())
+	if completed.Status == TurnStatusCancelled && ctx.Err() != nil {
+		service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", ctx.Err().Error())
 	}
 	service.finishSend(actor, request.TurnID, request.RunID, completed, err)
 }
@@ -2506,7 +2506,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
 			normalizeActiveThreadRunProgress(&actor.state.view)
-		} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted || errors.Is(runErr, context.Canceled) {
+		} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted {
 			outcome = TurnOutcomeCancelled
 		} else if runErr != nil || completed.Status == TurnStatusFailed {
 			outcome = TurnOutcomeFailed
@@ -3244,8 +3244,8 @@ func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRun
 // persist the terminal marker. Canonical settlement must precede the live
 // actor transition so a preparation failure cannot look complete in memory
 // while the journal still contains an active turn.
-func (service *threadRuntimeService) finishUnloadedTerminal(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
-	if completed.Status == TurnStatusCancelled || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+func (service *threadRuntimeService) finishUnloadedTerminal(executionCtx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, completed TurnResult, runErr error) {
+	if completed.Status == TurnStatusCancelled || executionCtx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 		service.finishUnloadedCancellation(actor, threadID, turnID, runID)
 		return
 	}
@@ -3621,11 +3621,11 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		return nil
 	})
 	if !claimed {
-		cancel(context.Canceled)
 		close(executionDone)
 		if claimErr != nil {
-			service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, waitingRunID, TurnResult{}, claimErr)
+			service.finishUnloadedTerminal(executionCtx, actor, threadID, interaction.TurnID, waitingRunID, TurnResult{}, claimErr)
 		}
+		cancel(context.Canceled)
 		return
 	}
 	service.publish(preparing)
@@ -3640,7 +3640,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	_, canonicalInput, canonicalErr := service.retrySource(executionCtx, threadID, interaction.TurnID)
 	if canonicalErr != nil {
-		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, canonicalErr)
+		service.finishUnloadedTerminal(executionCtx, actor, threadID, interaction.TurnID, runID, TurnResult{}, canonicalErr)
 		return
 	}
 	agent, err := service.factory.Agent(executionCtx, AgentRequest{
@@ -3651,12 +3651,12 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		if err == nil {
 			err = errors.New("thread runtime agent is unavailable")
 		}
-		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
+		service.finishUnloadedTerminal(executionCtx, actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
 		return
 	}
 	runner, err := service.host.turnRunner(executionCtx, threadID, service.executionAgent(actor, agent))
 	if err != nil {
-		service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
+		service.finishUnloadedTerminal(executionCtx, actor, threadID, interaction.TurnID, runID, TurnResult{}, err)
 		return
 	}
 	request := turnExecutionRequest{

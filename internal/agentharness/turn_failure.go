@@ -1,7 +1,6 @@
 package agentharness
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,14 +56,14 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 	if errors.Is(err, sessiontree.ErrEffectOutcomeUnknown) {
 		return sessiontree.TurnFailureEffectOutcomeUnknown, nil
 	}
+	if status == engine.Cancelled {
+		return sessiontree.TurnFailureCancelled, nil
+	}
 	if errors.Is(err, engine.ErrModelContextUnavailable) {
 		return sessiontree.TurnFailureModelContextUnavailable, nil
 	}
 	if errors.Is(err, cache.ErrContextPrefixDrift) {
 		return sessiontree.TurnFailureContextPrefixDrift, nil
-	}
-	if status == engine.Cancelled || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return sessiontree.TurnFailureCancelled, nil
 	}
 	switch {
 	case errors.Is(err, engine.ErrInvalidContextBudget):
@@ -86,7 +85,7 @@ func turnFailureCode(status engine.Status, err error, origin engine.FailureOrigi
 	}
 	switch origin {
 	case engine.FailureOriginCancelled:
-		return sessiontree.TurnFailureCancelled, nil
+		return "", errors.New("cancelled failure origin requires cancelled status")
 	case engine.FailureOriginProvider:
 		return sessiontree.TurnFailureProvider, nil
 	case engine.FailureOriginToolDispatch:
