@@ -1,9 +1,17 @@
 # Changelog
 
+## v7.39.1 - 2026-10-15
+
+- Require expanded gateways to replay their frozen prepared rendering instead of preparing mutable inputs again. Preserve one-use transport ownership and physical attempt identities.
+
 ## v7.39.0 - 2026-10-15
 
 - Add memory-only provider request timing and incremental received-output estimates, separate from billable usage. Preserve argument deltas through the OpenAI-compatible adapter.
 - Add optional bounded tool argument preview factories and attempt-fenced current-view previews. Unvalidated previews cannot authorize or dispatch tools, reserve canonical ordinals, or enter durable storage. Keep schema 16 unchanged.
+
+## v7.38.1 - 2026-10-15
+
+- Route expanded gateway recovery through fresh prepared request handles.
 
 ## v7.38.0 - 2026-10-15
 
