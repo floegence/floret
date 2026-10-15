@@ -3879,7 +3879,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 		return previews[id]
 	}
 	hostedTools := map[string]struct{}{}
-	for _, def := range opts.HostedToolDefinitions {
+	for _, def := range req.HostedTools {
 		name := strings.TrimSpace(def.Name)
 		if name != "" {
 			hostedTools[name] = struct{}{}

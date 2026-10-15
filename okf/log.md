@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Hosted request authority
+
+- Bind [hosted event validation](api/provider.md) to the exact frozen request; retain provider failure boundaries and local unknown-tool feedback without a schema or public API change.
+
 ## 2026-10-15 — Managed model context
 
 - Document [canonical live snapshots](decisions/managed-model-context.md), exact cut baselines, authorized reads, safe failures and permanent schema 16 -> 17 migration.

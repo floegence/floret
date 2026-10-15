@@ -160,6 +160,10 @@ See [the implementation](../../provider/deepseek.go),
 Static hosted tools are frozen with `runtime.WithAgentHostedTools`; it is
 mutually exclusive with the per-step dynamic tool surface option. Engine
 admission and provider requests consume that same immutable Agent surface.
+Hosted stream events are authorized only by the exact frozen request's hosted
+tool definitions, including restored checkpoints. Unrequested hosted events
+fail as provider errors; they never become local tool calls or automatic tool
+substitutions.
 
 Web-search observations retain the operation, target URL, query, and find
 pattern through sparse completion events. `HostedToolResult.ResultsProvided`
