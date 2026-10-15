@@ -3007,8 +3007,8 @@ func ValidateEntryMessageReferences(entry Entry) error {
 		}
 	}
 	if len(entry.Message.Context) > 0 {
-		if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
-			return errors.New("message context is only valid on canonical user message entries")
+		if (entry.Type != EntryUserMessage && entry.Type != EntrySteeringRequested) || entry.Message.Role != session.User {
+			return errors.New("message context is only valid on canonical user input entries")
 		}
 		if err := session.ValidateMessageContext(entry.Message.Context); err != nil {
 			return err
@@ -3017,8 +3017,8 @@ func ValidateEntryMessageReferences(entry Entry) error {
 	if len(entry.Message.References) == 0 {
 		return nil
 	}
-	if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
-		return errors.New("message references are only valid on canonical user message entries")
+	if (entry.Type != EntryUserMessage && entry.Type != EntrySteeringRequested) || entry.Message.Role != session.User {
+		return errors.New("message references are only valid on canonical user input entries")
 	}
 	return session.ValidateMessageReferences(entry.Message.References)
 }
@@ -3041,8 +3041,8 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 	if len(entry.Message.Attachments) == 0 {
 		return nil
 	}
-	if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
-		return errors.New("message attachments are only valid on canonical user message entries")
+	if (entry.Type != EntryUserMessage && entry.Type != EntrySteeringRequested) || entry.Message.Role != session.User {
+		return errors.New("message attachments are only valid on canonical user input entries")
 	}
 	return nil
 }

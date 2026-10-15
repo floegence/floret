@@ -2,9 +2,11 @@ package sessiontree
 
 import (
 	"encoding/json"
-	"github.com/floegence/floret/v7/internal/session"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/v7/internal/session"
 )
 
 func TestSteeringProjectionForkAndRetry(t *testing.T) {
@@ -17,7 +19,11 @@ func TestSteeringProjectionForkAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := Entry{ID: "guide", Type: EntrySteeringRequested, ThreadID: "thread", TurnID: "turn", RunID: "run", RequestKey: "guide", RequestFingerprint: "guide", Message: session.Message{Role: session.User, Content: "new direction"}}
+	request := Entry{ID: "guide", Type: EntrySteeringRequested, ThreadID: "thread", TurnID: "turn", RunID: "run", RequestKey: "guide", RequestFingerprint: "guide", Message: session.Message{Role: session.User, Content: "new direction", Attachments: []session.MessageAttachment{{Name: "note.txt", MIMEType: "text/plain", ResourceRef: "host:note"}}, References: []session.MessageReference{{ReferenceID: "source", Kind: session.MessageReferenceText, Label: "Source", Text: "complete source"}}, Context: []session.MessageContextItem{{Kind: "facts", Title: "Facts", Text: "frozen context"}}}}
+	matches := func(got session.Message) bool {
+		got.EntryID, got.ParentEntryID = "", ""
+		return reflect.DeepEqual(got, request.Message)
+	}
 	_, err = repo.AppendRuntimeFacts(t.Context(), "thread", []Entry{request})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +52,7 @@ func TestSteeringProjectionForkAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 2 || history[1].Content != "new direction" {
+	if len(history) != 2 || !matches(history[1]) {
 		t.Fatalf("history=%#v", history)
 	}
 	fork, err := repo.Fork(t.Context(), ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"})
@@ -58,7 +64,7 @@ func TestSteeringProjectionForkAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 2 || history[1].Content != "new direction" {
+	if len(history) != 2 || !matches(history[1]) {
 		t.Fatalf("fork history=%#v", history)
 	}
 	prefix, _ := repo.Path(t.Context(), "thread", accepted.UserMessage.ID)
@@ -67,7 +73,7 @@ func TestSteeringProjectionForkAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 2 || history[1].Content != "new direction" {
+	if len(history) != 2 || !matches(history[1]) {
 		t.Fatal("retry dropped applied steering")
 	}
 }
