@@ -3,7 +3,10 @@ package adoption_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -91,6 +94,16 @@ func TestPublishedCompleteQueueEditSurvivesSQLiteRestart(t *testing.T) {
 	if err != nil || !found || !reflect.DeepEqual(input, original) {
 		t.Fatalf("original send=%#v %v %v", input, found, err)
 	}
+	raw, _ := json.Marshal(replacement)
+	digest := sha256.Sum256(raw)
+	removal := runtime.DeleteQueuedInput{ThreadID: created.ThreadID, QueueItemID: "queue:queued", RequestKey: "take-back", ExpectedInputSHA256: fmt.Sprintf("%x", digest)}
+	if view, err := service.DeleteQueued(t.Context(), removal); err != nil || len(view.Queue) != 0 {
+		t.Fatalf("take-back=%#v %v", view.Queue, err)
+	}
+	if _, err := service.DeleteQueued(t.Context(), removal); err != nil {
+		t.Fatalf("take-back replay=%v", err)
+	}
+
 }
 
 type usageEventRecorder struct {

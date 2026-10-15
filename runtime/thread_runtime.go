@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,10 +173,15 @@ type ReorderQueueInput struct {
 	RequestKey     RequestKey        `json:"request_key"`
 }
 
+// DeleteQueuedInput removes pending input. ExpectedInputSHA256 optionally requires
+// the complete pending input to match the lowercase SHA-256 hex digest of its
+// encoding/json representation. Missing, started or changed input then returns
+// ErrRequestConflict; exact retries of a committed deletion succeed.
 type DeleteQueuedInput struct {
-	ThreadID    identity.ThreadID `json:"thread_id"`
-	QueueItemID string            `json:"queue_item_id"`
-	RequestKey  RequestKey        `json:"request_key"`
+	ThreadID            identity.ThreadID `json:"thread_id"`
+	QueueItemID         string            `json:"queue_item_id"`
+	RequestKey          RequestKey        `json:"request_key"`
+	ExpectedInputSHA256 string            `json:"expected_input_sha256,omitempty"`
 }
 
 type PromoteQueuedInput = DeleteQueuedInput
@@ -1456,16 +1462,42 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 	queueID := strings.TrimSpace(in.QueueItemID)
 	actor := service.runtime(in.ThreadID)
 	fingerprint, _ := stableFingerprint(queueID)
+	if in.ExpectedInputSHA256 != "" {
+		decoded, err := hex.DecodeString(in.ExpectedInputSHA256)
+		if err != nil || len(decoded) != sha256.Size || strings.ToLower(in.ExpectedInputSHA256) != in.ExpectedInputSHA256 {
+			return ThreadView{}, errors.New("invalid expected input SHA-256")
+		}
+		fingerprint, _ = stableFingerprint(struct{ ID, ExpectedInputSHA256 string }{queueID, in.ExpectedInputSHA256})
+	}
 	if err := actor.apply(ctx, func() error {
+		if previous, ok := actor.state.requestKeys[key]; ok && in.ExpectedInputSHA256 != "" {
+			if previous.fingerprint != fingerprint {
+				return ErrRequestConflict
+			}
+			return nil
+		}
 		for index, item := range actor.state.view.Queue {
 			if item.ID == queueID {
+				if in.ExpectedInputSHA256 != "" {
+					currentFingerprint, err := stableFingerprint(item.Input)
+					if err != nil {
+						return err
+					}
+					if currentFingerprint != "sha256:"+in.ExpectedInputSHA256 {
+						return ErrRequestConflict
+					}
+				}
 				if err := service.appendQueueFact(ctx, in.ThreadID, sessiontree.EntryQueueDeleted, "queue-delete:"+key, key, fingerprint, queueID); err != nil {
 					return err
 				}
 				actor.state.view.Queue = append(actor.state.view.Queue[:index], actor.state.view.Queue[index+1:]...)
 				actor.state.view.ViewVersion++
+				actor.state.requestKeys[key] = threadRuntimeRequest{fingerprint: fingerprint}
 				return nil
 			}
+		}
+		if in.ExpectedInputSHA256 != "" {
+			return ErrRequestConflict
 		}
 		return nil
 	}); err != nil {

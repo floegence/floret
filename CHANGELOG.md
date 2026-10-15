@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.35.0 - 2026-10-14
+
+- Add optional `DeleteQueuedInput.ExpectedInputSHA256` for atomic conditional removal of complete pending input. Reject changed or started messages and preserve exact retry behavior across restart. Existing unconditional deletion remains available; schema 15 is unchanged.
+
 ## v7.34.0 - 2026-10-14
 
 - Add optional `provider.State.ReusePolicy`: preserve exact-surface semantics by
