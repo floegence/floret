@@ -167,6 +167,7 @@ type EffectResultFinalizationResult struct {
 type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
 
 type Options struct {
+	Steering *SteeringControl
 	// RetrySourceEntryID is supplied only by the canonical harness retry admission.
 	RetrySourceEntryID       string
 	RunID                    string
@@ -886,7 +887,25 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		}
 	}
 
+	rootCtx := ctx
+steps:
 	for step := 1; ; step++ {
+		ctx = rootCtx
+		if opts.Steering != nil {
+			var history []session.Message
+			ctx, history, err = opts.Steering.Begin(rootCtx, nil)
+			if err != nil {
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
+			}
+			if history != nil {
+				activeHistory = history
+				state.activeMessages = session.CloneMessages(history)
+				if err := owner.clear(rootCtx); err != nil {
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
+				}
+				noProgress, duplicateCount, emptyRetries = 0, 0, 0
+			}
+		}
 		opts.PreviousProviderState = provider.CloneState(owner.state)
 		if supplementalTurn {
 			opts.PreviousProviderState = nil
@@ -899,6 +918,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		opts, err = e.resolveToolSurface(ctx, opts, step, "provider_request")
 		if err != nil {
 			if isContextCancellation(err) {
+				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+					continue
+				}
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
 			}
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, RunDecision{})
@@ -909,6 +931,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
 			if isContextCancellation(err) {
+				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+					continue
+				}
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
 			}
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -931,9 +956,15 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		attemptMetadata := providerAttemptMetadata(req)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+					continue
+				}
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
 			}
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginProvider), metrics, started, RunDecision{})
+		}
+		if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil {
+			continue
 		}
 		stepText := stepOutput.Text
 		calls := stepOutput.Calls
@@ -996,6 +1027,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		}
 		if len(calls) == 0 {
 			if err := owner.complete(ctx, stepOutput.ResponseState, nil, supplementalTurn); err != nil {
+				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && isContextCancellation(err) {
+					continue
+				}
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
 		}
@@ -1033,6 +1067,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
 					if isContextCancellation(err) {
+						if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+							continue
+						}
 						return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 					}
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
@@ -1060,6 +1097,15 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 				}
 				decision.CompletionReason = CompletionReasonNaturalStop
 				e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
+				if opts.Steering != nil {
+					sealed, sealErr := opts.Steering.Finish(rootCtx)
+					if sealErr != nil {
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(sealErr, FailureOriginStorage), metrics, started, decision)
+					}
+					if !sealed {
+						continue steps
+					}
+				}
 				return e.end(state, opts, step, Completed, output, nil, metrics, started, decision)
 			}
 			decision.ContinuationReason = ContinueNoProgress
@@ -1111,6 +1157,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
 			if err != nil {
 				if isContextCancellation(err) {
+					if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+						continue
+					}
 					return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 				}
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
@@ -1278,6 +1327,15 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 				switch signal.Disposition {
 				case ControlWaiting:
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
+					if opts.Steering != nil {
+						sealed, sealErr := opts.Steering.Finish(rootCtx)
+						if sealErr != nil {
+							return e.end(state, opts, step, Failed, output, withFailureOrigin(sealErr, FailureOriginStorage), metrics, started, decision)
+						}
+						if !sealed {
+							continue steps
+						}
+					}
 					return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
 				case ControlContinue:
 					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
@@ -1429,6 +1487,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		}
 		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, validationErrors, processToolResult); err != nil {
 			if isContextCancellation(err) {
+				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
+					continue
+				}
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 			}
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginToolDispatch), metrics, started, decision)
@@ -1454,6 +1515,15 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 		for _, result := range toolResults {
 			if result.InputRequired != nil {
 				e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
+				if opts.Steering != nil {
+					sealed, sealErr := opts.Steering.Finish(rootCtx)
+					if sealErr != nil {
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(sealErr, FailureOriginStorage), metrics, started, decision)
+					}
+					if !sealed {
+						continue steps
+					}
+				}
 				return e.end(state, opts, step, Waiting, result.InputRequired.Summary, nil, metrics, started, decision)
 			}
 		}
@@ -3790,6 +3860,9 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case ev, ok := <-stream:
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
 			if !ok {
 				if err := providerStreamCloseError(ctx, &validator); err != nil {
 					return out, err

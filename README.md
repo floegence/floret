@@ -320,7 +320,7 @@ complete response text. `runtime.ThreadItem.Sources` exposes detached, message-r
 ranges in current/history views. Unsafe URLs are dropped; malformed or cross-segment
 ranges become unlocated sources. Hosts render exact citations and list unlocated
 sources without inferring URLs from provider markers. Sources events remain live
-observations; they are not a second durable source store. Existing schema-15 bytes
+observations; they are not a second durable source store. Existing schema-16 bytes
 without sources remain unchanged.
 
 Provider credentials and editable profile sources remain in the host.
@@ -441,7 +441,7 @@ failed or cancelled compaction with a new compact request key. Ordinary `Retry`
 returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
 result per operation and its canonical `AfterItemID` presentation anchor; an
 empty history has no artificial anchor. Stop, shutdown, restart, and fork use
-the existing thread lifecycle. Domain schema v15 retains the automatic v12 -> v13
+the existing thread lifecycle. Domain schema v16 retains the automatic v12 -> v13
 typed-turn edge and v13 -> v14 canonical run-identity edge without
 reclassifying historical slash-command conversations or using observation
 metadata as runtime authority. The v14 -> v15 edge adds typed thread references
@@ -692,3 +692,7 @@ threads: already saved references become visible; missing historical ephemeral
 material is never reconstructed. Ordinary requests retain their canonical prefix;
 compaction, canonical retry, projection upgrades, and execution configuration
 changes use the existing observable request boundary.
+
+### Immediate thread steering
+
+Hosts may opt into `runtime.ThreadSteeringController`. `Steer` durably accepts an instruction and interrupts the current provider attempt or cancellable tool batch while preserving the same task and execution identity. `SteerQueued` atomically consumes an exact queued item. Ordinary `Send` remains queued while a thread is active; steering requests are idempotent by request key and stale queue content returns `ErrRequestConflict`.

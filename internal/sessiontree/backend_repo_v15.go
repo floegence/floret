@@ -37,6 +37,13 @@ func loadBackendDomainV15(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV15Memory(memory *MemoryRepo) error {
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if entry.Type == EntrySteeringRequested || entry.Type == EntrySteeringApplied || entry.Type == EntrySteeringCancelled {
+				return ErrAuthorityCorrupt
+			}
+		}
+	}
 	if err := validateBackendDomainMemory(memory, "v15", true); err != nil {
 		return err
 	}

@@ -25,6 +25,9 @@ type threadRuntimeState struct {
 }
 
 type threadRuntimeData struct {
+	steering            []string
+	fragmentCancel      context.CancelCauseFunc
+	executionSealed     bool
 	turnID              identity.TurnID
 	runID               identity.RunID
 	logicalRequestID    identity.LogicalRequestID
@@ -73,6 +76,9 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 			runtime.state.responseSegmented = turn.segmented
 		}
 	}
+	runtime.state.executionSealed = false
+	runtime.state.fragmentCancel = nil
+	runtime.state.steering = nil
 	runtime.state.attemptID = ""
 	runtime.state.attemptEpoch = 0
 	runtime.state.openTextSegmentID = ""

@@ -299,7 +299,8 @@ type AttentionSummary struct {
 type ThreadItemKind string
 
 const (
-	ThreadItemUser ThreadItemKind = "user"
+	ThreadItemUser     ThreadItemKind = "user"
+	ThreadItemSteering ThreadItemKind = "steering"
 	// ThreadItemThinking is one ordered reasoning segment in a thread view.
 	ThreadItemThinking    ThreadItemKind = "thinking"
 	ThreadItemAssistant   ThreadItemKind = "assistant"
@@ -309,6 +310,7 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
+	Steering       *ThreadSteering         `json:"steering,omitempty"`
 	Sources        []publicprovider.Source `json:"sources,omitempty"`
 	sourceEntryIDs []string
 	ID             string          `json:"id"`
@@ -1784,6 +1786,12 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = runID
 		actor.state.requestKeys = hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
+		states, _ := steeringProjection(entries)
+		for _, entry := range entries {
+			if entry.Type == sessiontree.EntrySteeringRequested && entry.TurnID == canonical.TurnID.String() && states[entry.ID].Status == ThreadSteeringPending {
+				actor.state.steering = append(actor.state.steering, entry.ID)
+			}
+		}
 		if canonical.Activity == ThreadActivityActive && !actor.state.hydrationStarted && service.host.requireExecution() == nil {
 			actor.state.hydrationStarted = true
 			startHydration = true
@@ -1859,7 +1867,14 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		service.refreshCanonical(threadID, turnID)
 		return
 	}
-	view := service.currentView(service.runtime(threadID))
+	actor := service.runtime(threadID)
+	pendingSteering := false
+	_ = actor.apply(ctx, func() error { pendingSteering = len(actor.state.steering) > 0; return nil })
+	if pendingSteering {
+		service.continueCanonicalInput(actor, threadID, ThreadInteraction{ID: "recovered-steering:" + runID.String(), TurnID: turnID, RunID: runID}, InteractionResolution{}, nil, true)
+		return
+	}
+	view := service.currentView(actor)
 	for _, interaction := range view.Interactions {
 		if interaction.TurnID != turnID {
 			continue
@@ -2460,6 +2475,10 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.state.view.ViewVersion++
 		actor.finishLiveTextSegment()
 		actor.state.view.Activity = ThreadActivityIdle
+		if completed.Status != TurnStatusWaiting {
+			actor.state.steering = nil
+			actor.state.executionSealed = false
+		}
 		actor.state.view.RunProgress = nil
 		if refreshErr == nil {
 			actor.state.view.Turns = canonical.Turns
@@ -2469,6 +2488,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		}
 		outcome := TurnOutcomeCompleted
 		if completed.Status == TurnStatusWaiting {
+			actor.state.executionSealed = false
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
 			normalizeActiveThreadRunProgress(&actor.state.view)
@@ -2574,11 +2594,12 @@ func (sink combinedThreadEventSink) EmitEvent(event Event) {
 	sink.runtime.EmitEvent(event)
 }
 
-func (service *threadRuntimeService) executionAgent(_ *threadRuntimeState, agent *Agent) *Agent {
+func (service *threadRuntimeService) executionAgent(actor *threadRuntimeState, agent *Agent) *Agent {
 	if agent == nil {
 		return nil
 	}
 	copy := *agent
+	copy.steering = service.steeringControl(actor)
 	copy.eventSink = combinedThreadEventSink{primary: agent.eventSink, runtime: threadRuntimeEventSink{service: service}}
 	copy.effectAuthorization = threadRuntimeEffectGate{service: service, downstream: agent.effectAuthorization}
 	return &copy
@@ -3356,7 +3377,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 			replayedRespond = true
 			return nil
 		}
-		if actor.state.view.Cancellation != nil {
+		if actor.state.view.Cancellation != nil || len(actor.state.steering) > 0 {
 			return ErrRequestConflict
 		}
 		for interactionID := range resolutions {
@@ -3517,7 +3538,7 @@ func resolveThreadInteractionCanonical(view *ThreadView, interactionID string, r
 	}
 }
 
-func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntimeState, threadID identity.ThreadID, interaction ThreadInteraction, resolution InteractionResolution, secretInput map[string]string) {
+func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntimeState, threadID identity.ThreadID, interaction ThreadInteraction, resolution InteractionResolution, secretInput map[string]string, steering ...bool) {
 	payload, err := json.Marshal(resolution)
 	if err != nil {
 		return
@@ -3534,6 +3555,10 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	waitingRunID := interaction.RunID
 	continuationKey := "continue-input:" + interaction.ID
+	isSteering := len(steering) > 0 && steering[0]
+	if isSteering {
+		continuationKey = "continue-steering:" + interaction.ID
+	}
 	runID, err := service.host.idSource.NewRunID()
 	if err != nil {
 		return
@@ -3543,16 +3568,23 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	var previousExecution <-chan struct{}
 	var preparing ThreadView
 	claimed := false
-	_ = actor.apply(context.Background(), func() error {
+	claimErr := actor.apply(context.Background(), func() error {
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
 			return nil
 		}
 		for _, pending := range actor.state.view.Interactions {
-			if pending.Kind == ThreadInteractionInput && !pending.Resolved {
+			if pending.Kind == ThreadInteractionInput && !pending.Resolved && !isSteering {
 				return nil
 			}
 		}
 
+		if isSteering {
+			// Resolve suspended interactions before installing a continuation Run.
+			if err := service.resolveSteeringInteractions(context.Background(), actor); err != nil {
+				return err
+			}
+		}
+		pendingSteering := slices.Clone(actor.state.steering)
 		var beginErr error
 		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
 			turnID: interaction.TurnID, runID: runID, logicalRequestID: identity.LogicalRequestID(continuationKey),
@@ -3561,6 +3593,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		if beginErr != nil {
 			return beginErr
 		}
+		actor.state.steering = pendingSteering
 		preparing = cloneThreadRuntimeView(actor.state.view)
 		claimed = true
 		return nil
@@ -3568,6 +3601,9 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	if !claimed {
 		cancel(context.Canceled)
 		close(executionDone)
+		if claimErr != nil {
+			service.finishUnloadedTerminal(actor, threadID, interaction.TurnID, waitingRunID, TurnResult{}, claimErr)
+		}
 		return
 	}
 	service.publish(preparing)
@@ -3607,7 +3643,7 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	applyAgentExecutionPolicy(&request, agent)
 	result, runErr := runner.ResumeInput(executionCtx, resumeInputRequest{
-		TurnID: interaction.TurnID, WaitingRunID: waitingRunID, RunID: runID, Answer: string(payload),
+		TurnID: interaction.TurnID, WaitingRunID: waitingRunID, RunID: runID, Answer: string(payload), Steering: isSteering,
 		Options: request,
 	})
 	service.finishSend(actor, interaction.TurnID, runID, result, runErr)
@@ -3854,7 +3890,7 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 	}()
 }
 
-func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -3867,6 +3903,12 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		promotionFingerprint, err = stableFingerprint(struct {
 			QueueItemID string `json:"queue_item_id"`
 		}{QueueItemID: promotedQueueID})
+		if err != nil {
+			return ThreadView{}, err
+		}
+	}
+	if len(steeringQueued) > 0 {
+		promotionFingerprint, err = stableFingerprint(*steeringQueued[0])
 		if err != nil {
 			return ThreadView{}, err
 		}
@@ -3896,6 +3938,13 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 			found := false
 			for _, item := range actor.state.view.Queue {
 				if item.ID == promotedQueueID {
+					if len(steeringQueued) > 0 {
+						expected, _ := stableFingerprint(steeringQueued[0].ExpectedInput)
+						actual, _ := stableFingerprint(item.Input)
+						if expected != actual || len(item.SupplementalContext) != 0 {
+							return ErrRequestConflict
+						}
+					}
 					// Resolve the pending input while admitting it, so an edit that
 					// won the actor lock cannot be replaced by a captured old copy.
 					input = item.Input
@@ -4035,6 +4084,10 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		if item.Steering != nil {
+			steering := *item.Steering
+			out[index].Steering = &steering
+		}
 		out[index].Sources = runtimeSourceRefs(citation.Clone(providerSourceRefs(item.Sources)))
 		out[index].sourceEntryIDs = append([]string(nil), item.sourceEntryIDs...)
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
@@ -4212,6 +4265,10 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 	if err != nil {
 		return nil, nil, runtimeHostError(err)
 	}
+	steeringStates, steeringErr := steeringProjection(entries)
+	if steeringErr != nil {
+		return nil, nil, steeringErr
+	}
 	readyToolInputs := sessiontree.ReadyToolInputResultIDs(entries)
 	items := make([]ThreadItem, 0, len(entries))
 	interactions := make([]ThreadInteraction, 0)
@@ -4294,7 +4351,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			continue
 		}
 		switch entry.Type {
-		case sessiontree.EntryUserMessage:
+		case sessiontree.EntryUserMessage, sessiontree.EntrySteeringRequested:
 			if entry.Message.Kind == "control_signal" {
 				continue
 			}
@@ -4303,6 +4360,11 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				return nil, nil, identityErr
 			}
 			items = appendThreadItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: occurredAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References), Context: runtimeMessageContext(entry.Message.Context)})
+			if entry.Type == sessiontree.EntrySteeringRequested {
+				items[len(items)-1].Kind = ThreadItemSteering
+				status := steeringStates[entry.ID]
+				items[len(items)-1].Steering = &status
+			}
 		case sessiontree.EntryAssistantMessage:
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {

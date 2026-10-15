@@ -973,6 +973,16 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		}
 		return replayed, nil
 	}
+	for _, entry := range entries {
+		if entry.Type != EntrySteeringRequested && entry.Type != EntrySteeringApplied {
+			continue
+		}
+		turnID, active := runtimeActiveTurn(r.entries[threadID])
+		runID, identityErr := activeRunIdentity(r.entries[threadID], entry.TurnID)
+		if !active || turnID != entry.TurnID || identityErr != nil || runID != entry.RunID || turnCancellationRequested(r.entries[threadID], entry.TurnID) {
+			return nil, ErrStaleAuthority
+		}
+	}
 	previousEntries := cloneEntries(r.entries[threadID])
 	previousOrdinals := maps.Clone(r.entryOrdinals[threadID])
 	previousDepths := maps.Clone(r.entryDepths[threadID])
@@ -1620,6 +1630,17 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			next.ID = entry.ID
 		}
 		next.ThreadID = newID
+		if entry.Type == EntrySteeringApplied || entry.Type == EntrySteeringCancelled {
+			resolution, err := DecodeSteeringResolution(entry)
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+			resolution.SteeringID = oldToNew[resolution.SteeringID]
+			if resolution.SteeringID == "" {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			next.Payload, _ = json.Marshal(resolution)
+		}
 		next.ParentID = oldToNew[entry.ParentID]
 		next.PathDepth = int64(len(forkedEntries) + 1)
 		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
@@ -1688,6 +1709,27 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			result.PathDepth = int64(len(forkedEntries) + 1)
 			forkedEntries = append(forkedEntries, result)
 			meta.LeafID = result.ID
+		}
+		resolvedSteering := make(map[string]bool)
+		for _, entry := range forkedEntries {
+			if entry.Type == EntrySteeringApplied || entry.Type == EntrySteeringCancelled {
+				resolution, err := DecodeSteeringResolution(entry)
+				if err != nil {
+					return ThreadMeta{}, err
+				}
+				resolvedSteering[resolution.SteeringID] = true
+			}
+		}
+		for _, entry := range append([]Entry(nil), forkedEntries...) {
+			if entry.Type != EntrySteeringRequested || resolvedSteering[entry.ID] {
+				continue
+			}
+			payload, _ := json.Marshal(SteeringResolution{SteeringID: entry.ID, Reason: "Pending instructions are not executed by a fork."})
+			r.seq++
+			fact := PrepareEntry(Entry{ID: fmt.Sprintf("%s-entry-%d", newID, r.seq), ThreadID: newID, ParentID: meta.LeafID, Type: EntrySteeringCancelled, TurnID: entry.TurnID, RunID: entry.RunID, Payload: payload, CreatedAt: now})
+			fact.PathDepth = int64(len(forkedEntries) + 1)
+			forkedEntries = append(forkedEntries, fact)
+			meta.LeafID = fact.ID
 		}
 		r.seq++
 		boundary, err := PrepareBranchBoundaryEntry(forkedEntries, newID, meta.LeafID, fmt.Sprintf("%s-entry-%d", newID, r.seq), "fork", now)
@@ -2329,7 +2371,7 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 				if source.projectedLength <= 0 || source.projectedLength > len(projected) || projected[source.projectedLength-1].ID != retrySource.EntryID {
 					return nil, ErrAuthorityCorrupt
 				}
-				projected = projected[:source.projectedLength]
+				projected = RetainAppliedSteering(projected[:source.projectedLength], projected[source.projectedLength:], retrySource.TurnID)
 			}
 		}
 		projected = append(projected, entry)
@@ -2339,6 +2381,11 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 }
 
 func buildContextMessages(path []Entry) ([]session.Message, error) {
+	var steeringErr error
+	path, steeringErr = projectSteering(path)
+	if steeringErr != nil {
+		return nil, steeringErr
+	}
 	redundant, err := RedundantControlResultIDs(path)
 	if err != nil {
 		return nil, err

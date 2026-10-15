@@ -133,6 +133,7 @@ type AgentHarness struct {
 type ResumeOptions struct{}
 
 type RunOptions struct {
+	Steering                    *engine.SteeringControl
 	TurnKind                    string
 	LogicalRequestID            string
 	RunID                       string
@@ -583,14 +584,24 @@ func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
 // owns the active attempt; AgentHarness only performs provider I/O against the
 // accepted turn and never acquires a durable execution lease.
 func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer string, opts RunOptions) (TurnResult, error) {
+	if strings.TrimSpace(answer) == "" {
+		return TurnResult{}, errors.New("waiting turn resume requires an answer")
+	}
+	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts, "input_resume")
+}
+
+func (t *Thread) ResumeSteering(ctx context.Context, turnID, waitingRunID string, opts RunOptions) (TurnResult, error) {
+	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts, "steering_resume")
+}
+
+func (t *Thread) resumeWaitingTurn(ctx context.Context, turnID, waitingRunID string, opts RunOptions, reason string) (TurnResult, error) {
 	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
 		return TurnResult{}, errors.New("thread is not initialized")
 	}
 	turnID = strings.TrimSpace(turnID)
 	waitingRunID = strings.TrimSpace(waitingRunID)
 	runID := strings.TrimSpace(opts.RunID)
-	answer = strings.TrimSpace(answer)
-	if turnID == "" || waitingRunID == "" || runID == "" || answer == "" {
+	if turnID == "" || waitingRunID == "" || runID == "" {
 		return TurnResult{}, errors.New("waiting turn resume requires turn, run, and answer")
 	}
 	opts.TurnID = turnID
@@ -600,7 +611,7 @@ func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer s
 	// the provider state, even though resolving input advances the journal leaf.
 	opts.AdmissionBaseLeafID = terminalTurnEntryID(t.id, turnID, waitingRunID)
 	opts.SkipContextPolicyEvent = true
-	entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, map[string]string{"reason": "input_resume"})
+	entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, map[string]string{"reason": reason})
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -758,6 +769,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "retry_source_path_error", engine.FailureOriginStorage)
 		}
 	}
+	if retrySource != nil {
+		historyPath = sessiontree.RetainAppliedSteering(historyPath, snap.Path, retrySource.TurnID)
+	}
 	history, err := sessiontree.BuildContextChecked(historyPath, sessiontree.ContextOptions{})
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -810,6 +824,13 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
+	if opts.Steering != nil {
+		control := *opts.Steering
+		control.Begin = func(ctx context.Context, _ func() error) (context.Context, []session.Message, error) {
+			return opts.Steering.Begin(ctx, projection.prepareSteeringBoundary)
+		}
+		engineOptions.Steering = &control
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
@@ -1330,6 +1351,12 @@ type durableMessageSignature struct {
 
 func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableMessageCounter {
 	counter := &durableMessageCounter{counts: map[durableMessageSignature]int{}}
+	steeringRequests := make(map[string]session.Message)
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntrySteeringRequested {
+			steeringRequests[entry.ID] = entry.Message
+		}
+	}
 	for _, entry := range entries {
 		if entry.TurnID != turnID {
 			continue
@@ -1337,6 +1364,11 @@ func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableM
 		switch entry.Type {
 		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
 			counter.record(entry.Message)
+		case sessiontree.EntrySteeringApplied:
+			resolution, err := sessiontree.DecodeSteeringResolution(entry)
+			if err == nil {
+				counter.record(steeringRequests[resolution.SteeringID])
+			}
 		}
 	}
 	return counter

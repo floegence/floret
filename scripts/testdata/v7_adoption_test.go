@@ -740,3 +740,25 @@ func TestPublishedNativeHistorySurvivesStopAndSQLiteRestart(t *testing.T) {
 		t.Fatalf("native history=%+v", state)
 	}
 }
+
+func TestPublishedSteeringCapability(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("execution not expected")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := service.(runtime.ThreadSteeringController); !ok {
+		t.Fatal("published steering capability is missing")
+	}
+	_ = runtime.SteerInput{Input: runtime.UserInput{Text: "guide"}, RequestKey: "guide"}
+	_ = runtime.SteerQueuedInput{ExpectedInput: runtime.UserInput{Text: "guide"}, RequestKey: "guide"}
+	if runtime.ThreadSteeringPending != "pending" || runtime.ThreadSteeringApplied != "applied" || runtime.ThreadSteeringCancelled != "cancelled" {
+		t.Fatal("unstable steering status")
+	}
+}

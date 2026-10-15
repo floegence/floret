@@ -228,6 +228,9 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 		}
 		meta = r.threads[req.ThreadID]
 	}
+	if req.Status != TurnWaiting {
+		r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "The task ended before this instruction was applied.", now)
+	}
 	result := FinishTurnResult{}
 	parentID := meta.LeafID
 	if message := strings.TrimSpace(req.FailureMessage); message != "" {
@@ -366,6 +369,7 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	}
 
 	now := canonicalTime(req.Now, r.now)
+	r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, EffectOutcomeUnknownFailureMessage, now)
 	result := FailUnknownEffectTurnResult{}
 	resolutionPayload := json.RawMessage(`{"accepted":false,"outcome":"failed"}`)
 	for _, interaction := range runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID) {
@@ -613,6 +617,7 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		return CancelTurnResult{}, err
 	}
 	meta = r.threads[req.ThreadID]
+	r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "The task was stopped before this instruction was applied.", now)
 	terminal := Entry{
 		ID: req.TerminalEntryID, ThreadID: req.ThreadID, ParentID: meta.LeafID,
 		Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,

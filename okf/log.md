@@ -1433,3 +1433,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
   late annotation segmentation and the additive v7.32 host projection.
 
 - 2026-10-14: Document conditional complete-input queue deletion and exact replay for host draft take-back.
+
+- Add actor-owned immediate steering and the contiguous schema 15 -> 16 migration, preserving historical canonical facts.
