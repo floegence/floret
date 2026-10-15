@@ -1472,3 +1472,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 - 2026-10-14: Document conditional complete-input queue deletion and exact replay for host draft take-back.
 
 - Add actor-owned immediate steering and the contiguous schema 15 -> 16 migration, preserving historical canonical facts.
+
+- 2026-10-15: Document optional per-row and per-mutation Activity resource targets and host-owned current access checks.

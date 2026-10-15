@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.41.0 - 2026-10-15
+
+- Add optional per-row and per-mutation Activity targets with validation and deep-copy isolation. Preserve existing fields, comparability, canonical history and domain schema 17; resource paths never authorize host navigation.
+
 ## v7.40.3 - 2026-10-15
 
 - Preserve typed Provider failures when a request or recovery window times out while execution remains active. Remove competing error-chain cancellation inference from Harness and runtime settlement; actual Stop and execution deadlines retain cancellation authority.
