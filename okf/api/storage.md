@@ -153,7 +153,10 @@ remain errors. No record is decoded, copied, or replaced by the host.
 logical and domain migration code in a transaction-local memory overlay. It
 creates no Host, never dispatches providers or tools, and reports whether a
 migration would be needed. Formal startup verifies again under its writable
-transaction. Missing files are reported without creating them. `ErrStoreTooNew`
+transaction. Both paths validate canonical state and the complete search
+projection; inspection omits text postings that would be discarded, while formal
+startup prepares the searchable index. Missing files are reported without
+creating them. `ErrStoreTooNew`
 retains `ErrUnsupportedSchema` classification for newer logical formats.
 Physical checks report `storage.ErrUnsupportedSQLiteFormat`,
 `storage.ErrSQLiteTooNew`, and `storage.ErrSQLiteIntegrity`. Driver and operating

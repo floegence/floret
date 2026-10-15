@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.39.2 - 2026-10-15
+
+- Avoid building disposable text-search postings during read-only SQLite inspection while retaining complete canonical and projection validation. Formal runtime startup still prepares the full search index.
+- Reduce Unicode n-gram allocation during index construction by deduplicating fragments before assembling posting keys. Preserve search semantics, canonical bytes, schema 16, and every released migration edge.
+
 ## v7.39.1 - 2026-10-15
 
 - Require expanded gateways to replay their frozen prepared rendering instead of preparing mutable inputs again. Preserve one-use transport ownership and physical attempt identities.

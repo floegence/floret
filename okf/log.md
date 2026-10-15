@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Startup search-index construction
+
+- Document [inspection validation and runtime indexing](api/thread-query.md): read-only inspection omits disposable text postings, while formal startup builds the complete index without changing canonical storage or migration lineage.
+
 ## 2026-10-15 — Received output and argument previews
 
 - Document [memory-only request feedback](decisions/provider-output-progress.md), bounded tool-authored argument previews, actual-result replacement and unchanged canonical storage.

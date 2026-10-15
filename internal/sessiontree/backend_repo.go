@@ -586,6 +586,29 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 // VerifyCurrentStateInTransaction verifies the final current-schema domain
 // invariant without rewriting canonical bytes.
 func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
+		return err
+	}
+	return repo.domainMemory.syncQueryIndex(ctx)
+}
+
+// VerifyInspectionStateInTransaction retains canonical and projection checks
+// while omitting text postings that a read-only inspection cannot query.
+func (repo *BackendRepo) VerifyInspectionStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
+		return err
+	}
+	previous := repo.domainMemory.queryIndex
+	defer func() { repo.domainMemory.queryIndex = previous }()
+	repo.domainMemory.queryIndex = newQueryIndex()
+	repo.domainMemory.queryIndex.omitTextPostings = true
+	for id := range repo.domainMemory.threads {
+		repo.domainMemory.queryIndex.dirty[id] = true
+	}
+	return repo.domainMemory.syncQueryIndex(ctx)
+}
+
+func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
 	if repo == nil || tx == nil || ctx == nil {
 		return errors.New("backend repository verification requires context, repository, and transaction")
 	}
@@ -593,7 +616,7 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 		return err
 	}
 	if !repo.requiresPersistedStartupVerification {
-		return repo.domainMemory.syncQueryIndex(ctx)
+		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
 	memory, found, err := loadBackendDomainV16(ctx, tx, repo.now)
@@ -610,7 +633,7 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
-	return repo.domainMemory.syncQueryIndex(ctx)
+	return nil
 }
 
 func (repo *BackendRepo) reportStartupPhase(phase StartupPhase) {
