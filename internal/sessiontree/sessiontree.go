@@ -1724,7 +1724,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			if entry.Type != EntrySteeringRequested || resolvedSteering[entry.ID] {
 				continue
 			}
-			payload, _ := json.Marshal(SteeringResolution{SteeringID: entry.ID, Reason: "Pending instructions are not executed by a fork."})
+			payload, _ := json.Marshal(SteeringResolution{SteeringID: entry.ID, Reason: "fork"})
 			r.seq++
 			fact := PrepareEntry(Entry{ID: fmt.Sprintf("%s-entry-%d", newID, r.seq), ThreadID: newID, ParentID: meta.LeafID, Type: EntrySteeringCancelled, TurnID: entry.TurnID, RunID: entry.RunID, Payload: payload, CreatedAt: now})
 			fact.PathDepth = int64(len(forkedEntries) + 1)
