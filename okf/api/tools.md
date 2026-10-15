@@ -211,3 +211,12 @@ only for polling tools and must name unique properties from the input schema.
 * [Permissions](/tools/permission.go)
 * [Output Projection](/tools/output_projection.go)
 * [Web Fetch Tool](/tools/webfetch/webfetch.go)
+
+### Per-resource Activity targets
+
+Structured rows and patch mutations support an optional Target using the
+existing ActivityTargetRef. Each target belongs to its enclosing result item,
+without ordinal pairing against a separate collection. The engine validates and
+deep-copies targets through merge, finalization and JSON replay. Hosts own current
+resource authorization and missing-resource navigation. No schema migration or
+additional durable mapping is required. See [activity contracts](/tools/activity.go).

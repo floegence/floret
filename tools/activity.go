@@ -79,6 +79,8 @@ const (
 // StructuredActivityRow is one ordered, product-neutral display row for a
 // structured tool activity. Hosts author already-sanitized display text.
 type StructuredActivityRow struct {
+	// Target describes the observed resource; hosts authorize navigation.
+	Target  *ActivityTargetRef          `json:"target,omitempty"`
 	Title   string                      `json:"title,omitempty"`
 	Meta    string                      `json:"meta,omitempty"`
 	Content string                      `json:"content,omitempty"`
@@ -168,15 +170,17 @@ type FileActivityPayload struct {
 func (FileActivityPayload) activityRenderer() ActivityRenderer { return ActivityRendererFile }
 
 // FileMutationActivityPayload is one bounded, product-neutral file mutation
-// rendered by a patch activity. Resource authority remains in TargetRefs.
+// rendered by a patch activity. Targets describe resources, never authority.
 type FileMutationActivityPayload struct {
-	DisplayName           string `json:"display_name,omitempty"`
-	ChangeType            string `json:"change_type,omitempty"`
-	Additions             int    `json:"additions,omitempty"`
-	Deletions             int    `json:"deletions,omitempty"`
-	UnifiedDiff           string `json:"unified_diff,omitempty"`
-	DiffUnavailableReason string `json:"diff_unavailable_reason,omitempty"`
-	Truncated             bool   `json:"truncated,omitempty"`
+	// Target describes the observed resource; hosts authorize navigation.
+	Target                *ActivityTargetRef `json:"target,omitempty"`
+	DisplayName           string             `json:"display_name,omitempty"`
+	ChangeType            string             `json:"change_type,omitempty"`
+	Additions             int                `json:"additions,omitempty"`
+	Deletions             int                `json:"deletions,omitempty"`
+	UnifiedDiff           string             `json:"unified_diff,omitempty"`
+	DiffUnavailableReason string             `json:"diff_unavailable_reason,omitempty"`
+	Truncated             bool               `json:"truncated,omitempty"`
 }
 
 // FileMutationActivityPayloads is an ordered set of patch mutations. Patch
@@ -436,12 +440,8 @@ func (presentation ActivityPresentation) Validate() error {
 		return errors.New("tool activity has too many target references")
 	}
 	for _, target := range presentation.TargetRefs {
-		if strings.TrimSpace(target.Kind) == "" || strings.TrimSpace(target.Label) == "" || target.Line < 0 {
-			return errors.New("tool activity target requires kind, label, and a non-negative line")
-		}
-		if activityTextTooLong(target.Kind, 64) || activityTextTooLong(target.Label, 240) ||
-			activityTextTooLong(target.URI, 500) || activityTextTooLong(target.Path, 500) || activityTextTooLong(target.ResourceRef, 1000) {
-			return errors.New("tool activity target exceeds its size limit")
+		if err := validateActivityTargetRef(target); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -753,10 +753,10 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.Error = cloneActivityError(r.Error)
 		}
 		if len(r.Inputs) > 0 {
-			l.Inputs = append([]StructuredActivityRow(nil), r.Inputs...)
+			l.Inputs = cloneStructuredActivityRows(r.Inputs)
 		}
 		if r.RowsProvided || len(r.Rows) > 0 {
-			l.Rows = append([]StructuredActivityRow(nil), r.Rows...)
+			l.Rows = cloneStructuredActivityRows(r.Rows)
 		}
 		l.RowsProvided = l.RowsProvided || r.RowsProvided
 		return l
@@ -904,7 +904,7 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 			l.NormalizedFormat = r.NormalizedFormat
 		}
 		if r.Mutations != nil {
-			mutations := append(FileMutationActivityPayloads(nil), (*r.Mutations)...)
+			mutations := cloneFileMutations(*r.Mutations)
 			l.Mutations = &mutations
 		}
 		l.Truncated = l.Truncated || r.Truncated
@@ -1093,10 +1093,45 @@ func cloneQuestionActivityAnswers(in []QuestionActivityAnswer) []QuestionActivit
 	return out
 }
 
+func validateActivityTargetRef(target ActivityTargetRef) error {
+	if strings.TrimSpace(target.Kind) == "" || strings.TrimSpace(target.Label) == "" || target.Line < 0 {
+		return errors.New("tool activity target requires kind, label, and a non-negative line")
+	}
+	if activityTextTooLong(target.Kind, 64) || activityTextTooLong(target.Label, 240) ||
+		activityTextTooLong(target.URI, 500) || activityTextTooLong(target.Path, 500) || activityTextTooLong(target.ResourceRef, 1000) {
+		return errors.New("tool activity target exceeds its size limit")
+	}
+	return nil
+}
+
+func cloneActivityTargetRef(target *ActivityTargetRef) *ActivityTargetRef {
+	if target == nil {
+		return nil
+	}
+	out := *target
+	return &out
+}
+
+func cloneStructuredActivityRows(rows []StructuredActivityRow) []StructuredActivityRow {
+	out := append([]StructuredActivityRow(nil), rows...)
+	for i := range out {
+		out[i].Target = cloneActivityTargetRef(out[i].Target)
+	}
+	return out
+}
+
+func cloneFileMutations(mutations FileMutationActivityPayloads) FileMutationActivityPayloads {
+	out := append(FileMutationActivityPayloads(nil), mutations...)
+	for i := range out {
+		out[i].Target = cloneActivityTargetRef(out[i].Target)
+	}
+	return out
+}
+
 func cloneStructuredActivityPayload(payload StructuredActivityPayload) StructuredActivityPayload {
 	payload.Error = cloneActivityError(payload.Error)
-	payload.Rows = append([]StructuredActivityRow(nil), payload.Rows...)
-	payload.Inputs = append([]StructuredActivityRow(nil), payload.Inputs...)
+	payload.Rows = cloneStructuredActivityRows(payload.Rows)
+	payload.Inputs = cloneStructuredActivityRows(payload.Inputs)
 	return payload
 }
 
@@ -1117,7 +1152,7 @@ func cloneFileActivityPayload(payload FileActivityPayload) FileActivityPayload {
 func clonePatchActivityPayload(payload PatchActivityPayload) PatchActivityPayload {
 	payload.Error = cloneActivityError(payload.Error)
 	if payload.Mutations != nil {
-		mutations := append(FileMutationActivityPayloads(nil), (*payload.Mutations)...)
+		mutations := cloneFileMutations(*payload.Mutations)
 		payload.Mutations = &mutations
 	}
 	return payload
@@ -1222,6 +1257,11 @@ func validateActivityPayload(payload ActivityPayload) error {
 		values := []string{typed.Path, typed.Diff, typed.Status, typed.Summary, typed.InputFormat, typed.NormalizedFormat}
 		if typed.Mutations != nil {
 			for _, mutation := range *typed.Mutations {
+				if mutation.Target != nil {
+					if err := validateActivityTargetRef(*mutation.Target); err != nil {
+						return err
+					}
+				}
 				if mutation.Additions < 0 || mutation.Deletions < 0 {
 					return errors.New("patch mutation counts must be non-negative")
 				}
@@ -1387,6 +1427,11 @@ func validateStructuredActivityRows(rows []StructuredActivityRow) error {
 		return errors.New("too many structured activity rows")
 	}
 	for _, row := range rows {
+		if row.Target != nil {
+			if err := validateActivityTargetRef(*row.Target); err != nil {
+				return err
+			}
+		}
 		if strings.TrimSpace(row.Title) == "" && strings.TrimSpace(row.Meta) == "" && strings.TrimSpace(row.Content) == "" {
 			return errors.New("structured activity row requires title, meta, or content")
 		}

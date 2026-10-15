@@ -149,6 +149,12 @@ prompts. A secret answer is represented only by `Redacted: true`; Floret
 rejects a redacted answer that also carries values. These fields are display
 data, not an alternate input-response or durable message authority.
 
+Structured rows and patch mutations may each carry an optional Target
+(ActivityTargetRef) identifying their own observed resource. Targets survive
+cloning, result merges, finalization and journal replay. Paths are navigation
+facts, never authorization or a guarantee that the resource still exists; hosts
+must authorize current access. Omitted targets preserve existing JSON behavior.
+
 Structured activity may include bounded, ordered `Rows` containing
 host-sanitized text, Markdown, or code. Floret validates and preserves these
 display rows without interpreting product tools or accepting arbitrary JSON

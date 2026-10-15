@@ -1647,6 +1647,7 @@ field FileActivityPayload.DiffUnavailableReason string tag="json:\"diff_unavaila
 field FileActivityPayload.Truncated bool tag="json:\"truncated,omitempty\""
 field FileActivityPayload.Error *github.com/floegence/floret/v7/tools.ActivityError tag="json:\"error,omitempty\""
 type FileMutationActivityPayload struct
+field FileMutationActivityPayload.Target *github.com/floegence/floret/v7/tools.ActivityTargetRef tag="json:\"target,omitempty\""
 field FileMutationActivityPayload.DisplayName string tag="json:\"display_name,omitempty\""
 field FileMutationActivityPayload.ChangeType string tag="json:\"change_type,omitempty\""
 field FileMutationActivityPayload.Additions int tag="json:\"additions,omitempty\""
@@ -1826,6 +1827,7 @@ field StructuredActivityPayload.Rows []github.com/floegence/floret/v7/tools.Stru
 field StructuredActivityPayload.Inputs []github.com/floegence/floret/v7/tools.StructuredActivityRow tag="json:\"inputs,omitempty\""
 field StructuredActivityPayload.RowsProvided bool tag="json:\"rows_provided,omitempty\""
 type StructuredActivityRow struct
+field StructuredActivityRow.Target *github.com/floegence/floret/v7/tools.ActivityTargetRef tag="json:\"target,omitempty\""
 field StructuredActivityRow.Title string tag="json:\"title,omitempty\""
 field StructuredActivityRow.Meta string tag="json:\"meta,omitempty\""
 field StructuredActivityRow.Content string tag="json:\"content,omitempty\""
