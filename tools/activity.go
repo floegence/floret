@@ -207,6 +207,8 @@ type PatchActivityPayload struct {
 
 func (PatchActivityPayload) activityRenderer() ActivityRenderer { return ActivityRendererPatch }
 
+// WebSearchActivityResult preserves a provider source. URL is required; Title
+// and Snippet are optional and must not be synthesized by the engine.
 type WebSearchActivityResult struct {
 	Snippet string `json:"snippet,omitempty"`
 	Title   string `json:"title"`
@@ -1278,8 +1280,8 @@ func validateActivityPayload(payload ActivityPayload) error {
 		}
 		values := []string{typed.Query, typed.Status, typed.Operation, typed.URL, typed.Pattern}
 		for _, result := range typed.Results {
-			if strings.TrimSpace(result.Title) == "" || strings.TrimSpace(result.URL) == "" {
-				return errors.New("search result requires title and url")
+			if strings.TrimSpace(result.URL) == "" {
+				return errors.New("search result requires url")
 			}
 			values = append(values, result.Title, result.URL, result.Snippet)
 		}

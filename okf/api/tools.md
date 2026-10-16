@@ -161,6 +161,11 @@ content preview. Complete fetched content stays in the tool result and artifact.
 Floret does not discover or request page icons; static tool iconography belongs
 to the host.
 
+Web Search sources require a URL. Provider titles and snippets are optional;
+missing titles must not discard the entire Activity or trigger title generation.
+Operation, query and returned source order survive canonical history unchanged.
+Hosts decide how to present results; answer citations are not per-call results.
+
 # Batch Execution
 
 The engine validates and prepares the complete ordinary-call batch before any

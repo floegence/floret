@@ -289,3 +289,18 @@ func TestSanitizeWebSearchFacts(t *testing.T) {
 		t.Fatalf("unsafe or lost facts: %+v", p)
 	}
 }
+
+func TestSanitizeWebSearchPreservesURLOnlySources(t *testing.T) {
+	input := &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{
+		Operation: "search", Query: "official documentation", Status: "success", ResultsProvided: true,
+		Results: []tools.WebSearchActivityResult{{URL: "https://example.com/docs", Snippet: "Provider supplied excerpt"}},
+	}}
+	got := Sanitize(Event{Type: HostedToolResult, Activity: input}).Activity
+	if got == nil {
+		t.Fatal("URL-only source dropped the complete search presentation")
+	}
+	payload := got.Payload.(tools.WebSearchActivityPayload)
+	if payload.Query != "official documentation" || !payload.ResultsProvided || len(payload.Results) != 1 || payload.Results[0].Title != "" || payload.Results[0].URL != "https://example.com/docs" {
+		t.Fatalf("provider facts lost or fabricated: %+v", payload)
+	}
+}
