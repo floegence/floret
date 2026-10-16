@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.46.0 - 2026-10-15
+
+- Add optional canonical assistant-item Fork anchors for host answer actions. Resolve active-path presentation IDs inside the runtime; reject unknown, foreign and conflicting anchors without copying or exposing journal state. Preserve request-key replay and schema 17.
+
 ## v7.45.0 - 2026-10-15
 
 - Add compatible request-scoped token attribution by exact tool name, registry source/namespace and canonical managed-context section key. Preserve existing aggregate fields, comparability, native usage authority, prompt rendering, schema 17 and historical records; keep product source grouping in hosts.

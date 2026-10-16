@@ -1489,3 +1489,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 
 - 2026-10-15: Document detached canonical Ask User reason, required-input and evidence metadata across all public input views; preserve schema 17 and tool-origin input.
 - 2026-10-15: Clarify URL-only Web Search source validation and canonical result preservation without synthesized titles.
+
+- 2026-10-15: Document canonical assistant-item Fork anchors in [runtime](api/runtime.md#answer-fork-anchors).

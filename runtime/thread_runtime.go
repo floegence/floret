@@ -97,6 +97,9 @@ type CreateThreadInput struct {
 }
 
 type ForkThreadInput struct {
+	// SourceItemID pins a committed assistant item on the active path.
+	// It is mutually exclusive with SourceEntryID; unknown items are rejected.
+	SourceItemID    string            `json:"source_item_id,omitempty"`
 	SourceThreadID  identity.ThreadID `json:"source_thread_id"`
 	SourceEntryID   string            `json:"source_entry_id,omitempty"`
 	ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
@@ -747,13 +750,14 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 	fingerprint, err := stableFingerprint(struct {
 		Source          identity.ThreadID `json:"source"`
 		Entry           string            `json:"entry,omitempty"`
+		Item            string            `json:"item,omitempty"`
 		ParentThreadID  identity.ThreadID `json:"parent_thread_id,omitempty"`
 		ParentTurnID    identity.TurnID   `json:"parent_turn_id,omitempty"`
 		TaskName        string            `json:"task_name,omitempty"`
 		TaskDescription string            `json:"task_description,omitempty"`
 		HostProfileRef  string            `json:"host_profile_ref,omitempty"`
 		ForkMode        string            `json:"fork_mode,omitempty"`
-	}{in.SourceThreadID, strings.TrimSpace(in.SourceEntryID), in.ParentThreadID, in.ParentTurnID, strings.TrimSpace(in.TaskName), strings.TrimSpace(in.TaskDescription), strings.TrimSpace(in.HostProfileRef), strings.TrimSpace(in.ForkMode)})
+	}{in.SourceThreadID, strings.TrimSpace(in.SourceEntryID), strings.TrimSpace(in.SourceItemID), in.ParentThreadID, in.ParentTurnID, strings.TrimSpace(in.TaskName), strings.TrimSpace(in.TaskDescription), strings.TrimSpace(in.HostProfileRef), strings.TrimSpace(in.ForkMode)})
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -787,6 +791,28 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 		return ThreadView{}, runtimeHostError(err)
 	}
 	entryID := strings.TrimSpace(in.SourceEntryID)
+	if itemID := strings.TrimSpace(in.SourceItemID); itemID != "" {
+		if entryID != "" {
+			return ThreadView{}, fmt.Errorf("source_item_id and source_entry_id are mutually exclusive")
+		}
+		path, err := service.host.store.repo.Path(ctx, source.ID, source.LeafID)
+		if err != nil {
+			return ThreadView{}, runtimeHostError(err)
+		}
+		items, _, err := threadRuntimeItemsFromEntries(path)
+		if err != nil {
+			return ThreadView{}, err
+		}
+		for _, item := range items {
+			if item.ID == itemID && item.Kind == ThreadItemAssistant && len(item.sourceEntryIDs) > 0 {
+				entryID = item.sourceEntryIDs[len(item.sourceEntryIDs)-1]
+				break
+			}
+		}
+		if entryID == "" {
+			return ThreadView{}, fmt.Errorf("source_item_id is not a committed assistant item")
+		}
+	}
 	if entryID == "" {
 		entryID = source.LeafID
 	}

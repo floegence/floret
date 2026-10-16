@@ -684,6 +684,7 @@ field Event.Timestamp time.Time tag="json:\"timestamp,omitempty\""
 method Event.Validate func() error
 type EventSink interface interface{EmitEvent(github.com/floegence/floret/v7/runtime.Event)}
 type ForkThreadInput struct
+field ForkThreadInput.SourceItemID string tag="json:\"source_item_id,omitempty\""
 field ForkThreadInput.SourceThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"source_thread_id\""
 field ForkThreadInput.SourceEntryID string tag="json:\"source_entry_id,omitempty\""
 field ForkThreadInput.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id,omitempty\""
