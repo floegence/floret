@@ -82,7 +82,7 @@ func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
 							t.Fatalf("missing split usage: %+v", snapshot)
 						}
 						breakdown := snapshot.ContextUsage.Confirmed.RequestEstimate.Breakdown
-						if breakdown.Source == "" || breakdown.ToolCallTokens <= 0 || breakdown.ToolResultTokens <= 0 || breakdown.SystemTokens <= 0 || breakdown.UserTokens <= 0 {
+						if breakdown.Source == "" || breakdown.AttachmentTokens != 4096 || breakdown.ToolCallTokens <= 0 || breakdown.ToolResultTokens <= 0 || breakdown.SystemTokens <= 0 || breakdown.UserTokens <= 0 {
 							t.Fatalf("missing persisted input composition: %+v", breakdown)
 						}
 						if snapshot.ContextUsage.Estimate.RequestEstimate.Breakdown.AssistantTokens <= 0 {
@@ -185,7 +185,7 @@ func (p *calibrationPrepared) Stream(ctx context.Context) (<-chan provider.Event
 	return p.gateway.Stream(ctx, p.request)
 }
 func (p *calibrationPrepared) TokenEstimate() provider.TokenEstimate {
-	return provider.TokenEstimate{MessageTokens: p.tokens, EstimatedInputTokens: p.tokens, Source: "calibration", Method: string(config.EstimateMethodProviderRenderedPayload), Confidence: "conservative", Coverage: "complete_request"}
+	return provider.TokenEstimate{AttachmentTokens: min(4096, p.tokens), MessageTokens: p.tokens, EstimatedInputTokens: p.tokens, Source: "calibration", Method: string(config.EstimateMethodProviderRenderedPayload), Confidence: "conservative", Coverage: "complete_request"}
 }
 func (p *calibrationPrepared) RenderedPayloadFingerprint() string {
 	return fmt.Sprintf("calibration:%d", p.tokens)
