@@ -1340,6 +1340,10 @@ func TestThreadServiceRespondResumesWaitingInput(t *testing.T) {
 	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
 		return len(view.Interactions) == 1 && view.Interactions[0].Kind == ThreadInteractionInput && !view.Interactions[0].Resolved
 	})
+	waitResult, waitErr := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute})
+	if waitErr != nil || waitResult.Reason != ThreadWaitAttentionRequired {
+		t.Fatalf("wait=%#v err=%v", waitResult, waitErr)
+	}
 	assertOrderedThreadItems(t, waiting.Items, []orderedThreadItemExpectation{
 		{kind: ThreadItemUser, text: "begin"},
 		{kind: ThreadItemInteraction},

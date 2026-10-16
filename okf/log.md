@@ -1499,3 +1499,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 - 2026-10-16: Document v7.47 prepared content distribution, typed attribution, display quality and fixed qualification evidence in [Provider](api/provider.md).
 
 - 2026-10-16: Preserve canonical transient context attribution across prompt-cache plan reuse; cached wire snapshots remain transport facts, not provenance owners.
+
+- 2026-10-16: Document optional bounded thread waits, one batch repeat guard, and canonical failure reasons without schema changes.

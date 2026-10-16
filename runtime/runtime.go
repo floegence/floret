@@ -962,13 +962,30 @@ func (c ThreadTurnFailureCode) Valid() bool {
 	}
 }
 
+// ThreadTurnFailureReason is a safe, product-neutral classification derived
+// from canonical failure facts. Unknown messages retain an empty reason.
+type ThreadTurnFailureReason string
+
+const (
+	ThreadTurnFailureRepeatedToolCalls   ThreadTurnFailureReason = "repeated_tool_calls"
+	ThreadTurnFailureNoProgress          ThreadTurnFailureReason = "no_progress"
+	ThreadTurnFailureDuplicateToolCallID ThreadTurnFailureReason = "duplicate_tool_call_id"
+	ThreadTurnFailureStopHookLoop        ThreadTurnFailureReason = "stop_hook_loop"
+)
+
 type ThreadTurnFailure struct {
+	Reason ThreadTurnFailureReason `json:"reason,omitempty"`
+
 	ProviderTimeout *publicprovider.RequestTimeoutDetails `json:"provider_timeout,omitempty"`
 	Code            ThreadTurnFailureCode                 `json:"code"`
 	Message         string                                `json:"message"`
 }
 
 func (f ThreadTurnFailure) Validate() error {
+	if f.Reason != "" && f.Reason != classifyThreadTurnFailureReason(f.Code, f.Message) {
+		return errors.New("thread failure reason does not match canonical failure")
+	}
+
 	if f.ProviderTimeout != nil {
 		if f.Code != ThreadTurnFailureProvider {
 			return errors.New("provider timeout requires provider failure")
@@ -1801,6 +1818,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 			Code:    ThreadTurnFailureCode(strings.TrimSpace(in.FailureCode)),
 			Message: in.Err.Error(),
 		}
+		out.Failure.Reason = classifyThreadTurnFailureReason(out.Failure.Code, out.Failure.Message)
 		if out.Failure.Code == ThreadTurnFailureProvider {
 			out.Failure.ProviderTimeout = providerattempt.TimeoutDetails(in.Err)
 		}

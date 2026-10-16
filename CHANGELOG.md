@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.50.0 - 2026-10-16
+
+- Add optional scoped ThreadWaiter with frozen targets, explicit missing/attention/completion/timeout outcomes, deletion wakeups, and distinct cancellation/Host shutdown errors.
+- Unify batch repeat evaluation with dispatcher-measured bounded waits; preserve polling progress and mixed-effect protections.
+- Derive typed loop failure reasons consistently from canonical live and historical facts without rewriting storage or changing schema 19.
+
 ## v7.49.0 - 2026-10-16
 
 - Add opt-in passive parent events through the optional runtime service, canonical authorized child reports, critical source references, explicit full reads and pagination. Preserve legacy host model inputs by default.

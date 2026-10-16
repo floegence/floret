@@ -684,6 +684,23 @@ retain the measurement across Turns and restart; changed policies and successful
 compaction clear it. Failed, cancelled, and noop compactions do not clear it.
 Missing native usage updates only the estimate. Existing `Usage` and
 `ContextStatus` fields retain their latest-status semantics.
+The optional `ThreadWaiter.WaitThreads` observes a frozen scoped target set with
+one positive timeout. Results distinguish `missing`, `attention_required`,
+`completed` and `timed_out`, in that priority order. Timeout is a normal snapshot;
+caller cancellation, read failure and Host shutdown remain errors. Opt-in pending
+parent-event observation also returns canonical receipts with an `events` reason
+without resuming idle parents. Subscriptions
+wake a fresh authoritative read, including after deletion; they are not replay.
+A tool may return `tools.BoundedWait` only for a full normal timeout with
+unfinished, nonempty targets. The dispatcher measures that handler, excluding
+approval and batch delay. Engine's single batch guard permits repetition only
+when every call demonstrates a full bounded wait or changed polling progress.
+Ordinary effects, early returns and errors retain the existing repeat limit.
+`ThreadTurnFailure.Reason` derives safe loop-blocking classifications from the
+canonical code and exact fixed Engine reason, including historical reads and
+restart. Unknown failures have no guessed reason. No durable schema changes are
+required; codes, retry savepoints and unknown-effect restrictions stay intact.
+
 `ThreadService.Subscribe` publishes workspace summary and current-view updates;
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle

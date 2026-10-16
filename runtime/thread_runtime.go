@@ -545,16 +545,17 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
-	host           *Host
-	factory        AgentFactory
-	mu             sync.Mutex
-	subscribers    map[*WorkspaceSubscription]struct{}
-	published      map[string]uint64
-	cancellationMu sync.Mutex
-	cancellations  []threadCancellationDiagnostic
-	runtimesMu     sync.Mutex
-	runtimes       map[string]*threadRuntimeState
-	closed         bool
+	host                *Host
+	factory             AgentFactory
+	mu                  sync.Mutex
+	subscribers         map[*WorkspaceSubscription]struct{}
+	subscriptionsClosed bool
+	published           map[string]uint64
+	cancellationMu      sync.Mutex
+	cancellations       []threadCancellationDiagnostic
+	runtimesMu          sync.Mutex
+	runtimes            map[string]*threadRuntimeState
+	closed              bool
 }
 
 type threadRuntimeRequest struct {
@@ -569,11 +570,13 @@ type preparedThreadExecution struct {
 
 // WorkspaceSubscription receives replaceable current views.
 type WorkspaceSubscription struct {
-	mu      sync.Mutex
-	views   chan ThreadView
-	done    chan struct{}
-	closed  bool
-	service *threadRuntimeService
+	mu       sync.Mutex
+	views    chan ThreadView
+	done     chan struct{}
+	closed   bool
+	closeErr error
+	changed  chan struct{}
+	service  *threadRuntimeService
 }
 
 func (subscription *WorkspaceSubscription) Next(ctx context.Context) (ThreadView, error) {
@@ -584,23 +587,22 @@ func (subscription *WorkspaceSubscription) Next(ctx context.Context) (ThreadView
 	case <-ctx.Done():
 		return ThreadView{}, ctx.Err()
 	case <-subscription.done:
-		return ThreadView{}, ErrHostClosed
+		subscription.mu.Lock()
+		err := subscription.closeErr
+		subscription.mu.Unlock()
+		return ThreadView{}, err
 	case view := <-subscription.views:
 		return view, nil
 	}
 }
 
-func (subscription *WorkspaceSubscription) Close() {
+func (subscription *WorkspaceSubscription) Close() { subscription.closeWithError(ErrHostClosed) }
+func (subscription *WorkspaceSubscription) closeWithError(err error) {
 	if subscription == nil {
 		return
 	}
 	subscription.mu.Lock()
-	if subscription.closed {
-		subscription.mu.Unlock()
-		return
-	}
-	subscription.closed = true
-	close(subscription.done)
+	subscription.closeLockedWithError(err)
 	service := subscription.service
 	subscription.mu.Unlock()
 	if service != nil {
@@ -609,12 +611,15 @@ func (subscription *WorkspaceSubscription) Close() {
 		service.mu.Unlock()
 	}
 }
-
 func (subscription *WorkspaceSubscription) closeLocked() {
+	subscription.closeLockedWithError(ErrHostClosed)
+}
+func (subscription *WorkspaceSubscription) closeLockedWithError(err error) {
 	if subscription.closed {
 		return
 	}
 	subscription.closed = true
+	subscription.closeErr = err
 	close(subscription.done)
 }
 
@@ -903,6 +908,14 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 		drain.actor.deleting = false
 		drain.actor.mu.Unlock()
 	}
+	service.mu.Lock()
+	for subscription := range service.subscribers {
+		select {
+		case subscription.changed <- struct{}{}:
+		default:
+		}
+	}
+	service.mu.Unlock()
 	return nil
 }
 
@@ -1725,6 +1738,7 @@ func (service *threadRuntimeService) close() error {
 		return nil
 	}
 	service.mu.Lock()
+	service.subscriptionsClosed = true
 	subscriptions := make([]*WorkspaceSubscription, 0, len(service.subscribers))
 	for subscription := range service.subscribers {
 		subscriptions = append(subscriptions, subscription)
@@ -3899,16 +3913,23 @@ func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceS
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
-	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), service: service}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), changed: make(chan struct{}, 1), service: service}
 	service.mu.Lock()
+	if service.subscriptionsClosed {
+		service.mu.Unlock()
+		return nil, ErrHostClosed
+	}
 	service.subscribers[subscription] = struct{}{}
 	service.mu.Unlock()
 	go func() {
-		<-ctx.Done()
-		service.mu.Lock()
-		delete(service.subscribers, subscription)
-		service.mu.Unlock()
-		subscription.Close()
+		select {
+		case <-ctx.Done():
+			subscription.closeWithError(ctx.Err())
+		case <-subscription.done:
+		}
 	}()
 	return subscription, nil
 }
@@ -4907,7 +4928,7 @@ func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessi
 		if !failureCode.Valid() {
 			failureCode = ThreadTurnFailureLegacyUnclassified
 		}
-		failure = &ThreadTurnFailure{Code: failureCode, Message: failureMessage}
+		failure = &ThreadTurnFailure{Code: failureCode, Message: failureMessage, Reason: classifyThreadTurnFailureReason(failureCode, failureMessage)}
 		if failureCode == ThreadTurnFailureProvider {
 			failure.ProviderTimeout = providerattempt.CloneTimeoutDetails(timeoutDetails)
 		}
@@ -4920,6 +4941,7 @@ func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {
 		return nil
 	}
 	cloned := *failure
+	cloned.Reason = classifyThreadTurnFailureReason(cloned.Code, cloned.Message)
 	cloned.ProviderTimeout = providerattempt.CloneTimeoutDetails(failure.ProviderTimeout)
 	return &cloned
 }
