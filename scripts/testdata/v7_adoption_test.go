@@ -604,7 +604,7 @@ func TestPublishedStructuredInputAndEmptyOutput(t *testing.T) {
 
 func TestPublishedOfflineRequestEstimate(t *testing.T) {
 	estimate, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "openai", Model: "gpt-4o", Format: provider.RequestFormatOpenAIChat, Payload: []byte(`{"messages":[{"role":"user","content":"Check this request."}]}`)})
-	if err != nil || estimate.EstimatedInputTokens <= 0 || estimate.Source != "rendered_o200k_base_media_v1" {
+	if err != nil || estimate.EstimatedInputTokens <= 0 || estimate.Source != "rendered_o200k_base_content_v3" {
 		t.Fatalf("offline estimate: %+v %v", estimate, err)
 	}
 }
@@ -871,5 +871,19 @@ func TestPublishedContextAttributionContract(t *testing.T) {
 	status := observation.ContextStatus{Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable, RequestEstimate: config.RequestEstimate{Breakdown: restored}}
 	if err := status.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishedPreparedContentDistribution(t *testing.T) {
+	raw := []byte(`{"input":[{"role":"user","content":"skills rules"}]}`)
+	attrs := []provider.RenderedContentAttribution{{Path: "/input/0/content", Category: "model_context", Parts: []provider.ContentAttributionPart{{Start: 0, End: 12, Key: "skills"}}}}
+	got, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "deepseek", Model: "deepseek-flash", Format: provider.RequestFormatOpenAIResponses, Payload: raw, Attribution: attrs})
+	if err != nil || got.Breakdown.Quality != "token_estimate" || got.Breakdown.Tokenizer != "deepseek_v4" || got.Breakdown.ModelContextTokens <= 0 || got.Breakdown.UserTokens != 0 {
+		t.Fatalf("distribution=%+v err=%v", got, err)
+	}
+	attrs[0].Path = "/missing"
+	omitted, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "deepseek", Model: "deepseek-flash", Format: provider.RequestFormatOpenAIResponses, Payload: raw, Attribution: attrs})
+	if err != nil || omitted.EstimatedInputTokens != got.EstimatedInputTokens || omitted.Breakdown.Source != "" || omitted.Breakdown.Diagnostic != "attribution_mismatch" {
+		t.Fatalf("optional attribution blocked budget: %+v %v", omitted, err)
 	}
 }

@@ -166,8 +166,17 @@ func (s ContextStatus) Validate() error {
 	}
 
 	b := s.RequestEstimate.Breakdown
+	if b.Quality != "" && b.Quality != "token_estimate" && b.Quality != "relative_weight" {
+		return fmt.Errorf("invalid context breakdown quality")
+	}
+	if b.Quality == "token_estimate" && (b.Tokenizer == "" || b.AttachmentTokens > 0) {
+		return fmt.Errorf("context token estimate requires complete text vocabulary coverage")
+	}
+	if b.Diagnostic != "" && b.Diagnostic != "attribution_mismatch" {
+		return fmt.Errorf("invalid context breakdown diagnostic")
+	}
 	total := int64(0)
-	for _, n := range []int64{b.SystemTokens, b.UserTokens, b.AssistantTokens, b.ToolDefinitionTokens, b.ToolCallTokens, b.ToolResultTokens, b.ModelContextTokens, b.CompactionTokens, b.ReasoningTokens, b.AttachmentTokens} {
+	for _, n := range []int64{b.FramingTokens, b.SystemTokens, b.UserTokens, b.AssistantTokens, b.ToolDefinitionTokens, b.ToolCallTokens, b.ToolResultTokens, b.ModelContextTokens, b.CompactionTokens, b.ReasoningTokens, b.AttachmentTokens} {
 		if n < 0 || n > int64(^uint64(0)>>1)-total {
 			return fmt.Errorf("invalid context breakdown token counts")
 		}

@@ -1491,3 +1491,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 - 2026-10-15: Clarify URL-only Web Search source validation and canonical result preservation without synthesized titles.
 
 - 2026-10-15: Document canonical assistant-item Fork anchors in [runtime](api/runtime.md#answer-fork-anchors).
+
+- 2026-10-16: Document v7.47 prepared content distribution, typed attribution, display quality and fixed qualification evidence in [Provider](api/provider.md).

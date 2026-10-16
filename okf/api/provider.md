@@ -252,3 +252,28 @@ chronological timestamps and logical/physical attempt identity; provider text is
 never parsed into this contract. Hosts configure the Agent's
 `ProviderRequestTimeoutPolicy`, pass cancellation into transport opening and
 reading, and leave automatic recovery to Floret.
+
+
+## Prepared content distribution
+
+The additive v7.47 API decision serves Redeven Flower. `TokenEstimate.Breakdown`
+is produced by the same frozen-request extraction and vocabulary count as the safety
+budget. `Message.Attribution` carries optional typed model-context/compaction source
+spans; renderers map them to `RenderedRequest.Attribution` JSON Pointer paths.
+These fields are observation metadata, excluded from model payloads. UTF-8 spans
+partition decoded text; token ownership uses the first byte and never retokenizes
+sources. Missing sources remain unattributed. Invalid optional maps suppress only
+that distribution and emit the bounded `attribution_mismatch` diagnostic.
+
+`ContextBreakdown.Tokenizer` identifies the actual vocabulary, independently of the
+wire protocol and configured provider instance identity. `Quality=token_estimate`
+allows approximate token amounts only with complete known text coverage;
+`relative_weight` and the empty historical quality allow shares only, including
+accessible labels and tooltips. `FramingTokens` is protocol markup, not native-usage
+reconciliation. Display shares use the content-weight total, never scaled native
+usage. Safety margins/media bounds remain in budgets. No new durable store or
+lifecycle is introduced; the existing request identity, history and source-version
+calibration invalidation continue to apply.
+
+See [qualification evidence](../../scripts/context-qualification/REPORT.md) and
+[unified counter](../../internal/requestestimate/content.go).

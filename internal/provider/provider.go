@@ -518,62 +518,7 @@ type TokenEstimator interface {
 }
 
 func GenericRequestEstimate(req Request) (TokenEstimate, error) {
-	allMessages, err := MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
-	if err != nil {
-		return TokenEstimate{}, err
-	}
-	prefix, messages := splitSystemMessages(allMessages)
-	prefixTokens, err := estimateMessagesJSON(prefix)
-	if err != nil {
-		return TokenEstimate{}, err
-	}
-	messageTokens, err := estimateMessagesJSON(messages)
-	if err != nil {
-		return TokenEstimate{}, err
-	}
-	toolDefinitionTokens, err := estimateToolsJSON(req.Tools, req.HostedTools)
-	if err != nil {
-		return TokenEstimate{}, err
-	}
-	breakdown, err := EstimateContextBreakdown(req)
-	if err != nil {
-		return TokenEstimate{}, err
-	}
-	return TokenEstimate{
-		Breakdown:            breakdown,
-		PrefixTokens:         prefixTokens,
-		MessageTokens:        messageTokens,
-		ToolDefinitionTokens: toolDefinitionTokens,
-		EstimatedInputTokens: prefixTokens + messageTokens + toolDefinitionTokens,
-		Source:               "generic_request_json",
-		Method:               TokenEstimateGenericPayload,
-		Confidence:           EstimateConservative,
-	}, nil
-}
-
-func estimateMessagesJSON(messages []session.Message) (int64, error) {
-	if len(messages) == 0 {
-		return 0, nil
-	}
-	raw, err := json.Marshal(messages)
-	if err != nil {
-		return 0, err
-	}
-	return contextpolicy.EstimateTextTokens(string(raw)), nil
-}
-
-func estimateToolsJSON(localTools []tools.ToolDefinition, hostedTools []HostedToolDefinition) (int64, error) {
-	if len(localTools) == 0 && len(hostedTools) == 0 {
-		return 0, nil
-	}
-	raw, err := json.Marshal(map[string]any{
-		"tools":        localTools,
-		"hosted_tools": hostedTools,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return contextpolicy.EstimateTextTokens(string(raw)), nil
+	return estimateGenericInput(req)
 }
 
 func splitSystemMessages(messages []session.Message) ([]session.Message, []session.Message) {

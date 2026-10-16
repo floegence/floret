@@ -49,3 +49,11 @@ func Count(text string) (int64, error) {
 	}
 	return counter.Count(text)
 }
+
+func CountParts(text string, ends []int) ([]int64, error) {
+	c, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return c.CountParts(text, ends)
+}

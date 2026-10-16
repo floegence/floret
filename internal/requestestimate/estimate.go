@@ -1,23 +1,20 @@
-// Package requestestimate owns provider-neutral request counting. It accepts
-// rendered provider input and never resolves remote resources or stores text.
+// Package requestestimate counts frozen provider input without retaining text.
 package requestestimate
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"strings"
-
-	"github.com/floegence/floret/v7/internal/deepseektokenizer"
-	"github.com/floegence/floret/v7/internal/openaitokenizer"
 )
 
 type Estimate struct {
 	Prefix, Messages, Tools int64
 	Media                   int64
 	Source, Method          string
+	Breakdown               contextpolicy.ContextBreakdown
 }
-
 type counter struct {
 	provider, model, encoding string
 	margin                    int64
@@ -26,6 +23,10 @@ type counter struct {
 }
 
 func Count(provider, model, format string, payload []byte) (Estimate, error) {
+	return CountAttributed(provider, model, format, payload, nil)
+}
+
+func CountAttributed(provider, model, format string, payload []byte, attrs []Attribution) (Estimate, error) {
 	if strings.TrimSpace(model) == "" || len(payload) == 0 {
 		return Estimate{}, errors.New("request estimate requires a model and input")
 	}
@@ -36,181 +37,89 @@ func Count(provider, model, format string, payload []byte) (Estimate, error) {
 		return Estimate{}, errors.New("request estimate requires a JSON object")
 	}
 	media := int64(0)
-	c := counter{media: &media, provider: strings.ToLower(strings.TrimSpace(provider)), model: strings.TrimSpace(model), margin: 25}
-	c.encoding = openaitokenizer.Encoding(c.provider, c.model)
-	if c.provider == "openrouter" && strings.HasPrefix(c.model, "deepseek/") {
-		c.provider = "deepseek"
-		c.model = strings.TrimPrefix(c.model, "deepseek/")
+	c := newCounter(provider, model, &media)
+	switch format {
+	case "openai_chat", "anthropic_messages":
+		if err := sanitizeMessages(body["messages"], &c); err != nil {
+			return Estimate{}, err
+		}
+	case "openai_responses":
+		if list, ok := body["input"].([]any); ok {
+			for _, item := range list {
+				if m, ok := item.(map[string]any); ok {
+					field := "content"
+					if m["type"] == "function_call_output" {
+						field = "output"
+					}
+					if err := c.parts(m[field]); err != nil {
+						return Estimate{}, err
+					}
+				}
+			}
+		}
+	case "input_json":
+		c.encoding = ""
+		c.margin = 25
+		c.opaque = true
+		if body["messages"] != nil {
+			if err := sanitizeMessages(body["messages"], &c); err != nil {
+				return Estimate{}, err
+			}
+		}
+	default:
+		return Estimate{}, errors.New("unsupported request estimate format")
 	}
-	if c.provider == "deepseek" && (c.model == "deepseek-v4-pro" || c.model == "deepseek-v4-flash" || c.model == "deepseek-v4-flash-vision-exp") {
-		c.encoding = "deepseek_v4"
+	stripCacheControl(body["system"])
+	stripCacheControl(body["tools"])
+	// Typed media placeholders never occur in caller JSON. Opaque transports keep
+	// their byte bounds, while image-like text in schemas and arguments stays text.
+	var mediaCost func(any) int64
+	mediaCost = func(v any) int64 {
+		switch v := v.(type) {
+		case mediaBudget:
+			return int64(v)
+		case []any:
+			var n int64
+			for _, x := range v {
+				n += mediaCost(x)
+			}
+			return n
+		case map[string]any:
+			var n int64
+			for _, x := range v {
+				n += mediaCost(x)
+			}
+			return n
+		}
+		return 0
 	}
-	if c.encoding != "" {
-		c.margin = 10
+	media = mediaCost(body)
+	collected, err := collectContent(c, format, body, attrs)
+	if err != nil {
+		return Estimate{}, err
 	}
+	b := collected.ContextBreakdown
+	b.AttachmentTokens = media
+	if media > 0 {
+		b.Quality = "relative_weight"
+	}
+	prefix := b.SystemTokens
+	definitions := b.ToolDefinitionTokens
+	messages := b.UserTokens + b.AssistantTokens + b.ToolCallTokens + b.ToolResultTokens + b.ModelContextTokens + b.CompactionTokens + b.ReasoningTokens
+	margin := func(n int64) int64 { return n + (n*c.margin+99)/100 }
 	source := c.encoding
 	if source == "" {
 		source = "proxy_bpe"
 	}
-	estimate := Estimate{Source: "rendered_" + source + "_media_v1", Method: "provider_rendered_payload_estimate"}
-	var prefix, messages, tools any
-	switch format {
-	case "openai_chat":
-		messages = body["messages"]
-		tools = body["tools"]
-		if err := sanitizeMessages(messages, &c); err != nil {
-			return Estimate{}, err
-		}
-		var system []any
-		if list, ok := messages.([]any); ok {
-			var history []any
-			for _, item := range list {
-				message, _ := item.(map[string]any)
-				if message["role"] == "system" || message["role"] == "developer" {
-					system = append(system, item)
-				} else {
-					history = append(history, item)
-				}
-			}
-			messages = history
-		}
-		if len(system) > 0 || body["response_format"] != nil {
-			prefix = map[string]any{"messages": system, "response_format": body["response_format"]}
-		}
-	case "openai_responses":
-		messages = body["input"]
-		tools = body["tools"]
-		if list, ok := messages.([]any); ok {
-			for _, item := range list {
-				if m, ok := item.(map[string]any); ok {
-					switch m["type"] {
-					case "function_call_output":
-						if err := c.parts(m["output"]); err != nil {
-							return Estimate{}, err
-						}
-					default:
-						if err := c.parts(m["content"]); err != nil {
-							return Estimate{}, err
-						}
-					}
-				}
-			}
-		}
-		prefix = map[string]any{"instructions": body["instructions"], "text": body["text"]}
-	case "anthropic_messages":
-		messages = body["messages"]
-		tools = body["tools"]
-		prefix = body["system"]
-		if err := sanitizeMessages(messages, &c); err != nil {
-			return Estimate{}, err
-		}
-	case "input_json":
-		// Remote/custom transports expose complete model input but not the final
-		// provider rendering. Do not claim official tokenization of opaque input.
-		c.encoding = ""
-		c.margin = 25
-		c.opaque = true
-		messages = body
-		estimate.Source = "input_json_proxy_bpe_v1"
-		estimate.Method = "generic_payload_estimate"
-	default:
-		return Estimate{}, errors.New("unsupported request estimate format")
+	method := "provider_rendered_payload_estimate"
+	if c.opaque {
+		method = "generic_payload_estimate"
 	}
-	stripCacheControl(prefix)
-	stripCacheControl(tools)
-	var err error
-	if estimate.Prefix, err = c.value(prefix); err != nil {
-		return Estimate{}, err
+	estimate := Estimate{Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media, Media: media, Source: "rendered_" + source + "_content_v3", Method: method, Breakdown: b}
+	if b.Diagnostic != "" {
+		estimate.Breakdown = contextpolicy.ContextBreakdown{Diagnostic: b.Diagnostic}
 	}
-	if estimate.Messages, err = c.value(messages); err != nil {
-		return Estimate{}, err
-	}
-	if estimate.Tools, err = c.value(tools); err != nil {
-		return Estimate{}, err
-	}
-	// Protocol envelopes and tool separators are not identical to their JSON form.
-	// Keep explicit framing allowance in addition to the text margin.
-	estimate.Messages += 16
-	if list, ok := messages.([]any); ok {
-		estimate.Messages += int64(len(list)) * 12
-	}
-	if list, ok := tools.([]any); ok && len(list) > 0 {
-		estimate.Tools += 32 + int64(len(list))*16
-	}
-	estimate.Media = media
 	return estimate, nil
-}
-
-func (c counter) value(value any) (int64, error) {
-	if value == nil {
-		return 0, nil
-	}
-	// Media budgets are carried by private placeholders and added independently
-	// of text tokenization. They cannot be supplied by input JSON.
-	media := int64(0)
-	var collect func(any) any
-	collect = func(v any) any {
-		switch v := v.(type) {
-		case string:
-			if c.opaque && strings.HasPrefix(v, "data:") {
-				// Opaque transports do not expose typed media positions. Keep
-				// their transport-byte bound and allow for small encoded images.
-				budget := max(int64(len(v)), 4096)
-				if strings.HasPrefix(v, "data:image/") {
-					if n, err := c.image(v, ""); err == nil {
-						budget = max(budget, n)
-					}
-				}
-				media += budget
-				return ""
-			}
-		case mediaBudget:
-			media += int64(v)
-			return ""
-		case map[string]any:
-			for key, item := range v {
-				v[key] = collect(item)
-			}
-		case []any:
-			for i, item := range v {
-				v[i] = collect(item)
-			}
-		}
-		return v
-	}
-	value = collect(value)
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(value); err != nil {
-		return 0, errors.New("cannot encode request estimate input")
-	}
-	text := strings.TrimSuffix(buf.String(), "\n")
-	var n int64
-	var err error
-	switch c.encoding {
-	case "deepseek_v4":
-		n, err = deepseektokenizer.Count(text)
-	case "cl100k_base", "o200k_base":
-		n, err = openaitokenizer.Count(c.encoding, text)
-	default:
-		a, e := openaitokenizer.Count("cl100k_base", text)
-		if e != nil {
-			return 0, e
-		}
-		b, e := openaitokenizer.Count("o200k_base", text)
-		if e != nil {
-			return 0, e
-		}
-		n = max(a, b)
-	}
-	if err != nil {
-		return 0, err
-	}
-	if c.media != nil {
-		*c.media += media
-	}
-	return n + (n*c.margin+99)/100 + media, nil
 }
 
 type mediaBudget int64
@@ -248,6 +157,15 @@ func (c counter) parts(value any) error {
 		kind, _ := part["type"].(string)
 		switch kind {
 		case "image_url", "input_image":
+			if c.opaque {
+				raw, _ := json.Marshal(part)
+				for k := range part {
+					delete(part, k)
+				}
+				part["type"] = kind
+				part["opaque_file_budget"] = mediaBudget(max(4096, int64(len(raw))))
+				continue
+			}
 			url, _ := part["image_url"].(string)
 			detail, _ := part["detail"].(string)
 			if image, ok := part["image_url"].(map[string]any); ok {
@@ -260,6 +178,15 @@ func (c counter) parts(value any) error {
 			}
 			part["image_url"] = mediaBudget(n)
 		case "image":
+			if c.opaque {
+				raw, _ := json.Marshal(part)
+				for k := range part {
+					delete(part, k)
+				}
+				part["type"] = kind
+				part["opaque_file_budget"] = mediaBudget(max(4096, int64(len(raw))))
+				continue
+			}
 			source, _ := part["source"].(map[string]any)
 			url, _ := source["url"].(string)
 			if data, ok := source["data"].(string); ok {
@@ -275,7 +202,7 @@ func (c counter) parts(value any) error {
 			if err := c.parts(part["content"]); err != nil {
 				return err
 			}
-		case "input_file", "file", "document":
+		case "input_file", "file", "document", "audio", "input_audio", "video":
 			// Opaque documents may expand into text and page images. Local text BPE
 			// must not silently discount their encoded bytes as if they were prose.
 			raw, err := json.Marshal(part)
@@ -302,23 +229,4 @@ func stripCacheControl(value any) {
 			}
 		}
 	}
-}
-
-// CountText estimates semantic fragments using offline vocabulary selection.
-// Fragments are approximate and omit provider framing.
-func CountText(provider, model, text string) (int64, error) {
-	if text == "" {
-		return 0, nil
-	}
-	c := counter{encoding: openaitokenizer.Encoding(provider, model), margin: 25}
-	if c.encoding != "" {
-		c.margin = 10
-	}
-	if provider == "deepseek" || provider == "openrouter" && strings.HasPrefix(model, "deepseek/") {
-		model = strings.TrimPrefix(model, "deepseek/")
-		if model == "deepseek-v4-pro" || model == "deepseek-v4-flash" || model == "deepseek-v4-flash-vision-exp" {
-			c.encoding, c.margin = "deepseek_v4", 10
-		}
-	}
-	return c.value(text)
 }

@@ -176,7 +176,8 @@ func contextBreakdownFromAny(value any) config.ContextBreakdown {
 		return v
 	case map[string]any:
 		return config.ContextBreakdown{
-			Details:              contextBreakdownDetailsFromAny(v["details"]),
+			Details:   contextBreakdownDetailsFromAny(v["details"]),
+			Tokenizer: stringFromAny(v["tokenizer"]), Quality: stringFromAny(v["quality"]), FramingTokens: int64FromAny(v["framing_tokens"], 0), Diagnostic: stringFromAny(v["diagnostic"]),
 			Source:               stringFromAny(v["source"]),
 			SystemTokens:         int64FromAny(v["system_tokens"], 0),
 			UserTokens:           int64FromAny(v["user_tokens"], 0),

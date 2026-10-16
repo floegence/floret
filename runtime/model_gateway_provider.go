@@ -136,18 +136,6 @@ func (adapter modelGatewayProvider) EstimateTokens(_ context.Context, request pr
 	return estimate, err
 }
 
-func (adapter modelGatewayProvider) EstimateContextBreakdown(_ context.Context, request provider.Request) (contextpolicy.ContextBreakdown, error) {
-	if request.EphemeralUser != nil {
-		return contextpolicy.ContextBreakdown{}, nil
-	}
-	messages, err := adapter.requestMessages(request)
-	if err != nil {
-		return contextpolicy.ContextBreakdown{}, err
-	}
-	request.Messages = messages
-	return provider.EstimateContextBreakdown(request)
-}
-
 // Filter only the detached transport projection. Canonical messages and earlier
 // checkpoints retain reasoning, including reasoning-only interrupted output.
 func (adapter modelGatewayProvider) requestMessages(request provider.Request) ([]session.Message, error) {
@@ -274,6 +262,7 @@ func (request *modelGatewayPreparedRequest) Stream(ctx context.Context) (<-chan 
 func (request *modelGatewayPreparedRequest) TokenEstimate() provider.TokenEstimate {
 	estimate := request.prepared.TokenEstimate()
 	return provider.TokenEstimate{
+		Breakdown:        contextpolicy.ContextBreakdown(estimate.Breakdown),
 		AttachmentTokens: estimate.AttachmentTokens, PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
 		Source: estimate.Source, Method: provider.TokenEstimateMethod(estimate.Method),
@@ -306,6 +295,18 @@ func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 		switch message.Role {
 		case session.System, session.User:
 			projected := modelMessage{Role: modelMessageRole(message.Role), Text: message.Content, Attachments: runtimeMessageAttachments(message.Attachments)}
+			if message.Kind == session.MessageKindModelContext || message.Kind == session.MessageKindCompactionSummary {
+				category := "model_context"
+				if message.Kind == session.MessageKindCompactionSummary {
+					category = "compaction"
+				}
+				projected.Attribution = &publicprovider.MessageAttribution{Category: category}
+				offset := 0
+				for _, p := range message.ModelContextParts {
+					projected.Attribution.Parts = append(projected.Attribution.Parts, publicprovider.ContentAttributionPart{Start: offset, End: offset + len(p.Text), Key: p.Key})
+					offset += len(p.Text)
+				}
+			}
 			if err := projected.validateStored(); err != nil {
 				return nil, fmt.Errorf("model message %d: %w", index, err)
 			}

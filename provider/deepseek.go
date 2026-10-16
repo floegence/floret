@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/tools"
 	"io"
 	"net/http"
 	"slices"
@@ -20,7 +21,6 @@ import (
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/configbridge"
-	"github.com/floegence/floret/v7/internal/deepseektokenizer"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 )
 
@@ -823,80 +823,72 @@ func (g *deepSeekGateway) Prepare(ctx context.Context, req Request) (PreparedReq
 	if err != nil {
 		return nil, err
 	}
-	estimate, err := deepSeekRenderedEstimate(body)
+	estimate, err := EstimateRenderedRequest(RenderedRequest{Provider: "deepseek", Model: g.identity.Model, Format: RequestFormatOpenAIResponses, Payload: body, Attribution: deepSeekAttribution(body, req)})
 	if err != nil {
 		return nil, err
 	}
 	return &deepSeekPrepared{gateway: g, body: body, history: history, stateAllowed: req.ReusePolicy == nil || req.ReusePolicy.ProviderStateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: estimate}, nil
 }
 
-// Count the complete rendered request with the offline official V4 vocabulary.
-// Wire JSON differs from server prompt rendering, so include 10% text headroom
-// as a conservative estimate, never an exact count. Native usage calibrates deltas.
-// Only actual Responses image parts receive the documented 1024-token budget;
-// tool schemas, arguments, and image-like literal text retain their text cost.
-// https://api-docs.deepseek.com/guides/vision/
-func deepSeekRenderedEstimate(body []byte) (TokenEstimate, error) {
-	var request map[string]json.RawMessage
-	if err := json.Unmarshal(body, &request); err != nil {
-		return TokenEstimate{}, fmt.Errorf("estimate DeepSeek rendered request: %w", err)
+// Bind attribution by the provider's ordered user projection, never by parsing
+// prompt text. Native replay may insert reasoning and tool facts, not user input.
+func deepSeekAttribution(body []byte, req Request) []RenderedContentAttribution {
+	var envelope struct {
+		Input []struct {
+			Role    string
+			Content json.RawMessage
+		}
+		Tools []json.RawMessage
 	}
-	var input []map[string]json.RawMessage
-	if err := json.Unmarshal(request["input"], &input); err != nil {
-		return TokenEstimate{}, err
+	if json.Unmarshal(body, &envelope) != nil {
+		return nil
 	}
-	var imageTokens int64
-	for _, item := range input {
-		var kind string
-		if err := json.Unmarshal(item["type"], &kind); err != nil {
-			return TokenEstimate{}, err
-		}
-		field := ""
-		switch kind {
-		case "message":
-			field = "content"
-		case "function_call_output":
-			field = "output"
-		default:
-			continue
-		}
-		content := item[field]
-		if len(content) == 0 || content[0] != '[' {
-			continue
-		}
-		var parts []map[string]json.RawMessage
-		if err := json.Unmarshal(content, &parts); err != nil {
-			return TokenEstimate{}, err
-		}
-		for _, part := range parts {
-			var partType string
-			if err := json.Unmarshal(part["type"], &partType); err != nil {
-				return TokenEstimate{}, err
-			}
-			if partType == "input_image" {
-				var url string
-				if err := json.Unmarshal(part["image_url"], &url); err != nil {
-					return TokenEstimate{}, err
-				}
-				part["image_url"] = json.RawMessage(`""`)
-				imageTokens += 1024
+
+	out := []RenderedContentAttribution{}
+	for _, role := range []MessageRole{RoleSystem, RoleUser} {
+		var originals []Message
+		for _, m := range req.Messages {
+			if m.Role == role && (m.Text != "" || len(m.Attachments) > 0) {
+				originals = append(originals, m)
 			}
 		}
-		item[field], _ = json.Marshal(parts)
+		u := 0
+		for i, item := range envelope.Input {
+			if item.Role != string(role) {
+				continue
+			}
+			if u >= len(originals) {
+				break
+			}
+			m := originals[u]
+			u++
+			if m.Attribution == nil {
+				continue
+			}
+			path := fmt.Sprintf("/input/%d/content", i)
+			if len(item.Content) > 0 && item.Content[0] == '[' {
+				path += "/0/text"
+			}
+			out = append(out, RenderedContentAttribution{Path: path, Category: m.Attribution.Category, Parts: append([]ContentAttributionPart(nil), m.Attribution.Parts...)})
+		}
+		if u != len(originals) {
+			out = append(out, RenderedContentAttribution{Path: "/missing_canonical_attribution"})
+		}
 	}
-	request["input"], _ = json.Marshal(input)
-	text, err := json.Marshal(request)
-	if err != nil {
-		return TokenEstimate{}, err
+
+	for i, t := range req.Tools {
+		source, _ := t.Annotations["source"].(string)
+		ns, _ := t.Annotations["namespace"].(string)
+		out = append(out, RenderedContentAttribution{Path: fmt.Sprintf("/tools/%d", i), Category: "tool_definition", Key: toolAttributionKey(t), Source: source, Namespace: ns})
 	}
-	tokens, err := deepseektokenizer.Count(string(text))
-	if err != nil {
-		return TokenEstimate{}, err
+	return out
+}
+
+func toolAttributionKey(t tools.ToolDefinition) string {
+	if name, ok := t.Annotations["canonical_name"].(string); ok && name != "" {
+		return name
 	}
-	total := tokens + (tokens+9)/10 + imageTokens
-	return TokenEstimate{AttachmentTokens: imageTokens, MessageTokens: total, EstimatedInputTokens: total,
-		Source: "deepseek_v4_tokenizer_image_tokens_v3", Method: string(config.EstimateMethodProviderRenderedPayload),
-		Confidence: "conservative", Coverage: "complete_request"}, nil
+	return t.Name
 }
 
 type deepSeekPrepared struct {
@@ -921,7 +913,7 @@ func (p *deepSeekPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 	p.mu.Unlock()
 	return p.gateway.streamRendered(ctx, body, history, p.stateAllowed)
 }
-func (p *deepSeekPrepared) TokenEstimate() TokenEstimate       { return p.estimate }
+func (p *deepSeekPrepared) TokenEstimate() TokenEstimate       { return cloneTokenEstimate(p.estimate) }
 func (p *deepSeekPrepared) RenderedPayloadFingerprint() string { return p.fingerprint }
 func (p *deepSeekPrepared) Close() error {
 	p.mu.Lock()

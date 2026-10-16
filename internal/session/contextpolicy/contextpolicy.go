@@ -44,6 +44,10 @@ const (
 // It describes the prepared request, never cumulative billing usage or original
 // tool output discarded before model input. Empty Source means unavailable.
 type ContextBreakdown struct {
+	Tokenizer            string                   `json:"tokenizer,omitempty"`
+	Quality              string                   `json:"quality,omitempty"`
+	FramingTokens        int64                    `json:"framing_tokens,omitempty"`
+	Diagnostic           string                   `json:"diagnostic,omitempty"`
 	Details              *ContextBreakdownDetails `json:"details,omitempty"`
 	Source               string                   `json:"source,omitempty"`
 	SystemTokens         int64                    `json:"system_tokens,omitempty"`

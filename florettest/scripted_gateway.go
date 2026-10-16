@@ -179,6 +179,11 @@ func cloneProviderRequest(request provider.Request) provider.Request {
 	cloned.Messages = make([]provider.Message, len(request.Messages))
 	for index, message := range request.Messages {
 		cloned.Messages[index] = message
+		if message.Attribution != nil {
+			a := *message.Attribution
+			a.Parts = append([]provider.ContentAttributionPart(nil), a.Parts...)
+			cloned.Messages[index].Attribution = &a
+		}
 		cloned.Messages[index].Attachments = append([]provider.Attachment(nil), message.Attachments...)
 		cloned.Messages[index].ToolCalls = append([]provider.ToolCall(nil), message.ToolCalls...)
 		if message.ToolResult != nil {
