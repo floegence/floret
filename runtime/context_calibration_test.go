@@ -185,9 +185,34 @@ func (p *calibrationPrepared) Stream(ctx context.Context) (<-chan provider.Event
 	return p.gateway.Stream(ctx, p.request)
 }
 func (p *calibrationPrepared) TokenEstimate() provider.TokenEstimate {
-	return provider.TokenEstimate{AttachmentTokens: min(4096, p.tokens), MessageTokens: p.tokens, EstimatedInputTokens: p.tokens, Source: "calibration", Method: string(config.EstimateMethodProviderRenderedPayload), Confidence: "conservative", Coverage: "complete_request"}
+	raw, _ := json.Marshal(map[string]any{"messages": testCalibrationMessages(p.request.Messages)})
+	estimate, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "test", Model: "calibration", Format: provider.RequestFormatJSON, Payload: raw})
+	if err != nil {
+		panic(err)
+	}
+	estimate.Breakdown.AttachmentTokens = min(4096, p.tokens)
+	return provider.TokenEstimate{Breakdown: estimate.Breakdown, AttachmentTokens: min(4096, p.tokens), MessageTokens: p.tokens, EstimatedInputTokens: p.tokens, Source: "calibration", Method: string(config.EstimateMethodProviderRenderedPayload), Confidence: "conservative", Coverage: "complete_request"}
 }
 func (p *calibrationPrepared) RenderedPayloadFingerprint() string {
 	return fmt.Sprintf("calibration:%d", p.tokens)
 }
 func (p *calibrationPrepared) Close() error { return nil }
+
+func testCalibrationMessages(values []provider.Message) []any {
+	out := []any{}
+	for _, m := range values {
+		item := map[string]any{"role": m.Role, "content": m.Text}
+		if m.ToolResult != nil {
+			item["content"] = m.ToolResult.Text
+		}
+		if len(m.ToolCalls) > 0 {
+			calls := []any{}
+			for _, c := range m.ToolCalls {
+				calls = append(calls, map[string]any{"function": map[string]any{"name": c.Name, "arguments": c.Args}})
+			}
+			item["tool_calls"] = calls
+		}
+		out = append(out, item)
+	}
+	return out
+}

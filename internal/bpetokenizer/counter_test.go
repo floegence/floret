@@ -11,7 +11,7 @@ func TestTimeoutDoesNotExposeInput(t *testing.T) {
 	pattern := regexp2.MustCompile(`(x+)+y`, regexp2.None)
 	pattern.MatchTimeout = time.Millisecond
 	c := Counter{patterns: []*regexp2.Regexp{pattern}}
-	_, err := c.count([]rune("private-context-marker"+strings.Repeat("x", 80)), 0)
+	_, err := c.count([]rune("private-context-marker"+strings.Repeat("x", 80)), 0, nil)
 	if err == nil {
 		t.Fatal("expected bounded timeout")
 	}

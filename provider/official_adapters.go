@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	internalprovider "github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/adapters"
@@ -146,6 +147,10 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 		}
 		return nil, publicRetryError(err)
 	}
+	return publicOfficialStream(ctx, request, stream), nil
+}
+
+func publicOfficialStream(ctx context.Context, request Request, stream <-chan internalprovider.StreamEvent) <-chan Event {
 	output := make(chan Event)
 	go func() {
 		defer close(output)
@@ -168,7 +173,7 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 			}
 		}
 	}()
-	return output, nil
+	return output
 }
 
 func internalRequest(request Request, identity Identity) internalprovider.Request {
@@ -199,6 +204,19 @@ func internalMessages(messages []Message) []session.Message {
 	output := make([]session.Message, 0, len(messages))
 	for _, message := range messages {
 		base := session.Message{Role: session.Role(message.Role), Content: message.Text, Reasoning: message.Reasoning}
+		if a := message.Attribution; a != nil {
+			switch a.Category {
+			case "model_context":
+				base.Kind = session.MessageKindModelContext
+			case "compaction":
+				base.Kind = session.MessageKindCompactionSummary
+			}
+			for _, p := range a.Parts {
+				if p.Start >= 0 && p.End >= p.Start && p.End <= len(message.Text) {
+					base.ModelContextParts = append(base.ModelContextParts, session.ModelContextPart{Key: p.Key, Text: message.Text[p.Start:p.End]})
+				}
+			}
+		}
 		if message.ToolResult != nil {
 			base.ToolCallID = message.ToolResult.CallID
 			base.ToolName = message.ToolResult.ToolName
@@ -308,4 +326,55 @@ func cloneStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+// Prepare counts and dispatches the same frozen official wire body.
+func (gateway *officialGateway) Prepare(ctx context.Context, request Request) (PreparedRequest, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	preparer, ok := gateway.transport.(internalprovider.RequestPreparer)
+	if !ok {
+		return nil, errors.New("official transport does not prepare requests")
+	}
+	prepared, err := preparer.PrepareRequest(ctx, internalRequest(request, gateway.identity))
+	if err != nil {
+		return nil, publicRetryError(err)
+	}
+	return &officialPrepared{prepared: prepared, request: request}, nil
+}
+
+type officialPrepared struct {
+	prepared internalprovider.PreparedRequest
+	request  Request
+}
+
+func (p *officialPrepared) Stream(ctx context.Context) (<-chan Event, error) {
+	stream, err := p.prepared.Stream(ctx)
+	if err != nil {
+		if errors.Is(err, internalprovider.ErrContextOverflow) {
+			return nil, ErrContextOverflow
+		}
+		return nil, publicRetryError(err)
+	}
+	return publicOfficialStream(ctx, p.request, stream), nil
+}
+func (p *officialPrepared) TokenEstimate() TokenEstimate {
+	v := p.prepared.TokenEstimate()
+	return cloneTokenEstimate(TokenEstimate{Breakdown: config.ContextBreakdown(v.Breakdown), AttachmentTokens: v.AttachmentTokens, PrefixTokens: v.PrefixTokens, MessageTokens: v.MessageTokens, ToolDefinitionTokens: v.ToolDefinitionTokens, EstimatedInputTokens: v.EstimatedInputTokens, Source: v.Source, Method: string(v.Method), Confidence: string(v.Confidence), Coverage: string(v.Coverage)})
+}
+func (p *officialPrepared) RenderedPayloadFingerprint() string {
+	return p.prepared.PayloadFingerprint()
+}
+func (p *officialPrepared) Close() error { return p.prepared.Close() }
+func (p *officialPrepared) PrepareRetry(ctx context.Context, _ Request) (PreparedRequest, error) {
+	replay, ok := p.prepared.(internalprovider.PreparedRequestReplay)
+	if !ok {
+		return nil, errors.New("official prepared request cannot replay")
+	}
+	next, err := replay.PrepareRetry(ctx, internalprovider.Request{})
+	if err != nil {
+		return nil, err
+	}
+	return &officialPrepared{prepared: next, request: p.request}, nil
 }

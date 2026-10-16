@@ -278,12 +278,14 @@ const (
 
 // Message is one typed provider-visible context item.
 type Message struct {
-	Role        MessageRole  `json:"role"`
-	Text        string       `json:"text,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	Reasoning   string       `json:"reasoning,omitempty"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResult  *ToolResult  `json:"tool_result,omitempty"`
+	// Attribution is observation-only provenance, never model input.
+	Attribution *MessageAttribution `json:"attribution,omitempty"`
+	Role        MessageRole         `json:"role"`
+	Text        string              `json:"text,omitempty"`
+	Attachments []Attachment        `json:"attachments,omitempty"`
+	Reasoning   string              `json:"reasoning,omitempty"`
+	ToolCalls   []ToolCall          `json:"tool_calls,omitempty"`
+	ToolResult  *ToolResult         `json:"tool_result,omitempty"`
 }
 
 // Validate verifies the role-specific message shape.
@@ -503,6 +505,7 @@ type PreparedRequest interface {
 
 // TokenEstimate describes the size of a complete rendered request.
 type TokenEstimate struct {
+	Breakdown config.ContextBreakdown `json:"breakdown,omitzero"`
 	// AttachmentTokens is the estimated media/file subset already included in MessageTokens.
 	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
 	PrefixTokens         int64  `json:"prefix_tokens,omitempty"`

@@ -2615,21 +2615,6 @@ func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Reques
 			req.RawPlan.PayloadHash = payloadHash
 		}
 	}
-	if req.RequestEstimate.Breakdown.Source == "" && req.EphemeralUser == nil {
-		mediaTokens := req.RequestEstimate.Breakdown.AttachmentTokens
-		var breakdown contextpolicy.ContextBreakdown
-		var err error
-		if estimator, ok := e.provider.(provider.ContextBreakdownEstimator); ok {
-			breakdown, err = estimator.EstimateContextBreakdown(ctx, req)
-		} else {
-			breakdown, err = provider.EstimateContextBreakdown(req)
-		}
-		if err != nil {
-			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
-		}
-		breakdown.AttachmentTokens = mediaTokens
-		req.RequestEstimate.Breakdown = breakdown
-	}
 	if req.EphemeralUser == nil {
 		req.RawPlan.RequestEstimate = req.RequestEstimate
 		req.RawPlan.RequestShape = requestShapeHashes(req)
@@ -2695,7 +2680,9 @@ func validateProviderTokenEstimate(estimate provider.TokenEstimate) error {
 
 func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy contextpolicy.Policy) contextpolicy.RequestEstimate {
 	breakdown := estimate.Breakdown
-	breakdown.AttachmentTokens = estimate.AttachmentTokens
+	if breakdown.Source != "" {
+		breakdown.AttachmentTokens = estimate.AttachmentTokens
+	}
 	return contextpolicy.RequestEstimate{
 		Breakdown:            breakdown,
 		PrefixTokens:         estimate.PrefixTokens,

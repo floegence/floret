@@ -52,6 +52,12 @@ type ContextPolicy struct {
 // It describes the prepared request, never cumulative billing usage or original
 // tool output discarded before model input. Empty Source means unavailable.
 type ContextBreakdown struct {
+	// Tokenizer identifies the vocabulary; Quality is token_estimate or relative_weight.
+	Tokenizer     string `json:"tokenizer,omitempty"`
+	Quality       string `json:"quality,omitempty"`
+	FramingTokens int64  `json:"framing_tokens,omitempty"`
+	// Diagnostic is a bounded non-content reason when attribution is unavailable.
+	Diagnostic string `json:"diagnostic,omitempty"`
 	// Details refines the existing totals; its weights must not be added again.
 	Details              *ContextBreakdownDetails `json:"details,omitempty"`
 	Source               string                   `json:"source,omitempty"`

@@ -129,6 +129,14 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if err != nil {
 		return nil, err
 	}
+	return p.streamRendered(ctx, body)
+}
+
+func (p AnthropicProvider) streamRendered(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
+	client := p.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -136,10 +144,6 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	httpReq.Header.Set("x-api-key", p.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("content-type", "application/json")
-	client := p.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
 	httpResp, err := client.Do(httpReq)
 	receivedAt := time.Now()
 	if err != nil {

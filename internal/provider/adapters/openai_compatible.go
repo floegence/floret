@@ -177,6 +177,14 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if err != nil {
 		return nil, err
 	}
+	return p.streamRendered(ctx, body)
+}
+
+func (p OpenAICompatibleProvider) streamRendered(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
+	client := p.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

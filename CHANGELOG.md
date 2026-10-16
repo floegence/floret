@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.47.0 - 2026-10-16
+
+- Unify prepared-request budget and disjoint content estimation across provider protocols. Count decoded text once, select vocabularies from actual provider/model identity, retain separate protocol framing and conservative reserves, and remove the independent message breakdown path.
+- Add optional typed message/rendered-path attribution and prepared TokenEstimate.Breakdown. Expose tokenizer identity, display quality and sanitized attribution diagnostics without changing wire payloads, canonical schema 17 or historical records. Unknown vocabularies and opaque/media input support relative shares only; optional attribution failure leaves valid budgets executable.
+- Preserve fixed DeepSeek Flash baseline evidence and deterministic protocol, source partition, retry and lifecycle regressions.
+
 ## v7.46.1 - 2026-10-15
 
 - Preserve the canonical completion marker when forking from the last final assistant item. Earlier item anchors keep their exact boundary; historical answer forks retain completion and final-response metadata without later turns.

@@ -105,3 +105,20 @@ func Encoding(provider, model string) string {
 	}
 	return ""
 }
+
+func CountParts(encoding, text string, ends []int) ([]int64, error) {
+	var c *bpetokenizer.Counter
+	var err error
+	switch encoding {
+	case "cl100k_base":
+		c, err = loadCL()
+	case "o200k_base":
+		c, err = loadO()
+	default:
+		return nil, errors.New("unsupported text encoding")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c.CountParts(text, ends)
+}

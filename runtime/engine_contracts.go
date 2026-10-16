@@ -139,6 +139,7 @@ type modelRequestTokenEstimateCoverage string
 const modelRequestTokenEstimateCoverageComplete modelRequestTokenEstimateCoverage = "complete_request"
 
 type modelRequestTokenEstimate struct {
+	Breakdown            config.ContextBreakdown
 	AttachmentTokens     int64
 	PrefixTokens         int64
 	MessageTokens        int64
@@ -234,12 +235,13 @@ type modelToolResult struct {
 }
 
 type modelMessage struct {
-	Role        modelMessageRole    `json:"role"`
-	Text        string              `json:"text,omitempty"`
-	Attachments []MessageAttachment `json:"attachments,omitempty"`
-	Reasoning   string              `json:"reasoning,omitempty"`
-	ToolCalls   []tools.ToolCall    `json:"tool_calls,omitempty"`
-	ToolResult  *modelToolResult    `json:"tool_result,omitempty"`
+	Attribution *publicprovider.MessageAttribution `json:"attribution,omitempty"`
+	Role        modelMessageRole                   `json:"role"`
+	Text        string                             `json:"text,omitempty"`
+	Attachments []MessageAttachment                `json:"attachments,omitempty"`
+	Reasoning   string                             `json:"reasoning,omitempty"`
+	ToolCalls   []tools.ToolCall                   `json:"tool_calls,omitempty"`
+	ToolResult  *modelToolResult                   `json:"tool_result,omitempty"`
 }
 
 func (message modelMessage) Validate() error {

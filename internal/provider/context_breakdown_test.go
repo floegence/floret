@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -19,7 +20,7 @@ func TestRequestBreakdownCoversProviderHistoryWithoutCountingDiscardedToolOutput
 		{Role: session.Assistant, ToolCallID: "read", ToolName: "read", ToolArgs: `{"path":"a.go"}`},
 		{Role: session.Tool, ToolCallID: "read", ToolName: "read", Content: "Visible output", ToolResult: &session.ToolResultView{OriginalBytes: 900000, VisibleBytes: 14, Truncated: true}},
 	}, Tools: []tools.ToolDefinition{{Name: "read", Description: "Read a file"}}}
-	got, err := EstimateContextBreakdown(request)
+	got, err := testBreakdown(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,12 +28,12 @@ func TestRequestBreakdownCoversProviderHistoryWithoutCountingDiscardedToolOutput
 		t.Fatalf("missing category: %+v", got)
 	}
 	request.Messages[6].ToolResult.OriginalBytes = 1000000000
-	same, err := EstimateContextBreakdown(request)
+	same, err := testBreakdown(request)
 	if err != nil || !reflect.DeepEqual(same, got) {
 		t.Fatalf("non-model output metadata changed breakdown: %+v, %v", same, err)
 	}
 	request.Messages[6].Content = strings.Repeat("large visible output ", 2000)
-	larger, err := EstimateContextBreakdown(request)
+	larger, err := testBreakdown(request)
 	if err != nil || larger.ToolResultTokens <= got.ToolResultTokens {
 		t.Fatalf("visible tool output not counted: %+v, %v", larger, err)
 	}
@@ -44,7 +45,7 @@ func TestRequestBreakdownCoversProviderHistoryWithoutCountingDiscardedToolOutput
 
 func TestRequestBreakdownDoesNotPersistSupplementalContextStatistics(t *testing.T) {
 	request := Request{Messages: []session.Message{{Role: session.User, Content: "durable"}}, EphemeralUser: &EphemeralUserMessage{HistoryInsertAt: 1, Message: session.Message{Role: session.User, Content: "secret"}}}
-	got, err := EstimateContextBreakdown(request)
+	got, err := testBreakdown(request)
 	if err != nil || got.Source != "" {
 		t.Fatalf("ephemeral request breakdown=%+v err=%v", got, err)
 	}
@@ -65,7 +66,7 @@ func TestBreakdownAttributesFrozenToolsAndRetainedContextUpdates(t *testing.T) {
 		{Name: "terminal.exec", Description: "execute", Annotations: map[string]any{"source": "builtin", "namespace": "terminal"}},
 		{Name: "opaque_name", Description: "external", Annotations: map[string]any{"source": "mcp", "namespace": "docs"}},
 	}, HostedTools: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}
-	got, err := EstimateContextBreakdown(request)
+	got, err := testBreakdown(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestBreakdownAttributesFrozenToolsAndRetainedContextUpdates(t *testing.T) {
 	}
 	latest, _, _ := session.ProjectProviderHistory([]session.Message{{Role: session.User, Content: "work", ModelContextSnapshot: snapshot("new skill catalog with more content")}}, "")
 	request.Messages = latest
-	current, err := EstimateContextBreakdown(request)
+	current, err := testBreakdown(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,4 +94,9 @@ func TestBreakdownAttributesFrozenToolsAndRetainedContextUpdates(t *testing.T) {
 			t.Fatal("historical skill update was not counted")
 		}
 	}
+}
+
+func testBreakdown(req Request) (contextpolicy.ContextBreakdown, error) {
+	out, err := GenericRequestEstimate(req)
+	return out.Breakdown, err
 }

@@ -65,6 +65,10 @@ field AgentProfile.ID string tag="json:\"id\""
 field AgentProfile.Name string tag="json:\"name\""
 field AgentProfile.Description string tag="json:\"description,omitempty\""
 type ContextBreakdown struct
+field ContextBreakdown.Tokenizer string tag="json:\"tokenizer,omitempty\""
+field ContextBreakdown.Quality string tag="json:\"quality,omitempty\""
+field ContextBreakdown.FramingTokens int64 tag="json:\"framing_tokens,omitempty\""
+field ContextBreakdown.Diagnostic string tag="json:\"diagnostic,omitempty\""
 field ContextBreakdown.Details *github.com/floegence/floret/v7/config.ContextBreakdownDetails tag="json:\"details,omitempty\""
 field ContextBreakdown.Source string tag="json:\"source,omitempty\""
 field ContextBreakdown.SystemTokens int64 tag="json:\"system_tokens,omitempty\""
@@ -238,6 +242,11 @@ field Capabilities.ReasoningCapability github.com/floegence/floret/v7/config.Rea
 field Capabilities.AttachmentPayload github.com/floegence/floret/v7/provider.AttachmentPayloadMode tag="json:\"attachment_payload\""
 field Capabilities.ReasoningHistory github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy tag="json:\"reasoning_history,omitempty\""
 method Capabilities.Validate func() error
+type ContentAttributionPart struct
+field ContentAttributionPart.Category string tag="json:\"category,omitempty\""
+field ContentAttributionPart.Start int tag="json:\"start\""
+field ContentAttributionPart.End int tag="json:\"end\""
+field ContentAttributionPart.Key string tag="json:\"key,omitempty\""
 type DeepSeekOptions struct
 field DeepSeekOptions.Model string
 field DeepSeekOptions.BaseURL string
@@ -312,6 +321,7 @@ type Labels struct
 field Labels.Correlation map[string]string tag="json:\"correlation,omitempty\""
 field Labels.Host map[string]string tag="json:\"host,omitempty\""
 type Message struct
+field Message.Attribution *github.com/floegence/floret/v7/provider.MessageAttribution tag="json:\"attribution,omitempty\""
 field Message.Role github.com/floegence/floret/v7/provider.MessageRole tag="json:\"role\""
 field Message.Text string tag="json:\"text,omitempty\""
 field Message.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
@@ -319,6 +329,9 @@ field Message.Reasoning string tag="json:\"reasoning,omitempty\""
 field Message.ToolCalls []github.com/floegence/floret/v7/provider.ToolCall tag="json:\"tool_calls,omitempty\""
 field Message.ToolResult *github.com/floegence/floret/v7/provider.ToolResult tag="json:\"tool_result,omitempty\""
 method Message.Validate func() error
+type MessageAttribution struct
+field MessageAttribution.Category string tag="json:\"category\""
+field MessageAttribution.Parts []github.com/floegence/floret/v7/provider.ContentAttributionPart tag="json:\"parts,omitempty\""
 type MessageRole string
 func NewAnthropic func(options github.com/floegence/floret/v7/provider.AnthropicOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
 func NewDeepSeek func(options github.com/floegence/floret/v7/provider.DeepSeekOptions) (github.com/floegence/floret/v7/provider.Gateway, error)
@@ -348,7 +361,15 @@ type ReasoningHistoryPolicy string
 type ReasoningSupport string
 const ReasoningSupported github.com/floegence/floret/v7/provider.ReasoningSupport = "supported"
 const ReasoningUnsupported github.com/floegence/floret/v7/provider.ReasoningSupport = "unsupported"
+type RenderedContentAttribution struct
+field RenderedContentAttribution.Path string
+field RenderedContentAttribution.Category string
+field RenderedContentAttribution.Key string
+field RenderedContentAttribution.Source string
+field RenderedContentAttribution.Namespace string
+field RenderedContentAttribution.Parts []github.com/floegence/floret/v7/provider.ContentAttributionPart
 type RenderedRequest struct
+field RenderedRequest.Attribution []github.com/floegence/floret/v7/provider.RenderedContentAttribution
 field RenderedRequest.Provider string
 field RenderedRequest.Model string
 field RenderedRequest.Format github.com/floegence/floret/v7/provider.RequestFormat
@@ -430,6 +451,7 @@ const StateReuseCanonicalHistory github.com/floegence/floret/v7/provider.StateRe
 const StateReuseExactSurface github.com/floegence/floret/v7/provider.StateReusePolicy = ""
 type StateReusePolicy string
 type TokenEstimate struct
+field TokenEstimate.Breakdown github.com/floegence/floret/v7/config.ContextBreakdown tag="json:\"breakdown,omitzero\""
 field TokenEstimate.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
 field TokenEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field TokenEstimate.MessageTokens int64 tag="json:\"message_tokens,omitempty\""

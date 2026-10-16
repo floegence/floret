@@ -665,6 +665,7 @@ func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan mod
 func (request agentPreparedRequest) TokenEstimate() modelRequestTokenEstimate {
 	estimate := request.prepared.TokenEstimate()
 	return modelRequestTokenEstimate{
+		Breakdown:        estimate.Breakdown,
 		AttachmentTokens: estimate.AttachmentTokens,
 		PrefixTokens:     estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
@@ -728,7 +729,7 @@ func providerMessage(message modelMessage) provider.Message {
 		result = &provider.ToolResult{CallID: message.ToolResult.CallID, ToolName: message.ToolResult.ToolName, Text: message.ToolResult.Text, Attachments: attachments}
 	}
 	return provider.Message{
-		Role: provider.MessageRole(message.Role), Text: message.Text, Attachments: attachments,
+		Attribution: message.Attribution, Role: provider.MessageRole(message.Role), Text: message.Text, Attachments: attachments,
 		Reasoning: message.Reasoning, ToolCalls: calls, ToolResult: result,
 	}
 }
