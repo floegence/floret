@@ -894,7 +894,7 @@ func deepSeekRenderedEstimate(body []byte) (TokenEstimate, error) {
 		return TokenEstimate{}, err
 	}
 	total := tokens + (tokens+9)/10 + imageTokens
-	return TokenEstimate{MessageTokens: total, EstimatedInputTokens: total,
+	return TokenEstimate{AttachmentTokens: imageTokens, MessageTokens: total, EstimatedInputTokens: total,
 		Source: "deepseek_v4_tokenizer_image_tokens_v3", Method: string(config.EstimateMethodProviderRenderedPayload),
 		Confidence: "conservative", Coverage: "complete_request"}, nil
 }

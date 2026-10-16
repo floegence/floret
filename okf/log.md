@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Used context composition
+
+- Document request-scoped [composition estimates](api/config.md), native-total authority, prepared media subsets and canonical observation without changing schema 17.
+
 ## 2026-10-15 — Physical request deadlines
 
 - Document [one semantic-progress clock](decisions/provider-retry.md), compatible typed timeout diagnostics, canonical restart readback and [host waiting feedback](decisions/provider-output-progress.md). Preserve schema 17 and execution cancellation authority.

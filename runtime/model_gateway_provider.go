@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	publicprovider "github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/tools"
 )
@@ -126,8 +127,25 @@ func (adapter modelGatewayProvider) EstimateTokens(_ context.Context, request pr
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
+	ephemeral := request.EphemeralUser != nil
 	request.Messages, request.EphemeralUser = messages, nil
-	return provider.GenericRequestEstimate(request)
+	estimate, err := provider.GenericRequestEstimate(request)
+	if ephemeral {
+		estimate.Breakdown = contextpolicy.ContextBreakdown{}
+	}
+	return estimate, err
+}
+
+func (adapter modelGatewayProvider) EstimateContextBreakdown(_ context.Context, request provider.Request) (contextpolicy.ContextBreakdown, error) {
+	if request.EphemeralUser != nil {
+		return contextpolicy.ContextBreakdown{}, nil
+	}
+	messages, err := adapter.requestMessages(request)
+	if err != nil {
+		return contextpolicy.ContextBreakdown{}, err
+	}
+	request.Messages = messages
+	return provider.EstimateContextBreakdown(request)
 }
 
 // Filter only the detached transport projection. Canonical messages and earlier
@@ -256,7 +274,7 @@ func (request *modelGatewayPreparedRequest) Stream(ctx context.Context) (<-chan 
 func (request *modelGatewayPreparedRequest) TokenEstimate() provider.TokenEstimate {
 	estimate := request.prepared.TokenEstimate()
 	return provider.TokenEstimate{
-		PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
+		AttachmentTokens: estimate.AttachmentTokens, PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
 		Source: estimate.Source, Method: provider.TokenEstimateMethod(estimate.Method),
 		Confidence: provider.EstimateConfidence(estimate.Confidence), Coverage: provider.TokenEstimateCoverage(estimate.Coverage),

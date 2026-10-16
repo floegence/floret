@@ -42,6 +42,7 @@ func requestEstimateFromAny(value any) config.RequestEstimate {
 		return *v
 	case map[string]any:
 		return config.RequestEstimate{
+			Breakdown:            contextBreakdownFromAny(v["breakdown"]),
 			PrefixTokens:         int64FromAny(v["prefix_tokens"], 0),
 			MessageTokens:        int64FromAny(v["message_tokens"], 0),
 			ToolDefinitionTokens: int64FromAny(v["tool_definition_tokens"], 0),
@@ -165,5 +166,28 @@ func float64FromAny(value any, defaultValue float64) float64 {
 		return float64(v)
 	default:
 		return defaultValue
+	}
+}
+
+func contextBreakdownFromAny(value any) config.ContextBreakdown {
+	switch v := value.(type) {
+	case config.ContextBreakdown:
+		return v
+	case map[string]any:
+		return config.ContextBreakdown{
+			Source:               stringFromAny(v["source"]),
+			SystemTokens:         int64FromAny(v["system_tokens"], 0),
+			UserTokens:           int64FromAny(v["user_tokens"], 0),
+			AssistantTokens:      int64FromAny(v["assistant_tokens"], 0),
+			ToolDefinitionTokens: int64FromAny(v["tool_definition_tokens"], 0),
+			ToolCallTokens:       int64FromAny(v["tool_call_tokens"], 0),
+			ToolResultTokens:     int64FromAny(v["tool_result_tokens"], 0),
+			ModelContextTokens:   int64FromAny(v["model_context_tokens"], 0),
+			CompactionTokens:     int64FromAny(v["compaction_tokens"], 0),
+			ReasoningTokens:      int64FromAny(v["reasoning_tokens"], 0),
+			AttachmentTokens:     int64FromAny(v["attachment_tokens"], 0),
+		}
+	default:
+		return config.ContextBreakdown{}
 	}
 }

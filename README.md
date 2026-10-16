@@ -519,6 +519,28 @@ reclassifying historical slash-command conversations or using observation
 metadata as runtime authority. The v14 -> v15 edge adds typed thread references
 without rewriting historical messages or request fingerprints.
 
+## Used Context Composition
+
+The public API deliberately adds a comparable, optional
+`config.RequestEstimate.Breakdown` value for host presentation. Each request
+reports disjoint estimates for system instructions, user and assistant messages,
+tool definitions, calls and retained results, managed model-context updates,
+compaction summaries, retained reasoning and expanded media/files. These are
+semantic offline BPE estimates, not provider billing categories. Their sum can
+differ from rendered request and native input totals; never rescale them into
+an exact allocation of native usage. Empty Source means unavailable.
+
+`provider.TokenEstimate.AttachmentTokens` is the media/file subset already
+included in MessageTokens. Prepared transports count resolved model input.
+Discarded original tool artifacts, attachment descriptors, activity metadata
+and filtered reasoning are excluded. Supplemental requests omit the breakdown.
+No prompt, tool text or secret is added to observation.
+
+Confirmed usage and its breakdown describe the same request. The next projected
+request has its own breakdown. Canonical reads and live events agree across
+restart. Historical schema-17 records without this optional observation field
+remain valid without rewriting; this changes no domain lifecycle invariant.
+
 ## Managed Runtime Facts
 
 `runtime.ModelContextSnapshot` contains complete `ModelContextSection` values

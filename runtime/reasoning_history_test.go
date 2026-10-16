@@ -41,6 +41,9 @@ func TestReasoningHistoryDefaultAndEstimate(t *testing.T) {
 	if err != nil || got.EstimatedInputTokens >= full.EstimatedInputTokens {
 		t.Fatalf("discarded reasoning was counted: %+v full=%+v err=%v", got, full, err)
 	}
+	if got.Breakdown.ReasoningTokens != 0 || full.Breakdown.ReasoningTokens <= 0 {
+		t.Fatalf("reasoning breakdown did not follow filtering: filtered=%+v full=%+v", got.Breakdown, full.Breakdown)
+	}
 	// A low-level continuation without a new user boundary must retain thought.
 	req.Messages = req.Messages[1:2]
 	filtered, err = adapter.requestMessages(req)

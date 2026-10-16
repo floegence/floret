@@ -2615,6 +2615,21 @@ func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Reques
 			req.RawPlan.PayloadHash = payloadHash
 		}
 	}
+	if req.RequestEstimate.Breakdown.Source == "" && req.EphemeralUser == nil {
+		mediaTokens := req.RequestEstimate.Breakdown.AttachmentTokens
+		var breakdown contextpolicy.ContextBreakdown
+		var err error
+		if estimator, ok := e.provider.(provider.ContextBreakdownEstimator); ok {
+			breakdown, err = estimator.EstimateContextBreakdown(ctx, req)
+		} else {
+			breakdown, err = provider.EstimateContextBreakdown(req)
+		}
+		if err != nil {
+			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
+		}
+		breakdown.AttachmentTokens = mediaTokens
+		req.RequestEstimate.Breakdown = breakdown
+	}
 	if req.EphemeralUser == nil {
 		req.RawPlan.RequestEstimate = req.RequestEstimate
 		req.RawPlan.RequestShape = requestShapeHashes(req)
@@ -2636,7 +2651,7 @@ func validatePreparedTokenEstimate(estimate provider.TokenEstimate) error {
 	if estimate.Confidence != provider.EstimateExact && estimate.Confidence != provider.EstimateConservative {
 		return fmt.Errorf("%w: prepared request estimate confidence=%q", ErrInvalidTokenEstimate, estimate.Confidence)
 	}
-	if estimate.PrefixTokens < 0 || estimate.MessageTokens < 0 || estimate.ToolDefinitionTokens < 0 || estimate.EstimatedInputTokens < 0 {
+	if estimate.AttachmentTokens < 0 || estimate.AttachmentTokens > estimate.MessageTokens || estimate.PrefixTokens < 0 || estimate.MessageTokens < 0 || estimate.ToolDefinitionTokens < 0 || estimate.EstimatedInputTokens < 0 {
 		return fmt.Errorf("%w: prepared request estimate contains negative tokens", ErrInvalidTokenEstimate)
 	}
 	components, ok := addNonnegativeTokenCounts(estimate.PrefixTokens, estimate.MessageTokens, estimate.ToolDefinitionTokens)
@@ -2678,7 +2693,10 @@ func validateProviderTokenEstimate(estimate provider.TokenEstimate) error {
 }
 
 func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy contextpolicy.Policy) contextpolicy.RequestEstimate {
+	breakdown := estimate.Breakdown
+	breakdown.AttachmentTokens = estimate.AttachmentTokens
 	return contextpolicy.RequestEstimate{
+		Breakdown:            breakdown,
 		PrefixTokens:         estimate.PrefixTokens,
 		MessageTokens:        estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens,

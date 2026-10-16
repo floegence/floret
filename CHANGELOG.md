@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.44.0 - 2026-10-15
+
+- Add optional request-scoped used-context composition estimates through canonical reads and live observation: instructions, conversation, tools, retained outputs, managed facts, summaries, reasoning and expanded media. Keep native totals authoritative, exclude discarded artifacts and supplemental secrets, and preserve schema 17 and every migration edge.
+- Expose the media/file subset of prepared token estimates without changing request budgets or provider usage.
+
 ## v7.43.0 - 2026-10-15
 
 - Expose optional Ask User reason, required-input and evidence references through one detached canonical input presentation across subscriptions, current views, summaries, history and restart. References never grant access or permission. Preserve existing tool-requested input, answer semantics, historical records and domain schema 17.

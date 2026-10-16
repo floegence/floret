@@ -139,6 +139,7 @@ type modelRequestTokenEstimateCoverage string
 const modelRequestTokenEstimateCoverageComplete modelRequestTokenEstimateCoverage = "complete_request"
 
 type modelRequestTokenEstimate struct {
+	AttachmentTokens     int64
 	PrefixTokens         int64
 	MessageTokens        int64
 	ToolDefinitionTokens int64
