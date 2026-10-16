@@ -176,6 +176,24 @@ func (s ContextStatus) Validate() error {
 	if total > 0 && strings.TrimSpace(b.Source) == "" {
 		return fmt.Errorf("context breakdown requires an estimate source")
 	}
+	if b.Details != nil {
+		totals := map[string]int64{"tool_definition": 0, "model_context": 0}
+		seen := map[[4]string]bool{}
+		for _, item := range b.Details.Items {
+			key := [4]string{item.Category, item.Key, item.Source, item.Namespace}
+			subtotal, ok := totals[item.Category]
+			if !ok || item.Tokens < 0 || item.Tokens > int64(^uint64(0)>>1)-subtotal || seen[key] ||
+				(item.Category == "tool_definition" && item.Key == "") ||
+				(item.Category == "model_context" && (item.Source != "" || item.Namespace != "")) {
+				return fmt.Errorf("invalid context breakdown attribution")
+			}
+			seen[key] = true
+			totals[item.Category] += item.Tokens
+		}
+		if strings.TrimSpace(b.Source) == "" || totals["tool_definition"] != b.ToolDefinitionTokens || totals["model_context"] != b.ModelContextTokens {
+			return fmt.Errorf("context breakdown attribution does not match category totals")
+		}
+	}
 	return nil
 }
 

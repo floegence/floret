@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.45.0 - 2026-10-15
+
+- Add compatible request-scoped token attribution by exact tool name, registry source/namespace and canonical managed-context section key. Preserve existing aggregate fields, comparability, native usage authority, prompt rendering, schema 17 and historical records; keep product source grouping in hosts.
+
 ## v7.44.1 - 2026-10-15
 
 - Preserve URL-only Web Search sources through validation, sanitized observation and canonical history. Source titles and snippets remain optional provider facts; no title synthesis, public API shape or domain schema change.

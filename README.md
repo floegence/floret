@@ -536,6 +536,16 @@ Discarded original tool artifacts, attachment descriptors, activity metadata
 and filtered reasoning are excluded. Supplemental requests omit the breakdown.
 No prompt, tool text or secret is added to observation.
 
+The optional `ContextBreakdown.Details` refines tool definitions by exact tool
+name and host-supplied `source` / `namespace` annotations, and managed context
+by canonical section key. These are disjoint refinements of the existing totals,
+not additional usage. The canonical renderer retains fragment boundaries only
+in memory, including retained updates and removals. Hosts group known keys and
+origins for presentation; Floret never infers MCP, skills or rules from prose.
+Missing historical attribution remains unavailable. Shared update framing has an
+empty section key. Per-fragment BPE estimates use `semantic_input_bpe_v2` and
+never allocate native totals by current text size.
+
 Confirmed usage and its breakdown describe the same request. The next projected
 request has its own breakdown. Canonical reads and live events agree across
 restart. Historical schema-17 records without this optional observation field

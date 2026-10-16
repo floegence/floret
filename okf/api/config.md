@@ -57,6 +57,17 @@ not sum exactly to native input. Hosts must not rescale them into exact usage.
 Supplemental requests omit the breakdown. Historical schema-17 records remain
 valid without rewriting; this adds no domain lifecycle invariant.
 
+Optional `ContextBreakdown.Details.Items` refine the tool-definition and managed
+context totals. Each item carries a category, tool name or canonical section key,
+nonnegative token estimate, and tool registry source/namespace when supplied.
+Their sums equal their parent totals; consumers never add parent and child
+weights together. Fragment attribution comes from the canonical renderer and
+frozen tool surface, never prompt parsing or the latest snapshot. An empty
+section key covers shared update framing. Floret supplies product-neutral
+attribution; hosts own source grouping. The pointer envelope preserves the
+comparability of existing public estimate structs; hosts must compare detail
+contents explicitly and treat returned data as detached observation.
+
 * [runtime](runtime.md) when constructing provider-backed runtime capabilities.
 * [Observation](observation.md) when interpreting context pressure DTOs.
 

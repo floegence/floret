@@ -103,8 +103,13 @@ func ModelContextChanges(previous, next *ModelContextSnapshot) ([]string, []stri
 
 // RenderModelContext derives a deterministic change message, never a second fact store.
 func RenderModelContext(previous, next *ModelContextSnapshot) string {
+	text, _ := renderModelContextParts(previous, next)
+	return text
+}
+
+func renderModelContextParts(previous, next *ModelContextSnapshot) (string, []ModelContextPart) {
 	if next == nil || EqualModelContext(previous, next) {
-		return ""
+		return "", nil
 	}
 	old := map[string]ModelContextSection{}
 	if previous != nil {
@@ -124,10 +129,30 @@ func RenderModelContext(previous, next *ModelContextSnapshot) string {
 		removed = append(removed, key)
 	}
 	slices.Sort(removed)
-	raw, _ := json.Marshal(struct {
-		Baseline bool                  `json:"baseline"`
-		Sections []ModelContextSection `json:"sections"`
-		Removed  []string              `json:"removed"`
-	}{previous == nil, changed, removed})
-	return "Model context update (runtime facts, not a user request; sections replace earlier values by key; removed keys are no longer current):\n" + string(raw)
+	// Preserve canonical bytes while exposing fragment boundaries in memory.
+	// Estimation never parses historical prompt text.
+	parts := []ModelContextPart{{Text: "Model context update (runtime facts, not a user request; sections replace earlier values by key; removed keys are no longer current):\n"}}
+	baseline, _ := json.Marshal(previous == nil)
+	parts[0].Text += `{"baseline":` + string(baseline) + `,"sections":[`
+	for i, section := range changed {
+		if i > 0 {
+			parts = append(parts, ModelContextPart{Text: ","})
+		}
+		raw, _ := json.Marshal(section)
+		parts = append(parts, ModelContextPart{Key: section.Key, Text: string(raw)})
+	}
+	parts = append(parts, ModelContextPart{Text: `],"removed":[`})
+	for i, key := range removed {
+		if i > 0 {
+			parts = append(parts, ModelContextPart{Text: ","})
+		}
+		raw, _ := json.Marshal(key)
+		parts = append(parts, ModelContextPart{Key: key, Text: string(raw)})
+	}
+	parts = append(parts, ModelContextPart{Text: `]}`})
+	var text strings.Builder
+	for _, part := range parts {
+		text.WriteString(part.Text)
+	}
+	return text.String(), parts
 }

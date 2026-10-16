@@ -61,3 +61,23 @@ func TestModelContextProjectionUsesOneChronologicalReducer(t *testing.T) {
 		t.Fatal("clear was lost")
 	}
 }
+
+func TestModelContextFragmentsPreserveRenderingAndOwnership(t *testing.T) {
+	next := &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "skills", Title: "Skills", Text: "Unicode 中文 <tool>"}}}
+	for _, pair := range [][2]*ModelContextSnapshot{{nil, next}, {next, &ModelContextSnapshot{Sections: []ModelContextSection{}}}} {
+		text, parts := renderModelContextParts(pair[0], pair[1])
+		var joined strings.Builder
+		for _, part := range parts {
+			joined.WriteString(part.Text)
+		}
+		if joined.String() != text || text != RenderModelContext(pair[0], pair[1]) {
+			t.Fatal("fragment rendering differs")
+		}
+		message := Message{Role: User, Content: text, ModelContextParts: parts}
+		cloned := CloneMessage(message)
+		cloned.ModelContextParts[0].Text = "mutated"
+		if message.ModelContextParts[0].Text == "mutated" {
+			t.Fatal("fragment alias")
+		}
+	}
+}

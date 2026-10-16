@@ -44,17 +44,35 @@ const (
 // It describes the prepared request, never cumulative billing usage or original
 // tool output discarded before model input. Empty Source means unavailable.
 type ContextBreakdown struct {
-	Source               string `json:"source,omitempty"`
-	SystemTokens         int64  `json:"system_tokens,omitempty"`
-	UserTokens           int64  `json:"user_tokens,omitempty"`
-	AssistantTokens      int64  `json:"assistant_tokens,omitempty"`
-	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`
-	ToolCallTokens       int64  `json:"tool_call_tokens,omitempty"`
-	ToolResultTokens     int64  `json:"tool_result_tokens,omitempty"`
-	ModelContextTokens   int64  `json:"model_context_tokens,omitempty"`
-	CompactionTokens     int64  `json:"compaction_tokens,omitempty"`
-	ReasoningTokens      int64  `json:"reasoning_tokens,omitempty"`
-	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
+	Details              *ContextBreakdownDetails `json:"details,omitempty"`
+	Source               string                   `json:"source,omitempty"`
+	SystemTokens         int64                    `json:"system_tokens,omitempty"`
+	UserTokens           int64                    `json:"user_tokens,omitempty"`
+	AssistantTokens      int64                    `json:"assistant_tokens,omitempty"`
+	ToolDefinitionTokens int64                    `json:"tool_definition_tokens,omitempty"`
+	ToolCallTokens       int64                    `json:"tool_call_tokens,omitempty"`
+	ToolResultTokens     int64                    `json:"tool_result_tokens,omitempty"`
+	ModelContextTokens   int64                    `json:"model_context_tokens,omitempty"`
+	CompactionTokens     int64                    `json:"compaction_tokens,omitempty"`
+	ReasoningTokens      int64                    `json:"reasoning_tokens,omitempty"`
+	AttachmentTokens     int64                    `json:"attachment_tokens,omitempty"`
+}
+
+// ContextTokenDetail attributes one retained fragment to its actual origin.
+// Category is tool_definition or model_context; Key is a tool name or section
+// key. Source and Namespace come from tool definition annotations, never prose.
+type ContextTokenDetail struct {
+	Category  string `json:"category"`
+	Key       string `json:"key"`
+	Source    string `json:"source,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Tokens    int64  `json:"tokens"`
+}
+
+// ContextBreakdownDetails contains optional request-scoped attribution. It
+// contains no prompt text, arguments, results, or resource paths.
+type ContextBreakdownDetails struct {
+	Items []ContextTokenDetail `json:"items"`
 }
 
 type RequestEstimate struct {

@@ -52,18 +52,23 @@ type ContextPolicy struct {
 // It describes the prepared request, never cumulative billing usage or original
 // tool output discarded before model input. Empty Source means unavailable.
 type ContextBreakdown struct {
-	Source               string `json:"source,omitempty"`
-	SystemTokens         int64  `json:"system_tokens,omitempty"`
-	UserTokens           int64  `json:"user_tokens,omitempty"`
-	AssistantTokens      int64  `json:"assistant_tokens,omitempty"`
-	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`
-	ToolCallTokens       int64  `json:"tool_call_tokens,omitempty"`
-	ToolResultTokens     int64  `json:"tool_result_tokens,omitempty"`
-	ModelContextTokens   int64  `json:"model_context_tokens,omitempty"`
-	CompactionTokens     int64  `json:"compaction_tokens,omitempty"`
-	ReasoningTokens      int64  `json:"reasoning_tokens,omitempty"`
-	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
+	// Details refines the existing totals; its weights must not be added again.
+	Details              *ContextBreakdownDetails `json:"details,omitempty"`
+	Source               string                   `json:"source,omitempty"`
+	SystemTokens         int64                    `json:"system_tokens,omitempty"`
+	UserTokens           int64                    `json:"user_tokens,omitempty"`
+	AssistantTokens      int64                    `json:"assistant_tokens,omitempty"`
+	ToolDefinitionTokens int64                    `json:"tool_definition_tokens,omitempty"`
+	ToolCallTokens       int64                    `json:"tool_call_tokens,omitempty"`
+	ToolResultTokens     int64                    `json:"tool_result_tokens,omitempty"`
+	ModelContextTokens   int64                    `json:"model_context_tokens,omitempty"`
+	CompactionTokens     int64                    `json:"compaction_tokens,omitempty"`
+	ReasoningTokens      int64                    `json:"reasoning_tokens,omitempty"`
+	AttachmentTokens     int64                    `json:"attachment_tokens,omitempty"`
 }
+
+type ContextTokenDetail = contextpolicy.ContextTokenDetail
+type ContextBreakdownDetails = contextpolicy.ContextBreakdownDetails
 
 type RequestEstimate struct {
 	Breakdown            ContextBreakdown   `json:"breakdown,omitzero"`

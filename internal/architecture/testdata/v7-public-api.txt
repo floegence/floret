@@ -65,6 +65,7 @@ field AgentProfile.ID string tag="json:\"id\""
 field AgentProfile.Name string tag="json:\"name\""
 field AgentProfile.Description string tag="json:\"description,omitempty\""
 type ContextBreakdown struct
+field ContextBreakdown.Details *github.com/floegence/floret/v7/config.ContextBreakdownDetails tag="json:\"details,omitempty\""
 field ContextBreakdown.Source string tag="json:\"source,omitempty\""
 field ContextBreakdown.SystemTokens int64 tag="json:\"system_tokens,omitempty\""
 field ContextBreakdown.UserTokens int64 tag="json:\"user_tokens,omitempty\""
@@ -76,6 +77,8 @@ field ContextBreakdown.ModelContextTokens int64 tag="json:\"model_context_tokens
 field ContextBreakdown.CompactionTokens int64 tag="json:\"compaction_tokens,omitempty\""
 field ContextBreakdown.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitempty\""
 field ContextBreakdown.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
+type ContextBreakdownDetails = github.com/floegence/floret/v7/config.ContextBreakdownDetails
+field ContextBreakdownDetails.Items []github.com/floegence/floret/v7/internal/session/contextpolicy.ContextTokenDetail tag="json:\"items\""
 type ContextPolicy struct
 field ContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
 field ContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
@@ -100,6 +103,12 @@ field ContextPressure.EstimateMethod github.com/floegence/floret/v7/config.Estim
 field ContextPressure.Confidence github.com/floegence/floret/v7/config.EstimateConfidence tag="json:\"confidence,omitempty\""
 field ContextPressure.CompactionNeeded bool tag="json:\"compaction_needed,omitempty\""
 field ContextPressure.HardLimitExceeded bool tag="json:\"hard_limit_exceeded,omitempty\""
+type ContextTokenDetail = github.com/floegence/floret/v7/config.ContextTokenDetail
+field ContextTokenDetail.Category string tag="json:\"category\""
+field ContextTokenDetail.Key string tag="json:\"key\""
+field ContextTokenDetail.Source string tag="json:\"source,omitempty\""
+field ContextTokenDetail.Namespace string tag="json:\"namespace,omitempty\""
+field ContextTokenDetail.Tokens int64 tag="json:\"tokens\""
 type ContextUsage struct
 field ContextUsage.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field ContextUsage.MessageTokens int64 tag="json:\"message_tokens,omitempty\""
