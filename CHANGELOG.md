@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.44.1 - 2026-10-15
+
+- Preserve URL-only Web Search sources through validation, sanitized observation and canonical history. Source titles and snippets remain optional provider facts; no title synthesis, public API shape or domain schema change.
+
 ## v7.44.0 - 2026-10-15
 
 - Add optional request-scoped used-context composition estimates through canonical reads and live observation: instructions, conversation, tools, retained outputs, managed facts, summaries, reasoning and expanded media. Keep native totals authoritative, exclude discarded artifacts and supplemental secrets, and preserve schema 17 and every migration edge.

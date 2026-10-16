@@ -8,6 +8,33 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
+func TestWebSearchPresentationAcceptsURLOnlySources(t *testing.T) {
+	for _, title := range []string{"", "Official documentation"} {
+		activity := &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{
+			Operation: "search", Query: "official documentation", ResultsProvided: true,
+			Results: []tools.WebSearchActivityResult{{Title: title, URL: "https://example.com/docs", Snippet: "Provider supplied excerpt"}},
+		}}
+		if err := activity.Validate(); err != nil {
+			t.Fatalf("URL source with title %q rejected: %v", title, err)
+		}
+		data, err := json.Marshal(activity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored tools.ActivityPresentation
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if got := restored.Payload.(tools.WebSearchActivityPayload); got.Query != "official documentation" || got.Results[0].Title != title || got.Results[0].Snippet != "Provider supplied excerpt" {
+			t.Fatalf("provider facts changed: %+v", got)
+		}
+	}
+	invalid := &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: tools.WebSearchActivityPayload{Results: []tools.WebSearchActivityResult{{Title: "Missing address"}}}}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("accepted a source without a URL")
+	}
+}
+
 func TestWebSearchPresentationMergeAndRoundTrip(t *testing.T) {
 	present := func(payload tools.WebSearchActivityPayload) *tools.ActivityPresentation {
 		return &tools.ActivityPresentation{Renderer: tools.ActivityRendererWebSearch, Payload: payload}

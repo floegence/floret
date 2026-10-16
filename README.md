@@ -734,7 +734,8 @@ acceptance is not evidence that the official service executes search.
 
 Web Activity preserves `Operation` (`search`, `open_page`, `find_in_page`),
 `Query` (ordered queries separated by newlines), `URL`, `Pattern`, and source
-`Title`, `URL`, and `Snippet`. `ResultsProvided` distinguishes an explicitly
+`Title`, `URL`, and `Snippet`. Each source requires a URL; title and snippet are
+optional provider facts and are never synthesized. `ResultsProvided` distinguishes an explicitly
 returned empty list from unavailable details. An empty operation remains
 unknown. Hosts render these facts from canonical Activity, including after
 restart; answer citations are not per-call search results. These additive v7.4

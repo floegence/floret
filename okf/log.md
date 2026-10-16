@@ -1484,3 +1484,4 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 - 2026-10-15: Document optional per-row and per-mutation Activity resource targets and host-owned current access checks.
 
 - 2026-10-15: Document detached canonical Ask User reason, required-input and evidence metadata across all public input views; preserve schema 17 and tool-origin input.
+- 2026-10-15: Clarify URL-only Web Search source validation and canonical result preservation without synthesized titles.
