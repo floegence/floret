@@ -1,5 +1,6 @@
 # Floret OKF Update Log
 
+- Document opt-in [passive parent events](api/runtime.md#passive-parent-events), canonical admission, bounded event reads and the permanent [18 -> 19 migration](api/storage.md).
 - Bound automatic summary and title output by the opted-in model capability, retaining one upstream owner for auxiliary generation controls.
 - Document [request-fitted output budgets](api/config.md), immutable refitting and the permanent [17 -> 18 migration](api/storage.md).
 

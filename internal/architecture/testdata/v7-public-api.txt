@@ -782,6 +782,12 @@ field InteractionResolution.Outcome string tag="json:\"outcome,omitempty\""
 field InteractionResolution.Approved *bool tag="json:\"approved,omitempty\""
 field InteractionResolution.Input map[string]string tag="json:\"input,omitempty\""
 field InteractionResolution.At time.Time tag="json:\"at\""
+type ListParentEventsInput struct
+field ListParentEventsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field ListParentEventsInput.SourceThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
+field ListParentEventsInput.AfterEventID string
+field ListParentEventsInput.Limit int
+field ListParentEventsInput.PendingOnly bool
 type LookupQueuedEditInput struct
 field LookupQueuedEditInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field LookupQueuedEditInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
@@ -884,9 +890,42 @@ func NewAgent func(configuration github.com/floegence/floret/v7/config.AgentConf
 func Open func(ctx context.Context, options github.com/floegence/floret/v7/runtime.Options) (*github.com/floegence/floret/v7/runtime.Host, error)
 type Options struct
 field Options.Storage github.com/floegence/floret/v7/storage.Source
+field Options.EnableParentEvents bool
 field Options.DeferExecution bool
 field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress
 field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
+type ParentEvent struct
+field ParentEvent.ID string tag="json:\"id\""
+field ParentEvent.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id\""
+field ParentEvent.SourceThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"source_thread_id\""
+field ParentEvent.SourceTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"source_turn_id\""
+field ParentEvent.SourceRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"source_run_id\""
+field ParentEvent.SourceEntryID string tag="json:\"source_entry_id\""
+field ParentEvent.Kind github.com/floegence/floret/v7/runtime.ParentEventKind tag="json:\"kind\""
+field ParentEvent.ReasonCode string tag="json:\"reason_code,omitempty\""
+field ParentEvent.InteractionID string tag="json:\"interaction_id,omitempty\""
+field ParentEvent.Message string tag="json:\"message,omitempty\""
+field ParentEvent.ReceivedAt string tag="json:\"received_at\""
+field ParentEvent.Admitted bool tag="json:\"admitted\""
+field ParentEvent.Resolved bool tag="json:\"resolved,omitempty\""
+const ParentEventApprovalRequired github.com/floegence/floret/v7/runtime.ParentEventKind = "approval_required"
+const ParentEventCancelled github.com/floegence/floret/v7/runtime.ParentEventKind = "cancelled"
+const ParentEventCompleted github.com/floegence/floret/v7/runtime.ParentEventKind = "completed"
+const ParentEventFailed github.com/floegence/floret/v7/runtime.ParentEventKind = "failed"
+const ParentEventInputRequired github.com/floegence/floret/v7/runtime.ParentEventKind = "input_required"
+const ParentEventInterrupted github.com/floegence/floret/v7/runtime.ParentEventKind = "interrupted"
+type ParentEventKind string
+type ParentEventPage struct
+field ParentEventPage.Events []github.com/floegence/floret/v7/runtime.ParentEvent tag="json:\"events\""
+field ParentEventPage.FirstEventID string tag="json:\"first_event_id,omitempty\""
+field ParentEventPage.LastEventID string tag="json:\"last_event_id,omitempty\""
+field ParentEventPage.NextAfterEventID string tag="json:\"next_after_event_id,omitempty\""
+type ParentEventReceipt struct
+field ParentEventReceipt.Accepted bool tag="json:\"accepted\""
+field ParentEventReceipt.EventID string tag="json:\"event_id\""
+field ParentEventReceipt.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id\""
+const ParentEventReport github.com/floegence/floret/v7/runtime.ParentEventKind = "report"
+const ParentEventTimedOut github.com/floegence/floret/v7/runtime.ParentEventKind = "timed_out"
 func PreflightStorageReset func(ctx context.Context, request github.com/floegence/floret/v7/runtime.StorageResetRequest) (github.com/floegence/floret/v7/runtime.StorageResetPreflight, error)
 func ProjectCoreControlSignal func(call github.com/floegence/floret/v7/tools.ToolCall) (github.com/floegence/floret/v7/runtime.TurnSignal, bool, error)
 type PromoteQueuedInput = github.com/floegence/floret/v7/runtime.PromoteQueuedInput
@@ -940,10 +979,26 @@ type QueuedInputEdit struct
 field QueuedInputEdit.QueueItemID string tag="json:\"queue_item_id\""
 field QueuedInputEdit.ExpectedInput github.com/floegence/floret/v7/runtime.UserInput tag="json:\"expected_input\""
 field QueuedInputEdit.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
+type ReadParentEventsInput struct
+field ReadParentEventsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field ReadParentEventsInput.EventID string
+field ReadParentEventsInput.FirstEventID string
+field ReadParentEventsInput.LastEventID string
+field ReadParentEventsInput.AfterEventID string
+field ReadParentEventsInput.Limit int
 type ReorderQueueInput struct
 field ReorderQueueInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ReorderQueueInput.OrderedItemIDs []string tag="json:\"ordered_item_ids\""
 field ReorderQueueInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type ReportToParentInput struct
+field ReportToParentInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
+field ReportToParentInput.TurnID github.com/floegence/floret/v7/identity.TurnID
+field ReportToParentInput.RunID github.com/floegence/floret/v7/identity.RunID
+field ReportToParentInput.ToolCallID string
+field ReportToParentInput.ToolName string
+field ReportToParentInput.ArgumentHash string
+field ReportToParentInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey
+field ReportToParentInput.Message string
 type RequestConflictError struct
 field RequestConflictError.Operation string
 field RequestConflictError.RequestID string
@@ -1150,6 +1205,7 @@ field ThreadModelContext.UsedByRequestID string tag="json:\"used_by_request_id,o
 field ThreadModelContext.UsedByTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"used_by_turn_id,omitempty\""
 field ThreadModelContext.UsedByRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"used_by_run_id,omitempty\""
 field ThreadModelContext.UsedAt *time.Time tag="json:\"used_at,omitempty\""
+type ThreadParentEventService interface interface{ListParentEvents(context.Context, github.com/floegence/floret/v7/runtime.ListParentEventsInput) (github.com/floegence/floret/v7/runtime.ParentEventPage, error); ReadParentEvents(context.Context, github.com/floegence/floret/v7/runtime.ReadParentEventsInput) (github.com/floegence/floret/v7/runtime.ParentEventPage, error); ReportToParent(context.Context, github.com/floegence/floret/v7/runtime.ReportToParentInput) (github.com/floegence/floret/v7/runtime.ParentEventReceipt, error)}
 type ThreadPhase string
 const ThreadPhaseIdle github.com/floegence/floret/v7/runtime.ThreadPhase = "idle"
 const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn"
@@ -1279,6 +1335,7 @@ const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTur
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.ParentEvents *github.com/floegence/floret/v7/runtime.ParentEventPage tag="json:\"parent_events,omitempty\""
 field ThreadView.ToolCallPreviews []github.com/floegence/floret/v7/runtime.ThreadToolCallPreview tag="json:\"tool_call_previews,omitempty\""
 field ThreadView.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
 field ThreadView.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""

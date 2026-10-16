@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -885,5 +886,93 @@ func TestPublishedPreparedContentDistribution(t *testing.T) {
 	omitted, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "deepseek", Model: "deepseek-flash", Format: provider.RequestFormatOpenAIResponses, Payload: raw, Attribution: attrs})
 	if err != nil || omitted.EstimatedInputTokens != got.EstimatedInputTokens || omitted.Breakdown.Source != "" || omitted.Breakdown.Diagnostic != "attribution_mismatch" {
 		t.Fatalf("optional attribution blocked budget: %+v %v", omitted, err)
+	}
+}
+
+func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(filepath.Join(t.TempDir(), "parent-events.db")), EnableParentEvents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	var service runtime.ThreadService
+	report := tools.Define[struct{ Message string }](tools.Definition{Name: "report_to_parent", ReadOnly: true, InputSchema: tools.StrictObject(map[string]any{"message": map[string]any{"type": "string"}}, []string{"message"}), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(ctx context.Context, in tools.Invocation[struct{ Message string }]) (tools.Result, error) {
+		sum := sha256.Sum256([]byte(strings.TrimSpace(in.RawArgs)))
+		receipt, err := service.(runtime.ThreadParentEventService).ReportToParent(ctx, runtime.ReportToParentInput{ThreadID: in.ThreadID, TurnID: in.TurnID, RunID: in.RunID, ToolCallID: in.CallID, ToolName: in.Name, ArgumentHash: fmt.Sprintf("%x", sum), RequestKey: runtime.RequestKey(in.CallID), Message: in.Args.Message})
+		data, _ := json.Marshal(receipt)
+		return tools.Result{Text: string(data)}, err
+	})
+	done := florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}}
+	childGateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "events", StateCompatibilityKey: "test:events"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "report", Name: "report_to_parent", Args: "{\"message\":\"Important finding\"}"}}}, {Type: provider.EventDone, Reason: "tool_calls"}}}, done)
+	parentGateway := florettest.NewScriptedGateway(childGateway.Identity(), childGateway.Capabilities(), done)
+	config := config.AgentConfig{Profile: config.AgentProfile{ID: "events", Name: "Events"}, SystemPrompt: "Review work.", Context: config.ContextPolicy{ContextWindowTokens: 256000}}
+	parentAgent, err := runtime.NewAgent(config, parentGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childAgent, err := runtime.NewAgent(config, childGateway, runtime.WithAgentTools(report), runtime.WithAgentEffectAuthorization(runtime.EffectAuthorizationGateFunc(func(ctx context.Context, req runtime.EffectAuthorizationRequest, effect runtime.AuthorizedEffect) (runtime.EffectDispatchResult, error) {
+		return effect(ctx, runtime.EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now()})
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parentID identity.ThreadID
+	service, err = host.ThreadService(runtime.AgentFactoryFunc(func(_ context.Context, r runtime.AgentRequest) (*runtime.Agent, error) {
+		if r.ThreadID == parentID {
+			return parentAgent, nil
+		}
+		return childAgent, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID = parent.ThreadID
+	child, err := service.Create(t.Context(), runtime.CreateThreadInput{ParentThreadID: parentID, TaskName: "research", HostProfileRef: "test", RequestKey: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), runtime.SendInput{ThreadID: child.ThreadID, RequestKey: "work", Input: runtime.UserInput{Text: "research"}}); err != nil {
+		t.Fatal(err)
+	}
+	final := waitPublishedToolInputView(t, service, child.ThreadID, func(v runtime.ThreadView) bool {
+		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
+	})
+	if final.Failure != nil {
+		t.Fatal(final.Failure)
+	}
+	events := service.(runtime.ThreadParentEventService)
+	page, err := events.ListParentEvents(t.Context(), runtime.ListParentEventsInput{ThreadID: parentID, PendingOnly: true})
+	if err != nil || len(page.Events) != 2 {
+		t.Fatalf("events=%+v %v", page, err)
+	}
+	full, err := events.ReadParentEvents(t.Context(), runtime.ReadParentEventsInput{ThreadID: parentID, FirstEventID: page.FirstEventID, LastEventID: page.LastEventID})
+	if err != nil || len(full.Events) != 2 || full.Events[0].Message != "Important finding" {
+		t.Fatalf("full=%+v %v", full, err)
+	}
+	if len(parentGateway.Requests()) != 0 {
+		t.Fatal("child report woke parent")
+	}
+	if _, err := service.Send(t.Context(), runtime.SendInput{ThreadID: parentID, RequestKey: "review", Input: runtime.UserInput{Text: "review"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitPublishedToolInputView(t, service, parentID, func(v runtime.ThreadView) bool {
+		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
+	})
+	requests := parentGateway.Requests()
+	if len(requests) != 1 {
+		t.Fatal("unexpected provider sampling")
+	}
+	found := false
+	for _, m := range requests[0].Messages {
+		if strings.Contains(m.Text, "Important finding") && strings.Contains(m.Text, "completed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("published service did not deliver reports and automatic completion")
 	}
 }

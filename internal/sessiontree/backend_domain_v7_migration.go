@@ -297,11 +297,13 @@ func convergeUnknownEffectTurns(ctx context.Context, memory *MemoryRepo) error {
 		if !unknown {
 			continue
 		}
-		if _, err := memory.FailUnknownEffectTurn(ctx, FailUnknownEffectTurnRequest{
+		result, err := memory.FailUnknownEffectTurn(ctx, FailUnknownEffectTurnRequest{
 			ThreadID: threadID, TurnID: turnID, RunID: runID, Now: memory.now().UTC(),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		memory.appendAutomaticParentEventLocked(result.Terminal)
 	}
 	return nil
 }

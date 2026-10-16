@@ -122,7 +122,12 @@ func RetainAppliedSteering(prefix, source []Entry, turnID string) []Entry {
 		present[entry.ID] = true
 	}
 	for _, entry := range source {
-		if entry.Type == EntryModelContext && entry.TurnID == turnID && !present[entry.ID] {
+		if entry.Type == EntryParentEvent && !present[entry.ID] {
+			out = append(out, entry)
+			present[entry.ID] = true
+			continue
+		}
+		if (entry.Type == EntryModelContext || entry.Type == EntryParentEventsAdmitted) && entry.TurnID == turnID && !present[entry.ID] {
 			out = append(out, entry)
 			present[entry.ID] = true
 			continue

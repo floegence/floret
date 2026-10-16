@@ -722,6 +722,7 @@ type AgentTodoStateRepo interface {
 }
 
 type MemoryRepo struct {
+	parentEvents      bool
 	mu                sync.Mutex
 	mutation          *backendDomainMutation
 	queryIndex        *queryIndex
@@ -1642,7 +1643,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		r.seq++
 		next := cloneEntry(entry)
 		next.ID = fmt.Sprintf("%s-entry-%d", newID, r.seq)
-		if entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone {
+		if entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted {
 			// Interaction IDs encode their call identity and are scoped to a thread.
 			next.ID = entry.ID
 		}
@@ -2575,7 +2576,7 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext:
+	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)
 			msg.EntryID = entry.ID

@@ -433,6 +433,8 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
+	// ParentEvents is a bounded, explicitly paginated receipt view, separate from streamed item ordinals.
+	ParentEvents     *ParentEventPage        `json:"parent_events,omitempty"`
 	ToolCallPreviews []ThreadToolCallPreview `json:"tool_call_previews,omitempty"`
 	Turns            []ThreadTurn            `json:"turns"`
 	TurnKind         TurnKind                `json:"turn_kind,omitempty"`
@@ -1810,6 +1812,10 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		return ThreadView{}, runtimeHostError(err)
 	}
 	canonical := ThreadView{ThreadID: threadID, Activity: ThreadActivityIdle}
+	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, err
@@ -2547,6 +2553,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		if refreshErr == nil {
 			actor.state.view.Turns = canonical.Turns
 			actor.state.view.Items = canonical.Items
+			actor.state.view.ParentEvents = canonical.ParentEvents
 			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		}
@@ -2983,6 +2990,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		}
 		actor.state.view.ViewVersion++
 		actor.state.view.Items = reconciled
+		actor.state.view.ParentEvents = canonical.ParentEvents
 		actor.pruneArgumentPreviews()
 		actor.state.view.Turns = canonical.Turns
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
@@ -3008,6 +3016,10 @@ func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context
 		return ThreadView{}, fmt.Errorf("canonical refresh path: %w", err)
 	}
 	canonical := ThreadView{ThreadID: threadID}
+	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, fmt.Errorf("canonical refresh hydrate items: %w", err)
@@ -4082,6 +4094,11 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
+	if view.ParentEvents != nil {
+		page := *view.ParentEvents
+		page.Events = append([]ParentEvent(nil), page.Events...)
+		view.ParentEvents = &page
+	}
 	view.Cancellation = cloneThreadCancellation(view.Cancellation)
 	view.Attention = AttentionSummary{}
 	for _, interaction := range view.Interactions {

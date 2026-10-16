@@ -39,6 +39,13 @@ func loadBackendDomainV18(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV18Memory(memory *MemoryRepo) error {
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted {
+				return ErrAuthorityCorrupt
+			}
+		}
+	}
 	if err := validateBackendDomainMemory(memory, "v18", true); err != nil {
 		return err
 	}

@@ -840,6 +840,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
 	engineOptions.AdmitModelContext = projection.admitModelContext
+	engineOptions.AdmitParentEvents = projection.admitParentEvents
 	if opts.Steering != nil {
 		control := *opts.Steering
 		control.Begin = func(ctx context.Context, _ func() error) (context.Context, []session.Message, error) {
@@ -1398,7 +1399,7 @@ func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableM
 			continue
 		}
 		switch entry.Type {
-		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext:
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext, sessiontree.EntryParentEventsAdmitted:
 			counter.record(entry.Message)
 		case sessiontree.EntrySteeringApplied:
 			resolution, err := sessiontree.DecodeSteeringResolution(entry)

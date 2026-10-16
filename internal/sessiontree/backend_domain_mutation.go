@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/session/artifact"
@@ -79,7 +80,7 @@ func newBackendDomainMutation(source *MemoryRepo) *backendDomainMutation {
 		artifacts: domainChanges[artifact.Record]{}, journals: map[string]domainJournal{}, sequence: source.seq,
 	}
 	mutation.memory = &MemoryRepo{
-		mutation: mutation, now: source.now, seq: source.seq,
+		mutation: mutation, now: source.now, seq: source.seq, parentEvents: source.parentEvents,
 		threads: source.threads, entries: source.entries, entryOrdinals: source.entryOrdinals,
 		entryDepths: source.entryDepths, turnEntryOrdinals: source.turnEntryOrdinals,
 		turnEntryCounts: source.turnEntryCounts, todos: source.todos, tombstones: source.tombstones,
@@ -293,8 +294,15 @@ func (mutation *backendDomainMutation) validate() error {
 		if previous.replaced && len(previous.entries) != 0 && !reflect.DeepEqual(previous.entries, next[:len(previous.entries)]) {
 			return errors.New("canonical session-tree entries are immutable")
 		}
+		parentFacts := false
 		for _, entry := range next[len(previous.entries):] {
+			parentFacts = parentFacts || entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted
 			if err := mutation.validateEntry(threadID, entry); err != nil {
+				return err
+			}
+		}
+		if parentFacts {
+			if _, err := memory.parentEventRecordsLocked(threadID); err != nil {
 				return err
 			}
 		}
@@ -327,6 +335,10 @@ func (mutation *backendDomainMutation) validate() error {
 }
 
 func (mutation *backendDomainMutation) validateEntry(threadID string, entry Entry) error {
+	if err := validateParentEventEntry(mutation.memory, threadID, entry); err != nil {
+		return err
+	}
+
 	if err := validateCanonicalEntryRunIdentity(entry); err != nil {
 		return err
 	}
@@ -385,12 +397,12 @@ func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values
 		next, found := values[key]
 		if !found {
 			if previous.found {
-				if err := tx.Delete(backendDomainV18Namespace, backendDomainKey(kind, key)); err != nil {
+				if err := tx.Delete(backendDomainV19Namespace, backendDomainKey(kind, key)); err != nil {
 					return err
 				}
 			}
 		} else if !previous.found || !reflect.DeepEqual(previous.value, next) {
-			if err := putBackendDomainRecord(tx, backendDomainV18Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
+			if err := putBackendDomainRecord(tx, backendDomainV19Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
 				return err
 			}
 		}
@@ -401,7 +413,7 @@ func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values
 func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 	memory := mutation.memory
 	if mutation.sequence != memory.seq {
-		if err := putBackendDomainRecord(tx, backendDomainV18Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV18Version, Sequence: memory.seq}); err != nil {
+		if err := putBackendDomainRecord(tx, backendDomainV19Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV19Version, Sequence: memory.seq}); err != nil {
 			return err
 		}
 	}
@@ -416,7 +428,7 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		}
 	}
 	if rootIndexChanged {
-		if err := putBackendDomainRecord(tx, backendDomainV18Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
+		if err := putBackendDomainRecord(tx, backendDomainV19Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
 			return err
 		}
 	}
@@ -427,12 +439,12 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		next := memory.entries[threadID]
 		for ordinal := len(previous.entries); ordinal < len(next); ordinal++ {
 			entry := next[ordinal]
-			if err := putBackendDomainRecord(tx, backendDomainV18Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
+			if err := putBackendDomainRecord(tx, backendDomainV19Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
 				return err
 			}
 		}
 		for ordinal := len(next); ordinal < len(previous.entries); ordinal++ {
-			if err := tx.Delete(backendDomainV18Namespace, backendDomainEntryKey(threadID, ordinal)); err != nil {
+			if err := tx.Delete(backendDomainV19Namespace, backendDomainEntryKey(threadID, ordinal)); err != nil {
 				return err
 			}
 		}
@@ -450,4 +462,37 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		return err
 	}
 	return nil
+}
+
+// Source facts have settled before cross-thread references are staged. Both
+// journals commit or roll back in the same existing domain transaction.
+func (mutation *backendDomainMutation) appendParentEvents() {
+	if !mutation.memory.parentEvents {
+		return
+	}
+	var sources []Entry
+	for threadID, previous := range mutation.journals {
+		if len(mutation.memory.entries[threadID]) <= len(previous.entries) {
+			continue
+		}
+		for _, entry := range mutation.memory.entries[threadID][len(previous.entries):] {
+			sources = append(sources, entry)
+		}
+	}
+	sort.SliceStable(sources, func(i, j int) bool {
+		if sources[i].ThreadID != sources[j].ThreadID {
+			return sources[i].ThreadID < sources[j].ThreadID
+		}
+		return mutation.memory.entryOrdinals[sources[i].ThreadID][sources[i].ID] < mutation.memory.entryOrdinals[sources[j].ThreadID][sources[j].ID]
+	})
+	for _, source := range sources {
+		mutation.memory.appendAutomaticParentEventLocked(source)
+		if source.Type == EntryTurnMarker && source.TurnStatus == TurnWaiting {
+			for _, entry := range mutation.memory.entries[source.ThreadID] {
+				if entry.TurnID == source.TurnID && entry.RunID == source.RunID && entry.Type == EntryToolResult {
+					mutation.memory.appendAutomaticParentEventLocked(entry)
+				}
+			}
+		}
+	}
 }

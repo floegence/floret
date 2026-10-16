@@ -8,6 +8,16 @@ import (
 	"github.com/floegence/floret/v7/internal/session/artifact"
 )
 
+func (repo *BackendRepo) AdmitParentEvents(ctx context.Context, threadID, turnID, runID string) (Entry, error) {
+	var result0 Entry
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.AdmitParentEvents(ctx, threadID, turnID, runID)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
 	var result0 Entry
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
@@ -56,6 +66,13 @@ func (repo *BackendRepo) BeginEffectDispatch(ctx context.Context, req BeginEffec
 		return callErr
 	})
 	return result0, err
+}
+
+func (repo *BackendRepo) BootstrapParentEvents(ctx context.Context) error {
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		return memory.BootstrapParentEvents(ctx)
+	})
+	return err
 }
 
 func (repo *BackendRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (CancelTurnResult, error) {
@@ -296,6 +313,16 @@ func (repo *BackendRepo) MoveLeaf(ctx context.Context, threadID, entryID string)
 	return err
 }
 
+func (repo *BackendRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
+	var result0 ParentEventPage
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ParentEvents(ctx, query)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) Path(ctx context.Context, threadID, leafID string) ([]Entry, error) {
 	var result0 []Entry
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
@@ -388,6 +415,16 @@ func (repo *BackendRepo) RejectEffectAttempt(ctx context.Context, req RejectEffe
 	err := repo.update(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.RejectEffectAttempt(ctx, req)
+		return callErr
+	})
+	return result0, err
+}
+
+func (repo *BackendRepo) ReportToParent(ctx context.Context, req ParentReportRequest) (ParentEvent, error) {
+	var result0 ParentEvent
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ReportToParent(ctx, req)
 		return callErr
 	})
 	return result0, err
