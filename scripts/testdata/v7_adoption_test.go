@@ -839,3 +839,21 @@ func TestPublishedInputEvidenceContract(t *testing.T) {
 		t.Fatalf("input evidence lost: %s", encoded)
 	}
 }
+
+func TestPublishedContextCompositionContract(t *testing.T) {
+	var comparable = map[config.RequestEstimate]bool{}
+	sample := config.RequestEstimate{Breakdown: config.ContextBreakdown{Source: "semantic_input_bpe_v1", ToolResultTokens: 1234}}
+	comparable[sample] = true
+	raw, err := json.Marshal(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored config.RequestEstimate
+	if err := json.Unmarshal(raw, &restored); err != nil || !comparable[restored] {
+		t.Fatalf("composition roundtrip: %+v, %v", restored, err)
+	}
+	measured, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "openai", Model: "gpt-4o", Format: provider.RequestFormatOpenAIResponses, Payload: []byte("{\"input\":[{\"role\":\"user\",\"content\":\"Hi\"}]}")})
+	if err != nil || measured.AttachmentTokens != 0 {
+		t.Fatalf("rendered composition=%+v, %v", measured, err)
+	}
+}

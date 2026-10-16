@@ -81,6 +81,13 @@ func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
 						if snapshot.ContextUsage == nil || snapshot.ContextUsage.Confirmed == nil || snapshot.ContextUsage.Estimate == nil {
 							t.Fatalf("missing split usage: %+v", snapshot)
 						}
+						breakdown := snapshot.ContextUsage.Confirmed.RequestEstimate.Breakdown
+						if breakdown.Source == "" || breakdown.ToolCallTokens <= 0 || breakdown.ToolResultTokens <= 0 || breakdown.SystemTokens <= 0 || breakdown.UserTokens <= 0 {
+							t.Fatalf("missing persisted input composition: %+v", breakdown)
+						}
+						if snapshot.ContextUsage.Estimate.RequestEstimate.Breakdown.AssistantTokens <= 0 {
+							t.Fatal("new request did not include the prior assistant answer")
+						}
 						if snapshot.ContextUsage.Confirmed.Usage.WindowInputTokens != 71872 || snapshot.ContextUsage.Estimate.ContextPressure.ProjectedInputTokens != 71872+next-previous {
 							t.Fatalf("wrong split usage: %+v", snapshot.ContextUsage)
 						}

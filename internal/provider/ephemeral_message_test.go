@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 func TestMessagesWithEphemeralUserRejectsInvalidIdentityAndIndex(t *testing.T) {
@@ -50,6 +51,7 @@ func TestGenericRequestEstimateIncludesEphemeralUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected.Breakdown = contextpolicy.ContextBreakdown{}
 	if !reflect.DeepEqual(got, expected) {
 		t.Fatalf("estimate with ephemeral=%#v, want merged payload estimate %#v", got, expected)
 	}

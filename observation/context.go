@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/config"
@@ -162,6 +163,18 @@ func (s ContextStatus) Validate() error {
 	}
 	if !s.Status.Valid() {
 		return fmt.Errorf("unsupported context display status %q", s.Status)
+	}
+
+	b := s.RequestEstimate.Breakdown
+	total := int64(0)
+	for _, n := range []int64{b.SystemTokens, b.UserTokens, b.AssistantTokens, b.ToolDefinitionTokens, b.ToolCallTokens, b.ToolResultTokens, b.ModelContextTokens, b.CompactionTokens, b.ReasoningTokens, b.AttachmentTokens} {
+		if n < 0 || n > int64(^uint64(0)>>1)-total {
+			return fmt.Errorf("invalid context breakdown token counts")
+		}
+		total += n
+	}
+	if total > 0 && strings.TrimSpace(b.Source) == "" {
+		return fmt.Errorf("context breakdown requires an estimate source")
 	}
 	return nil
 }

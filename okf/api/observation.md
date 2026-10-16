@@ -15,6 +15,13 @@ summaries without parsing assistant text or depending on implementation types.
 
 # Main Entry Points
 
+Context samples carry optional `RequestEstimate.Breakdown` estimates for the same
+request as their native/projected total. Retained tool output is included;
+discarded artifacts, filtered reasoning and supplemental secrets are excluded.
+Prepared media budgets come from resolved input rather than file descriptors.
+Native usage remains authoritative. Historical absent categories are unavailable,
+not zero usage; hosts must label category token counts as estimates.
+
 * `BuildActivityTimeline` creates a stable activity summary.
 * `RebuildActivitySummary` recomputes a timeline summary from its current items.
 * `ContextStatusesFromObservations` combines projected request, provider usage,

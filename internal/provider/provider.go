@@ -495,6 +495,8 @@ const (
 // TokenEstimate is a preflight request estimate. It is not provider usage and
 // does not imply an official provider token-count API unless Method says so.
 type TokenEstimate struct {
+	AttachmentTokens     int64
+	Breakdown            contextpolicy.ContextBreakdown
 	PrefixTokens         int64
 	MessageTokens        int64
 	ToolDefinitionTokens int64
@@ -533,7 +535,12 @@ func GenericRequestEstimate(req Request) (TokenEstimate, error) {
 	if err != nil {
 		return TokenEstimate{}, err
 	}
+	breakdown, err := EstimateContextBreakdown(req)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
 	return TokenEstimate{
+		Breakdown:            breakdown,
 		PrefixTokens:         prefixTokens,
 		MessageTokens:        messageTokens,
 		ToolDefinitionTokens: toolDefinitionTokens,

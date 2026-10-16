@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/observation"
 )
@@ -13,7 +14,8 @@ func TestThreadContextEntriesKeepExecutionIdentityOnlyOnCanonicalEntry(t *testin
 	statusEntry, err := NewThreadContextStatusEntry(observation.ContextStatus{
 		RunID: "run", ThreadID: "thread", TurnID: "turn",
 		Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable,
-		Provider: "test", Model: "scripted", ObservedAt: time.Unix(1_725_273_600, 0).UTC(),
+		RequestEstimate: config.RequestEstimate{Breakdown: config.ContextBreakdown{Source: "semantic_input_bpe_v1", ToolResultTokens: 750}},
+		Provider:        "test", Model: "scripted", ObservedAt: time.Unix(1_725_273_600, 0).UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +49,9 @@ func TestThreadContextEntriesKeepExecutionIdentityOnlyOnCanonicalEntry(t *testin
 	}
 	if status.ThreadID != identity.ThreadID("fork") || status.TurnID != identity.TurnID("turn") || status.RunID != identity.RunID("run") {
 		t.Fatalf("decoded status identity=%#v", status)
+	}
+	if status.RequestEstimate.Breakdown.ToolResultTokens != 750 {
+		t.Fatalf("lost input composition: %+v", status.RequestEstimate)
 	}
 	compactionEntry.ThreadID = "fork"
 	compaction, err := DecodeThreadContextCompactionEntry(compactionEntry)

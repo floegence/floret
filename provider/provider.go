@@ -503,6 +503,8 @@ type PreparedRequest interface {
 
 // TokenEstimate describes the size of a complete rendered request.
 type TokenEstimate struct {
+	// AttachmentTokens is the estimated media/file subset already included in MessageTokens.
+	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
 	PrefixTokens         int64  `json:"prefix_tokens,omitempty"`
 	MessageTokens        int64  `json:"message_tokens,omitempty"`
 	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`

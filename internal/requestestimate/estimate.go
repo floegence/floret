@@ -14,6 +14,7 @@ import (
 
 type Estimate struct {
 	Prefix, Messages, Tools int64
+	Media                   int64
 	Source, Method          string
 }
 
@@ -21,6 +22,7 @@ type counter struct {
 	provider, model, encoding string
 	margin                    int64
 	opaque                    bool
+	media                     *int64
 }
 
 func Count(provider, model, format string, payload []byte) (Estimate, error) {
@@ -33,7 +35,8 @@ func Count(provider, model, format string, payload []byte) (Estimate, error) {
 	if err := decoder.Decode(&body); err != nil || body == nil || !json.Valid(payload) {
 		return Estimate{}, errors.New("request estimate requires a JSON object")
 	}
-	c := counter{provider: strings.ToLower(strings.TrimSpace(provider)), model: strings.TrimSpace(model), margin: 25}
+	media := int64(0)
+	c := counter{media: &media, provider: strings.ToLower(strings.TrimSpace(provider)), model: strings.TrimSpace(model), margin: 25}
 	c.encoding = openaitokenizer.Encoding(c.provider, c.model)
 	if c.provider == "openrouter" && strings.HasPrefix(c.model, "deepseek/") {
 		c.provider = "deepseek"
@@ -134,6 +137,7 @@ func Count(provider, model, format string, payload []byte) (Estimate, error) {
 	if list, ok := tools.([]any); ok && len(list) > 0 {
 		estimate.Tools += 32 + int64(len(list))*16
 	}
+	estimate.Media = media
 	return estimate, nil
 }
 
@@ -202,6 +206,9 @@ func (c counter) value(value any) (int64, error) {
 	}
 	if err != nil {
 		return 0, err
+	}
+	if c.media != nil {
+		*c.media += media
 	}
 	return n + (n*c.margin+99)/100 + media, nil
 }
@@ -295,4 +302,23 @@ func stripCacheControl(value any) {
 			}
 		}
 	}
+}
+
+// CountText estimates semantic fragments using offline vocabulary selection.
+// Fragments are approximate and omit provider framing.
+func CountText(provider, model, text string) (int64, error) {
+	if text == "" {
+		return 0, nil
+	}
+	c := counter{encoding: openaitokenizer.Encoding(provider, model), margin: 25}
+	if c.encoding != "" {
+		c.margin = 10
+	}
+	if provider == "deepseek" || provider == "openrouter" && strings.HasPrefix(model, "deepseek/") {
+		model = strings.TrimPrefix(model, "deepseek/")
+		if model == "deepseek-v4-pro" || model == "deepseek-v4-flash" || model == "deepseek-v4-flash-vision-exp" {
+			c.encoding, c.margin = "deepseek_v4", 10
+		}
+	}
+	return c.value(text)
 }

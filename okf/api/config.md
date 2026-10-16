@@ -49,6 +49,14 @@ before treating compaction as complete.
 
 # Use With
 
+`RequestEstimate.Breakdown` is an optional comparable value containing disjoint
+semantic input estimates for instructions, conversation, tool definitions, calls
+and retained results, managed context, summaries, reasoning and expanded media.
+Empty Source means unavailable. Offline BPE categories are approximate and do
+not sum exactly to native input. Hosts must not rescale them into exact usage.
+Supplemental requests omit the breakdown. Historical schema-17 records remain
+valid without rewriting; this adds no domain lifecycle invariant.
+
 * [runtime](runtime.md) when constructing provider-backed runtime capabilities.
 * [Observation](observation.md) when interpreting context pressure DTOs.
 

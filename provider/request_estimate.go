@@ -34,6 +34,6 @@ func EstimateRenderedRequest(request RenderedRequest) (TokenEstimate, error) {
 	if err != nil {
 		return TokenEstimate{}, err
 	}
-	return TokenEstimate{PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools,
+	return TokenEstimate{AttachmentTokens: estimate.Media, PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools,
 		EstimatedInputTokens: estimate.Prefix + estimate.Messages + estimate.Tools, Source: estimate.Source, Method: estimate.Method, Confidence: "conservative", Coverage: "complete_request"}, nil
 }

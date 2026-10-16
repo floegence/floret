@@ -94,6 +94,7 @@ func PublicReasoningCapability(capability provider.ReasoningCapability) config.R
 
 func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstimate {
 	return config.RequestEstimate{
+		Breakdown:            config.ContextBreakdown(estimate.Breakdown),
 		PrefixTokens:         estimate.PrefixTokens,
 		MessageTokens:        estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens,

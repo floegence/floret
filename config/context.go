@@ -48,7 +48,25 @@ type ContextPolicy struct {
 	MaxCompactionFailures        int            `json:"max_compaction_failures,omitempty"`
 }
 
+// ContextBreakdown contains approximate, disjoint model-input token weights.
+// It describes the prepared request, never cumulative billing usage or original
+// tool output discarded before model input. Empty Source means unavailable.
+type ContextBreakdown struct {
+	Source               string `json:"source,omitempty"`
+	SystemTokens         int64  `json:"system_tokens,omitempty"`
+	UserTokens           int64  `json:"user_tokens,omitempty"`
+	AssistantTokens      int64  `json:"assistant_tokens,omitempty"`
+	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`
+	ToolCallTokens       int64  `json:"tool_call_tokens,omitempty"`
+	ToolResultTokens     int64  `json:"tool_result_tokens,omitempty"`
+	ModelContextTokens   int64  `json:"model_context_tokens,omitempty"`
+	CompactionTokens     int64  `json:"compaction_tokens,omitempty"`
+	ReasoningTokens      int64  `json:"reasoning_tokens,omitempty"`
+	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
+}
+
 type RequestEstimate struct {
+	Breakdown            ContextBreakdown   `json:"breakdown,omitzero"`
 	PrefixTokens         int64              `json:"prefix_tokens,omitempty"`
 	MessageTokens        int64              `json:"message_tokens,omitempty"`
 	ToolDefinitionTokens int64              `json:"tool_definition_tokens,omitempty"`

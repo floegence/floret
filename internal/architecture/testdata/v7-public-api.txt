@@ -64,6 +64,18 @@ type AgentProfile struct
 field AgentProfile.ID string tag="json:\"id\""
 field AgentProfile.Name string tag="json:\"name\""
 field AgentProfile.Description string tag="json:\"description,omitempty\""
+type ContextBreakdown struct
+field ContextBreakdown.Source string tag="json:\"source,omitempty\""
+field ContextBreakdown.SystemTokens int64 tag="json:\"system_tokens,omitempty\""
+field ContextBreakdown.UserTokens int64 tag="json:\"user_tokens,omitempty\""
+field ContextBreakdown.AssistantTokens int64 tag="json:\"assistant_tokens,omitempty\""
+field ContextBreakdown.ToolDefinitionTokens int64 tag="json:\"tool_definition_tokens,omitempty\""
+field ContextBreakdown.ToolCallTokens int64 tag="json:\"tool_call_tokens,omitempty\""
+field ContextBreakdown.ToolResultTokens int64 tag="json:\"tool_result_tokens,omitempty\""
+field ContextBreakdown.ModelContextTokens int64 tag="json:\"model_context_tokens,omitempty\""
+field ContextBreakdown.CompactionTokens int64 tag="json:\"compaction_tokens,omitempty\""
+field ContextBreakdown.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitempty\""
+field ContextBreakdown.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
 type ContextPolicy struct
 field ContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
 field ContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
@@ -180,6 +192,7 @@ field ReasoningSelection.Level github.com/floegence/floret/v7/config.ReasoningLe
 field ReasoningSelection.BudgetTokens int64 tag="json:\"budget_tokens,omitempty\""
 method ReasoningSelection.IsZero func() bool
 type RequestEstimate struct
+field RequestEstimate.Breakdown github.com/floegence/floret/v7/config.ContextBreakdown tag="json:\"breakdown,omitzero\""
 field RequestEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field RequestEstimate.MessageTokens int64 tag="json:\"message_tokens,omitempty\""
 field RequestEstimate.ToolDefinitionTokens int64 tag="json:\"tool_definition_tokens,omitempty\""
@@ -408,6 +421,7 @@ const StateReuseCanonicalHistory github.com/floegence/floret/v7/provider.StateRe
 const StateReuseExactSurface github.com/floegence/floret/v7/provider.StateReusePolicy = ""
 type StateReusePolicy string
 type TokenEstimate struct
+field TokenEstimate.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
 field TokenEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field TokenEstimate.MessageTokens int64 tag="json:\"message_tokens,omitempty\""
 field TokenEstimate.ToolDefinitionTokens int64 tag="json:\"tool_definition_tokens,omitempty\""

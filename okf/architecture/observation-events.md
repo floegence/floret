@@ -199,7 +199,11 @@ or validation failures require a canonical reload rather than event replay.
   journals written before this addition recover a missing approval presentation
   from the matching durable tool call in the same thread and turn; they do not
   rewrite state or change domain schema v4.
-* Context statuses show projected and provider-reported context pressure.
+* Context statuses show projected and provider-reported context pressure. Their
+  optional request-scoped composition estimates describe actual retained model
+  input, including tool output and prepared media, with no text persisted in
+  observation. Category sums may differ from native totals. Historical absent
+  estimates require no rewrite or domain-schema migration.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider
   request and validated against context pressure; failed compactions do not emit
