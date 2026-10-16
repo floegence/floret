@@ -1313,7 +1313,10 @@ steps:
 			}
 			continue
 		}
-		if repeats.reject(activeToolRegistry, calls, opts.DuplicateToolLimit) {
+		if len(validationErrors) > 0 {
+			repeats = toolBatchRepeatGuard{}
+		}
+		if len(validationErrors) == 0 && repeats.reject(activeToolRegistry, calls, opts.DuplicateToolLimit) {
 			return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
@@ -4747,7 +4750,11 @@ func (guard *toolBatchRepeatGuard) reject(reg *tools.Registry, calls []provider.
 			continue
 		}
 		token := toolResultProgressToken(result)
-		def, ok := reg.Definition(call.Name)
+		var def tools.Definition
+		var ok bool
+		if reg != nil {
+			def, ok = reg.Definition(call.Name)
+		}
 		polling := ok && strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) == tools.RepeatPolicyPolling
 		if !polling || result.IsError || result.DispatchErr != nil || token == "" || token == guard.tokens[i] {
 			repeatable = false
