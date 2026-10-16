@@ -848,6 +848,10 @@ Hosts may opt into `runtime.ThreadSteeringController`. `Steer` durably accepts a
 
 ## Prepared content distribution
 
+Prompt-cache plans retain source intervals from the current canonical projection,
+including cache reuse and frozen network retries. Wire snapshots never own or persist
+these transient attribution intervals.
+
 The additive v7.47 API decision serves Redeven Flower. `TokenEstimate.Breakdown`
 is produced by the same frozen-request extraction and vocabulary count as the safety
 budget. `Message.Attribution` carries optional typed model-context/compaction source

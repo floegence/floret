@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.47.1 - 2026-10-16
+
+- Preserve transient canonical managed-context source intervals through both new and reused prompt-cache plans. Derive attribution from the canonical projection without adding durable metadata or changing request bytes. Retain those intervals across frozen network retries and compare detached estimate details by value.
+
 ## v7.47.0 - 2026-10-16
 
 - Unify prepared-request budget and disjoint content estimation across provider protocols. Count decoded text once, select vocabularies from actual provider/model identity, retain separate protocol framing and conservative reserves, and remove the independent message breakdown path.

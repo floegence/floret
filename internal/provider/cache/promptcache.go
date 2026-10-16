@@ -923,19 +923,22 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 		if err != nil {
 			return RawPlan{}, nil, err
 		}
+		// Canonical projection owns transient provenance. Cached wire snapshots
+		// deliberately omit it and must not reconstruct the active model input.
+		projected := seg.Message.toSession()
+		projected.ModelContextParts = append([]session.ModelContextPart(nil), msg.ModelContextParts...)
+		requestMessages = append(requestMessages, projected)
 		if existing, ok := byFingerprint[seg.Fingerprint]; ok {
 			existing = segmentForCurrentRef(existing, seg)
 			if err := add(existing, false); err != nil {
 				return RawPlan{}, nil, err
 			}
-			requestMessages = append(requestMessages, existing.Message.toSession())
 			continue
 		}
 		sequence++
 		if err := add(seg, true); err != nil {
 			return RawPlan{}, nil, err
 		}
-		requestMessages = append(requestMessages, seg.Message.toSession())
 	}
 	plan.PrefixHash = HashStrings(segmentRaws(plan.Segments)...)
 	plan.PayloadHash = HashStrings(plan.PrefixHash, plan.HostedToolsetHash)
