@@ -267,6 +267,18 @@ func (s *collector) parts(path, category string, value any) error {
 			if err := s.text(base+"/text", category, text); err != nil {
 				return err
 			}
+		case "reasoning":
+			text, _ := p["text"].(string)
+			if err := s.text(base+"/text", "reasoning", text); err != nil {
+				return err
+			}
+		case "tool_call":
+			for _, key := range []string{"tool_name", "args_json"} {
+				text, _ := p[key].(string)
+				if err := s.text(base+"/"+key, "tool_call", text); err != nil {
+					return err
+				}
+			}
 		case "thinking":
 			text, _ := p["thinking"].(string)
 			if err := s.text(base+"/thinking", "reasoning", text); err != nil {
@@ -281,6 +293,11 @@ func (s *collector) parts(path, category string, value any) error {
 				return err
 			}
 		case "tool_result":
+			if text, ok := p["text"].(string); ok {
+				if err := s.text(base+"/text", "tool_result", text); err != nil {
+					return err
+				}
+			}
 			if err := s.parts(base+"/content", "tool_result", p["content"]); err != nil {
 				return err
 			}

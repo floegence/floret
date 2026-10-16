@@ -55,6 +55,7 @@ type turnExecutionOptions struct {
 }
 
 type modelGatewayCapabilities struct {
+	PreparedRequests  bool
 	Reasoning         *config.ReasoningCapability
 	AttachmentPayload modelGatewayAttachmentPayloadMode
 	ReasoningHistory  provider.ReasoningHistoryPolicy

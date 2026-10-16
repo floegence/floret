@@ -197,3 +197,15 @@ func TestSourceBoundariesDoNotRetokenizeMergedText(t *testing.T) {
 		t.Fatalf("source boundary changed text count: %+v base=%+v %v", got, base, err)
 	}
 }
+
+func TestGenericTypedToolContentDoesNotCountTransportMetadata(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"assistant","content":[{"type":"reasoning","text":"consider"},{"type":"tool_call","tool_name":"read","tool_call_id":"secret_id","args_json":"{}","json":"encoded_transport"}]},{"role":"tool","content":[{"type":"tool_result","text":"visible output","tool_call_id":"secret_id"}]}]}`)
+	got, err := Count("remote", "model", "input_json", raw)
+	if err != nil || got.Breakdown.ReasoningTokens <= 0 || got.Breakdown.ToolCallTokens <= 0 || got.Breakdown.ToolResultTokens <= 0 {
+		t.Fatalf("typed generic %+v %v", got, err)
+	}
+	other, err := Count("remote", "model", "input_json", []byte(strings.ReplaceAll(string(raw), "secret_id", strings.Repeat("metadata", 1000))))
+	if err != nil || other.Messages != got.Messages {
+		t.Fatal("transport identity entered model text")
+	}
+}
