@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	"github.com/floegence/floret/v7/internal/requestestimate"
-
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )

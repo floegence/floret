@@ -2634,6 +2634,7 @@ func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Reques
 		req.RawPlan.RequestEstimate = req.RequestEstimate
 		req.RawPlan.RequestShape = requestShapeHashes(req)
 	} else {
+		req.RequestEstimate.Breakdown = contextpolicy.ContextBreakdown{}
 		req.RawPlan.PayloadHash = ""
 		req.RawPlan.RequestEstimate = contextpolicy.RequestEstimate{}
 		req.RawPlan.RequestShape = cache.RequestShapeHashes{}
