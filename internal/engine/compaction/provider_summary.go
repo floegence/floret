@@ -61,6 +61,9 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			return "", details, err
 		}
 		cap := policy.ReservedSummaryTokens
+		if policy.ModelMaxOutputTokens > 0 {
+			cap = min(cap, policy.ModelMaxOutputTokens)
+		}
 		batch, err := g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, 0)
 		if err != nil {
 			return "", details, err

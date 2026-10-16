@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
 type titleProviderFunc func(context.Context, provider.Request) (<-chan provider.StreamEvent, error)
@@ -132,4 +133,21 @@ func TestTitlePhysicalDeadlineCoversSynchronousOpen(t *testing.T) {
 			t.Fatalf("error=%v", err)
 		}
 	})
+}
+
+func TestProviderTitleRespectsModelOutputCapability(t *testing.T) {
+	generator := ProviderTitleGenerator{Policy: contextpolicy.Policy{ModelMaxOutputTokens: 8}, Provider: titleProviderFunc(func(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+		if req.MaxOutputTokens != 8 {
+			t.Fatalf("title output = %d, want model capability 8", req.MaxOutputTokens)
+		}
+		stream := make(chan provider.StreamEvent, 2)
+		stream <- provider.StreamEvent{Type: provider.Delta, Text: "Topic"}
+		stream <- provider.StreamEvent{Type: provider.Done}
+		close(stream)
+		return stream, nil
+	})}
+	_, err := generator.GenerateTitle(t.Context(), TitleRequest{Messages: []session.Message{{Role: session.User, Content: "Describe the topic"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

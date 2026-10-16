@@ -90,3 +90,6 @@ control. Client preparation refits the immutable input through the optional
 PreparedRequestOutputLimiter; network retries retain its final bytes. Request
 pressure exposes request_output_tokens, output_control and safety_margin_tokens.
 These are request facts, not actual output usage or permanently occupied input.
+
+Automatic summary and title output budgets are bounded by the opted-in model
+capability before dispatch. Hosts must not silently clamp these requests.

@@ -21,6 +21,7 @@ min(window / 100, 4096)); automatic compaction starts at 90% of that window.
 An explicit ceiling is never silently reduced and may require earlier compaction.
 The margin is inside the default 10% compaction buffer, not another output reserve.
 Policies omitting ModelMaxOutputTokens retain their published v7 behavior.
+Automatic summary and title requests also respect the opted-in model capability.
 
 Gateways declare provider.OutputControlClient or provider.OutputControlServer.
 Client-controlled prepared requests implement PreparedRequestOutputLimiter to
