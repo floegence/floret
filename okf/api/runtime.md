@@ -619,3 +619,17 @@ placement, not proof of model reading. Existing subscriptions are observation
 only; hosts subscribe before checking pending events. List/read never wake an
 unhydrated thread. See [storage lineage](storage.md) and the
 [public integration contract](../../README.md#passive-child-events).
+
+## Bounded thread observation and failure reasons
+
+The optional public `ThreadWaiter` freezes scoped targets at the first read,
+subscribes before reading, and re-reads canonical current state on wakeup.
+Missing targets take priority over pending interactions, then terminal state;
+a single elapsed deadline returns the latest successful snapshot. Cancellation
+and Host closure remain distinct errors. Hosts map attention to completed-tool
+input requests and resume only after explicit user input.
+
+`ThreadTurnFailure.Reason` is derived from canonical code and exact Engine
+messages for both live and historical reads. It is not another persisted ledger
+or a migration. See [runtime source](../../runtime/thread_wait.go) and
+[failure classification](../../runtime/thread_failure_reason.go).

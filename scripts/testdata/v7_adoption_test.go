@@ -976,3 +976,32 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 		t.Fatal("published service did not deliver reports and automatic completion")
 	}
 }
+
+func TestPublishedThreadWaitContract(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("not expected")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiter, ok := service.(runtime.ThreadWaiter)
+	if !ok {
+		t.Fatal("missing ThreadWaiter")
+	}
+	result, err := waiter.WaitThreads(t.Context(), runtime.WaitThreadsInput{ThreadIDs: []identity.ThreadID{"missing"}, Timeout: time.Second})
+	if err != nil || result.Reason != runtime.ThreadWaitMissing || len(result.MissingThreadIDs) != 1 {
+		t.Fatalf("wait=%#v err=%v", result, err)
+	}
+	failure := runtime.ThreadTurnFailure{Code: runtime.ThreadTurnFailureEngineContract, Reason: runtime.ThreadTurnFailureRepeatedToolCalls, Message: "agent loop repeated identical tool calls"}
+	if err := failure.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if (tools.Result{BoundedWait: &tools.BoundedWait{Timeout: time.Second, TimedOut: true}}).CompletedBoundedWait() {
+		t.Fatal("unmeasured result qualified")
+	}
+}

@@ -878,10 +878,7 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	lengthContinuations := 0
 	stopHookContinuations := 0
 	compactionFailures := 0
-	lastToolSig := ""
-	lastToolProgressSig := ""
-	duplicateProgressSig := ""
-	duplicateCount := 0
+	var repeats toolBatchRepeatGuard
 	started := time.Now()
 	metrics := RunMetrics{}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
@@ -914,7 +911,7 @@ steps:
 				if err := owner.clear(rootCtx); err != nil {
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
 				}
-				noProgress, duplicateCount, emptyRetries = 0, 0, 0
+				noProgress, repeats.duplicates, emptyRetries = 0, 0, 0
 			}
 		}
 		opts.PreviousProviderState = provider.CloneState(owner.state)
@@ -961,7 +958,7 @@ steps:
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if compacted {
 			noProgress = 0
-			duplicateCount = 0
+			repeats.duplicates = 0
 		}
 		var stepOutput StepOutput
 		var providerLatency int64
@@ -970,7 +967,7 @@ steps:
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if overflowCompacted {
 			noProgress = 0
-			duplicateCount = 0
+			repeats.duplicates = 0
 		}
 		attemptMetadata := providerAttemptMetadata(req)
 		if err != nil {
@@ -1316,25 +1313,8 @@ steps:
 			}
 			continue
 		}
-		sig := toolSignature(activeToolRegistry, calls)
-		if len(validationErrors) == 0 && sig == lastToolSig {
-			if toolBatchAllowsProgressRepeat(activeToolRegistry, calls) && lastToolProgressSig != "" {
-				if lastToolProgressSig != duplicateProgressSig {
-					duplicateProgressSig = lastToolProgressSig
-					duplicateCount = 0
-				} else {
-					duplicateCount++
-				}
-			} else {
-				duplicateCount++
-			}
-			if duplicateCount >= opts.DuplicateToolLimit {
-				return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
-			}
-		} else {
-			lastToolSig = sig
-			duplicateProgressSig = lastToolProgressSig
-			duplicateCount = 0
+		if repeats.reject(activeToolRegistry, calls, opts.DuplicateToolLimit) {
+			return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
 			if projectedSignalErr != nil {
@@ -1547,7 +1527,7 @@ steps:
 				return e.end(state, opts, step, Waiting, result.InputRequired.Summary, nil, metrics, started, decision)
 			}
 		}
-		lastToolProgressSig = toolProgressSignature(activeToolRegistry, calls, toolResults)
+		repeats.results = toolResults
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
@@ -4737,24 +4717,49 @@ func toolSignature(reg *tools.Registry, calls []provider.ToolCall) string {
 	return s
 }
 
-func toolProgressSignature(reg *tools.Registry, calls []provider.ToolCall, results []tools.Result) string {
-	if len(calls) == 0 || len(calls) != len(results) || !toolBatchAllowsProgressRepeat(reg, calls) {
-		return ""
+// toolBatchRepeatGuard is the single repeat owner. Every call in a repeated
+// batch must independently demonstrate a changed polling token or a complete
+// bounded wait; one observer cannot excuse another call's repeated effects.
+type toolBatchRepeatGuard struct {
+	signature  string
+	results    []tools.Result
+	tokens     []string
+	duplicates int
+}
+
+func (guard *toolBatchRepeatGuard) reject(reg *tools.Registry, calls []provider.ToolCall, limit int) bool {
+	signature := toolSignature(reg, calls)
+	if signature != guard.signature {
+		guard.signature = signature
+		guard.tokens = make([]string, len(calls))
+		guard.results = nil
+		guard.duplicates = 0
+		return false
 	}
-	var b strings.Builder
+	repeatable := len(calls) > 0 && len(calls) == len(guard.results)
 	for i, call := range calls {
-		token := toolResultProgressToken(results[i])
-		if token == "" {
-			return ""
+		if i >= len(guard.results) {
+			repeatable = false
+			break
 		}
-		b.WriteString(call.Name)
-		b.WriteByte(0)
-		b.WriteString(toolIdentityArgs(reg, call))
-		b.WriteByte(0)
-		b.WriteString(token)
-		b.WriteByte(0)
+		result := guard.results[i]
+		if result.CompletedBoundedWait() {
+			continue
+		}
+		token := toolResultProgressToken(result)
+		def, ok := reg.Definition(call.Name)
+		polling := ok && strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) == tools.RepeatPolicyPolling
+		if !polling || result.IsError || result.DispatchErr != nil || token == "" || token == guard.tokens[i] {
+			repeatable = false
+		}
+		guard.tokens[i] = token
 	}
-	return b.String()
+	if repeatable {
+		guard.duplicates = 0
+	} else {
+		guard.duplicates++
+	}
+	return guard.duplicates >= limit
 }
 
 func toolIdentityArgs(reg *tools.Registry, call provider.ToolCall) string {
@@ -4800,22 +4805,6 @@ func repeatIdentityIgnoredArguments(raw any) []string {
 		out = append(out, strings.TrimSpace(value))
 	}
 	return out
-}
-
-func toolBatchAllowsProgressRepeat(reg *tools.Registry, calls []provider.ToolCall) bool {
-	if reg == nil || len(calls) == 0 {
-		return false
-	}
-	for _, call := range calls {
-		def, ok := reg.Definition(call.Name)
-		if !ok {
-			return false
-		}
-		if strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) != tools.RepeatPolicyPolling {
-			return false
-		}
-	}
-	return true
 }
 
 func toolResultProgressToken(result tools.Result) string {

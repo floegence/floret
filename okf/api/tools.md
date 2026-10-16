@@ -225,3 +225,12 @@ without ordinal pairing against a separate collection. The engine validates and
 deep-copies targets through merge, finalization and JSON replay. Hosts own current
 resource authorization and missing-resource navigation. No schema migration or
 additional durable mapping is required. See [activity contracts](/tools/activity.go).
+
+## Repeat safety
+
+`tools.Result.BoundedWait` describes a full normal deadline with unfinished
+observation targets. The dispatcher owns handler elapsed time. Engine evaluates
+every call in a repeated batch; a bounded wait never exempts a neighboring
+ordinary effect. Polling still requires changing progress tokens. Failed,
+pending, interaction and early results do not qualify. The evidence is ephemeral
+and does not introduce another lifecycle or durable record.

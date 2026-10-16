@@ -1,6 +1,10 @@
 package tools
 
-import "github.com/floegence/floret/v7/identity"
+import (
+	"time"
+
+	"github.com/floegence/floret/v7/identity"
+)
 
 type ToolCall struct {
 	ID        string
@@ -55,7 +59,18 @@ func (i Invocation[T]) UpdateActivity(update ActivityUpdate) {
 	i.ActivityUpdater(update)
 }
 
+// BoundedWait describes a successful observation that waited for its full single
+// deadline while its targets remained unfinished. The dispatcher measures the
+// handler itself; approval and batch scheduling never qualify as waiting.
+type BoundedWait struct {
+	Timeout  time.Duration
+	TimedOut bool
+}
+
 type Result struct {
+	BoundedWait     *BoundedWait
+	handlerDuration time.Duration
+
 	CallID     string
 	Name       string
 	Title      string
@@ -131,4 +146,12 @@ func (r Result) withCall(callID, name string) Result {
 // authority dispatcher and therefore requires its atomic result finalizer.
 func (r Result) RequiresEffectFinalization() bool {
 	return r.effectFinalizationRequired
+}
+
+// CompletedBoundedWait reports dispatcher-confirmed waiting, never tool-supplied
+// elapsed time. Failed, pending and interaction results cannot exempt a repeat.
+func (r Result) CompletedBoundedWait() bool {
+	return r.BoundedWait != nil && r.BoundedWait.Timeout > 0 && r.BoundedWait.TimedOut &&
+		r.handlerDuration >= r.BoundedWait.Timeout && !r.IsError && r.DispatchErr == nil &&
+		r.Pending == nil && r.InputRequired == nil && r.Structured["outcome"] != ResultOutcomeDeclined && r.Structured["outcome"] != ResultOutcomeCanceled
 }

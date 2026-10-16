@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/floegence/floret/v7/identity"
 )
@@ -751,7 +752,13 @@ func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepare
 				})
 			}
 		}
+		handlerStarted := time.Now()
 		result, err := t.handler(ctx, inv)
+		result.handlerDuration = time.Since(handlerStarted)
+		if result.BoundedWait != nil {
+			wait := *result.BoundedWait
+			result.BoundedWait = &wait
+		}
 		if err != nil {
 			failed := ErrorResult(call.ID, call.Name, err.Error())
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

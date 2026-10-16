@@ -1312,6 +1312,7 @@ field ThreadTurn.WorkDurationMS int64 tag="json:\"work_duration_ms\""
 field ThreadTurn.FinalItemIDs []string tag="json:\"final_item_ids\""
 field ThreadTurn.FinalBoundaryComplete bool tag="json:\"final_boundary_complete\""
 type ThreadTurnFailure struct
+field ThreadTurnFailure.Reason github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason tag="json:\"reason,omitempty\""
 field ThreadTurnFailure.ProviderTimeout *github.com/floegence/floret/v7/provider.RequestTimeoutDetails tag="json:\"provider_timeout,omitempty\""
 field ThreadTurnFailure.Code github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode tag="json:\"code\""
 field ThreadTurnFailure.Message string tag="json:\"message\""
@@ -1326,12 +1327,17 @@ const ThreadTurnFailureContextCompactionLimit github.com/floegence/floret/v7/run
 const ThreadTurnFailureContextFixedOverhead github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_fixed_overhead"
 const ThreadTurnFailureContextPrefixDrift github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "context_prefix_drift"
 const ThreadTurnFailureControlError github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "control_error"
+const ThreadTurnFailureDuplicateToolCallID github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "duplicate_tool_call_id"
 const ThreadTurnFailureEffectOutcomeUnknown github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "effect_outcome_unknown"
 const ThreadTurnFailureEngineContract github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "engine_contract"
 const ThreadTurnFailureInterrupted github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "interrupted"
 const ThreadTurnFailureLegacyUnclassified github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "legacy_unclassified"
 const ThreadTurnFailureModelContextUnavailable github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "model_context_unavailable"
+const ThreadTurnFailureNoProgress github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "no_progress"
 const ThreadTurnFailureProvider github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "provider"
+type ThreadTurnFailureReason string
+const ThreadTurnFailureRepeatedToolCalls github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "repeated_tool_calls"
+const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "stop_hook_loop"
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
@@ -1353,6 +1359,18 @@ field ThreadView.RunProgress *github.com/floegence/floret/v7/runtime.ThreadRunPr
 field ThreadView.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items,omitempty\""
 field ThreadView.Queue []github.com/floegence/floret/v7/runtime.QueuedInput tag="json:\"queue,omitempty\""
 field ThreadView.Interactions []github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interactions,omitempty\""
+const ThreadWaitAttentionRequired github.com/floegence/floret/v7/runtime.ThreadWaitReason = "attention_required"
+const ThreadWaitCompleted github.com/floegence/floret/v7/runtime.ThreadWaitReason = "completed"
+const ThreadWaitEvents github.com/floegence/floret/v7/runtime.ThreadWaitReason = "events"
+const ThreadWaitMissing github.com/floegence/floret/v7/runtime.ThreadWaitReason = "missing"
+type ThreadWaitReason string
+type ThreadWaitResult struct
+field ThreadWaitResult.ParentEvents *github.com/floegence/floret/v7/runtime.ParentEventPage tag="json:\"parent_events,omitempty\""
+field ThreadWaitResult.Threads []github.com/floegence/floret/v7/runtime.ThreadSummary tag="json:\"threads\""
+field ThreadWaitResult.MissingThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"missing_thread_ids\""
+field ThreadWaitResult.Reason github.com/floegence/floret/v7/runtime.ThreadWaitReason tag="json:\"reason\""
+const ThreadWaitTimedOut github.com/floegence/floret/v7/runtime.ThreadWaitReason = "timed_out"
+type ThreadWaiter interface interface{WaitThreads(context.Context, github.com/floegence/floret/v7/runtime.WaitThreadsInput) (github.com/floegence/floret/v7/runtime.ThreadWaitResult, error)}
 type ToolCallStream struct
 field ToolCallStream.ID string tag="json:\"id,omitempty\""
 field ToolCallStream.Name string tag="json:\"name,omitempty\""
@@ -1453,6 +1471,11 @@ field UserInput.Attachments []github.com/floegence/floret/v7/runtime.MessageAtta
 field UserInput.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
 field UserInput.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 method UserInput.Validate func() error
+type WaitThreadsInput struct
+field WaitThreadsInput.PendingParentEvents bool
+field WaitThreadsInput.Scope github.com/floegence/floret/v7/runtime.ThreadScope
+field WaitThreadsInput.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
+field WaitThreadsInput.Timeout time.Duration
 func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runtime.CapabilityOptions) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v7/runtime.EffectAuthorizationGate) github.com/floegence/floret/v7/runtime.AgentOption
@@ -1694,6 +1717,9 @@ field ArtifactRef.MIME string tag="json:\"mime,omitempty\""
 field ArtifactRef.SizeBytes int64 tag="json:\"size_bytes,omitempty\""
 field ArtifactRef.SHA256 string tag="json:\"sha256,omitempty\""
 func Boolean func(description string) map[string]any
+type BoundedWait struct
+field BoundedWait.Timeout time.Duration
+field BoundedWait.TimedOut bool
 func BuildOutputProjection func(result github.com/floegence/floret/v7/tools.Result, policy github.com/floegence/floret/v7/tools.OutputPolicy) github.com/floegence/floret/v7/tools.OutputProjection
 func CanceledResult func(callID string, name string, text string) github.com/floegence/floret/v7/tools.Result
 func ClearPendingActivity func(in *github.com/floegence/floret/v7/tools.ActivityPresentation) *github.com/floegence/floret/v7/tools.ActivityPresentation
@@ -1956,6 +1982,7 @@ type ResourceRef struct
 field ResourceRef.Kind string
 field ResourceRef.Value string
 type Result struct
+field Result.BoundedWait *github.com/floegence/floret/v7/tools.BoundedWait
 field Result.CallID string
 field Result.Name string
 field Result.Title string
@@ -1971,6 +1998,7 @@ field Result.Pending *github.com/floegence/floret/v7/tools.PendingToolResult
 field Result.IsError bool
 field Result.DispatchErr error
 method Result.RequiresEffectFinalization func() bool
+method Result.CompletedBoundedWait func() bool
 const ResultMetadataProgressToken untyped string = "progress_token"
 const ResultOutcomeCanceled untyped string = "canceled"
 const ResultOutcomeDeclined untyped string = "declined"
