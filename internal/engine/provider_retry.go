@@ -9,7 +9,9 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"reflect"
 	"time"
 )
 
@@ -25,6 +27,7 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 	if freezeErr != nil {
 		return initial, StepOutput{}, 0, false, errors.Join(freezeErr, closePreparedRequest(initial))
 	}
+	frozenMessages := session.CloneMessages(initial.Messages)
 	fingerprint := ""
 	var estimate provider.TokenEstimate
 	if initial.Prepared != nil {
@@ -45,6 +48,9 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 			if err := json.Unmarshal(frozen, &next); err != nil {
 				return providerAttemptResult{request: current}, err
 			}
+			// Source intervals are transient canonical projection metadata and
+			// intentionally absent from the serialized request envelope.
+			next.Messages = session.CloneMessages(frozenMessages)
 			e.attemptEpoch++
 			next.AttemptEpoch = e.attemptEpoch
 			next.AttemptID = fmt.Sprintf("%s:attempt:%d", next.LogicalRequestID, next.AttemptEpoch)
@@ -63,7 +69,7 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 					return providerAttemptResult{request: current}, errors.New("provider returned nil retry preparation")
 				}
 				next.Prepared = prepared
-				if prepared.PayloadFingerprint() != fingerprint || prepared.TokenEstimate() != estimate {
+				if prepared.PayloadFingerprint() != fingerprint || !reflect.DeepEqual(prepared.TokenEstimate(), estimate) {
 					return providerAttemptResult{request: current}, errors.Join(errors.New("provider retry rendering changed frozen model input"), prepared.Close())
 				}
 			}
