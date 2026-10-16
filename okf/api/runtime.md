@@ -591,3 +591,7 @@ using the same resolved permission state. `ThreadContextSnapshot.ModelContext`
 reports admitted facts and latest request usage. Required failure wraps
 `runtime.ErrModelContextUnavailable`; safe Retry follows normal effect rules.
 See [ownership and compaction](../decisions/managed-model-context.md).
+
+## Answer Fork Anchors
+
+Hosts pass an optional SourceItemID to ForkThreadInput to fork after a committed assistant item on the source active path. Floret resolves the presentation ID internally; hosts never decode or copy journal records. SourceEntryID and SourceItemID are mutually exclusive. Unknown, foreign and non-assistant items fail without creating a destination; request keys retain exact-anchor idempotency. The domain schema remains 17.

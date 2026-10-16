@@ -206,6 +206,7 @@ local tool arguments and output from the active journal path using exact thread,
 turn, run, and tool-call identity. Hosts authorize and interpret that private
 output; the query neither runs a tool nor changes history. Live and historical
 items retain their creation times, including original occurrence times in forks.
+Hosts may pin a committed assistant answer with the optional ForkThreadInput.SourceItemID; the runtime resolves its canonical journal boundary and rejects unknown or conflicting anchors.
 
 The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and
 `Aggregate` using `threadquery` types. It searches canonical active-path threads,
