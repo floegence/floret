@@ -23,7 +23,7 @@ func projectedModelProvider(_ runtimeConfig, gateway modelGateway, identity mode
 		return nil, errors.New("provider gateway is required")
 	}
 	direct := modelGatewayProvider{gateway: gateway, identity: identity, reasoningHistory: capabilities.ReasoningHistory}
-	if capabilities.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
+	if capabilities.PreparedRequests || capabilities.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
 		return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
 	}
 	return direct, nil

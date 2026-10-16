@@ -341,7 +341,12 @@ func (gateway *officialGateway) Prepare(ctx context.Context, request Request) (P
 	if err != nil {
 		return nil, publicRetryError(err)
 	}
-	return &officialPrepared{prepared: prepared, request: request}, nil
+	frozen := Request{}
+	if request.ReusePolicy != nil {
+		policy := *request.ReusePolicy
+		frozen.ReusePolicy = &policy
+	}
+	return &officialPrepared{prepared: prepared, request: frozen}, nil
 }
 
 type officialPrepared struct {

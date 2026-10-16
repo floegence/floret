@@ -599,6 +599,7 @@ func commitLogicalSchemaTransaction(tx spi.WriteTx, observed logicalSchemaState)
 func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 	identity := agent.gateway.Identity()
 	capabilities := agent.gateway.Capabilities()
+	_, prepares := agent.gateway.(provider.RequestPreparer)
 	reasoning := capabilities.ReasoningCapability
 	if capabilities.Reasoning == provider.ReasoningUnsupported {
 		reasoning = config.ReasoningCapability{Kind: config.ReasoningKindNone}
@@ -614,7 +615,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		},
 		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
 		modelGatewayIdentity:     modelGatewayIdentity(identity),
-		modelGatewayCapabilities: modelGatewayCapabilities{Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
+		modelGatewayCapabilities: modelGatewayCapabilities{PreparedRequests: prepares, Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
 		providerRequestTimeoutPolicy: agent.providerRequestTimeoutPolicy, providerRetryPolicy: agent.providerRetryPolicy, loopLimits: agent.loopLimits, capabilities: agent.capabilities,
