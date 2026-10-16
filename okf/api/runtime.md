@@ -594,4 +594,4 @@ See [ownership and compaction](../decisions/managed-model-context.md).
 
 ## Answer Fork Anchors
 
-Hosts pass an optional SourceItemID to ForkThreadInput to fork after a committed assistant item on the source active path. Floret resolves the presentation ID internally; hosts never decode or copy journal records. SourceEntryID and SourceItemID are mutually exclusive. Unknown, foreign and non-assistant items fail without creating a destination; request keys retain exact-anchor idempotency. The domain schema remains 17.
+Hosts pass an optional SourceItemID to ForkThreadInput to fork after a committed assistant item on the source active path. Floret resolves the presentation ID internally; hosts never decode or copy journal records. SourceEntryID and SourceItemID are mutually exclusive. Unknown, foreign and non-assistant items fail without creating a destination; request keys retain exact-anchor idempotency. The last final assistant item includes its canonical completion marker; earlier items keep their exact cut. The domain schema remains 17.

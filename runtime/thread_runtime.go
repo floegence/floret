@@ -803,9 +803,25 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 		if err != nil {
 			return ThreadView{}, err
 		}
+		turns, err := threadRuntimeTurnsFromEntries(path, items)
+		if err != nil {
+			return ThreadView{}, err
+		}
 		for _, item := range items {
 			if item.ID == itemID && item.Kind == ThreadItemAssistant && len(item.sourceEntryIDs) > 0 {
 				entryID = item.sourceEntryIDs[len(item.sourceEntryIDs)-1]
+				// The last final item includes its canonical completion boundary.
+				// Earlier items retain their exact cut without later answer content.
+				for _, turn := range turns {
+					if turn.TurnID != item.TurnID || turn.RunID != item.RunID || !turn.FinalBoundaryComplete || len(turn.FinalItemIDs) == 0 || turn.FinalItemIDs[len(turn.FinalItemIDs)-1] != item.ID {
+						continue
+					}
+					for _, entry := range path {
+						if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnCompleted && entry.TurnID == item.TurnID.String() && entry.RunID == item.RunID.String() {
+							entryID = entry.ID
+						}
+					}
+				}
 				break
 			}
 		}

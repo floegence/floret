@@ -52,6 +52,12 @@ func TestForkPinsHistoricalAssistantItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if fork.LastOutcome == nil || *fork.LastOutcome != TurnOutcomeCompleted {
+		t.Fatalf("completed answer fork lost completion: %+v", fork)
+	}
+	if len(fork.Turns) != 1 || !fork.Turns[0].FinalBoundaryComplete || len(fork.Turns[0].FinalItemIDs) != 1 || fork.Turns[0].FinalItemIDs[0] != anchor {
+		t.Fatalf("fork lost final answer boundary: %+v", fork.Turns)
+	}
 	history, err := svc.History(t.Context(), fork.ThreadID, "", 100)
 	if err != nil {
 		t.Fatal(err)

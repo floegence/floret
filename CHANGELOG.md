@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.46.1 - 2026-10-15
+
+- Preserve the canonical completion marker when forking from the last final assistant item. Earlier item anchors keep their exact boundary; historical answer forks retain completion and final-response metadata without later turns.
+
 ## v7.46.0 - 2026-10-15
 
 - Add optional canonical assistant-item Fork anchors for host answer actions. Resolve active-path presentation IDs inside the runtime; reject unknown, foreign and conflicting anchors without copying or exposing journal state. Preserve request-key replay and schema 17.
