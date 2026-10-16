@@ -50,7 +50,7 @@ func TestParentEventsTerminalKindsAndTypedTimeout(t *testing.T) {
 				metadata[TurnFailureCodeMetadataKey] = TurnFailureCancelled
 			case "interrupted":
 				status = TurnAborted
-				metadata[TurnFailureCodeMetadataKey] = TurnFailureCancelled
+				metadata[TurnFailureCodeMetadataKey] = TurnFailureInterrupted
 			case "timed_out":
 				now := time.Now()
 				data, _ := json.Marshal(provider.RequestTimeoutDetails{Stage: "first_output", StartedAt: now, TimedOutAt: now.Add(time.Second)})
@@ -59,11 +59,15 @@ func TestParentEventsTerminalKindsAndTypedTimeout(t *testing.T) {
 				metadata["provider_timeout"] = "context deadline exceeded"
 			}
 			request := FinishTurnRequest{ThreadID: "child", TurnID: "turn", RunID: "run", TerminalEntryID: "terminal", OutcomeFingerprint: "terminal", Status: status, Metadata: metadata, FailureMessage: map[bool]string{true: "canonical failure"}[status == TurnFailed]}
-			if _, err := repo.FinishTurn(t.Context(), request); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := repo.FinishTurn(t.Context(), request); err != nil {
-				t.Fatal(err)
+			for i := 0; i < 2; i++ {
+				if scenario == "interrupted" {
+					_, err := repo.AppendRuntimeFacts(t.Context(), "child", []Entry{{ID: "terminal", ThreadID: "child", TurnID: "turn", RunID: "run", Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := repo.FinishTurn(t.Context(), request); err != nil {
+					t.Fatal(err)
+				}
 			}
 			page, err := repo.ParentEvents(t.Context(), ParentEventQuery{ThreadID: "parent"})
 			if err != nil || len(page.Events) != 1 {
@@ -72,9 +76,6 @@ func TestParentEventsTerminalKindsAndTypedTimeout(t *testing.T) {
 			want := scenario
 			if scenario == "untyped_timeout" {
 				want = "failed"
-			}
-			if scenario == "interrupted" {
-				want = "cancelled"
 			}
 			if page.Events[0].Kind != want {
 				t.Fatalf("kind=%s want=%s", page.Events[0].Kind, want)
@@ -227,5 +228,34 @@ func TestParentEventsHostInputWaitsForCanonicalBatchAndAdmissionPairing(t *testi
 	page, err = repo.ParentEvents(t.Context(), ParentEventQuery{ThreadID: "parent"})
 	if err != nil || len(page.Events) != 1 || page.Events[0].Resolved {
 		t.Fatalf("page=%+v %v", page, err)
+	}
+}
+
+func TestParentEventsStartupUnknownEffectCommitsOneReceiptWithoutReplay(t *testing.T) {
+	repo, backend := parentEventRepoFixture(t)
+	call := Entry{ID: "call", ThreadID: "child", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "work", ToolCallID: "call", ToolArgs: "{}"}}
+	if _, err := repo.AppendRuntimeFacts(t.Context(), "child", []Entry{call}); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := repo.PrepareEffectAttempt(t.Context(), PrepareEffectAttemptRequest{Invocation: EffectInvocationIdentity{ThreadID: "child", TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "work", ArgumentHash: StableHash("{}")}, RequestFingerprint: "effect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.BeginEffectDispatch(t.Context(), BeginEffectDispatchRequest{EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "effect", AuthorizationProofHash: "proof"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		reopened, err := NewBackendRepo(WithParentEvents(t.Context(), true), backend, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := reopened.ParentEvents(t.Context(), ParentEventQuery{ThreadID: "parent"})
+		if err != nil || len(page.Events) != 1 || page.Events[0].ReasonCode != TurnFailureEffectOutcomeUnknown {
+			t.Fatalf("events=%+v err=%v", page, err)
+		}
+		source, err := reopened.Entry(t.Context(), "child", page.Events[0].SourceEntryID)
+		if err != nil || source.TurnStatus != TurnFailed {
+			t.Fatalf("source=%+v err=%v", source, err)
+		}
 	}
 }

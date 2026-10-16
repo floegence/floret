@@ -421,9 +421,16 @@ func parentEventProjection(record ParentEventRecord) string {
 		Resolved    bool   `json:"resolved,omitempty"`
 		Preview     string `json:"preview,omitempty"`
 		Truncated   bool   `json:"truncated,omitempty"`
+		Summary     string `json:"summary,omitempty"`
 	}{ID: record.ID, Source: record.SourceThreadID, Turn: record.SourceTurnID, Run: record.SourceRunID, SourceEntry: record.SourceEntryID, Kind: record.Kind, Reason: record.ReasonCode, Interaction: record.InteractionID, Resolved: record.Resolved}
 	if record.InteractionID != "" && record.Resolved {
 		item.Kind = "interaction_resolved"
+	}
+	if record.InteractionID != "" && !record.Resolved {
+		item.Summary = "Child requires input; inspect the referenced interaction."
+		if record.Kind == "approval_required" {
+			item.Summary = "Child requires approval; inspect the referenced interaction."
+		}
 	}
 	if record.Kind == "report" {
 		item.Preview, item.Truncated = clipParentText(record.Message, 512)
