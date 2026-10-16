@@ -11,6 +11,7 @@ import (
 
 func ContextPolicy(policy config.ContextPolicy) contextpolicy.Policy {
 	return contextpolicy.Policy{
+		ModelMaxOutputTokens:         policy.ModelMaxOutputTokens,
 		ContextWindowTokens:          policy.ContextWindowTokens,
 		MaxOutputTokens:              policy.MaxOutputTokens,
 		ReservedOutputTokens:         policy.ReservedOutputTokens,
@@ -26,6 +27,7 @@ func ContextPolicy(policy config.ContextPolicy) contextpolicy.Policy {
 
 func PublicContextPolicy(policy contextpolicy.Policy) config.ContextPolicy {
 	return config.ContextPolicy{
+		ModelMaxOutputTokens:         policy.ModelMaxOutputTokens,
 		ContextWindowTokens:          policy.ContextWindowTokens,
 		MaxOutputTokens:              policy.MaxOutputTokens,
 		ReservedOutputTokens:         policy.ReservedOutputTokens,
@@ -113,6 +115,7 @@ func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstim
 
 func PublicContextPressure(pressure contextpolicy.ContextPressure) config.ContextPressure {
 	return config.ContextPressure{
+		RequestOutputTokens: pressure.RequestOutputTokens, OutputControl: pressure.OutputControl, SafetyMarginTokens: pressure.SafetyMarginTokens,
 		WindowInputTokens:    pressure.WindowInputTokens,
 		ProjectedInputTokens: pressure.ProjectedInputTokens,
 		ContextWindowTokens:  pressure.ContextWindowTokens,

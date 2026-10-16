@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.48.0 - 2026-10-16
+
+- Add opt-in model-capability output budgeting with one shared solver, 90% automatic compaction and a bounded safety margin. Preserve explicit output limits and all legacy v7 policy semantics.
+- Declare client/server output control and refit prepared requests from frozen input without repeated attachment reads, fact collection or authorization. Retain final wire fingerprints and exact transport retries.
+- Expose request output budget facts separately from input pressure, and append the atomic domain 17 -> 18 migration without changing historical facts or removing any migration.
+
 ## v7.47.1 - 2026-10-16
 
 - Preserve transient canonical managed-context source intervals through both new and reused prompt-cache plans. Derive attribution from the canonical projection without adding durable metadata or changing request bytes. Retain those intervals across frozen network retries and compare detached estimate details by value.

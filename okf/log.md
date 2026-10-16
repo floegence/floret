@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- Document [request-fitted output budgets](api/config.md), immutable refitting and the permanent [17 -> 18 migration](api/storage.md).
+
 ## 2026-10-15 — Request source attribution
 
 - Add optional disjoint tool and managed-section details to [context estimates](api/config.md), preserving native totals, historical records and schema 17.

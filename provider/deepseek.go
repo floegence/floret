@@ -98,6 +98,7 @@ func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 func (g *deepSeekGateway) Identity() Identity { return g.identity }
 func (g *deepSeekGateway) Capabilities() Capabilities {
 	out := g.capabilities
+	out.OutputControl = OutputControlClient
 	out.ReasoningCapability.SupportedLevels = slices.Clone(out.ReasoningCapability.SupportedLevels)
 	return out
 }
@@ -939,4 +940,28 @@ func (p *deepSeekPrepared) PrepareRetry(ctx context.Context, _ Request) (Prepare
 		return nil, err
 	}
 	return &deepSeekPrepared{gateway: p.gateway, body: p.body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: p.fingerprint, estimate: p.estimate}, nil
+}
+
+func (p *deepSeekPrepared) WithMaxOutputTokens(ctx context.Context, limit int64) (PreparedRequest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, errors.New("output limit must be positive")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.used || p.closed {
+		return nil, errors.New("DeepSeek prepared request is closed or already streamed")
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(p.body, &envelope); err != nil {
+		return nil, err
+	}
+	envelope["max_output_tokens"], _ = json.Marshal(limit)
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return &deepSeekPrepared{gateway: p.gateway, body: body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: p.estimate}, nil
 }

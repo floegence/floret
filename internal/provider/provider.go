@@ -630,3 +630,11 @@ func usageHasValues(u Usage) bool {
 type PreparedRequestReplay interface {
 	PrepareRetry(context.Context, Request) (PreparedRequest, error)
 }
+
+// OutputController declares transport enforcement without expanding Provider.
+type OutputController interface{ OutputTokenControl() string }
+
+// PreparedRequestOutputLimiter refits a frozen wire request without rereading input.
+type PreparedRequestOutputLimiter interface {
+	WithMaxOutputTokens(context.Context, int64) (PreparedRequest, error)
+}

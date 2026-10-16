@@ -46,6 +46,7 @@ const (
 	backendDomainSourceV15
 	backendDomainSourceV16
 	backendDomainSourceV17
+	backendDomainSourceV18
 	backendDomainSourceV14
 	backendDomainSourceV13
 	backendDomainSourceV12
@@ -90,14 +91,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV17 {
+	if source == backendDomainSourceV18 {
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomainV17(ctx, tx, now)
+		memory, found, err := loadBackendDomainV18(ctx, tx, now)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
-			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v17 authority is missing"))
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v18 authority is missing"))
 		}
 		if hasUnknownEffectTurns(memory) {
 			before := memory
@@ -105,7 +106,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainV17Changes(tx, before, memory)
+			changed, err := persistBackendDomainV18Changes(tx, before, memory)
 			if err != nil {
 				return nil, err
 			}
@@ -114,6 +115,32 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		repo.domainMemory = memory
 		return repo, nil
 	}
+	if source == backendDomainSourceV17 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV17(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrAuthorityCorrupt
+		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomain(ctx, tx, backendDomainV17Format); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
+		return repo, nil
+	}
+
 	if source == backendDomainSourceV16 {
 		repo.reportStartupPhase(StartupPhaseMigrating)
 		memory, found, err := loadBackendDomainV16(ctx, tx, now)
@@ -126,6 +153,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
@@ -133,7 +163,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV16Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -155,10 +185,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV15Format); err != nil {
@@ -186,10 +219,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV14Format); err != nil {
@@ -220,10 +256,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV13Format); err != nil {
@@ -257,10 +296,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV12Format); err != nil {
@@ -297,10 +339,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV11Format); err != nil {
@@ -340,10 +385,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV10Format); err != nil {
@@ -386,10 +434,13 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV9Format); err != nil {
@@ -438,7 +489,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV8(ctx, tx); err != nil {
@@ -487,7 +541,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
@@ -539,7 +596,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -629,8 +689,11 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV16ToV17(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV17ToV18(ctx, memory); err != nil {
+			return nil, err
+		}
 	}
-	if err := saveCompleteBackendDomainV17(tx, memory); err != nil {
+	if err := saveCompleteBackendDomainV18(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -679,7 +742,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV17(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV18(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
@@ -689,7 +752,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 	if err := rejectPreV16BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateBackendDomainV17Memory(memory); err != nil {
+	if err := validateBackendDomainV18Memory(memory); err != nil {
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
@@ -739,6 +802,9 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 				}
 				if _, err := decodeBackendDomainRecord(backendDomainV17Format, raw); err == nil {
 					candidate.source = backendDomainSourceV17
+				}
+				if _, err := decodeBackendDomainRecord(backendDomainV18Format, raw); err == nil {
+					candidate.source = backendDomainSourceV18
 				}
 			}
 			present = append(present, candidate.source)

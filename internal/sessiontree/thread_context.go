@@ -35,6 +35,7 @@ const (
 // ThreadContextPolicy is the durable, product-neutral context budget attached
 // to one canonical context entry.
 type ThreadContextPolicy struct {
+	ModelMaxOutputTokens int64 `json:"model_max_output_tokens,omitempty"`
 	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
 	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
 	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
@@ -82,6 +83,7 @@ func NewThreadContextPolicyEntry(threadID, turnID, runID, providerName, modelNam
 		Provider: providerName,
 		Model:    modelName,
 		Policy: ThreadContextPolicy{
+			ModelMaxOutputTokens: normalized.ModelMaxOutputTokens,
 			ContextWindowTokens:  normalized.ContextWindowTokens,
 			MaxOutputTokens:      normalized.MaxOutputTokens,
 			ReservedOutputTokens: normalized.ReservedOutputTokens,

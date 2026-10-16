@@ -36,6 +36,8 @@ const (
 )
 
 type ContextPolicy struct {
+	// ModelMaxOutputTokens enables request-fitted budgeting when positive.
+	ModelMaxOutputTokens         int64          `json:"model_max_output_tokens,omitempty"`
 	ContextWindowTokens          int64          `json:"context_window_tokens,omitempty"`
 	MaxOutputTokens              int64          `json:"max_output_tokens,omitempty"`
 	ReservedOutputTokens         int64          `json:"reserved_output_tokens,omitempty"`
@@ -107,6 +109,9 @@ const (
 )
 
 type ContextPressure struct {
+	RequestOutputTokens  int64              `json:"request_output_tokens,omitempty"`
+	OutputControl        string             `json:"output_control,omitempty"`
+	SafetyMarginTokens   int64              `json:"safety_margin_tokens,omitempty"`
 	WindowInputTokens    int64              `json:"window_input_tokens,omitempty"`
 	ProjectedInputTokens int64              `json:"projected_input_tokens,omitempty"`
 	ContextWindowTokens  int64              `json:"context_window_tokens,omitempty"`
@@ -145,6 +150,7 @@ type ContextUsage struct {
 
 func (p ContextPolicy) internal() contextpolicy.Policy {
 	return contextpolicy.Policy{
+		ModelMaxOutputTokens:         p.ModelMaxOutputTokens,
 		ContextWindowTokens:          p.ContextWindowTokens,
 		MaxOutputTokens:              p.MaxOutputTokens,
 		ReservedOutputTokens:         p.ReservedOutputTokens,
@@ -160,6 +166,7 @@ func (p ContextPolicy) internal() contextpolicy.Policy {
 
 func contextPolicyFromInternal(p contextpolicy.Policy) ContextPolicy {
 	return ContextPolicy{
+		ModelMaxOutputTokens:         p.ModelMaxOutputTokens,
 		ContextWindowTokens:          p.ContextWindowTokens,
 		MaxOutputTokens:              p.MaxOutputTokens,
 		ReservedOutputTokens:         p.ReservedOutputTokens,

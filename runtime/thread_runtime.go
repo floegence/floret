@@ -489,6 +489,7 @@ type ThreadContextModel struct {
 }
 
 type ThreadContextPolicy struct {
+	ModelMaxOutputTokens int64 `json:"model_max_output_tokens,omitempty"`
 	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
 	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
 	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
@@ -1367,6 +1368,7 @@ func (service *threadRuntimeService) Context(ctx context.Context, threadID ident
 		ContextUsage: runtimeThreadContextUsage(contextSnapshot.ContextUsage),
 		Model:        ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
 		Policy: ThreadContextPolicy{
+			ModelMaxOutputTokens: contextSnapshot.Policy.ModelMaxOutputTokens,
 			ContextWindowTokens:  contextSnapshot.Policy.ContextWindowTokens,
 			MaxOutputTokens:      contextSnapshot.Policy.MaxOutputTokens,
 			ReservedOutputTokens: contextSnapshot.Policy.ReservedOutputTokens,

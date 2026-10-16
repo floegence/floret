@@ -196,10 +196,7 @@ func (g ProviderSummaryGenerator) summaryRequest(prep sessioncompaction.Preparat
 }
 
 func summaryRequestFits(input int64, policy contextpolicy.Policy, cap int64) bool {
-	margin := policy.ContextWindowTokens / 100
-	if margin > 4096 {
-		margin = 4096
-	}
+	margin := contextpolicy.SafetyMargin(policy.ContextWindowTokens)
 	return input >= 0 && cap < policy.ContextWindowTokens && input <= policy.ContextWindowTokens-cap-margin
 }
 

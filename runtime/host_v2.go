@@ -615,7 +615,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		},
 		modelGateway:             agentGatewayAdapter{gateway: agent.gateway},
 		modelGatewayIdentity:     modelGatewayIdentity(identity),
-		modelGatewayCapabilities: modelGatewayCapabilities{PreparedRequests: prepares, Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
+		modelGatewayCapabilities: modelGatewayCapabilities{OutputControl: capabilities.OutputControl, PreparedRequests: prepares, Reasoning: &reasoning, AttachmentPayload: attachmentMode, ReasoningHistory: capabilities.ReasoningHistory},
 		tools:                    agent.tools, effectAuthorizationGate: agent.effectAuthorization,
 		sink: agent.eventSink, toolSurfaceProvider: agent.toolSurface, idGenerator: agent.idGenerator,
 		providerRequestTimeoutPolicy: agent.providerRequestTimeoutPolicy, providerRetryPolicy: agent.providerRetryPolicy, loopLimits: agent.loopLimits, capabilities: agent.capabilities,
@@ -828,4 +828,16 @@ func (request agentPreparedRequest) PrepareRetryModel(ctx context.Context, next 
 		return nil, errors.New("provider returned nil retry preparation")
 	}
 	return agentPreparedRequest{prepared: prepared}, nil
+}
+
+func (request agentPreparedRequest) WithMaxOutputTokensModel(ctx context.Context, limit int64) (preparedModelRequest, error) {
+	limiter, ok := request.prepared.(provider.PreparedRequestOutputLimiter)
+	if !ok {
+		return nil, errors.New("prepared gateway cannot set output limit")
+	}
+	next, err := limiter.WithMaxOutputTokens(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	return agentPreparedRequest{prepared: next}, nil
 }

@@ -174,6 +174,9 @@ const (
 )
 
 type ContextPressure struct {
+	RequestOutputTokens  int64              `json:"request_output_tokens,omitempty"`
+	OutputControl        string             `json:"output_control,omitempty"`
+	SafetyMarginTokens   int64              `json:"safety_margin_tokens,omitempty"`
 	WindowInputTokens    int64              `json:"window_input_tokens,omitempty"`
 	ProjectedInputTokens int64              `json:"projected_input_tokens,omitempty"`
 	ContextWindowTokens  int64              `json:"context_window_tokens,omitempty"`
@@ -197,6 +200,8 @@ type NativeUsage struct {
 }
 
 type Policy struct {
+	// ModelMaxOutputTokens enables request-fitted budgeting when positive.
+	ModelMaxOutputTokens         int64          `json:"model_max_output_tokens,omitempty"`
 	ContextWindowTokens          int64          `json:"context_window_tokens,omitempty"`
 	MaxOutputTokens              int64          `json:"max_output_tokens,omitempty"`
 	ReservedOutputTokens         int64          `json:"reserved_output_tokens,omitempty"`
@@ -234,7 +239,7 @@ type Usage struct {
 }
 
 func HasValues(policy Policy) bool {
-	return policy.ContextWindowTokens > 0 ||
+	return policy.ModelMaxOutputTokens > 0 || policy.ContextWindowTokens > 0 ||
 		policy.MaxOutputTokens > 0 ||
 		policy.ReservedOutputTokens > 0 ||
 		policy.ReservedSummaryTokens > 0 ||
@@ -248,6 +253,9 @@ func HasValues(policy Policy) bool {
 
 func MergeDefaults(policy, defaults Policy) Policy {
 	provided := HasValues(policy)
+	if !provided {
+		policy.ModelMaxOutputTokens = defaults.ModelMaxOutputTokens
+	}
 	if policy.ContextWindowTokens <= 0 {
 		policy.ContextWindowTokens = defaults.ContextWindowTokens
 		if policy.ContextWindowTokens <= 0 {
@@ -333,31 +341,14 @@ func Normalize(policy Policy) Policy {
 	return policy
 }
 
-func Threshold(policy Policy) int64 {
-	policy = Normalize(policy)
-	threshold := min64(RatioLimitTokens(policy), RequestSafeLimitTokens(policy))
-	if threshold < 1 {
-		threshold = 1
-	}
-	return threshold
-}
-
-func OutputHeadroom(policy Policy) int64 {
-	policy = Normalize(policy)
-	if policy.MaxOutputTokens > 0 {
-		return policy.MaxOutputTokens
-	}
-	return policy.ReservedOutputTokens
-}
-
+func Threshold(policy Policy) int64      { return ResolveRequestBudget(policy, 0).ThresholdTokens }
+func OutputHeadroom(policy Policy) int64 { return ResolveRequestBudget(policy, 0).HeadroomTokens }
 func RatioLimitTokens(policy Policy) int64 {
 	policy = Normalize(policy)
-	return policy.ContextWindowTokens * DefaultAutoCompactRatioPercent / 100
+	return policy.ContextWindowTokens/100*DefaultAutoCompactRatioPercent + policy.ContextWindowTokens%100*DefaultAutoCompactRatioPercent/100
 }
-
 func RequestSafeLimitTokens(policy Policy) int64 {
-	policy = Normalize(policy)
-	return policy.ContextWindowTokens - OutputHeadroom(policy)
+	return ResolveRequestBudget(policy, 0).RequestSafeLimit
 }
 
 func PressureFromNativeUsage(usage NativeUsage, policy Policy) ContextPressure {
@@ -375,8 +366,9 @@ func PressureFromNativeUsage(usage NativeUsage, policy Policy) ContextPressure {
 		windowInput = usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
 	}
 	pressure.WindowInputTokens = windowInput
-	pressure.CompactionNeeded = windowInput >= pressure.ThresholdTokens
-	pressure.HardLimitExceeded = windowInput >= pressure.RequestSafeLimit
+	budget := ResolveRequestBudget(policy, windowInput)
+	pressure.CompactionNeeded = budget.CompactionNeeded
+	pressure.HardLimitExceeded = budget.HardLimitExceeded
 	return pressure
 }
 
@@ -404,7 +396,11 @@ func PressureFromProjectedRequest(estimate RequestEstimate, delta RequestDeltaEs
 		projected = 0
 	}
 	pressure.ProjectedInputTokens = projected
-	pressure.HardLimitExceeded = projected >= pressure.RequestSafeLimit
+	budget := ResolveRequestBudget(policy, projected)
+	pressure.HardLimitExceeded = budget.HardLimitExceeded
+	if policy.ModelMaxOutputTokens > 0 {
+		pressure.CompactionNeeded = budget.CompactionNeeded
+	}
 	return pressure
 }
 
@@ -435,7 +431,7 @@ func PressureFromManual(usage Usage, policy Policy) ContextPressure {
 		pressure.ProjectedInputTokens = usage.InputTokens
 	}
 	pressure.CompactionNeeded = true
-	pressure.HardLimitExceeded = pressure.ProjectedInputTokens >= pressure.RequestSafeLimit && pressure.ProjectedInputTokens > 0
+	pressure.HardLimitExceeded = ResolveRequestBudget(policy, pressure.ProjectedInputTokens).HardLimitExceeded
 	return pressure
 }
 
@@ -461,8 +457,9 @@ func UsageFromMessageContextEstimate(estimate MessageContextEstimate, policy Pol
 		Method:           estimate.Method,
 		Confidence:       estimate.Confidence,
 	}
-	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
-	usage.HardLimitExceeded = usage.InputTokens >= usage.RequestSafeLimit
+	budget := ResolveRequestBudget(policy, usage.InputTokens)
+	usage.CompactionNeeded = budget.CompactionNeeded
+	usage.HardLimitExceeded = budget.HardLimitExceeded
 	return usage
 }
 

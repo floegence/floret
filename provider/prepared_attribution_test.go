@@ -42,6 +42,21 @@ func TestOfficialPreparedAttributionAndFrozenRetry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			original := prepared.RenderedPayloadFingerprint()
+			fitted, err := prepared.(provider.PreparedRequestOutputLimiter).WithMaxOutputTokens(context.Background(), 1234)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.RenderedPayloadFingerprint() != original || fitted.RenderedPayloadFingerprint() == original {
+				t.Fatal("refitting mutated original or failed to update fingerprint")
+			}
+			if fitted.TokenEstimate().EstimatedInputTokens != prepared.TokenEstimate().EstimatedInputTokens {
+				t.Fatal("refitting changed input estimate")
+			}
+			if err := prepared.Close(); err != nil {
+				t.Fatal(err)
+			}
+			prepared = fitted
 			b := prepared.TokenEstimate().Breakdown
 			if b.CompactionTokens <= 0 || b.ModelContextTokens <= 0 || b.UserTokens != 0 {
 				t.Fatalf("attribution=%+v", b)
@@ -82,7 +97,7 @@ func TestOfficialPreparedAttributionAndFrozenRetry(t *testing.T) {
 					t.Fatal(e.Err)
 				}
 			}
-			if len(sent) != 2 || !bytes.Equal(sent[0], sent[1]) || bytes.Contains(sent[0], []byte("attribution")) || !json.Valid(sent[0]) {
+			if !bytes.Contains(sent[0], []byte("1234")) || len(sent) != 2 || !bytes.Equal(sent[0], sent[1]) || bytes.Contains(sent[0], []byte("attribution")) || !json.Valid(sent[0]) {
 				t.Fatal("frozen dispatch or metadata boundary failed")
 			}
 		})

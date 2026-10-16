@@ -18,12 +18,13 @@ type RequestShapeHashes = cache.RequestShapeHashes
 type PressureAnchorState = cache.PressureAnchorState
 
 type ContextPressureTracker struct {
-	promptScopeID     string
-	anchor            PressureAnchorState
-	anchorRequest     cache.ProviderRequestRecord
-	anchorReason      string
-	pendingCompaction bool
-	pendingPressure   contextpolicy.ContextPressure
+	softNoopFingerprint string
+	promptScopeID       string
+	anchor              PressureAnchorState
+	anchorRequest       cache.ProviderRequestRecord
+	anchorReason        string
+	pendingCompaction   bool
+	pendingPressure     contextpolicy.ContextPressure
 }
 
 func NewContextPressureTracker(promptScopeID string) *ContextPressureTracker {
@@ -63,6 +64,15 @@ func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []
 	}
 	normalized := usage.Normalized()
 	pressure := contextpolicy.PressureFromNativeUsage(nativeUsageForPressure(normalized), req.ContextPolicy)
+	if req.ContextPolicy.ModelMaxOutputTokens > 0 {
+		pressure.RequestSafeLimit = req.ContextPressure.RequestSafeLimit
+		pressure.ThresholdTokens = req.ContextPressure.ThresholdTokens
+		pressure.CompactionNeeded = pressure.WindowInputTokens >= pressure.ThresholdTokens
+		pressure.HardLimitExceeded = pressure.WindowInputTokens > pressure.RequestSafeLimit
+	}
+	pressure.RequestOutputTokens = req.ContextPressure.RequestOutputTokens
+	pressure.OutputControl = req.ContextPressure.OutputControl
+	pressure.SafetyMarginTokens = req.ContextPressure.SafetyMarginTokens
 	anchor := PressureAnchorState{}
 	if normalized.Available {
 		anchor = pressureAnchorForRequest(req, history, normalized, pressure)

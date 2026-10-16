@@ -52,6 +52,18 @@ func TestDeepSeekVisionPreparesImagesWithoutPersistingPayload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			original := prepared.RenderedPayloadFingerprint()
+			fitted, err := prepared.(provider.PreparedRequestOutputLimiter).WithMaxOutputTokens(t.Context(), 1234)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || fitted.RenderedPayloadFingerprint() == original || prepared.RenderedPayloadFingerprint() != original {
+				t.Fatal("refit reread input or mutated frozen body")
+			}
+			if err := prepared.Close(); err != nil {
+				t.Fatal(err)
+			}
+			prepared = fitted
 			defer prepared.Close()
 			data = []byte{4, 5, 6}
 			stream, err := prepared.Stream(context.Background())
