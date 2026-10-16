@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/providerretry"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
@@ -52,6 +53,7 @@ type TitleResult struct {
 }
 
 type ProviderTitleGenerator struct {
+	Policy          contextpolicy.Policy
 	TimeoutPolicy   providerattempt.RequestTimeoutPolicy
 	RetryPolicy     providerretry.Policy
 	Provider        provider.Provider
@@ -65,6 +67,9 @@ type ProviderTitleGenerator struct {
 func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequest) (TitleResult, error) {
 	if g.Provider == nil {
 		return TitleResult{}, errors.New("thread title generator requires provider")
+	}
+	if g.Policy.ModelMaxOutputTokens > 0 && g.MaxOutputTokens > g.Policy.ModelMaxOutputTokens {
+		return TitleResult{}, errors.New("thread title output limit exceeds model capability")
 	}
 	prompt, err := threadTitlePromptMessages(req.Messages)
 	if err != nil {
@@ -160,10 +165,14 @@ func (g ProviderTitleGenerator) maxOutputTokens() int64 {
 	}
 	// Provider output limits include hidden reasoning. Keep the visible title
 	// short, but allow thinking models to reach it when reasoning cannot be off.
+	limit := int64(defaultThreadTitleMaxOutputTokens)
 	if g.Reasoning.Kind != provider.ReasoningKindNone && provider.ShortRequestReasoningSelection(g.Reasoning).Level != provider.ReasoningLevelOff {
-		return defaultThreadTitleReasoningTokens
+		limit = defaultThreadTitleReasoningTokens
 	}
-	return defaultThreadTitleMaxOutputTokens
+	if g.Policy.ModelMaxOutputTokens > 0 {
+		limit = min(limit, g.Policy.ModelMaxOutputTokens)
+	}
+	return limit
 }
 
 func threadTitleRunID(turnID string) string {

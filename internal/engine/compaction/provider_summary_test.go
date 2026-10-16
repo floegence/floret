@@ -364,3 +364,15 @@ func TestSummaryPhysicalDeadlineCoversUnfinishedStream(t *testing.T) {
 		}
 	})
 }
+
+func TestProviderSummaryRespectsModelOutputCapability(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ModelMaxOutputTokens: 8, ReservedSummaryTokens: 20}
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	_, err := (ProviderSummaryGenerator{Provider: scripted, Policy: policy}).GenerateSummary(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{{Role: session.User, Content: "preserve this fact"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scripted.Requests) != 1 || scripted.Requests[0].MaxOutputTokens != 8 {
+		t.Fatalf("summary exceeded model output capability: %+v", scripted.Requests)
+	}
+}

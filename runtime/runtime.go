@@ -1877,6 +1877,7 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 	titleGenerator := opts.Title
 	if titleGenerator == nil && opts.ThreadTitleMode == ThreadTitleModeProvider {
 		titleGenerator = agentharness.ProviderTitleGenerator{
+			Policy:        turnPolicy.ContextPolicy,
 			Provider:      p,
 			ProviderName:  cfg.Provider,
 			Model:         cfg.Model,

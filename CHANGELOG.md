@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.48.1 - 2026-10-16
+
+- Bound automatic summary and title output by the opted-in model capability before provider dispatch. Preserve legacy policies and explicit title limits, and remove the need for downstream silent clamping.
+
 ## v7.48.0 - 2026-10-16
 
 - Add opt-in model-capability output budgeting with one shared solver, 90% automatic compaction and a bounded safety margin. Preserve explicit output limits and all legacy v7 policy semantics.
