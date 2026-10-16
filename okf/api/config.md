@@ -75,3 +75,18 @@ contents explicitly and treat returned data as detached observation.
 
 * [Config](/config/config.go)
 * [Context Policy](/config/context.go)
+
+## Request-fitted output
+
+ContextPolicy.ModelMaxOutputTokens enables automatic output fitting. The Engine's
+single budget solver uses complete projected input, the model capability and a
+shared min(window / 100, 4096) safety margin. Automatic compaction starts at 90%;
+explicit MaxOutputTokens may lower that threshold and is never silently clamped.
+The margin is already within the default 10% buffer. The former reservation
+semantics remain available for v7 callers omitting the new capability field.
+
+[Provider gateways](../../provider/provider.go) declare client or server output
+control. Client preparation refits the immutable input through the optional
+PreparedRequestOutputLimiter; network retries retain its final bytes. Request
+pressure exposes request_output_tokens, output_control and safety_margin_tokens.
+These are request facts, not actual output usage or permanently occupied input.

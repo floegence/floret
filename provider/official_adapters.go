@@ -129,7 +129,9 @@ func (gateway *officialGateway) Capabilities() Capabilities {
 	if gateway == nil {
 		return Capabilities{}
 	}
-	return gateway.capabilities
+	capabilities := gateway.capabilities
+	capabilities.OutputControl = OutputControlClient
+	return capabilities
 }
 
 // Stream validates and executes one public provider request.
@@ -378,6 +380,18 @@ func (p *officialPrepared) PrepareRetry(ctx context.Context, _ Request) (Prepare
 		return nil, errors.New("official prepared request cannot replay")
 	}
 	next, err := replay.PrepareRetry(ctx, internalprovider.Request{})
+	if err != nil {
+		return nil, err
+	}
+	return &officialPrepared{prepared: next, request: p.request}, nil
+}
+
+func (p *officialPrepared) WithMaxOutputTokens(ctx context.Context, limit int64) (PreparedRequest, error) {
+	limiter, ok := p.prepared.(internalprovider.PreparedRequestOutputLimiter)
+	if !ok {
+		return nil, errors.New("official prepared request cannot set output limit")
+	}
+	next, err := limiter.WithMaxOutputTokens(ctx, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -158,6 +158,24 @@ type ContextStatus struct {
 }
 
 func (s ContextStatus) Validate() error {
+	p := s.ContextPressure
+	if p.RequestOutputTokens < 0 || p.SafetyMarginTokens < 0 || p.SafetyMarginTokens > 4096 {
+		return fmt.Errorf("invalid request output budget")
+	}
+	switch p.OutputControl {
+	case "":
+		if p.RequestOutputTokens != 0 || p.SafetyMarginTokens != 0 {
+			return fmt.Errorf("request output budget requires control mode")
+		}
+	case "client":
+	case "server":
+		if p.RequestOutputTokens != 0 {
+			return fmt.Errorf("server-managed output cannot claim a client limit")
+		}
+	default:
+		return fmt.Errorf("unsupported output control %q", p.OutputControl)
+	}
+
 	if !s.Phase.Valid() {
 		return fmt.Errorf("unsupported context phase %q", s.Phase)
 	}

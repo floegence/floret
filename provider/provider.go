@@ -111,6 +111,8 @@ const (
 
 // Capabilities describes provider behavior that affects request validation.
 type Capabilities struct {
+	// OutputControl declares whether a client output ceiling is enforced.
+	OutputControl       OutputControl              `json:"output_control,omitempty"`
 	Reasoning           ReasoningSupport           `json:"reasoning"`
 	ReasoningCapability config.ReasoningCapability `json:"reasoning_capability,omitempty"`
 	AttachmentPayload   AttachmentPayloadMode      `json:"attachment_payload"`
@@ -119,6 +121,11 @@ type Capabilities struct {
 
 // Validate verifies an explicit capability declaration.
 func (capabilities Capabilities) Validate() error {
+	switch capabilities.OutputControl {
+	case "", OutputControlClient, OutputControlServer:
+	default:
+		return fmt.Errorf("unsupported output control %q", capabilities.OutputControl)
+	}
 	switch capabilities.ReasoningHistory {
 	case "", ReasoningHistoryAll, ReasoningHistoryCurrentUser:
 	default:
@@ -516,4 +523,19 @@ type TokenEstimate struct {
 	Method               string `json:"method,omitempty"`
 	Confidence           string `json:"confidence,omitempty"`
 	Coverage             string `json:"coverage,omitempty"`
+}
+
+// OutputControl describes who enforces a provider request output ceiling.
+type OutputControl string
+
+const (
+	OutputControlClient OutputControl = "client"
+	OutputControlServer OutputControl = "server"
+)
+
+// PreparedRequestOutputLimiter creates a new single-use request from frozen input.
+// It must change only the output ceiling, retain its input estimate, and never
+// read attachments, collect context, authorize effects, or mutate the original.
+type PreparedRequestOutputLimiter interface {
+	WithMaxOutputTokens(context.Context, int64) (PreparedRequest, error)
 }

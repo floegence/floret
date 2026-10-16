@@ -84,6 +84,7 @@ field ContextBreakdown.AttachmentTokens int64 tag="json:\"attachment_tokens,omit
 type ContextBreakdownDetails = github.com/floegence/floret/v7/config.ContextBreakdownDetails
 field ContextBreakdownDetails.Items []github.com/floegence/floret/v7/internal/session/contextpolicy.ContextTokenDetail tag="json:\"items\""
 type ContextPolicy struct
+field ContextPolicy.ModelMaxOutputTokens int64 tag="json:\"model_max_output_tokens,omitempty\""
 field ContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
 field ContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
 field ContextPolicy.ReservedOutputTokens int64 tag="json:\"reserved_output_tokens,omitempty\""
@@ -95,6 +96,9 @@ field ContextPolicy.EstimatorSource string tag="json:\"estimator_source,omitempt
 field ContextPolicy.EstimatorMethod github.com/floegence/floret/v7/config.EstimateMethod tag="json:\"estimator_method,omitempty\""
 field ContextPolicy.MaxCompactionFailures int tag="json:\"max_compaction_failures,omitempty\""
 type ContextPressure struct
+field ContextPressure.RequestOutputTokens int64 tag="json:\"request_output_tokens,omitempty\""
+field ContextPressure.OutputControl string tag="json:\"output_control,omitempty\""
+field ContextPressure.SafetyMarginTokens int64 tag="json:\"safety_margin_tokens,omitempty\""
 field ContextPressure.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
 field ContextPressure.ProjectedInputTokens int64 tag="json:\"projected_input_tokens,omitempty\""
 field ContextPressure.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
@@ -237,6 +241,7 @@ type AttachmentTextStats struct
 field AttachmentTextStats.UnicodeCodePointCount int64 tag="json:\"unicode_code_points\""
 field AttachmentTextStats.LogicalLineCount int64 tag="json:\"logical_lines\""
 type Capabilities struct
+field Capabilities.OutputControl github.com/floegence/floret/v7/provider.OutputControl tag="json:\"output_control,omitempty\""
 field Capabilities.Reasoning github.com/floegence/floret/v7/provider.ReasoningSupport tag="json:\"reasoning\""
 field Capabilities.ReasoningCapability github.com/floegence/floret/v7/config.ReasoningCapability tag="json:\"reasoning_capability,omitempty\""
 field Capabilities.AttachmentPayload github.com/floegence/floret/v7/provider.AttachmentPayloadMode tag="json:\"attachment_payload\""
@@ -345,8 +350,12 @@ field OpenAICompatibleOptions.APIKey string
 field OpenAICompatibleOptions.StateCompatibilityKey string
 field OpenAICompatibleOptions.HTTPClient *net/http.Client
 field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provider.Capabilities
+type OutputControl string
+const OutputControlClient github.com/floegence/floret/v7/provider.OutputControl = "client"
+const OutputControlServer github.com/floegence/floret/v7/provider.OutputControl = "server"
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
+type PreparedRequestOutputLimiter interface interface{WithMaxOutputTokens(context.Context, int64) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type PreparedRequestReplay interface interface{PrepareRetry(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type ProviderHTTPError struct
 field ProviderHTTPError.Provider string
@@ -1074,6 +1083,7 @@ type ThreadContextModel struct
 field ThreadContextModel.Provider string tag="json:\"provider,omitempty\""
 field ThreadContextModel.Model string tag="json:\"model,omitempty\""
 type ThreadContextPolicy struct
+field ThreadContextPolicy.ModelMaxOutputTokens int64 tag="json:\"model_max_output_tokens,omitempty\""
 field ThreadContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
 field ThreadContextPolicy.MaxOutputTokens int64 tag="json:\"max_output_tokens,omitempty\""
 field ThreadContextPolicy.ReservedOutputTokens int64 tag="json:\"reserved_output_tokens,omitempty\""

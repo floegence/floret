@@ -836,7 +836,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
 	}
 	if !opts.SkipContextPolicyEvent {
-		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
+		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ModelMaxOutputTokens: engineOptions.ContextPolicy.ModelMaxOutputTokens, ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
 	engineOptions.AdmitModelContext = projection.admitModelContext

@@ -55,6 +55,7 @@ type turnExecutionOptions struct {
 }
 
 type modelGatewayCapabilities struct {
+	OutputControl     provider.OutputControl
 	PreparedRequests  bool
 	Reasoning         *config.ReasoningCapability
 	AttachmentPayload modelGatewayAttachmentPayloadMode

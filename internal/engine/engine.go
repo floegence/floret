@@ -2505,7 +2505,7 @@ func (e *Engine) providerRequest(ctx context.Context, promptStore cache.Store, o
 		RawPlan:             plan,
 		Cache:               cachePolicy,
 		ContextPolicy:       opts.ContextPolicy,
-		MaxOutputTokens:     opts.ContextPolicy.MaxOutputTokens,
+		MaxOutputTokens:     e.initialRequestOutput(opts.ContextPolicy),
 		Reasoning:           opts.Reasoning,
 		TurnSurface:         turnSurface,
 		PreviousState:       provider.CloneState(opts.PreviousProviderState),
@@ -2802,7 +2802,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 			return provider.Request{}, history, false, err
 		}
 	}
-	if pressure, ok := tracker.ConsumePendingCompaction(); ok {
+	if pressure, ok := tracker.ConsumePendingCompaction(); ok && opts.ContextPolicy.ModelMaxOutputTokens <= 0 {
 		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, metrics, failures)
 		if err != nil {
 			return provider.Request{}, history, false, err
@@ -2827,8 +2827,23 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		}
 		return provider.Request{}, history, compacted, err
 	}
-	if !req.ContextPressure.HardLimitExceeded {
+	soft := req.ContextPolicy.ModelMaxOutputTokens > 0 && req.ContextPressure.CompactionNeeded && !req.ContextPressure.HardLimitExceeded
+	if !req.ContextPressure.HardLimitExceeded && (!soft || tracker.softNoopFingerprint != "" && tracker.softNoopFingerprint == req.RawPlan.PayloadHash) {
 		return req, history, compacted, nil
+	}
+	if soft {
+		next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
+		if errors.Is(compactErr, ErrCompactionNoop) {
+			tracker.softNoopFingerprint = req.RawPlan.PayloadHash
+			return req, history, false, nil
+		}
+		if closeErr := closePreparedRequest(req); closeErr != nil {
+			return provider.Request{}, history, false, errors.Join(compactErr, closeErr)
+		}
+		if compactErr != nil {
+			return provider.Request{}, history, false, compactErr
+		}
+		return replacement, next, true, nil
 	}
 	validation := compactedRequestValidationForRequest(req)
 	// Before compaction, use only provider-estimated fixed components. A total
@@ -2898,6 +2913,10 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	providerHistory, _, _ := session.ProjectProviderHistory(history, "")
 	req.ContextPressure = tracker.Project(req, providerHistory)
 	req.PressureAnchorReason = tracker.anchorReason
+	req, err = e.finalizeRequestOutput(ctx, req)
+	if err != nil {
+		return provider.Request{}, errors.Join(err, closePreparedRequest(req))
+	}
 	if req.EphemeralUser == nil {
 		req.RawPlan.ProjectedPressure = req.ContextPressure
 		req.RawPlan.RequestShape = requestShapeHashes(req)
@@ -3220,7 +3239,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 				status = ContextCompactDebugStatusCancelled
 			}
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(attemptDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, attemptStarted)
-			if manualCompactionNoopError(err, trigger, reason) {
+			if manualCompactionNoopError(err, trigger, reason) || (opts.ContextPolicy.ModelMaxOutputTokens > 0 && !beforePressure.HardLimitExceeded && errors.Is(err, compaction.ErrNoCutPoint)) {
 				e.emitCompactionNoop(opts, step, operationID, trigger, "no_compactable_context", beforePressure, usage, lifecycle)
 				return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
 			}
@@ -3244,7 +3263,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		attemptDoneDebug["tokens_after_estimate"] = result.TokensAfterEstimate
 		attemptDoneDebug["context_after"] = result.UsageAfter
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, attemptDoneDebug, nil, attemptStarted)
-		if manualCompactionResultHasInsufficientSavings(result, trigger, reason) {
+		if manualCompactionResultHasInsufficientSavings(result, trigger, reason) || (opts.ContextPolicy.ModelMaxOutputTokens > 0 && !beforePressure.HardLimitExceeded && result.TokensBefore > 0 && result.TokensAfterEstimate >= result.TokensBefore) {
 			noopMeta := withCompactionNextAction(cloneAnyMap(attemptDoneDebug), strings.TrimSpace(nextAction))
 			noopMeta["noop_reason"] = "insufficient_savings"
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, noopMeta, nil, time.Time{})

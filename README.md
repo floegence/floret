@@ -12,6 +12,29 @@ diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 Floret is not a graph workflow framework, a multi-agent orchestrator, or a
 product persistence layer.
 
+## Request output budgets
+
+Set ContextPolicy.ModelMaxOutputTokens to the model output capability to enable
+request-fitted budgets. MaxOutputTokens remains an explicit per-request ceiling.
+Automatic output is min(model capability, effective window - projected input -
+min(window / 100, 4096)); automatic compaction starts at 90% of that window.
+An explicit ceiling is never silently reduced and may require earlier compaction.
+The margin is inside the default 10% compaction buffer, not another output reserve.
+Policies omitting ModelMaxOutputTokens retain their published v7 behavior.
+
+Gateways declare provider.OutputControlClient or provider.OutputControlServer.
+Client-controlled prepared requests implement PreparedRequestOutputLimiter to
+return a new immutable wire snapshot from frozen input. Attachments and managed
+facts are not resolved again; network retries replay the final snapshot. A
+server-controlled gateway cannot accept an explicit client ceiling. Observation
+reports request_output_tokens, output_control and safety_margin_tokens for the
+actual request, separately from input usage and composition estimates.
+
+Domain schema 18 appends the atomic 17 -> 18 edge, retaining every older migration
+and all historical conversation facts without inferring historical capabilities.
+Older writers reject the upgraded envelope. Cancellation, bounded length
+continuation and unknown-effect recovery retain their existing boundaries.
+
 ## Install
 
 Build with Go 1.27.2.

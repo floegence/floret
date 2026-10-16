@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -39,6 +40,33 @@ func loadBackendDomainV17(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV17Memory(memory *MemoryRepo) error {
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if raw := entry.Metadata[threadContextPolicyKey]; raw != "" {
+				var fields map[string]json.RawMessage
+				if json.Unmarshal([]byte(raw), &fields) != nil {
+					return ErrAuthorityCorrupt
+				}
+				if _, ok := fields["model_max_output_tokens"]; ok {
+					return ErrAuthorityCorrupt
+				}
+			}
+			if raw := entry.Metadata[threadContextStatusKey]; raw != "" {
+				var payload struct {
+					Pressure map[string]json.RawMessage `json:"context_pressure"`
+				}
+				if json.Unmarshal([]byte(raw), &payload) != nil {
+					return ErrAuthorityCorrupt
+				}
+				for _, field := range []string{"request_output_tokens", "output_control", "safety_margin_tokens"} {
+					if _, ok := payload.Pressure[field]; ok {
+						return ErrAuthorityCorrupt
+					}
+				}
+			}
+		}
+	}
+
 	if err := validateBackendDomainMemory(memory, "v17", true); err != nil {
 		return err
 	}

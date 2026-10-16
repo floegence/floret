@@ -22,7 +22,7 @@ func projectedModelProvider(_ runtimeConfig, gateway modelGateway, identity mode
 	if gateway == nil {
 		return nil, errors.New("provider gateway is required")
 	}
-	direct := modelGatewayProvider{gateway: gateway, identity: identity, reasoningHistory: capabilities.ReasoningHistory}
+	direct := modelGatewayProvider{gateway: gateway, identity: identity, reasoningHistory: capabilities.ReasoningHistory, outputControl: string(capabilities.OutputControl)}
 	if capabilities.PreparedRequests || capabilities.AttachmentPayload == modelGatewayAttachmentPayloadExpanded {
 		return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
 	}
@@ -68,6 +68,7 @@ type modelGatewayProvider struct {
 	gateway          modelGateway
 	identity         modelGatewayIdentity
 	reasoningHistory publicprovider.ReasoningHistoryPolicy
+	outputControl    string
 }
 
 type preparedModelGatewayProvider struct{ modelGatewayProvider }
@@ -88,13 +89,16 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 	if prepared == nil {
 		return nil, errors.New("model gateway returned a nil prepared request")
 	}
+	return adapter.wrapPrepared(prepared), nil
+}
+
+func (adapter preparedModelGatewayProvider) wrapPrepared(prepared preparedModelRequest) *modelGatewayPreparedRequest {
 	wrapped := newModelGatewayPreparedRequest(prepared)
 	wrapped.retry = func(ctx context.Context, next provider.Request) (provider.PreparedRequest, error) {
 		projected, err := adapter.modelRequest(next)
 		if err != nil {
 			return nil, err
 		}
-
 		replayer, ok := prepared.(interface {
 			PrepareRetryModel(context.Context, modelRequest) (preparedModelRequest, error)
 		})
@@ -105,12 +109,25 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 		if err != nil {
 			return nil, err
 		}
-		result := newModelGatewayPreparedRequest(replay)
-		result.retry = wrapped.retry
-		return result, nil
+		return adapter.wrapPrepared(replay), nil
 	}
-	return wrapped, nil
+	wrapped.refit = func(ctx context.Context, limit int64) (provider.PreparedRequest, error) {
+		limiter, ok := prepared.(interface {
+			WithMaxOutputTokensModel(context.Context, int64) (preparedModelRequest, error)
+		})
+		if !ok {
+			return nil, errors.New("provider request lacks frozen output control")
+		}
+		next, err := limiter.WithMaxOutputTokensModel(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		return adapter.wrapPrepared(next), nil
+	}
+	return wrapped
 }
+
+func (adapter modelGatewayProvider) OutputTokenControl() string { return adapter.outputControl }
 
 func (adapter modelGatewayProvider) Stream(ctx context.Context, request provider.Request) (<-chan provider.StreamEvent, error) {
 	modelRequest, err := adapter.modelRequest(request)
@@ -241,6 +258,7 @@ type modelGatewayPreparedRequest struct {
 	closed    bool
 	closeErr  error
 	prepared  preparedModelRequest
+	refit     func(context.Context, int64) (provider.PreparedRequest, error)
 	retry     func(context.Context, provider.Request) (provider.PreparedRequest, error)
 }
 
@@ -435,4 +453,14 @@ func (request *modelGatewayPreparedRequest) PrepareRetry(ctx context.Context, ne
 		return nil, errors.New("provider request lacks frozen retry preparation")
 	}
 	return request.retry(ctx, next)
+}
+
+func (request *modelGatewayPreparedRequest) WithMaxOutputTokens(ctx context.Context, limit int64) (provider.PreparedRequest, error) {
+	request.mu.Lock()
+	unavailable := request.closed || request.streamed
+	request.mu.Unlock()
+	if unavailable || request.refit == nil {
+		return nil, errors.New("prepared request cannot set output limit")
+	}
+	return request.refit(ctx, limit)
 }
