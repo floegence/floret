@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -95,11 +97,32 @@ func TestModelContextRefreshAfterToolAndRestart(t *testing.T) {
 	if err != nil || current.ModelContext == nil || current.ModelContext.UsedByRequestID == "" {
 		t.Fatalf("context=%+v err=%v", current.ModelContext, err)
 	}
+	if current.ContextUsage == nil || current.ContextUsage.Estimate == nil || current.ContextUsage.Estimate.RequestEstimate.Breakdown.Details == nil {
+		t.Fatal("request-scoped attribution missing from canonical read")
+	}
+	attribution, _ := json.Marshal(current.ContextUsage)
+	current.ContextUsage.Estimate.RequestEstimate.Breakdown.Details.Items[0].Tokens = -1
+	detached, err := service.(ThreadContextReader).Context(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachedJSON, _ := json.Marshal(detached.ContextUsage)
+	if !bytes.Equal(attribution, detachedJSON) {
+		t.Fatal("caller mutation reached canonical attribution")
+	}
 	if err := host.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	host, service = open()
 	defer host.Shutdown(context.Background())
+	restored, err := service.(ThreadContextReader).Context(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredJSON, _ := json.Marshal(restored.ContextUsage)
+	if !bytes.Equal(attribution, restoredJSON) {
+		t.Fatalf("restart changed attribution: %s != %s", attribution, restoredJSON)
+	}
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "next", Input: UserInput{Text: "continue"}}); err != nil {
 		t.Fatal(err)
 	}
