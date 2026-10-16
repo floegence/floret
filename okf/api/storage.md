@@ -18,7 +18,7 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 lineage. Version 18 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 lineage. Version 19 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -209,3 +209,13 @@ See [managed context](../decisions/managed-model-context.md).
 The 17 -> 18 edge upgrades the domain envelope atomically for request-fitted
 output budgets. Existing canonical entries retain their exact facts; historical
 model capabilities and request limits are never inferred.
+
+The 18 -> 19 edge admits typed parent-event receipt and admission entries in the
+same journal and envelope namespace. It preserves historical canonical bytes
+and every released edge, rejects older writers, and never backfills historical
+terminal events. Startup opt-in bootstraps only unresolved direct-child
+interactions once. Source facts and receipts commit in one existing domain
+transaction. Admission freezes bounded text and a closed event range after tool
+pairs; coverage is derived from the journal, including retry, fork and compaction.
+There is no durable inbox or separate consumption table. See
+[runtime parent events](runtime.md#passive-parent-events).

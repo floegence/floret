@@ -595,3 +595,27 @@ See [ownership and compaction](../decisions/managed-model-context.md).
 ## Answer Fork Anchors
 
 Hosts pass an optional SourceItemID to ForkThreadInput to fork after a committed assistant item on the source active path. Floret resolves the presentation ID internally; hosts never decode or copy journal records. SourceEntryID and SourceItemID are mutually exclusive. Unknown, foreign and non-assistant items fail without creating a destination; request keys retain exact-anchor idempotency. The last final assistant item includes its canonical completion marker; earlier items keep their exact cut. The domain schema remains 17.
+
+## Passive parent events
+
+The additive `ThreadParentEventService` is optional, explicitly enabled by
+`Options.EnableParentEvents`, and leaves required `ThreadService` unchanged.
+Flower owns model tool definitions and host authorization; Floret owns direct
+parent identity, canonical source receipts, admission, and detached event reads.
+Reports verify active authorized invocation identity, accept nonempty UTF-8 up
+to 8 KiB, and deduplicate exact replay. Changed content or forged authority fails.
+
+Only terminal outcomes, typed execution timeouts, unresolved input/approval and
+explicit reports produce events. Receipts do not run, steer, cancel, respond or
+recover a parent. The next natural provider boundary admits one frozen bounded
+message after tool pairing; natural completion never forces a drain. Per-event
+and per-batch limits include framing, prioritized unresolved interaction and
+unknown-effect references, and a closed overflow range readable with explicit
+pagination. Full reports are stored once; full handoffs remain on existing reads.
+
+`ThreadView.ParentEvents` supplies bounded metadata and explicit pagination
+separately from streamed item ordinals. `Admitted` identifies canonical context
+placement, not proof of model reading. Existing subscriptions are observation
+only; hosts subscribe before checking pending events. List/read never wake an
+unhydrated thread. See [storage lineage](storage.md) and the
+[public integration contract](../../README.md#passive-child-events).

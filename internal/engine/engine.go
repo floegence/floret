@@ -203,6 +203,7 @@ type Options struct {
 	HostedToolDefinitions    []provider.HostedToolDefinition
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
+	AdmitParentEvents        func(context.Context) (session.Message, error)
 	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
 	CommitProviderContext    func(context.Context, *provider.State, []session.Message, bool) error
 	providerState            *runProviderState
@@ -936,6 +937,10 @@ steps:
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, RunDecision{})
 		}
 		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
+		activeHistory, err = e.admitParentEvents(ctx, opts, activeHistory)
+		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
 		activeHistory, err = e.admitModelContext(ctx, opts, activeHistory)

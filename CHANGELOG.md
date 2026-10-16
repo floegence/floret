@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.49.0 - 2026-10-16
+
+- Add opt-in passive parent events through the optional runtime service, canonical authorized child reports, critical source references, explicit full reads and pagination. Preserve legacy host model inputs by default.
+- Admit one bounded typed event message only at natural provider boundaries after tool pairs; retain normal handoffs, interaction authority, retry, fork and compaction semantics without waking idle parents.
+- Append the atomic domain 18 -> 19 migration, retaining old facts and every historical edge; bootstrap only unresolved interactions when enabled.
+
 ## v7.48.1 - 2026-10-16
 
 - Bound automatic summary and title output by the opted-in model capability before provider dispatch. Preserve legacy policies and explicit title limits, and remove the need for downstream silent clamping.

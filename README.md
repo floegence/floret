@@ -31,10 +31,57 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 18 appends the atomic 17 -> 18 edge, retaining every older migration
+Domain schema 19 retains the atomic 17 -> 18 output-budget edge and appends
+18 -> 19 for canonical parent events, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
+
+## Passive child events
+
+Set `runtime.Options.EnableParentEvents` explicitly to enable the optional
+`runtime.ThreadParentEventService` returned by `Host.ThreadService`. The default
+keeps existing hosts' model inputs unchanged. This additive API decision serves
+Flower's child reporting tools without adding methods to `ThreadService`.
+
+`ReportToParent` derives the direct parent from canonical child ownership and
+verifies the authorized active tool invocation. Reports require nonempty UTF-8
+text up to 8192 bytes. Exact invocation replay returns its stable receipt;
+conflicting content or identity fails. Hosts supply invocation authority, never
+model-selected sender, recipient or wakeup flags. Reads must be freshly
+authorized by the host. Read-only child policy may permit reporting to its own
+parent without granting other thread writes or interaction responses.
+
+Completion, failure, cancellation, confirmed interruption, typed execution
+request timeout, input and approval facts create references atomically with their
+source. Running states and message previews create none. Receipts and bounded,
+frozen admissions live in the existing journal. No inbox, consumer table,
+periodic scan or second lifecycle is introduced. Only unresolved interactions
+are bootstrapped on opt-in; historical terminal facts are not backfilled.
+
+A natural logical provider boundary admits pending events after tool pairs and
+before budgeting, compaction and request freezing. Receipt never sends, steers,
+wakes an idle thread, answers an interaction or resamples a natural completion.
+Retry retains admitted text even when preparation failed. Forks inherit their
+cut's receipts and admissions; later events still target the original parent.
+Compaction preserves canonical read access and admission coverage.
+
+Automatic event projections include stable source and event references. Reports
+have at most a 512-byte UTF-8 preview. Individual projections are bounded by
+2 KiB/512 estimated tokens and each new event message by 8 KiB/2048 estimated
+tokens, including framing. Unresolved interactions and unknown-effect failures
+have priority. Overflow includes a closed event range and requires reading the
+omitted events before claiming all delegated work has been reviewed. Normal
+whole-request budget failures remain authoritative; no extra sampling drains
+notifications. Error previews contain reason codes, not raw failures or approval
+commands. Full handoffs and failure details remain in the existing thread reads.
+
+`ListParentEvents` exposes metadata, filters and explicit pagination;
+`ReadParentEvents` reads full reports by event ID or a closed immutable range.
+`ThreadView.ParentEvents` is a bounded paginated receipt view separate from
+streamed item ordinals. Its `Admitted` field means context placement, never
+“model read”. Hosts use existing subscriptions before checking pending events
+when implementing event-aware waits; waiting timeouts are not execution timeouts.
 
 ## Install
 

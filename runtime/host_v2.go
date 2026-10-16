@@ -12,6 +12,7 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/provider"
@@ -67,6 +68,8 @@ func (failure *MigrationRequiredError) Is(target error) bool {
 // Options configures one runtime Host.
 type Options struct {
 	Storage publicstorage.Source
+	// EnableParentEvents admits passive child reports and critical events at natural provider boundaries.
+	EnableParentEvents bool
 	// DeferExecution keeps provider and tool execution disabled until Activate.
 	DeferExecution bool
 	// StartupProgress observes product-neutral storage startup phases. The
@@ -104,13 +107,14 @@ func (progress StartupProgressFunc) OnStartupPhase(phase StartupPhase) {
 // Host is the composition-root owner of Floret storage and narrow capability
 // issuance. Application services must retain only handles issued by Host.
 type Host struct {
-	maintenanceMu     sync.Mutex
-	executionMu       sync.RWMutex
-	executionDeferred bool
-	store             *runtimeStore
-	backend           spi.Backend
-	idSource          IDSource
-	idMu              sync.Mutex
+	maintenanceMu      sync.Mutex
+	executionMu        sync.RWMutex
+	executionDeferred  bool
+	enableParentEvents bool
+	store              *runtimeStore
+	backend            spi.Backend
+	idSource           IDSource
+	idMu               sync.Mutex
 	// mutationMu protects inventory-wide and cross-thread mutations only.
 	mutationMu      sync.Mutex
 	threadRuntimeMu sync.Mutex
@@ -265,12 +269,15 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		if inspectErr != nil {
 			return inspectErr
 		}
-		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, logicalState != logicalSchemaCurrent, startupProgress)
+		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(sessiontree.WithParentEvents(ctx, options.EnableParentEvents), coordinatedBackend, tx, time.Now, logicalState != logicalSchemaCurrent, startupProgress)
 		if inspectErr != nil {
 			return inspectErr
 		}
 		if inspectErr = commitLogicalSchemaTransaction(tx, logicalState); inspectErr != nil {
 			return inspectErr
+		}
+		if err := kernel.PrepareParentEventsInTransaction(ctx, tx, options.EnableParentEvents); err != nil {
+			return err
 		}
 		return kernel.VerifyCurrentStateInTransaction(ctx, tx)
 	})
@@ -286,7 +293,10 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 		idSource = randomIDSource{}
 	}
 	host := &Host{
-		store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
+		enableParentEvents: options.EnableParentEvents, store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
+	}
+	if options.EnableParentEvents {
+		kernel.SetParentEventObserver(func(ids []string) { go host.observeParentEvents(ids) })
 	}
 	transferred = true
 	return host, nil

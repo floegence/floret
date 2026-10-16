@@ -21,6 +21,7 @@ type MessageKind string
 
 const (
 	MessageKindNormal              MessageKind = ""
+	MessageKindParentEvents        MessageKind = "parent_events"
 	MessageKindModelContext        MessageKind = "model_context"
 	MessageKindToolValidationError MessageKind = "tool_validation_error"
 	MessageKindCompactionSummary   MessageKind = "compaction_summary"
