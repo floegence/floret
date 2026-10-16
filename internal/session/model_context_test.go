@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -66,6 +67,22 @@ func TestModelContextFragmentsPreserveRenderingAndOwnership(t *testing.T) {
 	next := &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "skills", Title: "Skills", Text: "Unicode 中文 <tool>"}}}
 	for _, pair := range [][2]*ModelContextSnapshot{{nil, next}, {next, &ModelContextSnapshot{Sections: []ModelContextSection{}}}} {
 		text, parts := renderModelContextParts(pair[0], pair[1])
+		changed := []ModelContextSection{}
+		removed := []string{}
+		if pair[0] == nil {
+			changed = append(changed, next.Sections...)
+		} else {
+			removed = append(removed, "skills")
+		}
+		raw, _ := json.Marshal(struct {
+			Baseline bool                  `json:"baseline"`
+			Sections []ModelContextSection `json:"sections"`
+			Removed  []string              `json:"removed"`
+		}{pair[0] == nil, changed, removed})
+		expected := "Model context update (runtime facts, not a user request; sections replace earlier values by key; removed keys are no longer current):\n" + string(raw)
+		if text != expected {
+			t.Fatalf("published rendering changed: %q != %q", text, expected)
+		}
 		var joined strings.Builder
 		for _, part := range parts {
 			joined.WriteString(part.Text)
