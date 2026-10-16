@@ -857,3 +857,19 @@ func TestPublishedContextCompositionContract(t *testing.T) {
 		t.Fatalf("rendered composition=%+v, %v", measured, err)
 	}
 }
+
+func TestPublishedContextAttributionContract(t *testing.T) {
+	sample := config.ContextBreakdown{Source: "semantic_input_bpe_v2", ToolDefinitionTokens: 10, Details: &config.ContextBreakdownDetails{Items: []config.ContextTokenDetail{{Category: "tool_definition", Key: "docs.read", Source: "mcp", Namespace: "docs", Tokens: 10}}}}
+	raw, err := json.Marshal(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored config.ContextBreakdown
+	if err := json.Unmarshal(raw, &restored); err != nil || !reflect.DeepEqual(sample, restored) {
+		t.Fatalf("attribution roundtrip=%+v err=%v", restored, err)
+	}
+	status := observation.ContextStatus{Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable, RequestEstimate: config.RequestEstimate{Breakdown: restored}}
+	if err := status.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

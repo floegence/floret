@@ -93,8 +93,14 @@ func PublicReasoningCapability(capability provider.ReasoningCapability) config.R
 }
 
 func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstimate {
+	breakdown := config.ContextBreakdown(estimate.Breakdown)
+	if breakdown.Details != nil {
+		details := *breakdown.Details
+		details.Items = append([]config.ContextTokenDetail(nil), details.Items...)
+		breakdown.Details = &details
+	}
 	return config.RequestEstimate{
-		Breakdown:            config.ContextBreakdown(estimate.Breakdown),
+		Breakdown:            breakdown,
 		PrefixTokens:         estimate.PrefixTokens,
 		MessageTokens:        estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens,

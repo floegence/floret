@@ -97,8 +97,15 @@ type MessageReference struct {
 	ReferencedThreadID string `json:"referenced_thread_id,omitempty"`
 }
 
+// ModelContextPart is emitted only by the canonical renderer, in memory.
+type ModelContextPart struct {
+	Key  string
+	Text string
+}
+
 type Message struct {
-	Sources              []citation.Source `json:"sources,omitempty"`
+	ModelContextParts    []ModelContextPart `json:"-"`
+	Sources              []citation.Source  `json:"sources,omitempty"`
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
@@ -161,6 +168,7 @@ func CloneMessages(messages []Message) []Message {
 }
 
 func CloneMessage(msg Message) Message {
+	msg.ModelContextParts = append([]ModelContextPart(nil), msg.ModelContextParts...)
 	msg.Sources = citation.Clone(msg.Sources)
 	msg.Attachments = CloneMessageAttachments(msg.Attachments)
 	msg.References = append([]MessageReference(nil), msg.References...)

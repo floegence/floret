@@ -29,7 +29,7 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 		if message.Kind == MessageKindCompactionSummary && message.ModelContextSnapshot != nil {
 			current = nil
 		}
-		update := RenderModelContext(current, message.ModelContextSnapshot)
+		update, parts := renderModelContextParts(current, message.ModelContextSnapshot)
 		if message.ModelContextSnapshot != nil {
 			current = CloneModelContext(message.ModelContextSnapshot)
 		}
@@ -38,6 +38,7 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 				continue
 			}
 			message.Content = update
+			message.ModelContextParts = parts
 		}
 		message.References = nil
 		message.Context = nil
@@ -49,7 +50,7 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 			insertAt = len(out)
 		}
 		if update != "" && message.Kind != MessageKindModelContext {
-			out = append(out, Message{Role: User, Kind: MessageKindModelContext, Content: update})
+			out = append(out, Message{Role: User, Kind: MessageKindModelContext, Content: update, ModelContextParts: parts})
 		}
 	}
 	if anchor != "" && anchorMatches != 1 {

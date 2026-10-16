@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-15 — Request source attribution
+
+- Add optional disjoint tool and managed-section details to [context estimates](api/config.md), preserving native totals, historical records and schema 17.
+
 ## 2026-10-15 — Used context composition
 
 - Document request-scoped [composition estimates](api/config.md), native-total authority, prepared media subsets and canonical observation without changing schema 17.

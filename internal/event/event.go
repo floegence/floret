@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/internal/providerretry"
 	"path/filepath"
 	"reflect"
@@ -129,10 +130,12 @@ func CloneThreadContextUsage(in *ThreadContextUsage) *ThreadContextUsage {
 	out := *in
 	if in.Confirmed != nil {
 		v := *in.Confirmed
+		v.RequestEstimate.Breakdown = cloneContextBreakdown(v.RequestEstimate.Breakdown)
 		out.Confirmed = &v
 	}
 	if in.Estimate != nil {
 		v := *in.Estimate
+		v.RequestEstimate.Breakdown = cloneContextBreakdown(v.RequestEstimate.Breakdown)
 		out.Estimate = &v
 	}
 	return &out
@@ -1023,4 +1026,13 @@ func safeStringLabel(value string) string {
 	}
 	redacted := Redact(value)
 	return "[redacted]#" + StableHash(redacted)[:12]
+}
+
+func cloneContextBreakdown(in config.ContextBreakdown) config.ContextBreakdown {
+	if in.Details != nil {
+		details := *in.Details
+		details.Items = append([]config.ContextTokenDetail(nil), details.Items...)
+		in.Details = &details
+	}
+	return in
 }

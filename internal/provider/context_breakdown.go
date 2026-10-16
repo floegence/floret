@@ -22,7 +22,20 @@ func EstimateContextBreakdown(req Request) (contextpolicy.ContextBreakdown, erro
 	if req.EphemeralUser != nil {
 		return contextpolicy.ContextBreakdown{}, nil
 	}
-	out := contextpolicy.ContextBreakdown{Source: "semantic_input_bpe_v1"}
+	out := contextpolicy.ContextBreakdown{Source: "semantic_input_bpe_v2"}
+	addDetail := func(category, key, source, namespace string, tokens int64) {
+		if out.Details == nil {
+			out.Details = &contextpolicy.ContextBreakdownDetails{}
+		}
+		for i := range out.Details.Items {
+			item := &out.Details.Items[i]
+			if item.Category == category && item.Key == key && item.Source == source && item.Namespace == namespace {
+				item.Tokens += tokens
+				return
+			}
+		}
+		out.Details.Items = append(out.Details.Items, contextpolicy.ContextTokenDetail{Category: category, Key: key, Source: source, Namespace: namespace, Tokens: tokens})
+	}
 	count := func(value any) (int64, error) {
 		raw, err := json.Marshal(value)
 		if err != nil {
@@ -67,6 +80,27 @@ func EstimateContextBreakdown(req Request) (contextpolicy.ContextBreakdown, erro
 		if err != nil {
 			return contextpolicy.ContextBreakdown{}, err
 		}
+		if message.Kind == session.MessageKindModelContext && len(message.ModelContextParts) > 0 {
+			n = 0
+			framing, err := count(struct {
+				Role session.Role `json:"role"`
+			}{message.Role})
+			if err != nil {
+				return contextpolicy.ContextBreakdown{}, err
+			}
+			addDetail("model_context", "", "", "", framing)
+			n += framing
+			for _, part := range message.ModelContextParts {
+				weight, err := requestestimate.CountText(req.Provider, req.Model, part.Text)
+				if err != nil {
+					return contextpolicy.ContextBreakdown{}, err
+				}
+				addDetail("model_context", part.Key, "", "", weight)
+				n += weight
+			}
+		} else if message.Kind == session.MessageKindModelContext {
+			addDetail("model_context", "", "", "", n)
+		}
 		*target += n
 		if message.Role == session.Assistant && message.Reasoning != "" {
 			n, err := count(message.Reasoning)
@@ -76,12 +110,23 @@ func EstimateContextBreakdown(req Request) (contextpolicy.ContextBreakdown, erro
 			out.ReasoningTokens += n
 		}
 	}
-	n, err := count([]any{req.Tools, req.HostedTools})
-	if err != nil {
-		return contextpolicy.ContextBreakdown{}, err
+	for _, tool := range req.Tools {
+		n, err := count(tool)
+		if err != nil {
+			return contextpolicy.ContextBreakdown{}, err
+		}
+		source, _ := tool.Annotations["source"].(string)
+		namespace, _ := tool.Annotations["namespace"].(string)
+		addDetail("tool_definition", tool.Name, source, namespace, n)
+		out.ToolDefinitionTokens += n
 	}
-	if len(req.Tools)+len(req.HostedTools) > 0 {
-		out.ToolDefinitionTokens = n
+	for _, tool := range req.HostedTools {
+		n, err := count(tool)
+		if err != nil {
+			return contextpolicy.ContextBreakdown{}, err
+		}
+		addDetail("tool_definition", tool.Name, "provider", "", n)
+		out.ToolDefinitionTokens += n
 	}
 	return out, nil
 }

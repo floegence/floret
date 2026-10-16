@@ -1,6 +1,7 @@
 package observation
 
 import (
+	"encoding/json"
 	"github.com/floegence/floret/v7/config"
 )
 
@@ -175,6 +176,7 @@ func contextBreakdownFromAny(value any) config.ContextBreakdown {
 		return v
 	case map[string]any:
 		return config.ContextBreakdown{
+			Details:              contextBreakdownDetailsFromAny(v["details"]),
 			Source:               stringFromAny(v["source"]),
 			SystemTokens:         int64FromAny(v["system_tokens"], 0),
 			UserTokens:           int64FromAny(v["user_tokens"], 0),
@@ -190,4 +192,19 @@ func contextBreakdownFromAny(value any) config.ContextBreakdown {
 	default:
 		return config.ContextBreakdown{}
 	}
+}
+
+func contextBreakdownDetailsFromAny(value any) *config.ContextBreakdownDetails {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var details config.ContextBreakdownDetails
+	if json.Unmarshal(raw, &details) != nil {
+		return nil
+	}
+	return &details
 }

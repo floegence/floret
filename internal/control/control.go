@@ -34,7 +34,9 @@ func ToolDefinitions() []tools.ToolDefinition {
 		InputSchema: askUserInputSchema(),
 		Strict:      true,
 		Annotations: map[string]any{
-			"kind": "control",
+			"kind":      "control",
+			"source":    "floret",
+			"namespace": "control",
 		},
 	}}
 }

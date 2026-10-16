@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -27,7 +28,7 @@ func TestRequestBreakdownCoversProviderHistoryWithoutCountingDiscardedToolOutput
 	}
 	request.Messages[6].ToolResult.OriginalBytes = 1000000000
 	same, err := EstimateContextBreakdown(request)
-	if err != nil || same != got {
+	if err != nil || !reflect.DeepEqual(same, got) {
 		t.Fatalf("non-model output metadata changed breakdown: %+v, %v", same, err)
 	}
 	request.Messages[6].Content = strings.Repeat("large visible output ", 2000)
@@ -36,7 +37,7 @@ func TestRequestBreakdownCoversProviderHistoryWithoutCountingDiscardedToolOutput
 		t.Fatalf("visible tool output not counted: %+v, %v", larger, err)
 	}
 	larger.ToolResultTokens = got.ToolResultTokens
-	if larger != got {
+	if !reflect.DeepEqual(larger, got) {
 		t.Fatalf("tool output changed unrelated categories: %+v", larger)
 	}
 }
@@ -46,5 +47,50 @@ func TestRequestBreakdownDoesNotPersistSupplementalContextStatistics(t *testing.
 	got, err := EstimateContextBreakdown(request)
 	if err != nil || got.Source != "" {
 		t.Fatalf("ephemeral request breakdown=%+v err=%v", got, err)
+	}
+}
+
+func TestBreakdownAttributesFrozenToolsAndRetainedContextUpdates(t *testing.T) {
+	snapshot := func(skill string) *session.ModelContextSnapshot {
+		return &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "skills", Title: "Available skills", Text: skill}, {Key: "repository_rules", Title: "Rule files", Text: "AGENTS instructions"}}}
+	}
+	history, _, err := session.ProjectProviderHistory([]session.Message{
+		{Role: session.User, Content: "work", ModelContextSnapshot: snapshot("old skill catalog")},
+		{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: snapshot("new skill catalog with more content")},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Messages: history, Tools: []tools.ToolDefinition{
+		{Name: "terminal.exec", Description: "execute", Annotations: map[string]any{"source": "builtin", "namespace": "terminal"}},
+		{Name: "opaque_name", Description: "external", Annotations: map[string]any{"source": "mcp", "namespace": "docs"}},
+	}, HostedTools: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}
+	got, err := EstimateContextBreakdown(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums := map[string]int64{}
+	origins := map[string]string{}
+	skill := int64(0)
+	for _, item := range got.Details.Items {
+		sums[item.Category] += item.Tokens
+		origins[item.Key] = item.Source
+		if item.Key == "skills" {
+			skill = item.Tokens
+		}
+	}
+	if sums["tool_definition"] != got.ToolDefinitionTokens || sums["model_context"] != got.ModelContextTokens || origins["opaque_name"] != "mcp" || origins["terminal.exec"] != "builtin" || origins["web_search"] != "provider" || skill <= 0 {
+		t.Fatalf("bad attribution: %+v", got.Details)
+	}
+	latest, _, _ := session.ProjectProviderHistory([]session.Message{{Role: session.User, Content: "work", ModelContextSnapshot: snapshot("new skill catalog with more content")}}, "")
+	request.Messages = latest
+	current, err := EstimateContextBreakdown(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range current.Details.Items {
+		if item.Key == "skills" && item.Tokens >= skill {
+			t.Fatal("historical skill update was not counted")
+		}
 	}
 }
