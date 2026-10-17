@@ -122,7 +122,9 @@ func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provide
 				err = errors.Join(err, refitted.Close())
 			}
 		}()
-		if limiter, ok := frozen.(provider.PreparedRequestOutputLimiter); ok {
+		controller, controlled := g.Provider.(provider.OutputController)
+		serverControlled := controlled && controller.OutputTokenControl() == "server"
+		if limiter, ok := frozen.(provider.PreparedRequestOutputLimiter); ok && !serverControlled {
 			refitted, err = limiter.WithMaxOutputTokens(ctx, retrySummaryCap(req.MaxOutputTokens))
 			if err != nil {
 				return "", err

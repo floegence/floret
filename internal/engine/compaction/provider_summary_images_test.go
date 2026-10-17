@@ -176,3 +176,15 @@ func TestImageOnlyPreservedInputRetainsDiscoverableLocator(t *testing.T) {
 		t.Fatal("checkpoint must explain lossy visual memory")
 	}
 }
+
+type serverImageSummaryProvider struct{ frozenImageSummaryProvider }
+
+func (*serverImageSummaryProvider) OutputTokenControl() string { return "server" }
+func TestServerOutputSummaryDoesNotRequireClientRefit(t *testing.T) {
+	p := &serverImageSummaryProvider{}
+	p.streams = 2
+	summary, _, err := (ProviderSummaryGenerator{Provider: p, Policy: contextpolicy.Policy{ContextWindowTokens: 5000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), sessioncompaction.Preparation{CompactedHead: []session.Message{{Role: session.User, Content: "fact"}}})
+	if err != nil || summary != "facts" || p.refits != 0 {
+		t.Fatalf("summary=%q refits=%d err=%v", summary, p.refits, err)
+	}
+}
