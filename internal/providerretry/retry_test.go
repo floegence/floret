@@ -24,6 +24,13 @@ func TestProtocolClassificationAndServerDeadlines(t *testing.T) {
 		{408, "", Timeout}, {504, "server_error", Timeout}, {524, "", Timeout}, {409, "", ""}, {409, "request_conflict", Transient},
 		{429, "", RateLimit}, {429, "insufficient_quota", Permanent}, {429, "billing_hard_limit_reached", Permanent}, {401, "server_error", Permanent},
 		{403, "rate_limit_error", Permanent}, {422, "", Permanent}, {200, "overloaded_error", Transient}, {200, "unknown_error", ""},
+		{200, "basispoints_tool_arguments_stalled", Interrupted},
+		{401, "basispoints_tool_arguments_stalled", Permanent},
+		{403, "basispoints_tool_arguments_stalled", Permanent},
+		{400, "basispoints_tool_arguments_stalled", Permanent},
+		{422, "basispoints_tool_arguments_stalled", Permanent},
+		{200, "basispoints_unknown_error", ""},
+		{200, "basispoints_tool_arguments_stalled_extra", ""},
 	} {
 		if got := HTTPAdvice(tc.status, tc.code, nil, now).Category; got != tc.want {
 			t.Errorf("%d/%s = %s, want %s", tc.status, tc.code, got, tc.want)
@@ -50,6 +57,81 @@ func TestProtocolClassificationAndServerDeadlines(t *testing.T) {
 		t.Fatal("server prohibition lost")
 	}
 }
+func TestToolArgumentStallRecoveryBounds(t *testing.T) {
+	for _, mode := range []string{"success", "exhausted", "window", "forbidden", "cancel_wait", "cancel_request"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				cause := errors.New("Tool arguments stopped making progress: consecutive whitespace outside JSON strings (output_index=24, whitespace_bytes=8192, limit_bytes=8192)")
+				headers := http.Header{}
+				if mode == "forbidden" {
+					headers.Set("x-should-retry", "false")
+				}
+				failure := WithAdvice(cause, HTTPAdvice(200, "basispoints_tool_arguments_stalled", headers, time.Now()))
+				calls, retries := 0, 0
+				var attempts []context.Context
+				value, err := Run(ctx, DefaultPolicy(), func(attempt context.Context, n int) (int, error) {
+					calls++
+					attempts = append(attempts, attempt)
+					if n > 0 {
+						switch mode {
+						case "success":
+							return 42, nil
+						case "window":
+							<-attempt.Done()
+							return 0, attempt.Err()
+						case "cancel_request":
+							cancel()
+							return 0, attempt.Err()
+						}
+					}
+					return 0, failure
+				}, func(info Info) {
+					retries++
+					if info.Reason != string(Interrupted) || info.Retry != retries || info.MaxRetries != 4 {
+						t.Fatalf("unexpected progress: %+v", info)
+					}
+					if mode == "cancel_wait" {
+						cancel()
+					}
+				})
+				wantCalls, wantRetries := 2, 1
+				switch mode {
+				case "success":
+					if value != 42 || err != nil {
+						t.Fatalf("value=%d err=%v", value, err)
+					}
+				case "exhausted":
+					wantCalls, wantRetries = 5, 4
+				case "forbidden":
+					wantCalls, wantRetries = 1, 0
+				case "cancel_wait":
+					wantCalls = 1
+				}
+				if calls != wantCalls || retries != wantRetries {
+					t.Fatalf("calls=%d retries=%d err=%v", calls, retries, err)
+				}
+				switch mode {
+				case "cancel_wait", "cancel_request":
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("Stop lost: %v", err)
+					}
+				case "exhausted", "forbidden", "window":
+					if !errors.Is(err, cause) {
+						t.Fatalf("failure evidence lost: %v", err)
+					}
+				}
+				for _, attempt := range attempts {
+					if attempt.Err() == nil {
+						t.Fatal("attempt context leaked")
+					}
+				}
+			})
+		})
+	}
+}
+
 func TestTransportClassificationAndCause(t *testing.T) {
 	for _, tc := range []struct {
 		err  error

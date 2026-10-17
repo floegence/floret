@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,12 +17,27 @@ import (
 
 func TestAutomaticProviderRecoveryPreservesConfirmedToolsAndTurn(t *testing.T) {
 	failure := provider.WithRetryAdvice(errors.New("upstream gateway error"), provider.RetryAdvice{Category: provider.RetryTransient})
+	testAutomaticProviderRecoveryPreservesConfirmedToolsAndTurn(t, failure)
+}
+
+func TestToolArgumentStallRecoveryPreservesConfirmedToolsAndTurn(t *testing.T) {
+	failure := &provider.ProviderHTTPError{Provider: "openai", StatusCode: 200, Code: "basispoints_tool_arguments_stalled", Message: "Tool arguments stopped making progress: consecutive whitespace outside JSON strings (output_index=24, whitespace_bytes=8192, limit_bytes=8192)"}
+	testAutomaticProviderRecoveryPreservesConfirmedToolsAndTurn(t, failure)
+}
+
+func testAutomaticProviderRecoveryPreservesConfirmedToolsAndTurn(t *testing.T, failure error) {
+	t.Helper()
 	calls := func(items ...provider.ToolCall) florettest.Step {
 		return florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: items}, {Type: provider.EventDone, Reason: "tool_calls"}}}
 	}
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "retry", StateCompatibilityKey: "retry:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		calls(provider.ToolCall{ID: "todo", Name: "write_todos", Args: `{}`}),
-		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "old partial"}, {Type: provider.EventError, Err: failure}}},
+		florettest.Step{Events: []provider.Event{
+			{Type: provider.EventDelta, Text: "old partial"},
+			{Type: provider.EventToolCallStart, ToolCallStream: &provider.ToolCallStream{ID: "incomplete", Name: "create_child"}},
+			{Type: provider.EventToolCallDelta, Text: "{", ToolCallStream: &provider.ToolCallStream{ID: "incomplete", Name: "create_child"}},
+			{Type: provider.EventError, Err: failure},
+		}},
 		calls(provider.ToolCall{ID: "child1", Name: "create_child", Args: `{}`}, provider.ToolCall{ID: "child2", Name: "create_child", Args: `{}`}, provider.ToolCall{ID: "child3", Name: "create_child", Args: `{}`}),
 		florettest.Step{ReturnError: failure},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Recovered answer."}, {Type: provider.EventDone, Reason: "stop"}}},
@@ -91,6 +107,12 @@ func TestAutomaticProviderRecoveryPreservesConfirmedToolsAndTurn(t *testing.T) {
 	}
 	if requests[1].Step != requests[2].Step || requests[3].Step != requests[4].Step {
 		t.Fatal("transient failures consumed agent steps")
+	}
+	for _, pair := range [][2]int{{1, 2}, {3, 4}} {
+		before, after := requests[pair[0]], requests[pair[1]]
+		if !reflect.DeepEqual(before.Messages, after.Messages) || !reflect.DeepEqual(before.Tools, after.Tools) {
+			t.Fatal("retry changed frozen model input")
+		}
 	}
 }
 func TestRetryRetiresLiveDraftImmediatelyAndRejectsLateEvents(t *testing.T) {

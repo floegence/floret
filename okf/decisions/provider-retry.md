@@ -20,6 +20,13 @@ An absolute server deadline is never shortened. Server waits over one minute,
 authentication, billing, contract, unknown-effect and unclassified errors end
 recovery. Parent cancellation and deadlines interrupt requests and waits.
 
+The exact protocol code `basispoints_tool_arguments_stalled` is a stream
+interruption even when transported with HTTP 200. It enters this existing loop;
+the Engine never infers retry permission from whitespace, error prose or a code
+prefix. Permanent HTTP statuses and explicit server prohibitions still win.
+Incomplete streamed arguments cannot dispatch a local tool. The host retains
+the sanitized original error for diagnostics and historical failure readback.
+
 The Engine status owns the execution outcome. A Provider request timeout or
 recovery-window deadline remains a Provider failure while its execution context
 is active, even when the error chain matches a context sentinel. The Harness

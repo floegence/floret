@@ -84,6 +84,8 @@ func HTTPAdvice(status int, code string, headers http.Header, received time.Time
 		a.Category = Transient
 	case "request_timeout", "timeout_error":
 		a.Category = Timeout
+	case "basispoints_tool_arguments_stalled":
+		a.Category = Interrupted
 	}
 	// Authentication and invalid contracts always outrank server retry hints.
 	if status == 401 || status == 403 || status == 404 || status == 400 || status == 422 || status == 501 || status == 505 {

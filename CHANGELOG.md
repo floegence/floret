@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.51.2 - 2026-10-17
+
+- Classify the exact tool-argument stall protocol code as a recoverable stream interruption, including HTTP 200 errors, through the existing bounded Engine retry loop. Preserve frozen requests, confirmed tools, Stop, permanent failures and explicit retry prohibitions without changing public API shapes or schema 19.
+
 ## v7.51.1 - 2026-10-17
 
 - Respect server-owned output control for visual summaries; reserve frozen output refits only where the provider supports client output limits.

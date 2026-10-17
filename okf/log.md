@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-17 — Tool-argument stall recovery
+
+- Document the exact stream-error classification in [Provider recovery](decisions/provider-retry.md), preserving one bounded Engine owner, confirmed tools and original diagnostics without new durable state.
+
 ## 2026-10-17 — Visual compaction and stable media locators
 
 - Document [native-image summary batching and locators](api/runtime.md#visual-compaction-and-media-locators), [canonical attachment discovery](api/thread-query.md#canonical-attachment-discovery), frozen retry/refit and unchanged schema 19.
