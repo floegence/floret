@@ -1005,3 +1005,23 @@ func TestPublishedThreadWaitContract(t *testing.T) {
 		t.Fatal("unmeasured result qualified")
 	}
 }
+
+func TestPublishedAttachmentLocatorIsStableAndOpaque(t *testing.T) {
+	attachment := runtime.MessageAttachment{ResourceRef: "host:private-snapshot", Name: "image.png", MIMEType: "image/png", SizeBytes: 42}
+	locator, err := attachment.Locator()
+	if err != nil || !strings.HasPrefix(locator, "media:v1:") || strings.Contains(locator, attachment.ResourceRef) {
+		t.Fatalf("locator=%q err=%v", locator, err)
+	}
+	raw, _ := json.Marshal(attachment)
+	var replay runtime.MessageAttachment
+	if err := json.Unmarshal(raw, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := replay.Locator(); err != nil || got != locator {
+		t.Fatalf("replayed locator=%q err=%v", got, err)
+	}
+	replay.Name = "another.png"
+	if got, _ := replay.Locator(); got == locator {
+		t.Fatal("locator omitted descriptor metadata")
+	}
+}

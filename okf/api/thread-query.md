@@ -78,3 +78,12 @@ Refs and cursors are opaque random capabilities bound to this process and scope.
 explicit identity as untrusted data. The host validates readability on initial
 admission and compares frozen input on transport retry. Schema 14 -> 15 validates
 old authority and preserves historical record bytes and fingerprints.
+
+## Canonical Attachment Discovery
+
+User attachments and confirmed tool-result attachments contribute safe source
+labels to text search and chunked reads. Each label includes a stable descriptor
+locator, name, MIME and size, excluding ResourceRef. Name and MIME search use the
+existing disposable canonical index; no durable media mapping is added. Locators
+are lookup keys, never access grants. Hosts must reauthorize the current thread
+and exact canonical descriptor before opening immutable bytes.

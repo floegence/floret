@@ -264,9 +264,13 @@ func TestProviderSummaryRetriesAfterTruncationWithHalfCap(t *testing.T) {
 	if scripted.Requests[0].MaxOutputTokens != 20 || scripted.Requests[1].MaxOutputTokens != 10 {
 		t.Fatalf("summary caps = %d/%d, want 20/10", scripted.Requests[0].MaxOutputTokens, scripted.Requests[1].MaxOutputTokens)
 	}
-	if !strings.Contains(scripted.Requests[1].Messages[1].Content, "10 estimated tokens") || strings.Contains(scripted.Requests[1].Messages[1].Content, "20 estimated tokens") {
-		t.Fatalf("retry prompt should describe half-cap budget: %q", scripted.Requests[1].Messages[1].Content)
+	if scripted.Requests[0].Messages[1].Content != scripted.Requests[1].Messages[1].Content {
+		t.Fatal("output refit changed frozen summary input")
 	}
+	if !strings.Contains(scripted.Requests[0].AttemptID, "generation:0") || !strings.Contains(scripted.Requests[1].AttemptID, "generation:1") {
+		t.Fatal("summary regeneration reused transport retry identity")
+	}
+
 	if prep.Result.Summary != "retry summary" {
 		t.Fatalf("summary = %q, want retry summary", prep.Result.Summary)
 	}

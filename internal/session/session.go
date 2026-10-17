@@ -59,7 +59,7 @@ type ControlSignalView struct {
 const ControlSignalErrorCodeControlError = "control_error"
 
 // MessageAttachment is one durable host-owned resource reference associated
-// with a user message. Floret persists and projects the opaque reference but
+// with a user message or confirmed tool result. Floret projects the opaque reference but
 // never resolves or reads the resource itself.
 type MessageAttachment struct {
 	ResourceRef string                      `json:"resource_ref"`

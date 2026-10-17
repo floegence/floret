@@ -851,6 +851,7 @@ field MessageAttachment.MIMEType string tag="json:\"mime_type\""
 field MessageAttachment.SizeBytes int64 tag="json:\"size_bytes,omitempty\""
 field MessageAttachment.TextStats *github.com/floegence/floret/v7/runtime.MessageAttachmentTextStats tag="json:\"text_stats,omitempty\""
 method MessageAttachment.Validate func() error
+method MessageAttachment.Locator func() (string, error)
 type MessageAttachmentTextStats struct
 field MessageAttachmentTextStats.UnicodeCodePointCount int64 tag="json:\"unicode_code_points\""
 field MessageAttachmentTextStats.LogicalLineCount int64 tag="json:\"logical_lines\""

@@ -633,3 +633,24 @@ input requests and resume only after explicit user input.
 messages for both live and historical reads. It is not another persisted ledger
 or a migration. See [runtime source](../../runtime/thread_wait.go) and
 [failure classification](../../runtime/thread_failure_reason.go).
+
+## Visual Compaction And Media Locators
+
+`MessageAttachment.Locator()` hashes the complete descriptor using versioned,
+fixed field encoding and returns `media:v1:<sha256>`. This additive public method
+supports authorized host rereads without exposing resource refs in model text.
+It does not change schema 19 or attachment persistence. Forks preserve locators.
+`ThreadItem.Attachments` projects user and confirmed tool-result attachments;
+Activity target refs are presentation, never canonical membership.
+
+The [summary generator](../../internal/engine/compaction/provider_summary.go)
+uses one ordered text/image sequence, UTF-8 fragments, atomic image source labels,
+complete rendered budgets and frozen retry/refit handles. Summary requests have
+no tools or provider continuation. All input must be covered before checkpoint
+installation. Summaries retain relevant visual facts with locators and uncertainty;
+checkpoints direct exact-detail questions back to original snapshots. Old
+checkpoints are not rewritten or retroactively supplied with visual facts.
+
+[Scoped history queries](thread-query.md) discover older images without a
+second attachment index or an unbounded checkpoint catalog. Hosts own bytes and
+current authorization. Floret owns descriptors, canonical membership and summaries.

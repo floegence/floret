@@ -203,7 +203,7 @@ func (adapter modelGatewayProvider) modelRequest(request provider.Request) (mode
 		MaxOutputTokens: request.MaxOutputTokens, Reasoning: configbridge.PublicReasoningSelection(request.Reasoning),
 		ReusePolicy: &publicprovider.RequestReusePolicy{
 			PromptCacheEnabled: request.Cache.Enabled, PromptCacheNamespace: request.Cache.Namespace,
-			ProviderStateAllowed: request.EphemeralUser == nil, PreferContinuation: request.Cache.PreferContinuation,
+			ProviderStateAllowed: request.EphemeralUser == nil && !request.DisableProviderState, PreferContinuation: request.Cache.PreferContinuation,
 		},
 		PreviousState: modelState(request.PreviousState), Labels: providerRequestLabels(request.Labels),
 	}, nil

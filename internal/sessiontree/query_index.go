@@ -208,6 +208,9 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 			base.Role = "assistant"
 		}
 		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: []queryPart{{"body", entry.Message.Content}}}
+		for _, attachment := range entry.Message.Attachments {
+			record.parts = append(record.parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
+		}
 		for _, ref := range entry.Message.References {
 			record.parts = append(record.parts, queryPart{"reference_label", ref.Label}, queryPart{"reference_text", ref.Text})
 			if ref.ReferencedThreadID != "" {
@@ -259,6 +262,9 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 			record.row.Elapsed = at.Sub(record.row.Time)
 			record.row.Status = entry.Message.ToolResult.Status
 			record.parts = append(record.parts, queryPart{"result", entry.Message.Content})
+			for _, attachment := range entry.Message.ToolResult.Attachments {
+				record.parts = append(record.parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
+			}
 		}
 		idx.replace(state, record)
 	case EntryCustom:

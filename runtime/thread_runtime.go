@@ -4582,6 +4582,9 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				items[previous].Activity = &activity
 				items[previous].Live = false
+				if entry.Message.ToolResult != nil {
+					items[previous].Attachments = runtimeMessageAttachments(entry.Message.ToolResult.Attachments)
+				}
 				reasoningOpen[threadExecutionKey(turnID, runID)] = false
 			} else {
 				toolItemIndex[toolKey] = len(items)

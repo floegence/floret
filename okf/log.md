@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-17 — Visual compaction and stable media locators
+
+- Document [native-image summary batching and locators](api/runtime.md#visual-compaction-and-media-locators), [canonical attachment discovery](api/thread-query.md#canonical-attachment-discovery), frozen retry/refit and unchanged schema 19.
+
 - Document opt-in [passive parent events](api/runtime.md#passive-parent-events), canonical admission, bounded event reads and the permanent [18 -> 19 migration](api/storage.md).
 - Bound automatic summary and title output by the opted-in model capability, retaining one upstream owner for auxiliary generation controls.
 - Document [request-fitted output budgets](api/config.md), immutable refitting and the permanent [17 -> 18 migration](api/storage.md).

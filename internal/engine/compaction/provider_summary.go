@@ -34,12 +34,12 @@ type ProviderSummaryGenerator struct {
 
 // Only this cursor and the latest candidate summary advance during generation.
 // Nothing is installed until the entire transcript has been consumed.
-type transcriptCursor struct{ message, offset int }
+type transcriptCursor struct{ message, part, offset int }
 
 type summaryBatch struct {
-	transcript string
-	next       transcriptCursor
-	bytes      int
+	messages []session.Message
+	next     transcriptCursor
+	bytes    int
 }
 
 func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep sessioncompaction.Preparation) (string, error) {
@@ -57,9 +57,6 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 	previous := prep.Request.PreviousSummary
 	cursor := transcriptCursor{}
 	for cursor.message < len(messages) {
-		if err := ctx.Err(); err != nil {
-			return "", details, err
-		}
 		cap := policy.ReservedSummaryTokens
 		if policy.ModelMaxOutputTokens > 0 {
 			cap = min(cap, policy.ModelMaxOutputTokens)
@@ -68,17 +65,12 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 		if err != nil {
 			return "", details, err
 		}
-		outputRetried := false
 		for {
-			if details.Attempts >= maxSummaryRequests {
-				return "", details, errors.New("compaction summary request limit exceeded")
-			}
-			details.Attempts++
-			req := g.summaryRequest(prep, previous, batch.transcript, policy, cap)
-			req.Attempt = 1
-			req.AttemptEpoch = details.Attempts
+			req := g.summaryRequest(prep, previous, batch.messages, policy, cap)
 			req.LogicalRequestID = fmt.Sprintf("%s:batch:%d", req.RunID, details.Batches)
-			req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
+			req.Attempt = 1
+			req.AttemptEpoch = details.Attempts + 1
+			req.AttemptID = fmt.Sprintf("%s:generation:0:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
 			prepared, inputTokens, err := g.prepareSummaryRequest(ctx, req)
 			if err != nil {
 				return "", details, err
@@ -89,94 +81,26 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 						return "", details, err
 					}
 				}
-				if batch.bytes <= 1 {
-					return "", details, errors.New("compaction summary fixed prefix exceeds provider capacity")
+			} else {
+				summary, err := g.generateBatch(ctx, req, prepared, inputTokens, policy, &details)
+				if err == nil {
+					previous = summary
+					cursor = batch.next
+					details.Batches++
+					break
 				}
-				batch, err = g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, batch.bytes/2)
-				if err != nil {
+				if !errors.Is(err, provider.ErrContextOverflow) {
 					return "", details, err
 				}
-				continue
-			}
-			details.PromptInputTokens = inputTokens
-			details.RequestBudgetTokens = inputTokens + cap
-			if details.RequestBudgetTokens > details.PeakRequestBudgetTokens {
-				details.PeakRequestBudgetTokens = details.RequestBudgetTokens
-			}
-
-			type summaryOutput struct {
-				text      string
-				truncated bool
-			}
-			output, err := providerretry.Run(ctx, g.RetryPolicy, func(attemptCtx context.Context, n int) (summaryOutput, error) {
-				current := prepared
-				if n > 0 {
-					if details.Attempts >= maxSummaryRequests {
-						return summaryOutput{}, errors.New("compaction summary request limit exceeded")
-					}
-					details.Attempts++
-					req.Attempt = n + 1
-					req.AttemptEpoch = details.Attempts
-					req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
-					var err error
-					current, _, err = g.prepareSummaryRequest(attemptCtx, req)
-					if err != nil {
-						return summaryOutput{}, err
-					}
-					if current != nil && prepared != nil && current.PayloadFingerprint() != prepared.PayloadFingerprint() {
-						current.Close()
-						return summaryOutput{}, errors.New("compaction retry changed frozen input")
-					}
-				}
-				req.Attempt = n + 1
-				req.AttemptEpoch = details.Attempts
-				req.LogicalRequestID = fmt.Sprintf("%s:batch:%d", req.RunID, details.Batches)
-				req.AttemptID = fmt.Sprintf("%s:attempt:%d", req.LogicalRequestID, details.Attempts)
-				text, truncated, err := g.streamSummary(attemptCtx, req, current)
-				if current != nil {
-					if closeErr := current.Close(); closeErr != nil {
-						return summaryOutput{}, providerretry.WithAdvice(errors.Join(err, closeErr), providerretry.Advice{Category: providerretry.Permanent})
-					}
-				}
-				if errors.Is(err, provider.ErrStreamMissingTerminal) {
-					err = providerretry.WithAdvice(err, providerretry.Advice{Category: providerretry.Interrupted})
-				}
-				return summaryOutput{text, truncated}, err
-			}, nil)
-			summary, truncated := output.text, output.truncated
-
-			if errors.Is(err, provider.ErrContextOverflow) {
 				details.OverflowRetries++
-				if batch.bytes <= 1 {
-					return "", details, errors.New("compaction summary fixed prefix exceeds provider capacity")
-				}
-				batch, err = g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, batch.bytes/2)
-				if err != nil {
-					return "", details, err
-				}
-				continue
 			}
+			if batch.bytes <= 1 {
+				return "", details, errors.New("compaction summary indivisible image or fixed prefix exceeds provider capacity")
+			}
+			batch, err = g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, batch.bytes/2)
 			if err != nil {
 				return "", details, err
 			}
-			if truncated || contextpolicy.EstimateTextTokens(summary) > cap {
-				if outputRetried {
-					return "", details, errors.New("compaction summary remains incomplete or over budget after retry")
-				}
-				outputRetried = true
-				details.ProviderTruncated = details.ProviderTruncated || truncated
-				details.RetryReason = summaryRetryReasonOverBudget
-				if truncated {
-					details.RetryReason = summaryRetryReasonTruncated
-				}
-				cap = retrySummaryCap(cap)
-				details.RetryCapTokens = cap
-				continue
-			}
-			previous = summary
-			cursor = batch.next
-			details.Batches++
-			break
 		}
 	}
 	if strings.TrimSpace(previous) == "" {
@@ -185,16 +109,115 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 	return previous, details, nil
 }
 
-func (g ProviderSummaryGenerator) summaryRequest(prep sessioncompaction.Preparation, previous, transcript string, policy contextpolicy.Policy, cap int64) provider.Request {
+// Keep the prepared source unused so transport replay and output refitting never
+// reopen attachments. Only independent replay handles are streamed and closed.
+func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provider.Request, frozen provider.PreparedRequest, inputTokens int64, policy contextpolicy.Policy, details *sessioncompaction.SummaryGenerationDetails) (summary string, err error) {
+	if frozen != nil {
+		defer func() { err = errors.Join(err, frozen.Close()) }()
+	}
+	for generation := 0; generation < 2; generation++ {
+		cap := req.MaxOutputTokens
+		details.PromptInputTokens = inputTokens
+		details.RequestBudgetTokens = inputTokens + cap
+		details.PeakRequestBudgetTokens = max(details.PeakRequestBudgetTokens, details.RequestBudgetTokens)
+		type summaryOutput struct {
+			text      string
+			truncated bool
+		}
+		output, streamErr := providerretry.Run(ctx, g.RetryPolicy, func(attemptCtx context.Context, n int) (summaryOutput, error) {
+			if details.Attempts >= maxSummaryRequests {
+				return summaryOutput{}, errors.New("compaction summary request limit exceeded")
+			}
+			details.Attempts++
+			attempt := req
+			attempt.Attempt = n + 1
+			attempt.AttemptEpoch = details.Attempts
+			attempt.LogicalRequestID = req.LogicalRequestID
+			attempt.AttemptID = fmt.Sprintf("%s:generation:%d:attempt:%d", attempt.LogicalRequestID, generation, details.Attempts)
+			current := frozen
+			if frozen != nil {
+				if replay, ok := frozen.(provider.PreparedRequestReplay); ok {
+					var err error
+					current, err = replay.PrepareRetry(attemptCtx, attempt)
+					if err != nil {
+						return summaryOutput{}, providerretry.WithAdvice(err, providerretry.Advice{Category: providerretry.Permanent})
+					}
+					if current == nil {
+						return summaryOutput{}, errors.New("provider returned nil frozen summary replay")
+					}
+					if current.PayloadFingerprint() != frozen.PayloadFingerprint() {
+						return summaryOutput{}, errors.Join(errors.New("compaction retry changed frozen input"), current.Close())
+					}
+				} else if n > 0 || generation > 0 {
+					return summaryOutput{}, providerretry.WithAdvice(errors.New("summary request lacks frozen replay"), providerretry.Advice{Category: providerretry.Permanent})
+				}
+			}
+			text, truncated, err := g.streamSummary(attemptCtx, attempt, current)
+			if current != nil {
+				if closeErr := current.Close(); closeErr != nil {
+					return summaryOutput{}, providerretry.WithAdvice(errors.Join(err, closeErr), providerretry.Advice{Category: providerretry.Permanent})
+				}
+			}
+			if errors.Is(err, provider.ErrStreamMissingTerminal) {
+				err = providerretry.WithAdvice(err, providerretry.Advice{Category: providerretry.Interrupted})
+			}
+			return summaryOutput{text, truncated}, err
+		}, nil)
+		if streamErr != nil {
+			return "", streamErr
+		}
+		if !output.truncated && contextpolicy.EstimateTextTokens(output.text) <= cap {
+			return output.text, nil
+		}
+		if generation == 1 {
+			return "", errors.New("compaction summary remains incomplete or over budget after retry")
+		}
+		details.ProviderTruncated = details.ProviderTruncated || output.truncated
+		details.RetryReason = summaryRetryReasonOverBudget
+		if output.truncated {
+			details.RetryReason = summaryRetryReasonTruncated
+		}
+		req.MaxOutputTokens = retrySummaryCap(cap)
+		details.RetryCapTokens = req.MaxOutputTokens
+		if frozen != nil {
+			limiter, ok := frozen.(provider.PreparedRequestOutputLimiter)
+			if !ok {
+				return "", errors.New("summary request lacks frozen output refit")
+			}
+			next, err := limiter.WithMaxOutputTokens(ctx, req.MaxOutputTokens)
+			if err != nil {
+				return "", err
+			}
+			if next == nil {
+				return "", errors.New("provider returned nil frozen output refit")
+			}
+			if err := frozen.Close(); err != nil {
+				return "", errors.Join(err, next.Close())
+			}
+			frozen = next
+		}
+	}
+	panic("unreachable summary generation")
+}
+
+func (g ProviderSummaryGenerator) summaryRequest(prep sessioncompaction.Preparation, previous string, fragments []session.Message, policy contextpolicy.Policy, cap int64) provider.Request {
+	messages := []session.Message{
+		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPromptWithOptions(g.PromptOptions)},
+		{Role: session.User, Content: sessioncompaction.SummaryPromptWithTranscript(previous, "", policy, cap, g.PromptOptions)},
+	}
+	for _, fragment := range fragments {
+		last := &messages[len(messages)-1]
+		if len(last.Attachments) == 0 && len(fragment.Attachments) == 0 {
+			last.Content += fragment.Content
+		} else {
+			messages = append(messages, session.CloneMessage(fragment))
+		}
+	}
 	return provider.Request{
 		RunID: prep.Request.CompactionID, ThreadID: prep.Request.Details["thread_id"], TurnID: prep.Request.Details["turn_id"],
 		PromptScopeID: prep.Request.Details["prompt_scope_id"], TraceID: prep.Request.Details["run_id"], Step: prep.Request.Step,
-		Provider: g.ProviderName, Model: g.Model, ContextPolicy: policy, MaxOutputTokens: cap,
-		Reasoning: provider.ShortRequestReasoningSelection(g.Reasoning),
-		Messages: []session.Message{
-			{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPromptWithOptions(g.PromptOptions)},
-			{Role: session.User, Content: sessioncompaction.SummaryPromptWithTranscript(previous, transcript, policy, cap, g.PromptOptions)},
-		},
+		Provider: g.ProviderName, Model: g.Model, ContextPolicy: policy, MaxOutputTokens: cap, DisableProviderState: true,
+		Reasoning: provider.ShortRequestReasoningSelection(g.Reasoning), Messages: messages,
 	}
 }
 
@@ -212,63 +235,82 @@ func (g ProviderSummaryGenerator) selectSummaryBatch(ctx context.Context, prep s
 	if byteLimit == 0 {
 		byteLimit = int(min(policy.ContextWindowTokens, int64(^uint(0)>>1)/3) * 3)
 	}
-	var text strings.Builder
-	next := cursor
-	used := 0
-	fits := func(transcript string) (bool, error) {
+	var fragments []session.Message
+	next, used := cursor, 0
+	fits := func(fragment session.Message) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		estimate, err := provider.GenericRequestEstimate(g.summaryRequest(prep, previous, transcript, policy, cap))
+		candidate := append(append([]session.Message(nil), fragments...), fragment)
+		estimate, err := provider.GenericRequestEstimate(g.summaryRequest(prep, previous, candidate, policy, cap))
 		return summaryRequestFits(estimate.EstimatedInputTokens, policy, cap), err
 	}
 	for next.message < len(messages) && used < byteLimit {
 		message := messages[next.message]
+		part := message.Parts[next.part]
 		header := message.Header + fmt.Sprintf(" [body byte offset %d]\n", next.offset)
-		remaining := message.Text[next.offset:]
-		upper := min(len(remaining), byteLimit-used)
-		prefix := text.String() + header
-		size := utf8Prefix(remaining, upper)
-		ok, err := fits(prefix + remaining[:size] + "\n\n")
-		if err != nil {
-			return summaryBatch{}, err
+		if next.part > 0 {
+			header = message.Header + fmt.Sprintf(" [content part %d]\n", next.part)
 		}
-		if !ok {
-			low, high := 0, size
-			for low < high {
-				mid := low + (high-low+1)/2
-				cut := utf8Prefix(remaining, mid)
-				ok, err = fits(prefix + remaining[:cut] + "\n\n")
-				if err != nil {
-					return summaryBatch{}, err
-				}
-				if ok {
-					low = mid
-				} else {
-					high = mid - 1
-				}
+		fragment := session.Message{Role: session.User}
+		size := 1
+		if part.Image != nil {
+			fragment.Content = header + part.Text + "\n\n"
+			fragment.Attachments = []session.MessageAttachment{session.CloneMessageAttachment(*part.Image)}
+			ok, err := fits(fragment)
+			if err != nil {
+				return summaryBatch{}, err
 			}
-			size = utf8Prefix(remaining, low)
+			if !ok {
+				break
+			}
+		} else {
+			remaining := part.Text[next.offset:]
+			size = utf8Prefix(remaining, min(len(remaining), byteLimit-used))
+			ok, err := fits(session.Message{Role: session.User, Content: header + remaining[:size] + "\n\n"})
+			if err != nil {
+				return summaryBatch{}, err
+			}
+			if !ok {
+				low, high := 0, size
+				for low < high {
+					mid := low + (high-low+1)/2
+					cut := utf8Prefix(remaining, mid)
+					ok, err = fits(session.Message{Role: session.User, Content: header + remaining[:cut] + "\n\n"})
+					if err != nil {
+						return summaryBatch{}, err
+					}
+					if ok {
+						low = mid
+					} else {
+						high = mid - 1
+					}
+				}
+				size = utf8Prefix(remaining, low)
+			}
+			if size == 0 {
+				break
+			}
+			fragment.Content = header + remaining[:size] + "\n\n"
+			next.offset += size
 		}
-		if size == 0 {
-			break
-		}
-		text.WriteString(header)
-		text.WriteString(remaining[:size])
-		text.WriteString("\n\n")
+		fragments = append(fragments, fragment)
 		used += size
-		next.offset += size
-		if next.offset == len(message.Text) {
-			next.message++
+		if part.Image != nil || next.offset == len(part.Text) {
+			next.part++
 			next.offset = 0
+			if next.part == len(message.Parts) {
+				next.message++
+				next.part = 0
+			}
 		} else {
 			break
 		}
 	}
 	if used == 0 {
-		return summaryBatch{}, errors.New("compaction summary fixed prefix leaves no transcript capacity")
+		return summaryBatch{}, errors.New("compaction summary indivisible image or fixed prefix leaves no transcript capacity")
 	}
-	return summaryBatch{transcript: text.String(), next: next, bytes: used}, nil
+	return summaryBatch{messages: fragments, next: next, bytes: used}, nil
 }
 
 func utf8Prefix(text string, size int) int {
