@@ -82,7 +82,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 					}
 				}
 			} else {
-				summary, err := g.generateBatch(ctx, req, prepared, inputTokens, policy, &details)
+				summary, err := g.generateBatch(ctx, req, prepared, inputTokens, &details)
 				if err == nil {
 					previous = summary
 					cursor = batch.next
@@ -109,11 +109,28 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 	return previous, details, nil
 }
 
-// Keep the prepared source unused so transport replay and output refitting never
-// reopen attachments. Only independent replay handles are streamed and closed.
-func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provider.Request, frozen provider.PreparedRequest, inputTokens int64, policy contextpolicy.Policy, details *sessioncompaction.SummaryGenerationDetails) (summary string, err error) {
+// Reserve the reduced-output handle before streaming the single-use source.
+// Retries replay consumed handles; regeneration uses only the frozen refit.
+func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provider.Request, frozen provider.PreparedRequest, inputTokens int64, details *sessioncompaction.SummaryGenerationDetails) (summary string, err error) {
 	if frozen != nil {
 		defer func() { err = errors.Join(err, frozen.Close()) }()
+	}
+	var refitted provider.PreparedRequest
+	if frozen != nil {
+		defer func() {
+			if refitted != nil {
+				err = errors.Join(err, refitted.Close())
+			}
+		}()
+		if limiter, ok := frozen.(provider.PreparedRequestOutputLimiter); ok {
+			refitted, err = limiter.WithMaxOutputTokens(ctx, retrySummaryCap(req.MaxOutputTokens))
+			if err != nil {
+				return "", err
+			}
+			if refitted == nil {
+				return "", errors.New("provider returned nil frozen output refit")
+			}
+		}
 	}
 	for generation := 0; generation < 2; generation++ {
 		cap := req.MaxOutputTokens
@@ -135,7 +152,12 @@ func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provide
 			attempt.LogicalRequestID = req.LogicalRequestID
 			attempt.AttemptID = fmt.Sprintf("%s:generation:%d:attempt:%d", attempt.LogicalRequestID, generation, details.Attempts)
 			current := frozen
-			if frozen != nil {
+			if frozen != nil && (n > 0 || generation > 0) {
+				if n == 0 {
+					if err := frozen.Close(); err != nil {
+						return summaryOutput{}, err
+					}
+				}
 				if replay, ok := frozen.(provider.PreparedRequestReplay); ok {
 					var err error
 					current, err = replay.PrepareRetry(attemptCtx, attempt)
@@ -148,7 +170,7 @@ func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provide
 					if current.PayloadFingerprint() != frozen.PayloadFingerprint() {
 						return summaryOutput{}, errors.Join(errors.New("compaction retry changed frozen input"), current.Close())
 					}
-				} else if n > 0 || generation > 0 {
+				} else {
 					return summaryOutput{}, providerretry.WithAdvice(errors.New("summary request lacks frozen replay"), providerretry.Advice{Category: providerretry.Permanent})
 				}
 			}
@@ -180,21 +202,11 @@ func (g ProviderSummaryGenerator) generateBatch(ctx context.Context, req provide
 		req.MaxOutputTokens = retrySummaryCap(cap)
 		details.RetryCapTokens = req.MaxOutputTokens
 		if frozen != nil {
-			limiter, ok := frozen.(provider.PreparedRequestOutputLimiter)
-			if !ok {
+			if refitted == nil {
 				return "", errors.New("summary request lacks frozen output refit")
 			}
-			next, err := limiter.WithMaxOutputTokens(ctx, req.MaxOutputTokens)
-			if err != nil {
-				return "", err
-			}
-			if next == nil {
-				return "", errors.New("provider returned nil frozen output refit")
-			}
-			if err := frozen.Close(); err != nil {
-				return "", errors.Join(err, next.Close())
-			}
-			frozen = next
+			frozen = refitted
+			refitted = nil
 		}
 	}
 	panic("unreachable summary generation")
