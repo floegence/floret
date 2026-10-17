@@ -111,6 +111,22 @@ type sqliteBackend struct {
 	closed              bool
 }
 
+// beginTransaction owns a connection until rollback has actually completed.
+// database/sql can return ErrTxDone while its cancellation goroutine is still
+// rolling back; Conn.Close joins that work before another owner can open files.
+func (backend *sqliteBackend) beginTransaction(ctx context.Context, options *sql.TxOptions) (*sql.Tx, func(), error) {
+	connection, err := backend.db.Conn(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	transaction, err := connection.BeginTx(ctx, options)
+	if err != nil {
+		_ = connection.Close()
+		return nil, nil, err
+	}
+	return transaction, func() { _ = transaction.Rollback(); _ = connection.Close() }, nil
+}
+
 func (backend *sqliteBackend) initialize(ctx context.Context) error {
 	if _, err := backend.db.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
 		return err
@@ -133,11 +149,11 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 	if _, err := backend.db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
 		return err
 	}
-	tx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	tx, finish, err := backend.beginTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer finish()
 	var tableCount int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*)
@@ -181,11 +197,11 @@ func (backend *sqliteBackend) View(ctx context.Context, callback func(spi.ReadTx
 	if backend.isClosed() {
 		return spi.ErrClosed
 	}
-	sqlTx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	sqlTx, finish, err := backend.beginTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
 	if err != nil {
 		return classifySQLiteError(ctx, err)
 	}
-	defer sqlTx.Rollback()
+	defer finish()
 	tx := &sqliteTx{ctx: ctx, tx: sqlTx, active: true, readOnly: true}
 	if err := func() error {
 		defer tx.expire()
@@ -203,11 +219,11 @@ func (backend *sqliteBackend) Update(ctx context.Context, callback func(spi.Writ
 	if backend.isClosed() {
 		return spi.ErrClosed
 	}
-	sqlTx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	sqlTx, finish, err := backend.beginTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return classifySQLiteError(ctx, err)
 	}
-	defer sqlTx.Rollback()
+	defer finish()
 	tx := &sqliteTx{ctx: ctx, tx: sqlTx, active: true}
 	if err := func() error {
 		defer tx.expire()
@@ -258,11 +274,11 @@ func (backend *sqliteBackend) ResetFloretStorage(ctx context.Context) (bool, err
 	if backend.isClosed() {
 		return false, spi.ErrClosed
 	}
-	tx, err := backend.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	tx, finish, err := backend.beginTransaction(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return false, classifySQLiteError(ctx, err)
 	}
-	defer tx.Rollback()
+	defer finish()
 	var count int64
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM floret_backend_records`).Scan(&count); err != nil {
 		return false, classifySQLiteError(ctx, err)
