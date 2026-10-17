@@ -374,6 +374,7 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 	}
 
 	completed := int64(0)
+	indexed := int64(0)
 	total := int64(len(memory.threads))
 	reportStartupWork(ctx, StartupPhaseVerifying, 0, total)
 	for id := range memory.threads {
@@ -429,7 +430,9 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 		if rebuild {
 			rebuilt = true
 			repo.reportStartupPhase(StartupPhaseIndexing)
-			reportStartupWork(ctx, StartupPhaseIndexing, completed, total)
+			// Correspondence checks can discover more derived work. Do not present
+			// the verification inventory as a known index-build total.
+			reportStartupWork(ctx, StartupPhaseIndexing, indexed, 0)
 			if err := index.DeleteIndexThread(id); err != nil {
 				return err
 			}
@@ -448,9 +451,13 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 			if err := putQueryManifest(writer, id, state.leaf); err != nil {
 				return err
 			}
+			indexed++
+			reportStartupWork(ctx, StartupPhaseIndexing, indexed, 0)
 		}
 		completed++
-		reportStartupWork(ctx, repo.startupPhase, completed, total)
+		if !rebuilt {
+			reportStartupWork(ctx, StartupPhaseVerifying, completed, total)
+		}
 	}
 	if !inspection && rebuilt {
 		if checker, ok := tx.(spi.IndexIntegrityChecker); ok {
