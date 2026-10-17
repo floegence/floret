@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.51.1 - 2026-10-17
+
+- Respect server-owned output control for visual summaries; reserve frozen output refits only where the provider supports client output limits.
+
 ## v7.51.0 - 2026-10-17
 
 - Add stable MessageAttachment.Locator descriptor identifiers and project confirmed tool attachments through canonical ThreadItem views and scoped history search/read.
