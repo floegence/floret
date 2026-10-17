@@ -473,6 +473,10 @@ output using their own presentation clock without inventing lifecycle timers.
 Gateways expose structured `provider.RetryAdvice` through `RetryAdviser` and
 `WithRetryAdvice`, preserving the original error cause. `HTTPRetryAdvice`
 parses response-time server deadlines, exact machine codes and HTTP status.
+The exact `basispoints_tool_arguments_stalled` code, including HTTP 200 stream
+errors, uses `RetryStreamInterrupted` and the same bounded recovery policy.
+Unknown codes and error prose do not establish retry permission; permanent
+statuses and explicit server retry prohibitions retain priority.
 Authentication, billing, invalid contracts, unknown errors and unsafe hosted
 requests are never automatically replayed. Declare `HostedToolDefinition.ReplaySafe`
 only for verified read-only provider capabilities. Expanded prepared gateways
