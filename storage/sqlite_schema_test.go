@@ -84,7 +84,7 @@ func TestPhysicalMigrationPreservesOpaqueRecordsAndRollsBack(t *testing.T) {
 			}
 			want := "1"
 			if failure == "none" {
-				want = "2"
+				want = "3"
 			}
 			if version != want {
 				t.Fatalf("version=%s want %s", version, want)

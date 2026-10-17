@@ -9,23 +9,17 @@ import (
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
-	"sort"
 	"strings"
-	"time"
-	"unicode"
 	"unicode/utf8"
 )
 
 type queryPart struct{ field, text string }
 type queryRecord struct {
-	indexID    uint32
 	key        string
 	row        threadquery.Record
+	sources    []string
 	parts      []queryPart
 	activities []*tools.ActivityPresentation
-	postings   []uint32
-	// Positions are derived Unicode word/rune positions, never query text copies.
-	positions map[string][]int
 }
 type queryThread struct {
 	reasoningOpen     map[string]bool
@@ -39,142 +33,85 @@ type queryThread struct {
 	previousAssistant bool
 	order             int64
 }
-type queryTimeRow struct {
-	at     time.Time
-	record *queryRecord
-}
-type queryIndex struct {
-	omitTextPostings bool
-	timeCounts       map[string]int
-	recordsByID      []*queryRecord
-	freeRecordSlots  []uint32
-	postingSlots     []*queryPosting
-	freePostingSlots []uint32
-	records          map[string]*queryRecord
-	postings         map[string]*queryPosting
-	times            map[string][]queryTimeRow
-	threads          map[string]*queryThread
-	dirty            map[string]bool
-	snapshots        map[string]*querySnapshot
-	snapshotBytes    int64
-	verified         int // candidate verification counter for deterministic performance tests
-}
 
-func newQueryIndex() *queryIndex {
-	return &queryIndex{timeCounts: map[string]int{}, records: map[string]*queryRecord{}, postings: map[string]*queryPosting{}, times: map[string][]queryTimeRow{}, threads: map[string]*queryThread{}, dirty: map[string]bool{}, snapshots: map[string]*querySnapshot{}}
-}
-func (r *MemoryRepo) markQueryDirty(threadID string) {
-	if r.queryIndex != nil && r.mutation == nil {
-		r.queryIndex.dirty[threadID] = true
-	}
-}
-func (r *MemoryRepo) syncQueryIndex(ctx context.Context) error {
-	if r.queryIndex == nil {
-		r.queryIndex = newQueryIndex()
-		for id := range r.threads {
-			r.queryIndex.dirty[id] = true
-		}
-	}
-	for id := range r.queryIndex.dirty {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := r.updateQueryThread(id); err != nil {
-			return err
-		}
-		delete(r.queryIndex.dirty, id)
-	}
-	r.queryIndex.compactTimes()
-	return nil
-}
+// queryProjector is the only canonical-to-search projection. It owns no
+// inverted index; its records are disposable source views for one thread.
+type queryProjector struct{ changed map[string]*queryRecord }
 
-func (r *MemoryRepo) updateQueryThread(id string) error {
-	idx := r.queryIndex
+func (projector *queryProjector) replace(state *queryThread, record *queryRecord) {
+	state.records[record.key] = record
+	if projector.changed != nil {
+		projector.changed[record.key] = record
+	}
+}
+func newQueryThread() *queryThread {
+	return &queryThread{reasoningOpen: map[string]bool{}, lastReasoning: map[string]string{}, records: map[string]*queryRecord{}, segmented: map[string]bool{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
+}
+func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryThread, error) {
 	meta, found := r.threads[id]
-	state := idx.threads[id]
 	if !found {
-		if state != nil {
-			for _, record := range state.records {
-				idx.remove(record)
-			}
-			delete(idx.threads, id)
-		}
-		// Deletion invalidates whole snapshots, including earlier pages and Read refs.
-		for key, snapshot := range idx.snapshots {
-			if snapshot.authorized[id] {
-				idx.dropSnapshot(key)
-			}
-		}
-		return nil
+		return nil, nil
 	}
-	var tail []Entry
-	if state != nil && state.leaf != meta.LeafID {
-		current := meta.LeafID
-		for current != "" && current != state.leaf {
-			ordinal, ok := r.entryOrdinals[id][current]
-			if !ok {
-				return ErrAuthorityCorrupt
-			}
-			entry := r.entries[id][ordinal]
-			tail = append(tail, entry)
-			current = entry.ParentID
-		}
-		if current != state.leaf {
-			state = nil
-			tail = nil
-		}
-		for left, right := 0, len(tail)-1; left < right; left, right = left+1, right-1 {
-			tail[left], tail[right] = tail[right], tail[left]
-		}
+	path, err := pathLocked(r.threads, r.entries, id, meta.LeafID)
+	if err != nil {
+		return nil, err
 	}
-	if state == nil {
-		if previous := idx.threads[id]; previous != nil {
-			for _, record := range previous.records {
-				idx.remove(record)
-			}
+	state := newQueryThread()
+	projector := &queryProjector{}
+	for _, entry := range path {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		var err error
-		tail, err = pathLocked(r.threads, r.entries, id, meta.LeafID)
-		if err != nil {
-			return err
-		}
-		state = &queryThread{reasoningOpen: map[string]bool{}, lastReasoning: map[string]string{}, records: map[string]*queryRecord{}, segmented: map[string]bool{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
-		idx.threads[id] = state
-	}
-	for _, entry := range tail {
 		if entry.Type == EntrySteeringApplied {
 			resolution, err := DecodeSteeringResolution(entry)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			ordinal, exists := r.entryOrdinals[id][resolution.SteeringID]
-			if !exists {
-				return ErrAuthorityCorrupt
+			ordinal, ok := r.entryOrdinals[id][resolution.SteeringID]
+			if !ok {
+				return nil, ErrAuthorityCorrupt
 			}
 			source := r.entries[id][ordinal]
 			entry.Type = EntryUserMessage
 			entry.Message = source.Message
 			entry.ID = source.ID
 		}
-		if err := idx.observe(state, id, entry); err != nil {
-			return err
+		if err := projector.observe(state, id, entry); err != nil {
+			return nil, err
 		}
 	}
-	state.leaf = meta.LeafID
-	key := id + "\x00threads"
-	activity, outcome := "idle", ""
-	switch state.lifecycle.Status {
-	case "running", "waiting":
-		activity = "active"
-	case "completed", "failed", "interrupted", "cancelled":
-		outcome = state.lifecycle.Status
-	}
-	record := &queryRecord{key: key, row: threadquery.Record{Object: threadquery.Threads, ThreadID: identity.ThreadID(id), ParentThreadID: identity.ThreadID(meta.ParentThreadID), Title: meta.Title, Activity: activity, Outcome: outcome, Status: string(meta.Lifecycle), Time: meta.CreatedAt.UTC(), CreatedAt: meta.CreatedAt.UTC(), UpdatedAt: meta.UpdatedAt.UTC()}, parts: []queryPart{{"title", meta.Title}}}
-	idx.replace(state, record)
-	return nil
+	projector.finish(state, id, meta)
+	return state, nil
 }
 
-func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry) error {
+// queryEntryParts is shared by projection and lazy canonical materialization.
+func queryEntryParts(entry Entry) []queryPart {
+	var parts []queryPart
+	switch entry.Type {
+	case EntryUserMessage, EntryAssistantMessage, EntrySteeringRequested:
+		parts = append(parts, queryPart{"body", entry.Message.Content})
+		for _, attachment := range entry.Message.Attachments {
+			parts = append(parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
+		}
+		for _, ref := range entry.Message.References {
+			parts = append(parts, queryPart{"reference_label", ref.Label}, queryPart{"reference_text", ref.Text})
+			if ref.ReferencedThreadID != "" {
+				parts = append(parts, queryPart{"referenced_thread_id", ref.ReferencedThreadID})
+			}
+		}
+	case EntryToolCall:
+		parts = append(parts, queryPart{"tool_name", entry.Message.ToolName}, queryPart{"arguments", entry.Message.ToolArgs})
+	case EntryToolResult:
+		parts = append(parts, queryPart{"result", entry.Message.Content})
+		if entry.Message.ToolResult != nil {
+			for _, attachment := range entry.Message.ToolResult.Attachments {
+				parts = append(parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
+			}
+		}
+	}
+	return parts
+}
+func (projector *queryProjector) observe(state *queryThread, threadID string, entry Entry) error {
 	at, err := EntryOccurrenceTime(entry)
 	if err != nil {
 		return err
@@ -207,23 +144,15 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 		if assistant {
 			base.Role = "assistant"
 		}
-		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: []queryPart{{"body", entry.Message.Content}}}
-		for _, attachment := range entry.Message.Attachments {
-			record.parts = append(record.parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
-		}
-		for _, ref := range entry.Message.References {
-			record.parts = append(record.parts, queryPart{"reference_label", ref.Label}, queryPart{"reference_text", ref.Text})
-			if ref.ReferencedThreadID != "" {
-				record.parts = append(record.parts, queryPart{"referenced_thread_id", ref.ReferencedThreadID})
-			}
-		}
+		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: queryEntryParts(entry), sources: []string{entry.ID}}
 		if assistant && state.previous != nil && MergeAssistantSegment(state.segmented[entry.TurnID], state.previousAssistant, state.previous.row.TurnID.String(), state.previous.row.RunID.String(), entry.TurnID, entry.RunID) {
 			record = copyQueryRecord(state.previous)
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
+			record.sources = append(record.sources, entry.ID)
 		} else {
 			state.order++
 		}
-		idx.replace(state, record)
+		projector.replace(state, record)
 		state.previous = record
 		state.previousAssistant = assistant
 	case EntryToolCall, EntryToolResult:
@@ -243,9 +172,9 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 		base.ToolKind = "local"
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + entry.Message.ToolCallID
-		record := &queryRecord{key: key, row: base}
+		record := &queryRecord{key: key, row: base, sources: []string{entry.ID}}
 		if entry.Type == EntryToolCall {
-			record.parts = []queryPart{{"tool_name", entry.Message.ToolName}, {"arguments", entry.Message.ToolArgs}}
+			record.parts = queryEntryParts(entry)
 			state.order++
 		} else {
 			previous := state.records[key]
@@ -261,12 +190,10 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 			record.row.CompletedAt = at.UTC()
 			record.row.Elapsed = at.Sub(record.row.Time)
 			record.row.Status = entry.Message.ToolResult.Status
-			record.parts = append(record.parts, queryPart{"result", entry.Message.Content})
-			for _, attachment := range entry.Message.ToolResult.Attachments {
-				record.parts = append(record.parts, queryPart{"attachment", session.AttachmentLabel(attachment)})
-			}
+			record.parts = append(record.parts, queryEntryParts(entry)...)
+			record.sources = append(record.sources, entry.ID)
 		}
-		idx.replace(state, record)
+		projector.replace(state, record)
 	case EntryCustom:
 		if entry.Metadata["kind"] != HostedToolEntryKind {
 			return nil
@@ -283,9 +210,10 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 		base.ToolKind = "hosted"
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + ev.ToolID
-		record := &queryRecord{key: key, row: base, parts: []queryPart{{"tool_name", ev.ToolName}}}
+		record := &queryRecord{key: key, row: base, parts: []queryPart{{"tool_name", ev.ToolName}}, sources: []string{entry.ID}}
 		if previous := state.records[key]; previous != nil {
 			record = copyQueryRecord(previous)
+			record.sources = append(record.sources, entry.ID)
 		} else {
 			state.order++
 		}
@@ -310,7 +238,7 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 		} else {
 			delete(state.hostedPending[executionKey], key)
 		}
-		idx.replace(state, record)
+		projector.replace(state, record)
 	case EntryTurnMarker:
 		if entry.TurnStatus == TurnCompleted || entry.TurnStatus == TurnFailed || entry.TurnStatus == TurnAborted {
 			executionKey := entry.TurnID + "\x00" + entry.RunID
@@ -320,7 +248,7 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 					record.row.Status = "canceled"
 					record.row.CompletedAt = at.UTC()
 					record.row.Elapsed = at.Sub(record.row.Time)
-					idx.replace(state, record)
+					projector.replace(state, record)
 				}
 			}
 			delete(state.hostedPending, executionKey)
@@ -331,93 +259,9 @@ func (idx *queryIndex) observe(state *queryThread, threadID string, entry Entry)
 func copyQueryRecord(record *queryRecord) *queryRecord {
 	result := *record
 	result.parts = append([]queryPart(nil), record.parts...)
+	result.sources = append([]string(nil), record.sources...)
 	result.activities = append([]*tools.ActivityPresentation(nil), record.activities...)
-	result.postings = nil
-	result.positions = nil
 	return &result
-}
-func (idx *queryIndex) replace(state *queryThread, record *queryRecord) {
-	if previous := idx.records[record.key]; previous != nil {
-		idx.remove(previous)
-	}
-	idx.allocateRecordSlot(record)
-	idx.records[record.key] = record
-	state.records[record.key] = record
-	values := map[string]string{"object": string(record.row.Object), "thread": record.row.ThreadID.String(), "parent": record.row.ParentThreadID.String(), "turn": record.row.TurnID.String(), "run": record.row.RunID.String(), "role": record.row.Role, "tool_name": record.row.ToolName, "tool_kind": record.row.ToolKind, "status": record.row.Status, "activity": record.row.Activity, "outcome": record.row.Outcome}
-	for field, value := range values {
-		idx.addPosting("f\x00"+field+"\x00"+value, record)
-	}
-	// N-grams cover punctuation, Chinese, code and fragments inside words. Word
-	// positions additionally preserve Unicode token locations for diagnostics.
-	record.positions = map[string][]int{}
-	for _, field := range []string{"text", "title", "arguments", "result"} {
-		if idx.omitTextPostings {
-			continue
-		}
-		runes := []rune(strings.ToLower(record.text(field)))
-		text := string(runes)
-		offsets := make([]int, 0, len(runes)+1)
-		for offset := range text {
-			offsets = append(offsets, offset)
-		}
-		offsets = append(offsets, len(text))
-		grams := map[string]struct{}{}
-		for n := 1; n <= 3; n++ {
-			for i := 0; i+n <= len(runes); i++ {
-				grams[text[offsets[i]:offsets[i+n]]] = struct{}{}
-			}
-		}
-		for gram := range grams {
-			idx.addPosting("g\x00"+field+"\x00"+gram, record)
-		}
-		start := -1
-		for i := 0; i <= len(runes); i++ {
-			word := i < len(runes) && (unicode.IsLetter(runes[i]) || unicode.IsDigit(runes[i]) || runes[i] == '_')
-			if word && start < 0 {
-				start = i
-			}
-			if !word && start >= 0 {
-				term := field + "\x00" + string(runes[start:i])
-				record.positions[term] = append(record.positions[term], start)
-				start = -1
-			}
-		}
-	}
-	for field, at := range record.times() {
-		if at.IsZero() {
-			continue
-		}
-		key := string(record.row.Object) + "\x00" + field
-		idx.timeCounts[key]++
-		rows := idx.times[key]
-		p := sort.Search(len(rows), func(i int) bool { return rows[i].at.After(at) })
-		rows = append(rows, queryTimeRow{})
-		copy(rows[p+1:], rows[p:])
-		rows[p] = queryTimeRow{at, record}
-		idx.times[key] = rows
-	}
-}
-func (idx *queryIndex) remove(record *queryRecord) {
-	delete(idx.records, record.key)
-	idx.recordsByID[record.indexID] = nil
-	idx.freeRecordSlots = append(idx.freeRecordSlots, record.indexID)
-	for _, slot := range record.postings {
-		posting := idx.postingSlots[slot]
-		posting.remove(record)
-		if posting.total == 0 {
-			delete(idx.postings, posting.key)
-			idx.postingSlots[slot] = nil
-			idx.freePostingSlots = append(idx.freePostingSlots, slot)
-		}
-	}
-
-	for field, at := range record.times() {
-		if !at.IsZero() {
-			idx.timeCounts[string(record.row.Object)+"\x00"+field]--
-		}
-	}
-	// Time rows are immutable and checked against the current identity map. Bound
-	// retired rows through occasional compaction, avoiding O(history) per commit.
 }
 func (record *queryRecord) text(field string) string {
 	var result strings.Builder
@@ -440,31 +284,13 @@ func (record *queryRecord) text(field string) string {
 	}
 	return result.String()
 }
-func (record *queryRecord) times() map[string]time.Time {
-	return map[string]time.Time{"time": record.row.Time, "created": record.row.CreatedAt, "updated": record.row.UpdatedAt, "completed": record.row.CompletedAt}
-}
-func (idx *queryIndex) compactTimes() {
-	for key, rows := range idx.times {
-		live := idx.timeCounts[key]
-		if len(rows) <= live*2+256 {
-			continue
-		}
-		kept := make([]queryTimeRow, 0, live)
-		for _, row := range rows {
-			if idx.records[row.record.key] == row.record {
-				kept = append(kept, row)
-			}
-		}
-		idx.times[key] = kept
-	}
-}
 func (record *queryRecord) estimateBytes() int64 {
-	size := int64(768 + len(record.key) + len(record.row.Title) + len(record.postings)*4)
-	for key, positions := range record.positions {
-		size += int64(64 + len(key) + len(positions)*8)
-	}
+	size := int64(768 + len(record.key) + len(record.row.Title))
 	for _, part := range record.parts {
 		size += int64(len(part.text) + 32)
+	}
+	for _, source := range record.sources {
+		size += int64(len(source) + 16)
 	}
 	if len(record.activities) > 0 {
 		raw, _ := json.Marshal(record.activities)
@@ -472,7 +298,7 @@ func (record *queryRecord) estimateBytes() int64 {
 	}
 	return size
 }
-func (idx *queryIndex) checkAuthority(scope threadquery.Scope) (map[string]bool, error) {
+func (idx *querySnapshots) checkAuthority(scope threadquery.Scope) (map[string]bool, error) {
 	if strings.TrimSpace(scope.Authority) == "" || !utf8.ValidString(scope.Authority) {
 		return nil, fmt.Errorf("%w: host authority is required", threadquery.ErrInvalidQuery)
 	}
@@ -484,4 +310,101 @@ func (idx *queryIndex) checkAuthority(scope threadquery.Scope) (map[string]bool,
 		authorized[id.String()] = true
 	}
 	return authorized, nil
+}
+
+func (projector *queryProjector) finish(state *queryThread, id string, meta ThreadMeta) {
+	state.leaf = meta.LeafID
+	activity, outcome := "idle", ""
+	switch state.lifecycle.Status {
+	case "running", "waiting":
+		activity = "active"
+	case "completed", "failed", "interrupted", "cancelled":
+		outcome = state.lifecycle.Status
+	}
+	record := &queryRecord{key: id + "\x00threads", row: threadquery.Record{Object: threadquery.Threads, ThreadID: identity.ThreadID(id), ParentThreadID: identity.ThreadID(meta.ParentThreadID), Title: meta.Title, Activity: activity, Outcome: outcome, Status: string(meta.Lifecycle), Time: meta.CreatedAt.UTC(), CreatedAt: meta.CreatedAt.UTC(), UpdatedAt: meta.UpdatedAt.UTC()}, parts: []queryPart{{"title", meta.Title}}}
+	projector.replace(state, record)
+}
+
+func cloneQueryThread(source *queryThread) *queryThread {
+	result := *source
+	result.records = map[string]*queryRecord{}
+	for key, record := range source.records {
+		result.records[key] = record
+	}
+	result.reasoningOpen = map[string]bool{}
+	for key, value := range source.reasoningOpen {
+		result.reasoningOpen[key] = value
+	}
+	result.lastReasoning = map[string]string{}
+	for key, value := range source.lastReasoning {
+		result.lastReasoning[key] = value
+	}
+	result.segmented = map[string]bool{}
+	for key, value := range source.segmented {
+		result.segmented[key] = value
+	}
+	result.hostedPending = map[string]map[string]*queryRecord{}
+	for key, values := range source.hostedPending {
+		result.hostedPending[key] = map[string]*queryRecord{}
+		for id, record := range values {
+			result.hostedPending[key][id] = record
+		}
+	}
+	return &result
+}
+func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous *queryThread) (*queryThread, map[string]*queryRecord, error) {
+	meta, ok := r.threads[id]
+	if !ok {
+		return nil, nil, nil
+	}
+	var tail []Entry
+	current := meta.LeafID
+	if previous != nil {
+		for current != "" && current != previous.leaf {
+			ordinal, ok := r.entryOrdinals[id][current]
+			if !ok {
+				return nil, nil, ErrAuthorityCorrupt
+			}
+			entry := r.entries[id][ordinal]
+			tail = append(tail, entry)
+			current = entry.ParentID
+		}
+		if current != previous.leaf {
+			previous = nil
+		}
+	}
+	if previous == nil {
+		state, err := r.projectQueryThread(ctx, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return state, state.records, nil
+	}
+	state := cloneQueryThread(previous)
+	projector := &queryProjector{changed: map[string]*queryRecord{}}
+	for i := len(tail) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		entry := tail[i]
+		if entry.Type == EntrySteeringApplied {
+			resolution, err := DecodeSteeringResolution(entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			ordinal, ok := r.entryOrdinals[id][resolution.SteeringID]
+			if !ok {
+				return nil, nil, ErrAuthorityCorrupt
+			}
+			source := r.entries[id][ordinal]
+			entry.Type = EntryUserMessage
+			entry.Message = source.Message
+			entry.ID = source.ID
+		}
+		if err := projector.observe(state, id, entry); err != nil {
+			return nil, nil, err
+		}
+	}
+	projector.finish(state, id, meta)
+	return state, projector.changed, nil
 }

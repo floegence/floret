@@ -195,6 +195,7 @@ func MaintainSQLite(ctx context.Context, path string, policy SQLiteMaintenancePo
 }
 
 type sqliteQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 

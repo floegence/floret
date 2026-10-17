@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 	"sort"
 	"strconv"
@@ -25,7 +26,7 @@ type queryContinuation struct {
 	ref           threadquery.RecordRef
 }
 type querySnapshot struct {
-	index                   *queryIndex
+	index                   *querySnapshots
 	secret                  [32]byte
 	id, digest, scopeDigest string
 	authorized              map[string]bool
@@ -65,20 +66,20 @@ func queryDigest(scope threadquery.Scope, input any) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
-func (idx *queryIndex) dropSnapshot(id string) {
+func (idx *querySnapshots) dropSnapshot(id string) {
 	if s := idx.snapshots[id]; s != nil {
 		idx.snapshotBytes -= s.bytes
 		delete(idx.snapshots, id)
 	}
 }
-func (idx *queryIndex) expireSnapshots(now time.Time) {
+func (idx *querySnapshots) expireSnapshots(now time.Time) {
 	for id, s := range idx.snapshots {
 		if !now.Before(s.expires) {
 			idx.dropSnapshot(id)
 		}
 	}
 }
-func (idx *queryIndex) snapshot(digest string, authorized map[string]bool, records []*queryRecord, groups []threadquery.Group, total int, now time.Time) (*querySnapshot, error) {
+func (idx *querySnapshots) snapshot(digest string, authorized map[string]bool, records []*queryRecord, groups []threadquery.Group, total int, now time.Time) (*querySnapshot, error) {
 	idx.expireSnapshots(now)
 	size := int64(512 + len(authorized)*64 + len(groups)*64 + len(records)*256)
 	for _, record := range records {
@@ -124,18 +125,18 @@ func (r *MemoryRepo) querySnapshotForScope(scope threadquery.Scope, token string
 	if !found {
 		return nil, threadquery.ErrCursorInvalid
 	}
-	r.queryIndex.expireSnapshots(r.now().UTC())
-	snapshot := r.queryIndex.snapshots[id]
+	r.querySnapshots.expireSnapshots(r.now().UTC())
+	snapshot := r.querySnapshots.snapshots[id]
 	if snapshot == nil {
 		return nil, threadquery.ErrCursorInvalid
 	}
 	if snapshot.scopeDigest != queryDigest(scope, nil) {
-		r.queryIndex.dropSnapshot(id)
+		r.querySnapshots.dropSnapshot(id)
 		return nil, threadquery.ErrCursorInvalid
 	}
 	for threadID := range snapshot.authorized {
 		if _, ok := r.threads[threadID]; !ok {
-			r.queryIndex.dropSnapshot(id)
+			r.querySnapshots.dropSnapshot(id)
 			return nil, threadquery.ErrCursorInvalid
 		}
 	}
@@ -174,11 +175,10 @@ func queryRow(snapshot *querySnapshot, record *queryRecord, filter threadquery.F
 		}
 		normalized := strings.ToLower(term)
 		runePosition := -1
-		if positions := record.positions["text\x00"+normalized]; len(positions) > 0 {
-			runePosition = positions[0]
-		} else if position := strings.Index(lower, normalized); position >= 0 {
+		if position := strings.Index(lower, normalized); position >= 0 {
 			runePosition = utf8.RuneCountInString(lower[:position])
 		}
+
 		if runePosition >= 0 {
 			count := 0
 			for position := range text {
@@ -214,10 +214,10 @@ func (r *MemoryRepo) Query(ctx context.Context, scope threadquery.Scope, input t
 	if err := validateQuery(input.Object, input.Filter, &input.Sort, &input.Limit); err != nil {
 		return threadquery.Page{}, err
 	}
-	if err := r.syncQueryIndex(ctx); err != nil {
+	if err := r.prepareQuery(ctx); err != nil {
 		return threadquery.Page{}, err
 	}
-	authorized, err := r.queryIndex.checkAuthority(scope)
+	authorized, err := r.querySnapshots.checkAuthority(scope)
 	if err != nil {
 		return threadquery.Page{}, err
 	}
@@ -234,12 +234,12 @@ func (r *MemoryRepo) Query(ctx context.Context, scope threadquery.Scope, input t
 		snapshot, cursor, err = r.continuation(scope, input.Cursor, digest, "query")
 		after = cursor.after
 	} else {
-		records, e := r.queryIndex.selectRecords(ctx, authorized, input.Object, input.Filter)
+		records, e := r.selectQueryRecords(ctx, authorized, input.Object, input.Filter)
 		if e != nil {
 			return threadquery.Page{}, e
 		}
 		sort.Slice(records, func(i, j int) bool { return queryRecordLess(records[i], records[j], input.Sort) })
-		snapshot, err = r.queryIndex.snapshot(digest, authorized, records, nil, len(records), r.now().UTC())
+		snapshot, err = r.querySnapshots.snapshot(digest, authorized, records, nil, len(records), r.now().UTC())
 		if err == nil {
 			snapshot.scopeDigest = queryDigest(scope, nil)
 		}
@@ -288,10 +288,10 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 	if err := ctx.Err(); err != nil {
 		return threadquery.ReadPage{}, err
 	}
-	if err := r.syncQueryIndex(ctx); err != nil {
+	if err := r.prepareQuery(ctx); err != nil {
 		return threadquery.ReadPage{}, err
 	}
-	if _, err := r.queryIndex.checkAuthority(scope); err != nil {
+	if _, err := r.querySnapshots.checkAuthority(scope); err != nil {
 		return threadquery.ReadPage{}, err
 	}
 	snapshot, err := r.querySnapshotForScope(scope, string(input.Ref))
@@ -456,10 +456,10 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 	if input.Sort.Key != "key" && input.Sort.Key != "count" {
 		return threadquery.AggregatePage{}, threadquery.ErrInvalidQuery
 	}
-	if err := r.syncQueryIndex(ctx); err != nil {
+	if err := r.prepareQuery(ctx); err != nil {
 		return threadquery.AggregatePage{}, err
 	}
-	authorized, err := r.queryIndex.checkAuthority(scope)
+	authorized, err := r.querySnapshots.checkAuthority(scope)
 	if err != nil {
 		return threadquery.AggregatePage{}, err
 	}
@@ -477,7 +477,7 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 		snapshot, cursor, err = r.continuation(scope, input.Cursor, digest, "aggregate")
 		after = cursor.after
 	} else {
-		records, e := r.queryIndex.selectRecords(ctx, authorized, input.Object, input.Filter)
+		records, e := r.selectQueryRecords(ctx, authorized, input.Object, input.Filter)
 		if e != nil {
 			return threadquery.AggregatePage{}, e
 		}
@@ -501,7 +501,7 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 			}
 			return compare < 0
 		})
-		snapshot, err = r.queryIndex.snapshot(digest, authorized, nil, groups, len(records), r.now().UTC())
+		snapshot, err = r.querySnapshots.snapshot(digest, authorized, nil, groups, len(records), r.now().UTC())
 		if err == nil {
 			snapshot.scopeDigest = queryDigest(scope, nil)
 		}
@@ -547,15 +547,25 @@ func queryGroupKey(record *queryRecord, group string) string {
 	return ""
 }
 
+func (repo *BackendRepo) queryView(ctx context.Context, callback func(*MemoryRepo) error) error {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		memory := repo.domainMemory
+		memory.queryReader = queryIndexReader(tx)
+		defer func() { memory.queryReader = nil }()
+		return callback(memory)
+	})
+}
 func (repo *BackendRepo) Query(ctx context.Context, scope threadquery.Scope, input threadquery.QueryInput) (result threadquery.Page, err error) {
-	err = repo.view(ctx, func(memory *MemoryRepo) error { result, err = memory.Query(ctx, scope, input); return err })
+	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Query(ctx, scope, input); return err })
 	return
 }
 func (repo *BackendRepo) Read(ctx context.Context, scope threadquery.Scope, input threadquery.ReadInput) (result threadquery.ReadPage, err error) {
-	err = repo.view(ctx, func(memory *MemoryRepo) error { result, err = memory.Read(ctx, scope, input); return err })
+	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Read(ctx, scope, input); return err })
 	return
 }
 func (repo *BackendRepo) Aggregate(ctx context.Context, scope threadquery.Scope, input threadquery.AggregateInput) (result threadquery.AggregatePage, err error) {
-	err = repo.view(ctx, func(memory *MemoryRepo) error { result, err = memory.Aggregate(ctx, scope, input); return err })
+	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Aggregate(ctx, scope, input); return err })
 	return
 }

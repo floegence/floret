@@ -1509,3 +1509,7 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 - 2026-10-16: Preserve canonical transient context attribution across prompt-cache plan reuse; cached wire snapshots remain transport facts, not provenance owners.
 
 - 2026-10-16: Document optional bounded thread waits, one batch repeat guard, and canonical failure reasons without schema changes.
+
+## 2026-10-17
+
+- Document canonical-owned transactional persistent search indexes, bounded runtime snapshots, optional physical index SPI and counted startup work.

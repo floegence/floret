@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/storage/spi"
 	"io"
 	"maps"
 	"os"
@@ -725,7 +726,8 @@ type MemoryRepo struct {
 	parentEvents      bool
 	mu                sync.Mutex
 	mutation          *backendDomainMutation
-	queryIndex        *queryIndex
+	querySnapshots    *querySnapshots
+	queryReader       spi.IndexReader
 	threads           map[string]ThreadMeta
 	entries           map[string][]Entry
 	entryOrdinals     map[string]map[string]int

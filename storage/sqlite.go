@@ -158,8 +158,9 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 				value BLOB NOT NULL,
 				PRIMARY KEY (namespace, key)
 			)`,
-			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('2' AS BLOB))`,
+			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('3' AS BLOB))`,
 		}
+		statements = append(statements, sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTerms)
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return err
@@ -265,6 +266,17 @@ func (backend *sqliteBackend) ResetFloretStorage(ctx context.Context) (bool, err
 	var count int64
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM floret_backend_records`).Scan(&count); err != nil {
 		return false, classifySQLiteError(ctx, err)
+	}
+	var physical string
+	if err := tx.QueryRowContext(ctx, "SELECT value FROM floret_backend_metadata WHERE name='physical_schema'").Scan(&physical); err != nil {
+		return false, err
+	}
+	if physical == "3" {
+		for _, statement := range []string{"DELETE FROM floret_index_terms", "DELETE FROM floret_index_documents"} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return false, classifySQLiteError(ctx, err)
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM floret_backend_records`); err != nil {
 		return false, classifySQLiteError(ctx, err)

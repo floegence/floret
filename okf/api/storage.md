@@ -67,8 +67,10 @@ The v14 -> v15 edge adds typed thread references and the optional referenced
 ThreadID. It validates exact v14 authority, preserves all canonical bytes,
 request fingerprints and execution identities, and installs v15 in the same
 startup transaction. v14 rejects new thread-reference shapes, including queued
-input; current v15 opens without rewriting records. The derived search index
-has no storage namespace and is rebuilt from the validated current journal.
+input; current v15 opens without rewriting records. The derived search index stores only canonical source locators, metadata and
+contentless postings, maintained in the same canonical transaction. Ordinary
+startup verifies source correspondence and reuses postings. Frozen pagination
+snapshots never persist.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
@@ -124,6 +126,12 @@ uncommitted facts; successful dispatch and turn boundaries clear those pending
 facts after commit. Shutdown flushes remaining additions. The legacy global
 snapshot decoder lives only in [startup migration](../../internal/storage/prompt_migration.go).
 
+SQLite physical format 3 adds persistent document metadata and contentless FTS5
+postings. The contiguous 2 -> 3 edge joins logical storage 8 -> 9 in the runtime
+startup transaction, preserving domain schema 19. Optional transaction-local
+IndexReader and IndexWriter keep physical indexing separate from canonical
+query semantics; other backends use the KV adapter.
+
 SQLite physical format 2 uses a rowid records table with the same unique
 `(namespace, key)` primary key; metadata retains its original layout. Format 1
 conversion copies opaque records with SQL, verifies their content, and commits
@@ -155,7 +163,8 @@ creates no Host, never dispatches providers or tools, and reports whether a
 migration would be needed. Formal startup verifies again under its writable
 transaction. Both paths validate canonical state and the complete search
 projection; inspection omits text postings that would be discarded, while formal
-startup prepares the searchable index. Missing files are reported without
+startup verifies and reuses the searchable index or builds missing derived
+state transactionally. Optional counted startup work reports real thread totals. Missing files are reported without
 creating them. `ErrStoreTooNew`
 retains `ErrUnsupportedSchema` classification for newer logical formats.
 Physical checks report `storage.ErrUnsupportedSQLiteFormat`,

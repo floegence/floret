@@ -26,8 +26,8 @@ func TestSQLiteRecordsSeparatePayloadFromPrimaryIndex(t *testing.T) {
 	if err := backend.db.QueryRow(`SELECT value FROM floret_backend_metadata WHERE name='physical_schema'`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "2" {
-		t.Fatalf("physical schema=%q, want 2", version)
+	if version != "3" {
+		t.Fatalf("physical schema=%q, want 3", version)
 	}
 }
 

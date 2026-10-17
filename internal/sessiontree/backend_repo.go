@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -22,6 +23,8 @@ type BackendRepo struct {
 	now                                  func() time.Time
 	mu                                   sync.Mutex
 	domainMemory                         *MemoryRepo
+	queryThreads                         map[string]*queryThread
+	queryThreadOrder                     []string
 	parentEventObserver                  func([]string)
 	startupProgress                      StartupProgress
 	startupPhase                         StartupPhase
@@ -35,6 +38,7 @@ type StartupPhase string
 const (
 	StartupPhaseMigrating StartupPhase = "migrating"
 	StartupPhaseVerifying StartupPhase = "verifying"
+	StartupPhaseIndexing  StartupPhase = "indexing"
 )
 
 // StartupProgress observes startup phase changes synchronously.
@@ -68,6 +72,9 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 	}
 	var repo *BackendRepo
 	if err := backend.Update(ctx, func(tx spi.WriteTx) error {
+		if _, err := storagebridge.PrepareStartup(tx, nil); err != nil {
+			return err
+		}
 		var err error
 		repo, err = NewBackendRepoInTransaction(ctx, backend, tx, now, nil)
 		if err != nil {
@@ -806,7 +813,7 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
 		return err
 	}
-	return repo.domainMemory.syncQueryIndex(ctx)
+	return repo.prepareQueryStorage(ctx, tx, false)
 }
 
 // VerifyInspectionStateInTransaction retains canonical and projection checks
@@ -815,14 +822,7 @@ func (repo *BackendRepo) VerifyInspectionStateInTransaction(ctx context.Context,
 	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
 		return err
 	}
-	previous := repo.domainMemory.queryIndex
-	defer func() { repo.domainMemory.queryIndex = previous }()
-	repo.domainMemory.queryIndex = newQueryIndex()
-	repo.domainMemory.queryIndex.omitTextPostings = true
-	for id := range repo.domainMemory.threads {
-		repo.domainMemory.queryIndex.dirty[id] = true
-	}
-	return repo.domainMemory.syncQueryIndex(ctx)
+	return repo.prepareQueryStorage(ctx, tx, true)
 }
 
 func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
@@ -1223,6 +1223,9 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := mutation.persist(tx); err != nil {
 			return err
 		}
+		if err := mutation.persistQuery(ctx, tx, repo.queryThreads); err != nil {
+			return err
+		}
 		for threadID, previous := range mutation.journals {
 			if len(mutation.memory.entries[threadID]) <= len(previous.entries) {
 				continue
@@ -1245,11 +1248,12 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 	if err == nil {
 		committedSuccess = true
 		committed.install(repo.domainMemory)
+		repo.installQueryThreads(committed.queryThreads)
 		for id := range committed.threads {
-			repo.domainMemory.markQueryDirty(id)
+			repo.domainMemory.invalidateDeletedQuerySnapshots(id)
 		}
 		for id := range committed.journals {
-			repo.domainMemory.markQueryDirty(id)
+			repo.domainMemory.invalidateDeletedQuerySnapshots(id)
 		}
 	}
 	return err

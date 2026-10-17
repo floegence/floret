@@ -282,7 +282,7 @@ Hosts may pin a committed assistant answer with the optional ForkThreadInput.Sou
 The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and
 `Aggregate` using `threadquery` types. It searches canonical active-path threads,
 user/assistant messages, and persisted local/hosted tool facts through the
-canonical owner's in-memory index. Hosts provide an exact readable ThreadID set
+canonical owner's transactional derived index. Hosts provide an exact readable ThreadID set
 and an authority key on **every** call; reference snapshots never grant access.
 Filters combine with AND (values within one field use OR), support literal
 Unicode substring/keyword/phrase search, and use UTC half-open time ranges.
@@ -760,14 +760,14 @@ storage phases without reading physical records:
 host, err := runtime.Open(ctx, runtime.Options{
     Storage: storage.SQLite("agent.db"),
     StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
-        // Present migrating or verifying without exposing stored content.
+        // Present migrating, verifying or indexing without exposing stored content.
     }),
 })
 ```
 
 The callback is synchronous and must return promptly. Legacy stores report
-`migrating` followed by `verifying`; fresh and current stores report only
-`verifying`. A returned `Host` is ready, and a failed migration remains atomic.
+`migrating` followed by `verifying`. Missing derived indexes also report
+`indexing` before the Host is exposed; current indexes are reused. A returned `Host` is ready, and a failed migration remains atomic.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their
@@ -781,11 +781,13 @@ and pending responses for the affected scopes; repeated request attempts retain
 their original order. Turn settlement and shutdown flush only pending facts.
 Compaction changes the effective model context independently of storage history.
 
-SQLite physical format 2 separates large record values from the primary-key
+SQLite physical format 3 adds source-locator metadata and contentless FTS5
+postings. The contiguous 2 -> 3 edge runs in the same startup transaction.
+Physical format 2 separates large record values from the primary-key
 index using a rowid records table. `runtime.Open` converts format 1, splits the
 legacy global prompt snapshot, migrates the session tree, updates logical
-storage version 8, and verifies the result in one transaction. The session-tree
-schema remains 13. Inspection reports physical upgrades as migration work and
+storage version 9, and verifies the result in one transaction. The session-tree
+schema remains 19. Inspection reports physical upgrades as migration work and
 reuses each merged namespace across pages without writing the source.
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
@@ -803,8 +805,11 @@ the supported migration path in memory without creating a runtime Host. A backup
 includes committed WAL records and never overwrites its destination.
 
 Inspection retains complete canonical and projection validation while omitting
-disposable text-search postings. `runtime.Open` prepares the full in-memory search
-index before exposing the Host; neither path persists a derived search index.
+disposable text-search postings. `runtime.Open` verifies and reuses persistent derived postings before exposing
+the Host, rebuilding only missing or supported derived state. Canonical mutations
+and index updates share one transaction. SQLite uses the optional storage SPI
+index capability; other backends use the generic KV adapter. Search bodies stay
+canonical, and pagination snapshots stay bounded in memory.
 
 Open with `runtime.Options{Storage: source, DeferExecution: true}` when product
 stores or authorization must be prepared first. Reads and pending-input import
@@ -990,3 +995,7 @@ calibration invalidation continue to apply.
 
 See [qualification evidence](scripts/context-qualification/REPORT.md) and
 [unified counter](internal/requestestimate/content.go).
+
+Optional ThreadSummaryReader reads canonical summaries without full history or
+thread actor creation. Options.StartupWorkProgress reports real completed thread
+projections and known totals; StartupPhaseIndexing identifies initial index work.

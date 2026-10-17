@@ -894,6 +894,7 @@ field Options.Storage github.com/floegence/floret/v7/storage.Source
 field Options.EnableParentEvents bool
 field Options.DeferExecution bool
 field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProgress
+field Options.StartupWorkProgress github.com/floegence/floret/v7/runtime.StartupWorkProgress
 field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 type ParentEvent struct
 field ParentEvent.ID string tag="json:\"id\""
@@ -1048,11 +1049,19 @@ const SignalContinue github.com/floegence/floret/v7/runtime.SignalDisposition = 
 type SignalDisposition string
 const SignalWaiting github.com/floegence/floret/v7/runtime.SignalDisposition = "waiting"
 type StartupPhase string
+const StartupPhaseIndexing github.com/floegence/floret/v7/runtime.StartupPhase = "indexing"
 const StartupPhaseMigrating github.com/floegence/floret/v7/runtime.StartupPhase = "migrating"
 const StartupPhaseVerifying github.com/floegence/floret/v7/runtime.StartupPhase = "verifying"
 type StartupProgress interface interface{OnStartupPhase(github.com/floegence/floret/v7/runtime.StartupPhase)}
 type StartupProgressFunc func(github.com/floegence/floret/v7/runtime.StartupPhase)
 method StartupProgressFunc.OnStartupPhase func(phase github.com/floegence/floret/v7/runtime.StartupPhase)
+type StartupWork struct
+field StartupWork.Phase github.com/floegence/floret/v7/runtime.StartupPhase
+field StartupWork.Completed int64
+field StartupWork.Total int64
+type StartupWorkProgress interface interface{OnStartupWork(github.com/floegence/floret/v7/runtime.StartupWork)}
+type StartupWorkProgressFunc func(github.com/floegence/floret/v7/runtime.StartupWork)
+method StartupWorkProgressFunc.OnStartupWork func(work github.com/floegence/floret/v7/runtime.StartupWork)
 type SteerInput struct
 field SteerInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field SteerInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
@@ -1270,6 +1279,7 @@ field ThreadSummary.Failure *github.com/floegence/floret/v7/runtime.ThreadTurnFa
 field ThreadSummary.PendingInput *github.com/floegence/floret/v7/runtime.InputPresentation tag="json:\"pending_input,omitempty\""
 field ThreadSummary.LastItemAt time.Time tag="json:\"last_item_at,omitempty\""
 field ThreadSummary.LastItemPreview string tag="json:\"last_item_preview,omitempty\""
+type ThreadSummaryReader interface interface{Summary(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadSummary, error)}
 type ThreadTitleMode string
 const ThreadTitleModeHostOwned github.com/floegence/floret/v7/runtime.ThreadTitleMode = "host_owned"
 const ThreadTitleModeProvider github.com/floegence/floret/v7/runtime.ThreadTitleMode = "provider"
@@ -1635,10 +1645,25 @@ package github.com/floegence/floret/v7/storage/spi
 type Backend interface interface{Close() error; Update(context.Context, func(github.com/floegence/floret/v7/storage/spi.WriteTx) error) error; View(context.Context, func(github.com/floegence/floret/v7/storage/spi.ReadTx) error) error}
 var ErrClosed error
 var ErrConflict error
+var ErrIndexCorrupt error
 var ErrInvalidArgument error
 var ErrMigrationRequired error
 var ErrNotFound error
 var ErrTransactionClosed error
+type IndexDocument struct
+field IndexDocument.Key string
+field IndexDocument.ThreadID string
+field IndexDocument.Object string
+field IndexDocument.Metadata []byte
+field IndexDocument.Terms []string
+type IndexIntegrityChecker interface interface{CheckIndexIntegrity() error}
+type IndexQuery struct
+field IndexQuery.ThreadIDs []string
+field IndexQuery.Object string
+field IndexQuery.Terms [][]string
+type IndexReader interface interface{QueryIndex(github.com/floegence/floret/v7/storage/spi.IndexQuery) ([]github.com/floegence/floret/v7/storage/spi.IndexDocument, error)}
+type IndexResetter interface interface{ResetIndex() error}
+type IndexWriter interface interface{DeleteIndexThread(string) error; PutIndexDocument(github.com/floegence/floret/v7/storage/spi.IndexDocument) error; github.com/floegence/floret/v7/storage/spi.IndexReader}
 type MaintenanceResetter interface interface{ResetFloretStorage(context.Context) (bool, error)}
 type ReadTx interface interface{Get(namespace string, key []byte) ([]byte, error); Scan(github.com/floegence/floret/v7/storage/spi.ScanRequest) (github.com/floegence/floret/v7/storage/spi.ScanPage, error)}
 type Record struct
