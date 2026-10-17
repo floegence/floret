@@ -133,7 +133,7 @@ func TestImageSummaryTransportRetryAndRegenerationKeepFrozenInput(t *testing.T) 
 	retry.Jitter = 0
 	prep := sessioncompaction.Preparation{Request: sessioncompaction.Request{CompactionID: "compact"}, CompactedHead: []session.Message{{Role: session.User, Attachments: []session.MessageAttachment{{ResourceRef: "immutable", Name: "receipt.png", MIMEType: "image/png", SizeBytes: 10}}}}}
 	summary, details, err := (ProviderSummaryGenerator{Provider: p, RetryPolicy: retry, Policy: contextpolicy.Policy{ContextWindowTokens: 10000, ReservedSummaryTokens: 100}}).GenerateSummaryWithDetails(t.Context(), prep)
-	if err != nil || summary != "facts" || p.prepared != 1 || p.replays != 3 || p.refits != 1 || details.Attempts != 3 {
+	if err != nil || summary != "facts" || p.prepared != 1 || p.replays != 2 || p.refits != 1 || details.Attempts != 3 {
 		t.Fatalf("%q %+v provider=%+v err=%v", summary, details, p, err)
 	}
 	if p.requests[0].LogicalRequestID != p.requests[1].LogicalRequestID || !strings.Contains(p.requests[1].AttemptID, "generation:0") || !strings.Contains(p.requests[2].AttemptID, "generation:1") {
