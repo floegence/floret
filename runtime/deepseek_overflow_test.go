@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"runtime/pprof"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -93,10 +94,11 @@ func TestDeepSeekImageHistoryOverflowRecoversWithoutReplayingTools(t *testing.T)
 }
 
 func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, transportBudget bool) {
-	var calls, overflows, effects, recoveries atomic.Int32
+	var requests, calls, overflows, effects, recoveries atomic.Int32
 	var latestCall string
 	var awaitingRecovery bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		// Use explicit wire tags; the tool output can also be a plain string.
 		var raw struct {
 			Input []map[string]json.RawMessage `json:"input"`
@@ -211,17 +213,27 @@ func testDeepSeekImageHistoryOverflow(t *testing.T, initialHistory string, trans
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send", Input: UserInput{Text: "Capture ten times."}}); err != nil {
 		t.Fatal(err)
 	}
-	// Real image encoding and resolution is slower under the race detector;
-	// wait for the canonical terminal event instead of a short polling helper.
-	waitCtx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	// This bounds the complete ten-tool recovery scenario, including request
+	// estimation and compaction under the race detector, not individual requests.
+	waitStarted := time.Now()
+	waitCtx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	var view ThreadView
 	for {
-		view, err = sub.Next(waitCtx)
+		next, err := sub.Next(waitCtx)
 		if err != nil {
-			t.Fatal(err)
+			t.Logf("image history recovery wait failed after %s: requests=%d calls=%d effects=%d overflows=%d recoveries=%d last_thread=%q last_turn=%q activity=%q outcome=%+v failure=%+v", time.Since(waitStarted), requests.Load(), calls.Load(), effects.Load(), overflows.Load(), recoveries.Load(), view.ThreadID, view.TurnID, view.Activity, view.LastOutcome, view.Failure)
+			var stacks bytes.Buffer
+			if stackErr := pprof.Lookup("goroutine").WriteTo(&stacks, 2); stackErr != nil {
+				t.Logf("capture goroutine stacks: %v", stackErr)
+			}
+			t.Fatalf("wait for image history recovery: %v\ngoroutine stacks before cleanup:\n%s", err, stacks.String())
 		}
-		if view.ThreadID == created.ThreadID && view.Activity == ThreadActivityIdle && view.LastOutcome != nil {
+		if next.ThreadID != created.ThreadID {
+			continue
+		}
+		view = next
+		if view.Activity == ThreadActivityIdle && view.LastOutcome != nil {
 			break
 		}
 	}
