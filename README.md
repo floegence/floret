@@ -591,6 +591,31 @@ reclassifying historical slash-command conversations or using observation
 metadata as runtime authority. The v14 -> v15 edge adds typed thread references
 without rewriting historical messages or request fingerprints.
 
+## Visual Compaction And Historical Images
+
+Compaction sends canonical user images and confirmed tool-result images to the
+selected summary model as native image attachments, beside source labels. One
+ordered batch cursor covers full text, UTF-8 fragments and indivisible images.
+The complete prepared request, including resolved image cost, must fit; an image
+that cannot fit fails explicitly. Transport retries replay frozen input and
+output refits never reopen attachments. No partial summary is installed.
+
+`runtime.MessageAttachment.Locator()` returns a stable `media:v1:<sha256>` identifier
+of the complete descriptor, including optional text statistics. It is independent
+of thread and entry identity and grants no access. Model labels expose the
+locator, name, MIME and size, never the opaque `ResourceRef`. Hosts authorize
+current canonical membership before resolving original bytes. `ThreadItem.Attachments`
+contains both user attachments and confirmed tool-result attachments; scoped
+thread search includes their names/MIME and chunked reads return safe labels.
+
+Checkpoints preserve recent user attachment labels and explain that summaries
+are lossy: exact text, numbers and positions require rereading the original by
+locator. Recent tail images retain normal native input. Older images remain
+discoverable through canonical history, without an unbounded checkpoint catalog.
+The context projection revision advances to v10 with an explicit lineage reset.
+Schema 19, original attachment descriptors, stored bytes and old checkpoints are
+unchanged; old summaries gain no invented visual facts.
+
 ## Used Context Composition
 
 The public API deliberately adds a comparable, optional

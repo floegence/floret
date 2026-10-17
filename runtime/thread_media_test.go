@@ -93,6 +93,13 @@ func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 			if item.Activity != nil && item.Activity.ToolID == "capture-1" && item.Activity.Presentation != nil {
 				refs := item.Activity.Presentation.TargetRefs
 				if len(refs) == 1 && refs[0].ResourceRef == ref {
+					if len(item.Attachments) != 1 || item.Attachments[0].ResourceRef != ref {
+						t.Fatal("canonical view lost confirmed tool attachment")
+					}
+					locator, err := item.Attachments[0].Locator()
+					if err != nil || !strings.HasPrefix(locator, "media:v1:") {
+						t.Fatalf("canonical media locator: %q %v", locator, err)
+					}
 					return
 				}
 			}

@@ -48,3 +48,4 @@ runtime.ProviderRequestProgress	keep	ThreadRunProgress.Request	memory-only timin
 runtime.ThreadToolCallPreview	keep	ThreadView.ToolCallPreviews	unvalidated display data has no canonical ordinal or execution authority
 tools.ArgumentPreview	keep	Definition.NewArgumentPreview	safe display name and optional known line counts without raw argument exposure
 tools.ArgumentPreviewer	keep	Definition.NewArgumentPreview	bounded per-call incremental display parser without effects
+runtime.MessageAttachment.Locator	add	canonical descriptor identity	Redeven Flower authorized immutable image rereading without resource-ref model exposure

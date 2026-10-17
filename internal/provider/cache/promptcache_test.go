@@ -47,7 +47,7 @@ func TestToolImageSurvivesRequestSnapshotAndReplay(t *testing.T) {
 	}
 }
 
-func TestMediaProjectionMigratesV8OnceWithoutRewritingCanonicalHistory(t *testing.T) {
+func TestMediaProjectionMigratesV9OnceWithoutRewritingCanonicalHistory(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	history := []session.Message{{Role: session.User, Content: "capture", EntryID: "user"}}
@@ -55,7 +55,7 @@ func TestMediaProjectionMigratesV8OnceWithoutRewritingCanonicalHistory(t *testin
 	if err := ValidateCanonicalLineage(ctx, store, "thread", &old, "system", nil, nil, nil, history); err != nil {
 		t.Fatal(err)
 	}
-	old.ContextProjectionRevision = contextProjectionV8
+	old.ContextProjectionRevision = contextProjectionV9
 	if _, err := RecordRequest(ctx, store, PromptScopeRef{PromptScopeID: "thread", RunID: "old", ThreadID: "thread", TurnID: "old"}, 1, "test", "vision", CachePolicy{}, old); err != nil {
 		t.Fatal(err)
 	}

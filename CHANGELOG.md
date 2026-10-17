@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.51.0 - 2026-10-17
+
+- Add stable MessageAttachment.Locator descriptor identifiers and project confirmed tool attachments through canonical ThreadItem views and scoped history search/read.
+- Include native user and tool images in one lossless ordered summary batch pipeline; enforce complete rendered budgets and frozen transport retry/output refit without partial checkpoints.
+- Preserve attachment labels in checkpoints, require original-image rereads for exact details, and advance context projection to v10 without changing schema 19 or rewriting old checkpoints.
+
 ## v7.50.0 - 2026-10-16
 
 - Add optional scoped ThreadWaiter with frozen targets, explicit missing/attention/completion/timeout outcomes, deletion wakeups, and distinct cancellation/Host shutdown errors.

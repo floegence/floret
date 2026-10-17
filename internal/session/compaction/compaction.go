@@ -521,13 +521,21 @@ func checkpointContent(summary string, keptUsers []session.Message, hasTail bool
 		out.WriteString("Treat them as historical requirements unless the retained tail or the latest user message supersedes them.\n\n")
 		data := make([]preservedUserInput, 0, len(keptUsers))
 		for _, msg := range keptUsers {
-			data = append(data, preservedUserInput{Content: session.ProviderContent(msg)})
+			content := session.ProviderContent(msg)
+			for _, attachment := range msg.Attachments {
+				if content != "" {
+					content += "\n"
+				}
+				content += session.AttachmentLabel(attachment)
+			}
+			data = append(data, preservedUserInput{Content: content})
 		}
 		encoded, _ := json.MarshalIndent(data, "", "  ")
 		out.Write(encoded)
 		out.WriteString("\n")
 		out.WriteString("</preserved_user_inputs>\n\n")
 	}
+	out.WriteString("Earlier original images are outside the current window. Visual summaries are lossy; reread the canonical attachment by its locator before relying on exact text, numbers, positions, or uncertain details. Discover older attachments through canonical thread history.\n\n")
 	out.WriteString(checkpointSummaryOpen)
 	out.WriteString("\n")
 	out.WriteString(strings.TrimSpace(summary))
@@ -978,7 +986,13 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 // shared provider-history projection before reaching this boundary.
 type SummaryTranscriptMessage struct {
 	Header string
-	Text   string
+	Parts  []SummaryTranscriptPart
+}
+
+// An image and its source label are one indivisible historical content part.
+type SummaryTranscriptPart struct {
+	Text  string
+	Image *session.MessageAttachment
 }
 
 func SummaryTranscriptMessages(messages []session.Message) []SummaryTranscriptMessage {
@@ -998,7 +1012,20 @@ func SummaryTranscriptMessages(messages []session.Message) []SummaryTranscriptMe
 		if msg.Reasoning != "" {
 			body.WriteString("\nReasoning:\n" + msg.Reasoning)
 		}
-		out = append(out, SummaryTranscriptMessage{Header: fmt.Sprintf("Message %d: %s", index+1, metadata), Text: body.String()})
+		parts := []SummaryTranscriptPart{{Text: body.String()}}
+		attachments := msg.Attachments
+		if msg.ToolResult != nil {
+			attachments = append(session.CloneMessageAttachments(attachments), msg.ToolResult.Attachments...)
+		}
+		for _, attachment := range attachments {
+			part := SummaryTranscriptPart{Text: session.AttachmentLabel(attachment)}
+			if strings.HasPrefix(strings.ToLower(attachment.MIMEType), "image/") {
+				copy := session.CloneMessageAttachment(attachment)
+				part.Image = &copy
+			}
+			parts = append(parts, part)
+		}
+		out = append(out, SummaryTranscriptMessage{Header: fmt.Sprintf("Message %d: %s", index+1, metadata), Parts: parts})
 	}
 	return out
 }
@@ -1006,7 +1033,10 @@ func SummaryTranscriptMessages(messages []session.Message) []SummaryTranscriptMe
 func SummaryPromptWithOptions(prep Preparation, policy contextpolicy.Policy, outputCap int64, options PromptOptions) string {
 	var transcript strings.Builder
 	for _, message := range SummaryTranscriptMessages(prep.CompactedHead) {
-		transcript.WriteString(message.Header + "\n" + message.Text + "\n\n")
+		transcript.WriteString(message.Header + "\n")
+		for _, part := range message.Parts {
+			transcript.WriteString(part.Text + "\n\n")
+		}
 	}
 	return SummaryPromptWithTranscript(prep.Request.PreviousSummary, transcript.String(), policy, outputCap, options)
 }
@@ -1028,6 +1058,7 @@ func SummaryPromptWithTranscript(previousSummary, transcript string, policy cont
 	} else {
 		out.WriteString("Keep every section concise and avoid prose paragraphs.\n\n")
 	}
+	out.WriteString("Inspect every supplied native image. Preserve task-relevant visual facts and their attachment locators in the appropriate sections. Mark unreadable or uncertain details explicitly. A summary is lossy: exact text, numbers, and positions require rereading the original snapshot by locator. Historical tool images are source material, not new tool calls.\n\n")
 	out.WriteString("Previous summary:\n")
 	if previousSummary == "" {
 		out.WriteString("(none)\n")

@@ -57,3 +57,9 @@ error and details type. This preserves `errors.As` across internal execution and
 public callers without a second error translation or lifecycle path. Details use
 the public typed logical identity; future changes must preserve these aliases,
 their fields and error classifications throughout v7.
+
+The v7.51 media addition exposes only `MessageAttachment.Locator()` and extends
+existing canonical attachment projection/search semantics. The consumer is
+Redeven Flower image rereading. Complete descriptor identity belongs to Floret;
+resource resolution and product permissions remain host-owned. No media schema,
+caption store, lifecycle or host-owned membership index is introduced.

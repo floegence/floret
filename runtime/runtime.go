@@ -353,7 +353,7 @@ type TurnSupplementalContextItem struct {
 }
 
 // MessageAttachment identifies one host-owned resource attached to a durable
-// user message. ResourceRef is opaque to Floret and is resolved only by the
+// user message or confirmed tool result. ResourceRef is opaque to Floret and is resolved only by the
 // host's modelGateway implementation.
 type MessageAttachment struct {
 	ResourceRef string                      `json:"resource_ref"`
@@ -519,6 +519,13 @@ func runtimeEffectAuthorizationError(err error) error {
 
 func (a MessageAttachment) Validate() error {
 	return sessionMessageAttachment(a).Validate()
+}
+
+// Locator returns a stable opaque identifier for the complete descriptor.
+// Hosts must verify canonical thread membership and current product permission
+// before resolving it. A locator never grants access.
+func (a MessageAttachment) Locator() (string, error) {
+	return sessionMessageAttachment(a).Locator()
 }
 
 // MessageContextItem is a durable model-context snapshot admitted with a user message.

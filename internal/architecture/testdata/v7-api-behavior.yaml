@@ -9,6 +9,15 @@ defaults:
   provider_progress: attempt-fenced in-memory timing and character estimate; never billable usage
   argument_preview: bounded side-effect-free parser; errors discard preview only; actual results replace counts including zero
 methods:
+  - method: MessageAttachment.Locator
+    errors_is: []
+    errors_as: []
+    retryability: correct an invalid descriptor before retrying
+    commit: read-only versioned hash of the complete descriptor; no authorization
+    replay: identical descriptors retain identity across restart and fork
+    concurrency: detached descriptor values are independently safe
+    cancellation: no context is accepted
+    closing: not applicable
   - method: Event.Validate
     errors_is: []
     errors_as: []

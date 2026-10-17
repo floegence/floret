@@ -405,7 +405,7 @@ func (r *MemoryRepo) queryReadParts(record *queryRecord) ([]queryPart, error) {
 		source := r.entries[record.row.ThreadID.String()][ordinal].Message
 		parts = []queryPart{}
 		for _, part := range record.parts {
-			if part.field == "body" {
+			if part.field == "body" || part.field == "attachment" {
 				parts = append(parts, part)
 			}
 		}

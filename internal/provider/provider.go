@@ -19,6 +19,8 @@ var ErrStreamMissingTerminal = errors.New("provider stream closed without termin
 var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close after terminal event")
 
 type Request struct {
+	// DisableProviderState fences auxiliary generations from native continuation.
+	DisableProviderState bool
 	ModelContextEntryID  string `json:"-"`
 	PressureAnchorReason string `json:"-"`
 
