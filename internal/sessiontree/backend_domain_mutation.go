@@ -63,6 +63,7 @@ type domainJournalIndexes struct {
 }
 
 type backendDomainMutation struct {
+	queryThreads   map[string]*queryThread
 	memory         *MemoryRepo
 	threads        domainChanges[ThreadMeta]
 	todos          domainChanges[AgentTodoState]
@@ -94,7 +95,7 @@ func (r *MemoryRepo) setThreadLocked(key string, value ThreadMeta) {
 		r.mutation.threads.capture(r.threads, key)
 	}
 	r.threads[key] = value
-	r.markQueryDirty(key)
+	r.invalidateDeletedQuerySnapshots(key)
 }
 
 func (r *MemoryRepo) deleteThreadLocked(key string) {
@@ -102,7 +103,7 @@ func (r *MemoryRepo) deleteThreadLocked(key string) {
 		r.mutation.threads.capture(r.threads, key)
 	}
 	delete(r.threads, key)
-	r.markQueryDirty(key)
+	r.invalidateDeletedQuerySnapshots(key)
 }
 
 func (r *MemoryRepo) setTodoLocked(key string, value AgentTodoState) {
@@ -215,7 +216,7 @@ func (r *MemoryRepo) stageEntryIndexesLocked(threadID string, entry Entry) {
 func (mutation *backendDomainMutation) snapshot() *backendDomainMutation {
 	memory := mutation.memory
 	next := &backendDomainMutation{
-		memory: memory, sequence: memory.seq, journals: make(map[string]domainJournal, len(mutation.journals)),
+		queryThreads: mutation.queryThreads, memory: memory, sequence: memory.seq, journals: make(map[string]domainJournal, len(mutation.journals)),
 		threads: mutation.threads.read(memory.threads), todos: mutation.todos.read(memory.todos),
 		tombstones: mutation.tombstones.read(memory.tombstones), providerStates: mutation.providerStates.read(memory.providerStates),
 		artifacts: mutation.artifacts.read(memory.artifacts),

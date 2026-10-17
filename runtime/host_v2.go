@@ -24,8 +24,10 @@ import (
 const (
 	logicalSchemaNamespace           = "floret.system"
 	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "8"
-	logicalSchemaFingerprint         = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
+	logicalSchemaVersion             = "9"
+	logicalSchemaFingerprint         = "sha256:97a494530555ecf4e0a5309f418a4eef0cf45a89cc05fa5cb51009d388bc0794"
+	legacyV8LogicalSchemaVersion     = "8"
+	legacyV8LogicalSchemaFingerprint = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
 	legacyV7LogicalSchemaVersion     = "7"
 	legacyV7LogicalSchemaFingerprint = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
 	previousLogicalSchemaVersion     = "6"
@@ -74,7 +76,8 @@ type Options struct {
 	DeferExecution bool
 	// StartupProgress observes product-neutral storage startup phases. The
 	// callback runs synchronously and must return promptly.
-	StartupProgress StartupProgress
+	StartupProgress     StartupProgress
+	StartupWorkProgress StartupWorkProgress
 	// IDSource exists only for v3 source compatibility.
 	// Deprecated: production hosts must leave this nil; tests should use
 	// florettest.NewIDSource.
@@ -87,6 +90,7 @@ type StartupPhase string
 const (
 	StartupPhaseMigrating StartupPhase = "migrating"
 	StartupPhaseVerifying StartupPhase = "verifying"
+	StartupPhaseIndexing  StartupPhase = "indexing"
 )
 
 // StartupProgress observes changes in the storage startup phase.
@@ -256,6 +260,11 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 			previousPhase = phase
 			options.StartupProgress.OnStartupPhase(StartupPhase(phase))
 		}
+	}
+	if options.StartupWorkProgress != nil {
+		ctx = sessiontree.WithStartupWork(ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
+			options.StartupWorkProgress.OnStartupWork(StartupWork{Phase: StartupPhase(phase), Completed: completed, Total: total})
+		})
 	}
 	err = coordinatedBackend.Update(ctx, func(tx spi.WriteTx) error {
 		if _, err := storagebridge.PrepareStartup(tx, func() {
@@ -517,6 +526,7 @@ const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
 	logicalSchemaV7      logicalSchemaState = "v7"
+	logicalSchemaV8      logicalSchemaState = "v8"
 	logicalSchemaV6      logicalSchemaState = "v6"
 	logicalSchemaV5      logicalSchemaState = "v5"
 	logicalSchemaV3      logicalSchemaState = "v3"
@@ -555,6 +565,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV8LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV8LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 8 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV8, nil
 	}
 	if envelope.Version == legacyV7LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV7LogicalSchemaFingerprint {

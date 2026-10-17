@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/storagebridge"
+	publicstorage "github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 )
@@ -51,7 +53,7 @@ func TestInspectionPreservesProjectionValidation(t *testing.T) {
 					}
 					if inspection {
 						err := repo.VerifyInspectionStateInTransaction(t.Context(), tx)
-						if repo.domainMemory.queryIndex != nil {
+						if repo.domainMemory.querySnapshots != nil {
 							t.Fatal("inspection retained its disposable query index")
 						}
 						return err
@@ -65,7 +67,7 @@ func TestInspectionPreservesProjectionValidation(t *testing.T) {
 				} else if !errors.Is(err, ErrAuthorityCorrupt) {
 					t.Fatalf("inspection=%v: got %v, want ErrAuthorityCorrupt", inspection, err)
 				}
-				if !equalMigrationRecords(backend.records, before) {
+				if !equalCanonicalMigrationRecords(backend.records, before) {
 					t.Fatal("startup verification changed canonical bytes")
 				}
 			}
@@ -86,13 +88,13 @@ func TestInspectionDoesNotReplaceLiveSearchIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := repo.domainMemory.queryIndex
+	index := repo.domainMemory.querySnapshots
 	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
 		return repo.VerifyInspectionStateInTransaction(t.Context(), tx)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if repo.domainMemory.queryIndex != index {
+	if repo.domainMemory.querySnapshots != index {
 		t.Fatal("inspection replaced the canonical owner's search index")
 	}
 	page, err := repo.Query(t.Context(), queryScope("a", "b"), threadquery.QueryInput{
@@ -104,50 +106,72 @@ func TestInspectionDoesNotReplaceLiveSearchIndex(t *testing.T) {
 }
 
 func TestThreadQueryUnicodeFragmentParity(t *testing.T) {
-	repo := NewMemoryRepo()
-	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "unicode"}); err != nil {
-		t.Fatal(err)
-	}
-	texts := []string{"İKΣ 中文🙂𐐀 code(foo_bar) e\u0301", "中文🙂🙂\x00重复重复 XYZ", "plain unrelated text"}
-	for i, text := range texts {
-		appendQueryFixture(t, repo, "unicode", Entry{ID: fmt.Sprint(i), Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: text}}, time.Unix(int64(i), 0))
-	}
-	for _, sensitive := range []bool{false, true} {
-		for _, term := range []string{"İ", "i", "kσ", "中文", "文🙂", "🙂𐐀", "🙂🙂", "\x00重", "重复重复", "foo_bar)", "e\u0301", "XYZ", "missing"} {
-			var want []string
-			for i, text := range texts {
-				target := term
-				if !sensitive {
-					text, target = strings.ToLower(text), strings.ToLower(target)
+	for _, backendName := range []string{"direct", "sqlite", "custom"} {
+		t.Run(backendName, func(t *testing.T) {
+			var repo queryTestRepo = NewMemoryRepo()
+			if backendName != "direct" {
+				var backend spi.Backend = newMigrationTestBackend()
+				if backendName == "sqlite" {
+					var err error
+					backend, err = storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.SQLite(t.TempDir()+"/unicode.sqlite")))
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = backend.Close() })
 				}
-				if strings.Contains(text, target) {
-					want = append(want, fmt.Sprint(i))
-				}
-			}
-			page, err := repo.Query(t.Context(), queryScope("unicode"), threadquery.QueryInput{
-				Object: threadquery.Messages, Filter: threadquery.Filter{Text: threadquery.TextMatch{Contains: term, CaseSensitive: sensitive}},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got []string
-			// Query refs are opaque; compare the canonical bodies through Read.
-			for _, record := range page.Records {
-				read, err := repo.Read(t.Context(), queryScope("unicode"), threadquery.ReadInput{Ref: record.Ref})
+				canonical, err := NewBackendRepo(t.Context(), backend, time.Now)
 				if err != nil {
 					t.Fatal(err)
 				}
-				for i, text := range texts {
-					if len(read.Chunks) == 1 && read.Chunks[0].Text == text {
-						got = append(got, fmt.Sprint(i))
+				repo = canonical
+			}
+
+			if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "unicode"}); err != nil {
+				t.Fatal(err)
+			}
+			texts := []string{"İKΣ 中文🙂𐐀 code(foo_bar) e\u0301", "中文🙂🙂\x00重复重复 XYZ", "plain unrelated text"}
+			for i, text := range texts {
+				appendQueryFixture(t, repo, "unicode", Entry{ID: fmt.Sprint(i), Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: text}}, time.Unix(int64(i), 0))
+			}
+			for _, sensitive := range []bool{false, true} {
+				for _, term := range []string{"İ", "i", "kσ", "中文", "文🙂", "🙂𐐀", "🙂🙂", "\x00重", "重复重复", "foo_bar)", "e\u0301", "XYZ", "missing"} {
+					var want []string
+					for i, text := range texts {
+						target := term
+						if !sensitive {
+							text, target = strings.ToLower(text), strings.ToLower(target)
+						}
+						if strings.Contains(text, target) {
+							want = append(want, fmt.Sprint(i))
+						}
+					}
+					page, err := repo.Query(t.Context(), queryScope("unicode"), threadquery.QueryInput{
+						Object: threadquery.Messages, Filter: threadquery.Filter{Text: threadquery.TextMatch{Contains: term, CaseSensitive: sensitive}},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var got []string
+					// Query refs are opaque; compare the canonical bodies through Read.
+					for _, record := range page.Records {
+						read, err := repo.Read(t.Context(), queryScope("unicode"), threadquery.ReadInput{Ref: record.Ref})
+						if err != nil {
+							t.Fatal(err)
+						}
+						for i, text := range texts {
+							if len(read.Chunks) == 1 && read.Chunks[0].Text == text {
+								got = append(got, fmt.Sprint(i))
+							}
+						}
+					}
+					if !reflect.DeepEqual(got, want) || page.Total != len(want) {
+						t.Fatalf("term=%q case_sensitive=%v: got %v total=%d, want %v", term, sensitive, got, page.Total, want)
 					}
 				}
 			}
-			if !reflect.DeepEqual(got, want) || page.Total != len(want) {
-				t.Fatalf("term=%q case_sensitive=%v: got %v total=%d, want %v", term, sensitive, got, page.Total, want)
-			}
-		}
+		})
 	}
+
 }
 
 func BenchmarkQueryStartup(b *testing.B) {
@@ -172,7 +196,7 @@ func BenchmarkQueryStartup(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				memory.queryIndex = nil
+				memory.querySnapshots = nil
 				if err := backend.View(ctx, func(tx spi.ReadTx) error {
 					if inspection {
 						return repo.VerifyInspectionStateInTransaction(ctx, tx)
@@ -184,4 +208,18 @@ func BenchmarkQueryStartup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Derived indexes are allowed to initialize; canonical namespaces stay exact.
+func equalCanonicalMigrationRecords(a, b map[string]map[string][]byte) bool {
+	selectCanonical := func(records map[string]map[string][]byte) map[string]map[string][]byte {
+		out := map[string]map[string][]byte{}
+		for ns, values := range records {
+			if ns != queryDocumentNamespace && ns != queryManifestNamespace {
+				out[ns] = values
+			}
+		}
+		return out
+	}
+	return equalMigrationRecords(selectCanonical(a), selectCanonical(b))
 }

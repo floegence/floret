@@ -218,7 +218,7 @@ Rules:
 - Floret migrates only Floret-owned state through its own storage kernel. Hosts
   and downstream products must treat the backend records as opaque and must
   not reconstruct, patch, or migrate Floret domain records themselves.
-- SQLite physical formats 1 -> 2 and logical storage 7 -> 8 migrate in the same
+- SQLite physical formats 1 -> 2 -> 3 and logical storage 7 -> 8 -> 9 migrate in the same
   runtime startup transaction as the permanent session-tree lineage. Prompt
   history uses append-ordered scope/category records; the global v1 snapshot
   reader belongs exclusively to migration. Do not reintroduce whole-cache
@@ -370,9 +370,10 @@ fork, and compaction. Hosts must not persist a second admitted mapping.
 supply freshly authorized scope for every query, page, read, and aggregate.
 Thread references never grant access. Search covers only current active-path
 public messages and persisted tool facts, excluding reasoning, secrets, provider
-state, correction records, and queued inputs. Derived indexes and bounded frozen
-pagination snapshots stay with the canonical in-process owner and are rebuilt
-at startup; they never become a second durable store or a host projection.
+state, correction records, and queued inputs. Derived indexes belong to the canonical owner, are rebuildable from canonical
+sources, and update in the same transaction. SQLite persists source locators
+and contentless postings, never a second transcript or lifecycle. Bounded frozen
+pagination snapshots remain in memory and are invalid after restart.
 
 `ModelContextSnapshot` is the complete managed runtime fact collection. Nil
 means no update; an empty collection clears managed facts. Admission copies,

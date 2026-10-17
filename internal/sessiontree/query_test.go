@@ -401,7 +401,7 @@ func BenchmarkThreadQuery100K(b *testing.B) {
 	goruntime.ReadMemStats(&before)
 	admission := time.Since(build)
 	startup := time.Now()
-	if err := repo.syncQueryIndex(ctx); err != nil {
+	if err := repo.prepareQuery(ctx); err != nil {
 		b.Fatal(err)
 	}
 	startupTime := time.Since(startup)
@@ -411,24 +411,24 @@ func BenchmarkThreadQuery100K(b *testing.B) {
 	indexBytes := after.HeapAlloc - before.HeapAlloc
 	input := threadquery.QueryInput{Object: threadquery.Messages, Filter: threadquery.Filter{Text: threadquery.TextMatch{Contains: "NEEDLE()"}}}
 	b.ResetTimer()
-	verified := repo.queryIndex.verified
+	verified := repo.querySnapshots.verified
 	for i := 0; i < b.N; i++ {
 		result, err := repo.Query(ctx, queryScope("a"), input)
 		if err != nil || result.Total != 10 {
 			b.Fatalf("%#v %v", result, err)
 		}
-		for id := range repo.queryIndex.snapshots {
-			repo.queryIndex.dropSnapshot(id)
+		for id := range repo.querySnapshots.snapshots {
+			repo.querySnapshots.dropSnapshot(id)
 		}
 	}
-	b.ReportMetric(float64(repo.queryIndex.verified-verified)/float64(b.N), "verified/query")
+	b.ReportMetric(float64(repo.querySnapshots.verified-verified)/float64(b.N), "verified/query")
 	b.StopTimer()
 	b.ReportMetric(float64(startupTime.Milliseconds()), "startup_ms")
 	b.ReportMetric(float64(admission.Milliseconds()), "fixture_100k_ms")
 	b.ReportMetric(float64(indexBytes)/1024/1024, "index_MiB")
 	update := time.Now()
 	appendQueryFixture(b, repo, "a", Entry{ID: "incremental", Type: EntryUserMessage, TurnID: "next", RunID: "next-run", Message: session.Message{Role: session.User, Content: "incremental unrelated record"}}, at.Add(24*time.Hour))
-	if err := repo.syncQueryIndex(ctx); err != nil {
+	if err := repo.prepareQuery(ctx); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportMetric(float64(time.Since(update).Microseconds()), "incremental_us")
@@ -485,7 +485,7 @@ func TestThreadQueryFrozenToolCompletionRenameAndCanonicalSegments(t *testing.T)
 		t.Fatalf("completion=%#v %v", current, err)
 	}
 	// A query indexed once only projects appended records on its next read.
-	before := repo.queryIndex.verified
+	before := repo.querySnapshots.verified
 	cursor, err := repo.Query(ctx, scope, threadquery.QueryInput{Object: threadquery.Messages, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestThreadQueryFrozenToolCompletionRenameAndCanonicalSegments(t *testing.T)
 	if cursor.NextCursor != "" {
 		_, _ = repo.Query(ctx, scope, threadquery.QueryInput{Object: threadquery.Messages, Limit: 1, Cursor: cursor.NextCursor})
 	}
-	if repo.queryIndex.verified-before != 1 {
+	if repo.querySnapshots.verified-before != 1 {
 		t.Fatal("pagination reverified canonical bodies")
 	}
 }
@@ -525,7 +525,7 @@ func TestThreadQueryHostedVisibilityAndSnapshotBudget(t *testing.T) {
 	if err != nil || empty.Total != 0 {
 		t.Fatalf("secret indexed: %#v %v", empty, err)
 	}
-	repo.queryIndex.snapshotBytes = querySnapshotMaxBytes
+	repo.querySnapshots.snapshotBytes = querySnapshotMaxBytes
 	if _, err := repo.Query(ctx, queryScope("a"), threadquery.QueryInput{Object: threadquery.Threads}); !errors.Is(err, threadquery.ErrSnapshotLimit) {
 		t.Fatalf("budget=%v", err)
 	}

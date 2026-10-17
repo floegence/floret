@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.52.0 - 2026-10-17
+
+- Persist canonical query source locators and contentless SQLite FTS5 postings in canonical transactions; reuse them on restart and remove the full-database Go inverted index and position maps.
+- Add optional transaction-local physical index capabilities, lightweight ThreadSummaryReader and counted startup index progress without changing existing required interfaces.
+- Append SQLite physical 2 -> 3 and logical storage 8 -> 9 while retaining domain schema 19 and all historical migration edges.
+
 ## v7.51.2 - 2026-10-17
 
 - Classify the exact tool-argument stall protocol code as a recoverable stream interruption, including HTTP 200 errors, through the existing bounded Engine retry loop. Preserve frozen requests, confirmed tools, Stop, permanent failures and explicit retry prohibitions without changing public API shapes or schema 19.

@@ -10,15 +10,21 @@ tags: [api, threads, queries, references]
 `runtime.ThreadQueryReader` is optional; `ThreadService` implementations keep
 all previously required methods. `Query`, `Read`, and `Aggregate` use public
 [`threadquery`](../../threadquery/query.go) contracts. The canonical journal
-owner maintains the index, rebuilds it after startup validation, and synchronizes
-only affected records before a read after successful canonical commit. Normal
-append processes only the new path tail; a branch change rebuilds that thread.
-No derived index, search body or cursor is persisted.
+owner derives metadata and source locators through one canonical projector.
+SQLite maintains contentless FTS5 postings and document metadata in the same
+transaction as canonical writes. Other physical backends use the optional
+transaction-local index SPI or Floret's opaque KV adapter. Native errors never
+switch to a second index or a full canonical scan.
 
-Read-only SQLite inspection runs the same canonical projection checks without
-building text postings. Formal startup builds the complete index. Construction
-deduplicates Unicode n-gram fragments before allocating posting keys; lowercase,
-punctuation, Chinese, and code-fragment matching retain the same semantics.
+Startup validates canonical state and source correspondence before reusing the
+index. Missing derived state initializes transactionally before Host exposure;
+ordinary reopen does not rebuild postings. Canonical damage and unknown formats
+fail closed. Physical format 2 -> 3 and logical storage 8 -> 9 preserve domain
+schema 19 and every historical migration edge. Atomic ASCII encodings of Go
+Unicode-lowercased 1/2/3-rune grams preserve Chinese, code, punctuation, emoji
+and NUL candidate semantics; one exact matcher verifies candidates. No full
+search body or global positions are stored. Only bounded active projections and
+frozen pagination values remain in memory.
 
 Hosts reconstruct `Scope` before every call. `Authority` identifies the user,
 runtime and namespace; `ThreadIDs` is the exact authorized set, including
@@ -84,6 +90,6 @@ old authority and preserves historical record bytes and fingerprints.
 User attachments and confirmed tool-result attachments contribute safe source
 labels to text search and chunked reads. Each label includes a stable descriptor
 locator, name, MIME and size, excluding ResourceRef. Name and MIME search use the
-existing disposable canonical index; no durable media mapping is added. Locators
+canonical owner's persistent derived index; no durable media mapping is added. Locators
 are lookup keys, never access grants. Hosts must reauthorize the current thread
 and exact canonical descriptor before opening immutable bytes.
