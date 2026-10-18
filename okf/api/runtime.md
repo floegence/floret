@@ -614,7 +614,8 @@ unknown-effect references, and a closed overflow range readable with explicit
 pagination. Full reports are stored once; full handoffs remain on existing reads.
 
 `ThreadView.ParentEvents` supplies bounded metadata and explicit pagination
-separately from streamed item ordinals. `Admitted` identifies canonical context
+separately from streamed item ordinals. Successful pages preserve an allocated
+empty event array through public clones and JSON; disabled parent events remain absent. `Admitted` identifies canonical context
 placement, not proof of model reading. Existing subscriptions are observation
 only; hosts subscribe before checking pending events. List/read never wake an
 unhydrated thread. See [storage lineage](storage.md) and the

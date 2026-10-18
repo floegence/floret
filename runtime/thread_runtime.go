@@ -4117,7 +4117,8 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
 	if view.ParentEvents != nil {
 		page := *view.ParentEvents
-		page.Events = append([]ParentEvent(nil), page.Events...)
+		page.Events = make([]ParentEvent, len(view.ParentEvents.Events))
+		copy(page.Events, view.ParentEvents.Events)
 		view.ParentEvents = &page
 	}
 	view.Cancellation = cloneThreadCancellation(view.Cancellation)

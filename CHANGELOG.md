@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.52.1 - 2026-10-18
+
+- Preserve empty parent event arrays through public thread snapshot cloning and JSON, while retaining disabled-event omission and detached nonempty pages. No public API or domain schema changes.
+
 ## v7.52.0 - 2026-10-17
 
 - Persist canonical query source locators and contentless SQLite FTS5 postings in canonical transactions; reuse them on restart and remove the full-database Go inverted index and position maps.

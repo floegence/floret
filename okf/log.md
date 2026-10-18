@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Empty parent event snapshots
+
+- Document array-preserving public parent event snapshots, including empty pages, without changing durable schema or event admission.
+
 ## 2026-10-17 — Tool-argument stall recovery
 
 - Document the exact stream-error classification in [Provider recovery](decisions/provider-retry.md), preserving one bounded Engine owner, confirmed tools and original diagnostics without new durable state.
