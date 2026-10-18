@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -1070,5 +1071,15 @@ func TestPublishedIndependentOutputArchival(t *testing.T) {
 	digest := sha256.Sum256([]byte(text))
 	if projection.Truncated || projection.VisibleText != text || projection.FullOutputPlan == nil || projection.FullOutputPlan.Text != text || projection.ContentSHA256 != fmt.Sprintf("%x", digest) {
 		t.Fatal("independent archive contract changed")
+	}
+}
+
+func TestPublishedTransportRetryAdvice(t *testing.T) {
+	if got := provider.RetryAdviceForError(fmt.Errorf("frame: %w", io.EOF)); got.Category != provider.RetryStreamInterrupted {
+		t.Fatalf("advice=%#v", got)
+	}
+	advice := provider.RetryAdvice{Forbidden: true}
+	if got := provider.RetryAdviceForError(provider.WithRetryAdvice(io.EOF, advice)); got != advice {
+		t.Fatalf("advice=%#v", got)
 	}
 }

@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Shared provider transport classification
+
+- Document ordinary EOF recovery and the public classifier in [Provider contracts](api/provider.md) and [recovery ownership](decisions/provider-retry.md). No durable schema changes.
+
+
 ## 2026-10-18 — Parent event turn ownership
 
 - Document canonical read-derived parent turn ownership in the [runtime contract](api/runtime.md#passive-parent-events), including late delivery, compaction and inherited paths without durable changes.

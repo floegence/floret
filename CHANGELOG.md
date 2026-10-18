@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.58.0 - 2026-10-18
+
+- Share provider transport classification through RetryAdviceForError and recover ordinary wrapped EOF using the existing bounded Engine retry owner. Preserve explicit advice, cancellation and non-provider failure boundaries.
+
+
 ## v7.57.0 - 2026-10-18
 
 - Add optional ParentEvent.ParentTurnID derived from the most recent ordinary turn in canonical path order, including late delivery, forks and restart.

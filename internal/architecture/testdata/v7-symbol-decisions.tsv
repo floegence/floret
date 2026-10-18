@@ -49,3 +49,4 @@ runtime.ThreadToolCallPreview	keep	ThreadView.ToolCallPreviews	unvalidated displ
 tools.ArgumentPreview	keep	Definition.NewArgumentPreview	safe display name and optional known line counts without raw argument exposure
 tools.ArgumentPreviewer	keep	Definition.NewArgumentPreview	bounded per-call incremental display parser without effects
 runtime.MessageAttachment.Locator	add	canonical descriptor identity	Redeven Flower authorized immutable image rereading without resource-ref model exposure
+provider.RetryAdviceForError	keep	provider transport fact classification	Redeven shares Engine classifier without owning retries

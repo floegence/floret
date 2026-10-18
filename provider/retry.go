@@ -29,6 +29,19 @@ type RetryAdvice struct {
 // RetryAdviser is an optional provider-error contract. Unknown errors are not retried.
 type RetryAdviser interface{ ProviderRetryAdvice() RetryAdvice }
 
+// RetryAdviceForError returns provider transport facts without scheduling retries.
+// The outermost explicit RetryAdviser takes precedence, including empty advice.
+// Use it only at provider request or stream boundaries, not for storage, decoding,
+// or tool failures. Unknown errors and nil return empty advice.
+func RetryAdviceForError(err error) RetryAdvice {
+	var adviser RetryAdviser
+	if errors.As(err, &adviser) {
+		return adviser.ProviderRetryAdvice()
+	}
+	a := providerretry.AdviceFor(err)
+	return RetryAdvice{Category: RetryCategory(a.Category), NotBefore: a.NotBefore, Forbidden: a.Forbidden}
+}
+
 // HTTPRetryAdvice classifies exact protocol codes and parses Retry-After headers.
 // receivedAt must be the time the response was received, not a later inspection.
 func HTTPRetryAdvice(status int, code string, headers http.Header, receivedAt time.Time) RetryAdvice {

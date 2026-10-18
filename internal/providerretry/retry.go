@@ -153,7 +153,7 @@ func AdviceFor(err error) Advice {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return Advice{Category: Timeout}
 	}
-	if errors.Is(err, io.ErrUnexpectedEOF) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return Advice{Category: Interrupted}
 	}
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) {

@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"io"
 	"testing"
 	"time"
 )
@@ -19,6 +20,7 @@ type recoveryProvider struct {
 	gateHeld       *bool
 	failCount      int
 	attemptsClosed int
+	failure        error
 }
 
 func (p *recoveryProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
@@ -26,7 +28,11 @@ func (p *recoveryProvider) Stream(ctx context.Context, req provider.Request) (<-
 	out := make(chan provider.StreamEvent, 4)
 	if len(p.requests) <= p.failCount {
 		out <- provider.StreamEvent{Type: provider.Delta, Text: "discarded draft"}
-		out <- provider.StreamEvent{Type: provider.Error, Err: providerretry.WithAdvice(errors.New("upstream gateway error"), providerretry.Advice{Category: providerretry.Transient})}
+		failure := p.failure
+		if failure == nil {
+			failure = providerretry.WithAdvice(errors.New("upstream gateway error"), providerretry.Advice{Category: providerretry.Transient})
+		}
+		out <- provider.StreamEvent{Type: provider.Error, Err: failure}
 	} else {
 		out <- provider.StreamEvent{Type: provider.Delta, Text: "recovered"}
 		out <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
@@ -42,7 +48,7 @@ func fastRecoveryPolicy() providerretry.Policy {
 	return p
 }
 func TestProviderRecoveryKeepsFrozenRequestIdentityAndReleasesAdmission(t *testing.T) {
-	p := &recoveryProvider{failCount: 2}
+	p := &recoveryProvider{failCount: 2, failure: io.EOF}
 	rec := &event.Recorder{}
 	e := newTestEngine(p, rec)
 	e.Options.ProviderRetryPolicy = fastRecoveryPolicy()
@@ -99,7 +105,7 @@ func TestProviderRecoveryKeepsFrozenRequestIdentityAndReleasesAdmission(t *testi
 	}
 }
 func TestProviderRecoveryDoesNotReplayUnsafeHostedToolsOrStorage(t *testing.T) {
-	for _, mode := range []string{"unsafe_hosted", "storage", "disabled"} {
+	for _, mode := range []string{"unsafe_hosted", "storage", "storage_eof", "disabled"} {
 		t.Run(mode, func(t *testing.T) {
 			p := &recoveryProvider{failCount: 10}
 			e := newTestEngine(p, &event.Recorder{})
@@ -109,6 +115,8 @@ func TestProviderRecoveryDoesNotReplayUnsafeHostedToolsOrStorage(t *testing.T) {
 				e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{Name: "search", Type: "web_search"}}
 			case "storage":
 				e.Prompt = &failingProviderRequestStore{Store: cache.NewMemoryStore(), err: providerretry.WithAdvice(errors.New("storage"), providerretry.Advice{Category: providerretry.Transient})}
+			case "storage_eof":
+				e.Prompt = &failingProviderRequestStore{Store: cache.NewMemoryStore(), err: io.EOF}
 			case "disabled":
 				e.Options.ProviderRetryPolicy.Disabled = true
 			}
