@@ -259,3 +259,60 @@ func TestParentEventsStartupUnknownEffectCommitsOneReceiptWithoutReplay(t *testi
 		}
 	}
 }
+
+func TestParentEventOwnershipUsesCanonicalOrderWithoutRewritingStorage(t *testing.T) {
+	repo, backend := parentEventRepoFixture(t)
+	start := func(id, kind string) {
+		input := session.Message{}
+		if kind == "" {
+			input = session.Message{Role: session.User, Content: id}
+		}
+		if _, err := repo.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "parent", TurnID: id, RunID: id + "-run", LogicalRequestID: id, RequestFingerprint: id, InputRequestFingerprint: id, TurnKind: kind, Input: input}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish := func(id string) {
+		if _, err := repo.FinishTurn(t.Context(), FinishTurnRequest{ThreadID: "parent", TurnID: id, RunID: id + "-run", TerminalEntryID: id + "-end", OutcomeFingerprint: id, Status: TurnCompleted}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit := func(id string) {
+		// Equal timestamps deliberately cannot establish ownership.
+		if _, err := repo.AppendRuntimeFacts(t.Context(), "child", []Entry{{ID: id, ThreadID: "child", TurnID: "turn", RunID: "run", Type: EntryInteractionAsked, Payload: json.RawMessage("{\"kind\":\"approval\"}")}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit("interaction-requested:before")
+	start("first", "")
+	emit("interaction-requested:during")
+	finish("first")
+	emit("interaction-requested:late")
+	start("compact", TurnKindContextCompaction)
+	emit("interaction-requested:compacting")
+	finish("compact")
+	start("second", "")
+	emit("interaction-requested:next")
+	if _, err := repo.AdmitParentEvents(t.Context(), "parent", "second", "second-run"); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	want := []string{"", "first", "first", "first", "second"}
+	for range 2 {
+		reopened, err := NewBackendRepo(WithParentEvents(t.Context(), true), backend, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := reopened.ParentEvents(t.Context(), ParentEventQuery{ThreadID: "parent"})
+		if err != nil || len(page.Events) != len(want) {
+			t.Fatalf("page=%+v %v", page, err)
+		}
+		for i, event := range page.Events {
+			if event.ParentTurnID != want[i] || !event.Admitted {
+				t.Fatalf("event %d=%+v want owner %s", i, event, want[i])
+			}
+		}
+	}
+	if !reflect.DeepEqual(before, backend.records) {
+		t.Fatal("read/restart rewrote canonical bytes")
+	}
+}

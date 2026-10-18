@@ -541,7 +541,7 @@ func TestParentEventsAdmissionSurvivesPreparationFailureAndRetry(t *testing.T) {
 		t.Fatalf("retry lost admission: %d %s", n, text)
 	}
 	page, err := service.(ThreadParentEventService).ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: parent.ThreadID})
-	if err != nil || len(page.Events) != 1 || !page.Events[0].Admitted {
+	if err != nil || len(page.Events) != 1 || !page.Events[0].Admitted || page.Events[0].ParentTurnID != "" {
 		t.Fatalf("page=%+v %v", page, err)
 	}
 }
@@ -612,7 +612,7 @@ func TestParentEventsCompactionKeepsCanonicalReceiptAndNoReadmission(t *testing.
 	}
 	waitThreadExecutionDone(t, service.(*threadRuntimeService), parent.ThreadID)
 	read, err := service.(ThreadParentEventService).ReadParentEvents(t.Context(), ReadParentEventsInput{ThreadID: parent.ThreadID, EventID: page.Events[0].ID})
-	if err != nil || len(read.Events) != 1 || !read.Events[0].Admitted {
+	if err != nil || len(read.Events) != 1 || !read.Events[0].Admitted || read.Events[0].ParentTurnID != page.Events[0].ParentTurnID {
 		t.Fatal("compaction lost canonical receipt")
 	}
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: parent.ThreadID, RequestKey: "after", Input: UserInput{Text: "review"}}); err != nil {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.57.0 - 2026-10-18
+
+- Add optional ParentEvent.ParentTurnID derived from the most recent ordinary turn in canonical path order, including late delivery, forks and restart.
+- Keep stored receipts, admission, compaction and domain schema 22 unchanged; presentation remains host-owned.
+
 ## v7.56.0 - 2026-10-18
 
 - Add explicit query-thread identity to parent event pages, including empty pages and fork-inherited reports, without changing historical event recipients or canonical bytes.

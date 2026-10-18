@@ -54,6 +54,10 @@ const (
 type ParentEvent struct {
 	ID             string            `json:"id"`
 	ParentThreadID identity.ThreadID `json:"parent_thread_id"`
+	// ParentTurnID is the most recently started ordinary turn at receipt on the
+	// queried canonical path, including after its end. Compaction does not advance
+	// it. Empty means no preceding ordinary turn; forks retain inherited ownership.
+	ParentTurnID   identity.TurnID   `json:"parent_turn_id,omitempty"`
 	SourceThreadID identity.ThreadID `json:"source_thread_id"`
 	SourceTurnID   identity.TurnID   `json:"source_turn_id"`
 	SourceRunID    identity.RunID    `json:"source_run_id"`
@@ -174,7 +178,7 @@ func publicParentEventPage(threadID identity.ThreadID, page sessiontree.ParentEv
 		if full {
 			message = event.Message
 		}
-		result.Events = append(result.Events, ParentEvent{ID: event.ID, ParentThreadID: identity.ThreadID(event.ParentThreadID), SourceThreadID: identity.ThreadID(event.SourceThreadID), SourceTurnID: identity.TurnID(event.SourceTurnID), SourceRunID: identity.RunID(event.SourceRunID), SourceEntryID: event.SourceEntryID, Kind: ParentEventKind(event.Kind), ReasonCode: event.ReasonCode, InteractionID: event.InteractionID, Message: message, ReceivedAt: event.ReceivedAt.UTC().Format("2006-01-02T15:04:05.999999999Z"), Admitted: event.Admitted, Resolved: event.Resolved})
+		result.Events = append(result.Events, ParentEvent{ID: event.ID, ParentThreadID: identity.ThreadID(event.ParentThreadID), ParentTurnID: identity.TurnID(event.ParentTurnID), SourceThreadID: identity.ThreadID(event.SourceThreadID), SourceTurnID: identity.TurnID(event.SourceTurnID), SourceRunID: identity.RunID(event.SourceRunID), SourceEntryID: event.SourceEntryID, Kind: ParentEventKind(event.Kind), ReasonCode: event.ReasonCode, InteractionID: event.InteractionID, Message: message, ReceivedAt: event.ReceivedAt.UTC().Format("2006-01-02T15:04:05.999999999Z"), Admitted: event.Admitted, Resolved: event.Resolved})
 	}
 	return result
 }

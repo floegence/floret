@@ -90,6 +90,14 @@ pages. A fork inherits events without rewriting their original `ParentThreadID`;
 that recipient can differ from the page identity. Hosts validate page scope
 against the requested thread and authorize source navigation independently.
 
+ParentEvent.ParentTurnID (JSON parent_turn_id) identifies the most recently
+started ordinary parent turn preceding receipt in canonical Path order. It
+remains that turn after termination until another ordinary turn starts; context
+compaction does not advance it. No preceding ordinary turn means the field is
+omitted. Forks retain inherited ownership and original recipient identity.
+List, full read, pagination and restart derive the same field without changing
+historical bytes or admission. Domain schema remains 22. Hosts own presentation.
+
 ## Install
 
 Build with Go 1.27.2.

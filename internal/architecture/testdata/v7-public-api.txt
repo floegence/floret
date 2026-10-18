@@ -905,6 +905,7 @@ field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 type ParentEvent struct
 field ParentEvent.ID string tag="json:\"id\""
 field ParentEvent.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id\""
+field ParentEvent.ParentTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"parent_turn_id,omitempty\""
 field ParentEvent.SourceThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"source_thread_id\""
 field ParentEvent.SourceTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"source_turn_id\""
 field ParentEvent.SourceRunID github.com/floegence/floret/v7/identity.RunID tag="json:\"source_run_id\""

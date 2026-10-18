@@ -905,7 +905,7 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	})
 	done := florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}}
 	childGateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "events", StateCompatibilityKey: "test:events"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "report", Name: "report_to_parent", Args: "{\"message\":\"Important finding\"}"}}}, {Type: provider.EventDone, Reason: "tool_calls"}}}, done)
-	parentGateway := florettest.NewScriptedGateway(childGateway.Identity(), childGateway.Capabilities(), done)
+	parentGateway := florettest.NewScriptedGateway(childGateway.Identity(), childGateway.Capabilities(), done, done)
 	config := config.AgentConfig{Profile: config.AgentProfile{ID: "events", Name: "Events"}, SystemPrompt: "Review work.", Context: config.ContextPolicy{ContextWindowTokens: 256000}}
 	parentAgent, err := runtime.NewAgent(config, parentGateway)
 	if err != nil {
@@ -947,6 +947,12 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 		t.Fatalf("public empty events=%s, want []", emptyPage["events"])
 	}
 	parentID = parent.ThreadID
+	if _, err := service.Send(t.Context(), runtime.SendInput{ThreadID: parentID, RequestKey: "initial", Input: runtime.UserInput{Text: "start"}}); err != nil {
+		t.Fatal(err)
+	}
+	initial := waitPublishedToolInputView(t, service, parentID, func(v runtime.ThreadView) bool {
+		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
+	})
 	child, err := service.Create(t.Context(), runtime.CreateThreadInput{ParentThreadID: parentID, TaskName: "research", HostProfileRef: "test", RequestKey: "child"})
 	if err != nil {
 		t.Fatal(err)
@@ -965,6 +971,11 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	if err != nil || page.ThreadID != parentID || len(page.Events) != 2 {
 		t.Fatalf("events=%+v %v", page, err)
 	}
+	for _, event := range page.Events {
+		if event.ParentTurnID != initial.TurnID {
+			t.Fatalf("late event owner=%s want=%s", event.ParentTurnID, initial.TurnID)
+		}
+	}
 	full, err := events.ReadParentEvents(t.Context(), runtime.ReadParentEventsInput{ThreadID: parentID, FirstEventID: page.FirstEventID, LastEventID: page.LastEventID})
 	if err != nil || full.ThreadID != parentID || len(full.Events) != 2 || full.Events[0].Message != "Important finding" {
 		t.Fatalf("full=%+v %v", full, err)
@@ -980,7 +991,7 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	if err != nil || inherited.ThreadID != fork.ThreadID || len(inherited.Events) != 2 || inherited.Events[0] != full.Events[0] || inherited.Events[1] != full.Events[1] {
 		t.Fatalf("inherited=%+v %v", inherited, err)
 	}
-	if len(parentGateway.Requests()) != 0 {
+	if len(parentGateway.Requests()) != 1 {
 		t.Fatal("child report woke parent")
 	}
 	if _, err := service.Send(t.Context(), runtime.SendInput{ThreadID: parentID, RequestKey: "review", Input: runtime.UserInput{Text: "review"}}); err != nil {
@@ -990,11 +1001,11 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
 	})
 	requests := parentGateway.Requests()
-	if len(requests) != 1 {
+	if len(requests) != 2 {
 		t.Fatal("unexpected provider sampling")
 	}
 	found := false
-	for _, m := range requests[0].Messages {
+	for _, m := range requests[1].Messages {
 		if strings.Contains(m.Text, "Important finding") && strings.Contains(m.Text, "completed") {
 			found = true
 		}
