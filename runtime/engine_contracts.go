@@ -446,7 +446,9 @@ func runtimeMetrics(metrics engine.RunMetrics) RunMetrics {
 func runtimeProviderUsage(usage provider.Usage) publicprovider.Usage {
 	usage = usage.Normalized()
 	return publicprovider.Usage{
-		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
+		OutputIncludesReasoning: usage.OutputIncludesReasoning,
+		TotalTokensReported:     usage.TotalTokensReported,
+		InputTokens:             usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
 		CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens, TotalTokens: usage.TotalTokens,
 		CostUSD: usage.CostUSD, Source: string(usage.Source), Available: usage.Available, WindowInputTokens: usage.WindowInputTokens,
 	}

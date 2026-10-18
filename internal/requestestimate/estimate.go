@@ -99,9 +99,11 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 		return Estimate{}, err
 	}
 	b := collected.ContextBreakdown
-	b.AttachmentTokens = media
 	if media > 0 {
-		b.Quality = "relative_weight"
+		b.AttributionCoverage = "partial"
+		if b.Limitation == "" {
+			b.Limitation = "media_input"
+		}
 	}
 	prefix := b.SystemTokens
 	definitions := b.ToolDefinitionTokens
@@ -115,7 +117,7 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 	if c.opaque {
 		method = "generic_payload_estimate"
 	}
-	estimate := Estimate{Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media, Media: media, Source: "rendered_" + source + "_content_v3", Method: method, Breakdown: b}
+	estimate := Estimate{Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media + b.OpaqueBytes, Media: media, Source: "rendered_" + source + "_content_v4", Method: method, Breakdown: b}
 	if b.Diagnostic != "" {
 		estimate.Breakdown = contextpolicy.ContextBreakdown{Diagnostic: b.Diagnostic}
 	}

@@ -109,6 +109,13 @@ type collectedContent struct {
 	toolFraming int64
 }
 
+func (s *collector) limit(reason string) {
+	s.out.AttributionCoverage = "partial"
+	if s.out.Limitation == "" {
+		s.out.Limitation = reason
+	}
+}
+
 func (s *collector) detail(category, key, source, namespace string, n int64) {
 	if s.out.Details == nil {
 		s.out.Details = &contextpolicy.ContextBreakdownDetails{}
@@ -301,7 +308,8 @@ func (s *collector) parts(path, category string, value any) error {
 			if err := s.parts(base+"/content", "tool_result", p["content"]); err != nil {
 				return err
 			}
-		case "image_url", "input_image", "image", "input_file", "file", "document", "audio", "input_audio", "video": // media is counted once by the budget sanitizer
+		case "image_url", "input_image", "image", "input_file", "file", "document", "audio", "input_audio", "video":
+			s.limit("media_input")
 		case "refusal":
 			if text, ok := p["refusal"].(string); ok {
 				if err := s.text(base+"/refusal", category, text); err != nil {
@@ -309,25 +317,27 @@ func (s *collector) parts(path, category string, value any) error {
 				}
 			}
 		case "redacted_thinking":
-			s.out.Quality = "relative_weight"
+			s.limit("opaque_reasoning")
 			if data, ok := p["data"].(string); ok {
-				s.add("reasoning", int64(len(data)))
+				s.out.OpaqueBytes += int64(len(data))
 			}
 		default:
-			// Unknown provider-native content is opaque; retain a bounded weight without claiming a matching text count.
-			s.out.Quality = "relative_weight"
-			if err := s.structured(category, p); err != nil {
-				return err
-			}
+			// Unknown provider content has no established token interpretation.
+			s.limit("unknown_content")
+			raw, _ := json.Marshal(p)
+			s.out.OpaqueBytes += int64(len(raw))
 		}
 	}
 	return nil
 }
 
 func collectContent(c counter, format string, body map[string]any, attrs []Attribution) (collectedContent, error) {
-	s := collector{c: c, out: collectedContent{ContextBreakdown: contextpolicy.ContextBreakdown{Source: "prepared_content_v3", Tokenizer: c.encoding, Quality: "relative_weight"}}, attrs: map[string]Attribution{}, used: map[string]bool{}}
-	if c.encoding != "" && format != "input_json" {
-		s.out.Quality = "token_estimate"
+	s := collector{c: c, out: collectedContent{ContextBreakdown: contextpolicy.ContextBreakdown{Source: "prepared_content_v4", Tokenizer: c.encoding, Quality: "token_estimate", AttributionCoverage: "complete"}}, attrs: map[string]Attribution{}, used: map[string]bool{}}
+	if c.encoding == "" {
+		s.out.Tokenizer = "proxy_bpe"
+	}
+	if format == "input_json" {
+		s.limit("opaque_transport")
 	}
 	for _, a := range attrs {
 		if _, ok := s.attrs[a.Path]; ok {
@@ -390,8 +400,8 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 				}
 			case "reasoning":
 				if data, ok := m["encrypted_content"].(string); ok {
-					s.add("reasoning", int64(len(data)))
-					s.out.Quality = "relative_weight"
+					s.out.OpaqueBytes += int64(len(data))
+					s.limit("opaque_reasoning")
 				}
 				for _, k := range []string{"content", "summary"} {
 					if err := s.parts(path+"/"+k, "reasoning", m[k]); err != nil {
@@ -399,7 +409,7 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 					}
 				}
 			case "web_search_call":
-				s.out.Quality = "relative_weight"
+				s.limit("hosted_context")
 			default:
 				if err := s.parts(path+"/content", category, m["content"]); err != nil {
 					return s.out, err
@@ -463,6 +473,9 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 				if a.Category != "tool_definition" || a.Key == "" {
 					s.invalid = true
 				}
+			}
+			if kind, _ := tool["type"].(string); strings.HasPrefix(kind, "web_search") {
+				s.limit("hosted_context")
 			}
 			def := tool
 			if f, ok := tool["function"].(map[string]any); ok {

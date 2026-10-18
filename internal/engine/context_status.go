@@ -49,6 +49,9 @@ const (
 )
 
 type ProviderUsageContextStatus struct {
+	PayloadFingerprint   string                        `json:"payload_fingerprint,omitempty"`
+	AttemptID            string                        `json:"attempt_id,omitempty"`
+	AttemptEpoch         int                           `json:"attempt_epoch,omitempty"`
 	Phase                string                        `json:"phase"`
 	RequestID            string                        `json:"request_id,omitempty"`
 	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
@@ -66,6 +69,7 @@ type ProviderUsageContextStatus struct {
 func providerUsageContextStatus(req provider.Request, usage provider.Usage, pressure contextpolicy.ContextPressure) ProviderUsageContextStatus {
 	normalized := usage.Normalized()
 	return ProviderUsageContextStatus{
+		PayloadFingerprint: req.RawPlan.PayloadHash, AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch,
 		Phase:                ProviderUsagePhaseFinalContextStatus,
 		RequestID:            requestID(req.RunID, req.Step),
 		LogicalRequestID:     req.LogicalRequestID,
@@ -98,7 +102,8 @@ func ProviderUsageContextStatusFromMetadata(metadata any) (ProviderUsageContextS
 	attempt, attemptOK := values["attempt"].(int)
 	if !logicalOK || !attemptIDOK || !attemptEpochOK || !attemptOK ||
 		strings.TrimSpace(logicalRequestID) == "" || strings.TrimSpace(attemptID) == "" || attemptEpoch <= 0 || attempt <= 0 ||
-		status.LogicalRequestID != logicalRequestID || status.Attempt != attempt {
+		status.LogicalRequestID != logicalRequestID || status.Attempt != attempt ||
+		(status.AttemptID != "" && status.AttemptID != attemptID) || (status.AttemptEpoch != 0 && status.AttemptEpoch != attemptEpoch) {
 		return ProviderUsageContextStatus{}, false
 	}
 	return status, true

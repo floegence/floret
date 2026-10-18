@@ -62,12 +62,29 @@ func (r chatRequest) MarshalJSON() ([]byte, error) {
 }
 
 type usagePayload struct {
+	totalReported           bool
 	PromptTokens            int64        `json:"prompt_tokens"`
 	CompletionTokens        int64        `json:"completion_tokens"`
 	ReasoningTokens         int64        `json:"reasoning_tokens"`
 	TotalTokens             int64        `json:"total_tokens"`
 	PromptTokensDetails     tokenDetails `json:"prompt_tokens_details"`
 	CompletionTokensDetails tokenDetails `json:"completion_tokens_details"`
+}
+
+func (u *usagePayload) UnmarshalJSON(raw []byte) error {
+	type plain usagePayload
+	var decoded plain
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*u = usagePayload(decoded)
+	value, exists := fields["total_tokens"]
+	u.totalReported = exists && string(value) != "null"
+	return nil
 }
 
 type tokenDetails struct {
@@ -928,18 +945,20 @@ func normalizeUsage(payload usagePayload, model catalog.Model) provider.Usage {
 	cacheWrite := payload.PromptTokensDetails.CacheWriteTokens
 	reasoning := payload.ReasoningTokens + payload.CompletionTokensDetails.ReasoningTokens
 	input := payload.PromptTokens
-	if input >= cacheRead {
-		input -= cacheRead
+	if cacheRead >= 0 && cacheWrite >= 0 && cacheRead <= input && cacheWrite <= input-cacheRead {
+		input -= cacheRead + cacheWrite
 	}
 	usage := provider.Usage{
-		InputTokens:       input,
-		OutputTokens:      payload.CompletionTokens,
-		ReasoningTokens:   reasoning,
-		CacheReadTokens:   cacheRead,
-		CacheWriteTokens:  cacheWrite,
-		TotalTokens:       payload.TotalTokens,
-		Source:            provider.UsageNative,
-		WindowInputTokens: payload.PromptTokens,
+		InputTokens:             input,
+		OutputTokens:            payload.CompletionTokens,
+		OutputIncludesReasoning: true,
+		TotalTokensReported:     payload.totalReported,
+		ReasoningTokens:         reasoning,
+		CacheReadTokens:         cacheRead,
+		CacheWriteTokens:        cacheWrite,
+		TotalTokens:             payload.TotalTokens,
+		Source:                  provider.UsageNative,
+		WindowInputTokens:       payload.PromptTokens,
 	}.Normalized()
 	if model.ID != "" {
 		usage.CostUSD = catalog.CostForUsage(model, usage)

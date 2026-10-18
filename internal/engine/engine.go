@@ -2629,7 +2629,7 @@ func validatePreparedTokenEstimate(estimate provider.TokenEstimate) error {
 	if estimate.Coverage != provider.TokenEstimateCoverageComplete {
 		return fmt.Errorf("%w: prepared request estimate coverage=%q", ErrInvalidTokenEstimate, estimate.Coverage)
 	}
-	if estimate.Confidence != provider.EstimateExact && estimate.Confidence != provider.EstimateConservative {
+	if estimate.Confidence != provider.EstimateExact && estimate.Confidence != provider.EstimateConservative && estimate.Confidence != provider.EstimateApproximate {
 		return fmt.Errorf("%w: prepared request estimate confidence=%q", ErrInvalidTokenEstimate, estimate.Confidence)
 	}
 	if estimate.AttachmentTokens < 0 || estimate.AttachmentTokens > estimate.MessageTokens || estimate.PrefixTokens < 0 || estimate.MessageTokens < 0 || estimate.ToolDefinitionTokens < 0 || estimate.EstimatedInputTokens < 0 {
@@ -2675,7 +2675,7 @@ func validateProviderTokenEstimate(estimate provider.TokenEstimate) error {
 
 func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy contextpolicy.Policy) contextpolicy.RequestEstimate {
 	breakdown := estimate.Breakdown
-	if breakdown.Source != "" {
+	if breakdown.Source != "prepared_content_v4" && breakdown.Source != "" {
 		breakdown.AttachmentTokens = estimate.AttachmentTokens
 	}
 	return contextpolicy.RequestEstimate{
@@ -2716,6 +2716,7 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 		"attempt_id":                  req.AttemptID,
 		"attempt_epoch":               req.AttemptEpoch,
 		"attempt":                     req.Attempt,
+		"payload_hash":                req.RawPlan.PayloadHash,
 		"request_estimate":            estimate,
 		"context_pressure":            pressure,
 		"compaction_generation":       req.RawPlan.CompactionGeneration,
@@ -3309,7 +3310,11 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		}
 		nextPolicy, ok := nextCompactionPolicyForValidation(policy, validation)
 		if !ok {
-			err = fixedContextBudgetError(req, validation)
+			if validation.FixedInputTokens >= validation.RequestSafeLimit {
+				err = fixedContextBudgetError(req, validation)
+			} else {
+				err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit)
+			}
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
 			break
 		}
@@ -3725,7 +3730,7 @@ func compactedRequestValidationForRequest(req provider.Request) compactedRequest
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
 	messageUsage := contextpolicy.EstimateMessageContext("", providerRequestHistoryMessages(req.Messages), req.ContextPolicy)
 	fixed := fixedInputTokens(estimate)
-	if estimate.MessageTokens <= 0 && estimate.EstimatedInputTokens > 0 && messageUsage.InputTokens > 0 {
+	if estimate.Breakdown.AttributionCoverage != "partial" && estimate.MessageTokens <= 0 && estimate.EstimatedInputTokens > 0 && messageUsage.InputTokens > 0 {
 		renderedFixed := estimate.EstimatedInputTokens - messageUsage.InputTokens
 		if renderedFixed > fixed {
 			fixed = renderedFixed

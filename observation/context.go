@@ -2,6 +2,7 @@ package observation
 
 import (
 	"fmt"
+	"github.com/floegence/floret/v7/internal/usageaccounting"
 	"math"
 	"slices"
 	"strings"
@@ -84,80 +85,91 @@ type Event struct {
 }
 
 type ProviderUsage struct {
-	InputTokens       int64   `json:"input_tokens,omitempty"`
-	OutputTokens      int64   `json:"output_tokens,omitempty"`
-	ReasoningTokens   int64   `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens   int64   `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
-	TotalTokens       int64   `json:"total_tokens,omitempty"`
-	WindowInputTokens int64   `json:"window_input_tokens,omitempty"`
-	CostUSD           float64 `json:"cost_usd,omitempty"`
-	Source            string  `json:"source,omitempty"`
-	Available         bool    `json:"available,omitempty"`
+	OutputIncludesReasoning bool    `json:"output_includes_reasoning,omitempty"`
+	TotalTokensReported     bool    `json:"total_tokens_reported,omitempty"`
+	InputTokens             int64   `json:"input_tokens,omitempty"`
+	OutputTokens            int64   `json:"output_tokens,omitempty"`
+	ReasoningTokens         int64   `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens         int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens        int64   `json:"cache_write_tokens,omitempty"`
+	TotalTokens             int64   `json:"total_tokens,omitempty"`
+	WindowInputTokens       int64   `json:"window_input_tokens,omitempty"`
+	CostUSD                 float64 `json:"cost_usd,omitempty"`
+	Source                  string  `json:"source,omitempty"`
+	Available               bool    `json:"available,omitempty"`
 }
 
 func (u ProviderUsage) Normalized() ProviderUsage {
-	if u.WindowInputTokens <= 0 {
-		u.WindowInputTokens = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
-	}
-	if u.TotalTokens <= 0 {
-		u.TotalTokens = u.InputTokens + u.OutputTokens + u.ReasoningTokens + u.CacheReadTokens + u.CacheWriteTokens
-	}
+	u.WindowInputTokens = usageaccounting.WindowInput(u.WindowInputTokens, u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+	u.TotalTokens = usageaccounting.Total(u.TotalTokens, u.TotalTokensReported, u.InputTokens, u.OutputTokens, u.ReasoningTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputIncludesReasoning)
 	return u
 }
 
 type RequestObservation struct {
-	RunID             identity.RunID            `json:"run_id,omitempty"`
-	ThreadID          identity.ThreadID         `json:"thread_id,omitempty"`
-	TurnID            identity.TurnID           `json:"turn_id,omitempty"`
-	Step              int                       `json:"step"`
-	RequestID         string                    `json:"request_id,omitempty"`
-	LogicalRequestID  identity.LogicalRequestID `json:"logical_request_id,omitempty"`
-	Attempt           int                       `json:"attempt,omitempty"`
-	Provider          string                    `json:"provider"`
-	Model             string                    `json:"model"`
-	ObservedAt        time.Time                 `json:"observed_at"`
-	RequestEstimate   config.RequestEstimate    `json:"request_estimate,omitempty"`
-	ProjectedPressure config.ContextPressure    `json:"projected_context_pressure,omitempty"`
+	PayloadFingerprint string                    `json:"payload_fingerprint,omitempty"`
+	AttemptID          string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch       int                       `json:"attempt_epoch,omitempty"`
+	RunID              identity.RunID            `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID           `json:"turn_id,omitempty"`
+	Step               int                       `json:"step"`
+	RequestID          string                    `json:"request_id,omitempty"`
+	LogicalRequestID   identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt            int                       `json:"attempt,omitempty"`
+	Provider           string                    `json:"provider"`
+	Model              string                    `json:"model"`
+	ObservedAt         time.Time                 `json:"observed_at"`
+	RequestEstimate    config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ProjectedPressure  config.ContextPressure    `json:"projected_context_pressure,omitempty"`
 }
 
 type ProviderUsageObservation struct {
-	RunID            identity.RunID            `json:"run_id,omitempty"`
-	ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
-	TurnID           identity.TurnID           `json:"turn_id,omitempty"`
-	Step             int                       `json:"step,omitempty"`
-	RequestID        string                    `json:"request_id,omitempty"`
-	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
-	Attempt          int                       `json:"attempt,omitempty"`
-	Provider         string                    `json:"provider,omitempty"`
-	Model            string                    `json:"model,omitempty"`
-	ObservedAt       time.Time                 `json:"observed_at"`
-	Usage            ProviderUsage             `json:"usage,omitempty"`
-	RequestEstimate  config.RequestEstimate    `json:"request_estimate,omitempty"`
-	ContextPressure  config.ContextPressure    `json:"context_pressure,omitempty"`
+	PayloadFingerprint string                    `json:"payload_fingerprint,omitempty"`
+	AttemptID          string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch       int                       `json:"attempt_epoch,omitempty"`
+	RunID              identity.RunID            `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID           `json:"turn_id,omitempty"`
+	Step               int                       `json:"step,omitempty"`
+	RequestID          string                    `json:"request_id,omitempty"`
+	LogicalRequestID   identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt            int                       `json:"attempt,omitempty"`
+	Provider           string                    `json:"provider,omitempty"`
+	Model              string                    `json:"model,omitempty"`
+	ObservedAt         time.Time                 `json:"observed_at"`
+	Usage              ProviderUsage             `json:"usage,omitempty"`
+	RequestEstimate    config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ContextPressure    config.ContextPressure    `json:"context_pressure,omitempty"`
 }
 
 type ContextStatus struct {
-	RunID            identity.RunID            `json:"run_id,omitempty"`
-	ThreadID         identity.ThreadID         `json:"thread_id,omitempty"`
-	TurnID           identity.TurnID           `json:"turn_id,omitempty"`
-	Step             int                       `json:"step,omitempty"`
-	RequestID        string                    `json:"request_id,omitempty"`
-	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id,omitempty"`
-	Attempt          int                       `json:"attempt,omitempty"`
-	Phase            ContextPhase              `json:"phase"`
-	Provider         string                    `json:"provider,omitempty"`
-	Model            string                    `json:"model,omitempty"`
-	ObservedAt       time.Time                 `json:"observed_at"`
-	Usage            ProviderUsage             `json:"usage,omitempty"`
-	RequestEstimate  config.RequestEstimate    `json:"request_estimate,omitempty"`
-	ContextPressure  config.ContextPressure    `json:"context_pressure,omitempty"`
-	UsedRatio        float64                   `json:"used_ratio,omitempty"`
-	ThresholdRatio   float64                   `json:"threshold_ratio,omitempty"`
-	Status           ContextDisplayStatus      `json:"status"`
+	PayloadFingerprint string                    `json:"payload_fingerprint,omitempty"`
+	AttemptID          string                    `json:"attempt_id,omitempty"`
+	AttemptEpoch       int                       `json:"attempt_epoch,omitempty"`
+	RunID              identity.RunID            `json:"run_id,omitempty"`
+	ThreadID           identity.ThreadID         `json:"thread_id,omitempty"`
+	TurnID             identity.TurnID           `json:"turn_id,omitempty"`
+	Step               int                       `json:"step,omitempty"`
+	RequestID          string                    `json:"request_id,omitempty"`
+	LogicalRequestID   identity.LogicalRequestID `json:"logical_request_id,omitempty"`
+	Attempt            int                       `json:"attempt,omitempty"`
+	Phase              ContextPhase              `json:"phase"`
+	Provider           string                    `json:"provider,omitempty"`
+	Model              string                    `json:"model,omitempty"`
+	ObservedAt         time.Time                 `json:"observed_at"`
+	Usage              ProviderUsage             `json:"usage,omitempty"`
+	RequestEstimate    config.RequestEstimate    `json:"request_estimate,omitempty"`
+	ContextPressure    config.ContextPressure    `json:"context_pressure,omitempty"`
+	UsedRatio          float64                   `json:"used_ratio,omitempty"`
+	ThresholdRatio     float64                   `json:"threshold_ratio,omitempty"`
+	Status             ContextDisplayStatus      `json:"status"`
 }
 
 func (s ContextStatus) Validate() error {
+	if len(s.PayloadFingerprint) > 512 || strings.ContainsAny(s.PayloadFingerprint, "\r\n\x00") || s.AttemptEpoch < 0 {
+		return fmt.Errorf("invalid frozen request identity")
+	}
+
 	p := s.ContextPressure
 	if p.RequestOutputTokens < 0 || p.SafetyMarginTokens < 0 || p.SafetyMarginTokens > 4096 {
 		return fmt.Errorf("invalid request output budget")
@@ -184,6 +196,20 @@ func (s ContextStatus) Validate() error {
 	}
 
 	b := s.RequestEstimate.Breakdown
+	if b.OpaqueBytes < 0 {
+		return fmt.Errorf("invalid opaque byte diagnostics")
+	}
+	if b.AttributionCoverage != "" && b.AttributionCoverage != "complete" && b.AttributionCoverage != "partial" {
+		return fmt.Errorf("invalid attribution coverage")
+	}
+	switch b.Limitation {
+	case "", "opaque_reasoning", "unknown_content", "media_input", "opaque_transport", "hosted_context":
+	default:
+		return fmt.Errorf("invalid attribution limitation")
+	}
+	if b.Source == "prepared_content_v4" && (b.AttributionCoverage == "" || b.Quality != "token_estimate" || b.AttachmentTokens != 0 || (b.AttributionCoverage == "complete" && (b.OpaqueBytes != 0 || b.Limitation != ""))) {
+		return fmt.Errorf("invalid token-unit attribution")
+	}
 	if b.Quality != "" && b.Quality != "token_estimate" && b.Quality != "relative_weight" {
 		return fmt.Errorf("invalid context breakdown quality")
 	}
@@ -226,6 +252,7 @@ func (s ContextStatus) Validate() error {
 
 func ContextStatusFromRequest(req RequestObservation) ContextStatus {
 	return ContextStatus{
+		PayloadFingerprint: req.PayloadFingerprint, AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch,
 		RunID:            req.RunID,
 		ThreadID:         req.ThreadID,
 		TurnID:           req.TurnID,
@@ -250,6 +277,7 @@ func ContextStatusFromProviderUsage(usage ProviderUsageObservation) (ContextStat
 		return ContextStatus{}, false
 	}
 	return ContextStatus{
+		PayloadFingerprint: usage.PayloadFingerprint, AttemptID: usage.AttemptID, AttemptEpoch: usage.AttemptEpoch,
 		RunID:            usage.RunID,
 		ThreadID:         usage.ThreadID,
 		TurnID:           usage.TurnID,
@@ -279,10 +307,11 @@ func ContextStatusFromProviderUsageEvent(ev Event) (ContextStatus, bool) {
 		return ContextStatus{}, false
 	}
 	return ContextStatusFromProviderUsage(ProviderUsageObservation{
-		RunID:            ev.RunID,
-		ThreadID:         ev.ThreadID,
-		TurnID:           ev.TurnID,
-		Step:             ev.Step,
+		RunID:              ev.RunID,
+		ThreadID:           ev.ThreadID,
+		TurnID:             ev.TurnID,
+		Step:               ev.Step,
+		PayloadFingerprint: status.PayloadFingerprint, AttemptID: status.AttemptID, AttemptEpoch: status.AttemptEpoch,
 		RequestID:        status.RequestID,
 		LogicalRequestID: status.LogicalRequestID,
 		Attempt:          status.Attempt,
@@ -388,13 +417,16 @@ func ContextPressureThresholdRatio(pressure config.ContextPressure) float64 {
 }
 
 type providerUsageContextStatus struct {
-	Phase            string
-	RequestID        string
-	LogicalRequestID identity.LogicalRequestID
-	Attempt          int
-	Usage            ProviderUsage
-	RequestEstimate  config.RequestEstimate
-	ContextPressure  config.ContextPressure
+	PayloadFingerprint string
+	AttemptID          string
+	AttemptEpoch       int
+	Phase              string
+	RequestID          string
+	LogicalRequestID   identity.LogicalRequestID
+	Attempt            int
+	Usage              ProviderUsage
+	RequestEstimate    config.RequestEstimate
+	ContextPressure    config.ContextPressure
 }
 
 func providerUsageContextStatusFromMetadata(meta map[string]any) (providerUsageContextStatus, bool) {
@@ -407,6 +439,7 @@ func providerUsageContextStatusFromMetadata(meta map[string]any) (providerUsageC
 		return providerUsageContextStatus{}, false
 	}
 	return providerUsageContextStatus{
+		PayloadFingerprint: stringFromAny(meta["payload_fingerprint"]), AttemptID: stringFromAny(meta["attempt_id"]), AttemptEpoch: intFromAny(meta["attempt_epoch"], 0),
 		Phase:            phase,
 		RequestID:        stringFromAny(meta["request_id"]),
 		LogicalRequestID: identity.LogicalRequestID(stringFromAny(meta["logical_request_id"])),

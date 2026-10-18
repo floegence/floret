@@ -289,6 +289,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 		HostedToolCall: hostedCall, HostedResult: hostedResult, Sources: sources, Reason: event.Reason,
 		Usage: Usage{
 			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
+			OutputIncludesReasoning: event.Usage.OutputIncludesReasoning, TotalTokensReported: event.Usage.TotalTokensReported,
 			ReasoningTokens: event.Usage.ReasoningTokens, CacheReadTokens: event.Usage.CacheReadTokens,
 			CacheWriteTokens: event.Usage.CacheWriteTokens, TotalTokens: event.Usage.TotalTokens,
 			CostUSD: event.Usage.CostUSD, Source: string(event.Usage.Source), Available: event.Usage.Available,
