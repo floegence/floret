@@ -1935,12 +1935,6 @@ func markerMetadata(runID string, result engine.Result) map[string]string {
 	return metadata
 }
 
-type retryTargetResult struct {
-	Entry            sessiontree.Entry
-	Source           string
-	LogicalRequestID string
-}
-
 type durableCompactionManager struct {
 	thread     *Thread
 	turnID     string
@@ -2079,47 +2073,6 @@ func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {
 		}
 	}
 	return sessiontree.Entry{}
-}
-
-func retryTarget(path []sessiontree.Entry) retryTargetResult {
-	logicalRequestIDForTurn := func(turnID string) string {
-		for _, entry := range path {
-			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == turnID && entry.TurnStatus == sessiontree.TurnStarted {
-				return strings.TrimSpace(entry.Metadata[sessiontree.LogicalRequestIDMetadataKey])
-			}
-		}
-		return ""
-	}
-	failedTurnID := ""
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i].Type == sessiontree.EntryRunFailure && path[i].TurnID != "" {
-			failedTurnID = path[i].TurnID
-			break
-		}
-	}
-	if failedTurnID != "" {
-		for i := len(path) - 1; i >= 0; i-- {
-			if path[i].TurnID == failedTurnID && path[i].Type == sessiontree.EntryTurnMarker && path[i].TurnStatus == sessiontree.TurnSavePoint {
-				if i > 0 {
-					candidate := path[i-1]
-					if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, candidate.TurnID, candidate.ID); err == nil && eligible {
-						return retryTargetResult{Entry: candidate, Source: "save_point", LogicalRequestID: logicalRequestIDForTurn(candidate.TurnID)}
-					}
-					return retryTargetResult{}
-				}
-			}
-		}
-	}
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i].Type != sessiontree.EntryUserMessage {
-			continue
-		}
-		if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, path[i].TurnID, path[i].ID); err == nil && eligible {
-			return retryTargetResult{Entry: path[i], Source: "user", LogicalRequestID: logicalRequestIDForTurn(path[i].TurnID)}
-		}
-		return retryTargetResult{}
-	}
-	return retryTargetResult{}
 }
 
 type HarnessRecorder struct {

@@ -95,7 +95,7 @@ func TestGracefulStopPreservesConfirmedCancellation(t *testing.T) {
 }
 
 func TestGracefulStopSettlesEachToolWithoutReplay(t *testing.T) {
-	for _, scenario := range []string{"canceled", "completed", "failed", "unconfirmed", "timeout"} {
+	for _, scenario := range []string{"canceled", "completed", "failed", "uncertain", "unconfirmed", "timeout"} {
 		t.Run(scenario, func(t *testing.T) {
 			quickStarted := make(chan struct{})
 			started, release, exited := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -119,6 +119,8 @@ func TestGracefulStopSettlesEachToolWithoutReplay(t *testing.T) {
 						return tools.Result{Text: "finished before exit"}, nil
 					case "failed":
 						return tools.ErrorResult(inv.CallID, inv.Name, "real command error"), nil
+					case "uncertain":
+						return tools.Result{IsError: true, EffectOutcome: tools.EffectOutcomeUncertain, Text: "receipt not confirmed"}, nil
 					case "unconfirmed":
 						return tools.Result{}, context.Canceled
 					default:
@@ -223,7 +225,7 @@ func TestGracefulStopSettlesEachToolWithoutReplay(t *testing.T) {
 			if scenario == "completed" {
 				wantStatus = observation.ActivityStatusSuccess
 			}
-			if scenario == "failed" || unknown {
+			if scenario == "failed" || scenario == "uncertain" || unknown {
 				wantStatus = observation.ActivityStatusError
 			}
 			if got := threadToolStatus(terminal.Items, "work-call"); got != wantStatus {

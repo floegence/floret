@@ -10,6 +10,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/tools"
 )
 
 var ErrProviderStateNotFound = errors.New("provider state not found")
@@ -301,6 +302,9 @@ func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceE
 	if isCanonicalUserEntry(entry) {
 		return nil
 	}
+	if uncertainResultTerminalBoundary(path, index) {
+		return nil
+	}
 	if index+1 < len(path) {
 		savePoint := path[index+1]
 		if savePoint.Type == EntryTurnMarker && savePoint.TurnStatus == TurnSavePoint && savePoint.ParentID == entry.ID && strings.TrimSpace(savePoint.TurnID) == sourceTurnID {
@@ -308,6 +312,30 @@ func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceE
 		}
 	}
 	return ErrInvalidThreadAuthority
+}
+
+// A settled terminal is a retry boundary only when it retains a returned
+// uncertainty and a complete tool exchange. No storage repair or replay is needed
+// when the process failed between result commit and its following savepoint.
+func uncertainResultTerminalBoundary(entries []Entry, index int) bool {
+	terminal := entries[index]
+	if terminal.Type != EntryTurnMarker || (terminal.TurnStatus != TurnCompleted && terminal.TurnStatus != TurnFailed && terminal.TurnStatus != TurnAborted) || terminal.Metadata[TurnFailureCodeMetadataKey] == TurnFailureEffectOutcomeUnknown {
+		return false
+	}
+	uncertain := false
+	messages := []session.Message{}
+	for _, entry := range entries[:index+1] {
+		if entry.TurnID != terminal.TurnID {
+			continue
+		}
+		if entry.Message.ToolResult != nil && entry.Message.ToolResult.EffectOutcome == tools.EffectOutcomeUncertain {
+			uncertain = true
+		}
+		if entry.Type == EntryUserMessage || entry.Type == EntryAssistantMessage || entry.Type == EntryToolCall || entry.Type == EntryToolResult {
+			messages = append(messages, entry.Message)
+		}
+	}
+	return uncertain && session.ValidateToolHistory(messages) == nil
 }
 
 func ValidateFinishTurnRequest(req FinishTurnRequest) error {

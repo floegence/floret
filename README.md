@@ -1021,5 +1021,9 @@ and archived output atomically, then lets the model inspect current state and de
 what to do. Do not blindly repeat an uncertain action. Repeated invocation identity
 replays the committed result, and retry preserves the post-result boundary.
 Crashes, panics, unsettled cancellation and result persistence failure retain the
-terminal ErrEffectOutcomeUnknown contract. Schema 20 -> 21 preserves historical
+terminal ErrEffectOutcomeUnknown contract. When a result commits before its batch
+savepoint, retry retains the complete settled terminal path instead of an earlier
+savepoint. Incomplete tool exchanges fail closed.
+
+Schema 20 -> 21 preserves historical
 facts and requires current writers.

@@ -1528,3 +1528,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
   preserve unsettled execution termination and post-result retry safety.
 
 - 2026-10-18: Document request-bound context accounting and permanent schema 22 -> 22.
+- Keep retry continuation after the latest uncertain result even when its following batch savepoint was not committed; Stop retains cancellation authority.
+
