@@ -50,3 +50,8 @@ tools.ArgumentPreview	keep	Definition.NewArgumentPreview	safe display name and o
 tools.ArgumentPreviewer	keep	Definition.NewArgumentPreview	bounded per-call incremental display parser without effects
 runtime.MessageAttachment.Locator	add	canonical descriptor identity	Redeven Flower authorized immutable image rereading without resource-ref model exposure
 provider.RetryAdviceForError	keep	provider transport fact classification	Redeven shares Engine classifier without owning retries
+runtime.WithAgentGoals	add	optional same-context goal reflection	Redeven Flower uses one journal objective independent of todos
+runtime.ThreadGoalController	add	SetGoal and DeleteGoal	management without execution with request deduplication and expected-version conflicts
+runtime.ThreadGoal	add	ThreadView.Goal	current exact objective and transient reflection presentation
+runtime.ThreadGoalChange	add	ThreadItemGoal	auditable user and model changes with atomic terminal completion
+tools.Registry.WithTools	add	independent registry snapshot	install runtime-owned tools without redispatching external effects

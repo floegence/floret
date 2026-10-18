@@ -9,6 +9,15 @@ defaults:
   provider_progress: attempt-fenced in-memory timing and character estimate; never billable usage
   argument_preview: bounded side-effect-free parser; errors discard preview only; actual results replace counts including zero
 methods:
+  - method: ThreadGoalController.SetGoal/DeleteGoal
+    errors_is: [ErrHostClosed, ErrThreadNotFound, ErrRequestConflict]
+    errors_as: [RequestConflictError]
+    retryability: reuse exact request key and input; expected-version conflicts return the current Goal
+    commit: one canonical Goal entry without model execution; completed requires atomic successful Turn end
+    replay: exact request replay never duplicates a mutation
+    concurrency: the journal serializes model and user mutations; stale versions do not overwrite
+    cancellation: preserves committed facts and does not start or interrupt model execution
+    closing: rejects after Host closes
   - method: provider.RetryAdviceForError
     errors_is: []
     errors_as: []

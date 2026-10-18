@@ -1110,11 +1110,11 @@ func TestPublishedGoalManagementSurvivesRestartWithoutExecution(t *testing.T) {
 	if _, err = service.(runtime.ThreadGoalController).SetGoal(t.Context(), input); err != nil {
 		t.Fatal(err)
 	}
-	if err = host.Close(); err != nil {
+	if err = host.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	host, service = open()
-	defer host.Close()
+	defer host.Shutdown(context.Background())
 	view, err := service.View(t.Context(), thread.ThreadID)
 	if err != nil || view.Goal == nil || view.Goal.Text != input.Text {
 		t.Fatalf("goal=%+v err=%v", view.Goal, err)
