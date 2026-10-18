@@ -586,6 +586,10 @@ field CreateThreadInput.ForkMode string tag="json:\"fork_mode,omitempty\""
 field CreateThreadInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
 func DefaultProviderRequestTimeoutPolicy func() github.com/floegence/floret/v7/runtime.ProviderRequestTimeoutPolicy
 func DefaultProviderRetryPolicy func() github.com/floegence/floret/v7/runtime.ProviderRetryPolicy
+type DeleteGoalInput struct
+field DeleteGoalInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field DeleteGoalInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+field DeleteGoalInput.ExpectedVersion int64 tag="json:\"expected_version\""
 type DeleteQueuedInput struct
 field DeleteQueuedInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field DeleteQueuedInput.QueueItemID string tag="json:\"queue_item_id\""
@@ -732,6 +736,10 @@ field ForkThreadInput.TaskDescription string tag="json:\"task_description,omitem
 field ForkThreadInput.HostProfileRef string tag="json:\"host_profile_ref,omitempty\""
 field ForkThreadInput.ForkMode string tag="json:\"fork_mode,omitempty\""
 field ForkThreadInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type GoalMutationResult struct
+field GoalMutationResult.Goal github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal\""
+field GoalMutationResult.Conflict bool tag="json:\"conflict\""
+field GoalMutationResult.Replayed bool tag="json:\"replayed,omitempty\""
 type HistoryPage struct
 field HistoryPage.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
 field HistoryPage.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items\""
@@ -1050,6 +1058,11 @@ field SendInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="j
 field SendInput.Input github.com/floegence/floret/v7/runtime.UserInput tag="json:\"input\""
 field SendInput.SupplementalContext []github.com/floegence/floret/v7/runtime.TurnSupplementalContextItem tag="json:\"supplemental_context,omitempty\""
 field SendInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+type SetGoalInput struct
+field SetGoalInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field SetGoalInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+field SetGoalInput.ExpectedVersion int64 tag="json:\"expected_version\""
+field SetGoalInput.Text string tag="json:\"text\""
 type SetTitleInput struct
 field SetTitleInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field SetTitleInput.Title string tag="json:\"title\""
@@ -1174,6 +1187,20 @@ field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty
 type ThreadContextUsage struct
 field ThreadContextUsage.Confirmed *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"confirmed,omitempty\""
 field ThreadContextUsage.Estimate *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"estimate,omitempty\""
+type ThreadGoal struct
+field ThreadGoal.Reviewing bool tag="json:\"reviewing,omitempty\""
+field ThreadGoal.Version int64 tag="json:\"version\""
+field ThreadGoal.Text string tag="json:\"text,omitempty\""
+field ThreadGoal.Status string tag="json:\"status\""
+field ThreadGoal.Actor string tag="json:\"actor\""
+field ThreadGoal.SuppressedAtInput string tag="json:\"suppressed_at_input,omitempty\""
+type ThreadGoalChange struct
+field ThreadGoalChange.Goal github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal\""
+field ThreadGoalChange.Operation string tag="json:\"operation\""
+field ThreadGoalChange.Reason string tag="json:\"reason,omitempty\""
+field ThreadGoalChange.Actor string tag="json:\"actor\""
+field ThreadGoalChange.At time.Time tag="json:\"at\""
+type ThreadGoalController interface interface{DeleteGoal(context.Context, github.com/floegence/floret/v7/runtime.DeleteGoalInput) (github.com/floegence/floret/v7/runtime.GoalMutationResult, error); SetGoal(context.Context, github.com/floegence/floret/v7/runtime.SetGoalInput) (github.com/floegence/floret/v7/runtime.GoalMutationResult, error)}
 type ThreadInteraction struct
 field ThreadInteraction.ID string tag="json:\"id\""
 field ThreadInteraction.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
@@ -1189,6 +1216,7 @@ const ThreadInteractionApproval github.com/floegence/floret/v7/runtime.ThreadInt
 const ThreadInteractionInput github.com/floegence/floret/v7/runtime.ThreadInteractionKind = "input"
 type ThreadInteractionKind string
 type ThreadItem struct
+field ThreadItem.Goal *github.com/floegence/floret/v7/runtime.ThreadGoalChange tag="json:\"goal,omitempty\""
 field ThreadItem.Steering *github.com/floegence/floret/v7/runtime.ThreadSteering tag="json:\"steering,omitempty\""
 field ThreadItem.Sources []github.com/floegence/floret/v7/provider.Source tag="json:\"sources,omitempty\""
 field ThreadItem.ID string tag="json:\"id\""
@@ -1205,6 +1233,7 @@ field ThreadItem.Context []github.com/floegence/floret/v7/runtime.MessageContext
 field ThreadItem.Activity *github.com/floegence/floret/v7/observation.ActivityItem tag="json:\"activity,omitempty\""
 field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interaction,omitempty\""
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
+const ThreadItemGoal github.com/floegence/floret/v7/runtime.ThreadItemKind = "goal"
 const ThreadItemInteraction github.com/floegence/floret/v7/runtime.ThreadItemKind = "interaction"
 type ThreadItemKind string
 const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
@@ -1362,6 +1391,7 @@ const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.Threa
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.Goal *github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal,omitempty\""
 field ThreadView.ParentEvents *github.com/floegence/floret/v7/runtime.ParentEventPage tag="json:\"parent_events,omitempty\""
 field ThreadView.ToolCallPreviews []github.com/floegence/floret/v7/runtime.ThreadToolCallPreview tag="json:\"tool_call_previews,omitempty\""
 field ThreadView.Turns []github.com/floegence/floret/v7/runtime.ThreadTurn tag="json:\"turns\""
@@ -1501,6 +1531,7 @@ func WithAgentCapabilities func(capabilities github.com/floegence/floret/v7/runt
 func WithAgentDynamicToolSurface func(surface github.com/floegence/floret/v7/runtime.ToolSurfaceProvider) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEffectAuthorization func(gate github.com/floegence/floret/v7/runtime.EffectAuthorizationGate) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentEventSink func(sink github.com/floegence/floret/v7/runtime.EventSink) github.com/floegence/floret/v7/runtime.AgentOption
+func WithAgentGoals func() github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentHostedTools func(definitions ...github.com/floegence/floret/v7/provider.HostedToolDefinition) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentIDGenerator func(generator func(string) string) github.com/floegence/floret/v7/runtime.AgentOption
 func WithAgentLoopLimits func(limits github.com/floegence/floret/v7/runtime.LoopLimits) github.com/floegence/floret/v7/runtime.AgentOption
@@ -2006,6 +2037,7 @@ field QuestionActivityPayload.PromptID string tag="json:\"prompt_id,omitempty\""
 field QuestionActivityPayload.Questions []github.com/floegence/floret/v7/tools.QuestionActivityItem tag="json:\"questions,omitempty\""
 field QuestionActivityPayload.Answers []github.com/floegence/floret/v7/tools.QuestionActivityAnswer tag="json:\"answers,omitempty\""
 type Registry struct
+method *Registry.WithTools func(items ...github.com/floegence/floret/v7/tools.Tool) (*github.com/floegence/floret/v7/tools.Registry, error)
 method *Registry.Register func(t github.com/floegence/floret/v7/tools.Tool) error
 method *Registry.Seal func()
 method *Registry.Definition func(name string) (github.com/floegence/floret/v7/tools.Definition, bool)

@@ -34,6 +34,7 @@ func (capability *turnExecutionCapability) ResumeInput(ctx context.Context, req 
 }
 
 type turnExecutionOptions struct {
+	goalsEnabled             bool
 	config                   runtimeConfig
 	modelGateway             modelGateway
 	modelGatewayIdentity     modelGatewayIdentity

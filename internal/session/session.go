@@ -106,6 +106,7 @@ type ModelContextPart struct {
 }
 
 type Message struct {
+	GoalContextBaseline  string             `json:"goal_context_baseline,omitempty"`
 	ModelContextParts    []ModelContextPart `json:"-"`
 	Sources              []citation.Source  `json:"sources,omitempty"`
 	Role                 Role

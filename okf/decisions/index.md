@@ -10,3 +10,5 @@
 * [Provider Output Progress](provider-output-progress.md) - Transient received-output estimates and unvalidated argument previews.
 
 * [Managed Model Context](managed-model-context.md) - Canonical live snapshots, request freezing and exact compaction baselines.
+
+* [Canonical Thread Goals](thread-goals.md) - Maintain one objective and verify natural completion in the executing context.

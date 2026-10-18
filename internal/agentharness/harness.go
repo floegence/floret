@@ -88,6 +88,7 @@ type Options struct {
 	EffectAuthorizationGate  EffectAuthorizationGate
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	StopHook                 engine.StopHook
+	GoalsEnabled             bool
 	CompactionGenerator      compaction.SummaryGenerator
 	CompactionPrompt         compaction.PromptOptions
 	CompactionPromptIdentity string
@@ -848,12 +849,18 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		}
 		engineOptions.Steering = &control
 	}
+	stopHook := t.harness.options.StopHook
+	if t.harness.options.GoalsEnabled && opts.TurnKind != sessiontree.TurnKindContextCompaction {
+		engineOptions.AdmitGoalContext = projection.admitGoalContext
+		engineOptions.ToolSurfaceProvider = projection.goalSurface(engineOptions.ToolSurfaceProvider, t.harness.options.Tools)
+		stopHook = projection.goalStopHook(stopHook)
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
 		Prompt:       t.harness.options.PromptStore,
 		SystemPrompt: t.harness.options.SystemPrompt,
-		StopHook:     t.harness.options.StopHook,
+		StopHook:     stopHook,
 		Compactor:    &durableCompactionManager{thread: t, turnID: turnID, finishTurn: opts.TurnKind == sessiontree.TurnKindContextCompaction},
 		Options:      engineOptions,
 	})
@@ -941,6 +948,20 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		t.harness.emitEntryCommitted(entry, runID)
 	}
 	terminalMetadata := markerMetadata(runID, result)
+	if t.harness.options.GoalsEnabled && opts.TurnKind != sessiontree.TurnKindContextCompaction && result.Status == engine.Completed {
+		terminalMetadata["goal_guard"] = "1"
+		journal, goalErr := t.Journal(persistCtx)
+		if goalErr != nil {
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, goalErr, "goal_read_error", engine.FailureOriginStorage, &result)
+		}
+		goal, goalErr := sessiontree.GoalFromPath(journal.Path)
+		if goalErr != nil {
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, goalErr, "goal_read_error", engine.FailureOriginStorage, &result)
+		}
+		if review, _, valid := sessiontree.CurrentGoalReview(journal.Path, turnID, runID, goal); valid {
+			terminalMetadata[sessiontree.GoalReviewMetadataKey] = review.ID
+		}
+	}
 	if result.Status == engine.Completed && projection.acceptedFinal {
 		finalJournal, readErr := t.Journal(persistCtx)
 		if readErr != nil {
@@ -1399,7 +1420,7 @@ func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableM
 			continue
 		}
 		switch entry.Type {
-		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext, sessiontree.EntryParentEventsAdmitted:
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext, sessiontree.EntryParentEventsAdmitted, sessiontree.EntryGoalContext:
 			counter.record(entry.Message)
 		case sessiontree.EntrySteeringApplied:
 			resolution, err := sessiontree.DecodeSteeringResolution(entry)
@@ -2371,7 +2392,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		p.finalCandidate = nil
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.User, Content: ev.Message})
+		p.err = p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.User, Kind: session.MessageKind(eventString(ev.Metadata, "message_kind")), Content: ev.Message})
 		if p.err != nil {
 			return
 		}
@@ -3053,4 +3074,10 @@ func toolResultMessageKind(ev event.Event) session.MessageKind {
 		return session.MessageKindToolValidationError
 	}
 	return session.MessageKindNormal
+}
+
+func eventString(raw any, key string) string {
+	metadata, _ := raw.(map[string]any)
+	value, _ := metadata[key].(string)
+	return value
 }

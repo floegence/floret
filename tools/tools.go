@@ -239,6 +239,18 @@ func NewRegistryE(items ...Tool) (*Registry, error) {
 	return r, nil
 }
 
+// WithTools returns an independent registry with additional tools. Existing handlers
+// and permission contracts are retained without wrapping or redispatching effects.
+func (r *Registry) WithTools(items ...Tool) (*Registry, error) {
+	r.mu.RLock()
+	snapshot := make([]Tool, 0, len(r.tools)+len(items))
+	for _, item := range r.tools {
+		snapshot = append(snapshot, item)
+	}
+	r.mu.RUnlock()
+	return NewRegistryE(append(snapshot, items...)...)
+}
+
 func (r *Registry) Register(t Tool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

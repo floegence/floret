@@ -309,6 +309,7 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 }
 
 type providerHostOptions struct {
+	GoalsEnabled             bool
 	Config                   runtimeConfig
 	modelGateway             modelGateway
 	modelGatewayIdentity     modelGatewayIdentity
@@ -1366,6 +1367,7 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	}
 	runtimeSink := newRuntimeEventSink(opts.Sink)
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
+		GoalsEnabled:                 opts.GoalsEnabled,
 		store:                        store,
 		Tools:                        opts.Tools,
 		EffectAuthorizationGate:      opts.EffectAuthorizationGate,
@@ -1834,6 +1836,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 }
 
 type harnessOptions struct {
+	GoalsEnabled             bool
 	store                    *runtimeStore
 	Tools                    *tools.Registry
 	EffectAuthorizationGate  EffectAuthorizationGate
@@ -1912,6 +1915,7 @@ func newHarnessWithProvider(cfg runtimeConfig, p provider.Provider, opts harness
 		}
 	}
 	harness := agentharness.New(agentharness.Options{
+		GoalsEnabled:                 opts.GoalsEnabled,
 		Provider:                     p,
 		ProviderName:                 cfg.Provider,
 		Model:                        cfg.Model,

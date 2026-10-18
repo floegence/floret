@@ -17,6 +17,7 @@ import (
 // Agent is an immutable assistant persona and execution-capability snapshot.
 // It contains no durable conversation identity or storage ownership.
 type Agent struct {
+	goalsEnabled        bool
 	steering            *engine.SteeringControl
 	configuration       config.AgentConfig
 	gateway             provider.Gateway
@@ -282,4 +283,9 @@ func cloneAgentConfig(configuration config.AgentConfig) config.AgentConfig {
 		Context:      configuration.Context,
 		Reasoning:    configuration.Reasoning,
 	}
+}
+
+// WithAgentGoals enables canonical thread goals and natural-stop reflection.
+func WithAgentGoals() AgentOption {
+	return AgentOption{category: "goals", apply: func(builder *agentBuilder) error { builder.agent.goalsEnabled = true; return nil }}
 }

@@ -306,6 +306,7 @@ type AttentionSummary struct {
 type ThreadItemKind string
 
 const (
+	ThreadItemGoal     ThreadItemKind = "goal"
 	ThreadItemUser     ThreadItemKind = "user"
 	ThreadItemSteering ThreadItemKind = "steering"
 	// ThreadItemThinking is one ordered reasoning segment in a thread view.
@@ -317,6 +318,7 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
+	Goal           *ThreadGoalChange       `json:"goal,omitempty"`
 	Steering       *ThreadSteering         `json:"steering,omitempty"`
 	Sources        []publicprovider.Source `json:"sources,omitempty"`
 	sourceEntryIDs []string
@@ -433,6 +435,7 @@ type InteractionAnswer struct {
 // ThreadView is the complete, replaceable presentation for one thread. Its
 // version is process-local notification ordering, not a durable journal cursor.
 type ThreadView struct {
+	Goal *ThreadGoal `json:"goal,omitempty"`
 	// ParentEvents is a bounded, explicitly paginated receipt view, separate from streamed item ordinals.
 	ParentEvents     *ParentEventPage        `json:"parent_events,omitempty"`
 	ToolCallPreviews []ThreadToolCallPreview `json:"tool_call_previews,omitempty"`
@@ -1830,6 +1833,10 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	if err != nil {
 		return ThreadView{}, err
 	}
+	canonical.Goal, err = goalFromEntries(entries)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, err
@@ -2568,6 +2575,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.Turns = canonical.Turns
 			actor.state.view.Items = canonical.Items
 			actor.state.view.ParentEvents = canonical.ParentEvents
+			actor.state.view.Goal = canonical.Goal
 			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		}
@@ -2984,6 +2992,13 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 	var refreshErr error
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.view.ViewVersion != baseVersion {
+			previous := actor.state.view.Goal
+			if canonical.Goal != nil && (previous == nil || canonical.Goal.Version > previous.Version) {
+				actor.state.view.Goal = canonical.Goal
+				actor.state.view.ViewVersion++
+				current = cloneThreadRuntimeView(actor.state.view)
+				changed = true
+			}
 			refreshErr = fmt.Errorf("%w: view version changed", errCanonicalRefreshDiscarded)
 			return nil
 		}
@@ -3005,6 +3020,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		actor.state.view.ViewVersion++
 		actor.state.view.Items = reconciled
 		actor.state.view.ParentEvents = canonical.ParentEvents
+		actor.state.view.Goal = canonical.Goal
 		actor.pruneArgumentPreviews()
 		actor.state.view.Turns = canonical.Turns
 		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
@@ -3031,6 +3047,10 @@ func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context
 	}
 	canonical := ThreadView{ThreadID: threadID}
 	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
+	if err != nil {
+		return ThreadView{}, err
+	}
+	canonical.Goal, err = goalFromEntries(entries)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -4130,6 +4150,10 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
+	if view.Goal != nil {
+		copy := *view.Goal
+		view.Goal = &copy
+	}
 	if view.ParentEvents != nil {
 		page := *view.ParentEvents
 		page.Events = make([]ParentEvent, len(view.ParentEvents.Events))
@@ -4227,6 +4251,10 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		if item.Goal != nil {
+			copy := *item.Goal
+			out[index].Goal = &copy
+		}
 		if item.Steering != nil {
 			steering := *item.Steering
 			out[index].Steering = &steering
@@ -4444,7 +4472,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 		reasoningOpen[executionKey] = true
 		lastReasoning[executionKey] = text
 	}
-	for _, entry := range entries {
+	for entryIndex, entry := range entries {
 		occurredAt, err := sessiontree.EntryOccurrenceTime(entry)
 		if err != nil {
 			return nil, nil, runtimeHostError(err)
@@ -4496,8 +4524,14 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			continue
 		}
 		switch entry.Type {
+		case sessiontree.EntryGoal:
+			item, goalErr := goalItem(entry)
+			if goalErr != nil {
+				return nil, nil, goalErr
+			}
+			items = appendThreadItem(items, item)
 		case sessiontree.EntryUserMessage, sessiontree.EntrySteeringRequested:
-			if entry.Message.Kind == "control_signal" {
+			if entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindGoalReview {
 				continue
 			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
@@ -4540,6 +4574,13 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
+			if entry.Metadata[sessiontree.GoalCompletedMetadataKey] != "" {
+				state, goalErr := sessiontree.GoalFromPath(entries[:entryIndex+1])
+				if goalErr != nil {
+					return nil, nil, goalErr
+				}
+				items = appendThreadItem(items, ThreadItem{ID: entry.ID + ":goal", TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Kind: ThreadItemGoal, CreatedAt: occurredAt, Goal: &ThreadGoalChange{Goal: *publicThreadGoal(state), Operation: "completed", Actor: "model", At: occurredAt}})
+			}
 			if entry.TurnStatus != sessiontree.TurnCompleted && entry.TurnStatus != sessiontree.TurnFailed && entry.TurnStatus != sessiontree.TurnAborted {
 				continue
 			}

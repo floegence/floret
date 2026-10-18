@@ -329,7 +329,8 @@ func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, ag
 		return nil, err
 	}
 	provider, err := newProviderHost(providerHostOptions{
-		Config: opts.config, modelGateway: opts.modelGateway, modelGatewayIdentity: opts.modelGatewayIdentity,
+		GoalsEnabled: opts.goalsEnabled,
+		Config:       opts.config, modelGateway: opts.modelGateway, modelGatewayIdentity: opts.modelGatewayIdentity,
 		modelGatewayCapabilities: opts.modelGatewayCapabilities, store: host.store, Tools: opts.tools,
 		EffectAuthorizationGate: opts.effectAuthorizationGate, Sink: opts.sink,
 		ToolSurfaceProvider: opts.toolSurfaceProvider, IDGenerator: opts.idGenerator,
@@ -635,6 +636,7 @@ func (agent *Agent) turnExecutionOptions() turnExecutionOptions {
 		attachmentMode = modelGatewayAttachmentPayloadExpanded
 	}
 	return turnExecutionOptions{
+		goalsEnabled: agent.goalsEnabled,
 		config: runtimeConfig{
 			SystemPrompt:  agent.configuration.SystemPrompt,
 			ContextPolicy: agent.configuration.Context, Reasoning: agent.configuration.Reasoning,

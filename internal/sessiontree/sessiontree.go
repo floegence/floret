@@ -441,6 +441,7 @@ type Entry struct {
 	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
 	FirstKeptEntryID        string                        `json:"first_kept_entry_id,omitempty"`
+	GoalContextBaseline     string                        `json:"goal_context_baseline,omitempty"`
 	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
 	KeptUserEntryIDs        []string                      `json:"kept_user_entry_ids,omitempty"`
 	Summary                 string                        `json:"summary,omitempty"`
@@ -1667,6 +1668,27 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew)
+		if entry.Type == EntryGoal {
+			var change GoalChange
+			if json.Unmarshal(next.Payload, &change) != nil {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			if mapped := oldToNew[change.State.SuppressedAtInput]; mapped != "" {
+				change.State.SuppressedAtInput = mapped
+			}
+			next.Payload, _ = json.Marshal(change)
+		}
+		if entry.Type == EntryGoalReview {
+			var review GoalReview
+			if json.Unmarshal(next.Payload, &review) != nil {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			review.Boundary = oldToNew[review.Boundary]
+			next.Payload, _ = json.Marshal(review)
+		}
+		if id := next.Metadata[GoalReviewMetadataKey]; id != "" {
+			next.Metadata[GoalReviewMetadataKey] = oldToNew[id]
+		}
 		if entry.Type == EntryTurnMarker || entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryToolCall || entry.Type == EntryToolResult || (entry.Type == EntryCustom && entry.Metadata["kind"] == "tool_dispatch") {
 			if next.Metadata == nil {
 				next.Metadata = map[string]string{}
@@ -2463,6 +2485,7 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
 			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, tail)
 			msg.ModelContextSnapshot = session.CloneModelContext(compactionEntry.ModelContextBaseline)
+			msg.GoalContextBaseline = compactionEntry.GoalContextBaseline
 			msg.EntryID = compactionEntry.ID
 			msg.ParentEntryID = compactionEntry.ParentID
 			msg.CompactionID = compactionEntry.CompactionID
@@ -2578,7 +2601,7 @@ func decodeInteractionResolution(entry Entry) (interactionResolutionProjection, 
 
 func appendProviderVisible(messages []session.Message, entry Entry) ([]session.Message, error) {
 	switch entry.Type {
-	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted:
+	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult, EntryModelContext, EntryParentEventsAdmitted, EntryGoalContext:
 		if entry.Message.Role != "" {
 			msg := session.CloneMessage(entry.Message)
 			msg.EntryID = entry.ID
@@ -2721,6 +2744,7 @@ func CompactionEntry(threadID, turnID string, result compaction.Result) (Entry, 
 		FirstKeptEntryID:        result.FirstKeptEntryID,
 		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
 		ModelContextBaseline:    session.CloneModelContext(result.ModelContextBaseline),
+		GoalContextBaseline:     result.GoalContextBaseline,
 		Summary:                 result.Summary,
 		CompactionTrigger:       string(result.Trigger),
 		CompactionReason:        string(result.Reason),
@@ -2833,6 +2857,9 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string)
 }
 
 func typeForMessage(msg session.Message) EntryType {
+	if msg.Kind == session.MessageKindGoalContext || msg.Kind == session.MessageKindGoalReview {
+		return EntryGoalContext
+	}
 	if msg.Kind == session.MessageKindModelContext {
 		return EntryModelContext
 	}
@@ -3132,6 +3159,7 @@ type canonicalEntryRaw struct {
 	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
 	FirstKeptEntryID        string                        `json:"first_kept_entry_id,omitempty"`
+	GoalContextBaseline     string                        `json:"goal_context_baseline,omitempty"`
 	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
 	KeptUserEntryIDs        []string                      `json:"kept_user_entry_ids,omitempty"`
 	Summary                 string                        `json:"summary,omitempty"`
@@ -3161,6 +3189,7 @@ func rawForEntry(entry Entry) string {
 		FirstKeptEntryID:        entry.FirstKeptEntryID,
 		KeptUserEntryIDs:        entry.KeptUserEntryIDs,
 		ModelContextBaseline:    entry.ModelContextBaseline,
+		GoalContextBaseline:     entry.GoalContextBaseline,
 		Summary:                 entry.Summary,
 		CompactionTrigger:       entry.CompactionTrigger,
 		CompactionReason:        entry.CompactionReason,

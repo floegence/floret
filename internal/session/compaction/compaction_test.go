@@ -1058,3 +1058,28 @@ func preservedUserContents(inputs []preservedUserInput) []string {
 	}
 	return contents
 }
+
+func TestGoalBaselineRemainsExactAcrossCompaction(t *testing.T) {
+	text := "Goal runtime fact: " + strings.Repeat("precise user wording ", 100)
+	history := []session.Message{{Role: session.User, Content: strings.Repeat("old ", 1000), EntryID: "old"}, {Role: session.User, Kind: session.MessageKindGoalContext, Content: text, EntryID: "goal"}, {Role: session.User, Content: "Continue", EntryID: "latest"}}
+	prep, err := Prepare(t.Context(), Request{History: history, Policy: contextpolicy.Policy{ContextWindowTokens: 400, ReservedOutputTokens: 40, ReservedSummaryTokens: 40, RecentTailTokens: 30}}, &recordingSummaryGenerator{summaries: []string{"Summary"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := session.CurrentGoalContext(prep.ActiveMessages); got != text {
+		t.Fatal("compaction summarized or lost exact goal")
+	}
+	projected, _, err := session.ProjectProviderHistory(prep.ActiveMessages, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, message := range projected {
+		if message.Kind == session.MessageKindGoalContext && message.Content == text {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("provider projection lost goal baseline")
+	}
+}
