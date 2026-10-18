@@ -242,3 +242,12 @@ byte threshold, independently of visible truncation. Zero keeps archive-on-trunc
 behavior; explicit PreserveFull=false disables both triggers. Positive overrides
 replace inherited thresholds. One FullOutputPlan uses the existing atomic result
 settlement; uncut visible output remains Truncated=false.
+
+## Returned effect uncertainty
+
+A handler may return tools.EffectOutcomeUncertain with an error result and no
+dispatch error, pending result or input request. The normal atomic result owner
+persists this fact and continues to the model. Receipt uncertainty does not mean
+application failure or success. The model inspects evidence before another action;
+no automatic tool replay or mandatory user confirmation is introduced. Actual
+unsettled execution remains terminal.

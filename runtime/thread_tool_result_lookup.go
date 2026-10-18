@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/tools"
 )
 
 // ThreadToolResultReader reads a confirmed local tool result from the active
@@ -28,10 +29,11 @@ type LookupToolResultInput struct {
 // ThreadToolResult contains the original canonical arguments and visible output,
 // without rebuilding provider history or resolving any host resource.
 type ThreadToolResult struct {
-	ToolName  string `json:"tool_name"`
-	Arguments string `json:"arguments"`
-	Content   string `json:"content"`
-	Status    string `json:"status"`
+	EffectOutcome tools.EffectOutcome `json:"effect_outcome,omitempty"`
+	ToolName      string              `json:"tool_name"`
+	Arguments     string              `json:"arguments"`
+	Content       string              `json:"content"`
+	Status        string              `json:"status"`
 }
 
 var _ ThreadToolResultReader = (*threadRuntimeService)(nil)
@@ -62,7 +64,7 @@ func (service *threadRuntimeService) LookupToolResult(ctx context.Context, in Lo
 				return ThreadToolResult{}, false, ErrAuthorityCorrupt
 			}
 			return ThreadToolResult{
-				ToolName: call.ToolName, Arguments: call.ToolArgs,
+				ToolName: call.ToolName, Arguments: call.ToolArgs, EffectOutcome: entry.Message.ToolResult.EffectOutcome,
 				Content: entry.Message.Content, Status: entry.Message.ToolResult.Status,
 			}, true, nil
 		}

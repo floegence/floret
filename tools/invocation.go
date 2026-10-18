@@ -67,7 +67,17 @@ type BoundedWait struct {
 	TimedOut bool
 }
 
+// EffectOutcome describes a returned tool result, not dispatch failure.
+type EffectOutcome string
+
+// EffectOutcomeUncertain means execution returned, but its external effect could
+// not be confirmed. Inspect current state before considering another action.
+const EffectOutcomeUncertain EffectOutcome = "uncertain"
+
 type Result struct {
+	// Uncertainty is committed normally and lets the model inspect and continue.
+	EffectOutcome EffectOutcome
+
 	BoundedWait     *BoundedWait
 	handlerDuration time.Duration
 

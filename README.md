@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 20 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 21 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 Older writers reject the upgraded envelope. Cancellation, bounded length
@@ -373,7 +373,7 @@ must be resolved before continuation. The original tool is never replayed.
 Prompts, options, and answers are durable, non-secret data. Use acknowledgment
 choices for external user actions; collect passwords and tokens outside the
 agent. `Pending` remains asynchronous host work and cannot be combined with input.
-Domain schema v20 appends v19 to v20 while preserving the original v11 to v12
+Domain schema v21 appends v20 to v21 while preserving the original v11 to v12
 contract and all historical facts.
 
 OutputPolicy.ArchiveAboveBytes independently archives complete Text above
@@ -1007,3 +1007,15 @@ See [qualification evidence](scripts/context-qualification/REPORT.md) and
 Optional ThreadSummaryReader reads canonical summaries without full history or
 thread actor creation. Options.StartupWorkProgress reports real completed thread
 projections and known totals; StartupPhaseIndexing identifies initial index work.
+
+### Returned effect uncertainty
+
+Set tools.Result.EffectOutcome to tools.EffectOutcomeUncertain only when a handler
+returns a trustworthy error result whose external effect is unconfirmed. It requires
+IsError, no DispatchErr, no Pending and no InputRequired. Floret commits the result
+and archived output atomically, then lets the model inspect current state and decide
+what to do. Do not blindly repeat an uncertain action. Repeated invocation identity
+replays the committed result, and retry preserves the post-result boundary.
+Crashes, panics, unsettled cancellation and result persistence failure retain the
+terminal ErrEffectOutcomeUnknown contract. Schema 20 -> 21 preserves historical
+facts and requires current writers.

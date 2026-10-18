@@ -292,6 +292,9 @@ func validateBackendDomainMemory(memory *MemoryRepo, label string, validateConte
 				if formatVersionBefore(label, 13) && entry.Metadata[TurnKindMetadataKey] != "" {
 					return fmt.Errorf("session-tree %s contains a v13 turn kind", label)
 				}
+				if formatVersionBefore(label, 21) && entry.Message.ToolResult != nil && entry.Message.ToolResult.EffectOutcome != "" {
+					return fmt.Errorf("%s cannot contain returned effect uncertainty", label)
+				}
 				if formatVersionBefore(label, 12) && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 					return fmt.Errorf("session-tree %s contains a v12 tool input request", label)
 				}

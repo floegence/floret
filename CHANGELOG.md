@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.54.0 - 2026-10-18
+
+- Add explicit returned effect uncertainty: commit failed tool facts and continue model reasoning without replay or mandatory input. Keep unsettled dispatches terminal.
+- Persist the outcome through atomic result settlement, replay and readback, and retain post-result retry boundaries for turns containing uncertainty.
+- Append domain schema 20 -> 21, preserve historical facts and all migration edges, and reject upgraded stores in older writers.
+
 ## v7.53.0 - 2026-10-18
 
 - Add independent OutputPolicy.ArchiveAboveBytes archival through existing atomic result/artifact settlement without falsely marking complete output truncated.

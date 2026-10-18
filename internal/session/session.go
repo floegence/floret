@@ -29,6 +29,7 @@ const (
 )
 
 type ToolResultView struct {
+	EffectOutcome tools.EffectOutcome `json:"effect_outcome,omitempty"`
 	InputRequired *tools.InputRequest `json:"input_required,omitempty"`
 	Status        string              `json:"status,omitempty"`
 	Truncated     bool                `json:"truncated,omitempty"`
