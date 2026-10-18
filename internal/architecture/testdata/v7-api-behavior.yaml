@@ -9,6 +9,13 @@ defaults:
   provider_progress: attempt-fenced in-memory timing and character estimate; never billable usage
   argument_preview: bounded side-effect-free parser; errors discard preview only; actual results replace counts including zero
 methods:
+  - method: provider.RetryAdviceForError
+    errors_is: []
+    errors_as: []
+    retryability: provider transport facts only; outermost explicit advice wins including empty advice
+    commit: none
+    replay: no scheduling or side effects
+    concurrency: read-only error inspection
   - method: MessageAttachment.Locator
     errors_is: []
     errors_as: []

@@ -60,3 +60,9 @@ failures, retained through restart. They do not control lifecycle. Recovery-wind
 exhaustion preserves the originating failure evidence, while independent contract
 and storage errors retain priority. Actual execution cancellation remains the
 only Stop authority. No persistent retry queue or new schema is introduced.
+
+The additive v7.58 API decision exposes `provider.RetryAdviceForError`
+for Redeven transport boundaries. It shares Engine classification, recognizes
+ordinary and wrapped EOF, and preserves the outermost explicit advice including
+empty advice, Forbidden and absolute NotBefore. It never schedules retries;
+non-provider failures retain their permanent origin override. No schema changes.

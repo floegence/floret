@@ -286,3 +286,9 @@ Provider facts retain explicit reasoning inclusion and native-total presence.
 [rendered estimation](../../provider/request_estimate.go) separates visible token attribution
 from opaque diagnostics and Engine budget proxies. Historical mixed-unit categories
 remain unavailable for display, without rewriting provider totals or model history.
+
+The additive v7.58 API decision exposes `provider.RetryAdviceForError`
+for Redeven transport boundaries. It shares Engine classification, recognizes
+ordinary and wrapped EOF, and preserves the outermost explicit advice including
+empty advice, Forbidden and absolute NotBefore. It never schedules retries;
+non-provider failures retain their permanent origin override. No schema changes.

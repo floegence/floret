@@ -438,6 +438,7 @@ type RetryAdvice struct
 field RetryAdvice.Category github.com/floegence/floret/v7/provider.RetryCategory tag="json:\"category,omitempty\""
 field RetryAdvice.NotBefore time.Time tag="json:\"not_before,omitempty\""
 field RetryAdvice.Forbidden bool tag="json:\"forbidden,omitempty\""
+func RetryAdviceForError func(err error) github.com/floegence/floret/v7/provider.RetryAdvice
 type RetryAdviser interface interface{ProviderRetryAdvice() github.com/floegence/floret/v7/provider.RetryAdvice}
 type RetryCategory string
 const RetryPermanent github.com/floegence/floret/v7/provider.RetryCategory = "permanent"

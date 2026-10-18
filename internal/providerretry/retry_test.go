@@ -137,7 +137,7 @@ func TestTransportClassificationAndCause(t *testing.T) {
 		err  error
 		want Category
 	}{
-		{syscall.ECONNRESET, Transient}, {syscall.ECONNREFUSED, Transient}, {io.ErrUnexpectedEOF, Interrupted}, {&net.DNSError{IsTemporary: true}, Transient}, {&net.DNSError{IsNotFound: true}, Permanent}, {&net.DNSError{IsTimeout: true}, Timeout}, {context.Canceled, Permanent}, {errors.New("upstream 500 timeout"), ""},
+		{io.EOF, Interrupted}, {fmt.Errorf("failed to read frame header: %w", io.EOF), Interrupted}, {syscall.ECONNRESET, Transient}, {syscall.ECONNREFUSED, Transient}, {io.ErrUnexpectedEOF, Interrupted}, {&net.DNSError{IsTemporary: true}, Transient}, {&net.DNSError{IsNotFound: true}, Permanent}, {&net.DNSError{IsTimeout: true}, Timeout}, {context.Canceled, Permanent}, {errors.New("upstream 500 timeout"), ""},
 	} {
 		if got := AdviceFor(tc.err).Category; got != tc.want {
 			t.Errorf("%v: %v", tc.err, got)

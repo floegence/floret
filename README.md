@@ -495,6 +495,10 @@ output using their own presentation clock without inventing lifecycle timers.
 Gateways expose structured `provider.RetryAdvice` through `RetryAdviser` and
 `WithRetryAdvice`, preserving the original error cause. `HTTPRetryAdvice`
 parses response-time server deadlines, exact machine codes and HTTP status.
+At provider transport boundaries, `provider.RetryAdviceForError` shares the
+Engine classifier, including ordinary and wrapped EOF as stream interruption.
+The outermost explicit adviser wins even with empty advice. This helper does
+not schedule recovery and must not classify storage, decoding or tool errors.
 The exact `basispoints_tool_arguments_stalled` code, including HTTP 200 stream
 errors, uses `RetryStreamInterrupted` and the same bounded recovery policy.
 Unknown codes and error prose do not establish retry permission; permanent
