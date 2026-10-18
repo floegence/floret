@@ -930,6 +930,21 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encoded, err := json.Marshal(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var emptyPage map[string]json.RawMessage
+	if err := json.Unmarshal(wire["parent_events"], &emptyPage); err != nil {
+		t.Fatal(err)
+	}
+	if string(emptyPage["events"]) != "[]" {
+		t.Fatalf("public empty events=%s, want []", emptyPage["events"])
+	}
 	parentID = parent.ThreadID
 	child, err := service.Create(t.Context(), runtime.CreateThreadInput{ParentThreadID: parentID, TaskName: "research", HostProfileRef: "test", RequestKey: "child"})
 	if err != nil {

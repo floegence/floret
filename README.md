@@ -79,7 +79,8 @@ commands. Full handoffs and failure details remain in the existing thread reads.
 `ListParentEvents` exposes metadata, filters and explicit pagination;
 `ReadParentEvents` reads full reports by event ID or a closed immutable range.
 `ThreadView.ParentEvents` is a bounded paginated receipt view separate from
-streamed item ordinals. Its `Admitted` field means context placement, never
+streamed item ordinals. Successful event pages always encode events as an array,
+including an empty array for an empty page; disabled parent events remain absent. Its `Admitted` field means context placement, never
 “model read”. Hosts use existing subscriptions before checking pending events
 when implementing event-aware waits; waiting timeouts are not execution timeouts.
 
