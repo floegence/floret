@@ -51,6 +51,16 @@ func TestGoalMutationDoesNotRunAndPreservesText(t *testing.T) {
 	if err != nil || view.Goal == nil || view.Goal.Text != text {
 		t.Fatalf("view=%+v err=%v", view, err)
 	}
+	if _, err := json.Marshal(view); err != nil {
+		t.Fatalf("goal-only current view must serialize before its first Turn: %v", err)
+	}
+	history, err := service.History(t.Context(), thread.ThreadID, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := json.Marshal(history); err != nil {
+		t.Fatalf("goal-only history must serialize before its first Turn: %v", err)
+	}
 	deleted, err := controller.DeleteGoal(t.Context(), DeleteGoalInput{ThreadID: thread.ThreadID, RequestKey: "delete", ExpectedVersion: 1})
 	if err != nil || deleted.Goal.Status != "absent" || deleted.Goal.Version != 2 {
 		t.Fatalf("delete=%+v err=%v", deleted, err)

@@ -1243,7 +1243,7 @@ field ThreadItem.Steering *github.com/floegence/floret/v7/runtime.ThreadSteering
 field ThreadItem.Sources []github.com/floegence/floret/v7/provider.Source tag="json:\"sources,omitempty\""
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
-field ThreadItem.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadItem.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadItem.Ordinal uint64 tag="json:\"ordinal\""
 field ThreadItem.Kind github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kind\""
 field ThreadItem.Text string tag="json:\"text,omitempty\""
