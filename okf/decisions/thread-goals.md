@@ -17,7 +17,7 @@ map and present it. Goals have no dependency on todos.
 # Contract
 
 SetGoal and DeleteGoal carry a stable request key and expected Goal version.
-A replay preserves the committed operation; a stale version returns Conflict
+A mutation or review replay preserves its single committed fact; a stale version returns Conflict
 and the current Goal without changing it. Text is retained exactly, with no
 Goal-specific length ceiling or truncation. Prompts ask for clear, concise,
 understandable desired results. User and model mutations share the same journal
@@ -31,7 +31,7 @@ new ordinary user task can justify new_task after a deletion.
 Goal updates append typed runtime facts at the next logical model request,
 including subsequent requests in the same Turn. Stable instructions and tool
 definitions remain unchanged. The existing prepared-request retry owner retains
-its frozen snapshot and provider continuation. Compaction retains exact Goal
+its frozen snapshot and provider continuation. Canonical regeneration admits typed Goal facts after the exact retry source without accepting ordinary conversation suffixes. Compaction retains exact Goal
 facts beside the summary; it never asks a summary model to reconstruct them.
 Cache reuse depends on the provider and actual usage, not a promised percentage.
 

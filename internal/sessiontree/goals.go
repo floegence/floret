@@ -180,6 +180,14 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 	if err != nil {
 		return Entry{}, err
 	}
+	id := "goal-review:" + StableHash(threadID + "\x00" + runID + "\x00" + callID)[:32]
+	if existing, found := findEntry(r.entries[threadID], id); found {
+		var review GoalReview
+		if existing.TurnID != turnID || json.Unmarshal(existing.Payload, &review) != nil || review.Version != version || review.Outcome != outcome || review.Evidence != evidence {
+			return Entry{}, ErrRequestConflict
+		}
+		return cloneEntry(existing), nil
+	}
 	state, err := GoalFromPath(path)
 	if err != nil {
 		return Entry{}, err
@@ -212,7 +220,6 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 	}
 	review := GoalReview{Version: version, Outcome: outcome, Evidence: evidence, Boundary: GoalWorkBoundary(path)}
 	raw, _ := json.Marshal(review)
-	id := "goal-review:" + StableHash(threadID + "\x00" + runID + "\x00" + callID)[:32]
 	return r.appendLocked(ctx, Entry{ID: id, ThreadID: threadID, TurnID: turnID, RunID: runID, Type: EntryGoalReview, Payload: raw}, AppendOptions{ID: id})
 }
 

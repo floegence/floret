@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.60.2 - 2026-10-18
+
+- Keep Goal review replay idempotent and accept typed Goal facts after canonical retry checkpoints. Preserve frozen transport inputs when the Goal changes during a request.
+- Validate output-only provider usage as an estimate, matching the canonical accounting projection and preserving length continuation.
+
 ## v7.60.1 - 2026-10-18
 
 - Serialize Goal timeline facts before the first Turn without inventing execution identity. Preserve mandatory populated run identity on executable items.
