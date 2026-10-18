@@ -85,14 +85,15 @@ type ContextBreakdownDetails struct {
 }
 
 type RequestEstimate struct {
-	Breakdown            ContextBreakdown   `json:"breakdown,omitzero"`
-	PrefixTokens         int64              `json:"prefix_tokens,omitempty"`
-	MessageTokens        int64              `json:"message_tokens,omitempty"`
-	ToolDefinitionTokens int64              `json:"tool_definition_tokens,omitempty"`
-	EstimatedInputTokens int64              `json:"estimated_input_tokens,omitempty"`
-	Source               string             `json:"source,omitempty"`
-	Method               EstimateMethod     `json:"method,omitempty"`
-	Confidence           EstimateConfidence `json:"confidence,omitempty"`
+	Characters           *ContextCharacterBreakdown `json:"characters,omitempty"`
+	Breakdown            ContextBreakdown           `json:"breakdown,omitzero"`
+	PrefixTokens         int64                      `json:"prefix_tokens,omitempty"`
+	MessageTokens        int64                      `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens int64                      `json:"tool_definition_tokens,omitempty"`
+	EstimatedInputTokens int64                      `json:"estimated_input_tokens,omitempty"`
+	Source               string                     `json:"source,omitempty"`
+	Method               EstimateMethod             `json:"method,omitempty"`
+	Confidence           EstimateConfidence         `json:"confidence,omitempty"`
 }
 
 func (e RequestEstimate) Normalized(policy Policy) RequestEstimate {

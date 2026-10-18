@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.60.0 - 2026-10-18
+
+- Add frozen Unicode code point character attribution alongside compatible token budget contracts, with one collector and one reconciliation entry. Keep native input overview independent of visible content distribution.
+- Add explicit native input presence and measurement scope. Reject unqualified hosted, opaque and historical pressure anchors while preserving bounded compaction, cancellation and frozen retries.
+- Append transactional domain schema 23 -> 24, preserving canonical message, checkpoint and historical status bytes and every released migration edge.
+
+
 ## v7.59.0 - 2026-10-18
 
 - Add opt-in canonical thread Goals with typed user management, model maintenance, version conflicts and deduplicated journal mutations independent of todos.

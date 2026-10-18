@@ -101,7 +101,7 @@ func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstim
 		details.Items = append([]config.ContextTokenDetail(nil), details.Items...)
 		breakdown.Details = &details
 	}
-	return config.RequestEstimate{
+	return config.RequestEstimate{Characters: estimate.Characters.Clone(),
 		Breakdown:            breakdown,
 		PrefixTokens:         estimate.PrefixTokens,
 		MessageTokens:        estimate.MessageTokens,

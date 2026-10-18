@@ -39,7 +39,7 @@ func EstimateRenderedRequest(request RenderedRequest) (TokenEstimate, error) {
 	if err != nil {
 		return TokenEstimate{}, err
 	}
-	return TokenEstimate{Breakdown: config.ContextBreakdown(estimate.Breakdown), AttachmentTokens: estimate.Media, PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools,
+	return TokenEstimate{Characters: estimate.Characters.Clone(), Breakdown: config.ContextBreakdown(estimate.Breakdown), AttachmentTokens: estimate.Media, PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools,
 		EstimatedInputTokens: estimate.Prefix + estimate.Messages + estimate.Tools, Source: estimate.Source, Method: estimate.Method, Confidence: "approximate", Coverage: "complete_request"}, nil
 }
 
@@ -83,6 +83,7 @@ func internalAttribution(values []RenderedContentAttribution) []requestestimate.
 }
 
 func cloneTokenEstimate(in TokenEstimate) TokenEstimate {
+	in.Characters = in.Characters.Clone()
 	if in.Breakdown.Details != nil {
 		details := *in.Breakdown.Details
 		details.Items = append([]config.ContextTokenDetail(nil), details.Items...)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"image"
 	"image/png"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestRenderedRequestIgnoresTransportControlsAndRetainsTools(t *testing.T) {
 	body["metadata"] = map[string]any{"trace": strings.Repeat("host", 1000)}
 	body["stream"] = true
 	second := estimateJSON(t, "openai", "gpt-4o", provider.RequestFormatOpenAIChat, body)
-	if first != second {
+	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("transport controls changed estimate: %+v -> %+v", first, second)
 	}
 	body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "search", "description": strings.Repeat("search text ", 100)}}}
@@ -81,7 +82,7 @@ func TestRenderedImagesUseDimensionsNotEncodedBytes(t *testing.T) {
 		}
 		a := estimateJSON(t, "openai", "gpt-4o", format, build(0))
 		b := estimateJSON(t, "openai", "gpt-4o", format, build(1<<20))
-		if a != b || a.EstimatedInputTokens < 765 || a.EstimatedInputTokens > 1000 {
+		if !reflect.DeepEqual(a, b) || a.EstimatedInputTokens < 765 || a.EstimatedInputTokens > 1000 {
 			t.Fatalf("format=%s: %+v -> %+v", format, a, b)
 		}
 	}

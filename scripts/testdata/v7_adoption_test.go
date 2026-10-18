@@ -1129,3 +1129,17 @@ func TestPublishedGoalManagementSurvivesRestartWithoutExecution(t *testing.T) {
 
 	}
 }
+
+func TestPreparedCharacterContract(t *testing.T) {
+	value := &config.ContextCharacterBreakdown{Source: "prepared_characters_v1", Unit: "unicode_code_points", TotalCharacters: 3, Categories: []config.ContextCharacterCategory{{Category: "user", Characters: 3}}}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	estimate := provider.TokenEstimate{Characters: value.Clone()}
+	request := config.RequestEstimate{Characters: estimate.Characters.Clone()}
+	status := observation.ContextStatus{Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable, RequestID: "request", PayloadFingerprint: "sha256:frozen", Provider: "test", Model: "test", RequestEstimate: request, Usage: observation.ProviderUsage{InputTokensReported: true, InputTokenScope: "provider_execution", Available: true, Source: "native", InputTokens: 100}}
+	result, err := observation.ReconcileContextStatus(status)
+	if err != nil || !result.CharactersAvailable || result.Characters.TotalCharacters != 3 || result.InputTokens != 100 {
+		t.Fatalf("%+v %v", result, err)
+	}
+}

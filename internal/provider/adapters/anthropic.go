@@ -91,6 +91,7 @@ type anthropicCacheControl struct {
 }
 
 type anthropicUsage struct {
+	inputReported            bool
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
@@ -694,6 +695,7 @@ func anthropicCacheControlFor(req provider.Request, capability catalog.CacheCapa
 
 func normalizeAnthropicUsage(payload anthropicUsage, model catalog.Model) provider.Usage {
 	usage := provider.Usage{
+		InputTokensReported: payload.inputReported, InputTokenScope: "request_input",
 		InputTokens:       payload.InputTokens,
 		OutputTokens:      payload.OutputTokens,
 		CacheReadTokens:   payload.CacheReadInputTokens,
@@ -705,4 +707,20 @@ func normalizeAnthropicUsage(payload anthropicUsage, model catalog.Model) provid
 		usage.CostUSD = catalog.CostForUsage(model, usage)
 	}
 	return usage.Normalized()
+}
+
+func (u *anthropicUsage) UnmarshalJSON(raw []byte) error {
+	type plain anthropicUsage
+	var v plain
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*u = anthropicUsage(v)
+	value, ok := fields["input_tokens"]
+	u.inputReported = ok && string(value) != "null"
+	return nil
 }

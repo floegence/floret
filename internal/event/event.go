@@ -131,11 +131,13 @@ func CloneThreadContextUsage(in *ThreadContextUsage) *ThreadContextUsage {
 	if in.Confirmed != nil {
 		v := *in.Confirmed
 		v.RequestEstimate.Breakdown = cloneContextBreakdown(v.RequestEstimate.Breakdown)
+		v.RequestEstimate.Characters = v.RequestEstimate.Characters.Clone()
 		out.Confirmed = &v
 	}
 	if in.Estimate != nil {
 		v := *in.Estimate
 		v.RequestEstimate.Breakdown = cloneContextBreakdown(v.RequestEstimate.Breakdown)
+		v.RequestEstimate.Characters = v.RequestEstimate.Characters.Clone()
 		out.Estimate = &v
 	}
 	return &out

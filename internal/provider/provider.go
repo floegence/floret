@@ -498,6 +498,7 @@ const (
 // TokenEstimate is a preflight request estimate. It is not provider usage and
 // does not imply an official provider token-count API unless Method says so.
 type TokenEstimate struct {
+	Characters           *contextpolicy.ContextCharacterBreakdown `json:"characters,omitempty"`
 	AttachmentTokens     int64
 	Breakdown            contextpolicy.ContextBreakdown
 	PrefixTokens         int64
@@ -548,6 +549,10 @@ const (
 )
 
 type Usage struct {
+	// InputTokensReported distinguishes an explicit input zero from missing input usage.
+	InputTokensReported bool `json:"input_tokens_reported,omitempty"`
+	// InputTokenScope is request_input, provider_execution, or unknown. It is not inferred from model names.
+	InputTokenScope string `json:"input_token_scope,omitempty"`
 	// OutputIncludesReasoning means ReasoningTokens is a subset of OutputTokens.
 	OutputIncludesReasoning bool `json:"output_includes_reasoning,omitempty"`
 	// TotalTokensReported distinguishes an explicit native zero from an absent total.
@@ -567,7 +572,7 @@ type Usage struct {
 func (u Usage) Normalized() Usage {
 	u.TotalTokens = usageaccounting.Total(u.TotalTokens, u.TotalTokensReported, u.InputTokens, u.OutputTokens, u.ReasoningTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputIncludesReasoning)
 	if u.Source == "" {
-		if !u.Available && !u.TotalTokensReported && u.TotalTokens == 0 && u.CostUSD == 0 {
+		if !u.Available && !u.InputTokensReported && !u.TotalTokensReported && u.TotalTokens == 0 && u.CostUSD == 0 {
 			u.Source = UsageUnavailable
 		} else {
 			u.Source = UsageNative
@@ -577,7 +582,7 @@ func (u Usage) Normalized() Usage {
 		u.Available = false
 		return u
 	}
-	if u.TotalTokensReported || u.TotalTokens > 0 || u.CostUSD > 0 || u.InputTokens > 0 || u.OutputTokens > 0 || u.WindowInputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
+	if u.InputTokensReported || u.TotalTokensReported || u.TotalTokens > 0 || u.CostUSD > 0 || u.InputTokens > 0 || u.OutputTokens > 0 || u.WindowInputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
 		u.Available = true
 	}
 	if u.WindowInputTokens <= 0 && u.Available {
@@ -607,6 +612,8 @@ func (u Usage) Add(other Usage) Usage {
 	}
 	return Usage{
 		TotalTokensReported: true,
+		InputTokensReported: u.InputTokensReported || other.InputTokensReported,
+		InputTokenScope:     usageaccounting.CombinedInputScope(u.InputTokenScope, other.InputTokenScope),
 		InputTokens:         u.InputTokens + other.InputTokens,
 		OutputTokens:        u.OutputTokens + other.OutputTokens,
 		ReasoningTokens:     u.ReasoningTokens + other.ReasoningTokens,

@@ -2388,8 +2388,9 @@ func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedE
 func observationProviderUsage(in provider.Usage) observation.ProviderUsage {
 	in = in.Normalized()
 	return observation.ProviderUsage{
-		InputTokens:             in.InputTokens,
-		OutputTokens:            in.OutputTokens,
+		InputTokens:         in.InputTokens,
+		OutputTokens:        in.OutputTokens,
+		InputTokensReported: in.InputTokensReported, InputTokenScope: in.InputTokenScope,
 		OutputIncludesReasoning: in.OutputIncludesReasoning,
 		TotalTokensReported:     in.TotalTokensReported,
 		ReasoningTokens:         in.ReasoningTokens,

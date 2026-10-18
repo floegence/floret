@@ -17,7 +17,7 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
-func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
+func TestUnqualifiedHostedUsageUsesRequestEstimateAcrossTurnsAndRestart(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		for _, large := range []bool{false, true} {
 			t.Run(fmt.Sprintf("restart_%t_large_%t", restart, large), func(t *testing.T) {
@@ -39,7 +39,7 @@ func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
 				read := tools.Define[map[string]any](tools.Definition{Name: "read", InputSchema: tools.StrictObject(nil, nil), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil, func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
 					return tools.Result{Text: "recorded tool output"}, nil
 				})
-				agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: 950000, MaxOutputTokens: 384000}}, gateway, WithAgentTools(read), WithAgentEventSink(recorder), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, r EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+				agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: 950000, MaxOutputTokens: 320000}}, gateway, WithAgentTools(read), WithAgentEventSink(recorder), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, r EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 					return effect(ctx, EffectAuthorizationProof{EffectAttemptID: r.EffectAttemptID, RequestFingerprint: r.RequestFingerprint, ThreadID: r.ThreadID, TurnID: r.TurnID, RunID: r.RunID, ToolCallID: r.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now()})
 				})))
 				if err != nil {
@@ -88,7 +88,7 @@ func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
 						if snapshot.ContextUsage.Estimate.RequestEstimate.Breakdown.AssistantTokens <= 0 {
 							t.Fatal("new request did not include the prior assistant answer")
 						}
-						if snapshot.ContextUsage.Confirmed.Usage.WindowInputTokens != 71872 || snapshot.ContextUsage.Estimate.ContextPressure.ProjectedInputTokens != 71872+next-previous {
+						if snapshot.ContextUsage.Confirmed.Usage.WindowInputTokens != 71872 || snapshot.ContextUsage.Estimate.ContextPressure.ProjectedInputTokens != next {
 							t.Fatalf("wrong split usage: %+v", snapshot.ContextUsage)
 						}
 						recorder.mu.Lock()
@@ -143,8 +143,8 @@ func TestHostedContextCalibrationAcrossTurnsAndRestart(t *testing.T) {
 					t.Fatalf("requests=%d", len(requests))
 				}
 				pressure := requests[2].ContextStatus.ContextPressure
-				if pressure.Source != config.PressureSourceUsageAnchoredDelta || pressure.ProjectedInputTokens != 71872+next-previous {
-					t.Fatalf("hosted next-turn projection=%+v; want anchored %d", pressure, 71872+next-previous)
+				if pressure.Source != config.PressureSourceFullRequestEstimate || pressure.ProjectedInputTokens != next {
+					t.Fatalf("hosted next-turn projection=%+v; want uncalibrated request estimate %d", pressure, next)
 				}
 			})
 		}

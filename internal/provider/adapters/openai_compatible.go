@@ -63,6 +63,7 @@ func (r chatRequest) MarshalJSON() ([]byte, error) {
 
 type usagePayload struct {
 	totalReported           bool
+	inputReported           bool
 	PromptTokens            int64        `json:"prompt_tokens"`
 	CompletionTokens        int64        `json:"completion_tokens"`
 	ReasoningTokens         int64        `json:"reasoning_tokens"`
@@ -84,6 +85,8 @@ func (u *usagePayload) UnmarshalJSON(raw []byte) error {
 	*u = usagePayload(decoded)
 	value, exists := fields["total_tokens"]
 	u.totalReported = exists && string(value) != "null"
+	value, exists = fields["prompt_tokens"]
+	u.inputReported = exists && string(value) != "null"
 	return nil
 }
 
@@ -949,6 +952,7 @@ func normalizeUsage(payload usagePayload, model catalog.Model) provider.Usage {
 		input -= cacheRead + cacheWrite
 	}
 	usage := provider.Usage{
+		InputTokensReported: payload.inputReported, InputTokenScope: "request_input",
 		InputTokens:             input,
 		OutputTokens:            payload.CompletionTokens,
 		OutputIncludesReasoning: true,

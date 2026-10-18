@@ -694,6 +694,7 @@ func (request agentPreparedRequest) StreamModel(ctx context.Context) (<-chan mod
 func (request agentPreparedRequest) TokenEstimate() modelRequestTokenEstimate {
 	estimate := request.prepared.TokenEstimate()
 	return modelRequestTokenEstimate{
+		Characters:       estimate.Characters.Clone(),
 		Breakdown:        estimate.Breakdown,
 		AttachmentTokens: estimate.AttachmentTokens,
 		PrefixTokens:     estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,

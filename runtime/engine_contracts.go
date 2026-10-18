@@ -139,6 +139,7 @@ type modelRequestTokenEstimateCoverage string
 const modelRequestTokenEstimateCoverageComplete modelRequestTokenEstimateCoverage = "complete_request"
 
 type modelRequestTokenEstimate struct {
+	Characters           *config.ContextCharacterBreakdown `json:"characters,omitempty"`
 	Breakdown            config.ContextBreakdown
 	AttachmentTokens     int64
 	PrefixTokens         int64
@@ -446,6 +447,7 @@ func runtimeMetrics(metrics engine.RunMetrics) RunMetrics {
 func runtimeProviderUsage(usage provider.Usage) publicprovider.Usage {
 	usage = usage.Normalized()
 	return publicprovider.Usage{
+		InputTokensReported: usage.InputTokensReported, InputTokenScope: usage.InputTokenScope,
 		OutputIncludesReasoning: usage.OutputIncludesReasoning,
 		TotalTokensReported:     usage.TotalTokensReported,
 		InputTokens:             usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,

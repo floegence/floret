@@ -485,6 +485,10 @@ type Source struct {
 
 // Usage is normalized provider token and cost usage.
 type Usage struct {
+	// InputTokensReported distinguishes an explicit input zero from missing input usage.
+	InputTokensReported bool `json:"input_tokens_reported,omitempty"`
+	// InputTokenScope is request_input, provider_execution, or unknown. It is not inferred from model names.
+	InputTokenScope string `json:"input_token_scope,omitempty"`
 	// OutputIncludesReasoning means ReasoningTokens is a subset of OutputTokens.
 	OutputIncludesReasoning bool `json:"output_includes_reasoning,omitempty"`
 	// TotalTokensReported distinguishes an explicit native zero from an absent total.
@@ -524,7 +528,8 @@ type PreparedRequest interface {
 
 // TokenEstimate describes the size of a complete rendered request.
 type TokenEstimate struct {
-	Breakdown config.ContextBreakdown `json:"breakdown,omitzero"`
+	Characters *config.ContextCharacterBreakdown `json:"characters,omitempty"`
+	Breakdown  config.ContextBreakdown           `json:"breakdown,omitzero"`
 	// AttachmentTokens is the estimated media/file subset already included in MessageTokens.
 	AttachmentTokens     int64  `json:"attachment_tokens,omitempty"`
 	PrefixTokens         int64  `json:"prefix_tokens,omitempty"`
@@ -550,4 +555,9 @@ const (
 // read attachments, collect context, authorize effects, or mutate the original.
 type PreparedRequestOutputLimiter interface {
 	WithMaxOutputTokens(context.Context, int64) (PreparedRequest, error)
+}
+
+// HasInputUsage reports whether this sample contains an input measurement.
+func (u Usage) HasInputUsage() bool {
+	return usageaccounting.HasInput(u.InputTokensReported, u.InputTokenScope, u.Available, u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.WindowInputTokens, u.OutputTokens, u.ReasoningTokens)
 }

@@ -80,18 +80,24 @@ type ContextBreakdown struct {
 	AttachmentTokens     int64                    `json:"attachment_tokens,omitempty"`
 }
 
+// ContextCharacterBreakdown counts visible input; it is never a token estimate.
+type ContextCharacterBreakdown = contextpolicy.ContextCharacterBreakdown
+type ContextCharacterCategory = contextpolicy.ContextCharacterCategory
+type ContextCharacterDetail = contextpolicy.ContextCharacterDetail
+
 type ContextTokenDetail = contextpolicy.ContextTokenDetail
 type ContextBreakdownDetails = contextpolicy.ContextBreakdownDetails
 
 type RequestEstimate struct {
-	Breakdown            ContextBreakdown   `json:"breakdown,omitzero"`
-	PrefixTokens         int64              `json:"prefix_tokens,omitempty"`
-	MessageTokens        int64              `json:"message_tokens,omitempty"`
-	ToolDefinitionTokens int64              `json:"tool_definition_tokens,omitempty"`
-	EstimatedInputTokens int64              `json:"estimated_input_tokens,omitempty"`
-	Source               string             `json:"source,omitempty"`
-	Method               EstimateMethod     `json:"method,omitempty"`
-	Confidence           EstimateConfidence `json:"confidence,omitempty"`
+	Characters           *ContextCharacterBreakdown `json:"characters,omitempty"`
+	Breakdown            ContextBreakdown           `json:"breakdown,omitzero"`
+	PrefixTokens         int64                      `json:"prefix_tokens,omitempty"`
+	MessageTokens        int64                      `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens int64                      `json:"tool_definition_tokens,omitempty"`
+	EstimatedInputTokens int64                      `json:"estimated_input_tokens,omitempty"`
+	Source               string                     `json:"source,omitempty"`
+	Method               EstimateMethod             `json:"method,omitempty"`
+	Confidence           EstimateConfidence         `json:"confidence,omitempty"`
 }
 
 type PressureSignal string

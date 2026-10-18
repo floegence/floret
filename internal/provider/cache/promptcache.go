@@ -291,29 +291,30 @@ type RequestShapeHashes struct {
 }
 
 type PressureAnchorState struct {
-	PromptScopeID        string                           `json:"prompt_scope_id,omitempty"`
-	ThreadID             string                           `json:"thread_id,omitempty"`
-	Provider             string                           `json:"provider,omitempty"`
-	Model                string                           `json:"model,omitempty"`
-	AdapterVersion       string                           `json:"adapter_version,omitempty"`
-	RequestID            string                           `json:"request_id,omitempty"`
-	RunID                string                           `json:"run_id,omitempty"`
-	LogicalRequestID     string                           `json:"logical_request_id,omitempty"`
-	LastMessageEntryID   string                           `json:"last_message_entry_id,omitempty"`
-	LastMessageIndex     int                              `json:"last_message_index,omitempty"`
-	CompactionGeneration int                              `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                           `json:"compaction_window_id,omitempty"`
-	Shape                RequestShapeHashes               `json:"shape,omitempty"`
-	WindowInputTokens    int64                            `json:"window_input_tokens,omitempty"`
-	PrefixTokens         int64                            `json:"prefix_tokens,omitempty"`
-	MessageTokens        int64                            `json:"message_tokens,omitempty"`
-	ToolDefinitionTokens int64                            `json:"tool_definition_tokens,omitempty"`
-	ContextWindowTokens  int64                            `json:"context_window_tokens,omitempty"`
-	EstimateSource       string                           `json:"estimate_source,omitempty"`
-	EstimateMethod       contextpolicy.EstimateMethod     `json:"estimate_method,omitempty"`
-	Confidence           contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
-	PressureSource       contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
-	CreatedAt            time.Time                        `json:"created_at,omitempty"`
+	InputMeasurementQualified bool                             `json:"input_measurement_qualified,omitempty"`
+	PromptScopeID             string                           `json:"prompt_scope_id,omitempty"`
+	ThreadID                  string                           `json:"thread_id,omitempty"`
+	Provider                  string                           `json:"provider,omitempty"`
+	Model                     string                           `json:"model,omitempty"`
+	AdapterVersion            string                           `json:"adapter_version,omitempty"`
+	RequestID                 string                           `json:"request_id,omitempty"`
+	RunID                     string                           `json:"run_id,omitempty"`
+	LogicalRequestID          string                           `json:"logical_request_id,omitempty"`
+	LastMessageEntryID        string                           `json:"last_message_entry_id,omitempty"`
+	LastMessageIndex          int                              `json:"last_message_index,omitempty"`
+	CompactionGeneration      int                              `json:"compaction_generation,omitempty"`
+	CompactionWindowID        string                           `json:"compaction_window_id,omitempty"`
+	Shape                     RequestShapeHashes               `json:"shape,omitempty"`
+	WindowInputTokens         int64                            `json:"window_input_tokens,omitempty"`
+	PrefixTokens              int64                            `json:"prefix_tokens,omitempty"`
+	MessageTokens             int64                            `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens      int64                            `json:"tool_definition_tokens,omitempty"`
+	ContextWindowTokens       int64                            `json:"context_window_tokens,omitempty"`
+	EstimateSource            string                           `json:"estimate_source,omitempty"`
+	EstimateMethod            contextpolicy.EstimateMethod     `json:"estimate_method,omitempty"`
+	Confidence                contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
+	PressureSource            contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
+	CreatedAt                 time.Time                        `json:"created_at,omitempty"`
 }
 
 type Store interface {
@@ -1165,6 +1166,12 @@ func ProviderSurfaceChanges(ctx context.Context, store Store, promptScopeID, ren
 }
 
 func cloneProviderRequestRecord(record ProviderRequestRecord) ProviderRequestRecord {
+	record.RequestEstimate.Characters = record.RequestEstimate.Characters.Clone()
+	if record.RequestEstimate.Breakdown.Details != nil {
+		d := *record.RequestEstimate.Breakdown.Details
+		d.Items = append([]contextpolicy.ContextTokenDetail(nil), d.Items...)
+		record.RequestEstimate.Breakdown.Details = &d
+	}
 	record.SegmentIDs = append([]string(nil), record.SegmentIDs...)
 	record.TurnSurface = cloneTurnSurface(record.TurnSurface)
 	return record

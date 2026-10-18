@@ -1504,11 +1504,11 @@ func TestProviderUsageEventsSeparateStreamUsageAndFinalContextStatus(t *testing.
 	if finalStatus.Phase != engine.ProviderUsagePhaseFinalContextStatus ||
 		finalStatus.RequestID != "turn:req:1" ||
 		finalStatus.Usage.WindowInputTokens != 115 ||
-		finalStatus.ContextPressure.WindowInputTokens != 115 ||
-		finalStatus.ContextPressure.ProjectedInputTokens != 0 ||
-		finalStatus.UsedRatio != 0.115 ||
+		finalStatus.ContextPressure.WindowInputTokens != 0 ||
+		finalStatus.ContextPressure.ProjectedInputTokens != finalStatus.RequestEstimate.EstimatedInputTokens ||
+		finalStatus.UsedRatio != float64(finalStatus.RequestEstimate.EstimatedInputTokens)/1000 ||
 		finalStatus.ThresholdRatio != 0.9 ||
-		finalStatus.Status != engine.ContextStatusStable {
+		finalStatus.Status != engine.ContextStatusEstimated {
 		t.Fatalf("final context status = %#v", finalStatus)
 	}
 }
@@ -1850,7 +1850,7 @@ func TestRequestRecordsRequestEstimateMetadata(t *testing.T) {
 func TestProjectionUsesLatestNativeUsageAnchorAcrossTurns(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
-			provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{InputTokens: 80, WindowInputTokens: 100, Source: provider.UsageNative}},
+			provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 80, WindowInputTokens: 100, Source: provider.UsageNative}},
 			harness.Text("first"),
 			harness.Done(),
 		),
@@ -4206,7 +4206,7 @@ func TestPostResponsePressureCompactsNextRequestAndContinues(t *testing.T) {
 	rec := &event.Recorder{}
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
-			harness.Usage(provider.Usage{InputTokens: 950, WindowInputTokens: 950, OutputTokens: 10, Source: provider.UsageNative, Available: true}),
+			harness.Usage(provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 950, WindowInputTokens: 950, OutputTokens: 10, Source: provider.UsageNative, Available: true}),
 			harness.Tool("read-1", "read", `{"value":"large"}`),
 			harness.DoneReason("tool_calls"),
 		),
