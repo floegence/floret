@@ -35,3 +35,22 @@ func TestEventValidateRequiresCommittedFinalUsageForThreadTotals(t *testing.T) {
 		t.Fatalf("negative totals error=%v", err)
 	}
 }
+
+func TestEventValidateDistinguishesInputMeasurementFromOutputOnlyUsage(t *testing.T) {
+	for _, reported := range []bool{false, true} {
+		status := &observation.ContextStatus{RunID: "run", ThreadID: "thread", TurnID: "turn", Phase: observation.ContextPhaseProviderUsage, Status: observation.ContextStatusStable, Usage: observation.ProviderUsage{Source: "native", Available: true, InputTokensReported: reported, InputTokenScope: "provider_execution", OutputTokens: 1}}
+		valid := Event{Type: observation.EventTypeProviderUsage, RunID: "run", ThreadID: "thread", TurnID: "turn", ContextUsage: &ThreadContextUsage{}}
+		if reported {
+			valid.ContextUsage.Confirmed = status
+		} else {
+			valid.ContextUsage.Estimate = status
+		}
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("reported=%t valid sample rejected: %v", reported, err)
+		}
+		valid.ContextUsage.Confirmed, valid.ContextUsage.Estimate = valid.ContextUsage.Estimate, valid.ContextUsage.Confirmed
+		if err := valid.Validate(); err == nil {
+			t.Fatalf("reported=%t accepted wrong sample kind", reported)
+		}
+	}
+}

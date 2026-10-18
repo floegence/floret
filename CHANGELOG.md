@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.60.3 - 2026-10-18
+
+- Add public event-contract regression coverage for output-only usage and explicit zero input, including rejection of inverted confirmed/estimate placement.
+
+
 ## v7.60.2 - 2026-10-18
 
 - Keep Goal review replay idempotent and accept typed Goal facts after canonical retry checkpoints. Preserve frozen transport inputs when the Goal changes during a request.
