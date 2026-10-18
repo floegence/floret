@@ -335,7 +335,7 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 		if attempt.State == sessiontree.EffectAttemptCancelled {
 			structured = map[string]any{"outcome": tools.ResultOutcomeCanceled}
 		}
-		return tools.Result{CallID: attempt.Invocation.ToolCallID, Name: attempt.Invocation.ToolName, Text: text, Structured: structured, IsError: attempt.State == sessiontree.EffectAttemptFailed,
+		return tools.Result{EffectOutcome: entry.Message.ToolResult.EffectOutcome, CallID: attempt.Invocation.ToolCallID, Name: attempt.Invocation.ToolName, Text: text, Structured: structured, IsError: attempt.State == sessiontree.EffectAttemptFailed,
 			OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: len(text) + 1, VisibleMaxLines: strings.Count(text, "\n") + 2, Strategy: tools.OutputStrategy(entry.Message.ToolResult.Strategy), PreserveFullSet: true}}
 	case sessiontree.EffectAttemptRejected:
 		return tools.DeclinedResult(attempt.Invocation.ToolCallID, attempt.Invocation.ToolName)

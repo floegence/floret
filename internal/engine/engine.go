@@ -1399,6 +1399,9 @@ steps:
 				return nil
 			}
 			result = preparePendingToolResult(result)
+			if result.EffectOutcome == tools.EffectOutcomeUncertain && !strings.HasPrefix(result.Text, "External effect unconfirmed.") {
+				result.Text = "External effect unconfirmed. Inspect current state before deciding whether another action is necessary; do not blindly repeat this operation.\n" + result.Text
+			}
 			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
 			result.Activity = sanitizeActivityPresentation(result.Activity)
 			toolResults[i] = result
@@ -1444,6 +1447,7 @@ steps:
 			resultView.Attachments = toolResultAttachments(result.Attachments)
 			resultView.InputRequired = tools.CloneInputRequest(result.InputRequired)
 			resultView.Status = resultStatus
+			resultView.EffectOutcome = result.EffectOutcome
 			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
@@ -1481,6 +1485,9 @@ steps:
 			}
 			metadata := mergeAnyMetadata(metadataBase, projectedCallBatchMetadata[result.CallID])
 			metadata["tool_result_status"] = resultStatus
+			if result.EffectOutcome != "" {
+				metadata["effect_outcome"] = string(result.EffectOutcome)
+			}
 			{
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: append(eventArtifacts(projection, result.Artifacts), eventArtifactsFromToolAttachments(result.Attachments)...), CanonicalEntryID: finalized.CanonicalEntryID})
 			}

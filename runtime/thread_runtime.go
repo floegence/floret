@@ -3862,12 +3862,18 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 		}
 	}
 	failed := false
+	uncertain := false
 	for _, item := range read.Turn.Entries {
+		uncertain = uncertain || item.Entry.Message.ToolResult != nil && item.Entry.Message.ToolResult.EffectOutcome == tools.EffectOutcomeUncertain
 		failed = failed || item.Entry.Type == sessiontree.EntryTurnMarker && item.Entry.TurnStatus == sessiontree.TurnFailed
 	}
-	if failed {
-		// The harness commits save points after tool results and before a
-		// failed terminal. Retrying from that boundary retains confirmed work.
+	if failed || uncertain {
+		// Use the complete batch boundary after returned uncertainty. If the
+		// process stopped before its save point, retain the admitted path rather
+		// than moving back across a tool result whose effect is unconfirmed.
+		if uncertain && len(read.Turn.Entries) > 0 {
+			sourceEntryID = read.Turn.Entries[len(read.Turn.Entries)-1].Entry.ID
+		}
 		for index := len(read.Turn.Entries) - 1; index >= 0; index-- {
 			entry := read.Turn.Entries[index].Entry
 			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint {

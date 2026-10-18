@@ -236,3 +236,11 @@ Historical schemas still require success for tool-requested input; current write
 accept completed success or error results. Exact v19 validation precedes migration,
 which preserves canonical facts and verifies v20 in the startup transaction. Older
 writers reject the envelope. All older migration edges remain automatic.
+
+## Returned uncertainty migration
+
+Schema 21 appends 20 -> 21 in the same physical namespace with a new envelope.
+It retains every historical edge and canonical fact. Returned uncertainty is an
+error ToolResult with explicit effect_outcome; the EffectAttempt remains failed.
+No new recovery ledger is created. Older writers reject this envelope. Startup
+validates source and current invariants atomically and current restart is read-only.

@@ -1521,3 +1521,8 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 ## 2026-10-17
 
 - Document canonical-owned transactional persistent search indexes, bounded runtime snapshots, optional physical index SPI and counted startup work.
+
+## 2026-10-18 — Returned effect uncertainty
+
+- Document explicit returned uncertainty and the permanent 20 -> 21 migration;
+  preserve unsettled execution termination and post-result retry safety.
