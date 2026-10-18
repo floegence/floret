@@ -65,6 +65,9 @@ field AgentProfile.ID string tag="json:\"id\""
 field AgentProfile.Name string tag="json:\"name\""
 field AgentProfile.Description string tag="json:\"description,omitempty\""
 type ContextBreakdown struct
+field ContextBreakdown.AttributionCoverage string tag="json:\"attribution_coverage,omitempty\""
+field ContextBreakdown.Limitation string tag="json:\"limitation,omitempty\""
+field ContextBreakdown.OpaqueBytes int64 tag="json:\"opaque_bytes,omitempty\""
 field ContextBreakdown.Tokenizer string tag="json:\"tokenizer,omitempty\""
 field ContextBreakdown.Quality string tag="json:\"quality,omitempty\""
 field ContextBreakdown.FramingTokens int64 tag="json:\"framing_tokens,omitempty\""
@@ -483,6 +486,8 @@ field ToolResult.ToolName string tag="json:\"tool_name\""
 field ToolResult.Text string tag="json:\"text,omitempty\""
 field ToolResult.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
 type Usage struct
+field Usage.OutputIncludesReasoning bool tag="json:\"output_includes_reasoning,omitempty\""
+field Usage.TotalTokensReported bool tag="json:\"total_tokens_reported,omitempty\""
 field Usage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
 field Usage.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
 field Usage.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitempty\""
@@ -493,6 +498,7 @@ field Usage.CostUSD float64 tag="json:\"cost_usd,omitempty\""
 field Usage.Source string tag="json:\"source,omitempty\""
 field Usage.Available bool tag="json:\"available,omitempty\""
 field Usage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
+method Usage.Normalized func() github.com/floegence/floret/v7/provider.Usage
 func WithRetryAdvice func(cause error, advice github.com/floegence/floret/v7/provider.RetryAdvice) error
 
 package github.com/floegence/floret/v7/runtime
@@ -2368,6 +2374,13 @@ type CompletionReason string
 method CompletionReason.Valid func() bool
 const CompletionReasonHookStop github.com/floegence/floret/v7/observation.CompletionReason = "hook_stop"
 const CompletionReasonNaturalStop github.com/floegence/floret/v7/observation.CompletionReason = "natural_stop"
+type ContextAccounting struct
+field ContextAccounting.Available bool tag="json:\"available\""
+field ContextAccounting.InputTokens int64 tag="json:\"input_tokens\""
+field ContextAccounting.Measured bool tag="json:\"measured\""
+field ContextAccounting.BreakdownAvailable bool tag="json:\"breakdown_available\""
+field ContextAccounting.UnattributedTokens int64 tag="json:\"unattributed_tokens\""
+field ContextAccounting.Limitation string tag="json:\"limitation,omitempty\""
 type ContextDisplayStatus string
 method ContextDisplayStatus.Valid func() bool
 type ContextPhase string
@@ -2378,6 +2391,9 @@ func ContextPressureDisplayStatus func(pressure github.com/floegence/floret/v7/c
 func ContextPressureThresholdRatio func(pressure github.com/floegence/floret/v7/config.ContextPressure) float64
 func ContextPressureUsedRatio func(pressure github.com/floegence/floret/v7/config.ContextPressure) float64
 type ContextStatus struct
+field ContextStatus.PayloadFingerprint string tag="json:\"payload_fingerprint,omitempty\""
+field ContextStatus.AttemptID string tag="json:\"attempt_id,omitempty\""
+field ContextStatus.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
 field ContextStatus.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ContextStatus.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field ContextStatus.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
@@ -2507,6 +2523,8 @@ field ProviderRetryProgress.Reason string tag="json:\"reason\""
 field ProviderRetryProgress.ReplacedAttemptID string tag="json:\"replaced_attempt_id,omitempty\""
 field ProviderRetryProgress.ReplacedAttemptEpoch int tag="json:\"replaced_attempt_epoch,omitempty\""
 type ProviderUsage struct
+field ProviderUsage.OutputIncludesReasoning bool tag="json:\"output_includes_reasoning,omitempty\""
+field ProviderUsage.TotalTokensReported bool tag="json:\"total_tokens_reported,omitempty\""
 field ProviderUsage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
 field ProviderUsage.OutputTokens int64 tag="json:\"output_tokens,omitempty\""
 field ProviderUsage.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitempty\""
@@ -2519,6 +2537,9 @@ field ProviderUsage.Source string tag="json:\"source,omitempty\""
 field ProviderUsage.Available bool tag="json:\"available,omitempty\""
 method ProviderUsage.Normalized func() github.com/floegence/floret/v7/observation.ProviderUsage
 type ProviderUsageObservation struct
+field ProviderUsageObservation.PayloadFingerprint string tag="json:\"payload_fingerprint,omitempty\""
+field ProviderUsageObservation.AttemptID string tag="json:\"attempt_id,omitempty\""
+field ProviderUsageObservation.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
 field ProviderUsageObservation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ProviderUsageObservation.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field ProviderUsageObservation.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
@@ -2535,8 +2556,12 @@ field ProviderUsageObservation.ContextPressure github.com/floegence/floret/v7/co
 const ProviderUsagePhaseFinalContextStatus untyped string = "final_context_status"
 const ProviderUsagePhaseStreamUsage untyped string = "stream_usage"
 func RebuildActivitySummary func(timeline github.com/floegence/floret/v7/observation.ActivityTimeline) github.com/floegence/floret/v7/observation.ActivitySummary
+func ReconcileContextStatus func(s github.com/floegence/floret/v7/observation.ContextStatus) (github.com/floegence/floret/v7/observation.ContextAccounting, error)
 func RequestID func(runID string, step int) string
 type RequestObservation struct
+field RequestObservation.PayloadFingerprint string tag="json:\"payload_fingerprint,omitempty\""
+field RequestObservation.AttemptID string tag="json:\"attempt_id,omitempty\""
+field RequestObservation.AttemptEpoch int tag="json:\"attempt_epoch,omitempty\""
 field RequestObservation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field RequestObservation.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field RequestObservation.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""

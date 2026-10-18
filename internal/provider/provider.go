@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/usageaccounting"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/citation"
@@ -547,24 +548,26 @@ const (
 )
 
 type Usage struct {
-	InputTokens       int64       `json:"input_tokens,omitempty"`
-	OutputTokens      int64       `json:"output_tokens,omitempty"`
-	ReasoningTokens   int64       `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens   int64       `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64       `json:"cache_write_tokens,omitempty"`
-	TotalTokens       int64       `json:"total_tokens,omitempty"`
-	CostUSD           float64     `json:"cost_usd,omitempty"`
-	Source            UsageSource `json:"source,omitempty"`
-	Available         bool        `json:"available,omitempty"`
-	WindowInputTokens int64       `json:"window_input_tokens,omitempty"`
+	// OutputIncludesReasoning means ReasoningTokens is a subset of OutputTokens.
+	OutputIncludesReasoning bool `json:"output_includes_reasoning,omitempty"`
+	// TotalTokensReported distinguishes an explicit native zero from an absent total.
+	TotalTokensReported bool        `json:"total_tokens_reported,omitempty"`
+	InputTokens         int64       `json:"input_tokens,omitempty"`
+	OutputTokens        int64       `json:"output_tokens,omitempty"`
+	ReasoningTokens     int64       `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens     int64       `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens    int64       `json:"cache_write_tokens,omitempty"`
+	TotalTokens         int64       `json:"total_tokens,omitempty"`
+	CostUSD             float64     `json:"cost_usd,omitempty"`
+	Source              UsageSource `json:"source,omitempty"`
+	Available           bool        `json:"available,omitempty"`
+	WindowInputTokens   int64       `json:"window_input_tokens,omitempty"`
 }
 
 func (u Usage) Normalized() Usage {
-	if u.TotalTokens == 0 {
-		u.TotalTokens = u.InputTokens + u.OutputTokens + u.ReasoningTokens + u.CacheReadTokens + u.CacheWriteTokens
-	}
+	u.TotalTokens = usageaccounting.Total(u.TotalTokens, u.TotalTokensReported, u.InputTokens, u.OutputTokens, u.ReasoningTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputIncludesReasoning)
 	if u.Source == "" {
-		if u.TotalTokens == 0 && u.CostUSD == 0 {
+		if !u.Available && !u.TotalTokensReported && u.TotalTokens == 0 && u.CostUSD == 0 {
 			u.Source = UsageUnavailable
 		} else {
 			u.Source = UsageNative
@@ -574,7 +577,7 @@ func (u Usage) Normalized() Usage {
 		u.Available = false
 		return u
 	}
-	if u.TotalTokens > 0 || u.CostUSD > 0 || u.InputTokens > 0 || u.OutputTokens > 0 || u.WindowInputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
+	if u.TotalTokensReported || u.TotalTokens > 0 || u.CostUSD > 0 || u.InputTokens > 0 || u.OutputTokens > 0 || u.WindowInputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
 		u.Available = true
 	}
 	if u.WindowInputTokens <= 0 && u.Available {
@@ -603,16 +606,17 @@ func (u Usage) Add(other Usage) Usage {
 		source = UsageMixed
 	}
 	return Usage{
-		InputTokens:       u.InputTokens + other.InputTokens,
-		OutputTokens:      u.OutputTokens + other.OutputTokens,
-		ReasoningTokens:   u.ReasoningTokens + other.ReasoningTokens,
-		CacheReadTokens:   u.CacheReadTokens + other.CacheReadTokens,
-		CacheWriteTokens:  u.CacheWriteTokens + other.CacheWriteTokens,
-		TotalTokens:       u.TotalTokens + other.TotalTokens,
-		CostUSD:           u.CostUSD + other.CostUSD,
-		Source:            source,
-		Available:         u.Available || other.Available,
-		WindowInputTokens: u.WindowInputTokens + other.WindowInputTokens,
+		TotalTokensReported: true,
+		InputTokens:         u.InputTokens + other.InputTokens,
+		OutputTokens:        u.OutputTokens + other.OutputTokens,
+		ReasoningTokens:     u.ReasoningTokens + other.ReasoningTokens,
+		CacheReadTokens:     u.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens:    u.CacheWriteTokens + other.CacheWriteTokens,
+		TotalTokens:         u.TotalTokens + other.TotalTokens,
+		CostUSD:             u.CostUSD + other.CostUSD,
+		Source:              source,
+		Available:           u.Available || other.Available,
+		WindowInputTokens:   u.WindowInputTokens + other.WindowInputTokens,
 	}
 }
 

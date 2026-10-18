@@ -40,7 +40,7 @@ func EstimateRenderedRequest(request RenderedRequest) (TokenEstimate, error) {
 		return TokenEstimate{}, err
 	}
 	return TokenEstimate{Breakdown: config.ContextBreakdown(estimate.Breakdown), AttachmentTokens: estimate.Media, PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools,
-		EstimatedInputTokens: estimate.Prefix + estimate.Messages + estimate.Tools, Source: estimate.Source, Method: estimate.Method, Confidence: "conservative", Coverage: "complete_request"}, nil
+		EstimatedInputTokens: estimate.Prefix + estimate.Messages + estimate.Tools, Source: estimate.Source, Method: estimate.Method, Confidence: "approximate", Coverage: "complete_request"}, nil
 }
 
 // MessageAttribution identifies canonical model-context or compaction text.

@@ -423,7 +423,9 @@ func internalHostedToolResult(value *publicprovider.HostedToolResult) provider.H
 
 func providerUsage(value publicprovider.Usage) provider.Usage {
 	return provider.Usage{
-		InputTokens: value.InputTokens, OutputTokens: value.OutputTokens, ReasoningTokens: value.ReasoningTokens,
+		OutputIncludesReasoning: value.OutputIncludesReasoning,
+		TotalTokensReported:     value.TotalTokensReported,
+		InputTokens:             value.InputTokens, OutputTokens: value.OutputTokens, ReasoningTokens: value.ReasoningTokens,
 		CacheReadTokens: value.CacheReadTokens, CacheWriteTokens: value.CacheWriteTokens,
 		TotalTokens: value.TotalTokens, CostUSD: value.CostUSD, Source: provider.UsageSource(value.Source),
 		Available: value.Available, WindowInputTokens: value.WindowInputTokens,

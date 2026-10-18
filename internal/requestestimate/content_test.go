@@ -39,7 +39,7 @@ func TestContentDistributionNeverGuessesProviderFromModel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Breakdown.Quality != "relative_weight" {
+		if got.Breakdown.Tokenizer != "proxy_bpe" {
 			t.Fatalf("%s incorrectly claims model vocabulary: %+v", name, got)
 		}
 	}
@@ -173,7 +173,7 @@ func TestOpaqueAndMediaNeverClaimTextAccuracy(t *testing.T) {
 		{"input_json", `{"messages":[{"role":"user","content":[{"type":"file","file_uri":"data:application/pdf;base64,opaque"}]}]}`},
 	} {
 		got, err := Count("openai", "gpt-4o", tc.format, []byte(tc.payload))
-		if err != nil || got.Breakdown.Quality != "relative_weight" || got.Messages <= 0 {
+		if err != nil || got.Breakdown.AttributionCoverage != "partial" || got.Messages <= 0 {
 			t.Fatalf("opaque %+v %v", got, err)
 		}
 	}

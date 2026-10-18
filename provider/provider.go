@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/usageaccounting"
 	"strings"
 
 	"github.com/floegence/floret/v7/config"
@@ -484,16 +485,27 @@ type Source struct {
 
 // Usage is normalized provider token and cost usage.
 type Usage struct {
-	InputTokens       int64   `json:"input_tokens,omitempty"`
-	OutputTokens      int64   `json:"output_tokens,omitempty"`
-	ReasoningTokens   int64   `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens   int64   `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
-	TotalTokens       int64   `json:"total_tokens,omitempty"`
-	CostUSD           float64 `json:"cost_usd,omitempty"`
-	Source            string  `json:"source,omitempty"`
-	Available         bool    `json:"available,omitempty"`
-	WindowInputTokens int64   `json:"window_input_tokens,omitempty"`
+	// OutputIncludesReasoning means ReasoningTokens is a subset of OutputTokens.
+	OutputIncludesReasoning bool `json:"output_includes_reasoning,omitempty"`
+	// TotalTokensReported distinguishes an explicit native zero from an absent total.
+	TotalTokensReported bool    `json:"total_tokens_reported,omitempty"`
+	InputTokens         int64   `json:"input_tokens,omitempty"`
+	OutputTokens        int64   `json:"output_tokens,omitempty"`
+	ReasoningTokens     int64   `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens     int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens    int64   `json:"cache_write_tokens,omitempty"`
+	TotalTokens         int64   `json:"total_tokens,omitempty"`
+	CostUSD             float64 `json:"cost_usd,omitempty"`
+	Source              string  `json:"source,omitempty"`
+	Available           bool    `json:"available,omitempty"`
+	WindowInputTokens   int64   `json:"window_input_tokens,omitempty"`
+}
+
+// Normalized derives missing totals using the declared protocol relationship.
+func (u Usage) Normalized() Usage {
+	u.WindowInputTokens = usageaccounting.WindowInput(u.WindowInputTokens, u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+	u.TotalTokens = usageaccounting.Total(u.TotalTokens, u.TotalTokensReported, u.InputTokens, u.OutputTokens, u.ReasoningTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputIncludesReasoning)
+	return u
 }
 
 // RequestPreparer renders a complete provider request before context limits

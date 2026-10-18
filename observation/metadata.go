@@ -16,16 +16,18 @@ func providerUsageFromAny(value any) ProviderUsage {
 		return *v
 	case map[string]any:
 		return ProviderUsage{
-			InputTokens:       int64FromAny(v["input_tokens"], 0),
-			OutputTokens:      int64FromAny(v["output_tokens"], 0),
-			ReasoningTokens:   int64FromAny(v["reasoning_tokens"], 0),
-			CacheReadTokens:   int64FromAny(v["cache_read_tokens"], 0),
-			CacheWriteTokens:  int64FromAny(v["cache_write_tokens"], 0),
-			TotalTokens:       int64FromAny(v["total_tokens"], 0),
-			WindowInputTokens: int64FromAny(v["window_input_tokens"], 0),
-			CostUSD:           float64FromAny(v["cost_usd"], 0),
-			Source:            stringFromAny(v["source"]),
-			Available:         boolFromAny(v["available"], false),
+			InputTokens:             int64FromAny(v["input_tokens"], 0),
+			OutputTokens:            int64FromAny(v["output_tokens"], 0),
+			OutputIncludesReasoning: boolFromAny(v["output_includes_reasoning"], false),
+			TotalTokensReported:     boolFromAny(v["total_tokens_reported"], false),
+			ReasoningTokens:         int64FromAny(v["reasoning_tokens"], 0),
+			CacheReadTokens:         int64FromAny(v["cache_read_tokens"], 0),
+			CacheWriteTokens:        int64FromAny(v["cache_write_tokens"], 0),
+			TotalTokens:             int64FromAny(v["total_tokens"], 0),
+			WindowInputTokens:       int64FromAny(v["window_input_tokens"], 0),
+			CostUSD:                 float64FromAny(v["cost_usd"], 0),
+			Source:                  stringFromAny(v["source"]),
+			Available:               boolFromAny(v["available"], false),
 		}.Normalized()
 	default:
 		return ProviderUsage{}
@@ -179,7 +181,8 @@ func contextBreakdownFromAny(value any) config.ContextBreakdown {
 		return v
 	case map[string]any:
 		return config.ContextBreakdown{
-			Details:   contextBreakdownDetailsFromAny(v["details"]),
+			Details:             contextBreakdownDetailsFromAny(v["details"]),
+			AttributionCoverage: stringFromAny(v["attribution_coverage"]), Limitation: stringFromAny(v["limitation"]), OpaqueBytes: int64FromAny(v["opaque_bytes"], 0),
 			Tokenizer: stringFromAny(v["tokenizer"]), Quality: stringFromAny(v["quality"]), FramingTokens: int64FromAny(v["framing_tokens"], 0), Diagnostic: stringFromAny(v["diagnostic"]),
 			Source:               stringFromAny(v["source"]),
 			SystemTokens:         int64FromAny(v["system_tokens"], 0),

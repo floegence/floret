@@ -159,7 +159,7 @@ func TestApplicationStorageSourceIsOpaque(t *testing.T) {
 func TestPublicPackageDependencyDirection(t *testing.T) {
 	allowed := map[string]map[string]bool{
 		"tools":       {"identity": true, "tools": true},
-		"observation": {"config": true, "identity": true, "tools": true},
+		"observation": {"config": true, "identity": true, "tools": true, "internal/usageaccounting": true},
 	}
 	for directory, packageAllowlist := range allowed {
 		err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
@@ -180,7 +180,7 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 					continue
 				}
 				dependency := strings.TrimPrefix(value, module)
-				if strings.Contains(dependency, "/") || !packageAllowlist[dependency] {
+				if !packageAllowlist[dependency] {
 					t.Fatalf("%s imports forbidden public dependency %s", path, value)
 				}
 			}

@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.55.0 - 2026-10-18
+
+- Add request-bound context reconciliation, attribution coverage and opaque byte diagnostics. Preserve native totals and raw category estimates; expose unattributed input without proportional scaling.
+- Separate ciphertext/media budget proxies from token categories and mark rendered estimates approximate. Retain anchored pressure, bounded compaction and frozen retries.
+- Add explicit output/reasoning inclusion and native-total presence with one usage arithmetic owner. Preserve published output semantics and historical totals.
+- Append transactional domain schema 21 -> 22 with unchanged canonical entry bytes and all historical migrations.
+
 ## v7.54.0 - 2026-10-18
 
 - Add explicit returned effect uncertainty: commit failed tool facts and continue model reasoning without replay or mandatory input. Keep unsettled dispatches terminal.

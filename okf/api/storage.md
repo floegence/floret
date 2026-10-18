@@ -244,3 +244,12 @@ It retains every historical edge and canonical fact. Returned uncertainty is an
 error ToolResult with explicit effect_outcome; the EffectAttempt remains failed.
 No new recovery ledger is created. Older writers reject this envelope. Startup
 validates source and current invariants atomically and current restart is read-only.
+
+## Request-bound accounting
+
+Domain schema 22 appends the atomic 21 -> 22 edge and preserves canonical entry bytes.
+Provider facts retain explicit reasoning inclusion and native-total presence.
+[Context reconciliation](../../observation/context_accounting.go) owns host display arithmetic;
+[rendered estimation](../../provider/request_estimate.go) separates visible token attribution
+from opaque diagnostics and Engine budget proxies. Historical mixed-unit categories
+remain unavailable for display, without rewriting provider totals or model history.

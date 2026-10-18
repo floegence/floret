@@ -368,7 +368,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Metrics.Usage.InputTokens != 100 || result.Metrics.Usage.WindowInputTokens != 120 || result.Metrics.Usage.OutputTokens != 30 || result.Metrics.Usage.CacheReadTokens != 20 || result.Metrics.Usage.CacheWriteTokens != 5 || result.Metrics.Usage.ReasoningTokens != 10 || result.Metrics.Usage.TotalTokens != 160 {
+	if result.Metrics.Usage.InputTokens != 95 || result.Metrics.Usage.WindowInputTokens != 120 || result.Metrics.Usage.OutputTokens != 30 || result.Metrics.Usage.CacheReadTokens != 20 || result.Metrics.Usage.CacheWriteTokens != 5 || result.Metrics.Usage.ReasoningTokens != 10 || result.Metrics.Usage.TotalTokens != 160 {
 		t.Fatalf("usage = %#v", result.Metrics.Usage)
 	}
 }
@@ -801,9 +801,9 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 		t.Fatal(err)
 	}
 	if withTool.EstimatedInputTokens <= base.EstimatedInputTokens ||
-		withTool.Source != "rendered_proxy_bpe_content_v3" ||
+		withTool.Source != "rendered_proxy_bpe_content_v4" ||
 		withTool.Method != provider.TokenEstimateProviderRenderedPayload ||
-		withTool.Confidence != provider.EstimateConservative {
+		withTool.Confidence != provider.EstimateApproximate {
 		t.Fatalf("estimate did not include rendered tool schema: base=%#v withTool=%#v", base, withTool)
 	}
 	if withTool.ToolDefinitionTokens <= 0 || withTool.MessageTokens != base.MessageTokens {
@@ -946,9 +946,9 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	if estimate.EstimatedInputTokens <= baseEstimate.EstimatedInputTokens ||
-		estimate.Source != "rendered_proxy_bpe_content_v3" ||
+		estimate.Source != "rendered_proxy_bpe_content_v4" ||
 		estimate.Method != provider.TokenEstimateProviderRenderedPayload ||
-		estimate.Confidence != provider.EstimateConservative {
+		estimate.Confidence != provider.EstimateApproximate {
 		t.Fatalf("anthropic estimate did not include rendered tools/source/confidence: base=%#v estimate=%#v", baseEstimate, estimate)
 	}
 	if estimate.PrefixTokens != 0 || estimate.ToolDefinitionTokens <= 0 {

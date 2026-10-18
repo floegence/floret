@@ -31,9 +31,10 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 21 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 22 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
+The 21 -> 22 edge admits request-bound accounting without rewriting entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
 
@@ -630,35 +631,38 @@ unchanged; old summaries gain no invented visual facts.
 
 ## Used Context Composition
 
-The public API deliberately adds a comparable, optional
-`config.RequestEstimate.Breakdown` value for host presentation. Each request
-reports disjoint estimates for system instructions, user and assistant messages,
-tool definitions, calls and retained results, managed model-context updates,
-compaction summaries, retained reasoning and expanded media/files. These are
-semantic offline BPE estimates, not provider billing categories. Their sum can
-differ from rendered request and native input totals; never rescale them into
-an exact allocation of native usage. Empty Source means unavailable.
+The additive public accounting contract serves hosts displaying one frozen request.
+Use '+chr(96)+'observation.ReconcileContextStatus'+chr(96)+' for both canonical and live samples.
+Prefer the last confirmed sample until model, policy or successful compaction
+invalidates it. The returned measured total and recent cache usage belong to
+that sample; the current request pressure remains separate.
 
-`provider.TokenEstimate.AttachmentTokens` is the media/file subset already
-included in MessageTokens. Prepared transports count resolved model input.
-Discarded original tool artifacts, attachment descriptors, activity metadata
-and filtered reasoning are excluded. Supplemental requests omit the breakdown.
-No prompt, tool text or secret is added to observation.
+'+chr(96)+'prepared_content_v4'+chr(96)+' breakdowns contain disjoint approximate token estimates.
+'+chr(96)+'AttributionCoverage'+chr(96)+' describes complete or partial visible attribution, while
+'+chr(96)+'TokenEstimate.Coverage=complete_request'+chr(96)+' retains its preparation meaning.
+Unknown models use explicitly approximate '+chr(96)+'proxy_bpe'+chr(96)+'. Ciphertext length is
+'+chr(96)+'OpaqueBytes'+chr(96)+' diagnostics, never reasoning tokens. Media/file and opaque
+proxies, margins and output reserves remain budget inputs only. Hosted search
+may contain unobserved context; partial attribution cannot establish a complete
+input total without native usage. No online count is added to sending.
 
-The optional `ContextBreakdown.Details` refines tool definitions by exact tool
-name and host-supplied `source` / `namespace` annotations, and managed context
-by canonical section key. These are disjoint refinements of the existing totals,
-not additional usage. The canonical renderer retains fragment boundaries only
-in memory, including retained updates and removals. Hosts group known keys and
-origins for presentation; Floret never infers MCP, skills or rules from prose.
-Missing historical attribution remains unavailable. Shared update framing has an
-empty section key. Per-fragment BPE estimates use `semantic_input_bpe_v2` and
-never allocate native totals by current text size.
+Reconciliation preserves category estimates and reports a positive remainder
+as unattributed tokens. It never rescales categories. Categories above the native
+total, missing request identity or historical mixed-unit sources suppress details
+while preserving trustworthy totals. Damaged structure returns a validation error.
+Measured zero is available; missing total is unavailable. Hosts render measured
+values with '+chr(96)+'='+chr(96)+' and all estimates with '+chr(96)+'≈'+chr(96)+'. Category/tool disclosure remains
+usable independently of runtime execution.
 
-Confirmed usage and its breakdown describe the same request. The next projected
-request has its own breakdown. Canonical reads and live events agree across
-restart. Historical schema-17 records without this optional observation field
-remain valid without rewriting; this changes no domain lifecycle invariant.
+'+chr(96)+'ContextStatus.PayloadFingerprint'+chr(96)+' identifies final prepared bytes after output
+refitting; request, attempt, provider and model identities travel with the sample.
+'+chr(96)+'ContextBreakdown.Details'+chr(96)+' refines tool definitions and managed-context categories
+without adding to them. Historical entries keep their original bytes and totals.
+
+Provider adapters declare '+chr(96)+'Usage.OutputIncludesReasoning'+chr(96)+' from the protocol.
+'+chr(96)+'Usage.Normalized'+chr(96)+' preserves native totals, including an explicit zero marked by
+'+chr(96)+'TotalTokensReported'+chr(96)+', and derives missing totals without counting reasoning or
+cached input twice. Existing output field meanings are unchanged.
 
 ## Managed Runtime Facts
 

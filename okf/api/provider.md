@@ -277,3 +277,12 @@ calibration invalidation continue to apply.
 
 See [qualification evidence](../../scripts/context-qualification/REPORT.md) and
 [unified counter](../../internal/requestestimate/content.go).
+
+## Request-bound accounting
+
+Domain schema 22 appends the atomic 21 -> 22 edge and preserves canonical entry bytes.
+Provider facts retain explicit reasoning inclusion and native-total presence.
+[Context reconciliation](../../observation/context_accounting.go) owns host display arithmetic;
+[rendered estimation](../../provider/request_estimate.go) separates visible token attribution
+from opaque diagnostics and Engine budget proxies. Historical mixed-unit categories
+remain unavailable for display, without rewriting provider totals or model history.

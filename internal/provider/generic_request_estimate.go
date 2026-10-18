@@ -82,5 +82,5 @@ func estimateGenericInput(req Request) (TokenEstimate, error) {
 	if req.EphemeralUser != nil {
 		out.Breakdown = contextpolicy.ContextBreakdown{}
 	}
-	return TokenEstimate{Breakdown: out.Breakdown, AttachmentTokens: out.Media, PrefixTokens: out.Prefix, MessageTokens: out.Messages, ToolDefinitionTokens: out.Tools, EstimatedInputTokens: out.Prefix + out.Messages + out.Tools, Source: out.Source, Method: TokenEstimateGenericPayload, Confidence: EstimateConservative}, nil
+	return TokenEstimate{Breakdown: out.Breakdown, AttachmentTokens: out.Media, PrefixTokens: out.Prefix, MessageTokens: out.Messages, ToolDefinitionTokens: out.Tools, EstimatedInputTokens: out.Prefix + out.Messages + out.Tools, Source: out.Source, Method: TokenEstimateGenericPayload, Confidence: EstimateApproximate}, nil
 }

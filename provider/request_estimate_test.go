@@ -36,7 +36,7 @@ func TestRenderedRequestModelIdentityAndTextAccuracy(t *testing.T) {
 			if !strings.Contains(out.Source, tc.source) || out.EstimatedInputTokens < 1000 || out.EstimatedInputTokens > 1800 {
 				t.Fatalf("unexpected estimate: %+v", out)
 			}
-			if out.Confidence != "conservative" || out.Coverage != "complete_request" {
+			if out.Confidence != "approximate" || out.Coverage != "complete_request" {
 				t.Fatalf("invalid provenance: %+v", out)
 			}
 		})

@@ -2186,6 +2186,7 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 		}
 		estimate, _ := meta["request_estimate"].(contextpolicy.RequestEstimate)
 		status := observation.ContextStatusFromRequest(observation.RequestObservation{
+			PayloadFingerprint: stringFromMetadata(meta, "payload_hash"), AttemptID: stringFromMetadata(meta, "attempt_id"), AttemptEpoch: intFromMetadata(meta, "attempt_epoch"),
 			RunID:             identity.RunID(ev.RunID),
 			ThreadID:          identity.ThreadID(ev.ThreadID),
 			TurnID:            identity.TurnID(ev.TurnID),
@@ -2206,10 +2207,11 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 			return nil
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
-			RunID:            identity.RunID(ev.RunID),
-			ThreadID:         identity.ThreadID(ev.ThreadID),
-			TurnID:           identity.TurnID(ev.TurnID),
-			Step:             ev.Step,
+			RunID:              identity.RunID(ev.RunID),
+			ThreadID:           identity.ThreadID(ev.ThreadID),
+			TurnID:             identity.TurnID(ev.TurnID),
+			Step:               ev.Step,
+			PayloadFingerprint: status.PayloadFingerprint, AttemptID: status.AttemptID, AttemptEpoch: status.AttemptEpoch,
 			RequestID:        status.RequestID,
 			LogicalRequestID: identity.LogicalRequestID(status.LogicalRequestID),
 			Attempt:          status.Attempt,
@@ -2382,16 +2384,18 @@ func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedE
 func observationProviderUsage(in provider.Usage) observation.ProviderUsage {
 	in = in.Normalized()
 	return observation.ProviderUsage{
-		InputTokens:       in.InputTokens,
-		OutputTokens:      in.OutputTokens,
-		ReasoningTokens:   in.ReasoningTokens,
-		CacheReadTokens:   in.CacheReadTokens,
-		CacheWriteTokens:  in.CacheWriteTokens,
-		TotalTokens:       in.TotalTokens,
-		WindowInputTokens: in.WindowInputTokens,
-		CostUSD:           in.CostUSD,
-		Source:            string(in.Source),
-		Available:         in.Available,
+		InputTokens:             in.InputTokens,
+		OutputTokens:            in.OutputTokens,
+		OutputIncludesReasoning: in.OutputIncludesReasoning,
+		TotalTokensReported:     in.TotalTokensReported,
+		ReasoningTokens:         in.ReasoningTokens,
+		CacheReadTokens:         in.CacheReadTokens,
+		CacheWriteTokens:        in.CacheWriteTokens,
+		TotalTokens:             in.TotalTokens,
+		WindowInputTokens:       in.WindowInputTokens,
+		CostUSD:                 in.CostUSD,
+		Source:                  string(in.Source),
+		Available:               in.Available,
 	}
 }
 

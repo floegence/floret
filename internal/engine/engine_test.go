@@ -4391,7 +4391,7 @@ func TestGenericRequestEstimateIncludesToolsForProvidersWithoutEstimator(t *test
 	}
 	messageOnly := contextpolicy.EstimateMessageContext("", []session.Message{{Role: session.User, Content: "hello"}}, e.Options.ContextPolicy)
 	estimate := requests[0].RequestEstimate
-	if estimate.EstimatedInputTokens <= messageOnly.InputTokens || estimate.Source != "rendered_proxy_bpe_content_v3" {
+	if estimate.EstimatedInputTokens <= messageOnly.InputTokens || estimate.Source != "rendered_proxy_bpe_content_v4" {
 		t.Fatalf("generic request estimate should include rendered tools: estimate=%#v messageOnly=%#v", estimate, messageOnly)
 	}
 }

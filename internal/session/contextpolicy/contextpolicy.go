@@ -44,6 +44,11 @@ const (
 // It describes the prepared request, never cumulative billing usage or original
 // tool output discarded before model input. Empty Source means unavailable.
 type ContextBreakdown struct {
+	// AttributionCoverage describes token attribution, independently of preparation coverage.
+	AttributionCoverage string `json:"attribution_coverage,omitempty"`
+	Limitation          string `json:"limitation,omitempty"`
+	// OpaqueBytes is transport diagnostics, never a token category.
+	OpaqueBytes          int64                    `json:"opaque_bytes,omitempty"`
 	Tokenizer            string                   `json:"tokenizer,omitempty"`
 	Quality              string                   `json:"quality,omitempty"`
 	FramingTokens        int64                    `json:"framing_tokens,omitempty"`
