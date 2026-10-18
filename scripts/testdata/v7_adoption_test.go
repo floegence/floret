@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -942,7 +943,7 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	if err := json.Unmarshal(wire["parent_events"], &emptyPage); err != nil {
 		t.Fatal(err)
 	}
-	if string(emptyPage["events"]) != "[]" {
+	if string(emptyPage["events"]) != "[]" || string(emptyPage["thread_id"]) != strconv.Quote(parent.ThreadID.String()) {
 		t.Fatalf("public empty events=%s, want []", emptyPage["events"])
 	}
 	parentID = parent.ThreadID
@@ -961,12 +962,23 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 	}
 	events := service.(runtime.ThreadParentEventService)
 	page, err := events.ListParentEvents(t.Context(), runtime.ListParentEventsInput{ThreadID: parentID, PendingOnly: true})
-	if err != nil || len(page.Events) != 2 {
+	if err != nil || page.ThreadID != parentID || len(page.Events) != 2 {
 		t.Fatalf("events=%+v %v", page, err)
 	}
 	full, err := events.ReadParentEvents(t.Context(), runtime.ReadParentEventsInput{ThreadID: parentID, FirstEventID: page.FirstEventID, LastEventID: page.LastEventID})
-	if err != nil || len(full.Events) != 2 || full.Events[0].Message != "Important finding" {
+	if err != nil || full.ThreadID != parentID || len(full.Events) != 2 || full.Events[0].Message != "Important finding" {
 		t.Fatalf("full=%+v %v", full, err)
+	}
+	fork, err := service.Fork(t.Context(), runtime.ForkThreadInput{SourceThreadID: parentID, RequestKey: "event-fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fork.ParentEvents == nil || fork.ParentEvents.ThreadID != fork.ThreadID || len(fork.ParentEvents.Events) != 2 {
+		t.Fatalf("fork scope=%+v", fork.ParentEvents)
+	}
+	inherited, err := events.ReadParentEvents(t.Context(), runtime.ReadParentEventsInput{ThreadID: fork.ThreadID, FirstEventID: page.FirstEventID, LastEventID: page.LastEventID})
+	if err != nil || inherited.ThreadID != fork.ThreadID || len(inherited.Events) != 2 || inherited.Events[0] != full.Events[0] || inherited.Events[1] != full.Events[1] {
+		t.Fatalf("inherited=%+v %v", inherited, err)
 	}
 	if len(parentGateway.Requests()) != 0 {
 		t.Fatal("child report woke parent")

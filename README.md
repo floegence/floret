@@ -84,6 +84,11 @@ streamed item ordinals. Successful event pages always encode events as an array,
 including an empty array for an empty page; disabled parent events remain absent. Its `Admitted` field means context placement, never
 “model read”. Hosts use existing subscriptions before checking pending events
 when implementing event-aware waits; waiting timeouts are not execution timeouts.
+`ParentEventPage.ThreadID` (`thread_id`) identifies the queried canonical thread
+path on every successful list, read and current view, including empty or filtered
+pages. A fork inherits events without rewriting their original `ParentThreadID`;
+that recipient can differ from the page identity. Hosts validate page scope
+against the requested thread and authorize source navigation independently.
 
 ## Install
 

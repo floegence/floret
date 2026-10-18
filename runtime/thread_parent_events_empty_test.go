@@ -16,6 +16,7 @@ func assertEmptyParentEventJSON(t *testing.T, view ThreadView) {
 	if view.ParentEvents == nil || view.ParentEvents.Events == nil || len(view.ParentEvents.Events) != 0 {
 		t.Fatalf("empty parent events must be an allocated array: %+v", view.ParentEvents)
 	}
+	assertParentEventScope(t, *view.ParentEvents, view.ThreadID)
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -35,12 +36,12 @@ func assertEmptyParentEventJSON(t *testing.T, view ThreadView) {
 
 func TestCloneThreadViewPreservesParentEventArrays(t *testing.T) {
 	for _, events := range [][]ParentEvent{nil, {}} {
-		assertEmptyParentEventJSON(t, cloneThreadRuntimeView(ThreadView{ThreadID: "empty-events", ParentEvents: &ParentEventPage{Events: events}}))
+		assertEmptyParentEventJSON(t, cloneThreadRuntimeView(ThreadView{ThreadID: "empty-events", ParentEvents: &ParentEventPage{ThreadID: "empty-events", Events: events}}))
 	}
 	if cloneThreadRuntimeView(ThreadView{}).ParentEvents != nil {
 		t.Fatal("disabled events became enabled")
 	}
-	source := ThreadView{ThreadID: "empty-events", ParentEvents: &ParentEventPage{Events: []ParentEvent{{ID: "original"}}}}
+	source := ThreadView{ThreadID: "empty-events", ParentEvents: &ParentEventPage{ThreadID: "empty-events", Events: []ParentEvent{{ID: "original"}}}}
 	clone := cloneThreadRuntimeView(source)
 	clone.ParentEvents.Events[0].ID = "changed"
 	if source.ParentEvents.Events[0].ID != "original" {
@@ -84,7 +85,7 @@ func TestParentEventEmptySnapshotsAcrossLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEmptyParentEventJSON(t, ThreadView{ThreadID: "empty-events", ParentEvents: &page})
+	assertEmptyParentEventJSON(t, ThreadView{ThreadID: created.ThreadID, ParentEvents: &page})
 	fork, err := service.Fork(t.Context(), ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork"})
 	if err != nil {
 		t.Fatal(err)
