@@ -620,6 +620,11 @@ placement, not proof of model reading. Existing subscriptions are observation
 only; hosts subscribe before checking pending events. List/read never wake an
 unhydrated thread. See [storage lineage](storage.md) and the
 [public integration contract](../../README.md#passive-child-events).
+`ParentEventPage.ThreadID` (`thread_id`) identifies the queried canonical thread
+path on every successful list, read and current view, including empty or filtered
+pages. A fork inherits events without rewriting their original `ParentThreadID`;
+that recipient can differ from the page identity. Hosts validate page scope
+against the requested thread and authorize source navigation independently.
 
 ## Bounded thread observation and failure reasons
 

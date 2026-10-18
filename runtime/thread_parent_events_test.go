@@ -362,6 +362,7 @@ func TestParentEventsDuringProviderWaitRemainPassiveAtNaturalEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		if view.ThreadID == parent.ThreadID && view.ParentEvents != nil && len(view.ParentEvents.Events) == 1 {
+			assertParentEventScope(t, *view.ParentEvents, parent.ThreadID)
 			if view.Activity != ThreadActivityActive || view.RunID != started.RunID || view.ParentEvents.Events[0].Admitted {
 				t.Fatalf("event altered execution: %+v", view)
 			}

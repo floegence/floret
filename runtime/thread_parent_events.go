@@ -67,11 +67,14 @@ type ParentEvent struct {
 	Resolved       bool              `json:"resolved,omitempty"`
 }
 
+// ParentEventPage identifies the queried canonical thread path. Inherited events
+// retain their original ParentThreadID, which may differ from ThreadID.
 type ParentEventPage struct {
-	Events           []ParentEvent `json:"events"`
-	FirstEventID     string        `json:"first_event_id,omitempty"`
-	LastEventID      string        `json:"last_event_id,omitempty"`
-	NextAfterEventID string        `json:"next_after_event_id,omitempty"`
+	ThreadID         identity.ThreadID `json:"thread_id"`
+	Events           []ParentEvent     `json:"events"`
+	FirstEventID     string            `json:"first_event_id,omitempty"`
+	LastEventID      string            `json:"last_event_id,omitempty"`
+	NextAfterEventID string            `json:"next_after_event_id,omitempty"`
 }
 
 type ListParentEventsInput struct {
@@ -140,7 +143,7 @@ func (service *threadRuntimeService) ListParentEvents(ctx context.Context, in Li
 	if err != nil {
 		return ParentEventPage{}, runtimeHostError(err)
 	}
-	return publicParentEventPage(page, false), nil
+	return publicParentEventPage(in.ThreadID, page, false), nil
 }
 
 func (service *threadRuntimeService) ReadParentEvents(ctx context.Context, in ReadParentEventsInput) (ParentEventPage, error) {
@@ -161,11 +164,11 @@ func (service *threadRuntimeService) ReadParentEvents(ctx context.Context, in Re
 	if err != nil {
 		return ParentEventPage{}, runtimeHostError(err)
 	}
-	return publicParentEventPage(page, true), nil
+	return publicParentEventPage(in.ThreadID, page, true), nil
 }
 
-func publicParentEventPage(page sessiontree.ParentEventPage, full bool) ParentEventPage {
-	result := ParentEventPage{Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID}
+func publicParentEventPage(threadID identity.ThreadID, page sessiontree.ParentEventPage, full bool) ParentEventPage {
+	result := ParentEventPage{ThreadID: threadID, Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID}
 	for _, event := range page.Events {
 		message := ""
 		if full {
@@ -188,7 +191,7 @@ func (service *threadRuntimeService) parentEventView(ctx context.Context, thread
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
-	result := publicParentEventPage(page, false)
+	result := publicParentEventPage(threadID, page, false)
 	return &result, nil
 }
 

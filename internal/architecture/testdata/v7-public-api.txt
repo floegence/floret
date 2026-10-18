@@ -924,6 +924,7 @@ const ParentEventInputRequired github.com/floegence/floret/v7/runtime.ParentEven
 const ParentEventInterrupted github.com/floegence/floret/v7/runtime.ParentEventKind = "interrupted"
 type ParentEventKind string
 type ParentEventPage struct
+field ParentEventPage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ParentEventPage.Events []github.com/floegence/floret/v7/runtime.ParentEvent tag="json:\"events\""
 field ParentEventPage.FirstEventID string tag="json:\"first_event_id,omitempty\""
 field ParentEventPage.LastEventID string tag="json:\"last_event_id,omitempty\""

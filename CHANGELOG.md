@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.56.0 - 2026-10-18
+
+- Add explicit query-thread identity to parent event pages, including empty pages and fork-inherited reports, without changing historical event recipients or canonical bytes.
+- Verify nested fork isolation, fixed-range reads, passive waits, subscriptions, clones, restart and published downstream adoption. Domain schema remains 22.
+
 ## v7.55.1 - 2026-10-18
 
 - Never select a retry savepoint that precedes a returned uncertain effect, including interruption between result commit and batch savepoint. Preserve ordinary completed regeneration.
