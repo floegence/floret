@@ -761,7 +761,7 @@ func (e Event) Validate() error {
 			if sample.ThreadID != e.ThreadID {
 				return errors.New("runtime event context usage thread mismatch")
 			}
-			measured := sample.Phase == observation.ContextPhaseProviderUsage && sample.Usage.Available
+			measured := sample.Phase == observation.ContextPhaseProviderUsage && sample.Usage.Available && sample.Usage.HasInputUsage()
 			if (i == 0) != measured {
 				return errors.New("runtime event context usage sample kind mismatch")
 			}

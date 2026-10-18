@@ -122,3 +122,30 @@ func TestGoalReviewRejectsPendingWorkAndCancelledContext(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestGoalReviewReplayKeepsOneCanonicalFact(t *testing.T) {
+	r := goalTestTurn(t)
+	if _, err := r.MutateGoal(t.Context(), GoalMutation{ThreadID: "thread", RequestKey: "set", Actor: "user", Operation: "set", Text: "Result"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.RecordGoalReview(t.Context(), "thread", "turn", "run", "review", 1, "completed", "Verified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := r.RecordGoalReview(t.Context(), "thread", "turn", "run", "review", 1, "completed", "Verified")
+	if err != nil || first.ID != again.ID {
+		t.Fatalf("replay=%+v err=%v", again, err)
+	}
+	if _, err := r.RecordGoalReview(t.Context(), "thread", "turn", "run", "review", 1, "blocked", "Different outcome"); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("changed review identity: %v", err)
+	}
+	count := 0
+	for _, entry := range testGoalPath(t, r) {
+		if entry.Type == EntryGoalReview {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("reviews=%d", count)
+	}
+}

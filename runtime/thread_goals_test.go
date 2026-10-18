@@ -3,8 +3,10 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/provider"
@@ -199,5 +201,96 @@ func TestGoalDeletionCancelsReflectionWithoutStopping(t *testing.T) {
 	view := waitThreadView(t, service, thread.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
 	if view.Failure != nil || view.Goal.Status != "absent" || len(g.Requests()) != 1 {
 		t.Fatalf("goal=%+v failure=%+v requests=%d", view.Goal, view.Failure, len(g.Requests()))
+	}
+}
+
+func TestGoalSurvivesRegenerationAndFrozenTransportRetry(t *testing.T) {
+	gate := make(chan struct{})
+	failed := parentEventDone()
+	failed.BlockUntil = gate
+	failed.Events = nil
+	failed.ReturnError = provider.WithRetryAdvice(errors.New("temporary"), provider.RetryAdvice{Category: provider.RetryTransient})
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "goals", StateCompatibilityKey: "test:goals"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, failed, goalCall("review", `{"operation":"review","expected_version":2,"outcome":"blocked","evidence":"External credential is unavailable."}`), parentEventDone(), parentEventDone())
+	retry := DefaultProviderRetryPolicy()
+	retry.BaseDelay = time.Microsecond
+	retry.MaxDelay = time.Microsecond
+	retry.Jitter = 0
+	agent, err := testAgent(gateway, WithAgentGoals(), WithAgentProviderRetryPolicy(retry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, service := testThreadServiceWithAgent(t, agent)
+	thread, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := service.(ThreadGoalController)
+	if _, err = controller.SetGoal(t.Context(), SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "set", Text: "Original"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Send(t.Context(), SendInput{ThreadID: thread.ThreadID, RequestKey: "send", Input: UserInput{Text: "Finish"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = gateway.WaitForRequests(t.Context(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = controller.SetGoal(t.Context(), SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "update", ExpectedVersion: 1, Text: "Updated"}); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	view := waitThreadView(t, service, thread.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	if view.Failure != nil {
+		t.Fatal(view.Failure)
+	}
+	requests := gateway.Requests()
+	firstInput, _ := json.Marshal(struct {
+		Messages any
+		Tools    any
+	}{requests[0].Messages, requests[0].Tools})
+	retriedInput, _ := json.Marshal(struct {
+		Messages any
+		Tools    any
+	}{requests[1].Messages, requests[1].Tools})
+	if string(firstInput) != string(retriedInput) || requests[0].LogicalRequestID != requests[1].LogicalRequestID || requests[0].AttemptID == requests[1].AttemptID {
+		t.Fatal("transport retry changed frozen input or attempt identity")
+	}
+	if _, err = controller.DeleteGoal(t.Context(), DeleteGoalInput{ThreadID: thread.ThreadID, RequestKey: "delete", ExpectedVersion: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Retry(t.Context(), RetryInput{ThreadID: thread.ThreadID, SourceTurnID: view.TurnID, RequestKey: "regenerate"}); err != nil {
+		t.Fatal(err)
+	}
+	regenerated := waitThreadView(t, service, thread.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.TurnID != view.TurnID })
+	if regenerated.Failure != nil || regenerated.Goal.Status != "absent" {
+		t.Fatalf("goal=%+v failure=%+v", regenerated.Goal, regenerated.Failure)
+	}
+}
+
+func TestOutputOnlyUsageRetainsValidRuntimeEvents(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "usage", StateCompatibilityKey: "usage:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventUsage, Usage: provider.Usage{Available: true, OutputTokens: 1, Source: "native"}}, {Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}})
+	sink := goalValidatingEventSink{t: t}
+	agent, err := testAgent(gateway, WithAgentEventSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, service := testThreadServiceWithAgent(t, agent)
+	thread, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Send(t.Context(), SendInput{ThreadID: thread.ThreadID, RequestKey: "send", Input: UserInput{Text: "Finish"}}); err != nil {
+		t.Fatal(err)
+	}
+	view := waitThreadView(t, service, thread.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	if view.Failure != nil {
+		t.Fatal(view.Failure)
+	}
+}
+
+type goalValidatingEventSink struct{ t *testing.T }
+
+func (s goalValidatingEventSink) EmitEvent(event Event) {
+	if err := event.Validate(); err != nil {
+		s.t.Error(err)
 	}
 }

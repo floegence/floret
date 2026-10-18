@@ -81,7 +81,7 @@ func TestCanonicalRetryBoundaryAllowsOneExactReset(t *testing.T) {
 }
 
 func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
-	for _, kind := range []session.MessageKind{session.MessageKindModelContext, session.MessageKindNormal} {
+	for _, kind := range []session.MessageKind{session.MessageKindModelContext, session.MessageKindGoalContext, session.MessageKindNormal} {
 		store := NewMemoryStore()
 		history := []session.Message{{Role: session.User, EntryID: "source", Content: "input"}}
 		first := lineagePlan("test", "model", "ns", "source")
@@ -95,7 +95,7 @@ func TestCanonicalRetryAllowsOnlyManagedFactsAfterSource(t *testing.T) {
 		retry := lineagePlan("test", "model", "ns", "source", "new")
 		retry.RetryRunID, retry.RetrySourceEntryID = "retry", "source"
 		err := ValidateCanonicalLineage(t.Context(), store, "thread", &retry, "system", nil, nil, nil, next)
-		if kind == session.MessageKindModelContext && err != nil {
+		if kind != session.MessageKindNormal && err != nil {
 			t.Fatal(err)
 		}
 		if kind == session.MessageKindNormal && !errors.Is(err, ErrContextPrefixDrift) {

@@ -989,7 +989,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		// Managed facts may be admitted after the retry checkpoint. They are
 		// typed context messages, never a replacement for its canonical source.
 		boundary := len(history) - 1
-		for boundary >= 0 && history[boundary].EntryID != plan.RetrySourceEntryID && history[boundary].Kind == session.MessageKindModelContext {
+		for boundary >= 0 && history[boundary].EntryID != plan.RetrySourceEntryID && (history[boundary].Kind == session.MessageKindModelContext || history[boundary].Kind == session.MessageKindGoalContext) {
 			boundary--
 		}
 		if boundary < 0 || history[boundary].EntryID != plan.RetrySourceEntryID {
