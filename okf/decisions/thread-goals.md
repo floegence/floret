@@ -73,3 +73,5 @@ entries and every earlier migration; old writers reject the new envelope.
 - Behavioral and migration coverage: ../../runtime/thread_goals_test.go,
   ../../internal/sessiontree/goals_test.go,
   ../../internal/sessiontree/backend_domain_v23_migration_test.go
+
+User Goal changes may precede the first Turn. Public current and history omit absent execution identities; they never invent a run to render a control fact. Executable items retain their populated identities.

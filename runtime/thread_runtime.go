@@ -324,7 +324,7 @@ type ThreadItem struct {
 	sourceEntryIDs []string
 	ID             string          `json:"id"`
 	TurnID         identity.TurnID `json:"turn_id,omitempty"`
-	RunID          identity.RunID  `json:"run_id"`
+	RunID          identity.RunID  `json:"run_id,omitempty"`
 	// Ordinal is the stable one-based position in the thread presentation.
 	Ordinal uint64         `json:"ordinal"`
 	Kind    ThreadItemKind `json:"kind"`

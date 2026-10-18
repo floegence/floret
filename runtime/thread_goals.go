@@ -21,7 +21,8 @@ type ThreadGoal struct {
 	SuppressedAtInput string `json:"suppressed_at_input,omitempty"`
 }
 
-// ThreadGoalChange is a detached public timeline fact.
+// ThreadGoalChange is a detached public timeline fact. User mutations may precede
+// the first Turn and therefore do not invent Turn or Run identities.
 type ThreadGoalChange struct {
 	Goal      ThreadGoal `json:"goal"`
 	Operation string     `json:"operation"`
