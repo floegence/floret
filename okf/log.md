@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Parent event turn ownership
+
+- Document canonical read-derived parent turn ownership in the [runtime contract](api/runtime.md#passive-parent-events), including late delivery, compaction and inherited paths without durable changes.
+
 ## 2026-10-18 — Completed-error input and independent archival
 
 - Document [completed-error input and independent output archival](api/tools.md), with the permanent [19 -> 20 migration](api/storage.md#completed-error-input-migration).
