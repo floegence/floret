@@ -16,6 +16,7 @@ func providerUsageFromAny(value any) ProviderUsage {
 		return *v
 	case map[string]any:
 		return ProviderUsage{
+			InputTokensReported: boolFromAny(v["input_tokens_reported"], false), InputTokenScope: stringFromAny(v["input_token_scope"]),
 			InputTokens:             int64FromAny(v["input_tokens"], 0),
 			OutputTokens:            int64FromAny(v["output_tokens"], 0),
 			OutputIncludesReasoning: boolFromAny(v["output_includes_reasoning"], false),
@@ -45,6 +46,7 @@ func requestEstimateFromAny(value any) config.RequestEstimate {
 		return *v
 	case map[string]any:
 		return config.RequestEstimate{
+			Characters:           contextCharactersFromAny(v["characters"]),
 			Breakdown:            contextBreakdownFromAny(v["breakdown"]),
 			PrefixTokens:         int64FromAny(v["prefix_tokens"], 0),
 			MessageTokens:        int64FromAny(v["message_tokens"], 0),
@@ -214,4 +216,22 @@ func contextBreakdownDetailsFromAny(value any) *config.ContextBreakdownDetails {
 		return nil
 	}
 	return &details
+}
+
+func contextCharactersFromAny(value any) *config.ContextCharacterBreakdown {
+	if value == nil {
+		return nil
+	}
+	if b, ok := value.(*config.ContextCharacterBreakdown); ok {
+		return b.Clone()
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return &config.ContextCharacterBreakdown{}
+	}
+	var b config.ContextCharacterBreakdown
+	if json.Unmarshal(raw, &b) != nil {
+		return &config.ContextCharacterBreakdown{}
+	}
+	return &b
 }

@@ -1545,3 +1545,5 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 ## 2026-10-18: Canonical thread Goals
 
 Document optional Goal management, same-context reflection, request-bound updates, independent Todo behavior and the permanent schema 22 -> 23 edge.
+
+- 2026-10-18: Document frozen visible-character attribution, explicit input measurement qualification and permanent schema 23 -> 24.

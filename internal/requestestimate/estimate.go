@@ -10,6 +10,7 @@ import (
 )
 
 type Estimate struct {
+	Characters              *contextpolicy.ContextCharacterBreakdown
 	Prefix, Messages, Tools int64
 	Media                   int64
 	Source, Method          string
@@ -117,9 +118,10 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 	if c.opaque {
 		method = "generic_payload_estimate"
 	}
-	estimate := Estimate{Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media + b.OpaqueBytes, Media: media, Source: "rendered_" + source + "_content_v4", Method: method, Breakdown: b}
+	estimate := Estimate{Characters: collected.characters, Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media + b.OpaqueBytes, Media: media, Source: "rendered_" + source + "_content_v4", Method: method, Breakdown: b}
 	if b.Diagnostic != "" {
 		estimate.Breakdown = contextpolicy.ContextBreakdown{Diagnostic: b.Diagnostic}
+		estimate.Characters = nil
 	}
 	return estimate, nil
 }
@@ -212,6 +214,10 @@ func (c counter) parts(value any) error {
 				return errors.New("invalid file input")
 			}
 			for key := range part {
+				switch key {
+				case "filename", "title", "text", "caption", "description":
+					continue
+				}
 				delete(part, key)
 			}
 			part["type"] = kind

@@ -107,10 +107,20 @@ type collector struct {
 type collectedContent struct {
 	contextpolicy.ContextBreakdown
 	toolFraming int64
+	characters  *contextpolicy.ContextCharacterBreakdown
 }
 
 func (s *collector) limit(reason string) {
 	s.out.AttributionCoverage = "partial"
+	if s.out.characters != nil {
+		found := false
+		for _, l := range s.out.characters.Limitations {
+			found = found || l == reason
+		}
+		if !found {
+			s.out.characters.Limitations = append(s.out.characters.Limitations, reason)
+		}
+	}
 	if s.out.Limitation == "" {
 		s.out.Limitation = reason
 	}
@@ -214,6 +224,7 @@ func (s *collector) text(path, category, text string) error {
 					partCategory = p.Category
 				}
 				s.add(partCategory, counts[i])
+				s.characters(partCategory, text[p.Start:p.End], p.Key, "", "")
 				if partCategory == "model_context" {
 					s.detail(partCategory, p.Key, "", "", counts[i])
 				}
@@ -230,6 +241,18 @@ func (s *collector) text(path, category, text string) error {
 		return err
 	}
 	s.add(category, n)
+	characterText := text
+	if category == "tool_call" && (strings.HasSuffix(path, "/arguments") || strings.HasSuffix(path, "/args_json")) {
+		var value any
+		decoder := json.NewDecoder(strings.NewReader(text))
+		decoder.UseNumber()
+		if decoder.Decode(&value) == nil && json.Valid([]byte(text)) {
+			if canonical, err := schemaText(value); err == nil {
+				characterText = canonical
+			}
+		}
+	}
+	s.characters(category, characterText, "", "", "")
 	if category == "model_context" {
 		s.detail(category, "", "", "", n)
 	}
@@ -248,6 +271,7 @@ func (s *collector) structured(category string, value any) error {
 		return err
 	}
 	s.add(category, n)
+	s.characters(category, text, "", "", "")
 	return nil
 }
 func (s *collector) parts(path, category string, value any) error {
@@ -310,6 +334,13 @@ func (s *collector) parts(path, category string, value any) error {
 			}
 		case "image_url", "input_image", "image", "input_file", "file", "document", "audio", "input_audio", "video":
 			s.limit("media_input")
+			for _, key := range []string{"filename", "title", "text", "caption", "description"} {
+				if text, ok := p[key].(string); ok {
+					if err := s.text(base+"/"+key, category, text); err != nil {
+						return err
+					}
+				}
+			}
 		case "refusal":
 			if text, ok := p["refusal"].(string); ok {
 				if err := s.text(base+"/refusal", category, text); err != nil {
@@ -333,11 +364,13 @@ func (s *collector) parts(path, category string, value any) error {
 
 func collectContent(c counter, format string, body map[string]any, attrs []Attribution) (collectedContent, error) {
 	s := collector{c: c, out: collectedContent{ContextBreakdown: contextpolicy.ContextBreakdown{Source: "prepared_content_v4", Tokenizer: c.encoding, Quality: "token_estimate", AttributionCoverage: "complete"}}, attrs: map[string]Attribution{}, used: map[string]bool{}}
+	s.out.characters = &contextpolicy.ContextCharacterBreakdown{Source: "prepared_characters_v1", Unit: "unicode_code_points"}
 	if c.encoding == "" {
 		s.out.Tokenizer = "proxy_bpe"
 	}
 	if format == "input_json" {
 		s.limit("opaque_transport")
+		s.out.characters = nil
 	}
 	for _, a := range attrs {
 		if _, ok := s.attrs[a.Path]; ok {
@@ -410,6 +443,13 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 				}
 			case "web_search_call":
 				s.limit("hosted_context")
+				if m["action"] != nil {
+					text, err := schemaText(m["action"])
+					if err != nil {
+						return s.out, err
+					}
+					s.characters("hosted_context", text, "", "", "")
+				}
 			default:
 				if err := s.parts(path+"/content", category, m["content"]); err != nil {
 					return s.out, err
@@ -509,6 +549,7 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 				name = fmt.Sprintf("tool_%d", i)
 			}
 			s.detail("tool_definition", name, source, namespace, n)
+			s.characters("tool_definition", text, name, source, namespace)
 			if c.encoding != "deepseek_v4" {
 				s.out.FramingTokens += 16
 				s.out.toolFraming += 16
@@ -535,7 +576,13 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 		}
 	}
 	for _, k := range []string{"response_format", "text"} {
-		if err := s.structured("system", body[k]); err != nil {
+		value := body[k]
+		if k == "text" {
+			if config, ok := value.(map[string]any); ok {
+				value = config["format"]
+			}
+		}
+		if err := s.structured("system", value); err != nil {
 			return s.out, err
 		}
 	}
@@ -560,9 +607,62 @@ func collectContent(c counter, format string, body map[string]any, attrs []Attri
 			s.invalid = true
 		}
 	}
+	if s.out.characters != nil {
+		sort.Slice(s.out.characters.Categories, func(i, j int) bool {
+			return s.out.characters.Categories[i].Category < s.out.characters.Categories[j].Category
+		})
+		for i := range s.out.characters.Categories {
+			d := s.out.characters.Categories[i].Details
+			sort.Slice(d, func(i, j int) bool {
+				a, b := d[i], d[j]
+				return strings.Join([]string{a.Key, a.Source, a.Namespace}, "\x00") < strings.Join([]string{b.Key, b.Source, b.Namespace}, "\x00")
+			})
+		}
+		sort.Strings(s.out.characters.Limitations)
+	}
 	if s.invalid {
 		s.out.Diagnostic = "attribution_mismatch"
 		return s.out, nil
 	}
 	return s.out, nil
+}
+
+// characters shares the token collector's decoded fragments and attribution.
+// Protocol framing and opaque budgets never pass through this method.
+func (s *collector) characters(category, text, key, source, namespace string) {
+	b := s.out.characters
+	if b == nil {
+		return
+	}
+	switch category {
+	case "system", "user", "assistant", "tool_definition", "tool_call", "tool_result", "model_context", "compaction", "reasoning", "hosted_context":
+	default:
+		category = "unlabelled"
+	}
+	n := int64(utf8.RuneCountInString(text))
+	b.TotalCharacters += n
+	index := -1
+	for i := range b.Categories {
+		if b.Categories[i].Category == category {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		index = len(b.Categories)
+		b.Categories = append(b.Categories, contextpolicy.ContextCharacterCategory{Category: category})
+	}
+	c := &b.Categories[index]
+	c.Characters += n
+	if category != "tool_definition" && category != "model_context" {
+		return
+	}
+	for i := range c.Details {
+		d := &c.Details[i]
+		if d.Key == key && d.Source == source && d.Namespace == namespace {
+			d.Characters += n
+			return
+		}
+	}
+	c.Details = append(c.Details, contextpolicy.ContextCharacterDetail{Key: key, Source: source, Namespace: namespace, Characters: n})
 }

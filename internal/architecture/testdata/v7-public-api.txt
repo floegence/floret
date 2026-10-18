@@ -86,6 +86,23 @@ field ContextBreakdown.ReasoningTokens int64 tag="json:\"reasoning_tokens,omitem
 field ContextBreakdown.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
 type ContextBreakdownDetails = github.com/floegence/floret/v7/config.ContextBreakdownDetails
 field ContextBreakdownDetails.Items []github.com/floegence/floret/v7/internal/session/contextpolicy.ContextTokenDetail tag="json:\"items\""
+type ContextCharacterBreakdown = github.com/floegence/floret/v7/config.ContextCharacterBreakdown
+field ContextCharacterBreakdown.Source string tag="json:\"source\""
+field ContextCharacterBreakdown.Unit string tag="json:\"unit\""
+field ContextCharacterBreakdown.TotalCharacters int64 tag="json:\"total_characters\""
+field ContextCharacterBreakdown.Categories []github.com/floegence/floret/v7/internal/session/contextpolicy.ContextCharacterCategory tag="json:\"categories\""
+field ContextCharacterBreakdown.Limitations []string tag="json:\"limitations,omitempty\""
+method *ContextCharacterBreakdown.Clone func() *github.com/floegence/floret/v7/internal/session/contextpolicy.ContextCharacterBreakdown
+method *ContextCharacterBreakdown.Validate func() error
+type ContextCharacterCategory = github.com/floegence/floret/v7/config.ContextCharacterCategory
+field ContextCharacterCategory.Category string tag="json:\"category\""
+field ContextCharacterCategory.Characters int64 tag="json:\"characters\""
+field ContextCharacterCategory.Details []github.com/floegence/floret/v7/internal/session/contextpolicy.ContextCharacterDetail tag="json:\"details,omitempty\""
+type ContextCharacterDetail = github.com/floegence/floret/v7/config.ContextCharacterDetail
+field ContextCharacterDetail.Key string tag="json:\"key\""
+field ContextCharacterDetail.Source string tag="json:\"source,omitempty\""
+field ContextCharacterDetail.Namespace string tag="json:\"namespace,omitempty\""
+field ContextCharacterDetail.Characters int64 tag="json:\"characters\""
 type ContextPolicy struct
 field ContextPolicy.ModelMaxOutputTokens int64 tag="json:\"model_max_output_tokens,omitempty\""
 field ContextPolicy.ContextWindowTokens int64 tag="json:\"context_window_tokens,omitempty\""
@@ -212,6 +229,7 @@ field ReasoningSelection.Level github.com/floegence/floret/v7/config.ReasoningLe
 field ReasoningSelection.BudgetTokens int64 tag="json:\"budget_tokens,omitempty\""
 method ReasoningSelection.IsZero func() bool
 type RequestEstimate struct
+field RequestEstimate.Characters *github.com/floegence/floret/v7/config.ContextCharacterBreakdown tag="json:\"characters,omitempty\""
 field RequestEstimate.Breakdown github.com/floegence/floret/v7/config.ContextBreakdown tag="json:\"breakdown,omitzero\""
 field RequestEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
 field RequestEstimate.MessageTokens int64 tag="json:\"message_tokens,omitempty\""
@@ -464,6 +482,7 @@ const StateReuseCanonicalHistory github.com/floegence/floret/v7/provider.StateRe
 const StateReuseExactSurface github.com/floegence/floret/v7/provider.StateReusePolicy = ""
 type StateReusePolicy string
 type TokenEstimate struct
+field TokenEstimate.Characters *github.com/floegence/floret/v7/config.ContextCharacterBreakdown tag="json:\"characters,omitempty\""
 field TokenEstimate.Breakdown github.com/floegence/floret/v7/config.ContextBreakdown tag="json:\"breakdown,omitzero\""
 field TokenEstimate.AttachmentTokens int64 tag="json:\"attachment_tokens,omitempty\""
 field TokenEstimate.PrefixTokens int64 tag="json:\"prefix_tokens,omitempty\""
@@ -487,6 +506,8 @@ field ToolResult.ToolName string tag="json:\"tool_name\""
 field ToolResult.Text string tag="json:\"text,omitempty\""
 field ToolResult.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
 type Usage struct
+field Usage.InputTokensReported bool tag="json:\"input_tokens_reported,omitempty\""
+field Usage.InputTokenScope string tag="json:\"input_token_scope,omitempty\""
 field Usage.OutputIncludesReasoning bool tag="json:\"output_includes_reasoning,omitempty\""
 field Usage.TotalTokensReported bool tag="json:\"total_tokens_reported,omitempty\""
 field Usage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
@@ -500,6 +521,7 @@ field Usage.Source string tag="json:\"source,omitempty\""
 field Usage.Available bool tag="json:\"available,omitempty\""
 field Usage.WindowInputTokens int64 tag="json:\"window_input_tokens,omitempty\""
 method Usage.Normalized func() github.com/floegence/floret/v7/provider.Usage
+method Usage.HasInputUsage func() bool
 func WithRetryAdvice func(cause error, advice github.com/floegence/floret/v7/provider.RetryAdvice) error
 
 package github.com/floegence/floret/v7/runtime
@@ -2410,6 +2432,9 @@ method CompletionReason.Valid func() bool
 const CompletionReasonHookStop github.com/floegence/floret/v7/observation.CompletionReason = "hook_stop"
 const CompletionReasonNaturalStop github.com/floegence/floret/v7/observation.CompletionReason = "natural_stop"
 type ContextAccounting struct
+field ContextAccounting.Characters *github.com/floegence/floret/v7/config.ContextCharacterBreakdown tag="json:\"characters,omitempty\""
+field ContextAccounting.CharactersAvailable bool tag="json:\"characters_available\""
+field ContextAccounting.CharacterLimitation string tag="json:\"character_limitation,omitempty\""
 field ContextAccounting.Available bool tag="json:\"available\""
 field ContextAccounting.InputTokens int64 tag="json:\"input_tokens\""
 field ContextAccounting.Measured bool tag="json:\"measured\""
@@ -2558,6 +2583,8 @@ field ProviderRetryProgress.Reason string tag="json:\"reason\""
 field ProviderRetryProgress.ReplacedAttemptID string tag="json:\"replaced_attempt_id,omitempty\""
 field ProviderRetryProgress.ReplacedAttemptEpoch int tag="json:\"replaced_attempt_epoch,omitempty\""
 type ProviderUsage struct
+field ProviderUsage.InputTokensReported bool tag="json:\"input_tokens_reported,omitempty\""
+field ProviderUsage.InputTokenScope string tag="json:\"input_token_scope,omitempty\""
 field ProviderUsage.OutputIncludesReasoning bool tag="json:\"output_includes_reasoning,omitempty\""
 field ProviderUsage.TotalTokensReported bool tag="json:\"total_tokens_reported,omitempty\""
 field ProviderUsage.InputTokens int64 tag="json:\"input_tokens,omitempty\""
@@ -2571,6 +2598,7 @@ field ProviderUsage.CostUSD float64 tag="json:\"cost_usd,omitempty\""
 field ProviderUsage.Source string tag="json:\"source,omitempty\""
 field ProviderUsage.Available bool tag="json:\"available,omitempty\""
 method ProviderUsage.Normalized func() github.com/floegence/floret/v7/observation.ProviderUsage
+method ProviderUsage.HasInputUsage func() bool
 type ProviderUsageObservation struct
 field ProviderUsageObservation.PayloadFingerprint string tag="json:\"payload_fingerprint,omitempty\""
 field ProviderUsageObservation.AttemptID string tag="json:\"attempt_id,omitempty\""

@@ -60,9 +60,20 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 func (t *ContextPressureTracker) ObserveSuccess(req provider.Request, history []session.Message, usage provider.Usage) (contextpolicy.ContextPressure, PressureAnchorState) {
 	if t == nil {
 		normalized := usage.Normalized()
+		if !qualifiedPressureUsage(req, normalized) {
+			return contextpolicy.PressureFromProjectedRequest(req.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, req.ContextPolicy), PressureAnchorState{}
+		}
 		return contextpolicy.PressureFromNativeUsage(nativeUsageForPressure(normalized), req.ContextPolicy), PressureAnchorState{}
 	}
 	normalized := usage.Normalized()
+	if !qualifiedPressureUsage(req, normalized) {
+		pressure := req.ContextPressure
+		if pressure == (contextpolicy.ContextPressure{}) {
+			pressure = t.Project(req, history)
+		}
+		pressure.Source = contextpolicy.PressureSourceMissingNativeUsage
+		return pressure, PressureAnchorState{}
+	}
 	pressure := contextpolicy.PressureFromNativeUsage(nativeUsageForPressure(normalized), req.ContextPolicy)
 	if req.ContextPolicy.ModelMaxOutputTokens > 0 {
 		pressure.RequestSafeLimit = req.ContextPressure.RequestSafeLimit
@@ -114,6 +125,12 @@ func (t *ContextPressureTracker) ConsumePendingCompaction() (contextpolicy.Conte
 // A calibration belongs to the canonical request prefix, not transient Engine
 // message identifiers, which the durable harness replaces when committing output.
 func pressureAnchorInvalidReason(anchor PressureAnchorState, previous cache.ProviderRequestRecord, req provider.Request, history []session.Message) string {
+	if req.RequestEstimate.Breakdown.AttributionCoverage == "partial" || req.RequestEstimate.Breakdown.OpaqueBytes > 0 || len(req.HostedTools) > 0 {
+		return "incomplete_request_coverage"
+	}
+	if !anchor.InputMeasurementQualified {
+		return "unqualified_measurement"
+	}
 	if anchor.WindowInputTokens <= 0 || previous.ID == "" || previous.ID != anchor.RequestID {
 		return "missing_measurement"
 	}
@@ -179,29 +196,30 @@ func pressureAnchorForRequest(req provider.Request, history []session.Message, u
 		return PressureAnchorState{}
 	}
 	return PressureAnchorState{
-		PromptScopeID:        req.PromptScopeID,
-		ThreadID:             req.ThreadID,
-		Provider:             req.Provider,
-		Model:                req.Model,
-		AdapterVersion:       req.RawPlan.Version,
-		RequestID:            requestID(req.RunID, req.Step),
-		RunID:                req.RunID,
-		LogicalRequestID:     req.LogicalRequestID,
-		LastMessageEntryID:   lastEntryID,
-		LastMessageIndex:     lastIndex,
-		CompactionGeneration: req.RawPlan.CompactionGeneration,
-		CompactionWindowID:   req.RawPlan.CompactionWindowID,
-		Shape:                requestShapeHashes(req),
-		WindowInputTokens:    usage.WindowInputTokens,
-		PrefixTokens:         req.RequestEstimate.PrefixTokens,
-		MessageTokens:        req.RequestEstimate.MessageTokens,
-		ToolDefinitionTokens: req.RequestEstimate.ToolDefinitionTokens,
-		ContextWindowTokens:  pressure.ContextWindowTokens,
-		EstimateSource:       req.RequestEstimate.Source,
-		EstimateMethod:       req.RequestEstimate.Method,
-		Confidence:           req.RequestEstimate.Confidence,
-		PressureSource:       pressure.Source,
-		CreatedAt:            time.Now(),
+		InputMeasurementQualified: true,
+		PromptScopeID:             req.PromptScopeID,
+		ThreadID:                  req.ThreadID,
+		Provider:                  req.Provider,
+		Model:                     req.Model,
+		AdapterVersion:            req.RawPlan.Version,
+		RequestID:                 requestID(req.RunID, req.Step),
+		RunID:                     req.RunID,
+		LogicalRequestID:          req.LogicalRequestID,
+		LastMessageEntryID:        lastEntryID,
+		LastMessageIndex:          lastIndex,
+		CompactionGeneration:      req.RawPlan.CompactionGeneration,
+		CompactionWindowID:        req.RawPlan.CompactionWindowID,
+		Shape:                     requestShapeHashes(req),
+		WindowInputTokens:         usage.WindowInputTokens,
+		PrefixTokens:              req.RequestEstimate.PrefixTokens,
+		MessageTokens:             req.RequestEstimate.MessageTokens,
+		ToolDefinitionTokens:      req.RequestEstimate.ToolDefinitionTokens,
+		ContextWindowTokens:       pressure.ContextWindowTokens,
+		EstimateSource:            req.RequestEstimate.Source,
+		EstimateMethod:            req.RequestEstimate.Method,
+		Confidence:                req.RequestEstimate.Confidence,
+		PressureSource:            pressure.Source,
+		CreatedAt:                 time.Now(),
 	}
 }
 
@@ -228,4 +246,10 @@ func nativeUsageForPressure(usage provider.Usage) contextpolicy.NativeUsage {
 
 func requestID(runID string, step int) string {
 	return fmt.Sprintf("%s:req:%d", runID, step)
+}
+
+// Native billing input is an anchor only when its protocol scope and visible
+// request coverage establish that it measures this prepared input.
+func qualifiedPressureUsage(req provider.Request, usage provider.Usage) bool {
+	return usage.Source == provider.UsageNative && usage.WindowInputTokens >= 0 && usage.InputTokens >= 0 && usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0 && usage.Available && usage.InputTokensReported && usage.InputTokenScope == "request_input" && req.RequestEstimate.Breakdown.AttributionCoverage != "partial" && len(req.HostedTools) == 0 && req.RequestEstimate.Breakdown.OpaqueBytes == 0
 }

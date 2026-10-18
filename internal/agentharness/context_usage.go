@@ -25,7 +25,7 @@ func (p *contextUsageProjection) applyStatus(status observation.ContextStatus) {
 	if p.usage == nil {
 		p.usage = &event.ThreadContextUsage{}
 	}
-	if status.Phase == observation.ContextPhaseProviderUsage && status.Usage.Available {
+	if status.Phase == observation.ContextPhaseProviderUsage && status.Usage.Available && status.Usage.HasInputUsage() {
 		p.usage.Confirmed = &status
 		p.usage.Estimate = nil
 	} else {

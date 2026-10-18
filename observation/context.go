@@ -85,6 +85,10 @@ type Event struct {
 }
 
 type ProviderUsage struct {
+	// InputTokensReported distinguishes an explicit input zero from missing input usage.
+	InputTokensReported bool `json:"input_tokens_reported,omitempty"`
+	// InputTokenScope is request_input, provider_execution, or unknown. It is not inferred from model names.
+	InputTokenScope         string  `json:"input_token_scope,omitempty"`
 	OutputIncludesReasoning bool    `json:"output_includes_reasoning,omitempty"`
 	TotalTokensReported     bool    `json:"total_tokens_reported,omitempty"`
 	InputTokens             int64   `json:"input_tokens,omitempty"`
@@ -195,6 +199,14 @@ func (s ContextStatus) Validate() error {
 		return fmt.Errorf("unsupported context display status %q", s.Status)
 	}
 
+	if err := s.RequestEstimate.Characters.Validate(); err != nil {
+		return err
+	}
+	switch s.Usage.InputTokenScope {
+	case "", "unknown", "request_input", "provider_execution":
+	default:
+		return fmt.Errorf("invalid input measurement scope")
+	}
 	b := s.RequestEstimate.Breakdown
 	if b.OpaqueBytes < 0 {
 		return fmt.Errorf("invalid opaque byte diagnostics")
@@ -264,7 +276,7 @@ func ContextStatusFromRequest(req RequestObservation) ContextStatus {
 		Provider:         req.Provider,
 		Model:            req.Model,
 		ObservedAt:       req.ObservedAt,
-		RequestEstimate:  req.RequestEstimate,
+		RequestEstimate:  cloneRequestEstimate(req.RequestEstimate),
 		ContextPressure:  req.ProjectedPressure,
 		UsedRatio:        ContextPressureUsedRatio(req.ProjectedPressure),
 		ThresholdRatio:   ContextPressureThresholdRatio(req.ProjectedPressure),
@@ -290,7 +302,7 @@ func ContextStatusFromProviderUsage(usage ProviderUsageObservation) (ContextStat
 		Model:            usage.Model,
 		ObservedAt:       usage.ObservedAt,
 		Usage:            usage.Usage.Normalized(),
-		RequestEstimate:  usage.RequestEstimate,
+		RequestEstimate:  cloneRequestEstimate(usage.RequestEstimate),
 		ContextPressure:  usage.ContextPressure,
 		UsedRatio:        ContextPressureUsedRatio(usage.ContextPressure),
 		ThresholdRatio:   ContextPressureThresholdRatio(usage.ContextPressure),
@@ -473,4 +485,19 @@ func requestIDOrDefault(requestID, runID string, step int) string {
 		return requestID
 	}
 	return RequestID(runID, step)
+}
+
+// HasInputUsage reports whether this sample contains an input measurement.
+func (u ProviderUsage) HasInputUsage() bool {
+	return usageaccounting.HasInput(u.InputTokensReported, u.InputTokenScope, u.Available, u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.WindowInputTokens, u.OutputTokens, u.ReasoningTokens)
+}
+
+func cloneRequestEstimate(in config.RequestEstimate) config.RequestEstimate {
+	in.Characters = in.Characters.Clone()
+	if in.Breakdown.Details != nil {
+		d := *in.Breakdown.Details
+		d.Items = append([]config.ContextTokenDetail(nil), d.Items...)
+		in.Breakdown.Details = &d
+	}
+	return in
 }

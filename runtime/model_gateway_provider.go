@@ -280,6 +280,7 @@ func (request *modelGatewayPreparedRequest) Stream(ctx context.Context) (<-chan 
 func (request *modelGatewayPreparedRequest) TokenEstimate() provider.TokenEstimate {
 	estimate := request.prepared.TokenEstimate()
 	return provider.TokenEstimate{
+		Characters:       estimate.Characters.Clone(),
 		Breakdown:        contextpolicy.ContextBreakdown(estimate.Breakdown),
 		AttachmentTokens: estimate.AttachmentTokens, PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
@@ -423,6 +424,7 @@ func internalHostedToolResult(value *publicprovider.HostedToolResult) provider.H
 
 func providerUsage(value publicprovider.Usage) provider.Usage {
 	return provider.Usage{
+		InputTokensReported: value.InputTokensReported, InputTokenScope: value.InputTokenScope,
 		OutputIncludesReasoning: value.OutputIncludesReasoning,
 		TotalTokensReported:     value.TotalTokensReported,
 		InputTokens:             value.InputTokens, OutputTokens: value.OutputTokens, ReasoningTokens: value.ReasoningTokens,

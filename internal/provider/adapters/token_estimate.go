@@ -102,5 +102,5 @@ func estimateRenderedRequest(req provider.Request, format string, body any) (pro
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	return provider.TokenEstimate{Breakdown: out.Breakdown, AttachmentTokens: out.Media, PrefixTokens: out.Prefix, MessageTokens: out.Messages, ToolDefinitionTokens: out.Tools, EstimatedInputTokens: out.Prefix + out.Messages + out.Tools, Source: out.Source, Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateApproximate, Coverage: provider.TokenEstimateCoverageComplete}, nil
+	return provider.TokenEstimate{Characters: out.Characters.Clone(), Breakdown: out.Breakdown, AttachmentTokens: out.Media, PrefixTokens: out.Prefix, MessageTokens: out.Messages, ToolDefinitionTokens: out.Tools, EstimatedInputTokens: out.Prefix + out.Messages + out.Tools, Source: out.Source, Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateApproximate, Coverage: provider.TokenEstimateCoverageComplete}, nil
 }

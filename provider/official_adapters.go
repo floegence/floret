@@ -289,6 +289,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 		HostedToolCall: hostedCall, HostedResult: hostedResult, Sources: sources, Reason: event.Reason,
 		Usage: Usage{
 			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
+			InputTokensReported: event.Usage.InputTokensReported, InputTokenScope: event.Usage.InputTokenScope,
 			OutputIncludesReasoning: event.Usage.OutputIncludesReasoning, TotalTokensReported: event.Usage.TotalTokensReported,
 			ReasoningTokens: event.Usage.ReasoningTokens, CacheReadTokens: event.Usage.CacheReadTokens,
 			CacheWriteTokens: event.Usage.CacheWriteTokens, TotalTokens: event.Usage.TotalTokens,
@@ -369,7 +370,7 @@ func (p *officialPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 }
 func (p *officialPrepared) TokenEstimate() TokenEstimate {
 	v := p.prepared.TokenEstimate()
-	return cloneTokenEstimate(TokenEstimate{Breakdown: config.ContextBreakdown(v.Breakdown), AttachmentTokens: v.AttachmentTokens, PrefixTokens: v.PrefixTokens, MessageTokens: v.MessageTokens, ToolDefinitionTokens: v.ToolDefinitionTokens, EstimatedInputTokens: v.EstimatedInputTokens, Source: v.Source, Method: string(v.Method), Confidence: string(v.Confidence), Coverage: string(v.Coverage)})
+	return cloneTokenEstimate(TokenEstimate{Characters: v.Characters.Clone(), Breakdown: config.ContextBreakdown(v.Breakdown), AttachmentTokens: v.AttachmentTokens, PrefixTokens: v.PrefixTokens, MessageTokens: v.MessageTokens, ToolDefinitionTokens: v.ToolDefinitionTokens, EstimatedInputTokens: v.EstimatedInputTokens, Source: v.Source, Method: string(v.Method), Confidence: string(v.Confidence), Coverage: string(v.Coverage)})
 }
 func (p *officialPrepared) RenderedPayloadFingerprint() string {
 	return p.prepared.PayloadFingerprint()

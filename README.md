@@ -31,10 +31,10 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 23 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 24 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
-The 21 -> 22 edge admits request-bound accounting without rewriting entries.
+The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
 
@@ -660,38 +660,47 @@ unchanged; old summaries gain no invented visual facts.
 
 ## Used Context Composition
 
-The additive public accounting contract serves hosts displaying one frozen request.
-Use '+chr(96)+'observation.ReconcileContextStatus'+chr(96)+' for both canonical and live samples.
-Prefer the last confirmed sample until model, policy or successful compaction
-invalidates it. The returned measured total and recent cache usage belong to
-that sample; the current request pressure remains separate.
+The public accounting contract describes one frozen request. Use
+`observation.ReconcileContextStatus` for canonical and live observations. Keep
+the last confirmed native input total, visible character distribution and recent
+cache usage together until model, policy or successful compaction invalidates
+that sample. Current request estimates remain Engine pressure inputs.
 
-'+chr(96)+'prepared_content_v4'+chr(96)+' breakdowns contain disjoint approximate token estimates.
-'+chr(96)+'AttributionCoverage'+chr(96)+' describes complete or partial visible attribution, while
-'+chr(96)+'TokenEstimate.Coverage=complete_request'+chr(96)+' retains its preparation meaning.
-Unknown models use explicitly approximate '+chr(96)+'proxy_bpe'+chr(96)+'. Ciphertext length is
-'+chr(96)+'OpaqueBytes'+chr(96)+' diagnostics, never reasoning tokens. Media/file and opaque
-proxies, margins and output reserves remain budget inputs only. Hosted search
-may contain unobserved context; partial attribution cannot establish a complete
-input total without native usage. No online count is added to sending.
+`TokenEstimate.Characters` and `RequestEstimate.Characters` use
+`prepared_characters_v1` and `unicode_code_points`. The existing collector counts
+decoded text without trimming or Unicode normalization, and deterministic JSON
+for tool definitions, arguments and response schemas. Categories and optional
+details add exactly to `TotalCharacters`; transport envelopes, protocol framing,
+controls, ciphertext and binary/media proxies contribute no characters. Visible
+media labels count normally. Hidden content records coverage limitations only.
+Characters have no arithmetic relationship with provider tokens.
 
-Reconciliation preserves category estimates and reports a positive remainder
-as unattributed tokens. It never rescales categories. Categories above the native
-total, missing request identity or historical mixed-unit sources suppress details
-while preserving trustworthy totals. Damaged structure returns a validation error.
-Measured zero is available; missing total is unavailable. Hosts render measured
-values with '+chr(96)+'='+chr(96)+' and all estimates with '+chr(96)+'≈'+chr(96)+'. Category/tool disclosure remains
-usable independently of runtime execution.
+Reconciliation validates character units, counts and frozen request identity,
+returns detached character data, and preserves trustworthy native totals when
+optional attribution is invalid. Missing historical characters stay unavailable;
+there is no reconstruction or token conversion. Render measured tokens with `=`,
+visible content with `chars` and shares of visible characters. A measured zero is
+available; output-only usage does not establish an input measurement.
 
-'+chr(96)+'ContextStatus.PayloadFingerprint'+chr(96)+' identifies final prepared bytes after output
-refitting; request, attempt, provider and model identities travel with the sample.
-'+chr(96)+'ContextBreakdown.Details'+chr(96)+' refines tool definitions and managed-context categories
-without adding to them. Historical entries keep their original bytes and totals.
+Legacy token breakdown and remainder fields remain compatible budget diagnostics,
+but are deprecated for content distribution. They are not a character fallback.
+`TokenEstimate.Coverage=complete_request` still means complete preparation, not
+complete attribution. Unknown models retain explicitly approximate vocabulary
+estimates. Opaque proxies, margins and output reserves serve budgets only.
 
-Provider adapters declare '+chr(96)+'Usage.OutputIncludesReasoning'+chr(96)+' from the protocol.
-'+chr(96)+'Usage.Normalized'+chr(96)+' preserves native totals, including an explicit zero marked by
-'+chr(96)+'TotalTokensReported'+chr(96)+', and derives missing totals without counting reasoning or
-cached input twice. Existing output field meanings are unchanged.
+Adapters declare `Usage.InputTokensReported` and `InputTokenScope` from the
+protocol (`request_input`, `provider_execution`, or `unknown`). Only qualified
+request input with complete visible coverage can calibrate pressure. Historical
+anchors without qualification, hosted/opaque execution usage and unknown scopes
+cannot establish exact window occupancy. Existing estimates, bounded compaction
+and explicit provider overflow recovery continue to govern execution. No online
+count is added before sending.
+
+`ContextStatus.PayloadFingerprint` identifies final sent bytes after output
+refitting. Frozen retries preserve input and character statistics.
+`Usage.OutputIncludesReasoning` and `TotalTokensReported` preserve protocol
+relationships and native totals, including explicit zero, without double-counting
+reasoning or cached input. Published token field meanings are unchanged.
 
 ## Managed Runtime Facts
 

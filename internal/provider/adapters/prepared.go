@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/floegence/floret/v7/internal/provider"
+	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"sync"
 )
 
@@ -48,7 +49,16 @@ func (p *preparedWire) Stream(ctx context.Context) (<-chan provider.StreamEvent,
 	}
 	return p.stream(ctx, p.body)
 }
-func (p *preparedWire) TokenEstimate() provider.TokenEstimate { return p.estimate }
+func (p *preparedWire) TokenEstimate() provider.TokenEstimate {
+	out := p.estimate
+	out.Characters = out.Characters.Clone()
+	if out.Breakdown.Details != nil {
+		d := *out.Breakdown.Details
+		d.Items = append([]contextpolicy.ContextTokenDetail(nil), d.Items...)
+		out.Breakdown.Details = &d
+	}
+	return out
+}
 func (p *preparedWire) PayloadFingerprint() string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(p.body))
 }

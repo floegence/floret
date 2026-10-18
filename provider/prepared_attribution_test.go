@@ -3,6 +3,7 @@ package provider_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/floegence/floret/v7/provider"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestOfficialPreparedAttributionAndFrozenRetry(t *testing.T) {
@@ -62,6 +64,13 @@ func TestOfficialPreparedAttributionAndFrozenRetry(t *testing.T) {
 				t.Fatalf("attribution=%+v", b)
 			}
 			estimate := prepared.TokenEstimate()
+			if estimate.Characters == nil || estimate.Characters.TotalCharacters != int64(utf8.RuneCountInString("earlier summary")+utf8.RuneCountInString("skills")) {
+				t.Fatalf("decoded frozen characters: %+v", estimate.Characters)
+			}
+			estimate.Characters.Categories[0].Characters = -1
+			if prepared.TokenEstimate().Characters.Validate() != nil {
+				t.Fatal("characters alias frozen metadata")
+			}
 			estimate.Breakdown.Details.Items[0].Key = "mutated"
 			if prepared.TokenEstimate().Breakdown.Details.Items[0].Key == "mutated" {
 				t.Fatal("estimate aliases frozen metadata")
@@ -99,6 +108,9 @@ func TestOfficialPreparedAttributionAndFrozenRetry(t *testing.T) {
 			}
 			if !bytes.Contains(sent[0], []byte("1234")) || len(sent) != 2 || !bytes.Equal(sent[0], sent[1]) || bytes.Contains(sent[0], []byte("attribution")) || !json.Valid(sent[0]) {
 				t.Fatal("frozen dispatch or metadata boundary failed")
+			}
+			if prepared.RenderedPayloadFingerprint() != fmt.Sprintf("sha256:%x", sha256.Sum256(sent[0])) {
+				t.Fatal("sample fingerprint differs from dispatched body")
 			}
 		})
 	}

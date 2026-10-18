@@ -17,7 +17,7 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := NewContextPressureTracker("scope")
-	tracker.ObserveSuccess(req, history, provider.Usage{InputTokens: 100, WindowInputTokens: 100, Available: true, Source: provider.UsageNative})
+	tracker.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 100, WindowInputTokens: 100, Available: true, Source: provider.UsageNative})
 	tests := []struct {
 		name, reason string
 		change       func(*provider.Request, *[]session.Message, *ContextPressureTracker)
@@ -78,5 +78,16 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 				t.Fatalf("missing usage=%+v", missing)
 			}
 		})
+	}
+}
+
+func TestUnqualifiedNativeUsageNeverCalibratesPressure(t *testing.T) {
+	for _, scope := range []string{"", "unknown", "provider_execution", "request_input"} {
+		req := provider.Request{RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 100, Breakdown: contextpolicy.ContextBreakdown{AttributionCoverage: "partial", OpaqueBytes: 5000}}, ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 1000}}
+		tr := NewContextPressureTracker("scope")
+		got, anchor := tr.ObserveSuccess(req, nil, provider.Usage{InputTokensReported: true, InputTokenScope: scope, InputTokens: 999999, Available: true})
+		if got.ProjectedInputTokens != 100 || got.Confidence == contextpolicy.EstimateExact || anchor.WindowInputTokens != 0 {
+			t.Fatalf("unqualified pressure: %+v %+v", got, anchor)
+		}
 	}
 }

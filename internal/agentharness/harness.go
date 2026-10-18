@@ -1817,6 +1817,7 @@ func subAgentObservationProviderUsage(in provider.Usage) observation.ProviderUsa
 	return observation.ProviderUsage{
 		InputTokens:             in.InputTokens,
 		OutputTokens:            in.OutputTokens,
+InputTokensReported: in.InputTokensReported, InputTokenScope: in.InputTokenScope,
 		OutputIncludesReasoning: in.OutputIncludesReasoning,
 		TotalTokensReported:     in.TotalTokensReported,
 		ReasoningTokens:         in.ReasoningTokens,

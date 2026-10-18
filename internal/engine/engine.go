@@ -2693,6 +2693,7 @@ func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy c
 		breakdown.AttachmentTokens = estimate.AttachmentTokens
 	}
 	return contextpolicy.RequestEstimate{
+		Characters:           estimate.Characters.Clone(),
 		Breakdown:            breakdown,
 		PrefixTokens:         estimate.PrefixTokens,
 		MessageTokens:        estimate.MessageTokens,

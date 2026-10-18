@@ -747,7 +747,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 					fail(errors.New("invalid DeepSeek usage"))
 					return true
 				}
-				emit(Event{Type: EventUsage, Usage: Usage{InputTokens: u.Input - cached, CacheReadTokens: cached, OutputTokens: u.Output - reason, ReasoningTokens: reason, TotalTokens: u.Input + u.Output, WindowInputTokens: u.Input, Source: "native", Available: true}})
+				emit(Event{Type: EventUsage, Usage: Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: u.Input - cached, CacheReadTokens: cached, OutputTokens: u.Output - reason, ReasoningTokens: reason, TotalTokens: u.Input + u.Output, WindowInputTokens: u.Input, Source: "native", Available: true}})
 			}
 			terminal := Event{Type: EventDone, Reason: "stop", ResponseID: r.ID}
 			if r.Status == "incomplete" {

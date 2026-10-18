@@ -247,9 +247,18 @@ validates source and current invariants atomically and current restart is read-o
 
 ## Request-bound accounting
 
-Domain schema 22 appends the atomic 21 -> 22 edge and preserves canonical entry bytes.
-Provider facts retain explicit reasoning inclusion and native-total presence.
-[Context reconciliation](../../observation/context_accounting.go) owns host display arithmetic;
-[rendered estimation](../../provider/request_estimate.go) separates visible token attribution
-from opaque diagnostics and Engine budget proxies. Historical mixed-unit categories
-remain unavailable for display, without rewriting provider totals or model history.
+Domain schema 24 appends the atomic 23 -> 24 edge and preserves canonical facts.
+`TokenEstimate.Characters` / `RequestEstimate.Characters` provide decoded Unicode
+code points from the existing prepared-input collector.
+[Context reconciliation](../../observation/context_accounting.go) validates the
+same-request native input overview and independent visible character distribution.
+Character totals and details add exactly; ciphertext, media budgets and protocol
+framing never become characters. Historical missing characters stay unavailable.
+
+The additive v7.60 API decision retains published token contracts and deprecates
+legacy display breakdown/remainder fields without changing their semantics.
+Adapters explicitly supply input presence and scope; only qualified request input
+with complete visible coverage calibrates Engine pressure. Older anchors expire
+without changing stored bytes. Existing estimate and bounded overflow recovery
+remain the sole execution path. No host scanner, durable ledger or online send-time
+counting is introduced.
