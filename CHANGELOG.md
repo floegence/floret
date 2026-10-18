@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.53.0 - 2026-10-18
+
+- Add independent OutputPolicy.ArchiveAboveBytes archival through existing atomic result/artifact settlement without falsely marking complete output truncated.
+- Allow confirmed completed error results to request user input while preserving error status, batch settlement, Stop and restart behavior without tool replay.
+- Append domain schema 19 -> 20 with strict historical validation, unchanged canonical facts and rejection by older writers. Preserve every released migration and protected public API.
+
 ## v7.52.1 - 2026-10-18
 
 - Preserve empty parent event arrays through public thread snapshot cloning and JSON, while retaining disabled-event omission and detached nonempty pages. No public API or domain schema changes.

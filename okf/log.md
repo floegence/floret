@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Completed-error input and independent archival
+
+- Document [completed-error input and independent output archival](api/tools.md), with the permanent [19 -> 20 migration](api/storage.md#completed-error-input-migration).
+
 ## 2026-10-18 — Empty parent event snapshots
 
 - Document array-preserving public parent event snapshots, including empty pages, without changing durable schema or event admission.

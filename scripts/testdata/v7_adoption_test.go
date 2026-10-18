@@ -1040,3 +1040,12 @@ func TestPublishedAttachmentLocatorIsStableAndOpaque(t *testing.T) {
 		t.Fatal("locator omitted descriptor metadata")
 	}
 }
+
+func TestPublishedIndependentOutputArchival(t *testing.T) {
+	text := strings.Repeat("x", 65537)
+	projection := tools.BuildOutputProjection(tools.Result{Text: text}, tools.OutputPolicy{VisibleMaxBytes: 1 << 20, ArchiveAboveBytes: 65536})
+	digest := sha256.Sum256([]byte(text))
+	if projection.Truncated || projection.VisibleText != text || projection.FullOutputPlan == nil || projection.FullOutputPlan.Text != text || projection.ContentSHA256 != fmt.Sprintf("%x", digest) {
+		t.Fatal("independent archive contract changed")
+	}
+}

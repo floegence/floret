@@ -88,14 +88,14 @@ failed handler effect.
 
 # Tool-requested user input
 
-`Result.InputRequired` is an optional `InputRequest` on a successful completed
-result. It reuses the runtime input interaction, not pending host execution or
+`Result.InputRequired` is an optional `InputRequest` on a completed success or error
+result. Errors retain their error status. It reuses the runtime input interaction, not pending host execution or
 an invented model control call. The whole batch settles before input becomes
 answerable, then the Engine stops before sending another provider request.
 Hosts use `ThreadService.Respond`; continuation never repeats the completed tool.
 `InputQuestion` supports `write`, `select`, and `select_or_write`. Every question
 requires an answer; `select` accepts only a declared option. An invalid request,
-an error/canceled/declined result, or combining input with `Pending` fails closed.
+an unconfirmed/canceled/declined result, or combining input with `Pending` fails closed.
 Prompts, choices, and answers are durable non-secret data. External login and
 similar work use acknowledgment choices, never secret inputs. The host owns
 external control and fresh observation after the answer.
@@ -234,3 +234,11 @@ every call in a repeated batch; a bounded wait never exempts a neighboring
 ordinary effect. Polling still requires changing progress tokens. Failed,
 pending, interaction and early results do not qualify. The evidence is ephemeral
 and does not introduce another lifecycle or durable record.
+
+# Independent output archival
+
+OutputPolicy.ArchiveAboveBytes optionally preserves full Text above a positive
+byte threshold, independently of visible truncation. Zero keeps archive-on-truncation
+behavior; explicit PreserveFull=false disables both triggers. Positive overrides
+replace inherited thresholds. One FullOutputPlan uses the existing atomic result
+settlement; uncut visible output remains Truncated=false.

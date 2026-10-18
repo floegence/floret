@@ -7,7 +7,8 @@ import (
 )
 
 // InputRequest pauses the model after a completed tool result until the user
-// responds. It is not pending host work and never requests replay of the tool.
+// responds. Completed success and error results may request input. Pending,
+// unconfirmed, canceled, and declined results may not. Input never requests replay.
 // Prompts and options are durable display data and must not contain secrets.
 type InputRequest struct {
 	Summary   string          `json:"summary"`

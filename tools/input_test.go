@@ -9,7 +9,7 @@ func TestToolInputRequestValidationAndClone(t *testing.T) {
 	valid := func() *InputRequest {
 		return &InputRequest{Summary: "Complete the external step", Questions: []InputQuestion{{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}}}}
 	}
-	for _, mode := range []string{"valid", "empty", "duplicate_question", "duplicate_option", "bad_kind", "bad_options", "pending", "error", "canceled", "declined"} {
+	for _, mode := range []string{"valid", "empty", "duplicate_question", "duplicate_option", "bad_kind", "bad_options", "pending", "error", "dispatch_error", "canceled", "declined"} {
 		t.Run(mode, func(t *testing.T) {
 			request := valid()
 			result := Result{Text: "Observed", InputRequired: request}
@@ -28,6 +28,8 @@ func TestToolInputRequestValidationAndClone(t *testing.T) {
 				result.Pending = &PendingToolResult{}
 			case "error":
 				result.IsError = true
+			case "dispatch_error":
+				result.DispatchErr = context.Canceled
 			case "canceled":
 				result.Structured = map[string]any{"outcome": ResultOutcomeCanceled}
 			case "declined":
@@ -35,13 +37,13 @@ func TestToolInputRequestValidationAndClone(t *testing.T) {
 			}
 			reg := NewRegistry(testTool("inspect", true, func(context.Context, Invocation[testArgs]) (Result, error) { return result, nil }))
 			got := reg.Run(t.Context(), ToolCall{ID: "call", Name: "inspect", Args: `{"value":"x"}`}, nil)
-			if mode != "valid" {
+			if mode != "valid" && mode != "error" {
 				if got.DispatchErr == nil || !got.IsError || got.InputRequired != nil {
 					t.Fatalf("invalid host contract did not fail closed: %+v", got)
 				}
 				return
 			}
-			if got.IsError || got.DispatchErr != nil || got.InputRequired == nil {
+			if got.IsError != (mode == "error") || got.DispatchErr != nil || got.InputRequired == nil {
 				t.Fatalf("valid input rejected: %+v", got)
 			}
 			request.Questions[0].Options[0] = "changed"
