@@ -3850,38 +3850,7 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 	if err != nil {
 		return "", UserInput{}, runtimeHostError(err)
 	}
-	sourceEntryID := ""
-	if read.Turn.RetrySource != nil {
-		sourceEntryID = read.Turn.RetrySource.EntryID
-	} else {
-		for _, item := range read.Turn.Entries {
-			if item.Entry.Type == sessiontree.EntryUserMessage && item.Entry.Message.Role == session.User {
-				sourceEntryID = item.Entry.ID
-				break
-			}
-		}
-	}
-	failed := false
-	uncertain := false
-	for _, item := range read.Turn.Entries {
-		uncertain = uncertain || item.Entry.Message.ToolResult != nil && item.Entry.Message.ToolResult.EffectOutcome == tools.EffectOutcomeUncertain
-		failed = failed || item.Entry.Type == sessiontree.EntryTurnMarker && item.Entry.TurnStatus == sessiontree.TurnFailed
-	}
-	if failed || uncertain {
-		// Use the complete batch boundary after returned uncertainty. If the
-		// process stopped before its save point, retain the admitted path rather
-		// than moving back across a tool result whose effect is unconfirmed.
-		if uncertain && len(read.Turn.Entries) > 0 {
-			sourceEntryID = read.Turn.Entries[len(read.Turn.Entries)-1].Entry.ID
-		}
-		for index := len(read.Turn.Entries) - 1; index >= 0; index-- {
-			entry := read.Turn.Entries[index].Entry
-			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint {
-				sourceEntryID = entry.ParentID
-				break
-			}
-		}
-	}
+	sourceEntryID := retryContinuationEntryID(read.Turn)
 	if sourceEntryID == "" {
 		return "", UserInput{}, ErrAuthorityCorrupt
 	}
@@ -3896,6 +3865,46 @@ func (service *threadRuntimeService) retrySource(ctx context.Context, threadID i
 		}
 	}
 	return "", UserInput{}, errors.New("retry source turn has no canonical user input")
+}
+
+func retryContinuationEntryID(turn sessiontree.CanonicalTurn) string {
+	sourceEntryID := ""
+	if turn.RetrySource != nil {
+		sourceEntryID = turn.RetrySource.EntryID
+	} else {
+		for _, item := range turn.Entries {
+			if item.Entry.Type == sessiontree.EntryUserMessage && item.Entry.Message.Role == session.User {
+				sourceEntryID = item.Entry.ID
+				break
+			}
+		}
+	}
+	failed := false
+	uncertain := false
+	lastUncertain := -1
+	for index, item := range turn.Entries {
+		if item.Entry.Message.ToolResult != nil && item.Entry.Message.ToolResult.EffectOutcome == tools.EffectOutcomeUncertain {
+			uncertain = true
+			lastUncertain = index
+		}
+		failed = failed || item.Entry.Type == sessiontree.EntryTurnMarker && item.Entry.TurnStatus == sessiontree.TurnFailed
+	}
+	if failed || uncertain {
+		// Use the complete batch boundary after returned uncertainty. If the
+		// process stopped before its save point, retain the admitted path rather
+		// than moving back across a tool result whose effect is unconfirmed.
+		if uncertain && len(turn.Entries) > 0 {
+			sourceEntryID = turn.Entries[len(turn.Entries)-1].Entry.ID
+		}
+		for index := len(turn.Entries) - 1; index >= 0; index-- {
+			entry := turn.Entries[index].Entry
+			if index > lastUncertain && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint {
+				sourceEntryID = entry.ParentID
+				break
+			}
+		}
+	}
+	return sourceEntryID
 }
 
 func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRuntimeState, turnID identity.TurnID, runID identity.RunID, requestKey string) {
