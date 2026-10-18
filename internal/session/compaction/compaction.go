@@ -101,6 +101,7 @@ type Request struct {
 }
 
 type Result struct {
+	GoalContextBaseline     string                        `json:"goal_context_baseline,omitempty"`
 	ModelContextBaseline    *session.ModelContextSnapshot `json:"model_context_baseline,omitempty"`
 	CompactionID            string                        `json:"compaction_id"`
 	OperationID             string                        `json:"operation_id"`
@@ -195,6 +196,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 			CompactedThroughEntryID: lastEntryID(history),
 			ModelContextBaseline:    snapshotAtCut(previousBaseline, history),
+			GoalContextBaseline:     session.CurrentGoalContext(req.History),
 			SummarySchemaVersion:    SummarySchemaVersion,
 			Trigger:                 req.Trigger,
 			Reason:                  req.Reason,
@@ -293,6 +295,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 		CompactedThroughEntryID: compactedThrough,
 		ModelContextBaseline:    snapshotAtCut(previousBaseline, head),
+		GoalContextBaseline:     session.CurrentGoalContext(head),
 		SummarySchemaVersion:    SummarySchemaVersion,
 		Trigger:                 req.Trigger,
 		Reason:                  req.Reason,
@@ -471,6 +474,7 @@ func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy c
 
 func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
 	checkpoint := BuildCheckpointMessage(result.Summary, keptUsers, tail)
+	checkpoint.GoalContextBaseline = result.GoalContextBaseline
 	checkpoint.ModelContextSnapshot = session.CloneModelContext(result.ModelContextBaseline)
 	checkpoint.CompactionID = result.CompactionID
 	checkpoint.CompactionGeneration = result.CompactionGeneration

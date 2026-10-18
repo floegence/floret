@@ -15,6 +15,15 @@ timestamp: 2026-08-18T00:00:00Z
 the product boundary. The service owns one durable thread journal and one
 in-process actor for each active thread.
 
+## Thread goals
+
+Opt in with `runtime.WithAgentGoals()`. The optional
+`runtime.ThreadGoalController` exposes `SetGoal` and `DeleteGoal` without
+starting execution. `ThreadView.Goal` and `ThreadItemGoal` expose canonical
+current state and changes; `Reviewing` is a transient presentation fact.
+See [Canonical Thread Goals](../decisions/thread-goals.md) for request timing,
+review validity, deletion suppression and recovery boundaries.
+
 ## Thread service
 
 `Host.MediaInventory` is the read-only canonical retention boundary for

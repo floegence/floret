@@ -46,6 +46,9 @@ func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string)
 		message.Activity = nil
 		message.ControlSignal = nil
 		out = append(out, message)
+		if message.GoalContextBaseline != "" {
+			out = append(out, Message{Role: User, Kind: MessageKindGoalContext, Content: message.GoalContextBaseline})
+		}
 		if isAnchor {
 			insertAt = len(out)
 		}

@@ -292,6 +292,14 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 			return FinishTurnResult{}, ErrEffectOutcomeUnknown
 		}
 	}
+	path, goalErr := pathLocked(r.threads, r.entries, req.ThreadID, meta.LeafID)
+	if goalErr != nil {
+		return FinishTurnResult{}, goalErr
+	}
+	req.Metadata, goalErr = goalFinishMetadata(path, req)
+	if goalErr != nil {
+		return FinishTurnResult{}, goalErr
+	}
 	now := canonicalTime(req.Now, r.now)
 	if req.Status == TurnFailed || req.Status == TurnAborted {
 		phase, status := "failed", "failed"

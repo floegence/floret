@@ -31,12 +31,24 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 22 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 23 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting without rewriting entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
+
+## Thread goals
+
+Opt in with `runtime.WithAgentGoals()` to let the executing model maintain one
+clear objective and reflect before naturally stopping. Use the optional
+`runtime.ThreadGoalController` for user `SetGoal` / `DeleteGoal` operations;
+changes appear in `ThreadView.Goal` and the canonical timeline immediately and
+enter the next new model request. Management never starts execution. Reflection
+reuses the existing context, provider continuation and bounded stop hook; Goal
+completion requires a current evidence-bearing review and successful Turn end.
+Goals are independent of todos. The 22 -> 23 schema edge preserves history.
+See [the Goal contract](okf/decisions/thread-goals.md).
 
 ## Passive child events
 

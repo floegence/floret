@@ -1,8 +1,15 @@
 # Changelog
 
+## v7.59.0 - 2026-10-18
+
+- Add opt-in canonical thread Goals with typed user management, model maintenance, version conflicts and deduplicated journal mutations independent of todos.
+- Reflect in the executing model context before natural completion, validate evidence against current work and atomically commit completion. Preserve next-request timing, frozen retries, exact compacted text, Fork isolation and bounded recovery.
+- Append atomic domain schema 22 -> 23 without rewriting existing conversation facts; retain every released migration.
+
 ## v7.58.0 - 2026-10-18
 
 - Share provider transport classification through RetryAdviceForError and recover ordinary wrapped EOF using the existing bounded Engine retry owner. Preserve explicit advice, cancellation and non-provider failure boundaries.
+
 
 
 ## v7.57.0 - 2026-10-18

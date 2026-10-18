@@ -1083,3 +1083,49 @@ func TestPublishedTransportRetryAdvice(t *testing.T) {
 		t.Fatalf("advice=%#v", got)
 	}
 }
+
+func TestPublishedGoalManagementSurvivesRestartWithoutExecution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "goals.db")
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		t.Helper()
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			t.Fatal("goal management started execution")
+			return nil, errors.New("unexpected execution")
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	host, service := open()
+	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := runtime.SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "set", Text: "Deliver a verified result"}
+	if _, err = service.(runtime.ThreadGoalController).SetGoal(t.Context(), input); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	host, service = open()
+	defer host.Close()
+	view, err := service.View(t.Context(), thread.ThreadID)
+	if err != nil || view.Goal == nil || view.Goal.Text != input.Text {
+		t.Fatalf("goal=%+v err=%v", view.Goal, err)
+	}
+	replay, err := service.(runtime.ThreadGoalController).SetGoal(t.Context(), input)
+	if err != nil || !replay.Replayed {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	conflict, err := service.(runtime.ThreadGoalController).DeleteGoal(t.Context(), runtime.DeleteGoalInput{ThreadID: thread.ThreadID, RequestKey: "stale", ExpectedVersion: 0})
+	if err != nil || !conflict.Conflict {
+		t.Fatalf("conflict=%+v err=%v", conflict, err)
+
+	}
+}

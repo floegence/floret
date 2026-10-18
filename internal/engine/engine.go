@@ -98,6 +98,7 @@ type StopHookContext struct {
 }
 
 type StopHookResult struct {
+	Kind     session.MessageKind
 	Continue bool
 	Prompt   string
 	Reason   string
@@ -204,6 +205,7 @@ type Options struct {
 	ControlSpec              ControlSpec
 	PreviousProviderState    *provider.State
 	AdmitParentEvents        func(context.Context) (session.Message, error)
+	AdmitGoalContext         func(context.Context, []session.Message) (session.Message, error)
 	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
 	CommitProviderContext    func(context.Context, *provider.State, []session.Message, bool) error
 	providerState            *runProviderState
@@ -936,6 +938,18 @@ steps:
 		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
+		if opts.AdmitGoalContext != nil {
+			message, goalErr := opts.AdmitGoalContext(ctx, activeHistory)
+			if goalErr != nil {
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(goalErr, FailureOriginStorage), metrics, started, RunDecision{})
+			}
+			if message.EntryID != "" {
+				if goalErr = e.store.AppendTranscript(opts.RunID, message); goalErr != nil {
+					return e.end(state, opts, step, Failed, output, goalErr, metrics, started, RunDecision{})
+				}
+				activeHistory = append(activeHistory, message)
+			}
+		}
 		activeHistory, err = e.admitParentEvents(ctx, opts, activeHistory)
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -1100,7 +1114,7 @@ steps:
 					if prompt == "" {
 						prompt = "Continue the task and address the remaining pending work."
 					}
-					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.User, Content: prompt})
+					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.User, Kind: hook.Kind, Content: prompt})
 					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 					}
@@ -1108,7 +1122,7 @@ steps:
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
-					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
+					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, Metadata: map[string]any{"message_kind": string(hook.Kind)}, ContinuationReason: string(ContinueHook), Result: decision.Detail})
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 					continue
 				}

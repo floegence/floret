@@ -1541,3 +1541,7 @@ Record the tokenizer dependency idle-clock fix and input-free error boundary in 
 
 
 - 2026-10-18: Distinguish parent-event page query scope from immutable event recipient identity across forks; preserve schema 22 and passive delivery.
+
+## 2026-10-18: Canonical thread Goals
+
+Document optional Goal management, same-context reflection, request-bound updates, independent Todo behavior and the permanent schema 22 -> 23 edge.

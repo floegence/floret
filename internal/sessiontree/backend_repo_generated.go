@@ -313,6 +313,16 @@ func (repo *BackendRepo) MoveLeaf(ctx context.Context, threadID, entryID string)
 	return err
 }
 
+func (repo *BackendRepo) MutateGoal(ctx context.Context, in GoalMutation) (GoalMutationResult, error) {
+	var result0 GoalMutationResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.MutateGoal(ctx, in)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
 	var result0 ParentEventPage
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
@@ -405,6 +415,16 @@ func (repo *BackendRepo) ReadCanonicalTurn(ctx context.Context, threadID, turnID
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var callErr error
 		result0, callErr = memory.ReadCanonicalTurn(ctx, threadID, turnID)
+		return callErr
+	})
+	return result0, err
+}
+
+func (repo *BackendRepo) RecordGoalReview(ctx context.Context, threadID, turnID, runID, callID string, version int64, outcome, evidence string) (Entry, error) {
+	var result0 Entry
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.RecordGoalReview(ctx, threadID, turnID, runID, callID, version, outcome, evidence)
 		return callErr
 	})
 	return result0, err

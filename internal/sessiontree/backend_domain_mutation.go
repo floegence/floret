@@ -295,10 +295,16 @@ func (mutation *backendDomainMutation) validate() error {
 		if previous.replaced && len(previous.entries) != 0 && !reflect.DeepEqual(previous.entries, next[:len(previous.entries)]) {
 			return errors.New("canonical session-tree entries are immutable")
 		}
-		parentFacts := false
+		parentFacts, goalFacts := false, false
 		for _, entry := range next[len(previous.entries):] {
 			parentFacts = parentFacts || entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted
+			goalFacts = goalFacts || entry.Type == EntryGoal || entry.Type == EntryGoalReview || entry.Type == EntryGoalContext
 			if err := mutation.validateEntry(threadID, entry); err != nil {
+				return err
+			}
+		}
+		if goalFacts {
+			if err := validateGoalRecords(&MemoryRepo{threads: map[string]ThreadMeta{threadID: memory.threads[threadID]}, entries: map[string][]Entry{threadID: next}}); err != nil {
 				return err
 			}
 		}
@@ -401,12 +407,12 @@ func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values
 		next, found := values[key]
 		if !found {
 			if previous.found {
-				if err := tx.Delete(backendDomainV22Namespace, backendDomainKey(kind, key)); err != nil {
+				if err := tx.Delete(backendDomainV23Namespace, backendDomainKey(kind, key)); err != nil {
 					return err
 				}
 			}
 		} else if !previous.found || !reflect.DeepEqual(previous.value, next) {
-			if err := putBackendDomainRecord(tx, backendDomainV22Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
+			if err := putBackendDomainRecord(tx, backendDomainV23Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
 				return err
 			}
 		}
@@ -417,7 +423,7 @@ func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values
 func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 	memory := mutation.memory
 	if mutation.sequence != memory.seq {
-		if err := putBackendDomainRecord(tx, backendDomainV22Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV22Version, Sequence: memory.seq}); err != nil {
+		if err := putBackendDomainRecord(tx, backendDomainV23Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV23Version, Sequence: memory.seq}); err != nil {
 			return err
 		}
 	}
@@ -432,7 +438,7 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		}
 	}
 	if rootIndexChanged {
-		if err := putBackendDomainRecord(tx, backendDomainV22Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
+		if err := putBackendDomainRecord(tx, backendDomainV23Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
 			return err
 		}
 	}
@@ -443,12 +449,12 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		next := memory.entries[threadID]
 		for ordinal := len(previous.entries); ordinal < len(next); ordinal++ {
 			entry := next[ordinal]
-			if err := putBackendDomainRecord(tx, backendDomainV22Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
+			if err := putBackendDomainRecord(tx, backendDomainV23Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
 				return err
 			}
 		}
 		for ordinal := len(next); ordinal < len(previous.entries); ordinal++ {
-			if err := tx.Delete(backendDomainV22Namespace, backendDomainEntryKey(threadID, ordinal)); err != nil {
+			if err := tx.Delete(backendDomainV23Namespace, backendDomainEntryKey(threadID, ordinal)); err != nil {
 				return err
 			}
 		}
