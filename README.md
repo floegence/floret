@@ -31,8 +31,8 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 19 retains the atomic 17 -> 18 output-budget edge and appends
-18 -> 19 for canonical parent events, retaining every older migration
+Domain schema 20 retains the atomic 17 -> 18 output-budget edge and
+18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
@@ -365,14 +365,21 @@ Schema v11 appends the v10 to v11 migration without rewriting historical records
 or inventing missing stop provenance.
 
 A completed tool may return `tools.Result.InputRequired` with a validated
-`tools.InputRequest`. Floret commits the result and pauses before the next model
+`tools.InputRequest`. Completed success and error results may request input; errors retain their status.
+Unconfirmed, canceled and declined results cannot request input. Floret commits the result and pauses before the next model
 request, after every tool in the batch settles. The existing input interaction
 survives restart; `Respond` must answer every question, and all batch interactions
 must be resolved before continuation. The original tool is never replayed.
 Prompts, options, and answers are durable, non-secret data. Use acknowledgment
 choices for external user actions; collect passwords and tokens outside the
 agent. `Pending` remains asynchronous host work and cannot be combined with input.
-Domain schema v12 appends the v11 to v12 migration, preserving historical facts.
+Domain schema v20 appends v19 to v20 while preserving the original v11 to v12
+contract and all historical facts.
+
+OutputPolicy.ArchiveAboveBytes independently archives complete Text above
+a positive byte threshold when PreserveFull is enabled, even without visible
+truncation. Zero retains archive-on-truncation behavior. Archival uses the existing
+atomic result/artifact settlement and never marks uncut Text as truncated.
 
 Ask User `runtime.InputPresentation` exposes optional `ReasonCode`,
 `RequiredFromUser`, and `EvidenceRefs` from the validated control signal in current,
@@ -788,7 +795,7 @@ Physical format 2 separates large record values from the primary-key
 index using a rowid records table. `runtime.Open` converts format 1, splits the
 legacy global prompt snapshot, migrates the session tree, updates logical
 storage version 9, and verifies the result in one transaction. The session-tree
-schema remains 19. Inspection reports physical upgrades as migration work and
+schema remains 20. Inspection reports physical upgrades as migration work and
 reuses each merged namespace across pages without writing the source.
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed

@@ -644,7 +644,7 @@ func (repo *BackendRepo) PrepareParentEventsInTransaction(ctx context.Context, t
 	if err := next.BootstrapParentEvents(ctx); err != nil {
 		return err
 	}
-	if _, err := persistBackendDomainV19Changes(tx, before, next); err != nil {
+	if _, err := persistBackendDomainV20Changes(tx, before, next); err != nil {
 		return err
 	}
 	repo.domainMemory = next

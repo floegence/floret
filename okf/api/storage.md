@@ -228,3 +228,11 @@ transaction. Admission freezes bounded text and a closed event range after tool
 pairs; coverage is derived from the journal, including retry, fork and compaction.
 There is no durable inbox or separate consumption table. See
 [runtime parent events](runtime.md#passive-parent-events).
+
+# Completed-error input migration
+
+Domain schema 20 appends 19 -> 20 in the existing namespace with a new envelope.
+Historical schemas still require success for tool-requested input; current writes
+accept completed success or error results. Exact v19 validation precedes migration,
+which preserves canonical facts and verifies v20 in the startup transaction. Older
+writers reject the envelope. All older migration edges remain automatic.

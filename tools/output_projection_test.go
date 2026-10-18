@@ -78,3 +78,33 @@ func TestBuildOutputProjectionTrimsNoticeWhenItExceedsLimit(t *testing.T) {
 		t.Fatalf("projection = %#v", got)
 	}
 }
+
+func TestBuildOutputProjectionIndependentArchiveThreshold(t *testing.T) {
+	for _, size := range []int{65535, 65536, 65537} {
+		text := strings.Repeat("x", size)
+		policy := OutputPolicy{VisibleMaxBytes: 1 << 20, ArchiveAboveBytes: 65536}
+		got := BuildOutputProjection(Result{Text: text}, policy)
+		if got.Truncated || got.VisibleText != text || (got.FullOutputPlan != nil) != (size > 65536) || got.ContentSHA256 != stableTextHash(text) {
+			t.Fatalf("size %d: invalid projection", size)
+		}
+		policy.PreserveFullSet = true
+		got = BuildOutputProjection(Result{Text: text}, policy)
+		if got.FullOutputPlan != nil {
+			t.Fatal("explicit no-preserve ignored")
+		}
+	}
+	base := OutputPolicy{ArchiveAboveBytes: 100}
+	for _, override := range []int{-1, 0, 200} {
+		got := MergeOutputPolicy(base, &OutputPolicy{ArchiveAboveBytes: override})
+		want := 100
+		if override > 0 {
+			want = override
+		}
+		if got.ArchiveAboveBytes != want {
+			t.Fatalf("merge %d: %+v", override, got)
+		}
+	}
+	if NormalizeOutputPolicy(OutputPolicy{ArchiveAboveBytes: -1}).ArchiveAboveBytes != 0 {
+		t.Fatal("negative archive threshold")
+	}
+}

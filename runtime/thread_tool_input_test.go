@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +18,12 @@ import (
 )
 
 func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.T) {
+	testCompletedToolInputRestart(t, false)
+}
+func TestErrorToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.T) {
+	testCompletedToolInputRestart(t, true)
+}
+func testCompletedToolInputRestart(t *testing.T, failed bool) {
 	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "input", StateCompatibilityKey: "test:input"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "inspect-1", Name: "inspect", Args: `{}`}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
 		florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "resumed"}, {Type: provider.EventDone, Reason: "stop"}}},
@@ -24,7 +32,7 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	inspect := tools.Define[map[string]any](tools.Definition{Name: "inspect", InputSchema: tools.StrictObject(map[string]any{}, []string{}), ReadOnly: true, Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}}, nil, nil,
 		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
 			calls.Add(1)
-			return tools.Result{Text: "Observation complete; the external step is unfinished.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{
+			return tools.Result{IsError: failed, Text: strings.Repeat("x", 65537), OutputPolicy: &tools.OutputPolicy{VisibleMaxBytes: 1 << 20, ArchiveAboveBytes: 65536}, InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{
 				{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}},
 				{ID: "claim", Prompt: "Describe the current state", Kind: "write"},
 			}}}, nil
@@ -61,6 +69,38 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	if len(waiting.Interactions) != 1 || waiting.Interactions[0].Resolved || len(gateway.Requests()) != 1 {
 		t.Fatalf("tool did not stop model for input: interactions=%+v requests=%d outcome=%v", waiting.Interactions, len(gateway.Requests()), waiting.LastOutcome)
 	}
+
+	assertArchive := func() {
+		t.Helper()
+		entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, entry := range entries {
+			if entry.Message.ToolCallID != "inspect-1" || entry.Message.ToolResult == nil {
+				continue
+			}
+			count++
+			view := entry.Message.ToolResult
+			expectedStatus := "success"
+			if failed {
+				expectedStatus = "error"
+			}
+			if view.Status != expectedStatus || view.Truncated || view.FullOutput == nil {
+				t.Fatalf("result/archive lost: %+v", view)
+			}
+			full, err := host.store.repo.(sessiontree.ArtifactAuthorityRepo).ReadArtifact(t.Context(), sessiontree.ArtifactReadRequest{ThreadID: created.ThreadID.String(), ArtifactID: view.FullOutput.ID})
+			digest := sha256.Sum256([]byte(strings.Repeat("x", 65537)))
+			if err != nil || full.Text != strings.Repeat("x", 65537) || full.Ref.SHA256 != fmt.Sprintf("%x", digest) {
+				t.Fatalf("archive changed: %v", err)
+			}
+		}
+		if count != 1 {
+			t.Fatalf("result count=%d", count)
+		}
+	}
+	assertArchive()
 	interaction := waiting.Interactions[0]
 	assertMediaIdle := func(want bool) {
 		t.Helper()
@@ -84,6 +124,7 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	if len(restored.Interactions) != 1 || restored.Interactions[0].ID != interaction.ID || restored.Interactions[0].Resolved {
 		t.Fatalf("input not restored: %+v", restored.Interactions)
 	}
+	assertArchive()
 	answer := map[string]string{"ready": "Continue", "claim": "The external step is complete, please check."}
 	assertMediaIdle(false)
 	response := RespondInput{ThreadID: created.ThreadID, InteractionID: interaction.ID, RequestKey: "respond", Answers: []InteractionAnswer{{Input: answer}}}
@@ -125,6 +166,9 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 		}
 		if msg.ToolResult != nil && msg.ToolResult.CallID == "inspect-1" {
 			resultCount++
+			if strings.HasPrefix(msg.ToolResult.Text, "ERROR: ") != failed {
+				t.Fatal("completed error status changed")
+			}
 		}
 	}
 
@@ -137,6 +181,7 @@ func TestToolRequestedInputPausesAndResumesAfterRestartWithoutReplay(t *testing.
 	if _, err := svc.Respond(t.Context(), response); err != nil {
 		t.Fatal(err)
 	}
+	assertArchive()
 	if calls.Load() != 1 || len(gateway.Requests()) != 2 {
 		t.Fatal("duplicate response replayed the tool or provider continuation")
 	}
@@ -176,7 +221,7 @@ func TestToolRequestedInputBatchWaitsForEveryAnswer(t *testing.T) {
 					if inv.CallID == "first" {
 						close(firstReturned)
 					}
-					return tools.Result{Text: "Observation requires user input.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}}, {ID: "confirm", Prompt: "Confirm the step", Kind: "select", Options: []string{"Done", "Cancel"}}}}}, nil
+					return tools.Result{IsError: true, Text: "Result requires verification.", InputRequired: &tools.InputRequest{Summary: "Complete the external step", Questions: []tools.InputQuestion{{ID: "ready", Prompt: "Return control when ready", Kind: "select", Options: []string{"Continue", "Stop"}}, {ID: "confirm", Prompt: "Confirm the step", Kind: "select", Options: []string{"Done", "Cancel"}}}}}, nil
 				})
 			agent, err := testAgent(gateway, WithAgentTools(inspect), WithAgentEffectAuthorization(EffectAuthorizationGateFunc(func(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				return effect(ctx, EffectAuthorizationProof{EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint, ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID, PolicyRevision: "test", AuditReference: "test", AuditHash: "test", AuthorizedAt: time.Now().UTC()})

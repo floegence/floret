@@ -1910,6 +1910,7 @@ func Nullable func(schema map[string]any) map[string]any
 func Number func(description string) map[string]any
 const OutputHead github.com/floegence/floret/v7/tools.OutputStrategy = "head"
 type OutputPolicy struct
+field OutputPolicy.ArchiveAboveBytes int
 field OutputPolicy.VisibleMaxBytes int
 field OutputPolicy.VisibleMaxLines int
 field OutputPolicy.Strategy github.com/floegence/floret/v7/tools.OutputStrategy

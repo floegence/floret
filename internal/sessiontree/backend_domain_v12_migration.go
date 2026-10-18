@@ -18,13 +18,21 @@ func migrateBackendDomainV11ToV12(ctx context.Context, memory *MemoryRepo) error
 }
 
 func validateToolInputRecords(memory *MemoryRepo) error {
+	return validateCompletedToolInputRecords(memory, false)
+}
+
+func validateCurrentToolInputRecords(memory *MemoryRepo) error {
+	return validateCompletedToolInputRecords(memory, true)
+}
+
+func validateCompletedToolInputRecords(memory *MemoryRepo, allowError bool) error {
 	for _, entries := range memory.entries {
 		for _, entry := range entries {
 			result := entry.Message.ToolResult
 			if result == nil || result.InputRequired == nil {
 				continue
 			}
-			if entry.Type != EntryToolResult || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" || result.Status != "success" {
+			if entry.Type != EntryToolResult || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" || (result.Status != "success" && !(allowError && result.Status == "error")) {
 				return fmt.Errorf("tool input request %q has no completed tool result identity", entry.ID)
 			}
 			if err := result.InputRequired.Validate(); err != nil {

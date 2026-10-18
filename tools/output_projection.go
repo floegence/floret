@@ -24,14 +24,17 @@ const (
 )
 
 type OutputPolicy struct {
-	VisibleMaxBytes  int
-	VisibleMaxLines  int
-	Strategy         OutputStrategy
-	PreserveFull     bool
-	PreserveFullSet  bool
-	ArtifactKind     string
-	ArtifactMIME     string
-	TruncationNotice string
+	// ArchiveAboveBytes independently preserves outputs larger than this threshold.
+	// Zero disables threshold-based archival; PreserveFull still controls archival.
+	ArchiveAboveBytes int
+	VisibleMaxBytes   int
+	VisibleMaxLines   int
+	Strategy          OutputStrategy
+	PreserveFull      bool
+	PreserveFullSet   bool
+	ArtifactKind      string
+	ArtifactMIME      string
+	TruncationNotice  string
 }
 
 type OutputProjection struct {
@@ -71,6 +74,9 @@ func NormalizeOutputPolicy(policy OutputPolicy) OutputPolicy {
 	if policy == (OutputPolicy{}) {
 		return DefaultOutputPolicy()
 	}
+	if policy.ArchiveAboveBytes < 0 {
+		policy.ArchiveAboveBytes = 0
+	}
 	if policy.VisibleMaxBytes <= 0 {
 		policy.VisibleMaxBytes = DefaultToolVisibleMaxBytes
 	}
@@ -98,6 +104,9 @@ func MergeOutputPolicy(base OutputPolicy, override *OutputPolicy) OutputPolicy {
 	out := NormalizeOutputPolicy(base)
 	if override == nil {
 		return out
+	}
+	if override.ArchiveAboveBytes > 0 {
+		out.ArchiveAboveBytes = override.ArchiveAboveBytes
 	}
 	if override.VisibleMaxBytes > 0 {
 		out.VisibleMaxBytes = override.VisibleMaxBytes
@@ -141,10 +150,7 @@ func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection 
 		Strategy:      policy.Strategy,
 		ContentSHA256: stableTextHash(text),
 	}
-	if !truncated {
-		return projection
-	}
-	if policy.PreserveFull {
+	if policy.PreserveFull && (truncated || (policy.ArchiveAboveBytes > 0 && len(text) > policy.ArchiveAboveBytes)) {
 		projection.FullOutputPlan = &FullOutputPlan{Text: text, Kind: policy.ArtifactKind, MIME: policy.ArtifactMIME}
 	}
 	return projection

@@ -135,7 +135,7 @@ func TestPersistentQueryBuildCancellationRollsBackAndRetries(t *testing.T) {
 	backend := newMigrationTestBackend()
 	memory := newMemoryRepo(time.Now)
 	queryFixture(t, memory)
-	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return saveCompleteBackendDomainV19(tx, memory) }); err != nil {
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return saveCompleteBackendDomainV20(tx, memory) }); err != nil {
 		t.Fatal(err)
 	}
 	before := cloneMigrationRecords(backend.records)
