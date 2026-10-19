@@ -1149,3 +1149,5 @@ savepoint. Incomplete tool exchanges fail closed.
 
 Schema 20 -> 21 preserves historical
 facts and requires current writers.
+
+Search and DeepSeek Fetch clients may use `ResolveAPIKey` to resolve live credentials immediately before dispatch. The callback must enforce current host authorization; its errors remain explicit and do not switch services. Credentials are never part of a tool definition or checkpoint.

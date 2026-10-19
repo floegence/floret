@@ -2289,6 +2289,7 @@ type DeepSeekOptions struct
 field DeepSeekOptions.<embedded> github.com/floegence/floret/v7/tools/webfetch.Options
 field DeepSeekOptions.BaseURL string
 field DeepSeekOptions.APIKey string
+field DeepSeekOptions.ResolveAPIKey func(context.Context) (string, error)
 field DeepSeekOptions.HTTPClient *net/http.Client
 type DeepSeekResult struct
 field DeepSeekResult.URL string tag="json:\"url\""
@@ -2317,6 +2318,7 @@ method *Client.Search func(ctx context.Context, request github.com/floegence/flo
 type ClientOptions struct
 field ClientOptions.BaseURL string
 field ClientOptions.APIKey string
+field ClientOptions.ResolveAPIKey func(context.Context) (string, error)
 field ClientOptions.HTTPClient *net/http.Client
 field ClientOptions.Timeout time.Duration
 type HTTPError = github.com/floegence/floret/v7/tools/websearch.HTTPError
