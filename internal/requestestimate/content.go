@@ -106,8 +106,9 @@ type collector struct {
 
 type collectedContent struct {
 	contextpolicy.ContextBreakdown
-	toolFraming int64
-	characters  *contextpolicy.ContextCharacterBreakdown
+	toolFraming          int64
+	unknownContentBudget int64
+	characters           *contextpolicy.ContextCharacterBreakdown
 }
 
 func (s *collector) limit(reason string) {
@@ -357,6 +358,7 @@ func (s *collector) parts(path, category string, value any) error {
 			s.limit("unknown_content")
 			raw, _ := json.Marshal(p)
 			s.out.OpaqueBytes += int64(len(raw))
+			s.out.unknownContentBudget += int64(len(raw))
 		}
 	}
 	return nil

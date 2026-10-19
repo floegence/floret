@@ -20,7 +20,7 @@ func TestDeepSeekTokenizerRemovesByteInflation(t *testing.T) {
 		if estimate.EstimatedInputTokens >= int64(len(raw)/2) || estimate.EstimatedInputTokens <= 0 {
 			t.Fatalf("tokens=%d bytes=%d", estimate.EstimatedInputTokens, len(raw))
 		}
-		if estimate.Source != "rendered_deepseek_v4_content_v4" {
+		if estimate.Source != "rendered_deepseek_v4_content_v5" {
 			t.Fatal("estimator upgrade must invalidate old calibration")
 		}
 		t.Logf("wire bytes=%d estimated tokens=%d", len(raw), estimate.EstimatedInputTokens)

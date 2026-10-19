@@ -34,6 +34,9 @@ type RenderedRequest struct {
 // or an explicitly identified proxy estimate. Native usage remains authoritative.
 // No network, resource resolution, or provider call occurs. Image transport data
 // is budgeted separately; opaque files retain a conservative transport-byte budget.
+// Encrypted/redacted reasoning remains diagnostic with partial attribution; its
+// length is not converted to decrypted tokens. Hidden-input overflow uses the
+// Engine's bounded compaction recovery.
 func EstimateRenderedRequest(request RenderedRequest) (TokenEstimate, error) {
 	estimate, err := requestestimate.CountAttributed(request.Provider, request.Model, string(request.Format), request.Payload, internalAttribution(request.Attribution))
 	if err != nil {

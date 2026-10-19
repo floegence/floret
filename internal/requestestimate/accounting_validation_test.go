@@ -87,3 +87,56 @@ func TestToolDefinitionsStayStableAcrossOpaqueHistory(t *testing.T) {
 		previous = got.Breakdown.ToolDefinitionTokens
 	}
 }
+
+func TestOpaqueReasoningBytesDoNotBecomeInputTokens(t *testing.T) {
+	for _, format := range []string{"openai_responses", "anthropic_messages"} {
+		t.Run(format, func(t *testing.T) {
+			var baseline Estimate
+			for i, size := range []int{0, 7096, 285984} {
+				part := map[string]any{"type": "reasoning", "encrypted_content": strings.Repeat("A", size)}
+				body := map[string]any{"instructions": "System.", "input": []any{part, map[string]any{"role": "user", "content": "Continue."}}, "tools": []any{map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}}}}
+				if format == "anthropic_messages" {
+					part = map[string]any{"type": "redacted_thinking", "data": strings.Repeat("A", size)}
+					delete(body, "input")
+					body["messages"] = []any{map[string]any{"role": "assistant", "content": []any{part}}, map[string]any{"role": "user", "content": "Continue."}}
+				}
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := Count("openai", "gpt-6.1-sol", format, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					baseline = got
+				}
+				if got.Prefix != baseline.Prefix || got.Tools != baseline.Tools || got.Messages != baseline.Messages {
+					t.Fatalf("%d encrypted bytes changed input tokens: got=%+v baseline=%+v", size, got, baseline)
+				}
+				if got.Breakdown.OpaqueBytes != int64(size) || got.Breakdown.AttributionCoverage != "partial" || got.Breakdown.Limitation != "opaque_reasoning" || got.Breakdown.ReasoningTokens != 0 {
+					t.Fatalf("unknown reasoning must remain explicit: %+v", got.Breakdown)
+				}
+			}
+		})
+	}
+}
+
+func TestUnknownContentBudgetSurvivesOpaqueReasoning(t *testing.T) {
+	count := func(reasoningBytes int) Estimate {
+		body := map[string]any{"input": []any{map[string]any{"type": "reasoning", "encrypted_content": strings.Repeat("A", reasoningBytes)}, map[string]any{"role": "user", "content": []any{map[string]any{"type": "future_content", "data": strings.Repeat("x", 8192)}, map[string]any{"type": "input_file", "file_data": "encoded"}}}}}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Count("openai", "gpt-6.1-sol", "openai_responses", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	base, got := count(0), count(285984)
+	if base.Messages < 8192+4096 || base.Media < 4096 || got.Messages != base.Messages || got.Media != base.Media || got.Breakdown.OpaqueBytes != base.Breakdown.OpaqueBytes+285984 {
+		t.Fatalf("opaque reasoning changed unknown/media safety budgets: base=%+v got=%+v", base, got)
+	}
+}

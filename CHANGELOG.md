@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.65.1 - 2026-10-19
+
+- Stop counting encrypted and redacted reasoning transport bytes as input tokens; preserve opaque diagnostics, partial attribution, conservative unknown/media bounds, and bounded overflow recovery.
+- Version rendered request estimates independently of unchanged breakdowns so prior pressure anchors expire without rewriting canonical history.
+
 ## v7.65.0 - 2026-10-19
 
 - Add optional native provider output parts and unify Engine response fragment ownership, atomic canonical commit and memory-only view takeover.

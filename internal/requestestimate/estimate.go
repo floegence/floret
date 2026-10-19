@@ -118,7 +118,11 @@ func CountAttributed(provider, model, format string, payload []byte, attrs []Att
 	if c.opaque {
 		method = "generic_payload_estimate"
 	}
-	estimate := Estimate{Characters: collected.characters, Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media + b.OpaqueBytes, Media: media, Source: "rendered_" + source + "_content_v4", Method: method, Breakdown: b}
+	// Ciphertext length describes transport, not decrypted reasoning tokens. Keep
+	// that uncertainty in attribution; only unknown content and typed media use
+	// their explicit conservative bounds. Breakdown v4 still describes the same
+	// visible weights, while estimate v5 invalidates earlier pressure anchors.
+	estimate := Estimate{Characters: collected.characters, Prefix: margin(prefix), Tools: margin(definitions) + collected.toolFraming, Messages: margin(messages) + b.FramingTokens - collected.toolFraming + media + collected.unknownContentBudget, Media: media, Source: "rendered_" + source + "_content_v5", Method: method, Breakdown: b}
 	if b.Diagnostic != "" {
 		estimate.Breakdown = contextpolicy.ContextBreakdown{Diagnostic: b.Diagnostic}
 		estimate.Characters = nil
