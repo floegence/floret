@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Goal activity presentation
+
+- Publish detached Goal invocation display facts and recover historical review evidence without changing journal authority or completion semantics.
+
+
 ## 2026-10-18 — Streaming Goal mutation visibility
 
 - Document actor-serialized Goal view installation and stable-ID reconciliation of canonical facts with live text, preserving journal authority and stale-snapshot rejection.

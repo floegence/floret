@@ -1949,6 +1949,13 @@ type FullOutputPlan struct
 field FullOutputPlan.Text string
 field FullOutputPlan.Kind string
 field FullOutputPlan.MIME string
+type GoalActivity struct
+field GoalActivity.Applied bool tag="json:\"applied,omitempty\""
+field GoalActivity.Operation string tag="json:\"operation\""
+field GoalActivity.Version int64 tag="json:\"version\""
+field GoalActivity.Text string tag="json:\"text,omitempty\""
+field GoalActivity.Outcome string tag="json:\"outcome,omitempty\""
+field GoalActivity.Evidence string tag="json:\"evidence,omitempty\""
 type InputQuestion struct
 field InputQuestion.ID string tag="json:\"id\""
 field InputQuestion.Prompt string tag="json:\"prompt\""
@@ -2110,6 +2117,7 @@ const ResultOutcomeDeclined untyped string = "declined"
 func StrictObject func(properties map[string]any, required []string) map[string]any
 func String func(description string) map[string]any
 type StructuredActivityPayload struct
+field StructuredActivityPayload.Goal *github.com/floegence/floret/v7/tools.GoalActivity tag="json:\"goal,omitempty\""
 field StructuredActivityPayload.Status string tag="json:\"status,omitempty\""
 field StructuredActivityPayload.Operation string tag="json:\"operation,omitempty\""
 field StructuredActivityPayload.DisplayName string tag="json:\"display_name,omitempty\""

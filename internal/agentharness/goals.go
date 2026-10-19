@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/goalactivity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/tools"
@@ -33,7 +34,25 @@ func goalTool(p *turnProjection) tools.Tool {
 		"outcome":  map[string]any{"type": "string", "enum": []string{"completed", "continue", "blocked"}},
 		"evidence": map[string]any{"type": "string"}, "new_task": map[string]any{"type": "boolean"},
 	}, "required": []string{"operation", "expected_version"}, "additionalProperties": false}
-	return tools.Define[goalToolInput](tools.Definition{Name: "goal", Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, ReadOnly: true}, nil, nil, func(ctx context.Context, inv tools.Invocation[goalToolInput]) (tools.Result, error) {
+	return tools.Define[goalToolInput](tools.Definition{Name: "goal", Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, ReadOnly: true, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+		path, err := p.goalPath(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		return goalactivity.Presentation(path, p.turnID, p.runID, inv.CallID, inv.RawArgs, "running", ""), nil
+	}}, nil, nil, func(ctx context.Context, inv tools.Invocation[goalToolInput]) (output tools.Result, resultErr error) {
+		defer func() {
+			path, err := p.goalPath(context.Background())
+			if err != nil {
+				return
+			}
+			status, failure := "success", ""
+			if resultErr != nil {
+				status = "error"
+				failure = resultErr.Error()
+			}
+			output.Activity = goalactivity.Presentation(path, p.turnID, p.runID, inv.CallID, inv.RawArgs, status, failure)
+		}()
 		in := inv.Args
 		if in.Operation == "review" {
 			repo, ok := p.thread.harness.options.Repo.(interface {

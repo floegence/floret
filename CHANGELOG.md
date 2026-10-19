@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.63.0 - 2026-10-18
+
+- Expose detached typed Goal invocation presentation with exact objective text and journal-confirmed review evidence, without equating a completed review with committed completion.
+- Restore historical Goal tool presentation from its canonical invocation and review at the original execution position without rewriting history.
+
 ## v7.62.3 - 2026-10-18
 
 - Reconcile live text and newly persisted Goal facts by stable item identity, retaining canonical Path positions and rejecting stale durable snapshots.

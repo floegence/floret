@@ -86,6 +86,31 @@ func TestGoalNaturalStopReflectsWithSameToolsAndContext(t *testing.T) {
 	if view.Failure != nil || view.Goal == nil || view.Goal.Status != "completed" {
 		t.Fatalf("view=%+v goal=%+v failure=%+v", view, view.Goal, view.Failure)
 	}
+	foundReview := false
+	for _, item := range view.Items {
+		if item.Activity == nil || item.Activity.ToolName != "goal" {
+			continue
+		}
+		raw, err := json.Marshal(item.Activity.Presentation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var activity struct {
+			Payload struct {
+				Goal struct{ Text, Outcome, Evidence string }
+			}
+		}
+		if err = json.Unmarshal(raw, &activity); err != nil {
+			t.Fatal(err)
+		}
+		if activity.Payload.Goal.Text != "Deliver the verified result" || activity.Payload.Goal.Outcome != "completed" || activity.Payload.Goal.Evidence != "The requested result is present and verified." {
+			t.Fatalf("incorrect review presentation: %s", raw)
+		}
+		foundReview = true
+	}
+	if !foundReview {
+		t.Fatal("missing Goal review activity")
+	}
 	requests := g.Requests()
 	if len(requests) != 3 {
 		t.Fatalf("requests=%d", len(requests))
