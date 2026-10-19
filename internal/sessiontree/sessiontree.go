@@ -1666,19 +1666,59 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			}
 			next.Payload, _ = json.Marshal(resolution)
 		}
-		next.ParentID = oldToNew[entry.ParentID]
 		next.PathDepth = int64(len(forkedEntries) + 1)
-		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
-		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
-		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
-		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew)
+		rewriteReference := func(id string) (string, error) {
+			if id == "" {
+				return "", nil
+			}
+			if mapped := oldToNew[id]; mapped != "" {
+				return mapped, nil
+			}
+			if strings.HasSuffix(id, ":result") {
+				if mapped := oldToNew[strings.TrimSuffix(id, ":result")]; mapped != "" {
+					return mapped + ":result", nil
+				}
+			}
+			return "", fmt.Errorf("%w: fork reference %q is missing", ErrAuthorityCorrupt, id)
+		}
+		var refErr error
+		next.ParentID, refErr = rewriteReference(entry.ParentID)
+		if refErr != nil {
+			return ThreadMeta{}, refErr
+		}
+		next.FirstKeptEntryID, refErr = rewriteReference(entry.FirstKeptEntryID)
+		if refErr != nil {
+			return ThreadMeta{}, refErr
+		}
+		next.CompactedThroughEntryID, refErr = rewriteReference(entry.CompactedThroughEntryID)
+		if refErr != nil {
+			return ThreadMeta{}, refErr
+		}
+		next.KeptUserEntryIDs = nil
+		for _, id := range entry.KeptUserEntryIDs {
+			mapped, err := rewriteReference(id)
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+			next.KeptUserEntryIDs = append(next.KeptUserEntryIDs, mapped)
+		}
+		for key, value := range next.Metadata {
+			switch strings.TrimSpace(key) {
+			case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id", RetrySourceEntryIDMetadataKey, GoalReviewMetadataKey:
+				next.Metadata[key], refErr = rewriteReference(value)
+				if refErr != nil {
+					return ThreadMeta{}, refErr
+				}
+			}
+		}
 		if entry.Type == EntryGoal {
 			var change GoalChange
 			if json.Unmarshal(next.Payload, &change) != nil {
 				return ThreadMeta{}, ErrAuthorityCorrupt
 			}
-			if mapped := oldToNew[change.State.SuppressedAtInput]; mapped != "" {
-				change.State.SuppressedAtInput = mapped
+			change.State.SuppressedAtInput, refErr = rewriteReference(change.State.SuppressedAtInput)
+			if refErr != nil {
+				return ThreadMeta{}, refErr
 			}
 			next.Payload, _ = json.Marshal(change)
 		}
@@ -1687,12 +1727,13 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			if json.Unmarshal(next.Payload, &review) != nil {
 				return ThreadMeta{}, ErrAuthorityCorrupt
 			}
-			review.Boundary = oldToNew[review.Boundary]
+			review.Boundary, refErr = rewriteReference(review.Boundary)
+			if refErr != nil {
+				return ThreadMeta{}, refErr
+			}
 			next.Payload, _ = json.Marshal(review)
 		}
-		if id := next.Metadata[GoalReviewMetadataKey]; id != "" {
-			next.Metadata[GoalReviewMetadataKey] = oldToNew[id]
-		}
+
 		refs, known, refErr := FinalResponseEntryIDs(entry)
 		if refErr != nil {
 			return ThreadMeta{}, refErr
@@ -2428,70 +2469,25 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 		return nil, err
 	}
 	compactionIndex := -1
-	firstKeptIndex := -1
 	for i, entry := range path {
 		if entry.Type == EntryCompaction {
 			compactionIndex = i
-			firstKeptIndex = -1
-			if entry.FirstKeptEntryID != "" {
-				firstKeptIndex = slices.IndexFunc(path, func(candidate Entry) bool { return candidate.ID == entry.FirstKeptEntryID })
-			}
-			if firstKeptIndex < 0 && len(entry.KeptUserEntryIDs) == 0 {
-				firstKeptIndex = repairFirstKeptIndex(path, i)
-			}
 		}
 	}
 	var messages []session.Message
+	start := 0
 	if compactionIndex >= 0 {
-		compactionEntry := path[compactionIndex]
-		tailEntryIDs := map[string]struct{}{}
-		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
-			for _, entry := range path[firstKeptIndex:compactionIndex] {
-				tailEntryIDs[entry.ID] = struct{}{}
-			}
+		prefix, err := buildContextMessages(path[:compactionIndex])
+		if err != nil {
+			return nil, err
 		}
-		for _, entry := range path[compactionIndex+1:] {
-			tailEntryIDs[entry.ID] = struct{}{}
+		messages, err = projectCheckpoint(prefix, path[compactionIndex], path[:compactionIndex])
+		if err != nil {
+			return nil, err
 		}
-		var tail []session.Message
-		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
-			for _, entry := range path[firstKeptIndex:compactionIndex] {
-				if redundant[entry.ID] {
-					continue
-				}
-				var err error
-				tail, err = appendProviderVisible(tail, entry)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		for _, entry := range path[compactionIndex+1:] {
-			if redundant[entry.ID] {
-				continue
-			}
-			var err error
-			tail, err = appendProviderVisible(tail, entry)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if compactionEntry.Summary != "" {
-			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
-			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, tail)
-			msg.ModelContextSnapshot = session.CloneModelContext(compactionEntry.ModelContextBaseline)
-			msg.GoalContextBaseline = compactionEntry.GoalContextBaseline
-			msg.EntryID = compactionEntry.ID
-			msg.ParentEntryID = compactionEntry.ParentID
-			msg.CompactionID = compactionEntry.CompactionID
-			msg.CompactionGeneration = compactionEntry.CompactionGeneration
-			msg.CompactionWindowID = compactionEntry.CompactionWindowID
-			messages = append(messages, msg)
-		}
-		messages = append(messages, tail...)
-		return messages, nil
+		start = compactionIndex + 1
 	}
-	for _, entry := range path {
+	for _, entry := range path[start:] {
 		if redundant[entry.ID] {
 			continue
 		}
@@ -2502,6 +2498,101 @@ func buildContextMessages(path []Entry) ([]session.Message, error) {
 		}
 	}
 	return messages, nil
+}
+
+// projectCheckpoint resolves message identities, including derived messages,
+// rather than guessing from physical journal adjacency.
+func projectCheckpoint(history []session.Message, entry Entry, path []Entry) ([]session.Message, error) {
+	eligible := make([]session.Message, 0, len(history))
+	for _, message := range history {
+		if message.Kind != session.MessageKindCompactionSummary && message.Role != "" {
+			eligible = append(eligible, message)
+		}
+	}
+	cut, first := -1, len(eligible)
+	for i, message := range eligible {
+		if message.EntryID == entry.CompactedThroughEntryID {
+			if cut >= 0 {
+				return nil, fmt.Errorf("%w: duplicate cut", ErrAuthorityCorrupt)
+			}
+			cut = i
+		}
+		if entry.FirstKeptEntryID != "" && message.EntryID == entry.FirstKeptEntryID {
+			if first != len(eligible) {
+				return nil, fmt.Errorf("%w: duplicate first kept", ErrAuthorityCorrupt)
+			}
+			first = i
+		}
+	}
+	if cut < 0 || entry.FirstKeptEntryID != "" && first == len(eligible) || first != cut+1 {
+		return nil, fmt.Errorf("%w: compaction %q has missing or conflicting canonical boundaries", ErrAuthorityCorrupt, entry.ID)
+	}
+	var baseline *session.ModelContextSnapshot
+	for _, message := range history {
+		if message.ModelContextSnapshot != nil {
+			baseline = session.CloneModelContext(message.ModelContextSnapshot)
+		}
+		if message.EntryID == entry.CompactedThroughEntryID {
+			break
+		}
+	}
+	goal := session.CurrentGoalContext(eligible[:cut+1])
+	if len(eligible) == 1 {
+		goal = session.CurrentGoalContext(history)
+	}
+	if !reflect.DeepEqual(baseline, entry.ModelContextBaseline) || goal != entry.GoalContextBaseline {
+		return nil, fmt.Errorf("%w: compaction %q has inconsistent context baseline", ErrAuthorityCorrupt, entry.ID)
+	}
+	tail := session.CloneMessages(eligible[first:])
+	if err := session.ValidateToolHistory(tail); err != nil {
+		return nil, fmt.Errorf("%w: compaction %q retained history: %v", ErrAuthorityCorrupt, entry.ID, err)
+	}
+	var kept []session.Message
+	seen := map[string]bool{}
+	for _, id := range entry.KeptUserEntryIDs {
+		if seen[id] {
+			return nil, fmt.Errorf("%w: duplicate retained user", ErrAuthorityCorrupt)
+		}
+		seen[id] = true
+		found := false
+		for i, message := range eligible {
+			if message.EntryID != id {
+				continue
+			}
+			if message.Role != session.User {
+				return nil, fmt.Errorf("%w: retained user has invalid role", ErrAuthorityCorrupt)
+			}
+			found = true
+			if i < first {
+				kept = append(kept, session.CloneMessage(message))
+			}
+		}
+		if !found {
+			source, sourceErr := ProjectProviderEntries(path)
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
+			for _, message := range source {
+				if message.EntryID == id && message.Role == session.User {
+					kept = append(kept, message)
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: compaction %q retained user %q is missing", ErrAuthorityCorrupt, entry.ID, id)
+		}
+	}
+	if entry.Summary == "" {
+		return nil, fmt.Errorf("%w: empty summary", ErrAuthorityCorrupt)
+	}
+	summary := compaction.BuildCheckpointMessage(entry.Summary, kept, tail)
+	summary.EntryID, summary.ParentEntryID = entry.ID, entry.ParentID
+	summary.ModelContextSnapshot = session.CloneModelContext(entry.ModelContextBaseline)
+	summary.GoalContextBaseline = entry.GoalContextBaseline
+	summary.CompactionID, summary.CompactionGeneration, summary.CompactionWindowID = entry.CompactionID, entry.CompactionGeneration, entry.CompactionWindowID
+	return append([]session.Message{summary}, tail...), nil
 }
 
 func projectedSegments(path []Entry, messages []session.Message, purpose ProjectionPurpose) []ProjectedSegment {
@@ -2528,6 +2619,8 @@ func projectedSegments(path []Entry, messages []session.Message, purpose Project
 		}
 		if entry, ok := entriesByID[msg.EntryID]; ok {
 			seg.EntryType = entry.Type
+		} else if source, ok := entriesByID[msg.ParentEntryID]; ok && msg.EntryID == source.ID+":result" {
+			seg.EntryType = source.Type
 		} else if msg.Kind == session.MessageKindCompactionSummary {
 			seg.EntryType = EntryCompaction
 		}
@@ -2603,24 +2696,13 @@ func appendProviderVisible(messages []session.Message, entry Entry) ([]session.M
 			msg.ParentEntryID = entry.ParentID
 			msg.Activity = nil
 			messages = append(messages, msg)
-			if entry.Type == EntryToolCall && msg.Kind == session.MessageKindControlSignal && msg.ControlSignal != nil {
-				outcome := ""
-				status := ""
-				switch {
-				case controlstate.Classify(msg.ControlSignal) == controlstate.Failed:
-					outcome, status = "failed", "error"
-				case strings.TrimSpace(msg.ControlSignal.Disposition) == "terminal":
-					outcome, status = "completed", "success"
+			if entry.Type == EntryToolCall {
+				result, ok, err := controlstate.ResultMessage(msg)
+				if err != nil {
+					return nil, err
 				}
-				if outcome != "" {
-					content, err := json.Marshal(interactionResponseMessage{Type: "control_result", Outcome: outcome})
-					if err != nil {
-						return nil, fmt.Errorf("%w: encode terminal control result: %v", ErrAuthorityCorrupt, err)
-					}
-					messages = append(messages, session.Message{
-						Role: session.Tool, Content: string(content), ToolCallID: msg.ToolCallID, ToolName: msg.ToolName,
-						EntryID: entry.ID + ":result", ParentEntryID: entry.ID, ToolResult: &session.ToolResultView{Status: status},
-					})
+				if ok {
+					messages = append(messages, result)
 				}
 			}
 		}
@@ -2765,90 +2847,6 @@ func AppendActiveTools(ctx context.Context, repo JournalRepo, threadID string, m
 
 func AppendFailure(ctx context.Context, repo JournalRepo, threadID, turnID string, message string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryRunFailure, Error: message}, AppendOptions{})
-}
-
-func repairFirstKeptIndex(path []Entry, compactionIndex int) int {
-	if compactionIndex <= 0 {
-		return -1
-	}
-	for i := compactionIndex - 1; i >= 0; i-- {
-		switch path[i].Type {
-		case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
-			start := i
-			for start > 0 && path[start].Type == EntryToolResult {
-				start--
-			}
-			return start
-		}
-	}
-	return -1
-}
-
-func keptUserEntries(prefix []Entry, ids []string, skip map[string]struct{}) []Entry {
-	if len(ids) == 0 {
-		return nil
-	}
-	byID := make(map[string]Entry, len(prefix))
-	for _, entry := range prefix {
-		if entry.Type == EntryUserMessage && entry.Message.Role == session.User {
-			byID[entry.ID] = entry
-		}
-	}
-	out := make([]Entry, 0, len(ids))
-	seen := map[string]struct{}{}
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		if _, ok := skip[id]; ok {
-			continue
-		}
-		entry, ok := byID[id]
-		if !ok {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
-func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
-	if len(ids) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if next := oldToNew[id]; next != "" {
-			out = append(out, next)
-		}
-	}
-	return out
-}
-
-func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string) map[string]string {
-	if len(metadata) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(metadata))
-	for key, value := range metadata {
-		next := value
-		switch strings.TrimSpace(key) {
-		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
-			if rewritten := strings.TrimSpace(entryIDs[strings.TrimSpace(value)]); rewritten != "" {
-				next = rewritten
-			}
-		case RetrySourceEntryIDMetadataKey:
-			if rewritten := strings.TrimSpace(entryIDs[strings.TrimSpace(value)]); rewritten != "" {
-				next = rewritten
-			}
-		}
-		out[key] = next
-	}
-	return out
 }
 
 func typeForMessage(msg session.Message) EntryType {
@@ -3277,4 +3275,18 @@ func toolInputSource(messages []session.Message, interactionID string) bool {
 		}
 	}
 	return false
+}
+
+// ProjectProviderEntries applies the canonical message rules to newly committed
+// entries. Full-history projections use the same implementation.
+func ProjectProviderEntries(entries []Entry) ([]session.Message, error) {
+	var messages []session.Message
+	for _, entry := range entries {
+		var err error
+		messages, err = appendProviderVisible(messages, entry)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
 }

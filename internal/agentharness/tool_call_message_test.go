@@ -32,8 +32,8 @@ func TestCanonicalToolCallMessageRejectsMissingOrConflictingPayload(t *testing.T
 			}
 			projection := &turnProjection{}
 			projection.Emit(ev)
-			if projection.err == nil || turnProjectionFailureOrigin(projection.err) != "contract" || len(projection.pendingCalls) != 0 {
-				t.Fatalf("error=%v pending=%v", projection.err, projection.pendingCalls)
+			if projection.err == nil || turnProjectionFailureOrigin(projection.err) != "contract" {
+				t.Fatalf("error=%v", projection.err)
 			}
 		})
 	}
@@ -41,14 +41,12 @@ func TestCanonicalToolCallMessageRejectsMissingOrConflictingPayload(t *testing.T
 
 func TestCanonicalToolCallMessageDetachesNestedData(t *testing.T) {
 	msg := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call", ToolName: "read", ToolArgs: `{}`, Reasoning: "canonical", Activity: &session.ActivityPresentation{TargetRefs: []tools.ActivityTargetRef{{Label: "original"}}}}
-	projection := &turnProjection{}
-	projection.Emit(event.Event{Type: event.ToolCall, ToolID: "call", ToolName: "read", Args: `{}`, ToolCallMessage: &msg})
-	if projection.err != nil || len(projection.pendingCalls) != 1 {
-		t.Fatalf("error=%v", projection.err)
+	got, err := canonicalToolCallMessage(event.Event{Type: event.ToolCall, ToolID: "call", ToolName: "read", Args: "{}", ToolCallMessage: &msg})
+	if err != nil {
+		t.Fatal(err)
 	}
 	msg.Reasoning = "mutated"
 	msg.Activity.TargetRefs[0].Label = "mutated"
-	got := projection.pendingCalls[0].message
 	if got.Reasoning != "canonical" || got.Activity.TargetRefs[0].Label != "original" {
 		t.Fatalf("projected message changed: %#v", got)
 	}

@@ -41,9 +41,9 @@ func TestControlResultOwnershipPreservesCanonicalFacts(t *testing.T) {
 			entries[1].Payload = json.RawMessage(payload)
 			before, _ := json.Marshal(entries)
 			for _, compacted := range []bool{false, true} {
-				path := append([]Entry(nil), entries...)
+				path := append([]Entry{{ID: "seed", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "begin"}}}, entries...)
 				if compacted {
-					path = append(path, Entry{ID: "compaction", Type: EntryCompaction, Summary: "earlier conversation", FirstKeptEntryID: "ask"})
+					path = append(path, Entry{ID: "compaction", Type: EntryCompaction, Summary: "earlier conversation", CompactedThroughEntryID: "seed", FirstKeptEntryID: "ask"})
 				}
 				messages, err := BuildContextChecked(path, ContextOptions{})
 				if err != nil {
@@ -115,5 +115,27 @@ func TestPendingToolsExcludeControlOwnersAcrossRuns(t *testing.T) {
 		if pending := runtimePendingToolCalls(entries, "turn"); !reflect.DeepEqual(pending, []Entry{ordinary}) {
 			t.Fatalf("%s pending tools=%#v", disposition, pending)
 		}
+	}
+}
+
+func TestControlContinueUsesCanonicalSourceAndSavedOutput(t *testing.T) {
+	call := Entry{ID: "continue-call", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolCallID: "continue", ToolName: "continue", ControlSignal: &session.ControlSignalView{Name: "continue", CallID: "continue", Disposition: "continue", OutputText: "saved output"}}}
+	physical := Entry{ID: "old-result", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolCallID: "continue", ToolName: "continue", Content: "saved output"}}
+	messages, err := BuildContextChecked([]Entry{call, physical}, ContextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[1].EntryID != "continue-call:result" || messages[1].Content != "saved output" {
+		t.Fatalf("messages=%+v", messages)
+	}
+	if err := session.ValidateToolHistory(messages); err != nil {
+		t.Fatal(err)
+	}
+	if pending := runtimePendingToolCalls([]Entry{call}, "turn"); len(pending) != 0 {
+		t.Fatal("continue is treated as pending effect")
+	}
+	physical.Message.Content = "different"
+	if _, err := BuildContextChecked([]Entry{call, physical}, ContextOptions{}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("conflicting continuation: %v", err)
 	}
 }

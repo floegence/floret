@@ -1277,3 +1277,49 @@ func TestRefreshTurnSurfacePreservesConfigurationAndHistoricalCheckpoints(t *tes
 		t.Fatalf("historical checkpoint changed: %+v %v", requests, err)
 	}
 }
+
+func TestCanonicalProjectionV10UpgradePreservesRecordedFacts(t *testing.T) {
+	store := NewMemoryStore()
+	history := []session.Message{{Role: session.User, EntryID: "canonical-user", Content: "continue"}}
+	old := lineagePlan("test", "model", "ns", "old-render")
+	old.ContextProjectionRevision = contextProjectionV10
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &old, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "old"}, 1, "test", "model", CachePolicy{}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendProviderResponse(t.Context(), ProviderResponseRecord{RequestID: recorded.ID, PromptScopeID: "thread", ProviderResponseID: "native-old", InputTokens: 1234, OutputTokens: 19, UsageAvailable: true}); err != nil {
+		t.Fatal(err)
+	}
+	beforeRequests, _ := store.ProviderRequests(t.Context(), "thread")
+	beforeResponses, _ := store.ProviderResponses(t.Context(), "thread")
+	before, err := json.Marshal([]any{beforeRequests, beforeResponses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := lineagePlan("test", "model", "ns", "canonical-render")
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &next, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	if !next.CanonicalLineageReset || next.ContextProjectionRevision != "provider-context.v11" {
+		t.Fatal("v10 did not explicitly reset lineage to v11")
+	}
+	if _, err := RecordRequest(t.Context(), store, PromptScopeRef{PromptScopeID: "thread", RunID: "new"}, 1, "test", "model", CachePolicy{}, next); err != nil {
+		t.Fatal(err)
+	}
+	afterRequests, _ := store.ProviderRequests(t.Context(), "thread")
+	afterResponses, _ := store.ProviderResponses(t.Context(), "thread")
+	after, err := json.Marshal([]any{afterRequests[:len(beforeRequests)], afterResponses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("projection upgrade rewrote recorded requests, responses or usage")
+	}
+	drift := lineagePlan("test", "model", "ns", "unexpected")
+	if err := ValidateCanonicalLineage(t.Context(), store, "thread", &drift, "system", nil, nil, nil, history); !errors.Is(err, ErrContextRenderLineageChanged) {
+		t.Fatalf("post-upgrade drift accepted: %v", err)
+	}
+}

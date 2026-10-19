@@ -1,0 +1,17 @@
+{
+  "writer_version": "v7.68.2",
+  "writer_commit": "31bbd828ab310171c12e439bf2735f025b734117",
+  "go_version": "go version go1.27.2 darwin/arm64",
+  "scenarios": [
+    "engine_harness",
+    "repeated_automatic_compaction",
+    "tool_activity_between_call_result",
+    "legacy_hash_boundary",
+    "fork",
+    "nested_fork"
+  ],
+  "files": {
+    "history.sqlite": "2a970599ab5a0b425506f44776fc9599b7109f25e07f32faaa478422b978676a",
+    "producer_test.go.txt": "85f69adc4fdd0e1c35b644cfb375aaaa9e8bd0638bbe68462cb020ea2c7a1703"
+  }
+}

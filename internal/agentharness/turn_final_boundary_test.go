@@ -3,12 +3,13 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"reflect"
+	"testing"
+
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
-	"reflect"
-	"testing"
 )
 
 func TestAcceptedFinalBoundaryDiscardsHookDraftAndPreservesLengthThroughEmptyRetry(t *testing.T) {
@@ -47,7 +48,7 @@ func TestAcceptedFinalBoundaryDiscardsHookDraftAndPreservesLengthThroughEmptyRet
 
 func commitText(t *testing.T, p *turnProjection, text string) {
 	t.Helper()
-	if err := p.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: text, ContentSourceID: "output:" + text}}}}, nil, false); err != nil {
+	if _, err := p.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: text, ContentSourceID: "output:" + text}}}}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -65,7 +66,7 @@ func TestOutputTakeoverFailureDoesNotRecommitAndClosesDurableCalls(t *testing.T)
 	p := &turnProjection{ctx: t.Context(), thread: thread, turnID: "turn", runID: "run", downstream: rejectingOutputSink{cause}}
 	output := engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "once", ContentSourceID: "output:once"}}}}
 	call := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "inspect", ToolName: "inspect", ToolArgs: "{}"}
-	if err := p.commitProviderContext(t.Context(), nil, output, []session.Message{call}, false); !errors.Is(err, cause) {
+	if committed, err := p.commitProviderContext(t.Context(), nil, output, []session.Message{call}, false); err != nil || !errors.Is(committed.NotificationErr, cause) {
 		t.Fatalf("takeover=%v", err)
 	}
 	if !errors.Is(p.err, cause) {
@@ -92,5 +93,36 @@ func TestOutputTakeoverFailureDoesNotRecommitAndClosesDurableCalls(t *testing.T)
 	}
 	if texts != 1 || calls != 1 || results != 1 {
 		t.Fatalf("texts=%d calls=%d results=%d", texts, calls, results)
+	}
+}
+
+type panickingOutputSink struct{}
+
+func (panickingOutputSink) Emit(event.Event) {}
+func (panickingOutputSink) CommitProviderOutput(context.Context, ProviderOutputCommitted) error {
+	panic("subscriber failed")
+}
+
+func TestCommittedOutputNotificationPanicRetainsCanonicalMessages(t *testing.T) {
+	repo, thread := newUsageProjectionThread(t)
+	p := &turnProjection{ctx: t.Context(), thread: thread, turnID: "turn", runID: "run", downstream: panickingOutputSink{}}
+	output := engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "committed once", ContentSourceID: "output:once"}}}}
+	committed, err := p.commitProviderContext(t.Context(), nil, output, nil, false)
+	if err != nil || committed.NotificationErr == nil || len(committed.Messages) != 1 || committed.Messages[0].EntryID == "" {
+		t.Fatalf("committed=%+v err=%v", committed, err)
+	}
+	before, err := repo.Entries(t.Context(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.commitProviderContext(t.Context(), nil, output, nil, false); err == nil {
+		t.Fatal("notification failure did not fence another commit")
+	}
+	after, err := repo.Entries(t.Context(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("notification panic duplicated committed output")
 	}
 }

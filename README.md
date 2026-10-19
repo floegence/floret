@@ -31,12 +31,33 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 26 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 27 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
+
+## Historical conversation compatibility
+
+Upgrades preserve supported historical conversations as a release requirement.
+Domain schema 26 -> 27 repairs only compaction references proven by canonical
+journal identity or the exact released writer contract. Startup and read-only
+inspection share this migration; unresolved authority rolls back the complete
+transaction. Historical messages, tool outcomes, attachments, timestamps and
+compaction decision evidence remain intact. No task or tool resumes automatically.
+
+The journal owns durable message identity. Engine installs committed canonical
+messages and the complete canonical context after compaction; observation events
+never persist the same output again. Invalid boundaries fail explicitly instead
+of guessing a retained exchange. Provider-context revision v11 establishes an
+observable lineage upgrade without rewriting old requests, responses or usage.
+
+Immutable synthetic released-writer databases cover repeated compaction,
+interleaved observations, Fork and nested Fork. Ordinary tests verify migration
+and rollback; candidate and published adoption gates also continue these threads
+through public APIs across restart. Incident qualification uses separate copies
+and fake providers, never production execution.
 
 ## Canonical output sources
 
@@ -628,7 +649,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 26).
+schema change (current domain schema 27).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use

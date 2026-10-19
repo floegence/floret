@@ -184,3 +184,54 @@ type commitSummaryFixture struct{}
 func (commitSummaryFixture) GenerateSummary(context.Context, compaction.Preparation) (string, error) {
 	return "Durable facts preserved.", nil
 }
+
+func TestContextCompactionRejectsConflictingCanonicalInstallation(t *testing.T) {
+	for _, invalid := range []string{"history", "first", "cut", "user", "baseline", "generation", "previous", "window", "replacement"} {
+		t.Run(invalid, func(t *testing.T) {
+			repo := NewMemoryRepo()
+			install := compactionCommitFixture(t, repo)
+			path, err := repo.Path(t.Context(), "thread", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			install.History, err = BuildContextChecked(path, ContextOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := repo.EncodeMemoryState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch invalid {
+			case "history":
+				install.History[0].Content = "changed"
+			case "first":
+				install.Summary.FirstKeptEntryID = "other-branch"
+			case "cut":
+				install.Summary.CompactedThroughEntryID = "missing"
+			case "user":
+				install.Summary.KeptUserEntryIDs = []string{"missing-user"}
+			case "baseline":
+				install.Summary.GoalContextBaseline = "invented"
+			case "generation":
+				install.Summary.CompactionGeneration++
+			case "previous":
+				install.Summary.PreviousCompactionID = "other-branch"
+			case "window":
+				install.Summary.CompactionWindowID = "other-window"
+			case "replacement":
+				install.ActiveMessages = []session.Message{{Role: session.System, Content: "wrong"}}
+			}
+			if _, err := repo.CommitContextCompaction(t.Context(), install); err == nil {
+				t.Fatal("invalid installation succeeded")
+			}
+			after, err := repo.EncodeMemoryState()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("rejected installation changed canonical facts")
+			}
+		})
+	}
+}

@@ -30,7 +30,7 @@ func OwnsResult(message session.Message) bool {
 		return false
 	}
 	classification := Classify(signal)
-	return classification == Failed || classification == WaitingInput || strings.TrimSpace(signal.Disposition) == "terminal"
+	return classification == Failed || classification == WaitingInput || strings.TrimSpace(signal.Disposition) == "terminal" || strings.TrimSpace(signal.Disposition) == "continue"
 }
 
 // Classify is the single authority for persisted control-signal state.
@@ -72,4 +72,40 @@ func validAskUserPayload(payload map[string]any) bool {
 	}
 	projected, ok, err := control.Project(provider.ToolCall{Name: control.AskUserTool, Args: string(encoded)})
 	return err == nil && ok && projected.Kind == control.SignalAskUser
+}
+
+// ResultMessage projects a result owned by a canonical control call. Waiting
+// calls are completed only by their durable interaction resolution.
+func ResultMessage(call session.Message) (session.Message, bool, error) {
+	signal := call.ControlSignal
+	if call.Kind != session.MessageKindControlSignal || signal == nil {
+		return session.Message{}, false, nil
+	}
+	outcome, status, content := "", "", ""
+	switch {
+	case Classify(signal) == Failed:
+		outcome, status = "failed", "error"
+	case strings.TrimSpace(signal.Disposition) == "terminal":
+		outcome, status = "completed", "success"
+	case strings.TrimSpace(signal.Disposition) == "continue":
+		content = signal.OutputText
+	default:
+		return session.Message{}, false, nil
+	}
+	if outcome != "" {
+		type response struct {
+			Type    string `json:"type"`
+			Outcome string `json:"outcome"`
+		}
+		encoded, err := json.Marshal(response{"control_result", outcome})
+		if err != nil {
+			return session.Message{}, false, err
+		}
+		content = string(encoded)
+	}
+	var result *session.ToolResultView
+	if status != "" {
+		result = &session.ToolResultView{Status: status}
+	}
+	return session.Message{Role: session.Tool, Content: content, ToolCallID: call.ToolCallID, ToolName: call.ToolName, EntryID: call.EntryID + ":result", ParentEntryID: call.EntryID, ToolResult: result}, true, nil
 }
