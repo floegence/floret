@@ -2384,6 +2384,18 @@ func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, th
 	if !ok {
 		return acceptedTurn{}, ErrUnsupportedStoreCapability
 	}
+	req, err := canonicalTurnRequest(threadID, request)
+	if err != nil {
+		return acceptedTurn{}, err
+	}
+	accepted, err := journal.AcceptTurn(ctx, req)
+	if err != nil {
+		return acceptedTurn{}, runtimeHostError(err)
+	}
+	return acceptedTurn{ThreadID: threadID, TurnID: request.TurnID, RunID: request.RunID, UserEntryID: accepted.UserMessage.ID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed}, nil
+}
+
+func canonicalTurnRequest(threadID identity.ThreadID, request turnExecutionRequest) (sessiontree.AcceptTurnRequest, error) {
 	canonicalInput := session.Message{
 		Role: session.User, Content: request.Input.Text,
 		Attachments:          sessionMessageAttachments(request.Input.Attachments),
@@ -2409,17 +2421,10 @@ func (service *threadRuntimeService) acceptCanonicalTurn(ctx context.Context, th
 	}
 	fingerprint, err := sessiontree.TurnAcceptanceRequestFingerprint(req)
 	if err != nil {
-		return acceptedTurn{}, err
+		return sessiontree.AcceptTurnRequest{}, err
 	}
 	req.RequestFingerprint = fingerprint
-	accepted, err := journal.AcceptTurn(ctx, req)
-	if err != nil {
-		return acceptedTurn{}, runtimeHostError(err)
-	}
-	return acceptedTurn{
-		ThreadID: identity.ThreadID(req.ThreadID), TurnID: request.TurnID, RunID: request.RunID,
-		UserEntryID: accepted.UserMessage.ID, BaseLeafID: accepted.BaseLeafID, Replayed: accepted.Replayed,
-	}, nil
+	return req, nil
 }
 
 func agentManualCompactions(agent *Agent) ManualCompactionSource {

@@ -106,11 +106,15 @@ func (r *MemoryRepo) MutateGoal(ctx context.Context, in GoalMutation) (GoalMutat
 	if err := ctx.Err(); err != nil {
 		return GoalMutationResult{}, err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mutateGoalLocked(ctx, in)
+}
+
+func (r *MemoryRepo) mutateGoalLocked(ctx context.Context, in GoalMutation) (GoalMutationResult, error) {
 	if in.RequestKey == "" || in.Actor != "user" && in.Actor != "model" || in.Operation != "set" && in.Operation != "delete" || in.ExpectedVersion < 0 || !utf8.ValidString(in.Text) || in.Operation == "set" && strings.TrimSpace(in.Text) == "" {
 		return GoalMutationResult{}, errors.New("invalid goal mutation")
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	meta, ok := r.threads[in.ThreadID]
 	if !ok {
 		return GoalMutationResult{}, ErrThreadNotFound

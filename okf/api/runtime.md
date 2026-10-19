@@ -21,6 +21,9 @@ Opt in with `runtime.WithAgentGoals()`. The optional
 `runtime.ThreadGoalController` exposes `SetGoal` and `DeleteGoal` without
 starting execution. `ThreadView.Goal` and `ThreadItemGoal` expose canonical
 current state and changes; `Reviewing` is a transient presentation fact.
+`ThreadGoalSubmitter.SubmitGoal` adds explicit save-and-pursue intent without
+changing the save-only controller. It starts only from canonical idle state;
+running or waiting execution is updated without another queued Turn.
 See [Canonical Thread Goals](../decisions/thread-goals.md) for request timing,
 review validity, deletion suppression and recovery boundaries.
 

@@ -48,6 +48,13 @@ enter the next new model request. Management never starts execution. Reflection
 reuses the existing context, provider continuation and bounded stop hook; Goal
 completion requires a current evidence-bearing review and successful Turn end.
 Goals are independent of todos. The 22 -> 23 schema edge preserves history.
+For an explicit user command that also pursues the objective, use the optional
+`runtime.ThreadGoalSubmitter.SubmitGoal`. It atomically saves the Goal and admits
+its submitted text as a normal user Turn only when idle. Active and waiting
+Turns are updated without queuing work or resolving interactions. Replays retain
+the original decision, including after Stop or restart. Execution preparation
+failures retain the Goal and use the existing recoverable Turn failure surface.
+This additive API reuses schema 24 journal shapes; no migration is needed.
 See [the Goal contract](okf/decisions/thread-goals.md).
 
 ## Passive child events
