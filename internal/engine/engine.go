@@ -1260,7 +1260,7 @@ steps:
 				if activityErr != nil {
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(activityErr, FailureOriginContract), metrics, started, decision)
 				}
-				callActivities[call.ID] = sanitizeActivityPresentation(activity)
+				callActivities[call.ID] = event.NormalizeActivityPresentation(activity)
 			}
 			for index, call := range calls {
 				projectedCallBatchMetadata[call.ID] = map[string]any{"batch_index": index, "batch_size": len(calls)}
@@ -1417,7 +1417,7 @@ steps:
 				result.Text = "External effect unconfirmed. Inspect current state before deciding whether another action is necessary; do not blindly repeat this operation.\n" + result.Text
 			}
 			result.Text = strings.ToValidUTF8(result.Text, "\uFFFD")
-			result.Activity = sanitizeActivityPresentation(result.Activity)
+			result.Activity = event.NormalizeActivityPresentation(result.Activity)
 			toolResults[i] = result
 			resultStatus := toolResultStatus(result)
 			finalizeEffect := func(message session.Message, fullOutput *artifact.FullOutput) (EffectResultFinalizationResult, error) {
@@ -1705,10 +1705,6 @@ func preparePendingToolResult(result tools.Result) tools.Result {
 	return result
 }
 
-func sanitizeActivityPresentation(activity *tools.ActivityPresentation) *tools.ActivityPresentation {
-	return event.Sanitize(event.Event{Activity: activity}).Activity
-}
-
 func errorToolResultActivityPresentation(activity, callActivity *tools.ActivityPresentation, status string, reason string, includeReason bool) *tools.ActivityPresentation {
 	if status != string(observation.ActivityStatusError) {
 		return activity
@@ -1725,7 +1721,7 @@ func errorToolResultActivityPresentation(activity, callActivity *tools.ActivityP
 		out = tools.CloneActivityPresentation(callActivity)
 	}
 	out = activityview.WithTerminalStatus(out, string(observation.ActivityStatusError), reason)
-	return sanitizeActivityPresentation(out)
+	return event.NormalizeActivityPresentation(out)
 }
 
 func effectFinalizationErrorActivityPresentation(activity, callActivity *tools.ActivityPresentation, reason string) *tools.ActivityPresentation {
@@ -1742,7 +1738,7 @@ func effectFinalizationErrorActivityPresentation(activity, callActivity *tools.A
 	if source != nil {
 		out.Label = source.Label
 	}
-	return sanitizeActivityPresentation(out)
+	return event.NormalizeActivityPresentation(out)
 }
 
 func sessionActivityPresentation(in *tools.ActivityPresentation) *session.ActivityPresentation {

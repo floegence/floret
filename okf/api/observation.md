@@ -157,8 +157,12 @@ configuration or circuit breaker failures from provider and validation failures.
 
 # Boundary
 
-Observation records are not raw debug traces. They intentionally omit local
-paths, secrets, tool arguments, tool results, provider payloads, and reasoning.
+Observation records are not raw debug traces. They omit secrets, raw tool
+arguments and results, provider payloads, reasoning, and local paths in display
+text and metadata. Explicit ActivityTargetRef Path and URI values remain exact
+resource facts for authorized host navigation, including top-level targets,
+structured inputs/rows, and patch mutations. They never grant access. Diagnostic
+trace sinks redact these navigation paths too, without mutating canonical data.
 
 # Key Source Files
 

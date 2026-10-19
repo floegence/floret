@@ -225,6 +225,11 @@ without ordinal pairing against a separate collection. The engine validates and
 deep-copies targets through merge, finalization and JSON replay. Hosts own current
 resource authorization and missing-resource navigation. No schema migration or
 additional durable mapping is required. See [activity contracts](/tools/activity.go).
+Canonical normalization preserves exact Path and URI values on top-level,
+structured input/result, and patch mutation targets. Host-facing runtime events
+and live timelines retain the same targets; display fields remain sanitized.
+Diagnostic traces apply path redaction to every target location on detached
+copies. Existing redacted journal entries are not rewritten or reconstructed.
 
 ## Repeat safety
 

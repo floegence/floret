@@ -270,6 +270,11 @@ Structured rows and patch mutations may each carry an optional Target
 cloning, result merges, finalization and journal replay. Paths are navigation
 facts, never authorization or a guarantee that the resource still exists; hosts
 must authorize current access. Omitted targets preserve existing JSON behavior.
+Top-level targets and targets on structured inputs, result rows, and patch
+mutations retain exact Path and URI values in canonical history and host-facing
+live observations. Display text remains sanitized. Diagnostic traces redact
+navigation paths at every target location without changing canonical facts.
+This boundary does not rewrite or reconstruct previously redacted history.
 
 Structured activity may include bounded, ordered `Rows` containing
 host-sanitized text, Markdown, or code. Floret validates and preserves these
