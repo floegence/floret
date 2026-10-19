@@ -88,6 +88,17 @@ Product authorization persists under the public GoalSubmissionRequestKey before
 SubmitGoal. The factory receives that same ordinary execution identity; products
 must not derive private hashes or duplicate admission decisions.
 
+# Goal activity presentation
+
+Structured activity optionally carries a detached GoalActivity: operation, version,
+original objective, confirmed mutation flag and recorded review outcome/evidence.
+It is display data, not lifecycle authority. A completed review never replaces the
+atomic completed Goal fact. Live tools and history share one projection; historical
+reads recover only the matching invocation and canonical review at its position,
+without rewriting entries or borrowing later Goal text. Unknown or rejected
+reviews never inherit requested outcomes. Text has no artificial preview limit;
+observation redaction still applies. Existing structured renderers remain valid.
+
 # Evidence
 
 - Public opt-in and controls: ../../runtime/agent.go, ../../runtime/thread_goals.go

@@ -91,7 +91,19 @@ type StructuredActivityRow struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// GoalActivity is a detached invocation snapshot. A recorded review outcome is
+// never proof of committed Goal completion. Text preserves the exact objective.
+type GoalActivity struct {
+	Applied   bool   `json:"applied,omitempty"`
+	Operation string `json:"operation"`
+	Version   int64  `json:"version"`
+	Text      string `json:"text,omitempty"`
+	Outcome   string `json:"outcome,omitempty"`
+	Evidence  string `json:"evidence,omitempty"`
+}
+
 type StructuredActivityPayload struct {
+	Goal        *GoalActivity           `json:"goal,omitempty"`
 	Status      string                  `json:"status,omitempty"`
 	Operation   string                  `json:"operation,omitempty"`
 	DisplayName string                  `json:"display_name,omitempty"`
@@ -736,6 +748,10 @@ func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
 		if !ok {
 			return cloneActivityPayload(r)
 		}
+		if r.Goal != nil {
+			value := *r.Goal
+			l.Goal = &value
+		}
 		if r.Status != "" {
 			l.Status = r.Status
 		}
@@ -1131,6 +1147,10 @@ func cloneFileMutations(mutations FileMutationActivityPayloads) FileMutationActi
 }
 
 func cloneStructuredActivityPayload(payload StructuredActivityPayload) StructuredActivityPayload {
+	if payload.Goal != nil {
+		value := *payload.Goal
+		payload.Goal = &value
+	}
 	payload.Error = cloneActivityError(payload.Error)
 	payload.Rows = cloneStructuredActivityRows(payload.Rows)
 	payload.Inputs = cloneStructuredActivityRows(payload.Inputs)
@@ -1216,6 +1236,15 @@ func validActivityRenderer(renderer ActivityRenderer) bool {
 func validateActivityPayload(payload ActivityPayload) error {
 	switch typed := payload.(type) {
 	case StructuredActivityPayload:
+		if typed.Goal != nil {
+			g := typed.Goal
+			if g.Version < 0 || (g.Operation != "set" && g.Operation != "delete" && g.Operation != "review") {
+				return errors.New("invalid goal activity")
+			}
+			if g.Outcome != "" && (g.Operation != "review" || (g.Outcome != "completed" && g.Outcome != "continue" && g.Outcome != "blocked") || strings.TrimSpace(g.Evidence) == "") {
+				return errors.New("invalid goal review activity")
+			}
+		}
 		if typed.DurationMS < 0 {
 			return errors.New("duration_ms must be non-negative")
 		}

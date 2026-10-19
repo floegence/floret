@@ -379,6 +379,12 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 	case nil:
 		return nil
 	case tools.StructuredActivityPayload:
+		if payload.Goal != nil {
+			goal := *payload.Goal
+			goal.Text = Redact(SafePathRefsText(goal.Text))
+			goal.Evidence = Redact(SafePathRefsText(goal.Evidence))
+			payload.Goal = &goal
+		}
 		payload.Status = sanitizeText(payload.Status)
 		payload.Operation = sanitizeText(payload.Operation)
 		payload.DisplayName = sanitizeText(payload.DisplayName)

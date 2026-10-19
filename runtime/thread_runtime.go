@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/floret/v7/internal/agentharness"
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/goalactivity"
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessionlifecycle"
@@ -4499,6 +4500,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 		reasoningOpen[executionKey] = true
 		lastReasoning[executionKey] = text
 	}
+	goalArguments := make(map[string]string)
 	for entryIndex, entry := range entries {
 		canonicalOrdinal = uint64(entryIndex + 1)
 		occurredAt, err := sessiontree.EntryOccurrenceTime(entry)
@@ -4661,6 +4663,20 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				appendReasoning(turnID, runID, entry.Message.Reasoning, occurredAt)
 			}
 			activity := activityItemFromCanonicalEntry(entry, occurredAt)
+			if entry.Message.ToolName == "goal" {
+				key := threadToolKey(turnID, runID, entry.Message.ToolCallID)
+				if entry.Type == sessiontree.EntryToolCall {
+					goalArguments[key] = entry.Message.ToolArgs
+				}
+				args := goalArguments[key]
+				failure := ""
+				if activity.Status == observation.ActivityStatusError {
+					failure = entry.Message.Content
+				}
+				if presentation := goalactivity.Presentation(entries[:entryIndex+1], entry.TurnID, entry.RunID, entry.Message.ToolCallID, args, string(activity.Status), failure); presentation != nil {
+					activity.Presentation = presentation
+				}
+			}
 			toolKey := threadToolKey(turnID, runID, entry.Message.ToolCallID)
 			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
