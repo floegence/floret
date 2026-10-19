@@ -79,8 +79,8 @@ func TestBackendDomainV24ToV25OutputSources(t *testing.T) {
 			stripped.Message.ContentSourceID = ""
 			stripped.Message.ReasoningSourceID = ""
 			stripped = PrepareEntry(stripped)
-			stripped.CreatedAt = stripped.CreatedAt.Round(0)
-			original[i].CreatedAt = original[i].CreatedAt.Round(0)
+			stripped.CreatedAt = stripped.CreatedAt.UTC()
+			original[i].CreatedAt = original[i].CreatedAt.UTC()
 			if !reflect.DeepEqual(stripped, original[i]) {
 				t.Fatalf("canonical fact changed thread=%s entry=%s\nafter=%+v\nbefore=%+v", id, entry.ID, stripped, original[i])
 			}
