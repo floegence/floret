@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.68.2 - 2026-10-19
+
+- Give the independent-compaction cancellation fixture a bounded five-second preparation guard under race instrumentation; keep production cancellation deadlines unchanged.
+
 ## v7.68.1 - 2026-10-19
 
 - Keep waiting-run finalization under its original owner, then atomically admit the continuation marker before publishing the successor Run so Stop cannot strand an answered thread during preparation.

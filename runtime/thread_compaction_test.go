@@ -226,7 +226,9 @@ func TestIndependentThreadCompactionCancellationPreservesContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline, cancel := context.WithTimeout(t.Context(), time.Second)
+	// Full frozen-request preparation is CPU-bound under race instrumentation.
+	// This is a readiness guard, not the cancellation latency being tested.
+	deadline, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := gateway.WaitForRequests(deadline, 4); err != nil {
 		t.Fatal(err)
