@@ -460,6 +460,16 @@ func (repo *BackendRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleR
 	return result0, err
 }
 
+func (repo *BackendRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (GoalSubmissionResult, error) {
+	var result0 GoalSubmissionResult
+	err := repo.update(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.SubmitGoal(ctx, in)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) Thread(ctx context.Context, threadID string) (ThreadMeta, error) {
 	var result0 ThreadMeta
 	err := repo.view(ctx, func(memory *MemoryRepo) error {

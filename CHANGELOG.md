@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.62.0 - 2026-10-18
+
+- Add optional ThreadGoalSubmitter for atomic user Goal submission and idle-only execution admission. Preserve SetGoal and DeleteGoal as save-only controls.
+- Preserve active questions, approvals and execution without queuing another Turn; deduplicate the original admission across Stop and restart, and retain Goals on normal recoverable execution failures.
+- Reuse canonical Goal and ordinary user Turn records without changing domain schema 24.
+
 ## v7.61.0 - 2026-10-18
 
 - Add canonical Path ordinals to thread items and parent events, retaining original row positions across tool updates, history and forks independently of clocks.

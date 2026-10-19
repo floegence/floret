@@ -36,6 +36,10 @@ func (r *MemoryRepo) AcceptTurn(_ context.Context, req AcceptTurnRequest) (Accep
 	req.InputRequestFingerprint = strings.TrimSpace(req.InputRequestFingerprint)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.acceptTurnLocked(req)
+}
+
+func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, error) {
 	meta, ok := r.threads[req.ThreadID]
 	if !ok {
 		if _, deleted := r.tombstones[req.ThreadID]; deleted {

@@ -37,6 +37,21 @@ Cache reuse depends on the provider and actual usage, not a promised percentage.
 
 # Natural stop and recovery
 
+Explicit user submission uses the optional ThreadGoalSubmitter. One journal
+transaction writes the Goal and, only when no canonical Turn is active, accepts
+the submitted user text as a normal Turn. Active execution, questions and
+approvals receive only the Goal change. The existing actor installs the admitted
+run and the existing execution path prepares it. Products do not inspect state
+and call Send afterward. SetGoal and DeleteGoal retain their save-only contract.
+
+The Goal entry's existing request key and fingerprint deduplicate both outcomes.
+An exact replay retains its original admission decision after completion, Stop
+or restart; it cannot wake a thread that was only updated. A stale Goal version
+changes nothing. Persistence failure rolls back both changes. Preparation or
+provider failure uses the normal recoverable Turn failure while retaining the
+saved Goal. A fresh explicit submission may start again. No new journal shape,
+receipt, queue owner or domain schema is introduced.
+
 The executing model uses the existing stop hook and continuation path. A typed
 internal reflection asks it to compare the Goal, user constraints and existing
 results, finish necessary work, ask for needed decisions, or honestly report an
