@@ -1,6 +1,7 @@
 package observation
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -45,6 +46,7 @@ func (s CompactionStatus) Valid() bool {
 }
 
 type CompactionEvent struct {
+	Decision            *CompactionDecision    `json:"decision,omitempty"`
 	RunID               identity.RunID         `json:"run_id,omitempty"`
 	ThreadID            identity.ThreadID      `json:"thread_id,omitempty"`
 	TurnID              identity.TurnID        `json:"turn_id,omitempty"`
@@ -66,6 +68,9 @@ type CompactionEvent struct {
 }
 
 func (e CompactionEvent) Validate() error {
+	if err := e.Decision.Validate(); err != nil {
+		return err
+	}
 	if !e.Phase.Valid() {
 		return fmt.Errorf("unsupported compaction phase %q", e.Phase)
 	}
@@ -87,7 +92,9 @@ func (e CompactionEvent) Validate() error {
 
 func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 	if ev.Compaction != nil {
-		return *ev.Compaction, ev.Compaction.Validate() == nil
+		out := *ev.Compaction
+		out.Decision = ev.Compaction.Decision.Clone()
+		return out, out.Validate() == nil
 	}
 	if ev.Type != EventTypeContextCompact {
 		return CompactionEvent{}, false
@@ -114,6 +121,16 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 		Source:      stringFromAny(meta["source"]),
 		ObservedAt:  ev.ObservedAt,
 		Error:       ev.Error,
+	}
+	if raw := meta["decision"]; raw != nil {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return CompactionEvent{}, false
+		}
+		if err := json.Unmarshal(data, &out.Decision); err != nil {
+			return CompactionEvent{}, false
+		}
+		out.Decision = out.Decision.Clone()
 	}
 	if usage, ok := contextUsageFromAny(meta["message_context_before"]); ok {
 		out.ContextBefore = usage
@@ -147,7 +164,7 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 	default:
 		return CompactionEvent{}, false
 	}
-	return out, true
+	return out, out.Validate() == nil
 }
 
 func CompactionEventsFromEvents(events []Event) []CompactionEvent {

@@ -292,6 +292,21 @@ func projectThreadContext(entries []sessiontree.Entry, retainedFrom int64, activ
 		if int64(index+1) < retainedFrom {
 			continue
 		}
+		// A canonical terminal settles an interrupted observation even if shutdown
+		// prevented its final compaction event. Never leave a completed turn running.
+		if entry.Type == sessiontree.EntryTurnMarker && (entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted) {
+			for i := range compactions {
+				compact := &compactions[i]
+				if compact.Status != "running" || compact.TurnID != entry.TurnID || compact.RunID != entry.RunID {
+					continue
+				}
+				compact.Phase, compact.Status = "failed", "failed"
+				if entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureCancelled {
+					compact.Phase, compact.Status = "cancelled", "cancelled"
+				}
+				compact.ObservedAt = entry.CreatedAt
+			}
+		}
 		switch {
 		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextPolicyEntryKind:
 			record, err := sessiontree.DecodeThreadContextPolicyEntry(entry)

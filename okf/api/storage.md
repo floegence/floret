@@ -274,3 +274,11 @@ entry-scoped identity without inventing provider request IDs. Mixed batches use
 canonical parent relationships, never observation logs or insertion-adjacent
 branches. A new envelope rejects old writers in the existing physical namespace.
 Current startup is byte-stable; all earlier migration edges remain mandatory.
+
+## Compaction decision evidence migration
+
+Domain schema 26 appends the atomic 25 -> 26 edge. Historical journal payloads
+remain unchanged and absent frozen request evidence remains unavailable. The new
+envelope rejects older writers; current startup remains byte-stable. Optional
+compaction decision facts belong to the canonical lifecycle, never a second
+request ledger or host-owned migration.

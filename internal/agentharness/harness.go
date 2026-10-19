@@ -1765,6 +1765,15 @@ func subAgentContextCompactionFromEvent(ev event.Event) (ThreadContextCompaction
 	if strings.TrimSpace(operationID) == "" {
 		return ThreadContextCompaction{}, false, errors.New("context compaction operation id is required")
 	}
+	if raw := meta["decision"]; raw != nil {
+		decision, ok := raw.(*observation.CompactionDecision)
+		if !ok {
+			return ThreadContextCompaction{}, false, errors.New("invalid typed compaction decision")
+		}
+		if err := decision.Validate(); err != nil {
+			return ThreadContextCompaction{}, false, err
+		}
+	}
 	return ThreadContextCompaction{
 		RunID:               ev.RunID,
 		ThreadID:            ev.ThreadID,
@@ -1779,9 +1788,15 @@ func subAgentContextCompactionFromEvent(ev event.Event) (ThreadContextCompaction
 		Source:              stringFromEventMetadata(meta["source"]),
 		TokensBefore:        int64FromEventMetadata(meta["tokens_before"]),
 		TokensAfterEstimate: int64FromEventMetadata(meta["tokens_after_estimate"]),
+		Decision:            compactionDecisionFromMetadata(meta),
 		Error:               strings.TrimSpace(ev.Err),
 		ObservedAt:          nonZeroTime(ev.Timestamp, time.Now()),
 	}, true, nil
+}
+
+func compactionDecisionFromMetadata(meta map[string]any) *observation.CompactionDecision {
+	d, _ := meta["decision"].(*observation.CompactionDecision)
+	return d.Clone()
 }
 
 func subAgentObservationProviderUsage(in provider.Usage) observation.ProviderUsage {

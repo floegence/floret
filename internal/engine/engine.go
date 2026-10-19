@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
 	"github.com/floegence/floret/v7/internal/citation"
+	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/memory"
@@ -489,6 +490,7 @@ type ManualCompactionPollRequest struct {
 }
 
 type ManualCompactionRequest struct {
+	decision  *observation.CompactionDecision
 	RequestID string
 	Source    string
 }
@@ -1576,7 +1578,7 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	}
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-	active, req, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
+	active, req, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, nil, ContextCompactDebugNextActionReturnCompactedContext)
 	if err != nil {
 		if errors.Is(err, ErrCompactionNoop) {
 			return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
@@ -2775,7 +2777,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	} else if ok {
 		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionProviderRequest)
+		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, nil, ContextCompactDebugNextActionProviderRequest)
 		if err == nil {
 			if metrics != nil {
 				metrics.Compactions++
@@ -2789,7 +2791,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		}
 	}
 	if pressure, ok := tracker.ConsumePendingCompaction(); ok && opts.ContextPolicy.ModelMaxOutputTokens <= 0 {
-		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, metrics, failures)
+		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, nil, metrics, failures)
 		if err != nil {
 			return provider.Request{}, history, false, err
 		}
@@ -2802,7 +2804,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		if contextLineageCompactionRequired(err) {
 			usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 			pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-			next, migrated, _, compactErr := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonContextLineage, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)
+			next, migrated, _, compactErr := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonContextLineage, usage, failures, pressure, ManualCompactionRequest{}, nil, ContextCompactDebugNextActionProviderRequest)
 			if compactErr != nil {
 				return provider.Request{}, history, false, compactErr
 			}
@@ -2818,7 +2820,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		return req, history, compacted, nil
 	}
 	if soft {
-		next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
+		next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 		if errors.Is(compactErr, ErrCompactionNoop) {
 			tracker.softNoopFingerprint = req.RawPlan.PayloadHash
 			return req, history, false, nil
@@ -2843,7 +2845,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		return provider.Request{}, history, compacted, err
 	}
 
-	next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
+	next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 	if err != nil {
 		return provider.Request{}, history, compacted, err
 	}
@@ -2919,7 +2921,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 		return req, history, stepOutput, latency, false, err
 	}
 	pressure := tracker.Overflow(opts.ContextPolicy)
-	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, metrics, failures)
+	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 	if compactErr != nil {
 		return req, history, StepOutput{}, latency, false, compactErr
 	}
@@ -3014,9 +3016,9 @@ func compactionErrorNextAction(trigger compaction.Trigger, reason compaction.Rea
 	return ContextCompactDebugNextActionFailTurn
 }
 
-func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
+func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, candidate *observation.CompactionRequestSnapshot, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
-	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)
+	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, candidate, ContextCompactDebugNextActionProviderRequest)
 	if err != nil {
 		return history, provider.Request{}, err
 	}
@@ -3110,12 +3112,13 @@ func validateConfiguredTools(local []tools.ToolDefinition, hosted []provider.Hos
 	return withFailureOrigin(err, FailureOriginContract)
 }
 
-func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, candidate *observation.CompactionRequestSnapshot, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
 	if err := validateContextBudget(opts.ContextPolicy); err != nil {
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	lifecycle := compactionLifecycleRequest(operationID, trigger, manual)
+	lifecycle.decision = (&observation.CompactionDecision{Before: candidate, Pressure: configbridge.PublicContextPressure(beforePressure)}).Clone()
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
 		TraceID:  opts.TraceID,
@@ -3333,6 +3336,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		}
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
+	lifecycle.decision.After = compactionRequestSnapshot(req, tracker)
 	installDebug := compactionValidationDebugMetadata(0, result, validation, 0, 0)
 	installDebug["active_message_count"] = len(active)
 	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, lifecycle, installDebug, nil, time.Time{})

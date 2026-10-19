@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 25 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 26 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
@@ -628,7 +628,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 25).
+schema change (current domain schema 26).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -823,6 +823,16 @@ ThreadContextCompaction.CanonicalOrdinal is the first lifecycle entry's one-base
 position on the queried Path, independent of timestamps and terminal updates.
 AfterItemID remains the insertion boundary; explicit Turn/Run identity defines
 ownership. Forks reproject canonical order on the destination Path.
+
+Compaction lifecycle records optionally expose a typed observation.CompactionDecision.
+It records the actual frozen trigger candidate (even when never sent), the decision
+pressure, and the validated replacement. Budget estimates, calibrated pressure and
+message-context before/after values remain distinct measurements. Missing snapshots
+are unavailable; manual preflight does not fabricate a request. The snapshot carries
+only budget diagnostics and fingerprints, never raw prompts or source distributions.
+The same canonical lifecycle supplies View, Context, reconnect and restart. Domain
+schema 25 -> 26 preserves historical payloads and rejects older writers.
+
 
 The value returned by `Host.ThreadService` also implements
 `ThreadContextReader`; `Context` returns Floret's canonical context policy,

@@ -134,3 +134,44 @@ func TestThreadDetailContextStartsNewPolicyWithoutPreviousModelUsage(t *testing.
 		t.Fatalf("cross-model totals=%#v, want 120 input tokens", after.UsageTotals)
 	}
 }
+
+func TestTerminalTurnSettlesInterruptedCompactionProjection(t *testing.T) {
+	for _, status := range []sessiontree.TurnMarkerStatus{sessiontree.TurnFailed, sessiontree.TurnAborted, sessiontree.TurnCompleted, sessiontree.TurnWaiting} {
+		t.Run(string(status), func(t *testing.T) {
+			policy, err := sessiontree.NewThreadContextPolicyEntry("thread", "turn", "run", "test", "model", contextpolicy.Policy{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			start, err := sessiontree.NewThreadContextCompactionEntry(sessiontree.ThreadContextCompaction{ThreadID: "thread", TurnID: "turn", RunID: "run", OperationID: "operation", RequestID: "request", Phase: "start", Status: "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := []sessiontree.Entry{policy, start, {Type: sessiontree.EntryTurnMarker, ThreadID: "thread", TurnID: "turn", RunID: "run", TurnStatus: status, Metadata: map[string]string{}, CreatedAt: time.Now()}}
+			if status == sessiontree.TurnAborted {
+				entries[2].Metadata[sessiontree.TurnFailureCodeMetadataKey] = sessiontree.TurnFailureCancelled
+			}
+			snapshot, err := ProjectThreadContext(entries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "failed"
+			if status == sessiontree.TurnWaiting {
+				want = "running"
+			}
+			if status == sessiontree.TurnAborted {
+				want = "cancelled"
+			}
+			if len(snapshot.Compactions) != 1 || snapshot.Compactions[0].Status != want {
+				t.Fatalf("stranded compaction: %+v", snapshot.Compactions)
+			}
+			complete, err := sessiontree.NewThreadContextCompactionEntry(sessiontree.ThreadContextCompaction{ThreadID: "thread", TurnID: "turn", RunID: "run", OperationID: "operation", RequestID: "request", Phase: "complete", Status: "compacted"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved, err := ProjectThreadContext([]sessiontree.Entry{policy, start, complete, entries[2]})
+			if err != nil || len(preserved.Compactions) != 1 || preserved.Compactions[0].Status != "compacted" {
+				t.Fatalf("terminal overwrote successful compaction: %+v %v", preserved.Compactions, err)
+			}
+		})
+	}
+}

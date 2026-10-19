@@ -5,9 +5,11 @@ import (
 	"math"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/observation"
 )
 
 const (
@@ -272,7 +274,22 @@ func compactionDebugMetadata(operationID string, stage string, status string, tr
 	}, manual)
 }
 
+func compactionRequestSnapshot(req provider.Request, tracker *ContextPressureTracker) *observation.CompactionRequestSnapshot {
+	estimate := configbridge.RequestEstimate(req.RequestEstimate)
+	estimate.Characters, estimate.Breakdown.Details = nil, nil
+	snapshot := &observation.CompactionRequestSnapshot{PayloadFingerprint: req.RawPlan.PayloadHash,
+		Provider: req.Provider, Model: req.Model, Estimate: estimate,
+		Pressure: configbridge.PublicContextPressure(req.ContextPressure)}
+	if tracker != nil && req.ContextPressure.Source == contextpolicy.PressureSourceUsageAnchoredDelta {
+		snapshot.CalibrationRequestID = tracker.anchor.RequestID
+	}
+	return snapshot
+}
+
 func withCompactionIdentityMetadata(meta map[string]any, manual ManualCompactionRequest) map[string]any {
+	if d := manual.decision; d != nil && (d.Before != nil || d.After != nil) {
+		meta["decision"] = d.Clone()
+	}
 	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
 		meta["request_id"] = requestID
 	}

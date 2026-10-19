@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.68.0 - 2026-10-19
+
+- Publish typed frozen compaction trigger and validated replacement diagnostics through the existing canonical lifecycle, preserving estimator scope and calibration identity without a second ledger.
+- Append automatic domain schema 25 -> 26, preserving historical payloads and missing evidence while rejecting older writers; settle interrupted compaction observations from canonical terminal turns.
+- Preserve decision isolation across observation, current views, reconnect, fork and restart without changing token measurement, compaction thresholds or retry limits.
+
 ## v7.67.1 - 2026-10-19
 
 - Install admitted managed context and canonical item positions before publishing an accepted execution, including promoted queued inputs, while keeping execution settlement independent of display projection failures.

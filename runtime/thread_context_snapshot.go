@@ -32,5 +32,8 @@ func cloneThreadContextSnapshot(in *ThreadContextSnapshot) *ThreadContextSnapsho
 	}
 	out.Compactions = make([]ThreadContextCompaction, len(in.Compactions))
 	copy(out.Compactions, in.Compactions)
+	for i := range out.Compactions {
+		out.Compactions[i].Decision = in.Compactions[i].Decision.Clone()
+	}
 	return &out
 }
