@@ -28,6 +28,13 @@ type GoalSubmissionResult struct {
 	Execution GoalExecution `json:"execution,omitempty"`
 }
 
+// GoalSubmissionRequestKey returns the ordinary Turn identity used by SubmitGoal.
+// Products that persist execution authorization before admission must use this
+// key; idle admission and its replay decision remain owned by Floret.
+func GoalSubmissionRequestKey(key RequestKey) RequestKey {
+	return RequestKey("goal-submit:" + sessiontree.StableHash(string(key)))
+}
+
 var _ ThreadGoalSubmitter = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalInput) (GoalSubmissionResult, error) {
@@ -53,7 +60,7 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		return GoalSubmissionResult{}, err
 	}
 	// A separate normal-input identity avoids collisions with user Send keys.
-	key := "goal-submit:" + sessiontree.StableHash(string(in.RequestKey))
+	key := string(GoalSubmissionRequestKey(in.RequestKey))
 	fingerprint, err := stableFingerprint(input)
 	if err != nil {
 		return GoalSubmissionResult{}, err

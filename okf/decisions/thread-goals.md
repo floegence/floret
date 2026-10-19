@@ -79,6 +79,10 @@ independently. A delegated mission resets inherited Goal content so the child
 maintains its own task. Domain schema 22 -> 23 preserves existing canonical
 entries and every earlier migration; old writers reject the new envelope.
 
+Product authorization persists under the public GoalSubmissionRequestKey before
+SubmitGoal. The factory receives that same ordinary execution identity; products
+must not derive private hashes or duplicate admission decisions.
+
 # Evidence
 
 - Public opt-in and controls: ../../runtime/agent.go, ../../runtime/thread_goals.go

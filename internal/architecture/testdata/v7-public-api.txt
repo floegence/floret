@@ -765,6 +765,7 @@ type GoalMutationResult struct
 field GoalMutationResult.Goal github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal\""
 field GoalMutationResult.Conflict bool tag="json:\"conflict\""
 field GoalMutationResult.Replayed bool tag="json:\"replayed,omitempty\""
+func GoalSubmissionRequestKey func(key github.com/floegence/floret/v7/runtime.RequestKey) github.com/floegence/floret/v7/runtime.RequestKey
 type GoalSubmissionResult struct
 field GoalSubmissionResult.<embedded> github.com/floegence/floret/v7/runtime.GoalMutationResult
 field GoalSubmissionResult.Execution github.com/floegence/floret/v7/runtime.GoalExecution tag="json:\"execution,omitempty\""
