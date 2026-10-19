@@ -25,15 +25,6 @@ type webSearchArgs struct {
 	Freshness  *string `json:"freshness"`
 }
 
-type braveSearchResponse struct {
-	Web struct {
-		Results []braveSearchResult `json:"results"`
-	} `json:"web"`
-	Query struct {
-		Original string `json:"original"`
-	} `json:"query"`
-}
-
 type braveSearchResult struct {
 	Title       string `json:"title"`
 	URL         string `json:"url"`
