@@ -51,3 +51,5 @@ See [Search client](../../tools/websearch/client.go),
 [tool](../../tools/websearch/tool.go), [Fetch](../../tools/webfetch/deepseek.go),
 [capabilities](../../provider/deepseek_capability.go) and
 [official contract](https://api-docs.deepseek.com/guides/search/).
+
+`ClientOptions.ResolveAPIKey` resolves a live host credential at dispatch. A host can preserve a frozen connection selection while applying key rotation and rejecting revocation. Callback failures do not invoke HTTP or substitute a source.

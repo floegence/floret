@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/floegence/floret/v7/internal/testing/tooltest"
 	"github.com/floegence/floret/v7/tools"
 	"net/http"
@@ -124,5 +125,26 @@ func TestBraveAndCancellationAndRedirect(t *testing.T) {
 	remote, _ := NewDeepSeekClient(ClientOptions{BaseURL: redirect.URL, APIKey: "key"})
 	if _, err := remote.Search(t.Context(), Request{Query: "q"}); err == nil || targetCalls != 0 {
 		t.Fatalf("redirect=%v calls=%d", err, targetCalls)
+	}
+}
+
+func TestLiveCredentialIsResolvedForEachSearch(t *testing.T) {
+	key := "first"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			t.Error("stale credential")
+		}
+		fmt.Fprint(w, `{"results":[]}`)
+	}))
+	defer server.Close()
+	client, err := NewDeepSeekClient(ClientOptions{BaseURL: server.URL, ResolveAPIKey: func(context.Context) (string, error) { return key, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range []string{"first", "rotated"} {
+		key = next
+		if _, err = client.Search(context.Background(), Request{Query: "rotation"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

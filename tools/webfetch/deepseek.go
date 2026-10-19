@@ -13,9 +13,11 @@ import (
 // DeepSeekOptions binds paid remote Fetch to one connection. Options retains host authorization.
 type DeepSeekOptions struct {
 	Options
-	BaseURL    string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL string
+	APIKey  string
+	// ResolveAPIKey optionally resolves a live credential immediately before each call.
+	ResolveAPIKey func(context.Context) (string, error)
+	HTTPClient    *http.Client
 }
 
 // HTTPError is a sanitized tool-service error, independent of model provider failures.
@@ -45,7 +47,7 @@ func NewDeepSeekClient(options DeepSeekOptions) (*DeepSeekClient, error) {
 		return nil, err
 	}
 	options.APIKey = strings.TrimSpace(options.APIKey)
-	if options.APIKey == "" {
+	if options.APIKey == "" && options.ResolveAPIKey == nil {
 		return nil, errors.New("Fetch API key is required")
 	}
 	return &DeepSeekClient{options: options, endpoint: endpoint, resolver: defaultResolver{}}, nil
@@ -63,11 +65,22 @@ func (c *DeepSeekClient) Fetch(ctx context.Context, rawURL string) (DeepSeekResu
 	if _, err := parseAndValidateURL(ctx, c.resolver, c.options.AllowResolvedBenchmarkIPs, args.URL); err != nil {
 		return DeepSeekResult{}, err
 	}
+	key := c.options.APIKey
+	if c.options.ResolveAPIKey != nil {
+		key, err = c.options.ResolveAPIKey(ctx)
+		if err != nil {
+			return DeepSeekResult{}, err
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return DeepSeekResult{}, errors.New("Fetch API key is required")
+		}
+	}
 	var response struct {
 		Title   string  `json:"title"`
 		Content *string `json:"content"`
 	}
-	if err := webapi.Do(ctx, c.options.HTTPClient, requestTimeout, "deepseek", c.options.APIKey, http.MethodPost, c.endpoint, map[string]string{"url": args.URL}, &response); err != nil {
+	if err := webapi.Do(ctx, c.options.HTTPClient, requestTimeout, "deepseek", key, http.MethodPost, c.endpoint, map[string]string{"url": args.URL}, &response); err != nil {
 		return DeepSeekResult{}, err
 	}
 	if response.Content == nil || strings.TrimSpace(*response.Content) == "" {

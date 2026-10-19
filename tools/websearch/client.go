@@ -24,10 +24,12 @@ type HTTPError = webapi.HTTPError
 // ClientOptions binds a client to one host-selected service endpoint and credential.
 // BaseURL is the Brave search endpoint or the DeepSeek connection base URL.
 type ClientOptions struct {
-	BaseURL    string
-	APIKey     string
-	HTTPClient *http.Client
-	Timeout    time.Duration
+	BaseURL string
+	APIKey  string
+	// ResolveAPIKey optionally resolves a live credential immediately before each call.
+	ResolveAPIKey func(context.Context) (string, error)
+	HTTPClient    *http.Client
+	Timeout       time.Duration
 }
 
 // Request describes a search. DeepSeek supports OriginalQuestion, Localization and NeedContent;
@@ -94,7 +96,7 @@ func NewBraveClient(options ClientOptions) (*Client, error) {
 }
 func newClient(provider, endpoint string, options ClientOptions) (*Client, error) {
 	options.APIKey = strings.TrimSpace(options.APIKey)
-	if options.APIKey == "" {
+	if options.APIKey == "" && options.ResolveAPIKey == nil {
 		return nil, errors.New("search API key is required")
 	}
 	if options.Timeout <= 0 {
@@ -110,12 +112,23 @@ func (c *Client) Search(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	key := c.options.APIKey
+	if c.options.ResolveAPIKey != nil {
+		key, err = c.options.ResolveAPIKey(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return Result{}, errors.New("search API key is required")
+		}
+	}
 	result := Result{Provider: c.provider, Query: req.Query, Results: []Item{}}
 	if c.provider == ProviderDeepSeek {
 		var response struct {
 			Results *[]Item `json:"results"`
 		}
-		if err := webapi.Do(ctx, c.options.HTTPClient, c.options.Timeout, c.provider, c.options.APIKey, http.MethodPost, c.endpoint, req, &response); err != nil {
+		if err := webapi.Do(ctx, c.options.HTTPClient, c.options.Timeout, c.provider, key, http.MethodPost, c.endpoint, req, &response); err != nil {
 			return Result{}, err
 		}
 		if response.Results == nil {
@@ -148,7 +161,7 @@ func (c *Client) Search(ctx context.Context, request Request) (Result, error) {
 				}
 			}
 		}
-		if err := webapi.Do(ctx, c.options.HTTPClient, c.options.Timeout, c.provider, c.options.APIKey, http.MethodGet, endpoint.String(), nil, &response); err != nil {
+		if err := webapi.Do(ctx, c.options.HTTPClient, c.options.Timeout, c.provider, key, http.MethodGet, endpoint.String(), nil, &response); err != nil {
 			return Result{}, err
 		}
 		for _, item := range response.Web.Results {
