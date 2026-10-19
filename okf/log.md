@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Streaming Goal mutation visibility
+
+- Document actor-serialized Goal view installation and stable-ID reconciliation of canonical facts with live text, preserving journal authority and stale-snapshot rejection.
+
 ## 2026-10-18 — Shared provider transport classification
 
 - Document ordinary EOF recovery and the public classifier in [Provider contracts](api/provider.md) and [recovery ownership](decisions/provider-retry.md). No durable schema changes.

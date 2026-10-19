@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
@@ -110,14 +109,35 @@ func (service *threadRuntimeService) mutateGoal(ctx context.Context, in sessiont
 	if !ok {
 		return GoalMutationResult{}, ErrUnsupportedStoreCapability
 	}
-	result, err := repo.MutateGoal(ctx, in)
+	actor := service.runtime(identity.ThreadID(in.ThreadID))
+	var result sessiontree.GoalMutationResult
+	var view ThreadView
+	err := actor.apply(ctx, func() error {
+		var err error
+		result, err = repo.MutateGoal(ctx, in)
+		if err != nil {
+			return runtimeHostError(err)
+		}
+		if result.Conflict || result.Replayed {
+			return nil
+		}
+		// Read and install under the same actor boundary so streaming events
+		// cannot turn a successful user mutation into a discarded refresh.
+		canonical, err := service.loadCanonicalThreadView(ctx, identity.ThreadID(in.ThreadID))
+		if err != nil {
+			return err
+		}
+		if err := actor.installCanonicalView(canonical); err != nil {
+			return err
+		}
+		view = cloneThreadRuntimeView(actor.state.view)
+		return nil
+	})
 	if err != nil {
-		return GoalMutationResult{}, runtimeHostError(err)
+		return GoalMutationResult{}, err
 	}
 	if !result.Conflict && !result.Replayed {
-		if err := service.refreshCanonical(identity.ThreadID(in.ThreadID), ""); err != nil && !errors.Is(err, errCanonicalRefreshDiscarded) {
-			return GoalMutationResult{}, err
-		}
+		service.publish(view)
 	}
 	return GoalMutationResult{Goal: *publicThreadGoal(result.State), Conflict: result.Conflict, Replayed: result.Replayed}, nil
 }

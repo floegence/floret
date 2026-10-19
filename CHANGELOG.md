@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.62.3 - 2026-10-18
+
+- Reconcile live text and newly persisted Goal facts by stable item identity, retaining canonical Path positions and rejecting stale durable snapshots.
+- Serialize user Goal mutations with canonical view installation so edits and deletion remain immediately visible during streaming without dropping text or starting extra execution.
+
 ## v7.62.2 - 2026-10-18
 
 - Install the canonical admitted item prefix when Goal submission starts execution, preserving immediate Goal edits, deletion and timeline ordering during the active Turn.

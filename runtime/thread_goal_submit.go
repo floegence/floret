@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -86,28 +85,29 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		if submission.Mutation.Conflict || submission.Mutation.Replayed {
 			return nil
 		}
-		actor.state.view.Goal = publicThreadGoal(submission.Mutation.State)
-		actor.state.view.ViewVersion++
+		canonical, err := service.loadCanonicalThreadView(ctx, in.ThreadID)
+		if err != nil {
+			return err
+		}
 		if a := submission.Accepted; a != nil {
-			// The preceding Turn is canonically terminal. Install the complete
-			// admitted journal prefix, including Goal facts before the user input,
-			// so later refreshes share its item identities and ordinals.
-			items, interactions, err := hydrateThreadRuntimeItems(ctx, service.host.store.repo, in.ThreadID)
-			if err != nil {
-				return err
-			}
+			// The preceding Turn is terminal: discard its stream-only drafts
+			// before admitting the new canonical prefix.
+			actor.state.view.Items = cloneThreadItems(canonical.Items)
 			previous, err = actor.beginRun(beginThreadRunInput{turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(key), cancel: cancel, executionDone: done, clearOutcome: true})
 			if err != nil {
 				return err
 			}
 			accepted = acceptedTurn{ThreadID: in.ThreadID, TurnID: turnID, RunID: runID, UserEntryID: a.UserMessage.ID, BaseLeafID: a.BaseLeafID}
-			actor.state.view.Items = items
-			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, interactions)
 			if actor.state.requestKeys == nil {
 				actor.state.requestKeys = map[string]threadRuntimeRequest{}
 			}
 			actor.state.requestKeys[key] = threadRuntimeRequest{fingerprint: fingerprint}
 			start = true
+		}
+		// Goal facts may arrive while an uncommitted text segment is live.
+		// Install their canonical order before the next observation can run.
+		if err := actor.installCanonicalView(canonical); err != nil {
+			return err
 		}
 		view = cloneThreadRuntimeView(actor.state.view)
 		return nil
@@ -116,18 +116,16 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		cancel(context.Canceled)
 		return GoalSubmissionResult{}, err
 	}
-	if start {
+	if !submission.Mutation.Conflict && !submission.Mutation.Replayed {
 		service.publish(view)
+	}
+	if start {
 		prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: in.ThreadID, TurnID: turnID, RequestKey: key, Input: input, CanonicalTurnInput: input})
 		go service.executePreparedSend(executionCtx, actor, prepared, accepted, request, previous, done)
 	} else {
 		cancel(context.Canceled)
 	}
-	if !submission.Mutation.Conflict && !submission.Mutation.Replayed {
-		if err := service.refreshCanonical(in.ThreadID, ""); err != nil && !errors.Is(err, errCanonicalRefreshDiscarded) {
-			return GoalSubmissionResult{}, err
-		}
-	}
+
 	result := GoalSubmissionResult{GoalMutationResult: GoalMutationResult{Goal: *publicThreadGoal(submission.Mutation.State), Conflict: submission.Mutation.Conflict, Replayed: submission.Mutation.Replayed}}
 	if !result.Conflict {
 		result.Execution = GoalExecutionUpdated

@@ -3014,26 +3014,10 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 			refreshErr = fmt.Errorf("%w: turn changed", errCanonicalRefreshDiscarded)
 			return nil
 		}
-		terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
-		if terminal && canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && actor.state.turnID == canonical.TurnID && actor.state.runID == canonical.RunID {
-			actor.state.view.LastOutcome = canonical.LastOutcome
-			actor.state.view.Failure = cloneThreadTurnFailure(canonical.Failure)
-			actor.state.view.Cancellation = canonical.Cancellation
-		}
-		reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal)
-		if !ok {
-			refreshErr = fmt.Errorf("%w: item identity or ordinal conflict", errCanonicalRefreshDiscarded)
+		if err := actor.installCanonicalView(canonical); err != nil {
+			refreshErr = err
 			return nil
 		}
-		actor.state.view.ViewVersion++
-		actor.state.view.Items = reconciled
-		actor.state.view.ParentEvents = canonical.ParentEvents
-		actor.state.view.Goal = canonical.Goal
-		actor.pruneArgumentPreviews()
-		actor.state.view.Turns = canonical.Turns
-		actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
-		applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
-		normalizeActiveThreadRunProgress(&actor.state.view)
 		current = cloneThreadRuntimeView(actor.state.view)
 		changed = true
 		return nil
@@ -3042,6 +3026,31 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		service.publish(current)
 	}
 	return refreshErr
+}
+
+// installCanonicalView runs under the actor and retains only observations that
+// have not yet reached the canonical journal.
+func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) error {
+	terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
+	if terminal && canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && actor.state.turnID == canonical.TurnID && actor.state.runID == canonical.RunID {
+		actor.state.view.LastOutcome = canonical.LastOutcome
+		actor.state.view.Failure = cloneThreadTurnFailure(canonical.Failure)
+		actor.state.view.Cancellation = canonical.Cancellation
+	}
+	reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal)
+	if !ok {
+		return fmt.Errorf("%w: item identity or canonical order conflict", errCanonicalRefreshDiscarded)
+	}
+	actor.state.view.ViewVersion++
+	actor.state.view.Items = reconciled
+	actor.state.view.ParentEvents = canonical.ParentEvents
+	actor.state.view.Goal = canonical.Goal
+	actor.pruneArgumentPreviews()
+	actor.state.view.Turns = canonical.Turns
+	actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
+	applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
+	normalizeActiveThreadRunProgress(&actor.state.view)
+	return nil
 }
 
 func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
@@ -3085,53 +3094,58 @@ func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal boo
 		// authority. Do not retain stream-only items or stale text.
 		return cloneThreadItems(canonical), true
 	}
-	byOrdinal := make(map[uint64]ThreadItem, len(canonical))
-	for _, item := range canonical {
-		if item.Ordinal == 0 {
+	byID := make(map[string]int, len(canonical))
+	result := cloneThreadItems(canonical)
+	for index, item := range canonical {
+		if item.ID == "" || item.Ordinal != uint64(index+1) {
 			return nil, false
 		}
-		byOrdinal[item.Ordinal] = item
+		if _, exists := byID[item.ID]; exists {
+			return nil, false
+		}
+		byID[item.ID] = index
 	}
-	maxOrdinal := uint64(len(canonical))
-	for _, item := range current {
-		if item.Ordinal == 0 {
+	seen := make(map[string]bool, len(current))
+	lastCommitted := -1
+	for index, item := range current {
+		if item.ID == "" || item.Ordinal != uint64(index+1) || seen[item.ID] {
 			return nil, false
 		}
-		if item.Ordinal > maxOrdinal {
-			maxOrdinal = item.Ordinal
-		}
-		if committed, exists := byOrdinal[item.Ordinal]; exists {
-			if committed.ID != item.ID {
+		seen[item.ID] = true
+		if position, exists := byID[item.ID]; exists {
+			committed := result[position]
+			if position <= lastCommitted || item.Kind != committed.Kind || item.TurnID != committed.TurnID || item.RunID != committed.RunID ||
+				item.CanonicalOrdinal != 0 && item.CanonicalOrdinal != committed.CanonicalOrdinal {
 				return nil, false
 			}
+			lastCommitted = position
 			// A journal call is durable input, not a newer observation of an
 			// executing tool. Keep live output and settled results until the
 			// corresponding canonical result or terminal turn is available.
-			if item.Kind == ThreadItemTool && item.RunID == committed.RunID && item.Activity != nil && committed.Activity != nil &&
+			if item.Kind == ThreadItemTool && item.Activity != nil && committed.Activity != nil &&
 				(threadToolActivityTerminal(item.Activity.Status) || item.Live && !threadToolActivityTerminal(committed.Activity.Status)) {
 				committed.Activity, committed.Live = item.Activity, item.Live
-				byOrdinal[item.Ordinal] = committed
-				continue
-			}
-			canonicalTerminalTool := committed.Kind == ThreadItemTool && committed.Activity != nil && committed.Activity.Status != observation.ActivityStatusRunning
-			if item.Live && !canonicalTerminalTool {
-				committed.Live = true
-				if item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant {
-					committed.Text = item.Text
+			} else {
+				canonicalTerminalTool := committed.Kind == ThreadItemTool && committed.Activity != nil && committed.Activity.Status != observation.ActivityStatusRunning
+				if item.Live && !canonicalTerminalTool {
+					committed.Live = true
+					if item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant {
+						committed.Text = item.Text
+					}
 				}
 			}
-			byOrdinal[item.Ordinal] = committed
+			result[position] = committed
 			continue
 		}
-		byOrdinal[item.Ordinal] = item
-	}
-	result := make([]ThreadItem, 0, maxOrdinal)
-	for ordinal := uint64(1); ordinal <= maxOrdinal; ordinal++ {
-		item, exists := byOrdinal[ordinal]
-		if !exists {
+		// A missing persisted identity means the snapshot is stale or belongs
+		// to another path. Only stream-only observations may survive its tail.
+		if item.CanonicalOrdinal != 0 {
 			return nil, false
 		}
 		result = append(result, item)
+	}
+	for index := range result {
+		result[index].Ordinal = uint64(index + 1)
 	}
 	return cloneThreadItems(result), true
 }
