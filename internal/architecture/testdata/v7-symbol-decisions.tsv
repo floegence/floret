@@ -1,4 +1,5 @@
 symbol	decision	v7 boundary	reason
+tools.SubAgentOperationStatus	add	tools.SubAgentOperationActivityPayload.Action	Flower needs metadata-only checks distinct from full-result inspection; existing actions remain unchanged
 runtime.Command	remove	ThreadService typed methods	generic commands create a second protocol
 runtime.AcceptedReceipt	remove	ThreadView	command return values are complete current views
 runtime.TurnAdmissionReceipt	remove	ThreadView	canonical acceptance is internal to Send

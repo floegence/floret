@@ -641,6 +641,12 @@ message after tool pairing; natural completion never forces a drain. Per-event
 and per-batch limits include framing, prioritized unresolved interaction and
 unknown-effect references, and a closed overflow range readable with explicit
 pagination. Full reports are stored once; full handoffs remain on existing reads.
+Use sufficient untruncated reports directly and read report events only when
+needed. Completion notifications do not contain final reports; hosts expose
+result reads and should reuse results already available for the same turn.
+`tools.SubAgentOperationStatus` distinguishes metadata-only checks from
+inspection and waiting without adding durable read tracking or changing
+existing actions. Event reads remain available for explicit audit.
 
 `ThreadView.ParentEvents` supplies bounded metadata and explicit pagination
 separately from streamed item ordinals. Successful pages preserve an allocated

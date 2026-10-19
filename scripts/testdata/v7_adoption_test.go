@@ -28,6 +28,22 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
+func TestPublishedSubAgentStatusActivity(t *testing.T) {
+	presentation := tools.ActivityPresentation{Renderer: tools.ActivityRendererSubAgentOperation, Payload: tools.SubAgentOperationActivityPayload{Action: tools.SubAgentOperationStatus, Status: "success", RequestedCount: 1, Targets: []tools.SubAgentOperationTarget{{ThreadID: "child", Status: "running"}}}}
+	data, err := json.Marshal(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded tools.ActivityPresentation
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	payload, ok := decoded.Payload.(tools.SubAgentOperationActivityPayload)
+	if !ok || payload.Action != tools.SubAgentOperationStatus || payload.Targets[0].Status != "running" {
+		t.Fatalf("status activity = %#v", decoded)
+	}
+}
+
 type oneShotCompaction struct {
 	consumed atomic.Bool
 }

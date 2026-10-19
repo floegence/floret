@@ -1,5 +1,10 @@
 # Changelog
 
+## v7.64.0 - 2026-10-18
+
+- Add the typed SubAgentOperationStatus action for metadata-only child checks, preserving complete inspect and wait result contracts.
+- Guide parent event consumers to reuse sufficient reports and read final child results separately from completion notifications, without changing durable history or event delivery.
+
 ## v7.63.1 - 2026-10-18
 
 - Preserve historical Goal review evidence after forks re-key journal entries by matching the confirmed invocation span.

@@ -35,6 +35,29 @@ func parentEventRepoFixture(t *testing.T) (*BackendRepo, *migrationTestBackend) 
 	return repo, backend
 }
 
+func TestParentEventGuidanceDistinguishesReportsAndCompletion(t *testing.T) {
+	records := []ParentEventRecord{
+		{ID: "report-short", Kind: "report", SourceThreadID: "child", Message: "A complete useful finding."},
+		{ID: "report-long", Kind: "report", SourceThreadID: "child", Message: strings.Repeat("界", 300)},
+		{ID: "completed", Kind: "completed", SourceThreadID: "child"},
+	}
+	text, err := renderParentEvents(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Use sufficient untruncated reports directly", "Read report text by event ID only when needed", "Completion events contain no final report", "child result read capability", "Never automatically retry unknown effects"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing guidance %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Read full events by event ID") {
+		t.Fatal("blanket full-event reading guidance retained")
+	}
+	if len(text) > ParentEventBatchMaxBytes || contextpolicy.EstimateTextTokens(text)+8 > ParentEventBatchMaxTokens {
+		t.Fatal("guidance exceeds batch budget")
+	}
+}
+
 func TestParentEventsTerminalKindsAndTypedTimeout(t *testing.T) {
 	for _, scenario := range []string{"completed", "failed", "cancelled", "interrupted", "timed_out", "untyped_timeout"} {
 		t.Run(scenario, func(t *testing.T) {

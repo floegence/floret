@@ -2176,6 +2176,7 @@ const SubAgentOperationInspect github.com/floegence/floret/v7/tools.SubAgentOper
 const SubAgentOperationList github.com/floegence/floret/v7/tools.SubAgentOperationAction = "list"
 const SubAgentOperationSendInput github.com/floegence/floret/v7/tools.SubAgentOperationAction = "send_input"
 const SubAgentOperationSpawn github.com/floegence/floret/v7/tools.SubAgentOperationAction = "spawn"
+const SubAgentOperationStatus github.com/floegence/floret/v7/tools.SubAgentOperationAction = "status"
 type SubAgentOperationTarget struct
 field SubAgentOperationTarget.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field SubAgentOperationTarget.TaskName string tag="json:\"task_name,omitempty\""
