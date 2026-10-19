@@ -269,7 +269,16 @@ func (h *AgentHarness) threadDetailActivityTimeline(entries []sessiontree.Entry,
 	return observation.BuildActivityTimeline(observation.ActivityRunMeta{}, observed, generatedAt.UnixMilli())
 }
 
+// ProjectThreadContext folds one captured canonical path without reading the journal again.
+func ProjectThreadContext(entries []sessiontree.Entry) (ThreadContextSnapshot, error) {
+	return projectThreadContext(entries, threadDetailRetainedFrom(entries), newThreadDetailActivityContext(entries), time.Time{})
+}
+
 func (h *AgentHarness) threadDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext threadDetailActivityContext, generatedAt time.Time) (ThreadContextSnapshot, error) {
+	return projectThreadContext(entries, retainedFrom, activityContext, generatedAt)
+}
+
+func projectThreadContext(entries []sessiontree.Entry, retainedFrom int64, activityContext threadDetailActivityContext, generatedAt time.Time) (ThreadContextSnapshot, error) {
 	if activityContext.err != nil {
 		return ThreadContextSnapshot{}, activityContext.err
 	}

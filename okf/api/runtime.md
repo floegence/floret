@@ -87,6 +87,13 @@ retry through a new compact key; ordinary `Retry` returns `ErrNoRetryTarget`.
 `ThreadContextCompaction.AfterItemID` is derived from Floret's canonical item
 projection at operation start, including after pagination, fork, and restart.
 Hosts use that anchor and existing live updates without another lifecycle store.
+ThreadView.Context is the complete actor-owned snapshot shared with
+ThreadContextReader.Context. Committed context changes install before a version
+is published, including during active execution; text deltas reuse it. Failed
+assembly returns an error and explicit reads retry without blocking cancellation
+or execution settlement. CanonicalOrdinal preserves the operation's first lifecycle
+position on the queried Path. Insertion anchors do not substitute for Turn/Run
+ownership. This additive v7 API changes no durable record or migration version.
 See [domain schema v14](storage.md#domain-migration) and the
 [README behavior contract](../../README.md#independent-context-compaction).
 

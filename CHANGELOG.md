@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.67.0 - 2026-10-19
+
+- Add complete actor-owned context snapshots to current thread views and subscriptions; share the canonical projection with Context reads and publish committed context changes during active execution.
+- Expose stable first-lifecycle canonical compaction ordinals while preserving insertion anchors and execution identities across terminal updates, forks and restart.
+- Preserve snapshot isolation and streaming reconciliation; retry failed canonical reads without blocking execution settlement or cancellation. Recover an admitted run's context policy before its first provider request.
+
 ## v7.66.1 - 2026-10-19
 
 - Align the native DeepSeek Search count schema with its accepted 1–50 range and preserve Brave descriptions in model-visible results.

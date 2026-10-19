@@ -504,7 +504,12 @@ func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string)
 	}
 	ordinal := h.threadEntryOrdinal(entry)
 	detail, ok := h.threadDetailEvent(entry, ordinal, false, threadDetailActivityContext{})
-	if !ok {
+	contextCommitted := entry.Type == sessiontree.EntryModelContext
+	switch sessiontree.ThreadContextEntryKind(entry) {
+	case sessiontree.ThreadContextPolicyEntryKind, sessiontree.ThreadContextStatusEntryKind, sessiontree.ThreadContextCompactionEntryKind:
+		contextCommitted = true
+	}
+	if !ok && !contextCommitted {
 		return
 	}
 	if detail.Kind == ThreadDetailEventAssistantMessage && detail.Message != nil {
@@ -515,10 +520,11 @@ func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string)
 		}
 	}
 	metadata := map[string]any{
-		"entry_id":   entry.ID,
-		"parent_id":  entry.ParentID,
-		"entry_type": string(entry.Type),
-		"created_at": entry.CreatedAt.Format(time.RFC3339Nano),
+		"context_committed": contextCommitted,
+		"entry_id":          entry.ID,
+		"parent_id":         entry.ParentID,
+		"entry_type":        string(entry.Type),
+		"created_at":        entry.CreatedAt.Format(time.RFC3339Nano),
 	}
 	if ordinal > 0 {
 		metadata["ordinal"] = ordinal
@@ -819,7 +825,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.EffectResultFinalizer = t.finalizeEffectResult
 	engineOptions.ProviderRequestGate = nil
 	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
-	if !opts.SkipContextPolicyEvent {
+	if !opts.SkipContextPolicyEvent || canonicalContext.Model.Provider == "" && canonicalContext.Model.Model == "" {
 		if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
 			defer cancelPersist()
@@ -835,7 +841,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
 		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
 	}
-	if !opts.SkipContextPolicyEvent {
+	if !opts.SkipContextPolicyEvent || canonicalContext.Model.Provider == "" && canonicalContext.Model.Model == "" {
 		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ModelMaxOutputTokens: engineOptions.ContextPolicy.ModelMaxOutputTokens, ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext

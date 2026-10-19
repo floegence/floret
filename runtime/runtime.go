@@ -717,6 +717,7 @@ type Event struct {
 	Sources           []publicprovider.Source           `json:"sources,omitempty"`
 	Metadata          map[string]any                    `json:"metadata,omitempty"`
 	Timestamp         time.Time                         `json:"timestamp,omitempty"`
+	contextCommitted  bool
 	outputSourceID    string
 	outputOrder       []string
 	committed         *agentharness.ThreadDetailEvent
@@ -2102,7 +2103,8 @@ func runtimeEvent(ev event.Event) Event {
 	stream := runtimeStreamObservation(ev, ev.Metadata)
 	ev = sanitized
 	return Event{
-		outputSourceID: ev.OutputSourceID, outputOrder: ev.OutputOrder,
+		contextCommitted: runtimeContextCommitted(ev),
+		outputSourceID:   ev.OutputSourceID, outputOrder: ev.OutputOrder,
 		ProviderLastProgressAt: lastProgressAt,
 		Type:                   ev.Type,
 		Retry:                  cloneProviderRetryProgress(ev.Retry),
@@ -2870,4 +2872,9 @@ func (sink runtimeEventSink) CommitProviderOutput(ctx context.Context, commit ag
 }
 func (recorder *runtimeActivityEventRecorder) CommitProviderOutput(ctx context.Context, commit agentharness.ProviderOutputCommitted) error {
 	return recorder.sink.CommitProviderOutput(ctx, commit)
+}
+
+func runtimeContextCommitted(ev event.Event) bool {
+	metadata, ok := ev.Metadata.(map[string]any)
+	return ev.Type == event.ThreadEntryCommitted && ok && metadata["context_committed"] == true
 }
