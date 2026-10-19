@@ -1585,3 +1585,5 @@ Document optional Goal management, same-context reflection, request-bound update
 
 - Documented actor-owned complete context snapshots, active lifecycle publication,
   canonical compaction order and explicit read recovery in [Runtime](api/runtime.md).
+
+- 2026-10-19: Publish admitted managed context in the same current view as its user message before Agent preparation, including queued-input promotion.

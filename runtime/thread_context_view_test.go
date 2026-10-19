@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/provider"
+	"github.com/floegence/floret/v7/storage"
 )
 
 func TestThreadViewPublishesCompactionLifecycleWhileActive(t *testing.T) {
@@ -253,5 +254,43 @@ func TestThreadStopDoesNotDependOnContextProjection(t *testing.T) {
 	recovered, err := service.View(ctx, created.ThreadID)
 	if err != nil || recovered.Context == nil || recovered.LastOutcome == nil || *recovered.LastOutcome != TurnOutcomeCancelled {
 		t.Fatalf("recovery=%+v err=%v", recovered, err)
+	}
+}
+
+func TestThreadAdmissionPublishesManagedContextBeforeAgentPreparation(t *testing.T) {
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	host, err := Open(t.Context(), Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+	service, err := host.ThreadService(AgentFactoryFunc(func(ctx context.Context, request AgentRequest) (*Agent, error) {
+		select {
+		case <-release:
+			return nil, errors.New("fixture preparation stopped")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-admission-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "admit-context", Input: UserInput{
+		Text: "inspect", ModelContextSnapshot: &ModelContextSnapshot{Sections: []ModelContextSection{{Key: "repository", Title: "Repository", Text: "admitted canonical facts"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted.Context == nil || admitted.Context.ModelContext == nil || admitted.Context.ModelContext.Snapshot.Sections[0].Text != "admitted canonical facts" {
+		t.Fatalf("admission context=%+v", admitted.Context)
+	}
+	if admitted.Context.ModelContext.TurnID != admitted.TurnID || admitted.Items[0].CanonicalOrdinal == 0 {
+		t.Fatalf("admitted identity=%+v", admitted)
 	}
 }
