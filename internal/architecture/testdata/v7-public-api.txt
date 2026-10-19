@@ -1188,6 +1188,7 @@ field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID t
 field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
 type ThreadContextCompaction struct
+field ThreadContextCompaction.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal\""
 field ThreadContextCompaction.AfterItemID string tag="json:\"after_item_id,omitempty\""
 field ThreadContextCompaction.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadContextCompaction.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
@@ -1433,6 +1434,7 @@ const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.Threa
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadView struct
+field ThreadView.Context *github.com/floegence/floret/v7/runtime.ThreadContextSnapshot tag="json:\"context,omitempty\""
 field ThreadView.Goal *github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal,omitempty\""
 field ThreadView.ParentEvents *github.com/floegence/floret/v7/runtime.ParentEventPage tag="json:\"parent_events,omitempty\""
 field ThreadView.ToolCallPreviews []github.com/floegence/floret/v7/runtime.ThreadToolCallPreview tag="json:\"tool_call_previews,omitempty\""

@@ -25,6 +25,7 @@ type threadRuntimeState struct {
 }
 
 type threadRuntimeData struct {
+	contextErr          error
 	steering            []string
 	fragmentCancel      context.CancelCauseFunc
 	executionSealed     bool

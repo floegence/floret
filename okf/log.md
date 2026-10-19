@@ -1580,3 +1580,8 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-19: Document shared websearch clients, explicit DeepSeek Fetch, reviewed Flash 1017/Pro search capabilities and canonical binding recovery.
 
 - 2026-10-19: Correct native DeepSeek Search count limits and retain Brave model-visible descriptions.
+
+## 2026-10-19 — Current context snapshots
+
+- Documented actor-owned complete context snapshots, active lifecycle publication,
+  canonical compaction order and explicit read recovery in [Runtime](api/runtime.md).

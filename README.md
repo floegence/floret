@@ -813,6 +813,17 @@ non-retryable.
 ## Consistent Reads
 
 `ThreadService.View` returns one complete replaceable current view.
+The thread runtime installs ThreadView.Context with canonical items before
+publishing ViewVersion. Views and subscriptions include a complete snapshot,
+even when no context facts exist. Committed context changes publish while a Turn
+is active; text deltas reuse the installed snapshot. Failed assembly returns an
+error and the next explicit read retries, without blocking execution settlement
+or cancellation. ThreadContextReader.Context uses that same projection.
+ThreadContextCompaction.CanonicalOrdinal is the first lifecycle entry's one-based
+position on the queried Path, independent of timestamps and terminal updates.
+AfterItemID remains the insertion boundary; explicit Turn/Run identity defines
+ownership. Forks reproject canonical order on the destination Path.
+
 The value returned by `Host.ThreadService` also implements
 `ThreadContextReader`; `Context` returns Floret's canonical context policy,
 usage, and one latest lifecycle record per compaction operation, including
