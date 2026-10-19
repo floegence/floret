@@ -303,6 +303,20 @@ empty advice, Forbidden and absolute NotBefore. It never schedules retries;
 non-provider failures retain their permanent origin override. No schema changes.
 
 
+## Opaque reasoning budget correction
+
+Rendered estimate v5 removes ciphertext byte lengths from token pressure while
+retaining the v4 breakdown contract. OpenAI encrypted reasoning and Anthropic
+redacted thinking remain replayable, diagnostics retain `OpaqueBytes`, and
+attribution stays partial. This is unknown hidden input, not a measured zero.
+Unknown content keeps its separate conservative bound; typed media, visible
+reasoning, framing and safety margins retain their existing budgets.
+
+The estimate source change expires older calibration anchors without rewriting
+history. Provider-execution usage remains unqualified for window calibration.
+The existing Engine threshold solver and bounded provider-overflow compaction
+remain the sole pressure and recovery path. No schema or public shape changes.
+
 ## Ordered output parts
 
 The additive output-source API exposes optional `Event.OutputPart` with native

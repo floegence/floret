@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"encoding/json"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
+	"github.com/floegence/floret/v7/internal/requestestimate"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"strings"
 	"testing"
 )
 
@@ -88,6 +91,34 @@ func TestUnqualifiedNativeUsageNeverCalibratesPressure(t *testing.T) {
 		got, anchor := tr.ObserveSuccess(req, nil, provider.Usage{InputTokensReported: true, InputTokenScope: scope, InputTokens: 999999, Available: true})
 		if got.ProjectedInputTokens != 100 || got.Confidence == contextpolicy.EstimateExact || anchor.WindowInputTokens != 0 {
 			t.Fatalf("unqualified pressure: %+v %+v", got, anchor)
+		}
+	}
+}
+
+func TestOpaqueReasoningDoesNotTriggerPrematurePressure(t *testing.T) {
+	for _, visible := range []bool{false, true} {
+		text := "Continue."
+		if visible {
+			text = strings.Repeat("visible history ", 160000)
+		}
+		raw, err := json.Marshal(map[string]any{"input": []any{map[string]any{"type": "reasoning", "encrypted_content": strings.Repeat("A", 285984)}, map[string]any{"role": "user", "content": text}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		estimate, err := requestestimate.Count("openai", "gpt-6.1-sol", "openai_responses", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := provider.Request{ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 256000, ModelMaxOutputTokens: 64000}, RequestEstimate: contextpolicy.RequestEstimate{PrefixTokens: estimate.Prefix, MessageTokens: estimate.Messages, ToolDefinitionTokens: estimate.Tools, EstimatedInputTokens: estimate.Prefix + estimate.Messages + estimate.Tools, Source: estimate.Source, Method: contextpolicy.EstimateMethodProviderRenderedPayload, Confidence: contextpolicy.EstimateApproximate, Breakdown: estimate.Breakdown}}
+		tracker := NewContextPressureTracker("scope")
+		pressure := tracker.Project(req, nil)
+		if pressure.CompactionNeeded != visible || pressure.HardLimitExceeded != visible {
+			t.Fatalf("visible=%v pressure=%+v", visible, pressure)
+		}
+		req.ContextPressure = pressure
+		observed, anchor := tracker.ObserveSuccess(req, nil, provider.Usage{Source: provider.UsageNative, Available: true, InputTokensReported: true, InputTokenScope: "provider_execution", InputTokens: 159360, WindowInputTokens: 159360})
+		if anchor.WindowInputTokens != 0 || observed.ProjectedInputTokens != pressure.ProjectedInputTokens {
+			t.Fatalf("unqualified native usage replaced pressure: %+v %+v", observed, anchor)
 		}
 	}
 }

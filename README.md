@@ -162,6 +162,12 @@ Production integrations must resolve the published module. Do not use a local
 `replace`, `go.work`, or sibling repository path. Earlier major versions remain
 available only from their published tags; v7 does not restore retired facades.
 
+Prepared request estimates count visible input, protocol framing, and conservative
+media/unknown-content bounds. Encrypted and redacted reasoning stays replayable,
+but ciphertext bytes are diagnostics, not token counts. Such estimates retain
+partial attribution and cannot calibrate pressure from provider-execution usage.
+The Engine's bounded overflow recovery remains authoritative for hidden input.
+
 ## Quick Start
 
 Every Agent uses one explicit `provider.Gateway`. Floret allocates durable

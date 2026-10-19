@@ -623,8 +623,28 @@ func TestPublishedStructuredInputAndEmptyOutput(t *testing.T) {
 
 func TestPublishedOfflineRequestEstimate(t *testing.T) {
 	estimate, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "openai", Model: "gpt-4o", Format: provider.RequestFormatOpenAIChat, Payload: []byte(`{"messages":[{"role":"user","content":"Check this request."}]}`)})
-	if err != nil || estimate.EstimatedInputTokens <= 0 || estimate.Source != "rendered_o200k_base_content_v4" {
+	if err != nil || estimate.EstimatedInputTokens <= 0 || estimate.Source != "rendered_o200k_base_content_v5" {
 		t.Fatalf("offline estimate: %+v %v", estimate, err)
+	}
+}
+
+func TestPublishedOpaqueReasoningEstimate(t *testing.T) {
+	var baseline int64
+	for i, size := range []int{0, 285984} {
+		raw, err := json.Marshal(map[string]any{"input": []any{map[string]any{"type": "reasoning", "encrypted_content": strings.Repeat("A", size)}, map[string]any{"role": "user", "content": "Continue."}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		estimate, err := provider.EstimateRenderedRequest(provider.RenderedRequest{Provider: "openai", Model: "gpt-6.1-sol", Format: provider.RequestFormatOpenAIResponses, Payload: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			baseline = estimate.EstimatedInputTokens
+		}
+		if estimate.EstimatedInputTokens != baseline || estimate.Breakdown.OpaqueBytes != int64(size) || estimate.Breakdown.AttributionCoverage != "partial" {
+			t.Fatalf("ciphertext changed token budget or hid uncertainty: %+v", estimate)
+		}
 	}
 }
 

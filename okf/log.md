@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-19 — Opaque reasoning budget correction
+
+- Separate encrypted transport diagnostics from input-token pressure while retaining unknown/media bounds, partial attribution, and bounded overflow recovery. See [provider accounting](api/provider.md#opaque-reasoning-budget-correction).
+
 ## 2026-10-19 — Canonical output sources
 
 - Unify Engine-owned response sources, transactional canonical takeover and schema 24 -> 25 migration. See [output sources](decisions/output-sources.md).
