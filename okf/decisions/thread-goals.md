@@ -43,7 +43,10 @@ the submitted user text as a normal Turn. Active execution, questions and
 approvals receive only the Goal change. The existing actor installs the admitted
 run with its canonical item prefix, including the Goal fact before the user input,
 and the existing execution path prepares it. Later edits and deletion remain
-immediately visible without colliding with the admitted input ordinal. Products do not inspect state
+immediately visible. The actor installs user mutations and their canonical view
+in one serialized operation. Stable item IDs reconcile persisted facts with
+uncommitted live text; only presentation ordinals are reassigned, preserving
+canonical Path positions and rejecting missing or reordered durable identities. Products do not inspect state
 and call Send afterward. SetGoal and DeleteGoal retain their save-only contract.
 
 The Goal entry's existing request key and fingerprint deduplicate both outcomes.
@@ -92,6 +95,7 @@ must not derive private hashes or duplicate admission decisions.
 - Same-context tool and reflection: ../../internal/agentharness/goals.go
 - Exact compacted facts: ../../internal/session/compaction/compaction.go
 - Behavioral and migration coverage: ../../runtime/thread_goals_test.go,
+  ../../runtime/thread_goal_submit_test.go,
   ../../internal/sessiontree/goals_test.go,
   ../../internal/sessiontree/backend_domain_v23_migration_test.go
 
