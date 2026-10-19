@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.68.1 - 2026-10-19
+
+- Keep waiting-run finalization under its original owner, then atomically admit the continuation marker before publishing the successor Run so Stop cannot strand an answered thread during preparation.
+- Remove duplicate continuation admission from AgentHarness; preserve one canonical cancellation path, accepted answers and valid tool history.
+
 ## v7.68.0 - 2026-10-19
 
 - Publish typed frozen compaction trigger and validated replacement diagnostics through the existing canonical lifecycle, preserving estimator scope and calibration identity without a second ledger.

@@ -3444,7 +3444,8 @@ func (service *threadRuntimeService) finishUnloadedTerminal(executionCtx context
 	if failureMessage == "" {
 		failureMessage = "thread runtime execution preparation failed"
 	}
-	terminalID := stableTerminalEntryID(threadID, turnID, runID)
+	hash := sessiontree.StableHash(strings.Join([]string{threadID.String(), turnID.String(), runID.String(), "preparation_failed"}, "\x00"))
+	terminalID := "terminal-preparation-failed-" + hash[:24]
 	metadata := map[string]string{
 		"run_id": runID.String(), "outcome": outcome,
 		sessiontree.TurnFailureCodeMetadataKey: failureCode,
@@ -3482,11 +3483,6 @@ func (service *threadRuntimeService) finishUnloadedTerminal(executionCtx context
 func stableCancellationEntryID(threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) string {
 	hash := sessiontree.StableHash(strings.Join([]string{threadID.String(), turnID.String(), runID.String(), "cancelled"}, "\x00"))
 	return "terminal-cancelled-" + hash[:24]
-}
-
-func stableTerminalEntryID(threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) string {
-	hash := sessiontree.StableHash(strings.Join([]string{threadID.String(), turnID.String(), runID.String(), "terminal"}, "\x00"))
-	return "terminal-" + hash[:24]
 }
 
 func (service *threadRuntimeService) respond(ctx context.Context, threadID identity.ThreadID, answers []InteractionAnswer, requestKey string) (ThreadView, error) {
@@ -3767,7 +3763,20 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	}
 	executionCtx, cancel := context.WithCancelCause(context.Background())
 	executionDone := make(chan struct{})
+	// The waiting execution owns finalization and cancellation until it drains.
+	// Publishing a successor earlier lets Stop cancel a Run that has no
+	// canonical marker while its predecessor can still commit a terminal.
 	var previousExecution <-chan struct{}
+	if err := actor.apply(context.Background(), func() error {
+		previousExecution = actor.state.executionDone
+		return nil
+	}); err != nil {
+		cancel(context.Canceled)
+		return
+	}
+	if previousExecution != nil {
+		<-previousExecution
+	}
 	var preparing ThreadView
 	claimed := false
 	claimErr := actor.apply(context.Background(), func() error {
@@ -3786,9 +3795,20 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 				return err
 			}
 		}
+		reason := "input_resume"
+		if isSteering {
+			reason = "steering_resume"
+		}
+		if err := service.appendRuntimeFactsError(context.Background(), threadID, []sessiontree.Entry{{
+			ID: "continue-run:" + runID.String(), Type: sessiontree.EntryTurnMarker,
+			ThreadID: threadID.String(), TurnID: interaction.TurnID.String(), RunID: runID.String(),
+			TurnStatus: sessiontree.TurnSavePoint, Metadata: map[string]string{"reason": reason},
+		}}); err != nil {
+			return err
+		}
 		pendingSteering := slices.Clone(actor.state.steering)
 		var beginErr error
-		previousExecution, beginErr = actor.beginRun(beginThreadRunInput{
+		_, beginErr = actor.beginRun(beginThreadRunInput{
 			turnID: interaction.TurnID, runID: runID, logicalRequestID: identity.LogicalRequestID(continuationKey),
 			cancel: cancel, executionDone: executionDone,
 		})
@@ -3811,13 +3831,6 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	service.publish(preparing)
 	defer cancel(context.Canceled)
 	defer close(executionDone)
-	if previousExecution != nil {
-		select {
-		case <-executionCtx.Done():
-			return
-		case <-previousExecution:
-		}
-	}
 	_, canonicalInput, canonicalErr := service.retrySource(executionCtx, threadID, interaction.TurnID)
 	if canonicalErr != nil {
 		service.finishUnloadedTerminal(executionCtx, actor, threadID, interaction.TurnID, runID, TurnResult{}, canonicalErr)

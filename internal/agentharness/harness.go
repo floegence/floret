@@ -599,14 +599,14 @@ func (t *Thread) ResumeInput(ctx context.Context, turnID, waitingRunID, answer s
 	if strings.TrimSpace(answer) == "" {
 		return TurnResult{}, errors.New("waiting turn resume requires an answer")
 	}
-	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts, "input_resume")
+	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts)
 }
 
 func (t *Thread) ResumeSteering(ctx context.Context, turnID, waitingRunID string, opts RunOptions) (TurnResult, error) {
-	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts, "steering_resume")
+	return t.resumeWaitingTurn(ctx, turnID, waitingRunID, opts)
 }
 
-func (t *Thread) resumeWaitingTurn(ctx context.Context, turnID, waitingRunID string, opts RunOptions, reason string) (TurnResult, error) {
+func (t *Thread) resumeWaitingTurn(ctx context.Context, turnID, waitingRunID string, opts RunOptions) (TurnResult, error) {
 	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
 		return TurnResult{}, errors.New("thread is not initialized")
 	}
@@ -623,11 +623,8 @@ func (t *Thread) resumeWaitingTurn(ctx context.Context, turnID, waitingRunID str
 	// the provider state, even though resolving input advances the journal leaf.
 	opts.AdmissionBaseLeafID = terminalTurnEntryID(t.id, turnID, waitingRunID)
 	opts.SkipContextPolicyEvent = true
-	entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, runID, sessiontree.TurnSavePoint, map[string]string{"reason": reason})
-	if err != nil {
-		return TurnResult{}, err
-	}
-	t.harness.emitEntryCommitted(entry, runID)
+	// ThreadRuntime admits the continuation marker before publishing its Run.
+	// Preparation and Stop therefore share the same canonical identity.
 	return t.runAccepted(ctx, "", opts, nil)
 }
 

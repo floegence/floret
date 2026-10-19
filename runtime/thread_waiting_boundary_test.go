@@ -64,7 +64,10 @@ func TestThreadServiceWaitingBoundaryAcceptsResponseAndStop(t *testing.T) {
 				if _, err := service.Respond(t.Context(), RespondInput{ThreadID: child.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"}); err != nil {
 					t.Fatal(err)
 				}
-				waitThreadView(t, service, child.ThreadID, func(v ThreadView) bool { return v.RunID != waiting.RunID })
+				accepted, err := service.View(t.Context(), child.ThreadID)
+				if err != nil || accepted.RunID != waiting.RunID || len(accepted.Interactions) != 1 || !accepted.Interactions[0].Resolved {
+					t.Fatalf("answer must commit while the waiting execution retains ownership: %+v, %v", accepted, err)
+				}
 			} else if action == "stop" {
 				if _, err := service.Cancel(context.Background(), CancelInput{ThreadID: child.ThreadID, Mode: CancelModeGraceful, RequestKey: "stop"}); err != nil {
 					t.Fatal(err)

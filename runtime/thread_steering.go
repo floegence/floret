@@ -296,8 +296,7 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 			sealed := false
 			err := actor.apply(ctx, func() error {
 				if actor.state.runID != runID {
-					// An answered input may claim its continuation before this
-					// waiting execution drains. Its old result must still settle.
+					// A retired execution cannot change its successor's owner.
 					sealed = true
 					return nil
 				}

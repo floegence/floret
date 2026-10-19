@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
@@ -253,5 +255,203 @@ func TestAnsweredAskUserThenToolStopPreservesSingleAnswer(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// waitingFinishGate holds the prior execution before its durable pause commits.
+type waitingFinishGate struct {
+	*internalstorage.BackendKernel
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (gate *waitingFinishGate) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	if request.Status == sessiontree.TurnWaiting {
+		gate.once.Do(func() { close(gate.entered) })
+		<-gate.release
+	}
+	return gate.BackendKernel.FinishTurn(ctx, request)
+}
+
+func TestAnsweredInputStopDuringWaitingFinalization(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "cancel", StateCompatibilityKey: "test:cancel"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: cancelHistoryAskArgs}}}, {Type: provider.EventDone, Reason: "tool_calls"}}})
+	agent, err := testAgent(gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, service := testThreadServiceWithAgent(t, agent)
+	typed := service.(*threadRuntimeService)
+	typed.factory = AgentFactoryFunc(func(ctx context.Context, request AgentRequest) (*Agent, error) {
+		if request.InteractionID != "" {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return agent, nil
+	})
+	gate := &waitingFinishGate{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{})}
+	host.store.repo = gate
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(gate.release) })
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, gate.entered, "waiting finalization did not start")
+	waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Hold finalization long enough to observe any premature Run takeover.
+	deadline := time.NewTimer(50 * time.Millisecond)
+	defer deadline.Stop()
+	for {
+		current, err := service.View(t.Context(), created.ThreadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.RunID != waiting.RunID {
+			t.Fatal("continuation took cancellation ownership before the waiting execution drained")
+		}
+		select {
+		case <-deadline.C:
+			goto cancelWaiting
+		case <-time.After(time.Millisecond):
+		}
+	}
+cancelWaiting:
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: CancelModeGraceful})
+		stopped <- err
+	}()
+	releaseOnce.Do(func() { close(gate.release) })
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	view := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+	if view.LastOutcome == nil || *view.LastOutcome != TurnOutcomeCancelled {
+		t.Fatalf("stop outcome=%+v", view)
+	}
+	if len(view.Interactions) != 1 || view.Interactions[0].Resolution == nil || view.Interactions[0].Resolution.Input["q"] != "yes" {
+		t.Fatal("accepted answer was lost")
+	}
+	entries, err := host.store.repo.Path(t.Context(), created.ThreadID.String(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := sessiontree.BuildContextChecked(entries, sessiontree.ContextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ValidateToolHistory(messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.Requests()) != 1 {
+		t.Fatal("stopped continuation dispatched provider work")
+	}
+}
+
+func TestAnsweredInputStopDuringContinuationPreparation(t *testing.T) {
+	for _, mode := range []CancelMode{CancelModeImmediate, CancelModeGraceful} {
+		t.Run(string(mode), func(t *testing.T) {
+			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "cancel", StateCompatibilityKey: "test:cancel"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+				florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: cancelHistoryAskArgs}}}, {Type: provider.EventDone, Reason: "tool_calls"}}},
+				florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "continued"}, {Type: provider.EventDone, Reason: "stop"}}})
+			agent, err := testAgent(gateway)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, service := testThreadServiceWithAgent(t, agent)
+			preparing := make(chan struct{})
+			service.(*threadRuntimeService).factory = AgentFactoryFunc(func(ctx context.Context, request AgentRequest) (*Agent, error) {
+				if request.InteractionID != "" {
+					close(preparing)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return agent, nil
+			})
+			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
+				t.Fatal(err)
+			}
+			waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
+			if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"}); err != nil {
+				t.Fatal(err)
+			}
+			waitClosed(t, preparing, "continuation preparation did not start")
+			if _, err := service.Cancel(t.Context(), CancelInput{ThreadID: created.ThreadID, RequestKey: "stop", Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			stopped := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+			if stopped.LastOutcome == nil || *stopped.LastOutcome != TurnOutcomeCancelled || stopped.Failure != nil || len(gateway.Requests()) != 1 {
+				t.Fatalf("preparation stop failed: %+v", stopped)
+			}
+			entries, err := host.store.repo.Path(t.Context(), created.ThreadID.String(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages, err := sessiontree.BuildContextChecked(entries, sessiontree.ContextOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.ValidateToolHistory(messages); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "continue"}, RequestKey: "next"}); err != nil {
+				t.Fatal(err)
+			}
+			resumed := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.TurnID != stopped.TurnID })
+			if resumed.LastOutcome == nil || *resumed.LastOutcome != TurnOutcomeCompleted {
+				t.Fatalf("next turn did not recover: %+v", resumed.Failure)
+			}
+		})
+	}
+}
+
+type rejectingContinuationRepo struct {
+	*internalstorage.BackendKernel
+}
+
+func (repo *rejectingContinuationRepo) AppendRuntimeFacts(ctx context.Context, threadID string, entries []sessiontree.Entry) ([]sessiontree.Entry, error) {
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.ID, "continue-run:") {
+			return nil, errors.New("injected continuation admission failure")
+		}
+	}
+	return repo.BackendKernel.AppendRuntimeFacts(ctx, threadID, entries)
+}
+
+func TestAnsweredInputAdmissionFailureSettlesWaitingTurn(t *testing.T) {
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "cancel", StateCompatibilityKey: "test:cancel"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
+		florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "ask", Name: "ask_user", Args: cancelHistoryAskArgs}}}, {Type: provider.EventDone, Reason: "tool_calls"}}})
+	agent, err := testAgent(gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, service := testThreadServiceWithAgent(t, agent)
+	host.store.repo = &rejectingContinuationRepo{host.store.repo.(*internalstorage.BackendKernel)}
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "ask"}, RequestKey: "send"}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Attention.InputCount == 1 })
+	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: waiting.Interactions[0].ID, Answers: []InteractionAnswer{{Input: map[string]string{"q": "yes"}}}, RequestKey: "answer"}); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle })
+	if failed.LastOutcome == nil || *failed.LastOutcome != TurnOutcomeFailed || failed.Failure == nil || !strings.Contains(failed.Failure.Message, "injected continuation admission failure") {
+		t.Fatalf("admission failure did not settle: %+v", failed)
 	}
 }
