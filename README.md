@@ -971,7 +971,7 @@ continues waiting. After completion, every retained handle returns
 ## DeepSeek Responses
 
 Use `provider.NewDeepSeek(provider.DeepSeekOptions{...})` for `deepseek-flash`
-(DeepSeek V4.1 Flash, text and images) and `deepseek-v4-pro` (text only).
+(DeepSeek V4.1 Flash 1017, text and images) and `deepseek-v4-pro` (text only).
 The official `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` aliases
 remain accepted with Flash capabilities; Floret preserves the selected ID and
 opaque state identity. All support `off`, `low`, `high`, and `max` reasoning
@@ -980,10 +980,24 @@ with `high` as the default. Catalog ceilings are 1,000,000 context tokens and
 
 Set `Model`, `BaseURL` (normally `https://api.deepseek.com`), `APIKey`, and an
 explicit `StateCompatibilityKey`. The gateway calls `/responses` and streams
-text and reasoning. The official API currently ignores built-in tools,
-including `web_search`, so the preset disables hosted search. The previously
-published hosted-tool wire and replay contracts remain accepted within v7;
-acceptance is not evidence that the official service executes search.
+text and reasoning. Pro supports hosted `web_search`; Flash ignores hosted
+search and uses the independent Search API. `provider.DeepSeekModelCapabilities`
+returns the reviewed exact-model capability; unknown models are unavailable.
+The gateway retains the published hosted-input and opaque replay contracts.
+
+`tools/websearch` provides `NewDeepSeekClient`, `NewBraveClient` and `NewTool`.
+Clients bind one host-selected endpoint and key; tools cannot select credentials
+or sources. DeepSeek search validates 1–128 Unicode query characters and 1–50
+results, defaults to 10, sends `need_content=false`, preserves model summaries
+separately from UI snippets, and treats an empty result list as success.
+`tools/webfetch.NewDeepSeek` is an explicit paid Markdown fetch alternative to
+`webfetch.New` (Direct); it never falls back or invents page response metadata.
+Both remote APIs use the connection key, bounded responses, cancellation, no
+API redirects, and typed tool-service errors independently of model failures.
+Search and Fetch currently cost $0.75 per 1,000 successful nonempty requests;
+hosts must make activation explicit and must not infer billed totals from tokens.
+See the [official Search/Fetch contract](https://api-docs.deepseek.com/guides/search/)
+and the [web tools API guide](okf/api/websearch.md).
 
 Web Activity preserves `Operation` (`search`, `open_page`, `find_in_page`),
 `Query` (ordered queries separated by newlines), `URL`, `Pattern`, and source

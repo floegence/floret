@@ -180,7 +180,8 @@ func TestPublicPackageDependencyDirection(t *testing.T) {
 					continue
 				}
 				dependency := strings.TrimPrefix(value, module)
-				if !packageAllowlist[dependency] {
+				webTransport := dependency == "internal/webapi" && (strings.HasPrefix(path, "tools/webfetch/") || strings.HasPrefix(path, "tools/websearch/"))
+				if !packageAllowlist[dependency] && !webTransport {
 					t.Fatalf("%s imports forbidden public dependency %s", path, value)
 				}
 			}

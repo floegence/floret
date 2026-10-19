@@ -7,5 +7,6 @@
 * [threadquery](thread-query.md) - Authorized indexed queries, exact counts, and bounded canonical reads.
 * [storage](storage.md) - Opaque ordinary-host sources and the advanced physical storage SPI.
 * [tools](tools.md) - Local tool schemas, handlers, permissions, and output.
+* [tools/websearch](websearch.md) - Authenticated Search and explicit remote Fetch.
 * [tools/webfetch](webfetch.md) - Secure public-text HTTP/HTTPS fetching.
 * [observation](observation.md) - Host-facing runtime observation DTOs.

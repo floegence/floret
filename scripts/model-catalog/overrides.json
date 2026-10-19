@@ -50,7 +50,9 @@
     "deepseek": [
       "https://api-docs.deepseek.com/guides/responses_api/",
       "https://api-docs.deepseek.com/guides/thinking_mode",
-      "https://api-docs.deepseek.com/quick_start/pricing"
+      "https://api-docs.deepseek.com/quick_start/pricing",
+      "https://api-docs.deepseek.com/updates/",
+      "https://api-docs.deepseek.com/guides/search/"
     ],
     "qwen": [
       "https://www.alibabacloud.com/help/en/model-studio/models",
@@ -96,12 +98,14 @@
     },
     "deepseek/deepseek-v4-pro": {
       "reasoning": {
-        "default_level": "high"
+        "default_level": "high",
+        "source_checked_at": "2026-10-19"
       }
     },
     "deepseek/deepseek-v4-flash": {
       "reasoning": {
-        "default_level": "high"
+        "default_level": "high",
+        "source_checked_at": "2026-10-19"
       },
       "metadata": {
         "status": "",
@@ -181,7 +185,11 @@
     },
     "deepseek/deepseek-flash": {
       "reasoning": {
-        "default_level": "high"
+        "default_level": "high",
+        "source_checked_at": "2026-10-19"
+      },
+      "metadata": {
+        "name": "DeepSeek V4.1 Flash (1017)"
       }
     },
     "deepseek/deepseek-v4-flash-vision-exp": {
@@ -216,7 +224,8 @@
         }
       },
       "reasoning": {
-        "default_level": "high"
+        "default_level": "high",
+        "source_checked_at": "2026-10-19"
       }
     }
   },

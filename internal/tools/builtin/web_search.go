@@ -2,16 +2,14 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/tools"
+	"github.com/floegence/floret/v7/tools/websearch"
 )
 
 const (
@@ -146,65 +144,33 @@ func validateSearchArgs(args webSearchArgs) error {
 }
 
 func runBraveSearch(ctx context.Context, opts SearchOptions, args webSearchArgs) (tools.Result, error) {
-	endpoint, err := url.Parse(opts.Endpoint)
-	if err != nil {
-		return tools.Result{}, fmt.Errorf("invalid Brave Search endpoint: %w", err)
-	}
-	values := endpoint.Query()
-	values.Set("q", args.Query)
-	values.Set("count", fmt.Sprintf("%d", valueOr(args.Count, 8)))
-	if args.Country != nil && strings.TrimSpace(*args.Country) != "" {
-		values.Set("country", strings.TrimSpace(*args.Country))
-	}
-	if args.SearchLang != nil && strings.TrimSpace(*args.SearchLang) != "" {
-		values.Set("search_lang", strings.TrimSpace(*args.SearchLang))
-	}
-	if args.Freshness != nil && strings.TrimSpace(*args.Freshness) != "" {
-		values.Set("freshness", strings.TrimSpace(*args.Freshness))
-	}
-	endpoint.RawQuery = values.Encode()
-
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(opts.DefaultTimeoutMS)*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	client, err := websearch.NewBraveClient(websearch.ClientOptions{BaseURL: opts.Endpoint, APIKey: opts.APIKey, HTTPClient: opts.HTTPClient, Timeout: time.Duration(opts.DefaultTimeoutMS) * time.Millisecond})
 	if err != nil {
 		return tools.Result{}, err
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Subscription-Token", opts.APIKey)
-	resp, err := opts.HTTPClient.Do(req)
+	request := websearch.Request{Query: args.Query, Count: valueOr(args.Count, 8)}
+	if args.Country != nil {
+		request.Country = *args.Country
+	}
+	if args.SearchLang != nil {
+		request.SearchLang = *args.SearchLang
+	}
+	if args.Freshness != nil {
+		request.Freshness = *args.Freshness
+	}
+	result, err := client.Search(ctx, request)
 	if err != nil {
 		return tools.Result{}, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return tools.Result{}, err
+	results := make([]braveSearchResult, 0, len(result.Results))
+	for _, item := range result.Results {
+		converted := braveSearchResult{Title: item.Title, URL: item.URL, Description: item.Snippet, Age: item.Age}
+		if item.SiteName != nil {
+			converted.Profile.Name = *item.SiteName
+		}
+		results = append(results, converted)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return tools.Result{}, fmt.Errorf("Brave Search API status %d: %s", resp.StatusCode, compactSearchError(body))
-	}
-	var parsed braveSearchResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return tools.Result{}, fmt.Errorf("decode Brave Search response: %w", err)
-	}
-	text := renderSearchResults(args.Query, parsed.Web.Results)
-	return tools.Result{
-		Title: fmt.Sprintf("Web search: %s", args.Query),
-		Text:  text,
-		Structured: map[string]any{
-			"provider":     searchProviderBrave,
-			"query":        args.Query,
-			"result_count": len(parsed.Web.Results),
-			"results":      structuredSearchResults(parsed.Web.Results),
-		},
-		Metadata: map[string]any{
-			"provider":     searchProviderBrave,
-			"query":        args.Query,
-			"count":        valueOr(args.Count, 8),
-			"result_count": len(parsed.Web.Results),
-		},
-	}, nil
+	return tools.Result{Title: fmt.Sprintf("Web search: %s", args.Query), Text: renderSearchResults(args.Query, results), Structured: map[string]any{"provider": searchProviderBrave, "query": args.Query, "result_count": len(results), "results": structuredSearchResults(results)}, Metadata: map[string]any{"provider": searchProviderBrave, "query": args.Query, "count": request.Count, "result_count": len(results)}}, nil
 }
 
 func renderSearchResults(query string, results []braveSearchResult) string {
@@ -261,17 +227,6 @@ func cleanSearchText(value string) string {
 	value = strings.ReplaceAll(value, "\n", " ")
 	value = strings.ReplaceAll(value, "\r", " ")
 	return strings.Join(strings.Fields(value), " ")
-}
-
-func compactSearchError(body []byte) string {
-	text := cleanSearchText(string(body))
-	if text == "" {
-		return "empty response body"
-	}
-	if len(text) > 500 {
-		text = text[:500]
-	}
-	return text
 }
 
 func integerRange(description string, minimum, maximum int) map[string]any {

@@ -273,6 +273,10 @@ field ContentAttributionPart.Category string tag="json:\"category,omitempty\""
 field ContentAttributionPart.Start int tag="json:\"start\""
 field ContentAttributionPart.End int tag="json:\"end\""
 field ContentAttributionPart.Key string tag="json:\"key,omitempty\""
+type DeepSeekCapabilities struct
+field DeepSeekCapabilities.IndependentSearch bool
+field DeepSeekCapabilities.HostedWebSearchWireShape string
+func DeepSeekModelCapabilities func(model string) (github.com/floegence/floret/v7/provider.DeepSeekCapabilities, bool)
 type DeepSeekOptions struct
 field DeepSeekOptions.Model string
 field DeepSeekOptions.BaseURL string
@@ -2279,12 +2283,84 @@ field WebSearchActivityResult.Title string tag="json:\"title\""
 field WebSearchActivityResult.URL string tag="json:\"url\""
 
 package github.com/floegence/floret/v7/tools/webfetch
+type DeepSeekClient struct
+method *DeepSeekClient.Fetch func(ctx context.Context, rawURL string) (github.com/floegence/floret/v7/tools/webfetch.DeepSeekResult, error)
+type DeepSeekOptions struct
+field DeepSeekOptions.<embedded> github.com/floegence/floret/v7/tools/webfetch.Options
+field DeepSeekOptions.BaseURL string
+field DeepSeekOptions.APIKey string
+field DeepSeekOptions.HTTPClient *net/http.Client
+type DeepSeekResult struct
+field DeepSeekResult.URL string tag="json:\"url\""
+field DeepSeekResult.Title string tag="json:\"title\""
+field DeepSeekResult.Content string tag="json:\"content\""
+field DeepSeekResult.Format string tag="json:\"format\""
+type HTTPError = github.com/floegence/floret/v7/tools/webfetch.HTTPError
+field HTTPError.Service string
+field HTTPError.StatusCode int
+field HTTPError.Code string
+field HTTPError.Message string
+field HTTPError.RetryAfter string
+method *HTTPError.Error func() string
 func New func(options github.com/floegence/floret/v7/tools/webfetch.Options) github.com/floegence/floret/v7/tools.Tool
+func NewDeepSeek func(options github.com/floegence/floret/v7/tools/webfetch.DeepSeekOptions) (github.com/floegence/floret/v7/tools.Tool, error)
+func NewDeepSeekClient func(options github.com/floegence/floret/v7/tools/webfetch.DeepSeekOptions) (*github.com/floegence/floret/v7/tools/webfetch.DeepSeekClient, error)
 type Options struct
 field Options.Permission github.com/floegence/floret/v7/tools.PermissionSpec
 field Options.PermissionFor github.com/floegence/floret/v7/tools.PermissionResolver
 field Options.AllowResolvedBenchmarkIPs bool
 const ToolName untyped string = "web_fetch"
+
+package github.com/floegence/floret/v7/tools/websearch
+type Client struct
+method *Client.Search func(ctx context.Context, request github.com/floegence/floret/v7/tools/websearch.Request) (github.com/floegence/floret/v7/tools/websearch.Result, error)
+type ClientOptions struct
+field ClientOptions.BaseURL string
+field ClientOptions.APIKey string
+field ClientOptions.HTTPClient *net/http.Client
+field ClientOptions.Timeout time.Duration
+type HTTPError = github.com/floegence/floret/v7/tools/websearch.HTTPError
+field HTTPError.Service string
+field HTTPError.StatusCode int
+field HTTPError.Code string
+field HTTPError.Message string
+field HTTPError.RetryAfter string
+method *HTTPError.Error func() string
+type Item struct
+field Item.Title string tag="json:\"title\""
+field Item.URL string tag="json:\"url\""
+field Item.Snippet string tag="json:\"snippet,omitempty\""
+field Item.Summary string tag="json:\"summary,omitempty\""
+field Item.Content string tag="json:\"content,omitempty\""
+field Item.SiteName *string tag="json:\"site_name,omitempty\""
+field Item.SiteIcon *string tag="json:\"site_icon,omitempty\""
+field Item.Date *string tag="json:\"date,omitempty\""
+field Item.Authority *int tag="json:\"authority,omitempty\""
+field Item.RerankScore *float64 tag="json:\"rerank_score,omitempty\""
+field Item.Age string tag="json:\"age,omitempty\""
+func NewBraveClient func(options github.com/floegence/floret/v7/tools/websearch.ClientOptions) (*github.com/floegence/floret/v7/tools/websearch.Client, error)
+func NewDeepSeekClient func(options github.com/floegence/floret/v7/tools/websearch.ClientOptions) (*github.com/floegence/floret/v7/tools/websearch.Client, error)
+func NewTool func(client *github.com/floegence/floret/v7/tools/websearch.Client, options github.com/floegence/floret/v7/tools/websearch.ToolOptions) github.com/floegence/floret/v7/tools.Tool
+const ProviderBrave untyped string = "brave"
+const ProviderDeepSeek untyped string = "deepseek"
+type Request struct
+field Request.Query string tag="json:\"query\""
+field Request.Count int tag="json:\"count,omitempty\""
+field Request.OriginalQuestion string tag="json:\"ori_question,omitempty\""
+field Request.Localization string tag="json:\"localization,omitempty\""
+field Request.NeedContent bool tag="json:\"need_content\""
+field Request.Country string tag="json:\"-\""
+field Request.SearchLang string tag="json:\"-\""
+field Request.Freshness string tag="json:\"-\""
+type Result struct
+field Result.Provider string tag="json:\"provider\""
+field Result.Query string tag="json:\"query\""
+field Result.Results []github.com/floegence/floret/v7/tools/websearch.Item tag="json:\"results\""
+const ToolName untyped string = "web_search"
+type ToolOptions struct
+field ToolOptions.Name string
+field ToolOptions.Permission github.com/floegence/floret/v7/tools.PermissionSpec
+field ToolOptions.PermissionFor github.com/floegence/floret/v7/tools.PermissionResolver
 
 package github.com/floegence/floret/v7/observation
 const ActivityAttentionApproval github.com/floegence/floret/v7/observation.ActivityAttentionReason = "approval"
