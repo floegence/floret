@@ -2,11 +2,13 @@
 
 ## Unreleased
 
+## v7.68.3 - 2026-10-19
+
 - Apply committed journal identities consistently to Engine output, effect results, validation feedback and continuation; remove duplicate event-driven persistence.
 - Share strict provider-context projection across live execution, restart, Retry, Fork and compaction. Install the full canonical replacement context and reject invalid boundaries without guessing or replaying tools.
 - Append atomic domain schema 26 -> 27 for proven historical compaction boundaries, including released Fork and nested Fork copies; preserve conversation facts and every earlier migration, with full rollback and byte-stable restart.
 - Upgrade provider-context lineage to v11 without rewriting historical request, response or usage records; invalidate incompatible continuation at the existing explicit reset boundary.
-- Require immutable released-writer historical conversation continuation and restart checks in both candidate and published release adoption gates.
+- Require immutable released-writer historical conversation continuation and restart checks in both candidate and published release adoption gates; retain the exact pinned Go toolchain when isolating downstream module caches.
 
 ## v7.68.2 - 2026-10-19
 
