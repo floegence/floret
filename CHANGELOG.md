@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.62.2 - 2026-10-18
+
+- Install the canonical admitted item prefix when Goal submission starts execution, preserving immediate Goal edits, deletion and timeline ordering during the active Turn.
+
 ## v7.62.1 - 2026-10-18
 
 - Publish GoalSubmissionRequestKey for product execution authorization before admission. Preserve the existing canonical identity across execution, exact retry and restart.

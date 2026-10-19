@@ -41,7 +41,9 @@ Explicit user submission uses the optional ThreadGoalSubmitter. One journal
 transaction writes the Goal and, only when no canonical Turn is active, accepts
 the submitted user text as a normal Turn. Active execution, questions and
 approvals receive only the Goal change. The existing actor installs the admitted
-run and the existing execution path prepares it. Products do not inspect state
+run with its canonical item prefix, including the Goal fact before the user input,
+and the existing execution path prepares it. Later edits and deletion remain
+immediately visible without colliding with the admitted input ordinal. Products do not inspect state
 and call Send afterward. SetGoal and DeleteGoal retain their save-only contract.
 
 The Goal entry's existing request key and fingerprint deduplicate both outcomes.
