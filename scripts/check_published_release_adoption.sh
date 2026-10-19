@@ -16,6 +16,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Resolve go.mod's exact toolchain before isolating module and build caches.
+readonly toolchain_root=$(go env GOROOT)
+export PATH="${toolchain_root}/bin:${PATH}"
+export GOTOOLCHAIN=local
 export GOWORK=off
 export GO111MODULE=on
 export GOPATH="${adoption_root}/gopath"
