@@ -61,9 +61,13 @@ func HostedToolObservation(entry Entry) (observation.Event, error) {
 		}
 		metadata["result_count"] = count
 	}
+	occurredAt, err := EntryOccurrenceTime(entry)
+	if err != nil {
+		return observation.Event{}, err
+	}
 	return observation.Event{
 		Type: typ, ThreadID: identity.ThreadID(entry.ThreadID), TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID),
-		ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, ToolKind: "hosted", ObservedAt: entry.CreatedAt,
+		ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, ToolKind: "hosted", ObservedAt: occurredAt,
 		Activity: tools.CloneActivityPresentation(entry.Message.Activity), Metadata: metadata,
 	}, nil
 }

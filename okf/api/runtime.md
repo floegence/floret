@@ -366,10 +366,27 @@ references in terminal metadata and mapped to stable `FinalItemIDs`.
 `FinalBoundaryComplete` means the full boundary was recorded, including a known
 empty boundary. Length continuations remain one final response; tools and hook
 continuation discard the preceding candidate. Legacy boundaries are unavailable,
-never inferred from text, timestamp, or the last assistant message. Hosts should
-collapse work only for completed turns with a complete, nonempty final boundary
-and the complete accepted detail. Summary notifications cannot author this fact.
+never inferred from text, timestamp, or the last assistant message. Summary notifications cannot author response classifications.
 Nested forks remap references and preserve original occurrence timestamps.
+
+`ThreadItem.CanonicalOrdinal` and `ParentEvent.CanonicalOrdinal` (JSON
+`canonical_ordinal`) are one-based source positions on the queried canonical
+Path. Merge public items and parent events by this position, preserving item
+order at ties; occurrence timestamps are display facts only. Tool updates retain
+their first position. Zero means an uncommitted live item, whose tail order stays
+unchanged. These positions are neither durable cursors nor execution identities.
+Forks derive positions from their own Path and preserve all copied occurrence
+timestamps; inherited event recipient identities remain unchanged.
+
+`ThreadTurn.IntermediateItemIDs` (JSON `intermediate_item_ids`) contains ordered,
+unique segmented assistant items superseded by a later local tool call, hosted
+activity or semantic continuation in the same Turn/Run. Accepted final references
+are disjoint. Length continuation alone does not supersede text. Trailing partial
+answers and unsegmented legacy text remain unclassified. Hosts may fold these
+confirmed intermediate items independently of terminal outcome; unknown prose
+must remain visible. These are read projections, with no journal rewrite or
+schema change (current domain schema 24).
+
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
 retains those records and their canonical bytes after explicit marker identities

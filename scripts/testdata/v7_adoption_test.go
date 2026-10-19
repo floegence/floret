@@ -973,6 +973,9 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 		t.Fatalf("events=%+v %v", page, err)
 	}
 	for _, event := range page.Events {
+		if event.CanonicalOrdinal == 0 {
+			t.Fatal("parent event has no canonical position")
+		}
 		if event.ParentTurnID != initial.TurnID {
 			t.Fatalf("late event owner=%s want=%s", event.ParentTurnID, initial.TurnID)
 		}
@@ -1141,5 +1144,14 @@ func TestPreparedCharacterContract(t *testing.T) {
 	result, err := observation.ReconcileContextStatus(status)
 	if err != nil || !result.CharactersAvailable || result.Characters.TotalCharacters != 3 || result.InputTokens != 100 {
 		t.Fatalf("%+v %v", result, err)
+	}
+}
+
+func TestPublishedCanonicalPresentationContract(t *testing.T) {
+	item := runtime.ThreadItem{ID: "answer", CanonicalOrdinal: 7, Ordinal: 2, Kind: runtime.ThreadItemAssistant}
+	event := runtime.ParentEvent{CanonicalOrdinal: 9}
+	turn := runtime.ThreadTurn{IntermediateItemIDs: []string{item.ID}}
+	if item.CanonicalOrdinal >= event.CanonicalOrdinal || turn.IntermediateItemIDs[0] != item.ID {
+		t.Fatal("canonical presentation contract unavailable")
 	}
 }
