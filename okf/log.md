@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-19 — Continuation cancellation ownership
+
+- Drain the waiting execution before admitting its successor and publish the continuation only after its canonical marker commits. See [interruption recovery](workflows/recover-interrupted-turn.md).
+
 ## 2026-10-19 — Opaque reasoning budget correction
 
 - Separate encrypted transport diagnostics from input-token pressure while retaining unknown/media bounds, partial attribution, and bounded overflow recovery. See [provider accounting](api/provider.md#opaque-reasoning-budget-correction).

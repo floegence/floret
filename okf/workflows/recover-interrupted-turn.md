@@ -52,3 +52,10 @@ runtime lock that commits cancellation. A concurrent Ask User response may
 advance the Run within that Turn, but cannot invalidate the user's stop.
 Execution-context cancellation retains the exact Run fence, so a late context
 callback cannot cancel a later continuation.
+
+A resolved input waits for the prior execution to finish its durable pause before
+claiming its continuation. ThreadRuntime appends the continuation save point and
+installs its in-memory Run under one actor lock. AgentHarness consumes that
+admission without appending another marker. Stop during finalization therefore
+still targets the prior owner; Stop during preparation targets an already
+canonical successor. The same cancellation transaction closes both cases.
