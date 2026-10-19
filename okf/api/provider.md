@@ -301,3 +301,20 @@ for Redeven transport boundaries. It shares Engine classification, recognizes
 ordinary and wrapped EOF, and preserves the outermost explicit advice including
 empty advice, Forbidden and absolute NotBefore. It never schedules retries;
 non-provider failures retain their permanent origin override. No schema changes.
+
+
+## Ordered output parts
+
+The additive output-source API exposes optional `Event.OutputPart` with native
+`ItemID`, `OutputIndex` and `ContentIndex`. Item IDs and positions must stay stable
+within one stream, indices must be nonnegative, and a part cannot change channel.
+Gateways that omit the descriptor remain supported. The Engine alone normalizes
+fragments and assigns source identities from exact Run/attempt/part identity.
+DeepSeek forwards its SSE item positions and terminal suffixes to the same part.
+Adapter bridges copy the descriptor without generating identities or sorting.
+
+The Engine passes its ordered collection to the Harness provider-context commit.
+Shared reasoning is a separate canonical fragment, never copied onto every call.
+Call-specific reasoning retains its own source. Chat Completions combines adjacent
+canonical assistant fragments only at its protocol rendering boundary.
+See [the output-source decision](../decisions/output-sources.md).

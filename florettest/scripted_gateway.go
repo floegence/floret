@@ -160,6 +160,10 @@ func cloneStep(step Step) Step {
 
 func cloneProviderEvent(event provider.Event) provider.Event {
 	cloned := event
+	if event.OutputPart != nil {
+		part := *event.OutputPart
+		cloned.OutputPart = &part
+	}
 	cloned.ToolCalls = append([]provider.ToolCall(nil), event.ToolCalls...)
 	cloned.Sources = append([]provider.Source(nil), event.Sources...)
 	if event.ToolCallStream != nil {

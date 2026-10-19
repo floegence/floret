@@ -431,8 +431,18 @@ type ToolCallStream struct {
 	Name string `json:"name,omitempty"`
 }
 
+// OutputPart identifies a native provider output item and its zero-based position.
+// Deltas and terminal suffixes for the same part must carry the same descriptor.
+// Providers without native output items may omit it; the Engine owns normalization.
+type OutputPart struct {
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	ContentIndex int    `json:"content_index"`
+}
+
 // Event carries one streamed provider output.
 type Event struct {
+	OutputPart     *OutputPart       `json:"output_part,omitempty"`
 	Type           EventType         `json:"type"`
 	Text           string            `json:"text,omitempty"`
 	ToolCallStream *ToolCallStream   `json:"tool_call_stream,omitempty"`

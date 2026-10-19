@@ -262,3 +262,15 @@ with complete visible coverage calibrates Engine pressure. Older anchors expire
 without changing stored bytes. Existing estimate and bounded overflow recovery
 remain the sole execution path. No host scanner, durable ledger or online send-time
 counting is introduced.
+
+## Canonical output-source migration
+
+Domain schema 25 appends the atomic 24 -> 25 edge. Minimal content/reasoning
+source references remain on the original assistant/tool entries. Existing public
+item IDs, text, tool facts, execution identity, timestamps and final-response
+entry references remain intact. Released implicit adjacency/shared reasoning is
+decoded only during migration. Hidden validation-response reasoning receives an
+entry-scoped identity without inventing provider request IDs. Mixed batches use
+canonical parent relationships, never observation logs or insertion-adjacent
+branches. A new envelope rejects old writers in the existing physical namespace.
+Current startup is byte-stable; all earlier migration edges remain mandatory.

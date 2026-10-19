@@ -38,6 +38,9 @@ func TestTurnProjectionDropsSupersededProviderAttemptFromLiveAndCanonicalOutput(
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-2", 2, ""))
 	projection.Emit(providerAttemptEvent(event.ProviderDelta, "logical", "attempt-1", 1, "late stale delta"))
 	projection.Emit(providerAttemptEvent(event.ProviderDelta, "logical", "attempt-2", 2, "canonical"))
+	if err := projection.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "canonical", ContentSourceID: "output:canonical"}}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := projection.Flush(); err != nil {
 		t.Fatal(err)
 	}

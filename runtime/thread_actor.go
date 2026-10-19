@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +171,7 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		case attemptEpoch == runtime.state.attemptEpoch && runtime.state.attemptID != "" && attemptID != runtime.state.attemptID:
 			return false
 		case attemptEpoch > runtime.state.attemptEpoch:
+			runtime.discardAttemptDraft()
 			runtime.state.retiredAttempt = false
 			runtime.state.attemptDraftIDs = nil
 			runtime.finishLiveTextSegment()
@@ -194,9 +195,9 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 	if event.Stream != nil {
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:
-			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text, event.Timestamp)
+			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text, event.Timestamp, event.outputSourceID)
 		case StreamObservationReasoningDelta:
-			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text, event.Timestamp)
+			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text, event.Timestamp, event.outputSourceID)
 		case StreamObservationToolCallStart, StreamObservationToolCallDelta:
 			runtime.finishLiveTextSegment()
 		case StreamObservationToolCallEnd:
@@ -306,31 +307,33 @@ func threadToolActivityTerminal(status observation.ActivityStatus) bool {
 	}
 }
 
-func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time) {
-	if runtime == nil || text == "" {
+func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time, source string) {
+	if runtime == nil || text == "" || source == "" {
 		return
 	}
-	if runtime.state.openTextSegmentID != "" && runtime.state.openTextKind != kind {
+	if runtime.state.openTextSegmentID != source {
 		runtime.finishLiveTextSegment()
 	}
-	if runtime.state.openTextSegmentID == "" {
+	index := threadItemIndexByID(runtime.state.view.Items, source)
+	if index < 0 {
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
 		}
-		runtime.state.openTextSegmentID = nextThreadTextSegmentID(runtime.state.view.Items, runtime.state.turnID, kind)
-		runtime.state.openTextKind = kind
+		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{ID: source, contentSourceID: source, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true, CreatedAt: createdAt})
+		index = len(runtime.state.view.Items) - 1
 		if runtime.state.attemptDraftIDs == nil {
 			runtime.state.attemptDraftIDs = make(map[string]bool)
 		}
-		runtime.state.attemptDraftIDs[runtime.state.openTextSegmentID] = true
-		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-			ID: runtime.state.openTextSegmentID, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true, CreatedAt: createdAt,
-		})
+		runtime.state.attemptDraftIDs[source] = true
 	}
-	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {
-		runtime.state.view.Items[index].Text += text
-		runtime.state.view.Items[index].Live = true
+	item := &runtime.state.view.Items[index]
+	if item.CanonicalOrdinal != 0 || item.contentSourceID != source || item.Kind != kind {
+		return
 	}
+	item.Text += text
+	item.Live = true
+	runtime.state.openTextSegmentID = source
+	runtime.state.openTextKind = kind
 }
 
 func (runtime *threadRuntimeState) finishLiveTextSegment() {
@@ -369,17 +372,6 @@ func settleTerminalToolSegments(items []ThreadItem, turnID identity.TurnID, time
 	return out
 }
 
-func nextThreadTextSegmentID(items []ThreadItem, turnID identity.TurnID, kind ThreadItemKind) string {
-	prefix := string(kind) + ":" + turnID.String() + ":"
-	next := 1
-	for _, item := range items {
-		if item.TurnID == turnID && item.Kind == kind && strings.HasPrefix(item.ID, prefix) {
-			next++
-		}
-	}
-	return prefix + strconv.Itoa(next)
-}
-
 func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, int, bool) {
 	if event.attemptEpoch > 0 && strings.TrimSpace(event.attemptID) != "" {
 		return event.attemptLogicalID, strings.TrimSpace(event.attemptID), event.attemptEpoch, true
@@ -405,11 +397,51 @@ func (runtime *threadRuntimeState) discardAttemptDraft() {
 	runtime.state.openTextKind = ""
 	items := runtime.state.view.Items[:0]
 	for _, item := range runtime.state.view.Items {
-		if runtime.state.attemptDraftIDs[item.ID] && len(item.sourceEntryIDs) == 0 {
+		if runtime.state.attemptDraftIDs[item.ID] && item.CanonicalOrdinal == 0 {
 			continue
 		}
+		item.Ordinal = uint64(len(items) + 1)
 		items = append(items, item)
 	}
 	runtime.state.view.Items = items
 	runtime.state.attemptDraftIDs = nil
+}
+
+// The Engine publishes its ordered fragment sources. The actor applies that
+// order only to this uncommitted attempt, preserving all canonical positions.
+func (runtime *threadRuntimeState) orderAttemptOutput(order []string) {
+	if len(order) < 2 {
+		return
+	}
+	ranks := make(map[string]int, len(order))
+	for i, source := range order {
+		ranks[source] = i
+	}
+	var positions []int
+	var drafts []ThreadItem
+	for i, item := range runtime.state.view.Items {
+		if !runtime.state.attemptDraftIDs[item.ID] || item.CanonicalOrdinal != 0 {
+			continue
+		}
+		source := item.ID
+		if item.Activity != nil && item.Activity.Kind == observation.ActivityKindHosted {
+			source = "hosted:" + item.Activity.ToolID
+		}
+		if _, ok := ranks[source]; !ok {
+			continue
+		}
+		positions = append(positions, i)
+		drafts = append(drafts, item)
+	}
+	rank := func(item ThreadItem) int {
+		if item.Activity != nil && item.Activity.Kind == observation.ActivityKindHosted {
+			return ranks["hosted:"+item.Activity.ToolID]
+		}
+		return ranks[item.ID]
+	}
+	sort.SliceStable(drafts, func(i, j int) bool { return rank(drafts[i]) < rank(drafts[j]) })
+	for i, position := range positions {
+		drafts[i].Ordinal = uint64(position + 1)
+		runtime.state.view.Items[position] = drafts[i]
+	}
 }

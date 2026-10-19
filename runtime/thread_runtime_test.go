@@ -2247,7 +2247,7 @@ func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T)
 		{ID: "assistant:turn-a:2", TurnID: "turn-a", Ordinal: 2, Kind: ThreadItemAssistant, Text: "canonical first"},
 	}
 
-	terminal, ok := reconcileCanonicalThreadItems(current, canonical, true)
+	terminal, ok := reconcileCanonicalThreadItems(current, canonical, true, nil)
 	if !ok {
 		t.Fatal("terminal reconciliation rejected canonical items")
 	}
@@ -2259,9 +2259,9 @@ func TestReconcileCanonicalThreadItemsUsesTerminalJournalAuthority(t *testing.T)
 		t.Fatalf("distinct canonical IDs were merged: %#v", terminal)
 	}
 
-	active, ok := reconcileCanonicalThreadItems(current[:1], canonical[:1], false)
-	if !ok || len(active) != 1 || active[0].Text != "stream draft" || !active[0].Live {
-		t.Fatalf("active reconciliation lost live text: %#v, ok=%v", active, ok)
+	active, ok := reconcileCanonicalThreadItems(current[:1], canonical[:1], false, nil)
+	if !ok || len(active) != 1 || active[0].Text != "canonical first" || active[0].Live {
+		t.Fatalf("active reconciliation overrode canonical text: %#v, ok=%v", active, ok)
 	}
 }
 
@@ -3342,25 +3342,26 @@ func TestThreadRuntimeRunProgressRejectsStaleAttemptAndRun(t *testing.T) {
 
 func TestThreadRuntimeFencesLateAndDuplicateProviderAttempts(t *testing.T) {
 	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-current", runID: "run-current", logicalRequestID: "request", view: ThreadView{ThreadID: "thread-current", TurnID: "turn-current"}}}
-	current := Event{ThreadID: "thread-current", TurnID: "turn-current", RunID: "run-current", Stream: &StreamObservation{
+	current := Event{outputSourceID: "output:first", ThreadID: "thread-current", TurnID: "turn-current", RunID: "run-current", Stream: &StreamObservation{
 		Type: StreamObservationAssistantDelta, Text: "first", LogicalRequestID: "request", AttemptID: "attempt-1", AttemptEpoch: 1,
 	}}
 	if !actor.acceptLiveEvent(current) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "first" {
 		t.Fatalf("current attempt was not accepted: %#v", actor.state)
 	}
 	newer := current
+	newer.outputSourceID = "output:new"
 	newer.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "new", LogicalRequestID: "request", AttemptID: "attempt-2", AttemptEpoch: 2}
-	if !actor.acceptLiveEvent(newer) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
+	if !actor.acceptLiveEvent(newer) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("new attempt was not accepted: %#v", actor.state)
 	}
 	late := current
 	late.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "stale", LogicalRequestID: "request", AttemptID: "attempt-1", AttemptEpoch: 1}
-	if actor.acceptLiveEvent(late) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
+	if actor.acceptLiveEvent(late) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("late attempt changed draft: %#v", actor.state)
 	}
 	duplicateIdentity := newer
 	duplicateIdentity.Stream = &StreamObservation{Type: StreamObservationAssistantDelta, Text: "other", LogicalRequestID: "request", AttemptID: "attempt-other", AttemptEpoch: 2}
-	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 2 || actor.state.view.Items[1].Text != "new" {
+	if actor.acceptLiveEvent(duplicateIdentity) || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
 		t.Fatalf("conflicting attempt changed draft: %#v", actor.state)
 	}
 }
@@ -3403,13 +3404,13 @@ func TestThreadRuntimeBeginRunResetsAttemptAndLiveOwnership(t *testing.T) {
 
 func TestThreadRuntimeDuplicateStreamEventKeepsOneAssistantIdentity(t *testing.T) {
 	actor := &threadRuntimeState{state: threadRuntimeData{turnID: "turn-duplicate", runID: "run-duplicate", logicalRequestID: "request-duplicate", view: ThreadView{ThreadID: "thread-duplicate", TurnID: "turn-duplicate"}}}
-	event := Event{ThreadID: "thread-duplicate", TurnID: "turn-duplicate", RunID: "run-duplicate", Stream: &StreamObservation{
+	event := Event{outputSourceID: "output:duplicate", ThreadID: "thread-duplicate", TurnID: "turn-duplicate", RunID: "run-duplicate", Stream: &StreamObservation{
 		Type: StreamObservationAssistantDelta, Text: "same", LogicalRequestID: "request-duplicate", AttemptID: "attempt-duplicate", AttemptEpoch: 1,
 	}}
 	if !actor.acceptLiveEvent(event) || !actor.acceptLiveEvent(event) {
 		t.Fatal("duplicate stream event was unexpectedly rejected")
 	}
-	if len(actor.state.view.Items) != 1 || actor.state.view.Items[0].ID != "assistant:turn-duplicate:1" {
+	if len(actor.state.view.Items) != 1 || actor.state.view.Items[0].ID != "output:duplicate" {
 		t.Fatalf("duplicate stream event created another assistant identity: %#v", actor.state.view.Items)
 	}
 }

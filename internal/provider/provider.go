@@ -283,7 +283,14 @@ func (r HostedToolResultData) SummaryText() string {
 	return b.String()
 }
 
+type OutputPart struct {
+	ItemID       string
+	OutputIndex  int
+	ContentIndex int
+}
+
 type StreamEvent struct {
+	OutputPart     *OutputPart
 	Type           EventType
 	Text           string
 	ToolCallStream ToolCallStream
@@ -327,15 +334,41 @@ func CloneState(in *State) *State {
 // duplicate tool call IDs, incomplete tool calls, hosted results without prior
 // hosted calls, or any event after a terminal event.
 type StreamValidator struct {
-	terminalSeen bool
-	toolIDs      map[string]struct{}
-	hostedCalls  map[string]string
-	hostedDone   map[string]struct{}
+	terminalSeen    bool
+	toolIDs         map[string]struct{}
+	hostedCalls     map[string]string
+	hostedDone      map[string]struct{}
+	outputItems     map[string]int
+	outputPositions map[int]string
+	outputChannels  map[OutputPart]EventType
 }
 
 func (v *StreamValidator) Observe(ev StreamEvent) error {
 	if v.terminalSeen {
 		return fmt.Errorf("provider emitted %q after terminal event", ev.Type)
+	}
+	if part := ev.OutputPart; part != nil {
+		if strings.TrimSpace(part.ItemID) == "" || part.ItemID != strings.TrimSpace(part.ItemID) || part.OutputIndex < 0 || part.ContentIndex < 0 {
+			return errors.New("invalid provider output part")
+		}
+		if v.outputItems == nil {
+			v.outputItems = map[string]int{}
+			v.outputPositions = map[int]string{}
+			v.outputChannels = map[OutputPart]EventType{}
+		}
+		if index, ok := v.outputItems[part.ItemID]; ok && index != part.OutputIndex {
+			return errors.New("provider output item position changed")
+		}
+		if id, ok := v.outputPositions[part.OutputIndex]; ok && id != part.ItemID {
+			return errors.New("provider output position has conflicting items")
+		}
+		v.outputItems[part.ItemID], v.outputPositions[part.OutputIndex] = part.OutputIndex, part.ItemID
+		if ev.Type == Delta || ev.Type == Reasoning {
+			if channel, ok := v.outputChannels[*part]; ok && channel != ev.Type {
+				return errors.New("provider output part changed channel")
+			}
+			v.outputChannels[*part] = ev.Type
+		}
 	}
 	switch ev.Type {
 	case Delta, Reasoning, UsageEvent, SourcesEvent:

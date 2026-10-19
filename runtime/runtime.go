@@ -717,6 +717,8 @@ type Event struct {
 	Sources           []publicprovider.Source           `json:"sources,omitempty"`
 	Metadata          map[string]any                    `json:"metadata,omitempty"`
 	Timestamp         time.Time                         `json:"timestamp,omitempty"`
+	outputSourceID    string
+	outputOrder       []string
 	committed         *agentharness.ThreadDetailEvent
 	attemptLogicalID  identity.LogicalRequestID
 	attemptID         string
@@ -2100,6 +2102,7 @@ func runtimeEvent(ev event.Event) Event {
 	stream := runtimeStreamObservation(ev, ev.Metadata)
 	ev = sanitized
 	return Event{
+		outputSourceID: ev.OutputSourceID, outputOrder: ev.OutputOrder,
 		ProviderLastProgressAt: lastProgressAt,
 		Type:                   ev.Type,
 		Retry:                  cloneProviderRetryProgress(ev.Retry),
@@ -2855,4 +2858,16 @@ func runtimeMessageContext(in []session.MessageContextItem) []MessageContextItem
 		out[i] = MessageContextItem(item)
 	}
 	return out
+}
+
+func (sink runtimeEventSink) CommitProviderOutput(ctx context.Context, commit agentharness.ProviderOutputCommitted) error {
+	if target, ok := sink.sink.(interface {
+		commitProviderOutput(context.Context, agentharness.ProviderOutputCommitted) error
+	}); ok {
+		return target.commitProviderOutput(ctx, commit)
+	}
+	return nil
+}
+func (recorder *runtimeActivityEventRecorder) CommitProviderOutput(ctx context.Context, commit agentharness.ProviderOutputCommitted) error {
+	return recorder.sink.CommitProviderOutput(ctx, commit)
 }

@@ -15,7 +15,6 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
-	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/engine"
 	enginecompaction "github.com/floegence/floret/v7/internal/engine/compaction"
@@ -914,7 +913,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	projection.ctx = persistCtx
 	projectionErr, projectionDiagnostic := projection.err, "projection_error"
 	if projectionErr == nil {
-		projectionErr = projection.FlushForTurnStatus(result.Status, result.Err)
+		projectionErr = projection.commitPartialOutput(result.UncommittedOutput)
+		if projectionErr == nil {
+			projectionErr = projection.FlushForTurnStatus(result.Status, result.Err)
+		}
 		projectionDiagnostic = "projection_flush_error"
 	}
 	if projectionErr != nil {
@@ -1367,12 +1369,6 @@ func (t *Thread) appendDelta(ctx context.Context, turnID string, runID string, b
 		if nonDurableProjection(msg) {
 			continue
 		}
-		if suffix, ok := persisted.assistantSuffix(msg); ok {
-			if strings.TrimSpace(suffix.Content) == "" && strings.TrimSpace(suffix.Reasoning) == "" {
-				continue
-			}
-			msg = suffix
-		}
 		// IMPORTANT: Realtime turn projection and appendDelta share the durable
 		// journal for one turn. appendDelta may only backfill messages that were
 		// not already persisted by projection; hiding duplicates in the UI or
@@ -1393,6 +1389,8 @@ type durableMessageCounter struct {
 }
 
 type durableMessageSignature struct {
+	ContentSourceID      string
+	ReasoningSourceID    string
 	ModelContext         string
 	Role                 session.Role
 	Content              string
@@ -1451,43 +1449,11 @@ func (c *durableMessageCounter) record(msg session.Message) {
 	c.counts[durableSignature(msg)]++
 }
 
-func (c *durableMessageCounter) assistantSuffix(msg session.Message) (session.Message, bool) {
-	if c == nil || msg.Role != session.Assistant || msg.ToolCallID != "" || msg.ToolName != "" || msg.ToolArgs != "" || msg.ToolResult != nil || msg.Kind != "" {
-		return session.Message{}, false
-	}
-	content := msg.Content
-	reasoning := msg.Reasoning
-	for signature, count := range c.counts {
-		if count <= 0 || signature.Role != session.Assistant || signature.ToolCallID != "" || signature.ToolName != "" || signature.ToolArgs != "" || signature.ToolResult != "" || signature.Kind != "" {
-			continue
-		}
-		if signature.Content != "" {
-			if !strings.HasPrefix(content, signature.Content) {
-				continue
-			}
-			content = strings.TrimPrefix(content, signature.Content)
-		}
-		if signature.Reasoning != "" {
-			if !strings.HasPrefix(reasoning, signature.Reasoning) {
-				continue
-			}
-			reasoning = strings.TrimPrefix(reasoning, signature.Reasoning)
-		}
-	}
-	if content == msg.Content && reasoning == msg.Reasoning {
-		return session.Message{}, false
-	}
-	suffix := msg
-	suffix.Content = content
-	suffix.Reasoning = reasoning
-	return suffix, true
-}
-
 func durableSignature(msg session.Message) durableMessageSignature {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
 	snapshot, _ := json.Marshal(msg.ModelContextSnapshot)
-	return durableMessageSignature{
+	return durableMessageSignature{ContentSourceID: msg.ContentSourceID, ReasoningSourceID: msg.ReasoningSourceID,
 		ModelContext:         string(snapshot),
 		Role:                 msg.Role,
 		Content:              msg.Content,
@@ -1815,9 +1781,9 @@ func subAgentContextCompactionFromEvent(ev event.Event) (ThreadContextCompaction
 func subAgentObservationProviderUsage(in provider.Usage) observation.ProviderUsage {
 	in = in.Normalized()
 	return observation.ProviderUsage{
-		InputTokens:             in.InputTokens,
-		OutputTokens:            in.OutputTokens,
-InputTokensReported: in.InputTokensReported, InputTokenScope: in.InputTokenScope,
+		InputTokens:         in.InputTokens,
+		OutputTokens:        in.OutputTokens,
+		InputTokensReported: in.InputTokensReported, InputTokenScope: in.InputTokenScope,
 		OutputIncludesReasoning: in.OutputIncludesReasoning,
 		TotalTokensReported:     in.TotalTokensReported,
 		ReasoningTokens:         in.ReasoningTokens,
@@ -2114,15 +2080,18 @@ func (r *HarnessRecorder) Snapshot() []HarnessEvent {
 	return slices.Clone(r.Events)
 }
 
-type pendingHostedObservation struct {
-	event        event.Event
-	textEnd      int
-	reasoningEnd int
+// ProviderOutputCommitted is a memory-only handoff of one atomic response commit.
+// Entry observation events remain independent diagnostics.
+type ProviderOutputCommitted struct {
+	ThreadID, TurnID, RunID string
+	Entries                 []sessiontree.Entry
+}
+
+type ProviderOutputSink interface {
+	CommitProviderOutput(context.Context, ProviderOutputCommitted) error
 }
 
 type turnProjection struct {
-	sources               []citation.Source
-	hosted                []pendingHostedObservation
 	thread                *Thread
 	stateCompatibilityKey string
 	ctx                   context.Context
@@ -2131,8 +2100,6 @@ type turnProjection struct {
 	downstream            event.Sink
 	emitMu                sync.Mutex
 	mu                    sync.Mutex
-	text                  string
-	reasoning             string
 	pendingCalls          []pendingToolMessage
 	pendingResults        []pendingToolMessage
 	pendingBatchSize      int
@@ -2284,29 +2251,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	switch ev.Type {
-	case event.ProviderDelta:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
-		// Hosted search boundaries stay in the in-memory assistant segment until
-		// the response sources arrive at step finalization.
-		p.text += ev.Message
-	case event.ProviderReasoning:
-		p.reasoning += ev.Message
-	case event.ProviderSources:
-		p.sources = citation.Normalize(append(p.sources, ev.Sources...))
-	case event.HostedToolCall, event.HostedToolResult:
-		// Annotations can arrive at the end of the response. Commit its assistant
-		// fragments and hosted observations together in their original order.
-		p.hosted = append(p.hosted, pendingHostedObservation{ev, len(p.text), len(p.reasoning)})
 	case event.ToolCall:
 		message, err := canonicalToolCallMessage(ev)
 		if err != nil {
-			p.err = err
-			return
-		}
-		if err := p.flushPendingAssistantText(false); err != nil {
 			p.err = err
 			return
 		}
@@ -2340,26 +2287,14 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
 		p.err = p.thread.appendToolDispatchEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolActivityUpdated:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err
 			return
 		}
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
 		p.err = p.thread.appendToolActivityEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolResult:
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
 		p.finalCandidate = nil
 		p.pendingResults = append(p.pendingResults, pendingToolMessage{
 			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity))},
@@ -2378,17 +2313,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
 		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ContextContinue:
 		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
-		if err := p.flushPendingAssistantText(true); err != nil {
 			p.err = err
 			return
 		}
@@ -2407,10 +2334,6 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	case event.StepEnd:
-		if err := p.flushPendingAssistantText(true); err != nil {
-			p.err = err
-			return
-		}
 		if ev.CompletionReason == string(engine.CompletionReasonNaturalStop) {
 			p.acceptedFinal = true
 		} else if ev.ContinuationReason != string(engine.ContinueProviderTruncated) && ev.ContinuationReason != string(engine.ContinueRetryEmpty) {
@@ -2448,10 +2371,6 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 			if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
 				return false, newTurnProjectionContractError("provider attempt superseded with pending canonical tool batch")
 			}
-			p.text = ""
-			p.reasoning = ""
-			p.sources = nil
-			p.hosted = nil
 			p.activeAttempt = identity
 			p.retiredAttempt = false
 		}
@@ -2486,10 +2405,6 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 		if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
 			return false, newTurnProjectionContractError("cannot retire attempt with confirmed pending tools")
 		}
-		p.text = ""
-		p.reasoning = ""
-		p.sources = nil
-		p.hosted = nil
 		p.retiredAttempt = true
 	}
 	return true, nil
@@ -2555,10 +2470,6 @@ func (p *turnProjection) Flush() error {
 		p.err = err
 		return err
 	}
-	if err := p.flushPendingAssistantText(true); err != nil {
-		p.err = err
-		return err
-	}
 	return nil
 }
 
@@ -2577,35 +2488,17 @@ func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) e
 		p.err = err
 		return err
 	}
-	if err := p.flushPendingAssistantText(true); err != nil {
-		p.err = err
-		return err
-	}
 	return nil
 }
 
-func (p *turnProjection) pendingAssistantEntries(keepFinalReasoning bool) ([]sessiontree.Entry, error) {
-	var entries []sessiontree.Entry
-	textStart, reasoningStart := 0, 0
-	boundaries := make([]int, len(p.hosted))
-	for i, hosted := range p.hosted {
-		boundaries[i] = hosted.textEnd
-	}
-	appendFragment := func(textEnd, reasoningEnd int, keepReasoning bool) error {
-		text, reasoning := p.text[textStart:textEnd], p.reasoning[reasoningStart:reasoningEnd]
-		sources := citation.Fragment(p.sources, p.text, textStart, textEnd, textEnd == len(p.text) && textStart < textEnd, boundaries)
-		textStart, reasoningStart = textEnd, reasoningEnd
-		if text == "" && (!keepReasoning || reasoning == "") {
-			return nil
+func (p *turnProjection) responseEntries(output engine.ResponseOutput) ([]sessiontree.Entry, error) {
+	entries := make([]sessiontree.Entry, 0, len(output.Items))
+	for _, item := range output.Items {
+		if item.Hosted == nil {
+			entries = append(entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, item.Message, time.Time{}))
+			continue
 		}
-		entries = append(entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources}, time.Time{}))
-		return nil
-	}
-	for _, hosted := range p.hosted {
-		if err := appendFragment(hosted.textEnd, hosted.reasoningEnd, true); err != nil {
-			return nil, err
-		}
-		ev := event.Sanitize(hosted.event)
+		ev := event.Sanitize(*item.Hosted)
 		metadata, _ := ev.Metadata.(map[string]any)
 		entry, err := sessiontree.NewHostedToolEntry(observation.Event{Type: ev.Type, ThreadID: identity.ThreadID(p.thread.id), TurnID: identity.TurnID(p.turnID), RunID: identity.RunID(p.runID), ToolID: ev.ToolID, ToolName: ev.ToolName, ObservedAt: ev.Timestamp, Activity: ev.Activity, Metadata: metadata})
 		if err != nil {
@@ -2613,10 +2506,40 @@ func (p *turnProjection) pendingAssistantEntries(keepFinalReasoning bool) ([]ses
 		}
 		entries = append(entries, entry)
 	}
-	if err := appendFragment(len(p.text), len(p.reasoning), keepFinalReasoning); err != nil {
-		return nil, err
-	}
 	return entries, nil
+}
+
+func (p *turnProjection) commitPartialOutput(output engine.ResponseOutput) error {
+	if len(output.Items) == 0 {
+		return nil
+	}
+	entries, err := p.responseEntries(output)
+	if err != nil {
+		return err
+	}
+	repo, ok := p.thread.harness.options.Repo.(sessiontree.ProviderContextRepo)
+	if !ok {
+		return errors.New("session tree repo does not support provider context commit")
+	}
+	saved, err := repo.CommitProviderContext(p.ctx, sessiontree.ProviderContextCommit{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, Entries: entries, Partial: true, Now: p.thread.harness.now()})
+	if err != nil {
+		return err
+	}
+	if err := p.publishOutputCommit(p.ctx, saved); err != nil {
+		return err
+	}
+	p.recordAssistantEntries(saved)
+	return nil
+}
+
+func (p *turnProjection) publishOutputCommit(ctx context.Context, entries []sessiontree.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if sink, ok := p.downstream.(ProviderOutputSink); ok {
+		return sink.CommitProviderOutput(ctx, ProviderOutputCommitted{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, Entries: entries})
+	}
+	return nil
 }
 
 func (p *turnProjection) recordAssistantEntries(entries []sessiontree.Entry) {
@@ -2631,34 +2554,13 @@ func (p *turnProjection) recordAssistantEntries(entries []sessiontree.Entry) {
 			p.projectedAssistantIDs = map[string]bool{}
 		}
 		p.projectedAssistantIDs[entry.ID] = true
-		p.finalCandidate = append(p.finalCandidate, entry.ID)
-	}
-}
-
-func (p *turnProjection) resetAssistant(resetReasoning bool) {
-	p.text, p.sources, p.hosted = "", nil, nil
-	if resetReasoning {
-		p.reasoning = ""
-	}
-}
-
-func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
-	entries, err := p.pendingAssistantEntries(false)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		saved, err := p.thread.harness.options.Repo.Append(p.ctx, entry, sessiontree.AppendOptions{})
-		if err != nil {
-			return err
+		if strings.TrimSpace(entry.Message.Content) != "" {
+			p.finalCandidate = append(p.finalCandidate, entry.ID)
 		}
-		p.recordAssistantEntries([]sessiontree.Entry{saved})
 	}
-	p.resetAssistant(resetReasoning)
-	return nil
 }
 
-func (p *turnProjection) commitProviderContext(ctx context.Context, state *provider.State, calls []session.Message, clear bool) error {
+func (p *turnProjection) commitProviderContext(ctx context.Context, state *provider.State, output engine.ResponseOutput, calls []session.Message, clear bool) error {
 	p.emitMu.Lock()
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
@@ -2676,7 +2578,7 @@ func (p *turnProjection) commitProviderContext(ctx context.Context, state *provi
 			return err
 		}
 		var err error
-		request.Entries, err = p.pendingAssistantEntries(len(calls) == 0)
+		request.Entries, err = p.responseEntries(output)
 		if err != nil {
 			return err
 		}
@@ -2686,13 +2588,13 @@ func (p *turnProjection) commitProviderContext(ctx context.Context, state *provi
 	}
 	entries, err := repo.CommitProviderContext(ctx, request)
 	if err != nil {
+		p.err = err
 		return err
 	}
 	if clear {
 		return nil
 	}
 	p.recordAssistantEntries(entries)
-	p.resetAssistant(true)
 	for _, call := range calls {
 		if call.Kind == session.MessageKindControlSignal {
 			continue
@@ -2700,6 +2602,10 @@ func (p *turnProjection) commitProviderContext(ctx context.Context, state *provi
 		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{message: call, observedAt: request.Now})
 	}
 	p.pendingBatchSize, p.pendingCallsSent = len(p.pendingCalls), len(p.pendingCalls) > 0
+	if err := p.publishOutputCommit(ctx, entries); err != nil {
+		p.err = err
+		return err
+	}
 	return nil
 }
 
@@ -2724,7 +2630,6 @@ func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Stat
 			}
 		}
 		p.pendingCallsSent = true
-		p.reasoning = ""
 	}
 
 	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
@@ -2825,7 +2730,6 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 			}
 		}
 		p.pendingCallsSent = true
-		p.reasoning = ""
 	}
 	if len(p.pendingResults) == 0 {
 		return nil

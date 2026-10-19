@@ -207,11 +207,11 @@ func TestCanonicalRefreshPreservesObservedToolProgress(t *testing.T) {
 			canonical[0].Live = false
 			canonical[0].Activity.Status = observation.ActivityStatusRunning
 			canonical[0].Activity.Presentation.Payload = tools.TerminalActivityPayload{Command: "printf ready"}
-			got, ok := reconcileCanonicalThreadItems(current, canonical, false)
+			got, ok := reconcileCanonicalThreadItems(current, canonical, false, nil)
 			if !ok || !reflect.DeepEqual(got, current) {
 				t.Fatalf("canonical call regressed observed tool: %#v", got)
 			}
-			got, ok = reconcileCanonicalThreadItems(current, canonical, true)
+			got, ok = reconcileCanonicalThreadItems(current, canonical, true, nil)
 			if !ok || !reflect.DeepEqual(got, canonical) {
 				t.Fatal("terminal settlement did not restore journal authority")
 			}
@@ -279,7 +279,7 @@ func TestThreadRuntimeToolResultSurvivesBlockedCanonicalRefresh(t *testing.T) {
 		}}}
 		sink.EmitEvent(Event{Type: observation.EventTypeToolActivityUpdated, ThreadID: created.ThreadID, TurnID: "turn-live", RunID: "run-live", ActivityTimeline: &timeline})
 	}
-	sink.EmitEvent(Event{Type: observation.EventTypeProviderDelta, ThreadID: created.ThreadID, TurnID: "turn-live", RunID: "run-live", Stream: &StreamObservation{Type: StreamObservationAssistantDelta, Text: "Continuing analysis"}})
+	sink.EmitEvent(Event{Type: observation.EventTypeProviderDelta, ThreadID: created.ThreadID, TurnID: "turn-live", RunID: "run-live", outputSourceID: "output:continuing", Stream: &StreamObservation{Type: StreamObservationAssistantDelta, Text: "Continuing analysis"}})
 	before := typed.currentView(actor)
 	releaseOnce()
 	select {

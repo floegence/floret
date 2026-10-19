@@ -1352,7 +1352,7 @@ func TestOpenAICompatibleProviderNonStreamResponseDoesNotBlockWhenAllEventTypesA
 	if !slices.Equal(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
-	if call.ID != "call-1" || call.Name != "list" || call.Reasoning != "Need a local tool." {
+	if call.ID != "call-1" || call.Name != "list" || call.Reasoning != "" {
 		t.Fatalf("tool call = %#v", call)
 	}
 }
@@ -1583,11 +1583,11 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Messages) != 5 {
+	if len(body.Messages) != 4 {
 		t.Fatalf("messages = %#v", body.Messages)
 	}
-	assistant := body.Messages[2]
-	if assistant["role"] != "assistant" || assistant["content"] != "" || assistant["reasoning_content"] != "search and shell" {
+	assistant := body.Messages[1]
+	if assistant["role"] != "assistant" || assistant["content"] != "I will inspect sources." || assistant["reasoning_content"] != "plansearch and shell" {
 		t.Fatalf("merged assistant message malformed: %#v", assistant)
 	}
 	toolCalls, ok := assistant["tool_calls"].([]any)
@@ -1599,11 +1599,11 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 	if first["id"] != "search-1" || second["id"] != "shell-1" {
 		t.Fatalf("tool calls out of order: %#v", toolCalls)
 	}
-	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-1" {
-		t.Fatalf("first tool result malformed: %#v", body.Messages[3])
+	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" {
+		t.Fatalf("first tool result malformed: %#v", body.Messages[2])
 	}
-	if body.Messages[4]["role"] != "tool" || body.Messages[4]["tool_call_id"] != "shell-1" {
-		t.Fatalf("second tool result malformed: %#v", body.Messages[4])
+	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "shell-1" {
+		t.Fatalf("second tool result malformed: %#v", body.Messages[3])
 	}
 }
 

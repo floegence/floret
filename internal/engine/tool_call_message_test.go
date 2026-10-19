@@ -43,9 +43,6 @@ func TestToolCallEventCarriesDetachedCanonicalMessage(t *testing.T) {
 				}
 			}
 			wantReasoning := callReasoning
-			if wantReasoning == "" {
-				wantReasoning = "step reasoning"
-			}
 			calls := 0
 			for _, ev := range recorder.Snapshot() {
 				if ev.Type != event.ToolCall {

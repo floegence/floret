@@ -1107,6 +1107,10 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 		}
 		entry.PathDepth = parentDepth + 1
 	}
+	admitOutputSources(&entry)
+	if err := r.validateNewOutputSourcesLocked(entry); err != nil {
+		return Entry{}, err
+	}
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
 	r.appendIndexedEntriesLocked(entry.ThreadID, entry)

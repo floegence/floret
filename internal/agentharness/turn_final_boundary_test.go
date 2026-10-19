@@ -1,8 +1,12 @@
 package agentharness
 
 import (
+	"context"
+	"errors"
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"reflect"
 	"testing"
 )
@@ -10,14 +14,14 @@ import (
 func TestAcceptedFinalBoundaryDiscardsHookDraftAndPreservesLengthThroughEmptyRetry(t *testing.T) {
 	repo, thread := newUsageProjectionThread(t)
 	p := &turnProjection{ctx: t.Context(), thread: thread, turnID: "turn", runID: "run"}
-	p.Emit(event.Event{Type: event.ProviderDelta, Message: "draft"})
+	commitText(t, p, "draft")
 	p.Emit(event.Event{Type: event.StepEnd, ContinuationReason: string(engine.ContinueProviderTruncated)})
 	p.Emit(event.Event{Type: event.ContextContinue, Message: "continue", ContinuationReason: string(engine.ContinueHook)})
 	p.Emit(event.Event{Type: event.StepEnd, ContinuationReason: string(engine.ContinueHook)})
-	p.Emit(event.Event{Type: event.ProviderDelta, Message: "final part one"})
+	commitText(t, p, "final part one")
 	p.Emit(event.Event{Type: event.StepEnd, ContinuationReason: string(engine.ContinueProviderTruncated)})
 	p.Emit(event.Event{Type: event.StepEnd, ContinuationReason: string(engine.ContinueRetryEmpty)})
-	p.Emit(event.Event{Type: event.ProviderDelta, Message: "final part two"})
+	commitText(t, p, "final part two")
 	if p.acceptedFinal {
 		t.Fatal("a continuation cannot accept the final response")
 	}
@@ -38,5 +42,55 @@ func TestAcceptedFinalBoundaryDiscardsHookDraftAndPreservesLengthThroughEmptyRet
 	}
 	if !reflect.DeepEqual(texts, []string{"final part one", "final part two"}) {
 		t.Fatalf("final texts=%v", texts)
+	}
+}
+
+func commitText(t *testing.T, p *turnProjection, text string) {
+	t.Helper()
+	if err := p.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: text, ContentSourceID: "output:" + text}}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type rejectingOutputSink struct{ err error }
+
+func (s rejectingOutputSink) Emit(event.Event) {}
+func (s rejectingOutputSink) CommitProviderOutput(context.Context, ProviderOutputCommitted) error {
+	return s.err
+}
+
+func TestOutputTakeoverFailureDoesNotRecommitAndClosesDurableCalls(t *testing.T) {
+	repo, thread := newUsageProjectionThread(t)
+	cause := errors.New("view installation failed")
+	p := &turnProjection{ctx: t.Context(), thread: thread, turnID: "turn", runID: "run", downstream: rejectingOutputSink{cause}}
+	output := engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "once", ContentSourceID: "output:once"}}}}
+	call := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "inspect", ToolName: "inspect", ToolArgs: "{}"}
+	if err := p.commitProviderContext(t.Context(), nil, output, []session.Message{call}, false); !errors.Is(err, cause) {
+		t.Fatalf("takeover=%v", err)
+	}
+	if !errors.Is(p.err, cause) {
+		t.Fatal("takeover failure did not fence further commits")
+	}
+	if _, err := thread.finalizeFailedTurn(t.Context(), "turn", "run", engine.Failed, cause, "projection_error", engine.FailureOriginContract); err == nil {
+		t.Fatal("missing failure")
+	}
+	entries, err := repo.Entries(t.Context(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts, calls, results := 0, 0, 0
+	for _, entry := range entries {
+		if entry.Message.Content == "once" {
+			texts++
+		}
+		if entry.Type == sessiontree.EntryToolCall {
+			calls++
+		}
+		if entry.Type == sessiontree.EntryToolResult {
+			results++
+		}
+	}
+	if texts != 1 || calls != 1 || results != 1 {
+		t.Fatalf("texts=%d calls=%d results=%d", texts, calls, results)
 	}
 }

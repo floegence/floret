@@ -22,16 +22,14 @@ type queryRecord struct {
 	activities []*tools.ActivityPresentation
 }
 type queryThread struct {
-	reasoningOpen     map[string]bool
-	lastReasoning     map[string]string
-	leaf              string
-	records           map[string]*queryRecord
-	segmented         map[string]bool
-	hostedPending     map[string]map[string]*queryRecord
-	lifecycle         CanonicalLifecycle
-	previous          *queryRecord
-	previousAssistant bool
-	order             int64
+	leaf                  string
+	records               map[string]*queryRecord
+	hostedPending         map[string]map[string]*queryRecord
+	lifecycle             CanonicalLifecycle
+	previous              *queryRecord
+	previousAssistant     bool
+	previousContentSource string
+	order                 int64
 }
 
 // queryProjector is the only canonical-to-search projection. It owns no
@@ -45,7 +43,7 @@ func (projector *queryProjector) replace(state *queryThread, record *queryRecord
 	}
 }
 func newQueryThread() *queryThread {
-	return &queryThread{reasoningOpen: map[string]bool{}, lastReasoning: map[string]string{}, records: map[string]*queryRecord{}, segmented: map[string]bool{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
+	return &queryThread{records: map[string]*queryRecord{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
 }
 func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryThread, error) {
 	meta, found := r.threads[id]
@@ -117,9 +115,6 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		return err
 	}
 	state.lifecycle.Observe(entry, true)
-	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
-		state.segmented[entry.TurnID] = entry.Metadata[ResponseSegmentsMetadataKey] == "1"
-	}
 	base := threadquery.Record{ThreadID: identity.ThreadID(threadID), TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Time: at.UTC(), Order: state.order}
 	normal := entry.Message.Kind == session.MessageKindNormal
 	switch entry.Type {
@@ -128,14 +123,6 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			return nil
 		}
 		assistant := entry.Type == EntryAssistantMessage
-		if assistant {
-			executionKey := entry.TurnID + "\x00" + entry.RunID
-			if AppendReasoningSegment(entry.Message.Reasoning, state.lastReasoning[executionKey], state.reasoningOpen[executionKey]) {
-				state.previousAssistant = false
-				state.reasoningOpen[executionKey] = true
-				state.lastReasoning[executionKey] = entry.Message.Reasoning
-			}
-		}
 		if assistant && entry.Message.Content == "" {
 			return nil
 		}
@@ -145,7 +132,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			base.Role = "assistant"
 		}
 		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: queryEntryParts(entry), sources: []string{entry.ID}}
-		if assistant && state.previous != nil && MergeAssistantSegment(state.segmented[entry.TurnID], state.previousAssistant, state.previous.row.TurnID.String(), state.previous.row.RunID.String(), entry.TurnID, entry.RunID) {
+		if assistant && state.previous != nil && state.previousAssistant && state.previousContentSource == entry.Message.ContentSourceID && entry.Message.ContentSourceID != "" && state.previous.row.TurnID.String() == entry.TurnID && state.previous.row.RunID.String() == entry.RunID {
 			record = copyQueryRecord(state.previous)
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
 			record.sources = append(record.sources, entry.ID)
@@ -155,10 +142,8 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		projector.replace(state, record)
 		state.previous = record
 		state.previousAssistant = assistant
+		state.previousContentSource = entry.Message.ContentSourceID
 	case EntryToolCall, EntryToolResult:
-		if entry.Type == EntryToolResult {
-			state.reasoningOpen[entry.TurnID+"\x00"+entry.RunID] = false
-		}
 		if !normal {
 			if entry.Message.Kind == session.MessageKindControlSignal {
 				state.previousAssistant = false
@@ -199,7 +184,6 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			return nil
 		}
 		state.previousAssistant = false
-		state.reasoningOpen[entry.TurnID+"\x00"+entry.RunID] = false
 		ev, err := HostedToolObservation(entry)
 		if err != nil {
 			return err
@@ -330,18 +314,6 @@ func cloneQueryThread(source *queryThread) *queryThread {
 	result.records = map[string]*queryRecord{}
 	for key, record := range source.records {
 		result.records[key] = record
-	}
-	result.reasoningOpen = map[string]bool{}
-	for key, value := range source.reasoningOpen {
-		result.reasoningOpen[key] = value
-	}
-	result.lastReasoning = map[string]string{}
-	for key, value := range source.lastReasoning {
-		result.lastReasoning[key] = value
-	}
-	result.segmented = map[string]bool{}
-	for key, value := range source.segmented {
-		result.segmented[key] = value
 	}
 	result.hostedPending = map[string]map[string]*queryRecord{}
 	for key, values := range source.hostedPending {

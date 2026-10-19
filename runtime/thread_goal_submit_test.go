@@ -379,7 +379,7 @@ func TestCanonicalReconciliationRejectsMissingOrReorderedDurableItems(t *testing
 		{"changed canonical position", []ThreadItem{first, {ID: "second", Ordinal: 2, CanonicalOrdinal: 5, Kind: ThreadItemAssistant, TurnID: "turn", RunID: "run"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, ok := reconcileCanonicalThreadItems(current, test.canonical, false); ok {
+			if _, ok := reconcileCanonicalThreadItems(current, test.canonical, false, nil); ok {
 				t.Fatal("incompatible canonical snapshot was accepted")
 			}
 		})

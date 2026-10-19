@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-19 — Canonical output sources
+
+- Unify Engine-owned response sources, transactional canonical takeover and schema 24 -> 25 migration. See [output sources](decisions/output-sources.md).
+
 ## 2026-10-18 — Activity navigation and diagnostic boundaries
 
 - Preserve canonical and host-facing navigation targets consistently across file, structured, and patch Activity while redacting all target paths in diagnostic traces. See [tools](api/tools.md#per-resource-activity-targets) and [observation](api/observation.md#boundary). Existing history and schema 24 remain unchanged.

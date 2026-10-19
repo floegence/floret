@@ -70,6 +70,10 @@ const (
 )
 
 type Event struct {
+	// OutputSourceID is assigned by the Engine before publishing any text.
+	OutputSourceID string   `json:"-"`
+	OutputOrder    []string `json:"-"`
+
 	ProviderLastProgressAt *time.Time             `json:"provider_last_progress_at,omitempty"`
 	EstimatedOutputTokens  int64                  `json:"estimated_output_tokens,omitempty"`
 	ArgumentPreview        *tools.ArgumentPreview `json:"argument_preview,omitempty"`

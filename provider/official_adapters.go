@@ -264,6 +264,11 @@ func internalState(state *State) *internalprovider.State {
 }
 
 func publicEvent(event internalprovider.StreamEvent) Event {
+	var part *OutputPart
+	if event.OutputPart != nil {
+		part = &OutputPart{ItemID: event.OutputPart.ItemID, OutputIndex: event.OutputPart.OutputIndex, ContentIndex: event.OutputPart.ContentIndex}
+	}
+
 	calls := make([]ToolCall, len(event.ToolCalls))
 	for index, call := range event.ToolCalls {
 		calls[index] = ToolCall{ID: call.ID, Name: call.Name, Args: call.Args}
@@ -285,7 +290,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 		hostedResult = publicHostedResult(event.HostedResult)
 	}
 	return Event{
-		Type: EventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		OutputPart: part, Type: EventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
 		HostedToolCall: hostedCall, HostedResult: hostedResult, Sources: sources, Reason: event.Reason,
 		Usage: Usage{
 			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
