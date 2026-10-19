@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.63.1 - 2026-10-18
+
+- Preserve historical Goal review evidence after forks re-key journal entries by matching the confirmed invocation span.
+
 ## v7.63.0 - 2026-10-18
 
 - Expose detached typed Goal invocation presentation with exact objective text and journal-confirmed review evidence, without equating a completed review with committed completion.
