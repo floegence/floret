@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.66.1 - 2026-10-19
+
+- Align the native DeepSeek Search count schema with its accepted 1–50 range and preserve Brave descriptions in model-visible results.
+
 ## v7.66.0 - 2026-10-19
 
 - Add shared Brave/DeepSeek Search clients and native tools, explicit Markdown DeepSeek Fetch, bounded authenticated transport and factual Activity.

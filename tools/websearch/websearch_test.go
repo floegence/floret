@@ -148,3 +148,42 @@ func TestLiveCredentialIsResolvedForEachSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeToolKeepsProviderCountAndBraveModelContent(t *testing.T) {
+	for _, deepseek := range []bool{false, true} {
+		t.Run(fmt.Sprint(deepseek), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if deepseek {
+					fmt.Fprint(w, `{"results":[{"url":"https://example.com","snippet":"UI snippet","summary":"Model summary"}]}`)
+				} else {
+					fmt.Fprint(w, `{"web":{"results":[{"title":"Title","url":"https://example.com","description":"Brave model content"}]}}`)
+				}
+			}))
+			defer server.Close()
+			options := ClientOptions{BaseURL: server.URL, APIKey: "test"}
+			client, err := NewBraveClient(options)
+			count := 20
+			if deepseek {
+				client, err = NewDeepSeekClient(options)
+				count = 50
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := NewTool(client, ToolOptions{})
+			properties := tool.Definition.InputSchema["properties"].(map[string]any)
+			if properties["count"].(map[string]any)["maximum"] != count {
+				t.Fatalf("count schema=%v", properties["count"])
+			}
+			result := tooltest.Run(t.Context(), tools.NewRegistry(tool), tools.ToolCall{ID: "search", Name: ToolName, Args: fmt.Sprintf(`{"query":"q","count":%d}`, count)}, func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+				return tooltest.PermissionDecisionAllow, nil
+			})
+			if result.IsError {
+				t.Fatal(result.Text)
+			}
+			if !deepseek && !strings.Contains(result.Text, "Brave model content") {
+				t.Fatalf("Brave model snippet lost: %s", result.Text)
+			}
+		})
+	}
+}
