@@ -7,7 +7,8 @@
 // prompt-cache storage records, or depending on internal inspection types.
 //
 // Observation values are not raw debug records. They intentionally omit provider
-// payloads, model deltas, reasoning, tool arguments, tool results, and local
-// paths. Hosts that need raw local inspection should build that capability as an
-// explicit privileged surface behind its own product boundary.
+// payloads, model deltas, reasoning, and raw tool arguments and results. Display
+// text and metadata omit local paths. Explicit ActivityTargetRef navigation
+// paths and URIs remain resource facts; hosts must authorize access before
+// opening them. Diagnostic trace sinks redact navigation paths separately.
 package observation

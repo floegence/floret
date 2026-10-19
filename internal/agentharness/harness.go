@@ -1565,7 +1565,7 @@ func approvalEventEntry(threadID, turnID, runID string, ev event.Event) sessiont
 		TurnID:   turnID,
 		RunID:    runID,
 		Type:     sessiontree.EntryCustom,
-		Message:  session.Message{Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+		Message:  session.Message{Activity: sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity))},
 		Metadata: metadata,
 	}
 }
@@ -1602,7 +1602,7 @@ func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, run
 		Message: session.Message{
 			ToolCallID: strings.TrimSpace(ev.ToolID),
 			ToolName:   strings.TrimSpace(ev.ToolName),
-			Activity:   sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity)),
+			Activity:   sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity)),
 		},
 		Metadata: metadata,
 	}, sessiontree.AppendOptions{})
@@ -1638,7 +1638,7 @@ func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, run
 		Message: session.Message{
 			ToolCallID: strings.TrimSpace(ev.ToolID),
 			ToolName:   strings.TrimSpace(ev.ToolName),
-			Activity:   sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity)),
+			Activity:   sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity)),
 		},
 		Metadata: metadata,
 	}, sessiontree.AppendOptions{})
@@ -2362,7 +2362,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 		}
 		p.finalCandidate = nil
 		p.pendingResults = append(p.pendingResults, pendingToolMessage{
-			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity))},
 			observedAt:       ev.Timestamp,
 			canonicalEntryID: ev.CanonicalEntryID,
 		})
@@ -3017,10 +3017,6 @@ func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
 		return string(observation.ActivityStatusCanceled)
 	}
 	return string(observation.ActivityStatusSuccess)
-}
-
-func sanitizeActivityPresentation(activity *tools.ActivityPresentation) *tools.ActivityPresentation {
-	return event.Sanitize(event.Event{Activity: activity}).Activity
 }
 
 func sessionActivityPresentation(in *tools.ActivityPresentation) *session.ActivityPresentation {

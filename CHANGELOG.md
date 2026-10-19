@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Preserve exact activity navigation paths and URIs through tool execution, canonical history, live observations, forks, and restart, without rewriting existing records.
+- Redact nested structured-row and patch-mutation navigation paths in diagnostic traces without mutating canonical presentation.
+
 ## v7.64.0 - 2026-10-18
 
 - Add the typed SubAgentOperationStatus action for metadata-only child checks, preserving complete inspect and wait result contracts.

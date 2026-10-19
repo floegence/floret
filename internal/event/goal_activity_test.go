@@ -9,7 +9,7 @@ import (
 func TestGoalActivitySanitizationKeepsFullDetachedObjective(t *testing.T) {
 	text := strings.Repeat("Original goal. ", 1000)
 	original := &tools.ActivityPresentation{Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Goal: &tools.GoalActivity{Operation: "review", Version: 1, Text: text, Outcome: "continue", Evidence: "Needs a decision"}}}
-	clean := sanitizeActivityPresentation(original)
+	clean := NormalizeActivityPresentation(original)
 	if clean == nil {
 		t.Fatal("lost Goal activity")
 	}

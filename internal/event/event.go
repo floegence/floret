@@ -181,6 +181,10 @@ type Redactor func(string) string
 type SinkPolicy struct {
 	AllowRaw bool
 	Redactor Redactor
+	// PreserveActivityNavigation is for canonical host/UI observation. Targets
+	// remain descriptive resource facts; the host must authorize navigation.
+	// Diagnostic sinks must leave this disabled.
+	PreserveActivityNavigation bool
 }
 
 func Sanitize(e Event) Event {
@@ -192,7 +196,7 @@ func SanitizeWithPolicy(e Event, policy SinkPolicy) Event {
 }
 
 func SanitizePathRefs(e Event) Event {
-	return sanitizePathRefs(e)
+	return sanitizePathRefs(e, false)
 }
 
 func sanitize(e Event, policy SinkPolicy) Event {
@@ -200,7 +204,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		copy := *e.Retry
 		e.Retry = &copy
 	}
-	e = sanitizePathRefs(e)
+	e = sanitizePathRefs(e, policy.PreserveActivityNavigation)
 	if policy.AllowRaw {
 		if policy.Redactor != nil {
 			e.Message = policy.Redactor(e.Message)
@@ -211,7 +215,6 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		if e.Type == ThreadEntryCommitted {
 			e.Metadata = withoutMetadataKey(e.Metadata, "detail")
 		}
-		e.Activity = sanitizeActivityPresentation(e.Activity)
 		return e
 	}
 	if e.ArgsHash == "" && e.Args != "" {
@@ -247,7 +250,6 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	e.Result = Redact(e.Result)
 	e.Metadata = sanitizeMetadata(e.Metadata)
 	e.Payload = nil
-	e.Activity = sanitizeActivityPresentation(e.Activity)
 	e.Sources = sanitizeSourceRefs(e.Sources)
 	return e
 }
@@ -281,7 +283,7 @@ func withoutMetadataKey(value any, key string) any {
 	}
 }
 
-func sanitizePathRefs(e Event) Event {
+func sanitizePathRefs(e Event, preserveActivityNavigation bool) Event {
 	e.ToolCallMessage = nil
 	e.ArgumentPreview = e.ArgumentPreview.Clone()
 	if e.ArgumentPreview != nil {
@@ -298,7 +300,7 @@ func sanitizePathRefs(e Event) Event {
 	e.Result = SafePathRefsText(e.Result)
 	e.Err = SafePathRefsText(e.Err)
 	e.Metadata = sanitizePathMetadata(e.Metadata)
-	e.Activity = sanitizeActivityPresentation(e.Activity)
+	e.Activity = normalizeActivityPresentation(e.Activity, preserveActivityNavigation)
 	e.Sources = sanitizeSourceRefs(e.Sources)
 	for i := range e.Artifacts {
 		if e.Artifacts[i].Path != "" {
@@ -337,17 +339,26 @@ func safeSourceURL(value string) string {
 	return safeActivityText(value, 500)
 }
 
-func sanitizeActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
+// NormalizeActivityPresentation detaches and validates canonical presentation
+// while sanitizing display text. Explicit navigation paths and URIs retain
+// their exact spelling; they are resource facts, never authorization evidence.
+// Use Sanitize for diagnostic output instead.
+func NormalizeActivityPresentation(in *tools.ActivityPresentation) *tools.ActivityPresentation {
+	return normalizeActivityPresentation(in, true)
+}
+
+func normalizeActivityPresentation(in *tools.ActivityPresentation, preserveNavigation bool) *tools.ActivityPresentation {
 	if in == nil {
 		return nil
 	}
+	in = tools.CloneActivityPresentation(in)
 	out := &tools.ActivityPresentation{
 		Label:       safeActivityText(in.Label, 200),
 		Description: safeActivityText(in.Description, 500),
 		Renderer:    in.Renderer,
 		Chips:       sanitizeActivityChips(in.Chips),
-		TargetRefs:  sanitizeActivityTargetRefs(in.TargetRefs),
-		Payload:     sanitizeTypedActivityPayload(in.Payload),
+		TargetRefs:  sanitizeActivityTargetRefs(in.TargetRefs, preserveNavigation),
+		Payload:     sanitizeTypedActivityPayload(in.Payload, preserveNavigation),
 	}
 	if out.Label == "" &&
 		out.Description == "" &&
@@ -363,7 +374,7 @@ func sanitizeActivityPresentation(in *tools.ActivityPresentation) *tools.Activit
 	return out
 }
 
-func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayload {
+func sanitizeTypedActivityPayload(in tools.ActivityPayload, preserveNavigation bool) tools.ActivityPayload {
 	sanitizeError := func(in *tools.ActivityError) *tools.ActivityError {
 		if in == nil {
 			return nil
@@ -390,8 +401,8 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 		payload.DisplayName = sanitizeText(payload.DisplayName)
 		payload.Summary = sanitizeText(payload.Summary)
 		payload.Error = sanitizeError(payload.Error)
-		payload.Inputs = sanitizeStructuredActivityRows(payload.Inputs)
-		payload.Rows = sanitizeStructuredActivityRows(payload.Rows)
+		payload.Inputs = sanitizeStructuredActivityRows(payload.Inputs, preserveNavigation)
+		payload.Rows = sanitizeStructuredActivityRows(payload.Rows, preserveNavigation)
 		return payload
 	case tools.TerminalActivityPayload:
 		payload.Operation = sanitizeText(payload.Operation)
@@ -429,6 +440,7 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 			mutations := append(tools.FileMutationActivityPayloads(nil), (*payload.Mutations)...)
 			payload.Mutations = &mutations
 			for i := range *payload.Mutations {
+				(*payload.Mutations)[i].Target = sanitizeActivityTarget((*payload.Mutations)[i].Target, preserveNavigation)
 				(*payload.Mutations)[i].DisplayName = sanitizeText((*payload.Mutations)[i].DisplayName)
 				(*payload.Mutations)[i].ChangeType = sanitizeText((*payload.Mutations)[i].ChangeType)
 				(*payload.Mutations)[i].UnifiedDiff = sanitizeText((*payload.Mutations)[i].UnifiedDiff)
@@ -518,10 +530,11 @@ func sanitizeTypedActivityPayload(in tools.ActivityPayload) tools.ActivityPayloa
 	}
 }
 
-func sanitizeStructuredActivityRows(in []tools.StructuredActivityRow) []tools.StructuredActivityRow {
+func sanitizeStructuredActivityRows(in []tools.StructuredActivityRow, preserveNavigation bool) []tools.StructuredActivityRow {
 	out := append([]tools.StructuredActivityRow(nil), in...)
 	for i := range out {
 		row := &out[i]
+		row.Target = sanitizeActivityTarget(row.Target, preserveNavigation)
 		row.Title = safeActivityText(row.Title, 8_000)
 		row.Meta = safeActivityText(row.Meta, 8_000)
 		if row.Format == tools.StructuredActivityRowFormatCode {
@@ -579,29 +592,37 @@ func sanitizeActivityChips(in []tools.ActivityChip) []tools.ActivityChip {
 	return out
 }
 
-func sanitizeActivityTargetRefs(in []tools.ActivityTargetRef) []tools.ActivityTargetRef {
+func sanitizeActivityTargetRefs(in []tools.ActivityTargetRef, preserveNavigation bool) []tools.ActivityTargetRef {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]tools.ActivityTargetRef, 0, len(in))
 	for _, ref := range in {
-		item := tools.ActivityTargetRef{
-			Kind:        safeActivityToken(ref.Kind, 64),
-			Label:       safeActivityText(ref.Label, 240),
-			URI:         safeActivityURI(ref.URI),
-			ResourceRef: ref.ResourceRef,
-			Path:        safeActivityPath(ref.Path),
-			Line:        ref.Line,
+		if item := sanitizeActivityTarget(&ref, preserveNavigation); item != nil {
+			out = append(out, *item)
 		}
-		if item.Line < 0 {
-			item.Line = 0
-		}
-		if item.Kind == "" || item.Label == "" {
-			continue
-		}
-		out = append(out, item)
 	}
 	return out
+}
+
+func sanitizeActivityTarget(in *tools.ActivityTargetRef, preserveNavigation bool) *tools.ActivityTargetRef {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Kind = safeActivityToken(out.Kind, 64)
+	out.Label = safeActivityText(out.Label, 240)
+	if !preserveNavigation {
+		out.URI = safeActivityURI(out.URI)
+		out.Path = safeActivityPath(out.Path)
+	}
+	if out.Line < 0 {
+		out.Line = 0
+	}
+	if out.Kind == "" || out.Label == "" {
+		return nil
+	}
+	return &out
 }
 
 func safeActivityToken(value string, limit int) string {

@@ -1417,7 +1417,7 @@ func resolveHostConfigAndProvider(opts providerHostOptions) (runtimeConfig, prov
 }
 
 func runtimeHarnessSinkPolicy() event.SinkPolicy {
-	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText}
+	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText, PreserveActivityNavigation: true}
 }
 
 func runtimeHostError(err error) error {
@@ -2085,7 +2085,7 @@ func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *obs
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
 	attemptLogicalID, attemptID, attemptEpoch := runtimeAttemptIdentity(ev.Metadata)
-	sanitized := event.Sanitize(ev)
+	sanitized := event.SanitizeWithPolicy(ev, event.SinkPolicy{PreserveActivityNavigation: true})
 	committed := runtimeCommittedEvent(ev)
 	compactionEvent := runtimeCompactionEventWithError(ev, sanitized, sanitized.Err)
 	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err)
@@ -2622,7 +2622,7 @@ func boolFromAnyMetadata(meta map[string]any, key string) bool {
 }
 
 func runtimeObservationEvent(ev event.Event) observation.Event {
-	sanitized := event.Sanitize(ev)
+	sanitized := event.SanitizeWithPolicy(ev, event.SinkPolicy{PreserveActivityNavigation: true})
 	return observation.Event{
 		Type:               sanitized.Type,
 		Retry:              cloneProviderRetryProgress(sanitized.Retry),
