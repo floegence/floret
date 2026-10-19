@@ -1587,3 +1587,4 @@ Document optional Goal management, same-context reflection, request-bound update
   canonical compaction order and explicit read recovery in [Runtime](api/runtime.md).
 
 - 2026-10-19: Publish admitted managed context in the same current view as its user message before Agent preparation, including queued-input promotion.
+- 2026-10-19: Document canonical compaction decision evidence, missing-history semantics, terminal recovery, and the byte-preserving domain 25 -> 26 edge.

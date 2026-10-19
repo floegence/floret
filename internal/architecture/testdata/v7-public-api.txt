@@ -1188,6 +1188,7 @@ field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID t
 field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
 type ThreadContextCompaction struct
+field ThreadContextCompaction.Decision *github.com/floegence/floret/v7/observation.CompactionDecision tag="json:\"decision,omitempty\""
 field ThreadContextCompaction.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal\""
 field ThreadContextCompaction.AfterItemID string tag="json:\"after_item_id,omitempty\""
 field ThreadContextCompaction.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
@@ -2496,7 +2497,14 @@ const CompactionDebugStatusFailed github.com/floegence/floret/v7/observation.Com
 const CompactionDebugStatusOK github.com/floegence/floret/v7/observation.CompactionDebugStatus = "ok"
 const CompactionDebugStatusRetrying github.com/floegence/floret/v7/observation.CompactionDebugStatus = "retrying"
 const CompactionDebugStatusRunning github.com/floegence/floret/v7/observation.CompactionDebugStatus = "running"
+type CompactionDecision struct
+field CompactionDecision.Pressure github.com/floegence/floret/v7/config.ContextPressure tag="json:\"pressure\""
+field CompactionDecision.Before *github.com/floegence/floret/v7/observation.CompactionRequestSnapshot tag="json:\"before,omitempty\""
+field CompactionDecision.After *github.com/floegence/floret/v7/observation.CompactionRequestSnapshot tag="json:\"after,omitempty\""
+method *CompactionDecision.Clone func() *github.com/floegence/floret/v7/observation.CompactionDecision
+method *CompactionDecision.Validate func() error
 type CompactionEvent struct
+field CompactionEvent.Decision *github.com/floegence/floret/v7/observation.CompactionDecision tag="json:\"decision,omitempty\""
 field CompactionEvent.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field CompactionEvent.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
 field CompactionEvent.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
@@ -2525,6 +2533,13 @@ const CompactionPhaseComplete github.com/floegence/floret/v7/observation.Compact
 const CompactionPhaseFailed github.com/floegence/floret/v7/observation.CompactionPhase = "failed"
 const CompactionPhaseNoop github.com/floegence/floret/v7/observation.CompactionPhase = "noop"
 const CompactionPhaseStart github.com/floegence/floret/v7/observation.CompactionPhase = "start"
+type CompactionRequestSnapshot struct
+field CompactionRequestSnapshot.PayloadFingerprint string tag="json:\"payload_fingerprint\""
+field CompactionRequestSnapshot.Provider string tag="json:\"provider\""
+field CompactionRequestSnapshot.Model string tag="json:\"model\""
+field CompactionRequestSnapshot.Estimate github.com/floegence/floret/v7/config.RequestEstimate tag="json:\"estimate\""
+field CompactionRequestSnapshot.Pressure github.com/floegence/floret/v7/config.ContextPressure tag="json:\"pressure\""
+field CompactionRequestSnapshot.CalibrationRequestID string tag="json:\"calibration_request_id,omitempty\""
 type CompactionStatus string
 method CompactionStatus.Valid func() bool
 const CompactionStatusCancelled github.com/floegence/floret/v7/observation.CompactionStatus = "cancelled"

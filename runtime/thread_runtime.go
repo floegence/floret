@@ -507,6 +507,7 @@ type ThreadContextPolicy struct {
 }
 
 type ThreadContextCompaction struct {
+	Decision *observation.CompactionDecision `json:"decision,omitempty"`
 	// CanonicalOrdinal is the first lifecycle entry's one-based position on the current Path.
 	// Terminal updates retain this position; a fork projects its own Path order.
 	CanonicalOrdinal    uint64            `json:"canonical_ordinal"`
@@ -1400,7 +1401,7 @@ func (service *threadRuntimeService) projectThreadContext(ctx context.Context, t
 			Step: compaction.Step, OperationID: compaction.OperationID, RequestID: compaction.RequestID, AfterItemID: anchors[compaction.OperationID], CanonicalOrdinal: ordinals[compaction.OperationID],
 			Phase: compaction.Phase, Status: compaction.Status, Trigger: compaction.Trigger,
 			Reason: compaction.Reason, Source: compaction.Source, TokensBefore: compaction.TokensBefore,
-			TokensAfterEstimate: compaction.TokensAfterEstimate, Error: compaction.Error, ObservedAt: compaction.ObservedAt,
+			TokensAfterEstimate: compaction.TokensAfterEstimate, Decision: compaction.Decision.Clone(), Error: compaction.Error, ObservedAt: compaction.ObservedAt,
 		})
 	}
 	modelContext, err := service.readModelContext(ctx, threadID, path)

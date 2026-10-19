@@ -158,6 +158,10 @@ func TestIndependentThreadCompactionInstallsOnceAndInvalidatesContinuation(t *te
 	if len(ctxSnapshot.Compactions) != 1 || ctxSnapshot.Compactions[0].Status != "compacted" || ctxSnapshot.Compactions[0].AfterItemID != before.Items[len(before.Items)-1].ID {
 		t.Fatalf("compactions=%+v", ctxSnapshot.Compactions)
 	}
+	decision := ctxSnapshot.Compactions[0].Decision
+	if decision == nil || decision.Before != nil || decision.After == nil || decision.After.PayloadFingerprint == "" {
+		t.Fatalf("manual decision=%+v", decision)
+	}
 	if ctxSnapshot.ContextUsage == nil || ctxSnapshot.ContextUsage.Confirmed != nil || ctxSnapshot.ContextUsage.Estimate == nil {
 		t.Fatalf("usage=%+v", ctxSnapshot.ContextUsage)
 	}
@@ -181,6 +185,11 @@ func TestIndependentThreadCompactionInstallsOnceAndInvalidatesContinuation(t *te
 		t.Fatal(err)
 	}
 	_, service = open()
+	restored, err := service.(ThreadContextReader).Context(t.Context(), created.ThreadID)
+	if err != nil || len(restored.Compactions) != 1 || !reflect.DeepEqual(restored.Compactions[0].Decision, decision) {
+		t.Fatalf("decision lost on restart: %+v %v", restored, err)
+	}
+
 	replay, err := service.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: created.ThreadID, RequestKey: "compact"})
 	if err != nil || replay.TurnID != admitted.TurnID || len(gateway.Requests()) != 4 {
 		t.Fatalf("restart replay=%+v err=%v", replay, err)

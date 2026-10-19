@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -21,7 +22,7 @@ var backendDomainV25Format = backendDomainFormat{
 	envelope:  "sessiontree-v25-record",
 	version:   backendDomainV25Version,
 	scanLimit: backendDomainV25ScanLimit,
-	validate:  validateBackendDomainV25Memory,
+	validate:  validateBackendDomainV25SourceMemory,
 }
 
 type backendDomainV25Manifest = backendDomainManifest
@@ -51,4 +52,25 @@ func saveCompleteBackendDomainV25(tx spi.WriteTx, memory *MemoryRepo) error {
 
 func persistBackendDomainV25Changes(tx spi.WriteTx, before, after *MemoryRepo) (bool, error) {
 	return persistBackendDomainChanges(tx, before, after, backendDomainV25Format)
+}
+
+func validateBackendDomainV25SourceMemory(memory *MemoryRepo) error {
+	if err := validateBackendDomainV25Memory(memory); err != nil {
+		return err
+	}
+	for _, entries := range memory.entries {
+		for _, entry := range entries {
+			if ThreadContextEntryKind(entry) != ThreadContextCompactionEntryKind {
+				continue
+			}
+			compact, err := DecodeThreadContextCompactionEntry(entry)
+			if err != nil {
+				return err
+			}
+			if compact.Decision != nil {
+				return errors.New("v25 compaction cannot contain v26 decision evidence")
+			}
+		}
+	}
+	return nil
 }

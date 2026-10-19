@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -3821,6 +3822,10 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if !ok {
 		t.Fatalf("context compact complete metadata = %#v", compactions[1].Metadata)
 	}
+	decision, ok := startMeta["decision"].(*observation.CompactionDecision)
+	if !ok || decision.Before == nil || decision.Pressure.Signal != "provider_overflow" {
+		t.Fatalf("overflow evidence=%+v", decision)
+	}
 	if startMeta["operation_id"] == "" || startMeta["operation_id"] != completeMeta["operation_id"] {
 		t.Fatalf("context compact operation id should link start and complete: start=%#v complete=%#v", startMeta, completeMeta)
 	}
@@ -4067,6 +4072,18 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	meta, ok := prepare.Metadata.(map[string]any)
 	if !ok {
 		t.Fatalf("context compact metadata = %#v", prepare.Metadata)
+	}
+	decision, ok := meta["decision"].(*observation.CompactionDecision)
+	if !ok || decision.Before == nil || decision.Before.Estimate.EstimatedInputTokens != 1000 || decision.Before.Estimate.Source != "request_estimator_test" || decision.Before.PayloadFingerprint == "" || decision.After != nil {
+		t.Fatalf("unsent trigger candidate evidence: %#v", meta["decision"])
+	}
+	complete := eventsOfType(rec.Events, event.ContextCompact)
+	final := complete[len(complete)-1].Metadata.(map[string]any)["decision"].(*observation.CompactionDecision)
+	if !reflect.DeepEqual(final.Before, decision.Before) || final.After == nil || final.After.Estimate.EstimatedInputTokens != 10 || final.After.Pressure.HardLimitExceeded {
+		t.Fatalf("decision changed or replacement missing: %#v", final)
+	}
+	if decision.After != nil {
+		t.Fatal("terminal event mutated earlier start evidence")
 	}
 	before, ok := meta["before_pressure"].(contextpolicy.ContextPressure)
 	if !ok ||

@@ -52,21 +52,22 @@ type ThreadContextPolicyRecord struct {
 // ThreadContextCompaction is the canonical public projection of one context
 // compaction lifecycle update.
 type ThreadContextCompaction struct {
-	RunID               string    `json:"run_id,omitempty"`
-	ThreadID            string    `json:"thread_id,omitempty"`
-	TurnID              string    `json:"turn_id,omitempty"`
-	Step                int       `json:"step,omitempty"`
-	OperationID         string    `json:"operation_id,omitempty"`
-	RequestID           string    `json:"request_id,omitempty"`
-	Phase               string    `json:"phase,omitempty"`
-	Status              string    `json:"status,omitempty"`
-	Trigger             string    `json:"trigger,omitempty"`
-	Reason              string    `json:"reason,omitempty"`
-	Source              string    `json:"source,omitempty"`
-	TokensBefore        int64     `json:"tokens_before,omitempty"`
-	TokensAfterEstimate int64     `json:"tokens_after_estimate,omitempty"`
-	Error               string    `json:"error,omitempty"`
-	ObservedAt          time.Time `json:"observed_at,omitempty"`
+	Decision            *observation.CompactionDecision `json:"decision,omitempty"`
+	RunID               string                          `json:"run_id,omitempty"`
+	ThreadID            string                          `json:"thread_id,omitempty"`
+	TurnID              string                          `json:"turn_id,omitempty"`
+	Step                int                             `json:"step,omitempty"`
+	OperationID         string                          `json:"operation_id,omitempty"`
+	RequestID           string                          `json:"request_id,omitempty"`
+	Phase               string                          `json:"phase,omitempty"`
+	Status              string                          `json:"status,omitempty"`
+	Trigger             string                          `json:"trigger,omitempty"`
+	Reason              string                          `json:"reason,omitempty"`
+	Source              string                          `json:"source,omitempty"`
+	TokensBefore        int64                           `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64                           `json:"tokens_after_estimate,omitempty"`
+	Error               string                          `json:"error,omitempty"`
+	ObservedAt          time.Time                       `json:"observed_at,omitempty"`
 }
 
 func NewThreadContextPolicyEntry(threadID, turnID, runID, providerName, modelName string, policy contextpolicy.Policy) (Entry, error) {
@@ -358,8 +359,9 @@ func validateThreadContextCompaction(compaction ThreadContextCompaction) error {
 		return errors.New("thread context compaction requires run, thread, turn, and request identities")
 	}
 	return (observation.CompactionEvent{
-		Phase:  observation.CompactionPhase(compaction.Phase),
-		Status: observation.CompactionStatus(compaction.Status),
+		Decision: compaction.Decision,
+		Phase:    observation.CompactionPhase(compaction.Phase),
+		Status:   observation.CompactionStatus(compaction.Status),
 	}).Validate()
 }
 

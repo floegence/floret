@@ -395,7 +395,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 25).
+schema change (current domain schema 26).
 
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
@@ -710,3 +710,10 @@ checkpoints are not rewritten or retroactively supplied with visual facts.
 [Scoped history queries](thread-query.md) discover older images without a
 second attachment index or an unbounded checkpoint catalog. Hosts own bytes and
 current authorization. Floret owns descriptors, canonical membership and summaries.
+
+Compaction records optionally carry CompactionDecision with the frozen trigger and
+validated replacement request fingerprints, estimator diagnostics and pressure.
+Only Engine produces these facts; hosts do not recompute historical requests.
+Missing fields remain unavailable. Manual preflight has no trigger candidate.
+The canonical terminal turn settles an interrupted running observation so restart
+cannot strand a completed operation in a running state.
