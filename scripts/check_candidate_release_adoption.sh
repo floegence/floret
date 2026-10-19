@@ -25,6 +25,10 @@ cp "${repository_root}/go.mod" "${version_dir}/${version}.mod"
 printf '{"Version":"%s","Time":"1970-01-01T00:00:00Z"}\n' "${version}" >"${version_dir}/${version}.info"
 printf '%s\n' "${version}" >"${version_dir}/list"
 
+# Resolve go.mod's exact toolchain before isolating module and build caches.
+readonly toolchain_root=$(go env GOROOT)
+export PATH="${toolchain_root}/bin:${PATH}"
+export GOTOOLCHAIN=local
 export GOWORK=off
 export GO111MODULE=on
 readonly upstream_proxy=$(go env GOPROXY)
