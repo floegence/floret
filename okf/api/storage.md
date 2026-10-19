@@ -282,3 +282,25 @@ remain unchanged and absent frozen request evidence remains unavailable. The new
 envelope rejects older writers; current startup remains byte-stable. Optional
 compaction decision facts belong to the canonical lifecycle, never a second
 request ledger or host-owned migration.
+
+
+## Canonical compaction boundary migration
+
+Domain schema 27 appends the atomic 26 -> 27 edge without changing earlier edges.
+It validates all checkpoints, including inactive branches and nested Fork copies,
+in ancestor order. Canonical message references, unique same-path stored aliases,
+and exact released Go JSON/hash identities are the only accepted authority.
+Historical counts corroborate identity; they never select a boundary. Fork
+reconstruction verifies every copied fact against the released writer before
+rewriting a reference. Missing or ambiguous authority fails without mutation.
+
+Only proven boundary references and their Raw/hash representations change. All
+other durable facts and unavailable historical decision evidence remain intact.
+Migration, schema update and current validation share one startup transaction;
+read-only inspection runs the same parser in its disposable overlay. Repeated
+current startup does not rewrite canonical bytes. Runtime accepts canonical
+references only and never guesses a replacement tool exchange.
+
+Release adoption gates must continue immutable, checksummed synthetic
+released-writer conversations and their Forks through public APIs after restart.
+See the [release requirement](../../AGENTS.md#historical-conversation-release-gate).

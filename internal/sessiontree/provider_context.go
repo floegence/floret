@@ -76,7 +76,7 @@ func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderCont
 		if req.Partial && entry.Type != EntryAssistantMessage && (entry.Type != EntryCustom || entry.Metadata["kind"] != HostedToolEntryKind) {
 			return nil, ErrInvalidThreadAuthority
 		}
-		if entry.ThreadID != req.ThreadID || entry.TurnID != req.TurnID || entry.RunID != req.RunID || entry.Type != EntryAssistantMessage && entry.Type != EntryToolCall && entry.Type != EntryCustom {
+		if entry.ThreadID != req.ThreadID || entry.TurnID != req.TurnID || entry.RunID != req.RunID || entry.Type != EntryAssistantMessage && entry.Type != EntryToolCall && entry.Type != EntryToolResult && entry.Type != EntryUserMessage && entry.Type != EntryGoalContext && entry.Type != EntryCustom {
 			return nil, ErrInvalidThreadAuthority
 		}
 	}

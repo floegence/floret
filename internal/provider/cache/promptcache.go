@@ -22,7 +22,8 @@ import (
 
 const (
 	Version                   = "cache.v1"
-	ContextProjectionRevision = "provider-context.v10"
+	ContextProjectionRevision = "provider-context.v11"
+	contextProjectionV10      = "provider-context.v10"
 	contextProjectionV9       = "provider-context.v9"
 	contextProjectionV7       = "provider-context.v7"
 	contextProjectionV8       = "provider-context.v8"
@@ -1009,7 +1010,7 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 		return nil
 	}
 	if previous.ContextProjectionRevision != plan.ContextProjectionRevision {
-		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7 || previous.ContextProjectionRevision == contextProjectionV8 || previous.ContextProjectionRevision == contextProjectionV9) && plan.ContextProjectionRevision == ContextProjectionRevision {
+		if (previous.ContextProjectionRevision == contextProjectionV2 || previous.ContextProjectionRevision == contextProjectionV3 || previous.ContextProjectionRevision == contextProjectionV4 || previous.ContextProjectionRevision == contextProjectionV5 || previous.ContextProjectionRevision == contextProjectionV6 || previous.ContextProjectionRevision == contextProjectionV7 || previous.ContextProjectionRevision == contextProjectionV8 || previous.ContextProjectionRevision == contextProjectionV9 || previous.ContextProjectionRevision == contextProjectionV10) && plan.ContextProjectionRevision == ContextProjectionRevision {
 			plan.CanonicalLineageReset = true
 			return nil
 		}

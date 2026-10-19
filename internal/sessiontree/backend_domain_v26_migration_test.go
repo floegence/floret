@@ -29,12 +29,12 @@ func TestBackendDomainV25ToV26PreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
-		after, found, err := loadBackendDomainV26(t.Context(), tx, time.Now)
+		after, found, err := loadBackendDomainV27(t.Context(), tx, time.Now)
 		if err != nil {
 			return err
 		}
 		if !found {
-			t.Fatal("missing v26 store")
+			t.Fatal("missing current store")
 		}
 		for id, entries := range before.entries {
 			if len(entries) != len(after.entries[id]) {
@@ -66,9 +66,9 @@ func TestBackendDomainV25ToV26PreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fresh.View(t.Context(), func(tx spi.ReadTx) error {
-		_, found, err := loadBackendDomainV26(t.Context(), tx, time.Now)
+		_, found, err := loadBackendDomainV27(t.Context(), tx, time.Now)
 		if !found {
-			t.Error("fresh store not initialized at v26")
+			t.Error("fresh store not initialized at current schema")
 		}
 		return err
 	}); err != nil {
@@ -100,7 +100,7 @@ func TestBackendDomainV25ToV26RollsBack(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "future":
-				format := backendDomainV26Format
+				format := backendDomainV27Format
 				format.version++
 				raw, err := encodeBackendDomainRecord(format, backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: format.version})
 				if err != nil {

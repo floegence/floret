@@ -28,19 +28,20 @@ projection. `Engine` owns one run's provider loop, tool dispatch, compaction
 decision, control signals, and events. Gateway owns transport and provider
 rendering.
 
-Engine constructs each canonical local tool-call message once. Its execution
-history and the internal ToolCall event carry detached copies of that same
-message; AgentHarness validates the event identity and saves a deep copy rather
-than reconstructing reasoning from stream fragments. This internal payload is
-not serialized and is removed at observation boundaries, including raw sinks.
-Missing or conflicting messages fail as contract errors.
+Engine constructs each local tool-call message once, then AgentHarness commits
+assistant output, calls and opaque provider state in one transaction. Engine
+applies only the returned canonical messages. Engine-generated continuation and
+validation feedback use the same synchronous commit boundary; effect finalizers
+return their canonical result identities. ToolCall, ToolResult and ContextContinue
+events observe committed facts without rebuilding or persisting model messages.
 
-Hosted-tool events flush preceding assistant text and reasoning into the
-journal. Engine preserves these same fragment boundaries in execution history
-so the next turn sees the same canonical context prefix. Final reconciliation
-still compares complete messages by occurrence: later legitimate reuse of a
-tool-call ID is a new exchange. Forks retain strict history and effect isolation;
-this write-path correction does not migrate existing invalid histories.
+One journal projection assembles live execution, restart, Retry, Fork and
+compaction. A control result has a deterministic identity derived from its
+canonical source; saved continuation output and interaction resolution supply its
+content. Compaction validates canonical source boundaries and baselines inside
+the installation transaction and returns the entire replacement projection.
+Missing boundaries fail explicitly. Historical Engine hashes and released Fork
+writer shapes are interpreted only by permanent schema 26 -> 27 migration.
 
 The public gateway projects complete tool-call reasoning into assistant reasoning
 once per batch, including calls preceded only by thinking. Already projected

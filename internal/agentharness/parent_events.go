@@ -18,7 +18,7 @@ func (p *turnProjection) admitParentEvents(ctx context.Context) (session.Message
 	if p.err != nil {
 		return session.Message{}, p.err
 	}
-	if err := p.flushPendingToolBatch(true); err != nil {
+	if err := p.err; err != nil {
 		return session.Message{}, err
 	}
 	entry, err := repo.AdmitParentEvents(ctx, p.thread.id, p.turnID, p.runID)

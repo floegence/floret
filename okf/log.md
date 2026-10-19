@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-10-19 — Canonical compaction and historical release gate
+
+- Make journal commit results authoritative in [runtime layers](architecture/runtime-layers.md); remove observation-driven duplicate persistence and runtime boundary guessing.
+- Append transactional [schema 26 -> 27](api/storage.md#canonical-compaction-boundary-migration), preserve historical facts, and require released-writer continuation checks in candidate and published adoption gates.
+
 ## 2026-10-19 — Continuation cancellation ownership
 
 - Drain the waiting execution before admitting its successor and publish the continuation only after its canonical marker commits. See [interruption recovery](workflows/recover-interrupted-turn.md).

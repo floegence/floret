@@ -1,9 +1,6 @@
 package agentharness
 
-import (
-	"context"
-	"github.com/floegence/floret/v7/internal/engine"
-)
+import ()
 
 // The Engine calls this only after the interrupted fragment has settled. A
 // partial provider draft is discarded; confirmed tool facts keep their existing
@@ -16,7 +13,11 @@ func (p *turnProjection) prepareSteeringBoundary() error {
 	if p.err != nil {
 		return p.err
 	}
-	if err := p.closePendingToolBatchForTerminalTurn(engine.Cancelled, context.Canceled); err != nil {
+	path, err := p.thread.harness.options.Repo.Path(p.ctx, p.thread.id, "")
+	if err != nil {
+		return err
+	}
+	if err := p.thread.harness.closeInterruptedTurnToolCalls(p.ctx, p.thread.id, p.turnID, path); err != nil {
 		return err
 	}
 	p.finalCandidate = nil

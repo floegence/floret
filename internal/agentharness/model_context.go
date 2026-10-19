@@ -16,7 +16,7 @@ func (p *turnProjection) admitModelContext(ctx context.Context, snapshot *sessio
 	if p.err != nil {
 		return session.Message{}, p.err
 	}
-	if err := p.flushPendingToolBatch(true); err != nil {
+	if err := p.err; err != nil {
 		return session.Message{}, err
 	}
 	repo, ok := p.thread.harness.options.Repo.(sessiontree.RuntimeJournalRepo)

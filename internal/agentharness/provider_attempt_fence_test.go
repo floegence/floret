@@ -38,7 +38,7 @@ func TestTurnProjectionDropsSupersededProviderAttemptFromLiveAndCanonicalOutput(
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-2", 2, ""))
 	projection.Emit(providerAttemptEvent(event.ProviderDelta, "logical", "attempt-1", 1, "late stale delta"))
 	projection.Emit(providerAttemptEvent(event.ProviderDelta, "logical", "attempt-2", 2, "canonical"))
-	if err := projection.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "canonical", ContentSourceID: "output:canonical"}}}}, nil, false); err != nil {
+	if _, err := projection.commitProviderContext(t.Context(), nil, engine.ResponseOutput{Items: []engine.ResponseOutputItem{{Message: session.Message{Role: session.Assistant, Content: "canonical", ContentSourceID: "output:canonical"}}}}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := projection.Flush(); err != nil {
@@ -76,7 +76,7 @@ func TestTurnProjectionFailsClosedForConflictingProviderAttemptIdentity(t *testi
 	}
 }
 
-func TestTurnProjectionFailsClosedWhenNextAttemptCrossesIncompletePublicToolBatch(t *testing.T) {
+func TestTurnProjectionToolObservationsDoNotOwnCanonicalBatches(t *testing.T) {
 	projection := &turnProjection{turnID: "turn", runID: "run"}
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-1", 1, ""))
 	projection.Emit(event.Event{
@@ -85,11 +85,8 @@ func TestTurnProjectionFailsClosedWhenNextAttemptCrossesIncompletePublicToolBatc
 		Metadata:        map[string]any{"batch_index": 0, "batch_size": 2},
 	})
 	projection.Emit(providerAttemptEvent(event.ProviderRequest, "logical", "attempt-2", 2, ""))
-	if projection.err == nil || !strings.Contains(projection.err.Error(), "pending canonical tool batch") {
-		t.Fatalf("projection error=%v, want pending canonical tool batch", projection.err)
-	}
-	if origin := turnProjectionFailureOrigin(projection.err); origin != "contract" {
-		t.Fatalf("projection failure origin=%q, want contract", origin)
+	if projection.err != nil {
+		t.Fatalf("observation interfered with canonical commit ownership: %v", projection.err)
 	}
 }
 

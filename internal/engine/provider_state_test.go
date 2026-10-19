@@ -85,12 +85,17 @@ func TestProviderStatePromotesOnlyAfterCanonicalCommit(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("complete"), provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: &provider.State{Kind: "native", ID: "uncommitted"}}))
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.PreviousProviderState = &provider.State{Kind: "native", ID: "valid"}
-	e.Options.CommitProviderContext = func(context.Context, *provider.State, engine.ResponseOutput, []session.Message, bool) error {
-		return failed
+	e.Options.CommitProviderContext = func(context.Context, *provider.State, engine.ResponseOutput, []session.Message, bool) (engine.ProviderContextCommitResult, error) {
+		return engine.ProviderContextCommitResult{}, failed
 	}
 	result := e.Run(t.Context(), "inspect")
 	if !errors.Is(result.Err, failed) || result.ProviderState == nil || result.ProviderState.ID != "valid" || result.ProviderStateFresh {
 		t.Fatalf("uncommitted state replaced valid state: %+v", result)
+	}
+	for _, message := range result.Messages {
+		if message.Content == "complete" {
+			t.Fatal("uncommitted provider output entered the active model context")
+		}
 	}
 }
 
@@ -130,5 +135,28 @@ func TestCompactionThenProviderFailureCannotRestorePreCompactionState(t *testing
 	}
 	if len(p.Requests) != 2 || p.Requests[1].PreviousState != nil {
 		t.Fatal("compacted request replayed pre-compaction native state")
+	}
+}
+
+func TestCommittedOutputNotificationFailureDoesNotBecomeUncommitted(t *testing.T) {
+	notification := errors.New("subscriber unavailable")
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("committed"), provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: &provider.State{Kind: "native", ID: "saved"}}))
+	e := newTestEngine(p, &event.Recorder{})
+	commits := 0
+	e.Options.CommitProviderContext = func(_ context.Context, _ *provider.State, output engine.ResponseOutput, _ []session.Message, clear bool) (engine.ProviderContextCommitResult, error) {
+		if clear {
+			return engine.ProviderContextCommitResult{}, nil
+		}
+		commits++
+		message := output.Items[0].Message
+		message.EntryID = "canonical-output"
+		return engine.ProviderContextCommitResult{Messages: []session.Message{message}, NotificationErr: notification}, nil
+	}
+	result := e.Run(t.Context(), "inspect")
+	if !errors.Is(result.Err, notification) || commits != 1 || len(result.UncommittedOutput.Items) != 0 || result.ProviderState == nil || result.ProviderState.ID != "saved" {
+		t.Fatalf("result=%+v commits=%d", result, commits)
+	}
+	if len(result.Messages) != 2 || result.Messages[1].EntryID != "canonical-output" {
+		t.Fatalf("committed context=%+v", result.Messages)
 	}
 }

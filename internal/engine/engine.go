@@ -208,7 +208,8 @@ type Options struct {
 	AdmitParentEvents        func(context.Context) (session.Message, error)
 	AdmitGoalContext         func(context.Context, []session.Message) (session.Message, error)
 	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
-	CommitProviderContext    func(context.Context, *provider.State, ResponseOutput, []session.Message, bool) error
+	CommitMessages           func(context.Context, []session.Message) ([]session.Message, error)
+	CommitProviderContext    func(context.Context, *provider.State, ResponseOutput, []session.Message, bool) (ProviderContextCommitResult, error)
 	providerState            *runProviderState
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
@@ -864,6 +865,51 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	started := time.Now()
 	metrics := RunMetrics{}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
+	applyMessages := func(messages []session.Message) error {
+		for _, message := range messages {
+			message = stableMessageAt(opts.RunID, len(activeHistory), message)
+			if err := e.store.AppendTranscript(opts.RunID, message); err != nil {
+				return err
+			}
+			activeHistory = append(activeHistory, message)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
+			if opts.CommitProviderContext == nil {
+				result, ok, err := controlstate.ResultMessage(message)
+				if err != nil {
+					return err
+				}
+				if ok {
+					if err := e.store.AppendTranscript(opts.RunID, result); err != nil {
+						return err
+					}
+					activeHistory = append(activeHistory, result)
+					state.activeMessages = append([]session.Message(nil), activeHistory...)
+				}
+			}
+		}
+		return nil
+	}
+	commitMessages := func(messages ...session.Message) error {
+		if opts.CommitMessages != nil {
+			var err error
+			messages, err = opts.CommitMessages(ctx, messages)
+			if err != nil {
+				return err
+			}
+		}
+		return applyMessages(messages)
+	}
+	commitOutput := func(responseState *provider.State, output ResponseOutput, calls []session.Message) error {
+		committed, err := owner.complete(ctx, responseState, output, calls, supplementalTurn)
+		if err != nil {
+			return err
+		}
+		pendingOutput = ResponseOutput{}
+		if err := applyMessages(committed.Messages); err != nil {
+			return err
+		}
+		return committed.NotificationErr
+	}
 	if supplementalTurn {
 		opts.supplementalAnchorEntryID = currentTurnUserEntryID(activeHistory)
 		if opts.supplementalAnchorEntryID == "" {
@@ -1029,24 +1075,13 @@ steps:
 			output += stepText
 			noProgress = 0
 		}
-		for _, assistantMessage := range stepOutput.assistantMessages() {
-			msg := stableMessageAt(opts.RunID, len(activeHistory), assistantMessage)
-			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
-			}
-			activeHistory = append(activeHistory, msg)
-			state.activeMessages = append([]session.Message(nil), activeHistory...)
-		}
 		if len(calls) == 0 {
-			if err := owner.complete(ctx, stepOutput.ResponseState, stepOutput.Output, nil, supplementalTurn); err != nil {
+			if err := commitOutput(stepOutput.ResponseState, stepOutput.Output, nil); err != nil {
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && isContextCancellation(err) {
 					continue
 				}
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
-		}
-		if len(calls) == 0 {
-			pendingOutput = ResponseOutput{}
 		}
 		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
 			lengthContinuations++
@@ -1099,11 +1134,9 @@ steps:
 						prompt = "Continue the task and address the remaining pending work."
 					}
 					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.User, Kind: hook.Kind, Content: prompt})
-					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
+					if err := commitMessages(msg); err != nil {
 						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 					}
-					activeHistory = append(activeHistory, msg)
-					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
 					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, Metadata: map[string]any{"message_kind": string(hook.Kind)}, ContinuationReason: string(ContinueHook), Result: decision.Detail})
@@ -1266,17 +1299,17 @@ steps:
 				msg.ControlSignal = sessionControlSignalView(projectedSignal)
 			}
 			callMessages[index] = msg
-			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				state.activeMessages = append([]session.Message(nil), activeHistory...)
-				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
-			}
-			activeHistory = append(activeHistory, msg)
 		}
-		state.activeMessages = append([]session.Message(nil), activeHistory...)
-		if err := owner.complete(ctx, stepOutput.ResponseState, stepOutput.Output, callMessages, supplementalTurn); err != nil {
+		responseStart := len(activeHistory)
+		if err := commitOutput(stepOutput.ResponseState, stepOutput.Output, callMessages); err != nil {
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 		}
-		pendingOutput = ResponseOutput{}
+		callMessages = nil
+		for _, message := range activeHistory[responseStart:] {
+			if message.Role == session.Assistant && message.ToolCallID != "" {
+				callMessages = append(callMessages, message)
+			}
+		}
 		if len(validationErrors) > 0 {
 			state.validationCorrectionCount++
 			decision.Metadata = mergeAnyMetadata(decision.Metadata, map[string]any{
@@ -1293,11 +1326,9 @@ steps:
 			}
 			for index, call := range calls {
 				msg := stableMessageAt(opts.RunID, len(activeHistory), validationFeedbackMessage(call, validationErrors[call.ID]))
-				if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
+				if err := commitMessages(msg); err != nil {
 					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 				}
-				activeHistory = append(activeHistory, msg)
-				state.activeMessages = append([]session.Message(nil), activeHistory...)
 				e.emit(opts, event.Event{Type: event.ToolResult, Step: step, ToolID: call.ID, ToolName: call.Name, ToolKind: "control", Result: msg.Content, Err: validationErrors[call.ID].Error(),
 					Metadata: mergeAnyMetadata(attemptMetadata, map[string]any{"batch_index": index, "batch_size": len(calls), "tool_validation_error": true, "tool_result_status": "error"})})
 			}
@@ -1336,12 +1367,6 @@ steps:
 					}
 					return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
 				case ControlContinue:
-					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
-					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
-					}
-					activeHistory = append(activeHistory, msg)
-					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueToolResults
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
 					continue
@@ -1364,7 +1389,6 @@ steps:
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
 		toolMessageSet := make([]bool, len(calls))
-		toolMessageOrder := make([]int, 0, len(calls))
 		toolResults := make([]tools.Result, len(calls))
 		toolMessageIndex := len(activeHistory)
 		var dispatchedMu sync.Mutex
@@ -1384,14 +1408,23 @@ steps:
 			}
 			if validationErr := validationErrors[result.CallID]; validationErr != nil {
 				// Engine feedback has no tool output projection or effect result.
-				// Persist the same message through live events and the transcript.
+				// Commit once before publishing observation and applying the transcript.
 				msg := stableMessageAt(opts.RunID, toolMessageIndex, validationFeedbackMessage(calls[i], validationErr))
+				if opts.CommitMessages != nil {
+					messages, err := opts.CommitMessages(ctx, []session.Message{msg})
+					if err != nil {
+						return err
+					}
+					if len(messages) != 1 {
+						return errors.New("validation feedback commit returned invalid message count")
+					}
+					msg = messages[0]
+				}
 				toolResults[i], toolMessages[i] = result, msg
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: msg.Content, Err: validationErr.Error(),
 					Metadata: mergeAnyMetadata(attemptMetadata, mergeAnyMetadata(projectedCallBatchMetadata[result.CallID], map[string]any{"tool_result_status": "error"}))})
 				toolMessageSet[i] = true
-				toolMessageOrder = append(toolMessageOrder, i)
-				return nil
+				return applyMessages([]session.Message{msg})
 			}
 			result = preparePendingToolResult(result)
 			if result.EffectOutcome == tools.EffectOutcomeUncertain && !strings.HasPrefix(result.Text, "External effect unconfirmed.") {
@@ -1474,6 +1507,16 @@ steps:
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata)})
 				return err
 			}
+			if !finalized.Handled && opts.CommitMessages != nil {
+				messages, err := opts.CommitMessages(ctx, []session.Message{toolMessages[i]})
+				if err != nil {
+					return err
+				}
+				if len(messages) != 1 {
+					return errors.New("tool result commit returned invalid message count")
+				}
+				toolMessages[i] = messages[0]
+			}
 			metadataBase := result.Metadata
 			if result.Pending == nil {
 				metadataBase = toolProjectionMetadata(result.Metadata, projection)
@@ -1487,8 +1530,7 @@ steps:
 				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: mergeAnyMetadata(attemptMetadata, metadata), Artifacts: append(eventArtifacts(projection, result.Artifacts), eventArtifactsFromToolAttachments(result.Attachments)...), CanonicalEntryID: finalized.CanonicalEntryID})
 			}
 			toolMessageSet[i] = true
-			toolMessageOrder = append(toolMessageOrder, i)
-			return nil
+			return applyMessages([]session.Message{toolMessages[i]})
 		}
 		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, validationErrors, processToolResult); err != nil {
 			if isContextCancellation(err) {
@@ -1503,14 +1545,6 @@ steps:
 			if !toolMessageSet[i] {
 				return e.end(state, opts, step, Failed, output, fmt.Errorf("tool result %d was not recorded", i), metrics, started, decision)
 			}
-		}
-		// Match the canonical completion order established by result finalization.
-		for _, i := range toolMessageOrder {
-			msg := toolMessages[i]
-			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
-			}
-			activeHistory = append(activeHistory, msg)
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)

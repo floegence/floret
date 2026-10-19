@@ -42,6 +42,11 @@ mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}"
 cd "${adoption_root}/consumer"
 go mod init example.com/floret-v7-candidate-adoption
 cp "${repository_root}/scripts/testdata/v7_adoption_test.go" adoption_test.go
+cp "${repository_root}/scripts/testdata/historical_compaction_test.go" historical_compaction_test.go
+mkdir historical-compaction
+for fixture in "${repository_root}"/internal/sessiontree/testdata/compaction-v*; do
+  cp -R "${fixture}" historical-compaction/
+done
 go get "${module_path}@${version}"
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...

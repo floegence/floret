@@ -130,7 +130,7 @@ func (p *turnProjection) admitGoalContext(ctx context.Context, history []session
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := p.flushPendingToolBatch(true); err != nil {
+	if err := p.err; err != nil {
 		return session.Message{}, err
 	}
 	path, err := p.goalPath(ctx)

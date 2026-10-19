@@ -280,7 +280,7 @@ func validateCommittedEffectFinalization(req engine.EffectResultFinalizationRequ
 			return engine.EffectResultFinalizationResult{}, fmt.Errorf("effect result finalization artifact: %w", sessiontree.ErrAuthorityCorrupt)
 		}
 	}
-	return engine.EffectResultFinalizationResult{Handled: true, Message: session.CloneMessage(finished.Result.Message), Replayed: finished.Replayed, CanonicalEntryID: finished.Result.ID}, nil
+	return engine.EffectResultFinalizationResult{Handled: true, Message: canonicalEntryMessage(finished.Result), Replayed: finished.Replayed, CanonicalEntryID: finished.Result.ID}, nil
 }
 
 func (t *Thread) rejectEffectAttempt(ctx context.Context, repo sessiontree.EffectAttemptRepo, attempt sessiontree.EffectAttempt, requestFingerprint string, cause error) tools.Result {
@@ -331,7 +331,7 @@ func (t *Thread) replayEffectResult(ctx context.Context, attempt sessiontree.Eff
 			if req.RunID != attempt.Invocation.RunID || req.ThreadID != attempt.Invocation.ThreadID || req.TurnID != attempt.Invocation.TurnID || req.ToolCallID != attempt.Invocation.ToolCallID {
 				return engine.EffectResultFinalizationResult{}, sessiontree.ErrAuthorityCorrupt
 			}
-			return engine.EffectResultFinalizationResult{Handled: true, Message: session.CloneMessage(entry.Message), Replayed: true, CanonicalEntryID: entry.ID}, nil
+			return engine.EffectResultFinalizationResult{Handled: true, Message: canonicalEntryMessage(entry), Replayed: true, CanonicalEntryID: entry.ID}, nil
 		}); err != nil {
 			return committedEffectDispatchError(attempt, err)
 		}
@@ -447,4 +447,11 @@ func effectOutcomeFingerprint(result tools.Result, message session.Message, full
 		return "", err
 	}
 	return sessiontree.StableHash(string(payload)), nil
+}
+
+func canonicalEntryMessage(entry sessiontree.Entry) session.Message {
+	message := session.CloneMessage(entry.Message)
+	message.EntryID, message.ParentEntryID = entry.ID, entry.ParentID
+	message.Activity = nil
+	return message
 }

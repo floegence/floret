@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityview"
 	"github.com/floegence/floret/v7/internal/configbridge"
+	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/engine"
 	enginecompaction "github.com/floegence/floret/v7/internal/engine/compaction"
 	"github.com/floegence/floret/v7/internal/event"
@@ -402,7 +404,7 @@ func unresolvedToolCallsForTurn(path []sessiontree.Entry, turnID string) []sessi
 		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolCall || entry.Message.Role != session.Assistant {
 			continue
 		}
-		if entry.Message.Kind != session.MessageKindNormal {
+		if controlstate.OwnsResult(entry.Message) {
 			continue
 		}
 		callID := strings.TrimSpace(entry.Message.ToolCallID)
@@ -842,6 +844,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ModelMaxOutputTokens: engineOptions.ContextPolicy.ModelMaxOutputTokens, ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
+	engineOptions.CommitMessages = projection.commitMessages
 	engineOptions.AdmitModelContext = projection.admitModelContext
 	engineOptions.AdmitParentEvents = projection.admitParentEvents
 	if opts.Steering != nil {
@@ -931,13 +934,6 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 			return turn, result.Err
 		}
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, projectionErr, projectionDiagnostic, turnProjectionFailureOrigin(projectionErr), &result)
-	}
-	current, err := t.Journal(persistCtx)
-	if err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "snapshot_error", engine.FailureOriginStorage, &result)
-	}
-	if err := t.appendDelta(persistCtx, turnID, runID, history, result.Messages, current.Path); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "append_delta_error", engine.FailureOriginStorage, &result)
 	}
 	if _, graceful := gracefulCancellation(ctx); graceful && result.Status == engine.Cancelled {
 		turn := t.turnResultFromEngine(turnID, runID, result, nil)
@@ -1365,138 +1361,6 @@ func (h *AgentHarness) effectFinalizationContext(ctx context.Context) (context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
-func (t *Thread) appendDelta(ctx context.Context, turnID string, runID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
-	start := sharedMessagePrefix(before, after)
-	persisted := persistedTurnMessages(currentPath, turnID)
-	for _, msg := range after[start:] {
-		if nonDurableProjection(msg) {
-			continue
-		}
-		// IMPORTANT: Realtime turn projection and appendDelta share the durable
-		// journal for one turn. appendDelta may only backfill messages that were
-		// not already persisted by projection; hiding duplicates in the UI or
-		// deduping across turns would corrupt the session history contract.
-		if persisted.skip(msg) {
-			continue
-		}
-		if err := t.appendMessage(ctx, turnID, runID, msg); err != nil {
-			return err
-		}
-		persisted.record(msg)
-	}
-	return nil
-}
-
-type durableMessageCounter struct {
-	counts map[durableMessageSignature]int
-}
-
-type durableMessageSignature struct {
-	ContentSourceID      string
-	ReasoningSourceID    string
-	ModelContext         string
-	Role                 session.Role
-	Content              string
-	Reasoning            string
-	ToolCallID           string
-	ToolName             string
-	ToolArgs             string
-	Kind                 session.MessageKind
-	ToolResult           string
-	CompactionID         string
-	CompactionGeneration int
-	CompactionWindowID   string
-}
-
-func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableMessageCounter {
-	counter := &durableMessageCounter{counts: map[durableMessageSignature]int{}}
-	steeringRequests := make(map[string]session.Message)
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntrySteeringRequested {
-			steeringRequests[entry.ID] = entry.Message
-		}
-	}
-	for _, entry := range entries {
-		if entry.TurnID != turnID {
-			continue
-		}
-		switch entry.Type {
-		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult, sessiontree.EntryModelContext, sessiontree.EntryParentEventsAdmitted, sessiontree.EntryGoalContext:
-			counter.record(entry.Message)
-		case sessiontree.EntrySteeringApplied:
-			resolution, err := sessiontree.DecodeSteeringResolution(entry)
-			if err == nil {
-				counter.record(steeringRequests[resolution.SteeringID])
-			}
-		}
-	}
-	return counter
-}
-
-func (c *durableMessageCounter) skip(msg session.Message) bool {
-	if c == nil {
-		return false
-	}
-	key := durableSignature(msg)
-	if c.counts[key] <= 0 {
-		return false
-	}
-	c.counts[key]--
-	return true
-}
-
-func (c *durableMessageCounter) record(msg session.Message) {
-	if c == nil {
-		return
-	}
-	c.counts[durableSignature(msg)]++
-}
-
-func durableSignature(msg session.Message) durableMessageSignature {
-	msg.EntryID = ""
-	msg.ParentEntryID = ""
-	snapshot, _ := json.Marshal(msg.ModelContextSnapshot)
-	return durableMessageSignature{ContentSourceID: msg.ContentSourceID, ReasoningSourceID: msg.ReasoningSourceID,
-		ModelContext:         string(snapshot),
-		Role:                 msg.Role,
-		Content:              msg.Content,
-		Reasoning:            msg.Reasoning,
-		ToolCallID:           msg.ToolCallID,
-		ToolName:             msg.ToolName,
-		ToolArgs:             msg.ToolArgs,
-		Kind:                 msg.Kind,
-		ToolResult:           toolResultSignature(msg.ToolResult),
-		CompactionID:         msg.CompactionID,
-		CompactionGeneration: msg.CompactionGeneration,
-		CompactionWindowID:   msg.CompactionWindowID,
-	}
-}
-
-func nonDurableProjection(msg session.Message) bool {
-	return msg.Kind == session.MessageKindCompactionSummary
-}
-
-func (t *Thread) appendMessage(ctx context.Context, turnID string, runID string, msg session.Message) error {
-	return t.appendMessageAt(ctx, turnID, runID, msg, time.Time{})
-}
-
-func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) error {
-	_, err := t.appendMessageEntryAt(ctx, turnID, runID, msg, observedAt)
-	return err
-}
-
-func (t *Thread) appendMessageEntryAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) (sessiontree.Entry, error) {
-	msg.EntryID = ""
-	msg.ParentEntryID = ""
-	entry, err := sessiontree.AppendRunMessageAt(ctx, t.harness.options.Repo, t.id, turnID, runID, msg, observedAt)
-	if err != nil {
-		return sessiontree.Entry{}, err
-	}
-	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
-	return entry, nil
-}
-
 func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
 	entry, err := t.harness.options.Repo.Append(ctx, approvalEventEntry(t.id, turnID, runID, ev), sessiontree.AppendOptions{})
 	if err != nil {
@@ -1890,35 +1754,6 @@ func safeApprovalMetadataValue(value any) string {
 	}
 }
 
-func sharedMessagePrefix(a, b []session.Message) int {
-	n := min(len(a), len(b))
-	for i := 0; i < n; i++ {
-		if !messagesEqualForDelta(a[i], b[i]) {
-			return i
-		}
-	}
-	return n
-}
-
-func messagesEqualForDelta(a, b session.Message) bool {
-	a.EntryID = ""
-	a.ParentEntryID = ""
-	b.EntryID = ""
-	b.ParentEntryID = ""
-	return durableSignature(a) == durableSignature(b)
-}
-
-func toolResultSignature(view *session.ToolResultView) string {
-	if view == nil {
-		return ""
-	}
-	data, err := json.Marshal(view)
-	if err != nil {
-		return fmt.Sprintf("%#v", view)
-	}
-	return string(data)
-}
-
 func markerForStatus(status engine.Status) sessiontree.TurnMarkerStatus {
 	return sessionlifecycle.MarkerForEngineStatus(status)
 }
@@ -1954,6 +1789,13 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	snap, err := m.thread.Journal(ctx)
 	if err != nil {
 		return compaction.Result{}, nil, engine.WithFailureOrigin(err, engine.FailureOriginStorage)
+	}
+	canonical, err := sessiontree.BuildContextChecked(snap.Path, sessiontree.ContextOptions{})
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	if !reflect.DeepEqual(canonical, req.History) {
+		return compaction.Result{}, nil, errors.New("active context differs from canonical provider projection")
 	}
 	previous := latestCompactionEntry(snap.Path)
 	if strings.TrimSpace(previous.CompactionID) != strings.TrimSpace(req.PreviousCompactionID) ||
@@ -2034,7 +1876,7 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
-	install := sessiontree.ContextCompactionCommit{Summary: pending, Lifecycle: lifecycle, Estimate: estimate}
+	install := sessiontree.ContextCompactionCommit{Summary: pending, Lifecycle: lifecycle, Estimate: estimate, History: req.History, ActiveMessages: req.ActiveMessages}
 	if m.finishTurn {
 		install.Finish = &sessiontree.FinishTurnRequest{
 			ThreadID: m.thread.id, TurnID: m.turnID, RunID: req.RunID, TerminalEntryID: terminalTurnEntryID(m.thread.id, m.turnID, req.RunID),
@@ -2057,17 +1899,7 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	result.CompactionID = entry.CompactionID
 	result.CompactionGeneration = entry.CompactionGeneration
 	result.CompactionWindowID = entry.CompactionWindowID
-	active := append([]session.Message(nil), req.ActiveMessages...)
-	for i := range active {
-		if active[i].Kind != session.MessageKindCompactionSummary {
-			continue
-		}
-		active[i].EntryID = entry.ID
-		active[i].ParentEntryID = entry.ParentID
-		active[i].CompactionID = entry.CompactionID
-		active[i].CompactionGeneration = entry.CompactionGeneration
-		active[i].CompactionWindowID = entry.CompactionWindowID
-	}
+	active := committed.Messages
 	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: req.RunID, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
 	return result, active, nil
 }
@@ -2118,10 +1950,6 @@ type turnProjection struct {
 	downstream            event.Sink
 	emitMu                sync.Mutex
 	mu                    sync.Mutex
-	pendingCalls          []pendingToolMessage
-	pendingResults        []pendingToolMessage
-	pendingBatchSize      int
-	pendingCallsSent      bool
 	lastCompaction        event.Event
 	activeAttempt         providerAttemptIdentity
 	retiredAttempt        bool
@@ -2173,12 +2001,6 @@ func (identity providerAttemptIdentity) empty() bool {
 
 func (identity providerAttemptIdentity) valid() bool {
 	return identity.logicalRequestID != "" && identity.attemptID != "" && identity.attemptEpoch > 0
-}
-
-type pendingToolMessage struct {
-	message          session.Message
-	observedAt       time.Time
-	canonicalEntryID string
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
@@ -2270,85 +2092,28 @@ func (p *turnProjection) Emit(ev event.Event) {
 	}
 	switch ev.Type {
 	case event.ToolCall:
-		message, err := canonicalToolCallMessage(ev)
-		if err != nil {
+		if _, err := canonicalToolCallMessage(ev); err != nil {
 			p.err = err
 			return
 		}
 		p.finalCandidate = nil
-		if p.pendingCallsSent {
-			found := false
-			for _, call := range p.pendingCalls {
-				if call.message.ToolCallID == message.ToolCallID {
-					if durableSignature(call.message) != durableSignature(message) {
-						p.err = newTurnProjectionContractError("committed tool call differs from event")
-						return
-					}
-					found = true
-					break
-				}
-			}
-			if !found {
-				p.err = newTurnProjectionContractError("event references an uncommitted tool call")
-			}
-			return
-		}
-		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{
-			message:    message,
-			observedAt: ev.Timestamp,
-		})
-		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
-			p.pendingBatchSize = size
-		}
-	case event.ToolDispatchStarted:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
-		p.err = p.thread.appendToolDispatchEvent(p.ctx, p.turnID, p.runID, ev)
-	case event.ToolActivityUpdated:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
-		p.err = p.thread.appendToolActivityEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolResult:
 		p.finalCandidate = nil
-		p.pendingResults = append(p.pendingResults, pendingToolMessage{
-			message:          session.Message{Role: session.Tool, Kind: toolResultMessageKind(ev), Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(event.NormalizeActivityPresentation(ev.Activity))},
-			observedAt:       ev.Timestamp,
-			canonicalEntryID: ev.CanonicalEntryID,
-		})
-		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
-			p.pendingBatchSize = size
-		}
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
+	case event.ToolDispatchStarted:
+		p.err = p.thread.appendToolDispatchEvent(p.ctx, p.turnID, p.runID, ev)
+	case event.ToolActivityUpdated:
+		p.err = p.thread.appendToolActivityEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
 		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ContextContinue:
-		if err := p.flushPendingToolBatch(false); err != nil {
-			p.err = err
-			return
-		}
 		p.finalCandidate = nil
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.User, Kind: session.MessageKind(eventString(ev.Metadata, "message_kind")), Content: ev.Message})
-		if p.err != nil {
-			return
-		}
 		metadata := map[string]string{"reason": "context_continue", "continuation_reason": ev.ContinuationReason, "run_id": p.runID}
 		if ev.Result != "" {
 			metadata["hook_reason"] = ev.Result
 		}
-		var entry sessiontree.Entry
-		entry, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID, sessiontree.TurnSavePoint, metadata)
-		if p.err == nil {
+		entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID, sessiontree.TurnSavePoint, metadata)
+		p.err = err
+		if err == nil {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	case event.StepEnd:
@@ -2386,9 +2151,6 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 		case identity.attemptEpoch == p.activeAttempt.attemptEpoch && identity.attemptID != p.activeAttempt.attemptID:
 			return false, newTurnProjectionContractError("provider attempt identity conflict: epoch reused by another attempt")
 		case identity.attemptEpoch > p.activeAttempt.attemptEpoch:
-			if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
-				return false, newTurnProjectionContractError("provider attempt superseded with pending canonical tool batch")
-			}
 			p.activeAttempt = identity
 			p.retiredAttempt = false
 		}
@@ -2420,9 +2182,6 @@ func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, erro
 		return false, nil
 	}
 	if ev.Type == event.ProviderRetry && ev.Retry != nil {
-		if len(p.pendingCalls) > 0 || len(p.pendingResults) > 0 {
-			return false, newTurnProjectionContractError("cannot retire attempt with confirmed pending tools")
-		}
 		p.retiredAttempt = true
 	}
 	return true, nil
@@ -2481,14 +2240,7 @@ func canonicalToolCallMessage(ev event.Event) (session.Message, error) {
 func (p *turnProjection) Flush() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.err != nil {
-		return p.err
-	}
-	if err := p.flushPendingToolBatch(true); err != nil {
-		p.err = err
-		return err
-	}
-	return nil
+	return p.err
 }
 
 func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) error {
@@ -2497,16 +2249,14 @@ func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) e
 	if p.err != nil {
 		return p.err
 	}
-	if status == engine.Cancelled || status == engine.Failed {
-		if err := p.closePendingToolBatchForTerminalTurn(status, cause); err != nil {
-			p.err = err
-			return err
-		}
-	} else if err := p.flushPendingToolBatch(true); err != nil {
-		p.err = err
+	if status != engine.Cancelled && status != engine.Failed {
+		return nil
+	}
+	path, err := p.thread.harness.options.Repo.Path(p.ctx, p.thread.id, "")
+	if err != nil {
 		return err
 	}
-	return nil
+	return p.thread.harness.closeInterruptedTurnToolCalls(p.ctx, p.thread.id, p.turnID, path)
 }
 
 func (p *turnProjection) responseEntries(output engine.ResponseOutput) ([]sessiontree.Entry, error) {
@@ -2543,11 +2293,7 @@ func (p *turnProjection) commitPartialOutput(output engine.ResponseOutput) error
 	if err != nil {
 		return err
 	}
-	if err := p.publishOutputCommit(p.ctx, saved); err != nil {
-		return err
-	}
-	p.recordAssistantEntries(saved)
-	return nil
+	return p.notifyCommittedOutput(p.ctx, saved)
 }
 
 func (p *turnProjection) publishOutputCommit(ctx context.Context, entries []sessiontree.Entry) error {
@@ -2558,6 +2304,17 @@ func (p *turnProjection) publishOutputCommit(ctx context.Context, entries []sess
 		return sink.CommitProviderOutput(ctx, ProviderOutputCommitted{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, Entries: entries})
 	}
 	return nil
+}
+
+// Observation failure cannot make a committed output eligible for persistence again.
+func (p *turnProjection) notifyCommittedOutput(ctx context.Context, entries []sessiontree.Entry) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("committed output notification panicked: %v", recovered)
+		}
+	}()
+	p.recordAssistantEntries(entries)
+	return p.publishOutputCommit(ctx, entries)
 }
 
 func (p *turnProjection) recordAssistantEntries(entries []sessiontree.Entry) {
@@ -2578,27 +2335,24 @@ func (p *turnProjection) recordAssistantEntries(entries []sessiontree.Entry) {
 	}
 }
 
-func (p *turnProjection) commitProviderContext(ctx context.Context, state *provider.State, output engine.ResponseOutput, calls []session.Message, clear bool) error {
+func (p *turnProjection) commitProviderContext(ctx context.Context, state *provider.State, output engine.ResponseOutput, calls []session.Message, clear bool) (engine.ProviderContextCommitResult, error) {
 	p.emitMu.Lock()
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.err != nil {
-		return p.err
+		return engine.ProviderContextCommitResult{}, p.err
 	}
 	repo, ok := p.thread.harness.options.Repo.(sessiontree.ProviderContextRepo)
 	if !ok {
-		return errors.New("session tree repo does not support provider context commit")
+		return engine.ProviderContextCommitResult{}, errors.New("session tree repo does not support provider context commit")
 	}
 	request := sessiontree.ProviderContextCommit{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, State: state, Clear: clear, CompatibilityKey: p.stateCompatibilityKey, Now: p.thread.harness.now()}
 	if !clear {
-		if err := p.flushPendingToolBatch(true); err != nil {
-			return err
-		}
 		var err error
 		request.Entries, err = p.responseEntries(output)
 		if err != nil {
-			return err
+			return engine.ProviderContextCommitResult{}, err
 		}
 		for _, call := range calls {
 			request.Entries = append(request.Entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, call, time.Time{}))
@@ -2607,90 +2361,45 @@ func (p *turnProjection) commitProviderContext(ctx context.Context, state *provi
 	entries, err := repo.CommitProviderContext(ctx, request)
 	if err != nil {
 		p.err = err
-		return err
+		return engine.ProviderContextCommitResult{}, err
 	}
-	if clear {
-		return nil
-	}
-	p.recordAssistantEntries(entries)
-	for _, call := range calls {
-		if call.Kind == session.MessageKindControlSignal {
-			continue
-		}
-		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{message: call, observedAt: request.Now})
-	}
-	p.pendingBatchSize, p.pendingCallsSent = len(p.pendingCalls), len(p.pendingCalls) > 0
-	if err := p.publishOutputCommit(ctx, entries); err != nil {
+	messages, err := sessiontree.ProjectProviderEntries(entries)
+	if err != nil {
 		p.err = err
-		return err
+		return engine.ProviderContextCommitResult{NotificationErr: err}, nil
 	}
-	return nil
+	if err := p.notifyCommittedOutput(ctx, entries); err != nil {
+		p.err = err
+		return engine.ProviderContextCommitResult{Messages: messages, NotificationErr: err}, nil
+	}
+	return engine.ProviderContextCommitResult{Messages: messages}, nil
 }
 
-func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Status, cause error) error {
-	if len(p.pendingCalls) == 0 && len(p.pendingResults) == 0 {
-		return nil
+func (p *turnProjection) commitMessages(ctx context.Context, messages []session.Message) ([]session.Message, error) {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return nil, p.err
 	}
-	if !p.pendingCallsSent {
-		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
-		for _, call := range p.pendingCalls {
-			if call.message.ToolCallID == "" {
-				return newTurnProjectionContractError("tool call batch contains empty tool_call_id")
-			}
-			if _, ok := seenCalls[call.message.ToolCallID]; ok {
-				return newTurnProjectionContractErrorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
-			}
-			seenCalls[call.message.ToolCallID] = struct{}{}
-		}
-		for _, call := range p.pendingCalls {
-			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
-				return err
-			}
-		}
-		p.pendingCallsSent = true
+	repo, ok := p.thread.harness.options.Repo.(sessiontree.ProviderContextRepo)
+	if !ok {
+		return nil, errors.New("session tree repo does not support canonical message commit")
 	}
-
-	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
-	for _, result := range p.pendingResults {
-		if result.message.ToolCallID == "" {
-			return newTurnProjectionContractError("tool result batch contains empty tool_call_id")
-		}
-		if _, ok := byID[result.message.ToolCallID]; ok {
-			return newTurnProjectionContractErrorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
-		}
-		byID[result.message.ToolCallID] = result
+	request := sessiontree.ProviderContextCommit{ThreadID: p.thread.id, TurnID: p.turnID, RunID: p.runID, CompatibilityKey: p.stateCompatibilityKey, Now: p.thread.harness.now()}
+	for _, message := range messages {
+		request.Entries = append(request.Entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, message, time.Time{}))
 	}
-
-	appended := false
-	for _, call := range p.pendingCalls {
-		result, ok := byID[call.message.ToolCallID]
-		if !ok {
-			result = pendingToolMessage{
-				message:    terminalTurnClosureToolResult(call.message, status, cause),
-				observedAt: p.thread.harness.now(),
-			}
-		}
-		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
-			return err
-		}
-		delete(byID, call.message.ToolCallID)
-		appended = true
+	entries, err := repo.CommitProviderContext(ctx, request)
+	if err != nil {
+		p.err = err
+		return nil, err
 	}
-	for id := range byID {
-		return newTurnProjectionContractErrorf("tool result batch references unknown tool_call_id %q", id)
-	}
-	if appended {
-		entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID})
-		if err != nil {
-			return err
-		}
+	for _, entry := range entries {
 		p.thread.harness.emitEntryCommitted(entry, p.runID)
 	}
-	p.pendingCalls = nil
-	p.pendingResults = nil
-	p.pendingBatchSize = 0
-	p.pendingCallsSent = false
-	return nil
+	return sessiontree.ProjectProviderEntries(entries)
 }
 
 func terminalTurnClosureToolResult(call session.Message, status engine.Status, cause error) session.Message {
@@ -2709,6 +2418,7 @@ func terminalTurnClosureToolResult(call session.Message, status engine.Status, c
 	activity = activityview.WithTerminalStatus(activity, resultStatus, text)
 	return session.Message{
 		Role:       session.Tool,
+		Kind:       call.Kind,
 		Content:    text,
 		ToolCallID: strings.TrimSpace(call.ToolCallID),
 		ToolName:   strings.TrimSpace(call.ToolName),
@@ -2717,243 +2427,8 @@ func terminalTurnClosureToolResult(call session.Message, status engine.Status, c
 	}
 }
 
-func (p *turnProjection) flushPendingToolBatch(force bool) error {
-	if len(p.pendingCalls) == 0 && len(p.pendingResults) == 0 {
-		return nil
-	}
-	size := p.pendingBatchSize
-	if size <= 0 {
-		size = len(p.pendingCalls)
-	}
-	if !p.pendingCallsSent {
-		if len(p.pendingCalls) < size {
-			if force {
-				return newTurnProjectionContractErrorf("incomplete tool call batch: %d calls, want %d", len(p.pendingCalls), size)
-			}
-			return nil
-		}
-		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
-		for _, call := range p.pendingCalls {
-			if call.message.ToolCallID == "" {
-				return newTurnProjectionContractError("tool call batch contains empty tool_call_id")
-			}
-			if _, ok := seenCalls[call.message.ToolCallID]; ok {
-				return newTurnProjectionContractErrorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
-			}
-			seenCalls[call.message.ToolCallID] = struct{}{}
-		}
-		for _, call := range p.pendingCalls {
-			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
-				return err
-			}
-		}
-		p.pendingCallsSent = true
-	}
-	if len(p.pendingResults) == 0 {
-		return nil
-	}
-	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
-	for _, result := range p.pendingResults {
-		if result.message.ToolCallID == "" {
-			return newTurnProjectionContractError("tool result batch contains empty tool_call_id")
-		}
-		if _, ok := byID[result.message.ToolCallID]; ok {
-			return newTurnProjectionContractErrorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
-		}
-		byID[result.message.ToolCallID] = result
-	}
-	appendedResult := false
-	appendedIDs := map[string]struct{}{}
-	appendable := 0
-	for _, call := range p.pendingCalls {
-		result, ok := byID[call.message.ToolCallID]
-		if !ok {
-			break
-		}
-		canonical, committed, err := p.canonicalEffectResult(result.message.ToolCallID, result.message.ToolName, result.canonicalEntryID)
-		if err != nil {
-			return err
-		}
-		if committed {
-			result.message = canonical
-		} else {
-			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
-				return err
-			}
-		}
-		delete(byID, call.message.ToolCallID)
-		appendedIDs[call.message.ToolCallID] = struct{}{}
-		appendedResult = true
-		appendable++
-	}
-	for id := range byID {
-		known := false
-		for _, call := range p.pendingCalls[appendable:] {
-			if call.message.ToolCallID == id {
-				known = true
-				break
-			}
-		}
-		if !known {
-			return newTurnProjectionContractErrorf("tool result batch references unknown tool_call_id %q", id)
-		}
-	}
-	remainingCalls := p.pendingCalls[appendable:]
-	if force && len(remainingCalls) > 0 {
-		return newTurnProjectionContractErrorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), len(byID))
-	}
-	if appendedResult && len(remainingCalls) == 0 {
-		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, p.runID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID}); err != nil {
-			return fmt.Errorf("canonical tool result save point: %w", err)
-		} else {
-			p.thread.harness.emitEntryCommitted(entry, p.runID)
-		}
-	}
-	p.pendingCalls = remainingCalls
-	remainingResults := p.pendingResults[:0]
-	for _, result := range p.pendingResults {
-		if _, ok := appendedIDs[result.message.ToolCallID]; ok {
-			continue
-		}
-		remainingResults = append(remainingResults, result)
-	}
-	p.pendingResults = remainingResults
-	if len(p.pendingCalls) == 0 {
-		p.pendingBatchSize = 0
-		p.pendingCallsSent = false
-		p.pendingResults = nil
-	}
-	return nil
-}
-
-func (p *turnProjection) canonicalEffectResult(toolCallID, toolName, canonicalEntryID string) (session.Message, bool, error) {
-	canonicalEntryID = strings.TrimSpace(canonicalEntryID)
-	if canonicalEntryID == "" {
-		return session.Message{}, false, nil
-	}
-	entry, err := p.thread.harness.options.Repo.Entry(p.ctx, p.thread.id, canonicalEntryID)
-	if err != nil {
-		if errors.Is(err, sessiontree.ErrEntryNotFound) || errors.Is(err, sessiontree.ErrThreadNotFound) {
-			return session.Message{}, false, fmt.Errorf("canonical effect result lookup: %w", sessiontree.ErrAuthorityCorrupt)
-		}
-		return session.Message{}, false, fmt.Errorf("canonical effect result lookup: %w", err)
-	}
-	if entry.ID != canonicalEntryID || entry.ThreadID != p.thread.id || entry.TurnID != p.turnID ||
-		entry.Type != sessiontree.EntryToolResult || entry.Message.Role != session.Tool ||
-		entry.Message.ToolCallID != toolCallID || entry.Message.ToolName != toolName ||
-		entry.Message.ToolResult == nil || strings.TrimSpace(entry.Metadata[sessiontree.PendingToolEffectAttemptIDKey]) == "" {
-		return session.Message{}, false, fmt.Errorf("canonical effect result identity: %w", sessiontree.ErrAuthorityCorrupt)
-	}
-	if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
-		return session.Message{}, false, fmt.Errorf("canonical effect result integrity: %w", err)
-	}
-	return session.CloneMessage(entry.Message), true, nil
-}
-
-func eventBatchSize(metadata any) int {
-	values, ok := metadata.(map[string]any)
-	if !ok {
-		return 0
-	}
-	switch size := values["batch_size"].(type) {
-	case int:
-		return size
-	case int64:
-		return int(size)
-	case float64:
-		return int(size)
-	default:
-		return 0
-	}
-}
-
-func toolResultViewFromEvent(ev event.Event) *session.ToolResultView {
-	values, _ := ev.Metadata.(map[string]any)
-	status := toolResultStatusFromEvent(ev, values)
-	if len(values) == 0 && len(ev.Artifacts) == 0 && status == "" {
-		return nil
-	}
-	view := &session.ToolResultView{
-		Status:        status,
-		Truncated:     metadataBool(values, "truncated"),
-		OriginalBytes: metadataInt(values, "original_bytes"),
-		VisibleBytes:  metadataInt(values, "visible_bytes"),
-		OriginalLines: metadataInt(values, "original_lines"),
-		VisibleLines:  metadataInt(values, "visible_lines"),
-		Strategy:      metadataString(values, "strategy"),
-		ContentSHA256: metadataString(values, "content_sha256"),
-	}
-	for _, item := range ev.Artifacts {
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.MIME)), "image/") || strings.TrimSpace(item.ID) == "" {
-			continue
-		}
-		name := strings.TrimSpace(item.SafeLabel)
-		if name == "" {
-			name = item.ID
-		}
-		view.Attachments = append(view.Attachments, session.MessageAttachment{ResourceRef: item.ID, Name: name, MIMEType: item.MIME, SizeBytes: item.SizeBytes})
-	}
-	if artifactID := metadataString(values, "artifact_id"); artifactID != "" {
-		for _, item := range ev.Artifacts {
-			if item.ID != artifactID {
-				continue
-			}
-			ref := artifactRefFromEvent(item)
-			if ref.ID != "" || ref.SafeLabel != "" {
-				view.FullOutput = &ref
-			}
-			break
-		}
-	}
-	if emptyToolResultView(view) {
-		return nil
-	}
-	return view
-}
-
-func emptyToolResultView(view *session.ToolResultView) bool {
-	return view == nil ||
-		(view.Status == "" &&
-			!view.Truncated &&
-			view.OriginalBytes == 0 &&
-			view.VisibleBytes == 0 &&
-			view.OriginalLines == 0 &&
-			view.VisibleLines == 0 &&
-			view.Strategy == "" &&
-			view.ContentSHA256 == "" &&
-			view.FullOutput == nil &&
-			len(view.Attachments) == 0)
-}
-
-func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
-	if metadataString(values, "outcome") == tools.ResultOutcomeDeclined || metadataString(values, "tool_result_status") == string(observation.ActivityStatusDeclined) {
-		return string(observation.ActivityStatusDeclined)
-	}
-	if metadataBool(values, "pending_tool_result") {
-		return string(observation.ActivityStatusRunning)
-	}
-	if strings.TrimSpace(ev.Err) != "" || metadataBool(values, "error_present") || metadataString(values, "tool_result_status") == string(observation.ActivityStatusError) {
-		return string(observation.ActivityStatusError)
-	}
-	if metadataString(values, "tool_result_status") == string(observation.ActivityStatusCanceled) {
-		return string(observation.ActivityStatusCanceled)
-	}
-	return string(observation.ActivityStatusSuccess)
-}
-
 func sessionActivityPresentation(in *tools.ActivityPresentation) *session.ActivityPresentation {
 	return session.CloneActivityPresentation(in)
-}
-
-func artifactRefFromEvent(in event.Artifact) artifact.Ref {
-	return artifact.Ref{
-		ID:        in.ID,
-		SafeLabel: in.SafeLabel,
-		Kind:      in.Kind,
-		MIME:      in.MIME,
-		SizeBytes: in.SizeBytes,
-		SHA256:    in.SHA256,
-	}
 }
 
 func metadataString(values map[string]any, key string) string {
@@ -2962,37 +2437,6 @@ func metadataString(values map[string]any, key string) string {
 	}
 	value, _ := values[key].(string)
 	return value
-}
-
-func metadataBool(values map[string]any, key string) bool {
-	if values == nil {
-		return false
-	}
-	value, _ := values[key].(bool)
-	return value
-}
-
-func metadataInt(values map[string]any, key string) int {
-	if values == nil {
-		return 0
-	}
-	switch value := values[key].(type) {
-	case int:
-		return value
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
-}
-
-func toolResultMessageKind(ev event.Event) session.MessageKind {
-	if metadata, ok := ev.Metadata.(map[string]any); ok && metadata["tool_validation_error"] == true {
-		return session.MessageKindToolValidationError
-	}
-	return session.MessageKindNormal
 }
 
 func eventString(raw any, key string) string {
