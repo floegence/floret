@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.66.0 - 2026-10-19
+
 - Add shared Brave/DeepSeek Search clients and native tools, explicit Markdown DeepSeek Fetch, bounded authenticated transport and factual Activity.
 - Publish reviewed Flash 1017/Pro search capabilities; preserve aliases, Responses replay and Direct security. Remove unused internal search policy and duplicate Brave HTTP transport.
 
