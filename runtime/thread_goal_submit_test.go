@@ -187,3 +187,53 @@ func TestGoalSubmissionPublicRequestKeyMatchesFactoryAndRestartIdentity(t *testi
 		t.Fatalf("factory=%+v key=%s", got, key)
 	}
 }
+
+func TestGoalSubmissionKeepsActiveViewAndJournalInOrder(t *testing.T) {
+	gate := make(chan struct{})
+	step := parentEventDone()
+	step.BlockUntil = gate
+	service, gateway := goalService(t, step)
+	thread, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = service.Cancel(context.Background(), CancelInput{ThreadID: thread.ThreadID, RequestKey: "cleanup"})
+		close(gate)
+	})
+	if _, err := service.(ThreadGoalSubmitter).SubmitGoal(t.Context(), SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "submit", Text: "Original result"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.WaitForRequests(t.Context(), 1); err != nil {
+		t.Fatal(err)
+	}
+	controller := service.(ThreadGoalController)
+	if _, err := controller.SetGoal(t.Context(), SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "edit", ExpectedVersion: 1, Text: "Edited result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.(ThreadGoalSubmitter).SubmitGoal(t.Context(), SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "update", ExpectedVersion: 2, Text: "Updated result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.DeleteGoal(t.Context(), DeleteGoalInput{ThreadID: thread.ThreadID, RequestKey: "delete", ExpectedVersion: 3}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := service.View(t.Context(), thread.ThreadID)
+	if err != nil || view.Goal.Version != 4 || view.Goal.Status != "absent" || view.Activity != ThreadActivityActive || len(view.Queue) != 0 {
+		t.Fatalf("view=%+v err=%v", view, err)
+	}
+	canonical, err := service.(*threadRuntimeService).loadCanonicalThreadView(t.Context(), thread.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Items) != len(canonical.Items) {
+		t.Fatalf("current has %d items, journal has %d", len(view.Items), len(canonical.Items))
+	}
+	for i, item := range canonical.Items {
+		if view.Items[i].ID != item.ID || view.Items[i].Ordinal != item.Ordinal {
+			t.Fatalf("item %d current=%+v canonical=%+v", i, view.Items[i], item)
+		}
+	}
+	if len(gateway.Requests()) != 1 {
+		t.Fatalf("requests=%d", len(gateway.Requests()))
+	}
+}

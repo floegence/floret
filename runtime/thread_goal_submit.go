@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -90,12 +89,20 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		actor.state.view.Goal = publicThreadGoal(submission.Mutation.State)
 		actor.state.view.ViewVersion++
 		if a := submission.Accepted; a != nil {
+			// The preceding Turn is canonically terminal. Install the complete
+			// admitted journal prefix, including Goal facts before the user input,
+			// so later refreshes share its item identities and ordinals.
+			items, interactions, err := hydrateThreadRuntimeItems(ctx, service.host.store.repo, in.ThreadID)
+			if err != nil {
+				return err
+			}
 			previous, err = actor.beginRun(beginThreadRunInput{turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(key), cancel: cancel, executionDone: done, clearOutcome: true})
 			if err != nil {
 				return err
 			}
 			accepted = acceptedTurn{ThreadID: in.ThreadID, TurnID: turnID, RunID: runID, UserEntryID: a.UserMessage.ID, BaseLeafID: a.BaseLeafID}
-			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: a.UserMessage.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC()})
+			actor.state.view.Items = items
+			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, interactions)
 			if actor.state.requestKeys == nil {
 				actor.state.requestKeys = map[string]threadRuntimeRequest{}
 			}
