@@ -153,14 +153,15 @@ func (r *deepSeekRendered) add(item deepSeekInput, canonical bool) {
 }
 func (g *deepSeekGateway) renderMessages(ctx context.Context, messages []Message, images map[string]string) (deepSeekRendered, []json.RawMessage, error) {
 	// Canonical conversation may split one provider answer around hosted activity.
-	// Adjacent assistant segments still represent one Responses message boundary.
+	// Adjacent assistant fragments and calls still represent one provider response.
 	merged := make([]Message, 0, len(messages))
 	for _, message := range messages {
-		if len(merged) > 0 && message.Role == RoleAssistant && len(message.ToolCalls) == 0 && message.ToolResult == nil && len(message.Attachments) == 0 {
+		if len(merged) > 0 && message.Role == RoleAssistant && message.ToolResult == nil && len(message.Attachments) == 0 {
 			previous := &merged[len(merged)-1]
-			if previous.Role == RoleAssistant && len(previous.ToolCalls) == 0 && previous.ToolResult == nil && len(previous.Attachments) == 0 {
+			if previous.Role == RoleAssistant && previous.ToolResult == nil && len(previous.Attachments) == 0 {
 				previous.Text += message.Text
 				previous.Reasoning += message.Reasoning
+				previous.ToolCalls = append(append([]ToolCall(nil), previous.ToolCalls...), message.ToolCalls...)
 				continue
 			}
 		}
@@ -499,8 +500,38 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 			return true
 		}
 	}
-	fail := func(err error) { emit(Event{Type: EventError, Err: err}) }
+	directEmit := emit
+	fail := func(err error) { directEmit(Event{Type: EventError, Err: err}) }
 	var text, reasoning strings.Builder
+	nativeChannels := map[EventType]bool{}
+	anonymousChannels := map[EventType]bool{}
+	streamedParts := map[string]string{}
+	nativeParts := map[string]OutputPart{}
+	nativePositions := map[int]string{}
+	partKey := func(part OutputPart, kind EventType) string {
+		return fmt.Sprintf("%s:%d:%d:%s", part.ItemID, part.OutputIndex, part.ContentIndex, kind)
+	}
+	emitText := func(kind EventType, value string, part *OutputPart) {
+		if value == "" {
+			return
+		}
+		if part != nil {
+			streamedParts[partKey(*part, kind)] += value
+			nativeChannels[kind] = true
+		} else {
+			anonymousChannels[kind] = true
+		}
+		emit(Event{Type: kind, Text: value, OutputPart: part})
+	}
+
+	partFor := func(id string) *OutputPart {
+		if p, ok := nativeParts[id]; ok {
+			copy := p
+			copy.ContentIndex = 0
+			return &copy
+		}
+		return nil
+	}
 	calls := map[string]*ToolCall{}
 	ended := map[string]bool{}
 	searches := map[string]deepSeekOutput{}
@@ -528,7 +559,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		searches[item.ID] = item
 		if !exists {
 			args, _ := json.Marshal(item.Action)
-			emit(Event{Type: EventHostedToolCall, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}})
+			emit(Event{Type: EventHostedToolCall, OutputPart: partFor(item.ID), HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}})
 		}
 		return item
 	}
@@ -556,7 +587,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 			}
 		}
 		args, _ := json.Marshal(item.Action)
-		emit(Event{Type: EventHostedToolResult, HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}, HostedResult: result})
+		emit(Event{Type: EventHostedToolResult, OutputPart: partFor(item.ID), HostedToolCall: &ToolCall{ID: item.ID, Name: "web_search", Args: string(args)}, HostedResult: result})
 	}
 	finishCall := func(item deepSeekOutput) error {
 		if item.ID == "" || item.CallID == "" || item.Name == "" || !json.Valid([]byte(item.Arguments)) {
@@ -566,7 +597,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		if c == nil {
 			c = &ToolCall{ID: item.CallID, Name: item.Name}
 			calls[item.ID] = c
-			emit(Event{Type: EventToolCallStart, ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
+			emit(Event{Type: EventToolCallStart, OutputPart: partFor(item.ID), ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
 		}
 		if c.ID != item.CallID || c.Name != item.Name {
 			return errors.New("DeepSeek function call identity changed")
@@ -574,7 +605,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		c.Args = item.Arguments
 		if !ended[item.ID] {
 			ended[item.ID] = true
-			emit(Event{Type: EventToolCallEnd, ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
+			emit(Event{Type: EventToolCallEnd, OutputPart: partFor(item.ID), ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
 		}
 		return nil
 	}
@@ -583,23 +614,52 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 	var data []string
 	dispatch := func(payload string) bool {
 		var event struct {
-			Type     string           `json:"type"`
-			Delta    string           `json:"delta"`
-			ItemID   string           `json:"item_id"`
-			Item     deepSeekOutput   `json:"item"`
-			Response deepSeekResponse `json:"response"`
+			Type         string           `json:"type"`
+			OutputIndex  *int             `json:"output_index"`
+			ContentIndex int              `json:"content_index"`
+			Delta        string           `json:"delta"`
+			ItemID       string           `json:"item_id"`
+			Item         deepSeekOutput   `json:"item"`
+			Response     deepSeekResponse `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			fail(fmt.Errorf("decode DeepSeek SSE: %w", err))
 			return true
 		}
+		var part *OutputPart
+		itemID := event.ItemID
+		if itemID == "" {
+			itemID = event.Item.ID
+		}
+		if itemID != "" {
+			previous, known := nativeParts[itemID]
+			if event.OutputIndex != nil {
+				if *event.OutputIndex < 0 || event.ContentIndex < 0 || known && previous.OutputIndex != *event.OutputIndex {
+					fail(errors.New("invalid or changed DeepSeek output item position"))
+					return true
+				}
+				if other, exists := nativePositions[*event.OutputIndex]; exists && other != itemID {
+					fail(errors.New("DeepSeek output position has conflicting items"))
+					return true
+				}
+				nativePositions[*event.OutputIndex] = itemID
+				previous = OutputPart{ItemID: itemID, OutputIndex: *event.OutputIndex}
+				nativeParts[itemID] = previous
+				known = true
+			}
+			if known {
+				previous.ContentIndex = event.ContentIndex
+				part = &previous
+			}
+		}
+
 		switch event.Type {
 		case "response.output_text.delta":
 			text.WriteString(event.Delta)
-			emit(Event{Type: EventDelta, Text: event.Delta})
+			emitText(EventDelta, event.Delta, part)
 		case "response.reasoning_text.delta":
 			reasoning.WriteString(event.Delta)
-			emit(Event{Type: EventReasoning, Text: event.Delta})
+			emitText(EventReasoning, event.Delta, part)
 		case "response.output_item.added":
 			item := event.Item
 			switch item.Type {
@@ -609,7 +669,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 					return true
 				}
 				calls[item.ID] = &ToolCall{ID: item.CallID, Name: item.Name, Args: item.Arguments}
-				emit(Event{Type: EventToolCallStart, ToolCallStream: &ToolCallStream{ID: item.CallID, Name: item.Name}})
+				emit(Event{Type: EventToolCallStart, OutputPart: part, ToolCallStream: &ToolCallStream{ID: item.CallID, Name: item.Name}})
 			case "web_search_call":
 				search(item)
 			}
@@ -620,7 +680,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 				return true
 			}
 			c.Args += event.Delta
-			emit(Event{Type: EventToolCallDelta, Text: event.Delta, ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
+			emit(Event{Type: EventToolCallDelta, OutputPart: part, Text: event.Delta, ToolCallStream: &ToolCallStream{ID: c.ID, Name: c.Name}})
 		case "response.output_item.done":
 			switch event.Item.Type {
 			case "function_call":
@@ -646,25 +706,63 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 				fail(errors.New("invalid DeepSeek terminal response"))
 				return true
 			}
+			directEmit := emit
+			var terminalEvents []Event
+			emit = func(e Event) bool { terminalEvents = append(terminalEvents, e); return true }
+			defer func() { emit = directEmit }()
+			finalParts := map[string]bool{}
+			finalItems := map[string]bool{}
 			var finalText, finalReasoning strings.Builder
 			var finalCalls []ToolCall
 			finalIDs := map[string]bool{}
 			var sources []Source
-			for _, raw := range r.Output {
+			for outputIndex, raw := range r.Output {
 				var item deepSeekOutput
 				if err := json.Unmarshal(raw, &item); err != nil {
 					fail(err)
 					return true
 				}
+				if item.ID != "" {
+					if finalItems[item.ID] {
+						fail(errors.New("duplicate DeepSeek terminal output item"))
+						return true
+					}
+					finalItems[item.ID] = true
+					if previous, ok := nativeParts[item.ID]; ok && previous.OutputIndex != outputIndex {
+						fail(errors.New("DeepSeek terminal item position changed"))
+						return true
+					}
+					nativeParts[item.ID] = OutputPart{ItemID: item.ID, OutputIndex: outputIndex}
+				}
 				switch item.Type {
 				case "message":
-					for _, part := range item.Content {
+					for contentIndex, part := range item.Content {
 						if part.Type != "output_text" {
 							fail(fmt.Errorf("unsupported DeepSeek message part %q", part.Type))
 							return true
 						}
 						offset := utf8.RuneCountInString(finalText.String())
 						finalText.WriteString(part.Text)
+						native := OutputPart{ItemID: item.ID, OutputIndex: outputIndex, ContentIndex: contentIndex}
+						if item.ID != "" {
+							key := partKey(native, EventDelta)
+							finalParts[key] = true
+							prior := streamedParts[key]
+							if !strings.HasPrefix(part.Text, prior) {
+								fail(errors.New("DeepSeek terminal text part disagrees with streamed deltas"))
+								return true
+							}
+							if !anonymousChannels[EventDelta] {
+								if suffix := part.Text[len(prior):]; suffix != "" {
+									emit(Event{Type: EventDelta, Text: suffix, OutputPart: &native})
+								}
+							}
+						} else if nativeChannels[EventDelta] {
+							fail(errors.New("DeepSeek terminal text omitted output identity"))
+							return true
+						} else if !anonymousChannels[EventDelta] && part.Text != "" {
+							emit(Event{Type: EventDelta, Text: part.Text})
+						}
 						for _, a := range part.Annotations {
 							if a.Type == "url_citation" && a.URL != "" {
 								source := citation.Source{Title: a.Title, URL: a.URL, StartIndex: a.StartIndex, EndIndex: a.EndIndex}
@@ -680,12 +778,32 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 						}
 					}
 				case "reasoning":
-					for _, part := range item.Content {
+					for contentIndex, part := range item.Content {
 						if part.Type != "reasoning_text" {
 							fail(fmt.Errorf("unsupported DeepSeek reasoning part %q", part.Type))
 							return true
 						}
 						finalReasoning.WriteString(part.Text)
+						native := OutputPart{ItemID: item.ID, OutputIndex: outputIndex, ContentIndex: contentIndex}
+						if item.ID != "" {
+							key := partKey(native, EventReasoning)
+							finalParts[key] = true
+							prior := streamedParts[key]
+							if !strings.HasPrefix(part.Text, prior) {
+								fail(errors.New("DeepSeek terminal reasoning part disagrees with streamed deltas"))
+								return true
+							}
+							if !anonymousChannels[EventReasoning] {
+								if suffix := part.Text[len(prior):]; suffix != "" {
+									emit(Event{Type: EventReasoning, Text: suffix, OutputPart: &native})
+								}
+							}
+						} else if nativeChannels[EventReasoning] {
+							fail(errors.New("DeepSeek terminal reasoning omitted output identity"))
+							return true
+						} else if !anonymousChannels[EventReasoning] && part.Text != "" {
+							emit(Event{Type: EventReasoning, Text: part.Text})
+						}
 					}
 				case "function_call":
 					if r.Status == "incomplete" {
@@ -720,16 +838,34 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 					}
 				}
 			}
-			if !strings.HasPrefix(finalText.String(), text.String()) || !strings.HasPrefix(finalReasoning.String(), reasoning.String()) {
-				fail(errors.New("DeepSeek terminal output disagrees with streamed deltas"))
-				return true
+			for key := range streamedParts {
+				if !finalParts[key] {
+					fail(errors.New("DeepSeek terminal omitted a streamed output part"))
+					return true
+				}
 			}
-			if delta := finalReasoning.String()[reasoning.Len():]; delta != "" {
-				emit(Event{Type: EventReasoning, Text: delta})
+			for _, channel := range []struct {
+				kind            EventType
+				streamed, final string
+			}{
+				{EventReasoning, reasoning.String(), finalReasoning.String()}, {EventDelta, text.String(), finalText.String()},
+			} {
+				if anonymousChannels[channel.kind] {
+					if nativeChannels[channel.kind] {
+						fail(errors.New("DeepSeek mixed identified and unidentified deltas in one channel"))
+						return true
+					}
+					if !strings.HasPrefix(channel.final, channel.streamed) {
+						fail(errors.New("DeepSeek terminal output disagrees with streamed deltas"))
+						return true
+					}
+					if suffix := channel.final[len(channel.streamed):]; suffix != "" {
+						emit(Event{Type: channel.kind, Text: suffix})
+					}
+
+				}
 			}
-			if delta := finalText.String()[text.Len():]; delta != "" {
-				emit(Event{Type: EventDelta, Text: delta})
-			}
+
 			if len(sources) > 0 {
 				refs := make([]citation.Source, len(sources))
 				for i, s := range sources {
@@ -783,6 +919,12 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 				raw, _ := json.Marshal(history)
 				if stateAllowed {
 					terminal.ResponseState = &State{Kind: deepSeekStateKind, ID: r.ID, Attributes: map[string]string{"history": string(raw)}}
+				}
+			}
+			emit = directEmit
+			for _, queued := range terminalEvents {
+				if !emit(queued) {
+					return true
 				}
 			}
 			emit(terminal)

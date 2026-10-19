@@ -31,12 +31,34 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 24 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 25 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
+
+## Canonical output sources
+
+The Engine owns one ordered response fragment collection for each exact Run and
+provider attempt. Optional `provider.Event.OutputPart` identifies native items
+and zero-based output/content positions; gateways without native items remain
+valid and use Engine channel/hosted boundaries. DeepSeek preserves native parts,
+including terminal suffixes that update an earlier fragment.
+
+Harness commits those fragments, classified calls and opaque provider state in
+one existing provider-context transaction. One memory-only batch handoff installs
+the canonical view before tool execution. Observation events do not independently
+settle drafts. Current-attempt drafts can survive a refresh; committed canonical
+text is authoritative and replaced attempts cannot change it.
+
+Schema 24 -> 25 stores only content/reasoning source references on canonical
+messages. It preserves historical public item IDs and entry references, reveals
+correction-response reasoning at its original position, and keeps invalid calls
+and validation feedback out of actionable tool rows. Technical feedback remains
+in model history. Legacy shape interpretation runs only in the atomic startup
+migration; current restart does not rewrite records. Hosts render Floret order
+and IDs directly without content deduplication or client sorting.
 
 ## Thread goals
 
@@ -600,7 +622,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 24).
+schema change (current domain schema 25).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use

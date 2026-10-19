@@ -258,10 +258,9 @@ func (p OpenAICompatibleProvider) streamRendered(ctx context.Context, body []byt
 		calls := make([]provider.ToolCall, 0, len(choice.Message.ToolCalls))
 		for _, call := range choice.Message.ToolCalls {
 			calls = append(calls, provider.ToolCall{
-				ID:        call.ID,
-				Name:      call.Function.Name,
-				Args:      call.Function.Arguments,
-				Reasoning: choice.Message.ReasoningContent,
+				ID:   call.ID,
+				Name: call.Function.Name,
+				Args: call.Function.Arguments,
 			})
 		}
 		events = append(events, provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls})
@@ -506,7 +505,7 @@ func (p OpenAICompatibleProvider) contextChatRequest(req provider.Request) (chat
 		copy(renderedMessages[insertAt+1:], renderedMessages[insertAt:])
 		renderedMessages[insertAt] = ephemeral[0]
 	}
-	renderedMessages = mergeAdjacentAssistantToolCalls(renderedMessages)
+	renderedMessages = mergeAdjacentAssistantMessages(renderedMessages)
 	renderedMessages = normalizeChatToolResults(renderedMessages)
 	if err := validateChatToolAdjacency(renderedMessages); err != nil {
 		return chatRequest{}, err
@@ -665,7 +664,7 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 							item.ended = true
 							tools[i] = item
 						}
-						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args, Reasoning: reasoning.String()})
+						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args})
 					}
 					ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
 					ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
@@ -783,26 +782,20 @@ func validateChatToolAdjacency(messages []chatMessage) error {
 	return nil
 }
 
-func mergeAdjacentAssistantToolCalls(messages []chatMessage) []chatMessage {
+// Chat Completions represents one response as one assistant message. Canonical
+// fragments stay separate in the Engine; only this wire adapter concatenates
+// adjacent assistant content before the paired tool result boundary.
+func mergeAdjacentAssistantMessages(messages []chatMessage) []chatMessage {
 	out := make([]chatMessage, 0, len(messages))
-	for i := 0; i < len(messages); i++ {
-		msg := messages[i]
-		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+	for _, msg := range messages {
+		if len(out) > 0 && msg.Role == "assistant" && out[len(out)-1].Role == "assistant" {
+			previous := &out[len(out)-1]
+			previous.Content += msg.Content
+			previous.ReasoningContent += msg.ReasoningContent
+			previous.ToolCalls = append(previous.ToolCalls, msg.ToolCalls...)
+		} else {
 			out = append(out, msg)
-			continue
 		}
-		merged := msg
-		for i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
-			i++
-			next := messages[i]
-			merged.ToolCalls = append(merged.ToolCalls, next.ToolCalls...)
-			if merged.ReasoningContent == "" {
-				merged.ReasoningContent = next.ReasoningContent
-			} else if next.ReasoningContent != "" && next.ReasoningContent != merged.ReasoningContent {
-				merged.ReasoningContent += "\n" + next.ReasoningContent
-			}
-		}
-		out = append(out, merged)
 	}
 	return out
 }

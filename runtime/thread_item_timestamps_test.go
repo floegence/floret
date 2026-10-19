@@ -72,7 +72,7 @@ func TestThreadLiveItemsRetainFirstOccurrenceTime(t *testing.T) {
 	for index, kind := range []StreamObservationType{StreamObservationReasoningDelta, StreamObservationAssistantDelta} {
 		at := start.Add(time.Duration(index) * time.Second)
 		for delta := range 2 {
-			sink.EmitEvent(Event{ThreadID: "thread-live", TurnID: "turn-live", RunID: "run-live", Timestamp: at.Add(time.Duration(delta) * time.Millisecond), Stream: &StreamObservation{Type: kind, Text: "text"}})
+			sink.EmitEvent(Event{ThreadID: "thread-live", TurnID: "turn-live", RunID: "run-live", outputSourceID: string(kind), Timestamp: at.Add(time.Duration(delta) * time.Millisecond), Stream: &StreamObservation{Type: kind, Text: "text"}})
 		}
 		item := service.currentView(actor).Items[index]
 		if !item.CreatedAt.Equal(at) {

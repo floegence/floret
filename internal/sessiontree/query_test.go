@@ -463,7 +463,7 @@ func TestThreadQueryFrozenToolCompletionRenameAndCanonicalSegments(t *testing.T)
 	}
 	appendQueryFixture(t, repo, "a", Entry{ID: "started", Type: EntryTurnMarker, TurnID: "turn", RunID: "run", TurnStatus: TurnStarted, Metadata: map[string]string{}}, at)
 	for i, text := range []string{"one", "two"} {
-		appendQueryFixture(t, repo, "a", Entry{ID: fmt.Sprintf("assistant%d", i), Type: EntryAssistantMessage, TurnID: "turn", RunID: "run", Message: session.Message{Role: session.Assistant, Content: text, Reasoning: "repeated hidden reasoning"}}, at)
+		appendQueryFixture(t, repo, "a", Entry{ID: fmt.Sprintf("assistant%d", i), Type: EntryAssistantMessage, TurnID: "turn", RunID: "run", Message: session.Message{Role: session.Assistant, ContentSourceID: "assistant:turn:1", ReasoningSourceID: "thinking:turn:1", Content: text, Reasoning: "repeated hidden reasoning"}}, at)
 	}
 	messages, err := repo.Query(ctx, scope, threadquery.QueryInput{Object: threadquery.Messages})
 	if err != nil || messages.Total != 1 || messages.Records[0].Snippet != "onetwo" {

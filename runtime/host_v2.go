@@ -836,7 +836,7 @@ func projectModelEvent(event provider.Event) modelEvent {
 		hostedResult = &result
 	}
 	return modelEvent{
-		Type: modelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		OutputPart: cloneOutputPart(event.OutputPart), Type: modelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
 		HostedToolCall: hostedCall, HostedResult: hostedResult,
 		Sources: sources, Reason: event.Reason,
 		Usage:      event.Usage,
@@ -869,4 +869,12 @@ func (request agentPreparedRequest) WithMaxOutputTokensModel(ctx context.Context
 		return nil, err
 	}
 	return agentPreparedRequest{prepared: next}, nil
+}
+
+func cloneOutputPart(part *provider.OutputPart) *provider.OutputPart {
+	if part == nil {
+		return nil
+	}
+	copy := *part
+	return &copy
 }

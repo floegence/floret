@@ -66,14 +66,3 @@ func DeriveCanonicalLifecycle(path []Entry, active bool) CanonicalLifecycle {
 	}
 	return result
 }
-
-// MergeAssistantSegment is the canonical legacy concatenation rule. Segmented
-// turns preserve entry boundaries; reasoning and intervening visible items break
-// adjacency. The query index and public timeline share this predicate.
-func MergeAssistantSegment(segmented bool, previousAssistant bool, previousTurnID, previousRunID, turnID, runID string) bool {
-	return !segmented && previousAssistant && previousTurnID == turnID && previousRunID == runID
-}
-
-func AppendReasoningSegment(text, previous string, open bool) bool {
-	return text != "" && (!open || previous != text)
-}

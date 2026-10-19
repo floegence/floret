@@ -58,6 +58,7 @@ const (
 	backendDomainSourceV22
 	backendDomainSourceV23
 	backendDomainSourceV24
+	backendDomainSourceV25
 	backendDomainSourceV14
 	backendDomainSourceV13
 	backendDomainSourceV12
@@ -105,14 +106,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV24 {
+	if source == backendDomainSourceV25 {
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomainV24(ctx, tx, now)
+		memory, found, err := loadBackendDomainV25(ctx, tx, now)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
-			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v24 authority is missing"))
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v25 authority is missing"))
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if hasUnknownEffectTurns(memory) {
@@ -122,7 +123,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainV24Changes(tx, before, memory)
+			changed, err := persistBackendDomainV25Changes(tx, before, memory)
 			if err != nil {
 				return nil, err
 			}
@@ -130,6 +131,32 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		repo.domainMemory = memory
+		return repo, nil
+	}
+	if source == backendDomainSourceV24 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV24(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrAuthorityCorrupt
+		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
+		memory.parentEvents = parentEventsEnabled(ctx)
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := deleteAllBackendDomain(ctx, tx, backendDomainV24Format); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
+			return nil, err
+		}
+		repo.domainMemory = memory
+		repo.requiresPersistedStartupVerification = true
 		return repo, nil
 	}
 	if source == backendDomainSourceV23 {
@@ -144,6 +171,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -151,7 +181,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV23Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -173,6 +203,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -180,7 +213,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV22Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -205,6 +238,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -212,7 +248,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV21Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -240,6 +276,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -247,7 +286,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV20Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -278,6 +317,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -285,7 +327,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV19Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -319,6 +361,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -326,7 +371,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV18Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -364,6 +409,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -371,7 +419,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV17Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -413,6 +461,9 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
@@ -421,7 +472,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV16Format); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -465,11 +516,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV15Format); err != nil {
@@ -519,11 +573,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV14Format); err != nil {
@@ -576,11 +633,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV13Format); err != nil {
@@ -636,11 +696,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV12Format); err != nil {
@@ -699,11 +762,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV11Format); err != nil {
@@ -765,11 +831,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV10Format); err != nil {
@@ -834,11 +903,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV9Format); err != nil {
@@ -910,7 +982,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV8(ctx, tx); err != nil {
@@ -981,7 +1056,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
@@ -1055,7 +1133,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -1167,8 +1248,11 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV23ToV24(ctx, memory); err != nil {
 			return nil, err
 		}
+		if err := migrateBackendDomainV24ToV25(ctx, memory); err != nil {
+			return nil, err
+		}
 	}
-	if err := saveCompleteBackendDomainV24(tx, memory); err != nil {
+	if err := saveCompleteBackendDomainV25(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -1211,7 +1295,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV24(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV25(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
@@ -1221,7 +1305,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 	if err := rejectPreV16BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateBackendDomainV24Memory(memory); err != nil {
+	if err := validateBackendDomainV25Memory(memory); err != nil {
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
@@ -1292,6 +1376,9 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 				}
 				if _, err := decodeBackendDomainRecord(backendDomainV24Format, raw); err == nil {
 					candidate.source = backendDomainSourceV24
+				}
+				if _, err := decodeBackendDomainRecord(backendDomainV25Format, raw); err == nil {
+					candidate.source = backendDomainSourceV25
 				}
 			}
 			present = append(present, candidate.source)

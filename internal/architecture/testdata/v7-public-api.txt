@@ -287,6 +287,7 @@ var ErrContextOverflow error
 var ErrRequestTimeout error
 func EstimateRenderedRequest func(request github.com/floegence/floret/v7/provider.RenderedRequest) (github.com/floegence/floret/v7/provider.TokenEstimate, error)
 type Event struct
+field Event.OutputPart *github.com/floegence/floret/v7/provider.OutputPart tag="json:\"output_part,omitempty\""
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""
 field Event.Text string tag="json:\"text,omitempty\""
 field Event.ToolCallStream *github.com/floegence/floret/v7/provider.ToolCallStream tag="json:\"tool_call_stream,omitempty\""
@@ -374,6 +375,10 @@ field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provid
 type OutputControl string
 const OutputControlClient github.com/floegence/floret/v7/provider.OutputControl = "client"
 const OutputControlServer github.com/floegence/floret/v7/provider.OutputControl = "server"
+type OutputPart struct
+field OutputPart.ItemID string tag="json:\"item_id\""
+field OutputPart.OutputIndex int tag="json:\"output_index\""
+field OutputPart.ContentIndex int tag="json:\"content_index\""
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
 type PreparedRequestOutputLimiter interface interface{WithMaxOutputTokens(context.Context, int64) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}

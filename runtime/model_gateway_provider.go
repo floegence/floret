@@ -305,12 +305,9 @@ func (request *modelGatewayPreparedRequest) Close() error {
 
 func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 	result := make([]modelMessage, 0, len(messages))
-	assistantReasoning := ""
+	seenReasoning := map[string]bool{}
 	for index := 0; index < len(messages); {
 		message := messages[index]
-		if message.Role != session.Assistant {
-			assistantReasoning = ""
-		}
 		switch message.Role {
 		case session.System, session.User:
 			projected := modelMessage{Role: modelMessageRole(message.Role), Text: message.Content, Attachments: runtimeMessageAttachments(message.Attachments)}
@@ -333,23 +330,21 @@ func runtimeModelMessages(messages []session.Message) ([]modelMessage, error) {
 			index++
 		case session.Assistant:
 			projected := modelMessage{Role: modelMessageRoleAssistant}
-			if message.ToolCallID == "" {
-				projected.Text, projected.Reasoning = message.Content, message.Reasoning
-				index++
-			}
-			for index < len(messages) && messages[index].Role == session.Assistant && messages[index].ToolCallID != "" {
+			for index < len(messages) && messages[index].Role == session.Assistant {
 				part := messages[index]
-				// Tool calls retain the complete step reasoning, while hosted
-				// events may already have emitted a prefix as assistant fragments.
-				// Project the remaining reasoning once, including pure-thinking
-				// tool calls, without repeating it for parallel calls.
-				if projected.Reasoning == "" || strings.HasPrefix(part.Reasoning, assistantReasoning+projected.Reasoning) {
-					projected.Reasoning = strings.TrimPrefix(part.Reasoning, assistantReasoning)
+				if part.ToolCallID == "" {
+					projected.Text += part.Content
+				} else {
+					projected.ToolCalls = append(projected.ToolCalls, tools.ToolCall{ID: part.ToolCallID, Name: part.ToolName, Args: part.ToolArgs, Reasoning: part.Reasoning})
 				}
-				projected.ToolCalls = append(projected.ToolCalls, tools.ToolCall{ID: part.ToolCallID, Name: part.ToolName, Args: part.ToolArgs, Reasoning: part.Reasoning})
+				if part.Reasoning != "" && (part.ReasoningSourceID == "" || !seenReasoning[part.ReasoningSourceID]) {
+					projected.Reasoning += part.Reasoning
+					if part.ReasoningSourceID != "" {
+						seenReasoning[part.ReasoningSourceID] = true
+					}
+				}
 				index++
 			}
-			assistantReasoning += projected.Reasoning
 			result = append(result, projected)
 		case session.Tool:
 			var attachments []session.MessageAttachment
@@ -378,7 +373,11 @@ func providerStreamEvent(event modelEvent) provider.StreamEvent {
 	if event.HostedToolCall != nil {
 		hosted = provider.ToolCall{ID: event.HostedToolCall.ID, Name: event.HostedToolCall.Name, Args: event.HostedToolCall.Args}
 	}
-	return provider.StreamEvent{Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: engineProviderError(event.Err)}
+	var part *provider.OutputPart
+	if event.OutputPart != nil {
+		part = &provider.OutputPart{ItemID: event.OutputPart.ItemID, OutputIndex: event.OutputPart.OutputIndex, ContentIndex: event.OutputPart.ContentIndex}
+	}
+	return provider.StreamEvent{OutputPart: part, Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: engineProviderError(event.Err)}
 }
 
 func providerToolCallStream(value *ToolCallStream) provider.ToolCallStream {

@@ -106,6 +106,8 @@ type ModelContextPart struct {
 }
 
 type Message struct {
+	ContentSourceID      string             `json:"content_source_id,omitempty"`
+	ReasoningSourceID    string             `json:"reasoning_source_id,omitempty"`
 	GoalContextBaseline  string             `json:"goal_context_baseline,omitempty"`
 	ModelContextParts    []ModelContextPart `json:"-"`
 	Sources              []citation.Source  `json:"sources,omitempty"`

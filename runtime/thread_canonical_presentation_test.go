@@ -40,6 +40,12 @@ func TestCanonicalIntermediateResponsesAndOrdinals(t *testing.T) {
 					entries[0].Metadata[sessiontree.ResponseSegmentsMetadataKey] = "1"
 				}
 				for i := range entries {
+					if entries[i].Message.Content != "" && entries[i].Type == sessiontree.EntryAssistantMessage {
+						entries[i].Message.ContentSourceID = "assistant:" + entries[i].ID
+					}
+					if entries[i].Message.Reasoning != "" {
+						entries[i].Message.ReasoningSourceID = "thinking:" + entries[i].ID
+					}
 					entries[i].TurnID = "turn"
 					entries[i].RunID = "run"
 					entries[i].CreatedAt = start.Add(-time.Duration(i) * time.Second)
@@ -96,5 +102,18 @@ func TestCanonicalToolResultRetainsCallPosition(t *testing.T) {
 	items, _, err := threadRuntimeItemsFromEntries(entries)
 	if err != nil || len(items) != 1 || items[0].CanonicalOrdinal != 1 {
 		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
+
+func TestCanonicalSharedContentSourceSurvivesNewlyVisibleCorrectionReasoning(t *testing.T) {
+	at := time.Now()
+	entries := []sessiontree.Entry{
+		{ID: "first", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryAssistantMessage, CreatedAt: at, Message: session.Message{Role: session.Assistant, Content: "first", ContentSourceID: "assistant:turn:1"}},
+		{ID: "invalid", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall, CreatedAt: at, Message: session.Message{Role: session.Assistant, Kind: session.MessageKindToolValidationError, ToolName: "read", ToolCallID: "invalid", Reasoning: "correction", ReasoningSourceID: "thinking:entry:invalid"}},
+		{ID: "second", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryAssistantMessage, CreatedAt: at, Message: session.Message{Role: session.Assistant, Content: "second", ContentSourceID: "assistant:turn:1"}},
+	}
+	items, _, err := threadRuntimeItemsFromEntries(entries)
+	if err != nil || len(items) != 2 || items[0].ID != "assistant:turn:1" || items[0].Text != "firstsecond" || len(items[0].sourceEntryIDs) != 2 || items[1].ID != "thinking:entry:invalid" {
+		t.Fatalf("shared historical source split: %+v %v", items, err)
 	}
 }

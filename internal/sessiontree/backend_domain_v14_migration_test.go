@@ -119,7 +119,7 @@ func TestBackendDomainV13ToV14RepairsCanonicalRunMarkers(t *testing.T) {
 	wantRuns := map[string]string{"started": "run-1", "save": "run-2", "done": "run-2"}
 	for index, want := range before {
 		got := after[index]
-		if got.ID != want.ID || got.ThreadID != want.ThreadID || got.ParentID != want.ParentID || got.CreatedAt != want.CreatedAt || got.Raw != want.Raw || got.RawHash != want.RawHash {
+		if got.ID != want.ID || got.ThreadID != want.ThreadID || got.ParentID != want.ParentID || got.CreatedAt != want.CreatedAt || got.Message.Content != want.Message.Content || got.Message.Reasoning != want.Message.Reasoning || ValidateEntryIntegrity(got) != nil {
 			t.Fatalf("entry %q changed durable content: got=%#v want=%#v", want.ID, got, want)
 		}
 		if expected, ok := wantRuns[want.ID]; ok {
@@ -150,6 +150,10 @@ func TestBackendDomainV13ToV14RepairsCanonicalRunMarkers(t *testing.T) {
 				}
 			}
 			got.RunID = source.RunID
+			got.Message.ContentSourceID = source.Message.ContentSourceID
+			got.Message.ReasoningSourceID = source.Message.ReasoningSourceID
+			got.Raw = rawForEntry(got)
+			got.RawHash = stableHash(got.Raw)
 			if !reflect.DeepEqual(got, source) {
 				t.Fatalf("thread %q migration changed facts outside RunID on entry %q", threadID, source.ID)
 			}

@@ -110,8 +110,8 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 				for _, m := range messages {
 					if m.Role == session.Assistant && m.ToolCallID != "" {
 						calls++
-						if m.Reasoning != wantReasoning {
-							t.Fatalf("reasoning=%q want %q", m.Reasoning, wantReasoning)
+						if m.Reasoning != "" {
+							t.Fatal("shared reasoning was duplicated onto a tool call")
 						}
 					}
 					if m.Role == session.Tool {

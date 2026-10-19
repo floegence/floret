@@ -41,7 +41,7 @@ func TestCanonicalToolCallMessageRejectsMissingOrConflictingPayload(t *testing.T
 
 func TestCanonicalToolCallMessageDetachesNestedData(t *testing.T) {
 	msg := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call", ToolName: "read", ToolArgs: `{}`, Reasoning: "canonical", Activity: &session.ActivityPresentation{TargetRefs: []tools.ActivityTargetRef{{Label: "original"}}}}
-	projection := &turnProjection{reasoning: "unrelated streamed fragment"}
+	projection := &turnProjection{}
 	projection.Emit(event.Event{Type: event.ToolCall, ToolID: "call", ToolName: "read", Args: `{}`, ToolCallMessage: &msg})
 	if projection.err != nil || len(projection.pendingCalls) != 1 {
 		t.Fatalf("error=%v", projection.err)

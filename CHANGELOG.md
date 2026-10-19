@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v7.65.0 - 2026-10-19
+
+- Add optional native provider output parts and unify Engine response fragment ownership, atomic canonical commit and memory-only view takeover.
+- Preserve schema-correction reasoning in original order without exposing invalid tool calls; remove visible-count identities, text-based deduplication and live overrides of canonical text.
+- Append domain schema 24 -> 25 with explicit canonical source references, stable historical item IDs and transactional rollback; retain all released migrations and byte-stable current startup.
+- Preserve DeepSeek native positions and terminal suffix identity, and adapt Chat Completions request rendering to canonical fragments.
+- Preserve partial output sources on Stop without authorizing calls or provider-state advancement.
 - Preserve exact activity navigation paths and URIs through tool execution, canonical history, live observations, forks, and restart, without rewriting existing records.
 - Redact nested structured-row and patch-mutation navigation paths in diagnostic traces without mutating canonical presentation.
 

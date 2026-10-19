@@ -207,7 +207,7 @@ type Options struct {
 	AdmitParentEvents        func(context.Context) (session.Message, error)
 	AdmitGoalContext         func(context.Context, []session.Message) (session.Message, error)
 	AdmitModelContext        func(context.Context, *session.ModelContextSnapshot) (session.Message, error)
-	CommitProviderContext    func(context.Context, *provider.State, []session.Message, bool) error
+	CommitProviderContext    func(context.Context, *provider.State, ResponseOutput, []session.Message, bool) error
 	providerState            *runProviderState
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
@@ -260,6 +260,7 @@ type compactionBudgetPlan struct {
 }
 
 type Result struct {
+	UncommittedOutput  ResponseOutput
 	Status             Status
 	FailureOrigin      FailureOrigin
 	Output             string
@@ -374,48 +375,23 @@ type RunDecision struct {
 }
 
 type StepOutput struct {
-	Sources             []citation.Source
-	Text                string
-	Reasoning           string
-	Calls               []provider.ToolCall
-	Usage               provider.Usage
-	ResponseID          string
-	Retry               bool
-	Truncated           bool
-	FinishReason        provider.FinishReason
-	RawFinishReason     string
-	FinishInferred      bool
-	ResponseState       *provider.State
-	assistantBoundaries []assistantBoundary
+	Sources         []citation.Source
+	Text            string
+	Reasoning       string
+	Calls           []provider.ToolCall
+	Usage           provider.Usage
+	ResponseID      string
+	Retry           bool
+	Truncated       bool
+	FinishReason    provider.FinishReason
+	RawFinishReason string
+	FinishInferred  bool
+	ResponseState   *provider.State
+	Output          ResponseOutput
 }
 
-type assistantBoundary struct {
-	textEnd      int
-	reasoningEnd int
-}
-
-// Hosted tool events commit preceding assistant fragments to the journal.
-// Keep those same boundaries in execution history so its cached prefix survives reopening.
 func (output StepOutput) assistantMessages() []session.Message {
-	var messages []session.Message
-	textStart, reasoningStart := 0, 0
-	appendFragment := func(boundary assistantBoundary, keepReasoningOnly bool) {
-		text, reasoning := output.Text[textStart:boundary.textEnd], output.Reasoning[reasoningStart:boundary.reasoningEnd]
-		if text != "" || (reasoning != "" && keepReasoningOnly) {
-			var boundaries []int
-			for _, b := range output.assistantBoundaries {
-				boundaries = append(boundaries, b.textEnd)
-			}
-			sources := citation.Fragment(output.Sources, output.Text, textStart, boundary.textEnd, boundary.textEnd == len(output.Text) && textStart < boundary.textEnd, boundaries)
-			messages = append(messages, session.Message{Role: session.Assistant, Content: text, Reasoning: reasoning, Sources: sources})
-		}
-		textStart, reasoningStart = boundary.textEnd, boundary.reasoningEnd
-	}
-	for _, boundary := range output.assistantBoundaries {
-		appendFragment(boundary, true)
-	}
-	appendFragment(assistantBoundary{len(output.Text), len(output.Reasoning)}, len(output.Calls) == 0)
-	return messages
+	return output.Output.assistantMessages()
 }
 
 type RunInput struct {
@@ -822,7 +798,9 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	opts := normalizeOptions(e.options)
 	owner := &runProviderState{state: provider.CloneState(opts.PreviousProviderState), commit: opts.CommitProviderContext}
 	opts.providerState = owner
+	var pendingOutput ResponseOutput
 	defer func() {
+		result.UncommittedOutput = pendingOutput
 		result.ProviderState, result.ProviderStateFresh = provider.CloneState(owner.state), owner.fresh
 	}()
 	if err := provider.ValidateState(owner.state); err != nil {
@@ -978,6 +956,7 @@ steps:
 		var providerLatency int64
 		var overflowCompacted bool
 		req, activeHistory, stepOutput, providerLatency, overflowCompacted, err = e.sendOrdinaryProviderRequest(ctx, opts, step, req, activeHistory, pressureTracker, &metrics, &compactionFailures)
+		pendingOutput = stepOutput.Output
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		if overflowCompacted {
 			noProgress = 0
@@ -1057,12 +1036,15 @@ steps:
 			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
 		if len(calls) == 0 {
-			if err := owner.complete(ctx, stepOutput.ResponseState, nil, supplementalTurn); err != nil {
+			if err := owner.complete(ctx, stepOutput.ResponseState, stepOutput.Output, nil, supplementalTurn); err != nil {
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && isContextCancellation(err) {
 					continue
 				}
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
+		}
+		if len(calls) == 0 {
+			pendingOutput = ResponseOutput{}
 		}
 		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
 			lengthContinuations++
@@ -1271,17 +1253,13 @@ steps:
 		}
 		callMessages := make([]session.Message, len(calls))
 		for index, call := range calls {
-			reasoning := call.Reasoning
-			if reasoning == "" {
-				reasoning = stepReasoning
-			}
 			kind := session.MessageKindNormal
 			if internalValidationCorrections[call.ID] {
 				kind = session.MessageKindToolValidationError
 			} else if opts.ControlSpec.isControlTool(call.Name) {
 				kind = session.MessageKindControlSignal
 			}
-			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
+			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: call.Reasoning, ReasoningSourceID: callReasoningSource(opts.RunID, req.AttemptID, call), ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
 			if projectedSignal != nil && strings.TrimSpace(projectedSignal.CallID) == strings.TrimSpace(call.ID) {
 				msg.ControlSignal = sessionControlSignalView(projectedSignal)
 			}
@@ -1293,9 +1271,10 @@ steps:
 			activeHistory = append(activeHistory, msg)
 		}
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
-		if err := owner.complete(ctx, stepOutput.ResponseState, callMessages, supplementalTurn); err != nil {
+		if err := owner.complete(ctx, stepOutput.ResponseState, stepOutput.Output, callMessages, supplementalTurn); err != nil {
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 		}
+		pendingOutput = ResponseOutput{}
 		if len(validationErrors) > 0 {
 			state.validationCorrectionCount++
 			decision.Metadata = mergeAnyMetadata(decision.Metadata, map[string]any{
@@ -3909,8 +3888,16 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 	return renderer
 }
 
-func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request, attempt *providerattempt.Attempt) (StepOutput, error) {
-	out := StepOutput{}
+func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request, attempt *providerattempt.Attempt) (out StepOutput, retErr error) {
+	builder := newResponseOutputBuilder(opts.RunID, req.AttemptID)
+	defer func() {
+		out.Output = builder.finish(out.Sources)
+		out.Text, out.Reasoning = "", ""
+		for _, item := range out.Output.Items {
+			out.Text += item.Message.Content
+			out.Reasoning += item.Message.Reasoning
+		}
+	}()
 	var lastProgressAt *time.Time
 	var estimate outputEstimate
 	registry := opts.toolSurface.tools
@@ -3934,11 +3921,18 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	validator := provider.StreamValidator{}
 	streamedToolCallEnds := map[string]struct{}{}
 	attemptMetadata := map[string]any{"logical_request_id": req.LogicalRequestID, "attempt_id": req.AttemptID, "attempt_epoch": req.AttemptEpoch, "attempt": req.Attempt}
-	emitAttemptEvent := func(ev event.Event) {
+	emitAttemptEvent := func(ev event.Event, parts ...*provider.OutputPart) {
 		ev.ProviderLastProgressAt = lastProgressAt
 		ev.EstimatedOutputTokens = estimate.tokens()
 		base, _ := ev.Metadata.(map[string]any)
 		ev.Metadata = mergeAnyMetadata(attemptMetadata, base)
+		if ev.Type == event.HostedToolCall || ev.Type == event.HostedToolResult {
+			var part *provider.OutputPart
+			if len(parts) > 0 {
+				part = parts[0]
+			}
+			ev.OutputOrder = builder.appendHosted(ev, part)
+		}
 		e.emit(opts, ev)
 	}
 	for {
@@ -3980,13 +3974,21 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			}
 			switch ev.Type {
 			case provider.Delta:
+				if ev.Text == "" {
+					break
+				}
+				source, order := builder.appendText(provider.Delta, ev.Text, ev.OutputPart)
 				out.Text += ev.Text
 				estimate.append("text", ev.Text)
-				emitAttemptEvent(event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
+				if ev.Text == "" {
+					break
+				}
+				source, order := builder.appendText(provider.Reasoning, ev.Text, ev.OutputPart)
 				out.Reasoning += ev.Text
 				estimate.append("reasoning", ev.Text)
-				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCallStart:
 				previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name)
 				emitAttemptEvent(event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
@@ -4026,18 +4028,16 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				out.assistantBoundaries = append(out.assistantBoundaries, assistantBoundary{len(out.Text), len(out.Reasoning)})
-				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args, Activity: hostedToolActivity(ev)})
+				emitAttemptEvent(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args, Activity: hostedToolActivity(ev)}, ev.OutputPart)
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				out.assistantBoundaries = append(out.assistantBoundaries, assistantBoundary{len(out.Text), len(out.Reasoning)})
 				var errorText string
 				if ev.HostedResult.Error != nil {
 					errorText = "Provider-hosted tool failed"
 				}
-				emitAttemptEvent(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Err: errorText, Activity: hostedToolActivity(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
+				emitAttemptEvent(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Err: errorText, Activity: hostedToolActivity(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)}, ev.OutputPart)
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
 				emitAttemptEvent(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})

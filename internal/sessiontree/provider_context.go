@@ -11,8 +11,9 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 )
 
-// ProviderContextCommit installs only a completed provider output. Entries and
-// opaque state share the canonical transaction and one durable journal owner.
+// ProviderContextCommit installs Engine-owned output. Completed output and opaque
+// state share one transaction; partial output can preserve text after cancellation
+// but cannot admit tool calls or advance provider state.
 type ProviderContextCommit struct {
 	ThreadID         string
 	TurnID           string
@@ -21,6 +22,7 @@ type ProviderContextCommit struct {
 	State            *provider.State
 	CompatibilityKey string
 	Clear            bool
+	Partial          bool
 	Now              time.Time
 }
 
@@ -36,6 +38,9 @@ func RunMessageEntry(threadID, turnID, runID string, message session.Message, ob
 func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderContextCommit) ([]Entry, error) {
 	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || req.Clear && (req.State != nil || len(req.Entries) != 0) {
 		return nil, errors.New("provider context commit requires an exact execution and unambiguous state")
+	}
+	if req.Partial && (req.State != nil || req.Clear) {
+		return nil, errors.New("partial provider output cannot change provider state")
 	}
 	if err := provider.ValidateState(req.State); err != nil {
 		return nil, err
@@ -60,7 +65,7 @@ func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderCont
 	if !running || active != req.TurnID || identityErr != nil || runID != req.RunID {
 		return nil, ErrStaleAuthority
 	}
-	if turnCancellationRequested(r.entries[req.ThreadID], req.TurnID) {
+	if !req.Partial && turnCancellationRequested(r.entries[req.ThreadID], req.TurnID) {
 		return nil, context.Canceled
 	}
 	if req.Clear {
@@ -68,6 +73,9 @@ func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderCont
 		return nil, nil
 	}
 	for _, entry := range req.Entries {
+		if req.Partial && entry.Type != EntryAssistantMessage && (entry.Type != EntryCustom || entry.Metadata["kind"] != HostedToolEntryKind) {
+			return nil, ErrInvalidThreadAuthority
+		}
 		if entry.ThreadID != req.ThreadID || entry.TurnID != req.TurnID || entry.RunID != req.RunID || entry.Type != EntryAssistantMessage && entry.Type != EntryToolCall && entry.Type != EntryCustom {
 			return nil, ErrInvalidThreadAuthority
 		}

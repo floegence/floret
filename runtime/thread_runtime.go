@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -319,13 +318,14 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
-	Goal           *ThreadGoalChange       `json:"goal,omitempty"`
-	Steering       *ThreadSteering         `json:"steering,omitempty"`
-	Sources        []publicprovider.Source `json:"sources,omitempty"`
-	sourceEntryIDs []string
-	ID             string          `json:"id"`
-	TurnID         identity.TurnID `json:"turn_id,omitempty"`
-	RunID          identity.RunID  `json:"run_id,omitempty"`
+	Goal            *ThreadGoalChange       `json:"goal,omitempty"`
+	Steering        *ThreadSteering         `json:"steering,omitempty"`
+	Sources         []publicprovider.Source `json:"sources,omitempty"`
+	contentSourceID string
+	sourceEntryIDs  []string
+	ID              string          `json:"id"`
+	TurnID          identity.TurnID `json:"turn_id,omitempty"`
+	RunID           identity.RunID  `json:"run_id,omitempty"`
 	// CanonicalOrdinal is the one-based source position on the queried Path.
 	// Zero denotes an uncommitted live item, not a timestamp or durable cursor.
 	CanonicalOrdinal uint64 `json:"canonical_ordinal,omitempty"`
@@ -2880,7 +2880,7 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 			}
 		}
 		if canonicalErr == nil {
-			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false); ok {
+			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false, actor.state.attemptDraftIDs); ok {
 				actor.state.view.Items = reconciled
 			}
 		}
@@ -2926,6 +2926,7 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 			return nil
 		}
 		activityChanged := actor.applyToolActivity(event.ActivityTimeline, event.Timestamp)
+		actor.orderAttemptOutput(event.outputOrder)
 		previewChanged := actor.applyArgumentPreview(event)
 		progress, progressEvent := threadRunProgressForEvent(event)
 		if progressEvent {
@@ -3038,7 +3039,7 @@ func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) erro
 		actor.state.view.Failure = cloneThreadTurnFailure(canonical.Failure)
 		actor.state.view.Cancellation = canonical.Cancellation
 	}
-	reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal)
+	reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal, actor.state.attemptDraftIDs)
 	if !ok {
 		return fmt.Errorf("%w: item identity or canonical order conflict", errCanonicalRefreshDiscarded)
 	}
@@ -3086,7 +3087,7 @@ func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context
 	return canonical, nil
 }
 
-func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool) ([]ThreadItem, bool) {
+func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal bool, allowedDrafts map[string]bool) ([]ThreadItem, bool) {
 	if len(current) == 0 {
 		return cloneThreadItems(canonical), true
 	}
@@ -3116,7 +3117,7 @@ func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal boo
 		if position, exists := byID[item.ID]; exists {
 			committed := result[position]
 			if position <= lastCommitted || item.Kind != committed.Kind || item.TurnID != committed.TurnID || item.RunID != committed.RunID ||
-				item.CanonicalOrdinal != 0 && item.CanonicalOrdinal != committed.CanonicalOrdinal {
+				item.CanonicalOrdinal != 0 && item.CanonicalOrdinal != committed.CanonicalOrdinal || item.contentSourceID != committed.contentSourceID {
 				return nil, false
 			}
 			lastCommitted = position
@@ -3126,14 +3127,6 @@ func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal boo
 			if item.Kind == ThreadItemTool && item.Activity != nil && committed.Activity != nil &&
 				(threadToolActivityTerminal(item.Activity.Status) || item.Live && !threadToolActivityTerminal(committed.Activity.Status)) {
 				committed.Activity, committed.Live = item.Activity, item.Live
-			} else {
-				canonicalTerminalTool := committed.Kind == ThreadItemTool && committed.Activity != nil && committed.Activity.Status != observation.ActivityStatusRunning
-				if item.Live && !canonicalTerminalTool {
-					committed.Live = true
-					if item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant {
-						committed.Text = item.Text
-					}
-				}
 			}
 			result[position] = committed
 			continue
@@ -3142,6 +3135,9 @@ func reconcileCanonicalThreadItems(current, canonical []ThreadItem, terminal boo
 		// to another path. Only stream-only observations may survive its tail.
 		if item.CanonicalOrdinal != 0 {
 			return nil, false
+		}
+		if (item.Kind == ThreadItemAssistant || item.Kind == ThreadItemThinking) && !allowedDrafts[item.ID] {
+			continue
 		}
 		result = append(result, item)
 	}
@@ -4471,34 +4467,25 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 	interactionIndex := make(map[string]int)
 	itemIndex := make(map[string]int)
 	toolItemIndex := make(map[string]int)
-	thinkingCounts := make(map[identity.TurnID]int)
-	assistantCounts := make(map[identity.TurnID]int)
-	segmented := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
-			segmented[entry.TurnID] = entry.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"
-		}
-	}
 	var canonicalOrdinal uint64
 	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
 		item.CanonicalOrdinal = canonicalOrdinal
 		return appendThreadItem(items, item)
 	}
-	reasoningOpen := make(map[string]bool)
-	lastReasoning := make(map[string]string)
 	failedControls := make(map[string]threadControlIdentity)
-	appendReasoning := func(turnID identity.TurnID, runID identity.RunID, text string, createdAt time.Time) {
-		executionKey := threadExecutionKey(turnID, runID)
-		if !sessiontree.AppendReasoningSegment(text, lastReasoning[executionKey], reasoningOpen[executionKey]) {
+	reasoningIndex := make(map[string]int)
+	contentIndex := make(map[string]int)
+	appendReasoning := func(entry sessiontree.Entry, turnID identity.TurnID, runID identity.RunID, createdAt time.Time) {
+		text, source := entry.Message.Reasoning, entry.Message.ReasoningSourceID
+		if text == "" {
 			return
 		}
-		thinkingCounts[turnID]++
-		items = appendItem(items, ThreadItem{
-			ID:     "thinking:" + turnID.String() + ":" + strconv.Itoa(thinkingCounts[turnID]),
-			TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt,
-		})
-		reasoningOpen[executionKey] = true
-		lastReasoning[executionKey] = text
+		if index, found := reasoningIndex[source]; found {
+			items[index].sourceEntryIDs = append(items[index].sourceEntryIDs, entry.ID)
+			return
+		}
+		reasoningIndex[source] = len(items)
+		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}})
 	}
 	goalArguments := make(map[string]string)
 	for entryIndex, entry := range entries {
@@ -4550,7 +4537,6 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				toolItemIndex[toolKey] = len(items)
 				items = appendItem(items, ThreadItem{ID: toolKey, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, CreatedAt: occurredAt, Activity: &activity})
 			}
-			reasoningOpen[threadExecutionKey(turnID, runID)] = false
 			continue
 		}
 		switch entry.Type {
@@ -4580,13 +4566,13 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				return nil, nil, identityErr
 			}
 			if entry.Message.Kind != "control_signal" {
-				appendReasoning(turnID, runID, entry.Message.Reasoning, occurredAt)
+				appendReasoning(entry, turnID, runID, occurredAt)
 				if entry.Message.Content == "" {
 					continue
 				}
-				if len(items) > 0 {
-					previous := &items[len(items)-1]
-					if sessiontree.MergeAssistantSegment(segmented[entry.TurnID], previous.Kind == ThreadItemAssistant, previous.TurnID.String(), previous.RunID.String(), entry.TurnID, entry.RunID) {
+				if index, found := contentIndex[entry.Message.ContentSourceID]; found {
+					previous := &items[index]
+					if previous.TurnID == turnID && previous.RunID == runID {
 						offset := utf8.RuneCountInString(previous.Text)
 						for _, source := range citation.Clone(entry.Message.Sources) {
 							if source.StartIndex != nil {
@@ -4600,8 +4586,8 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 						continue
 					}
 				}
-				assistantCounts[turnID]++
-				items = appendItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
+				contentIndex[entry.Message.ContentSourceID] = len(items)
+				items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
 			if entry.Metadata[sessiontree.GoalCompletedMetadataKey] != "" {
@@ -4625,12 +4611,15 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				item.Activity.Presentation = tools.FinalizeActivityPresentation(item.Activity.Presentation, "canceled")
 			}
 		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
-			if entry.Message.Kind == session.MessageKindToolValidationError {
-				continue
-			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return nil, nil, identityErr
+			}
+			if entry.Type == sessiontree.EntryToolCall {
+				appendReasoning(entry, turnID, runID, occurredAt)
+			}
+			if entry.Message.Kind == session.MessageKindToolValidationError {
+				continue
 			}
 			if entry.Message.Kind == "control_signal" && entry.Message.ControlSignal != nil {
 				signal := entry.Message.ControlSignal
@@ -4654,13 +4643,9 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 					if text == "" {
 						text = "The agent emitted a historical control signal."
 					}
-					assistantCounts[turnID]++
-					items = appendItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
+					items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
 				}
 				continue
-			}
-			if entry.Type == sessiontree.EntryToolCall {
-				appendReasoning(turnID, runID, entry.Message.Reasoning, occurredAt)
 			}
 			activity := activityItemFromCanonicalEntry(entry, occurredAt)
 			if entry.Message.ToolName == "goal" {
@@ -4686,7 +4671,6 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if entry.Message.ToolResult != nil {
 					items[previous].Attachments = runtimeMessageAttachments(entry.Message.ToolResult.Attachments)
 				}
-				reasoningOpen[threadExecutionKey(turnID, runID)] = false
 			} else {
 				toolItemIndex[toolKey] = len(items)
 				items = appendItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
@@ -5076,4 +5060,61 @@ func turnKindFromEntries(entries []sessiontree.Entry, turnID identity.TurnID) Tu
 		}
 	}
 	return ""
+}
+
+func (sink combinedThreadEventSink) commitProviderOutput(ctx context.Context, commit agentharness.ProviderOutputCommitted) error {
+	return sink.runtime.commitProviderOutput(ctx, commit)
+}
+
+func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, commit agentharness.ProviderOutputCommitted) error {
+	if sink.service == nil || commit.ThreadID == "" {
+		return errors.New("response commit requires a thread service")
+	}
+	threadID := identity.ThreadID(commit.ThreadID)
+	actor := sink.service.runtime(threadID)
+	committedSources := make(map[string]bool)
+	for _, entry := range commit.Entries {
+		if entry.ThreadID != commit.ThreadID || entry.TurnID != commit.TurnID || entry.RunID != commit.RunID {
+			return errors.New("response commit identity mismatch")
+		}
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind {
+			observed, err := sessiontree.HostedToolObservation(entry)
+			if err != nil {
+				return err
+			}
+			committedSources["hosted:"+threadToolKey(observed.TurnID, observed.RunID, observed.ToolID)] = true
+		}
+		for _, source := range []string{entry.Message.ContentSourceID, entry.Message.ReasoningSourceID} {
+			if source != "" {
+				committedSources[source] = true
+			}
+		}
+	}
+	var next ThreadView
+	err := actor.apply(ctx, func() error {
+		if identity.TurnID(commit.TurnID) != actor.state.turnID || identity.RunID(commit.RunID) != actor.state.runID {
+			return ErrStaleAuthority
+		}
+		canonical, err := sink.service.loadCanonicalThreadView(ctx, threadID)
+		if err != nil {
+			return err
+		}
+		if err := actor.installCanonicalView(canonical); err != nil {
+			return err
+		}
+		// Only this committed response relinquishes draft ownership.
+		for source := range committedSources {
+			delete(actor.state.attemptDraftIDs, source)
+		}
+		if committedSources[actor.state.openTextSegmentID] {
+			actor.finishLiveTextSegment()
+		}
+		next = cloneThreadRuntimeView(actor.state.view)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sink.service.publish(next)
+	return nil
 }

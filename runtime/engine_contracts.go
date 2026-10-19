@@ -296,6 +296,7 @@ const (
 )
 
 type modelEvent struct {
+	OutputPart     *publicprovider.OutputPart       `json:"output_part,omitempty"`
 	Type           modelEventType                   `json:"type"`
 	Text           string                           `json:"text,omitempty"`
 	ToolCallStream *ToolCallStream                  `json:"tool_call_stream,omitempty"`

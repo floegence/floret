@@ -85,7 +85,9 @@ func TestProviderStatePromotesOnlyAfterCanonicalCommit(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("complete"), provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: &provider.State{Kind: "native", ID: "uncommitted"}}))
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.PreviousProviderState = &provider.State{Kind: "native", ID: "valid"}
-	e.Options.CommitProviderContext = func(context.Context, *provider.State, []session.Message, bool) error { return failed }
+	e.Options.CommitProviderContext = func(context.Context, *provider.State, engine.ResponseOutput, []session.Message, bool) error {
+		return failed
+	}
 	result := e.Run(t.Context(), "inspect")
 	if !errors.Is(result.Err, failed) || result.ProviderState == nil || result.ProviderState.ID != "valid" || result.ProviderStateFresh {
 		t.Fatalf("uncommitted state replaced valid state: %+v", result)

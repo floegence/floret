@@ -190,3 +190,27 @@ func TestProviderContextBackendCancellationAndPanicRollBack(t *testing.T) {
 		})
 	}
 }
+
+func TestPartialProviderOutputCannotAdmitCallsOrProviderState(t *testing.T) {
+	repo := NewMemoryRepo()
+	req := providerContextFixture(t, repo)
+	req.Partial = true
+	before, _ := repo.EncodeMemoryState()
+	if _, err := repo.CommitProviderContext(t.Context(), req); err == nil {
+		t.Fatal("partial output changed provider state")
+	}
+	req.State = nil
+	if _, err := repo.CommitProviderContext(t.Context(), req); !errors.Is(err, ErrInvalidThreadAuthority) {
+		t.Fatalf("partial output admitted calls: %v", err)
+	}
+	after, _ := repo.EncodeMemoryState()
+	if string(before) != string(after) {
+		t.Fatal("invalid partial output changed canonical facts")
+	}
+	req.Entries = req.Entries[:1]
+	req.Entries[0].Message.ContentSourceID = "output:partial"
+	entries, err := repo.CommitProviderContext(t.Context(), req)
+	if err != nil || len(entries) != 1 || entries[0].Message.ContentSourceID != "output:partial" {
+		t.Fatalf("partial commit=%+v %v", entries, err)
+	}
+}

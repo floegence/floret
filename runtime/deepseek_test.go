@@ -145,3 +145,87 @@ func TestDeepSeekResponsesHistorySurvivesRuntimeRestart(t *testing.T) {
 	}
 	assertSearch(second, 2)
 }
+
+func TestDeepSeekNativeSuffixKeepsSourcesAcrossCommitAndContinuation(t *testing.T) {
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := requests.Add(1)
+		var body struct{ Input json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if current == 2 && !strings.Contains(string(body.Input), "native-receipt") {
+			t.Errorf("opaque native state was not reused: %s", body.Input)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if current == 2 {
+			fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"second","status":"completed","output":[{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"continued"}]}]}}`+"\n\n")
+			return
+		}
+		for _, e := range []string{`{"type":"response.reasoning_text.delta","item_id":"r","output_index":0,"content_index":0,"delta":"think"}`, `{"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"s","action":{"type":"search","query":"q"}}}`, `{"type":"response.output_text.delta","item_id":"m","output_index":2,"content_index":0,"delta":"ans"}`} {
+			fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"first","status":"completed","output":[{"type":"reasoning","id":"r","native-receipt":"preserved","content":[{"type":"reasoning_text","text":"thinking"}]},{"type":"web_search_call","id":"s","status":"completed","action":{"type":"search","query":"q"}},{"type":"message","id":"m","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}`+"\n\n")
+	}))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-v4-pro", BaseURL: server.URL, APIKey: "fixture", StateCompatibilityKey: "native:v1", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := testAgent(gateway, WithAgentHostedTools(provider.HostedToolDefinition{Name: "web_search", Type: "web_search"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, service := testThreadServiceWithAgent(t, agent)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "native-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "native-send", Input: UserInput{Text: "search"}}); err != nil {
+		t.Fatal(err)
+	}
+	live := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return len(v.Items) == 4 && v.Items[3].Text == "ans" })
+	close(release)
+	final := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	if final.Failure != nil || len(final.Items) != 4 {
+		t.Fatalf("native final=%+v", final)
+	}
+	for i := 1; i < 4; i++ {
+		if final.Items[i].ID != live.Items[i].ID || final.Items[i].CanonicalOrdinal == 0 {
+			t.Fatalf("native source drift: live=%+v final=%+v", live.Items, final.Items)
+		}
+	}
+	if final.Items[1].Text != "thinking" || final.Items[2].Kind != ThreadItemTool || final.Items[3].Text != "answer" {
+		t.Fatalf("suffix order=%+v", final.Items)
+	}
+	canonical, err := service.(*threadRuntimeService).loadCanonicalThreadView(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range final.Items {
+		if final.Items[i].ID != canonical.Items[i].ID {
+			t.Fatal("canonical source drift")
+		}
+	}
+	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "native-next", Input: UserInput{Text: "continue"}}); err != nil {
+		t.Fatal(err)
+	}
+	next := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.TurnID != final.TurnID })
+	if next.Failure != nil || next.LastOutcome == nil || *next.LastOutcome != TurnOutcomeCompleted || requests.Load() != 2 {
+		t.Fatalf("native continuation failed: %+v", next)
+	}
+}

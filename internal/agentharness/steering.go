@@ -19,7 +19,6 @@ func (p *turnProjection) prepareSteeringBoundary() error {
 	if err := p.closePendingToolBatchForTerminalTurn(engine.Cancelled, context.Canceled); err != nil {
 		return err
 	}
-	p.resetAssistant(true)
 	p.finalCandidate = nil
 	return nil
 }
