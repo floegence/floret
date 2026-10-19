@@ -17,6 +17,8 @@ func Presentation(path []sessiontree.Entry, turnID, runID, callID, args, status,
 		Operation string `json:"operation"`
 		Version   int64  `json:"expected_version"`
 		Text      string `json:"text"`
+		Outcome   string `json:"outcome"`
+		Evidence  string `json:"evidence"`
 	}
 	if json.Unmarshal([]byte(args), &input) != nil {
 		return nil
@@ -44,20 +46,30 @@ func Presentation(path []sessiontree.Entry, turnID, runID, callID, args, status,
 		}
 	}
 	if status == "success" && input.Operation == "review" {
-		threadID := ""
-		if len(path) > 0 {
-			threadID = path[len(path)-1].ThreadID
-		}
-		id := "goal-review:" + sessiontree.StableHash(threadID + "\x00" + runID + "\x00" + callID)[:32]
+		// Forks re-key journal entries. Match the review in the confirmed
+		// invocation span rather than deriving an entry ID from thread identity.
+		invocationOpen := false
+		var recorded *sessiontree.GoalReview
 		for _, entry := range path {
-			if entry.ID != id || entry.Type != sessiontree.EntryGoalReview || entry.TurnID != turnID || entry.RunID != runID {
+			if entry.TurnID != turnID || entry.RunID != runID {
 				continue
 			}
-			var review sessiontree.GoalReview
-			if json.Unmarshal(entry.Payload, &review) == nil && review.Version == input.Version {
-				goal.Outcome = review.Outcome
-				goal.Evidence = review.Evidence
+			if entry.Type == sessiontree.EntryToolCall && entry.Message.ToolName == "goal" && entry.Message.ToolCallID == callID {
+				invocationOpen = true
 			}
+			if invocationOpen && entry.Type == sessiontree.EntryGoalReview {
+				var review sessiontree.GoalReview
+				if json.Unmarshal(entry.Payload, &review) == nil && review.Version == input.Version && review.Outcome == input.Outcome && review.Evidence == input.Evidence {
+					recorded = &review
+				}
+			}
+			if invocationOpen && entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == callID {
+				break
+			}
+		}
+		if recorded != nil {
+			goal.Outcome = recorded.Outcome
+			goal.Evidence = recorded.Evidence
 		}
 	}
 	payload := tools.StructuredActivityPayload{Status: status, Operation: input.Operation, Goal: goal}
