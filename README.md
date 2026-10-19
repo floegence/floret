@@ -96,7 +96,15 @@ have priority. Overflow includes a closed event range and requires reading the
 omitted events before claiming all delegated work has been reviewed. Normal
 whole-request budget failures remain authoritative; no extra sampling drains
 notifications. Error previews contain reason codes, not raw failures or approval
-commands. Full handoffs and failure details remain in the existing thread reads.
+commands. Use sufficient untruncated reports directly; read report events only
+when their full text is needed. Completion events contain no final report:
+hosts expose a separate result read capability for final handoffs and failure
+details. Reuse an already available result for the same child turn.
+
+`tools.SubAgentOperationStatus` identifies metadata-only child checks in typed
+Activity presentation. It is distinct from `SubAgentOperationInspect`, whose
+result may include a complete final report. This additive action serves Flower
+without changing existing inspection, waiting, or event-read contracts.
 
 `ListParentEvents` exposes metadata, filters and explicit pagination;
 `ReadParentEvents` reads full reports by event ID or a closed immutable range.

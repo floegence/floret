@@ -75,6 +75,7 @@ func TestSubAgentOperationActivityAcceptsEveryAction(t *testing.T) {
 		tools.SubAgentOperationSpawn,
 		tools.SubAgentOperationWait,
 		tools.SubAgentOperationList,
+		tools.SubAgentOperationStatus,
 		tools.SubAgentOperationInspect,
 		tools.SubAgentOperationSendInput,
 		tools.SubAgentOperationClose,
@@ -125,6 +126,26 @@ func TestSubAgentOperationActivityRejectsInvalidPayloads(t *testing.T) {
 				t.Fatalf("Marshal() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestSubAgentStatusActivityRoundTrip(t *testing.T) {
+	t.Parallel()
+	var status tools.ActivityPresentation
+	err := json.Unmarshal([]byte(`{"renderer":"subagent_operation","payload":{"action":"status","status":"success","targets":[{"thread_id":"child","status":"running"}]}}`), &status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundtrip tools.ActivityPresentation
+	if err := json.Unmarshal(encoded, &roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(status, roundtrip) {
+		t.Fatalf("round trip = %#v", roundtrip)
 	}
 }
 

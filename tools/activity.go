@@ -364,9 +364,11 @@ func (SubAgentActivityPayload) activityRenderer() ActivityRenderer {
 type SubAgentOperationAction string
 
 const (
-	SubAgentOperationSpawn     SubAgentOperationAction = "spawn"
-	SubAgentOperationWait      SubAgentOperationAction = "wait"
-	SubAgentOperationList      SubAgentOperationAction = "list"
+	SubAgentOperationSpawn SubAgentOperationAction = "spawn"
+	SubAgentOperationWait  SubAgentOperationAction = "wait"
+	SubAgentOperationList  SubAgentOperationAction = "list"
+	// SubAgentOperationStatus checks child metadata without reading report bodies.
+	SubAgentOperationStatus    SubAgentOperationAction = "status"
 	SubAgentOperationInspect   SubAgentOperationAction = "inspect"
 	SubAgentOperationSendInput SubAgentOperationAction = "send_input"
 	SubAgentOperationClose     SubAgentOperationAction = "close"
@@ -1445,7 +1447,7 @@ func validateActivityPayload(payload ActivityPayload) error {
 
 func validSubAgentOperationAction(action SubAgentOperationAction) bool {
 	switch action {
-	case SubAgentOperationSpawn, SubAgentOperationWait, SubAgentOperationList, SubAgentOperationInspect,
+	case SubAgentOperationSpawn, SubAgentOperationWait, SubAgentOperationList, SubAgentOperationStatus, SubAgentOperationInspect,
 		SubAgentOperationSendInput, SubAgentOperationClose, SubAgentOperationCloseAll:
 		return true
 	default:

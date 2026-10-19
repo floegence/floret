@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-18 — Child status and result boundaries
+
+- Distinguish metadata-only status Activity from full result inspection and clarify selective report reading in [parent events](api/runtime.md#passive-parent-events), preserving canonical delivery and schema 24.
+
 ## 2026-10-18 — Goal activity presentation
 
 - Publish detached Goal invocation display facts and recover historical review evidence without changing journal authority or completion semantics.
