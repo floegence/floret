@@ -49,7 +49,9 @@ reuses the existing context, provider continuation and bounded stop hook; Goal
 completion requires a current evidence-bearing review and successful Turn end.
 Goals are independent of todos. The 22 -> 23 schema edge preserves history.
 For an explicit user command that also pursues the objective, use the optional
-`runtime.ThreadGoalSubmitter.SubmitGoal`. It atomically saves the Goal and admits
+`runtime.ThreadGoalSubmitter.SubmitGoal`. Persist product execution authorization under
+`runtime.GoalSubmissionRequestKey` before submission so ordinary execution and restart
+resolve the same identity. It atomically saves the Goal and admits
 its submitted text as a normal user Turn only when idle. Active and waiting
 Turns are updated without queuing work or resolving interactions. Replays retain
 the original decision, including after Stop or restart. Execution preparation

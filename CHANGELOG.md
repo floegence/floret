@@ -1,5 +1,9 @@
 # Changelog
 
+## v7.62.1 - 2026-10-18
+
+- Publish GoalSubmissionRequestKey for product execution authorization before admission. Preserve the existing canonical identity across execution, exact retry and restart.
+
 ## v7.62.0 - 2026-10-18
 
 - Add optional ThreadGoalSubmitter for atomic user Goal submission and idle-only execution admission. Preserve SetGoal and DeleteGoal as save-only controls.

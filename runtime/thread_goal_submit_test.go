@@ -160,3 +160,30 @@ func TestGoalSubmissionDuringExecutionUpdatesWithoutQueueOrWakeup(t *testing.T) 
 		t.Fatalf("replay=%+v err=%v", result, err)
 	}
 }
+
+func TestGoalSubmissionPublicRequestKeyMatchesFactoryAndRestartIdentity(t *testing.T) {
+	service, _ := goalService(t, goalCall("review", `{"operation":"review","expected_version":1,"outcome":"completed","evidence":"Verified result."}`), parentEventDone())
+	runtime := service.(*threadRuntimeService)
+	original := runtime.factory
+	var got AgentRequest
+	runtime.factory = AgentFactoryFunc(func(ctx context.Context, req AgentRequest) (*Agent, error) {
+		got = req
+		return original.Agent(ctx, req)
+	})
+	thread, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "authorize", Text: "Authorized result"}
+	key := GoalSubmissionRequestKey(in.RequestKey)
+	if key == in.RequestKey || key != GoalSubmissionRequestKey(in.RequestKey) {
+		t.Fatal("execution identity is not stable and separate")
+	}
+	if _, err := service.(ThreadGoalSubmitter).SubmitGoal(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	waitThreadView(t, service, thread.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	if got.RequestKey != string(key) || got.CanonicalTurnInput.Text != in.Text {
+		t.Fatalf("factory=%+v key=%s", got, key)
+	}
+}
