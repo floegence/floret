@@ -108,7 +108,8 @@ remains that turn after termination until another ordinary turn starts; context
 compaction does not advance it. No preceding ordinary turn means the field is
 omitted. Forks retain inherited ownership and original recipient identity.
 List, full read, pagination and restart derive the same field without changing
-historical bytes or admission. Domain schema remains 22. Hosts own presentation.
+historical bytes or admission. This projection does not change the domain schema.
+Hosts own presentation.
 
 ## Install
 
@@ -560,6 +561,25 @@ Waiting deducts the union of user-input and approval intervals; queue time is
 excluded. `FinalBoundaryComplete` distinguishes recorded accepted final-response
 item IDs from unavailable legacy boundaries. Render every `FinalItemIDs` segment
 in order; never infer final answers from text or the latest assistant item.
+
+`ThreadItem.CanonicalOrdinal` and `ParentEvent.CanonicalOrdinal` (JSON
+`canonical_ordinal`) are one-based source positions on the queried canonical
+Path. Merge public items and parent events by this position, preserving item
+order at ties; occurrence timestamps are display facts only. Tool updates retain
+their first position. Zero means an uncommitted live item, whose tail order stays
+unchanged. These positions are neither durable cursors nor execution identities.
+Forks derive positions from their own Path and preserve all copied occurrence
+timestamps; inherited event recipient identities remain unchanged.
+
+`ThreadTurn.IntermediateItemIDs` (JSON `intermediate_item_ids`) contains ordered,
+unique segmented assistant items superseded by a later local tool call, hosted
+activity or semantic continuation in the same Turn/Run. Accepted final references
+are disjoint. Length continuation alone does not supersede text. Trailing partial
+answers and unsegmented legacy text remain unclassified. Hosts may fold these
+confirmed intermediate items independently of terminal outcome; unknown prose
+must remain visible. These are read projections, with no journal rewrite or
+schema change (current domain schema 24).
+
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
 it to fill historical items. `RunProgress` is the actor-owned, process-local phase

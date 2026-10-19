@@ -1689,14 +1689,6 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		if id := next.Metadata[GoalReviewMetadataKey]; id != "" {
 			next.Metadata[GoalReviewMetadataKey] = oldToNew[id]
 		}
-		if entry.Type == EntryTurnMarker || entry.Type == EntryInteractionAsked || entry.Type == EntryInteractionDone || entry.Type == EntryToolCall || entry.Type == EntryToolResult || (entry.Type == EntryCustom && entry.Metadata["kind"] == "tool_dispatch") {
-			if next.Metadata == nil {
-				next.Metadata = map[string]string{}
-			}
-			if _, exists := next.Metadata[OccurrenceTimeMetadataKey]; !exists {
-				next.Metadata[OccurrenceTimeMetadataKey] = entry.CreatedAt.Format(time.RFC3339Nano)
-			}
-		}
 		refs, known, refErr := FinalResponseEntryIDs(entry)
 		if refErr != nil {
 			return ThreadMeta{}, refErr
@@ -1711,7 +1703,6 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			encoded, _ := json.Marshal(refs)
 			next.Metadata[FinalResponseEntriesMetadataKey] = string(encoded)
 		}
-		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
 		oldToNew[entry.ID] = next.ID

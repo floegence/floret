@@ -8,6 +8,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
@@ -16,17 +17,21 @@ import (
 // the union of user-input and approval waits. An unavailable final boundary is
 // distinct from a recorded final boundary with no assistant text.
 type ThreadTurn struct {
-	TurnID                identity.TurnID `json:"turn_id"`
-	RunID                 identity.RunID  `json:"run_id"`
-	Kind                  TurnKind        `json:"kind,omitempty"`
-	StartedAt             time.Time       `json:"started_at"`
-	EndedAt               *time.Time      `json:"ended_at,omitempty"`
-	Outcome               *TurnOutcome    `json:"outcome,omitempty"`
-	ElapsedMS             int64           `json:"elapsed_ms"`
-	WaitingMS             int64           `json:"waiting_ms"`
-	WorkDurationMS        int64           `json:"work_duration_ms"`
-	FinalItemIDs          []string        `json:"final_item_ids"`
-	FinalBoundaryComplete bool            `json:"final_boundary_complete"`
+	TurnID         identity.TurnID `json:"turn_id"`
+	RunID          identity.RunID  `json:"run_id"`
+	Kind           TurnKind        `json:"kind,omitempty"`
+	StartedAt      time.Time       `json:"started_at"`
+	EndedAt        *time.Time      `json:"ended_at,omitempty"`
+	Outcome        *TurnOutcome    `json:"outcome,omitempty"`
+	ElapsedMS      int64           `json:"elapsed_ms"`
+	WaitingMS      int64           `json:"waiting_ms"`
+	WorkDurationMS int64           `json:"work_duration_ms"`
+	// IntermediateItemIDs identifies segmented assistant text superseded by
+	// canonical tool activity or a semantic continuation. Trailing partial text
+	// and unsegmented legacy text remain unclassified.
+	IntermediateItemIDs   []string `json:"intermediate_item_ids,omitempty"`
+	FinalItemIDs          []string `json:"final_item_ids"`
+	FinalBoundaryComplete bool     `json:"final_boundary_complete"`
 	segmented             bool
 }
 
@@ -36,6 +41,7 @@ func cloneThreadTurns(turns []ThreadTurn) []ThreadTurn {
 	}
 	out := append([]ThreadTurn(nil), turns...)
 	for i := range out {
+		out[i].IntermediateItemIDs = append([]string(nil), turns[i].IntermediateItemIDs...)
 		out[i].FinalItemIDs = append([]string{}, turns[i].FinalItemIDs...)
 		if turns[i].Outcome != nil {
 			value := *turns[i].Outcome
@@ -122,6 +128,42 @@ func threadRuntimeTurnsFromEntries(entries []sessiontree.Entry, items []ThreadIt
 					lastOrdinal = item.Ordinal
 				}
 				turn.FinalBoundaryComplete = true
+			}
+		}
+		if turn.segmented {
+			final := make(map[string]bool, len(turn.FinalItemIDs))
+			for _, id := range turn.FinalItemIDs {
+				final[id] = true
+			}
+			pending := []ThreadItem{}
+			seen := map[string]bool{}
+			for _, entry := range canonical.entries {
+				if entry.RunID != turn.RunID.String() {
+					continue
+				}
+				if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" && strings.TrimSpace(entry.Message.Content) != "" {
+					item, found := itemByEntry[entry.ID]
+					if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant {
+						return nil, fmt.Errorf("%w: intermediate response is outside its canonical turn", ErrAuthorityCorrupt)
+					}
+					pending = append(pending, item)
+				}
+				boundary := entry.Type == sessiontree.EntryToolCall && entry.Message.Kind != "control_signal" && entry.Message.Kind != session.MessageKindToolValidationError ||
+					entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind ||
+					entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint && entry.Metadata["reason"] == "context_continue"
+				if !boundary {
+					continue
+				}
+				for _, item := range pending {
+					if final[item.ID] {
+						return nil, fmt.Errorf("%w: intermediate and final response overlap", ErrAuthorityCorrupt)
+					}
+					if !seen[item.ID] {
+						turn.IntermediateItemIDs = append(turn.IntermediateItemIDs, item.ID)
+						seen[item.ID] = true
+					}
+				}
+				pending = pending[:0]
 			}
 		}
 		out = append(out, turn)

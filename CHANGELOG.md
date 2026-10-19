@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.61.0 - 2026-10-18
+
+- Add canonical Path ordinals to thread items and parent events, retaining original row positions across tool updates, history and forks independently of clocks.
+- Expose confirmed intermediate assistant item references from segmented canonical responses while preserving final segments, length continuations, trailing partial answers and unknown legacy prose.
+- Preserve every copied Fork record occurrence time uniformly. All new facts are read projections; domain schema remains 24 and historical bytes are unchanged.
+
 ## v7.60.3 - 2026-10-18
 
 - Add public event-contract regression coverage for output-only usage and explicit zero input, including rejection of inverted confirmed/estimate placement.

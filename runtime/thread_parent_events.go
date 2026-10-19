@@ -52,8 +52,11 @@ const (
 // ParentEvent is detached; reads include complete report text. Admitted means
 // canonical context placement, not proof that a model read the event.
 type ParentEvent struct {
-	ID             string            `json:"id"`
-	ParentThreadID identity.ThreadID `json:"parent_thread_id"`
+	// CanonicalOrdinal is the receipt position on the queried Path, independent
+	// of occurrence time and the inherited recipient identity.
+	CanonicalOrdinal uint64            `json:"canonical_ordinal,omitempty"`
+	ID               string            `json:"id"`
+	ParentThreadID   identity.ThreadID `json:"parent_thread_id"`
 	// ParentTurnID is the most recently started ordinary turn at receipt on the
 	// queried canonical path, including after its end. Compaction does not advance
 	// it. Empty means no preceding ordinary turn; forks retain inherited ownership.
@@ -178,7 +181,7 @@ func publicParentEventPage(threadID identity.ThreadID, page sessiontree.ParentEv
 		if full {
 			message = event.Message
 		}
-		result.Events = append(result.Events, ParentEvent{ID: event.ID, ParentThreadID: identity.ThreadID(event.ParentThreadID), ParentTurnID: identity.TurnID(event.ParentTurnID), SourceThreadID: identity.ThreadID(event.SourceThreadID), SourceTurnID: identity.TurnID(event.SourceTurnID), SourceRunID: identity.RunID(event.SourceRunID), SourceEntryID: event.SourceEntryID, Kind: ParentEventKind(event.Kind), ReasonCode: event.ReasonCode, InteractionID: event.InteractionID, Message: message, ReceivedAt: event.ReceivedAt.UTC().Format("2006-01-02T15:04:05.999999999Z"), Admitted: event.Admitted, Resolved: event.Resolved})
+		result.Events = append(result.Events, ParentEvent{CanonicalOrdinal: event.CanonicalOrdinal, ID: event.ID, ParentThreadID: identity.ThreadID(event.ParentThreadID), ParentTurnID: identity.TurnID(event.ParentTurnID), SourceThreadID: identity.ThreadID(event.SourceThreadID), SourceTurnID: identity.TurnID(event.SourceTurnID), SourceRunID: identity.RunID(event.SourceRunID), SourceEntryID: event.SourceEntryID, Kind: ParentEventKind(event.Kind), ReasonCode: event.ReasonCode, InteractionID: event.InteractionID, Message: message, ReceivedAt: event.ReceivedAt.UTC().Format("2006-01-02T15:04:05.999999999Z"), Admitted: event.Admitted, Resolved: event.Resolved})
 	}
 	return result
 }

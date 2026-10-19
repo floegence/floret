@@ -46,6 +46,9 @@ func TestParentEventTurnOwnershipAcrossLateDeliveryForkPaginationAndRestart(t *t
 	}
 	want := []identity.TurnID{"", first, second}
 	for i, event := range page.Events {
+		if event.CanonicalOrdinal == 0 || i > 0 && event.CanonicalOrdinal <= page.Events[i-1].CanonicalOrdinal {
+			t.Fatalf("invalid event order: %+v", page.Events)
+		}
 		if event.ParentTurnID != want[i] {
 			t.Fatalf("event %d owner=%s want=%s", i, event.ParentTurnID, want[i])
 		}

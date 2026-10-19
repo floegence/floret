@@ -143,6 +143,18 @@ func TestThreadTurnPresentationFinalSegmentsSurviveRestartAndNestedFork(t *testi
 				if !reflect.DeepEqual(texts, scenario.finalTexts) {
 					t.Fatalf("final texts=%q want=%q", texts, scenario.finalTexts)
 				}
+				wantIntermediate := 1
+				if scenario.name == "length" {
+					wantIntermediate = 0
+				}
+				if len(v.Turns[0].IntermediateItemIDs) != wantIntermediate {
+					t.Fatalf("intermediate references=%v want count %d", v.Turns[0].IntermediateItemIDs, wantIntermediate)
+				}
+				for i, item := range v.Items {
+					if item.CanonicalOrdinal != view.Items[i].CanonicalOrdinal || !item.CreatedAt.Equal(view.Items[i].CreatedAt) {
+						t.Fatalf("fork/restart changed source position or occurrence: %+v want %+v", item, view.Items[i])
+					}
+				}
 				if !reflect.DeepEqual(v.Turns, view.Turns) {
 					t.Fatalf("turn facts changed across fork/restart: %+v want %+v", v.Turns, view.Turns)
 				}

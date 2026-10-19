@@ -69,9 +69,10 @@ type ParentEventQuery struct {
 type ParentEventRecord struct {
 	ParentEvent
 	// ParentTurnID is derived from the canonical path, never stored in the receipt.
-	ParentTurnID string `json:"parent_turn_id,omitempty"`
-	Admitted     bool   `json:"admitted"`
-	Resolved     bool   `json:"resolved,omitempty"`
+	ParentTurnID     string `json:"parent_turn_id,omitempty"`
+	CanonicalOrdinal uint64 `json:"canonical_ordinal,omitempty"`
+	Admitted         bool   `json:"admitted"`
+	Resolved         bool   `json:"resolved,omitempty"`
 }
 
 type ParentEventPage struct {
@@ -291,7 +292,7 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 	var records []ParentEventRecord
 	positions := map[string]int{}
 	parentTurnID := ""
-	for _, entry := range path {
+	for ordinal, entry := range path {
 		switch entry.Type {
 		case EntryTurnMarker:
 			if entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
@@ -303,7 +304,7 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 				return nil, err
 			}
 			positions[event.ID] = len(records)
-			records = append(records, ParentEventRecord{ParentEvent: event, ParentTurnID: parentTurnID})
+			records = append(records, ParentEventRecord{ParentEvent: event, ParentTurnID: parentTurnID, CanonicalOrdinal: uint64(ordinal + 1)})
 		case EntryParentEventsAdmitted:
 			var admission ParentEventAdmission
 			if decodeBackendDomainValue(backendDomainFormat{label: "parent event"}, backendDomainRecord{Value: entry.Payload}, &admission) != nil {

@@ -326,6 +326,17 @@ func installV8ThreadContextStore(t *testing.T, backend spi.Backend, mutate func(
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Version 8 copied context entries at fork creation time. Build that exact
+	// released shape instead of inheriting today's occurrence-preserving Fork.
+	for _, threadID := range []string{fixture.directThreadID, fixture.nestedThreadID} {
+		entries := cloneEntries(memory.entries[threadID])
+		for i := range entries {
+			if ThreadContextEntryKind(entries[i]) != "" {
+				entries[i].CreatedAt = memory.threads[threadID].CreatedAt
+			}
+		}
+		mustReplaceMigrationEntries(t, memory, threadID, entries)
+	}
 	if mutate != nil {
 		mutate(memory, fixture)
 	}

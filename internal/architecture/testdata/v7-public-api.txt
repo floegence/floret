@@ -934,6 +934,7 @@ field Options.StartupProgress github.com/floegence/floret/v7/runtime.StartupProg
 field Options.StartupWorkProgress github.com/floegence/floret/v7/runtime.StartupWorkProgress
 field Options.IDSource github.com/floegence/floret/v7/runtime.IDSource
 type ParentEvent struct
+field ParentEvent.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal,omitempty\""
 field ParentEvent.ID string tag="json:\"id\""
 field ParentEvent.ParentThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_id\""
 field ParentEvent.ParentTurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"parent_turn_id,omitempty\""
@@ -1244,6 +1245,7 @@ field ThreadItem.Sources []github.com/floegence/floret/v7/provider.Source tag="j
 field ThreadItem.ID string tag="json:\"id\""
 field ThreadItem.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
 field ThreadItem.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadItem.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal,omitempty\""
 field ThreadItem.Ordinal uint64 tag="json:\"ordinal\""
 field ThreadItem.Kind github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kind\""
 field ThreadItem.Text string tag="json:\"text,omitempty\""
@@ -1381,6 +1383,7 @@ field ThreadTurn.Outcome *github.com/floegence/floret/v7/runtime.TurnOutcome tag
 field ThreadTurn.ElapsedMS int64 tag="json:\"elapsed_ms\""
 field ThreadTurn.WaitingMS int64 tag="json:\"waiting_ms\""
 field ThreadTurn.WorkDurationMS int64 tag="json:\"work_duration_ms\""
+field ThreadTurn.IntermediateItemIDs []string tag="json:\"intermediate_item_ids,omitempty\""
 field ThreadTurn.FinalItemIDs []string tag="json:\"final_item_ids\""
 field ThreadTurn.FinalBoundaryComplete bool tag="json:\"final_boundary_complete\""
 type ThreadTurnFailure struct

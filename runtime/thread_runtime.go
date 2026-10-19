@@ -325,6 +325,9 @@ type ThreadItem struct {
 	ID             string          `json:"id"`
 	TurnID         identity.TurnID `json:"turn_id,omitempty"`
 	RunID          identity.RunID  `json:"run_id,omitempty"`
+	// CanonicalOrdinal is the one-based source position on the queried Path.
+	// Zero denotes an uncommitted live item, not a timestamp or durable cursor.
+	CanonicalOrdinal uint64 `json:"canonical_ordinal,omitempty"`
 	// Ordinal is the stable one-based position in the thread presentation.
 	Ordinal uint64         `json:"ordinal"`
 	Kind    ThreadItemKind `json:"kind"`
@@ -4456,6 +4459,11 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			segmented[entry.TurnID] = entry.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"
 		}
 	}
+	var canonicalOrdinal uint64
+	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
+		item.CanonicalOrdinal = canonicalOrdinal
+		return appendThreadItem(items, item)
+	}
 	reasoningOpen := make(map[string]bool)
 	lastReasoning := make(map[string]string)
 	failedControls := make(map[string]threadControlIdentity)
@@ -4465,7 +4473,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			return
 		}
 		thinkingCounts[turnID]++
-		items = appendThreadItem(items, ThreadItem{
+		items = appendItem(items, ThreadItem{
 			ID:     "thinking:" + turnID.String() + ":" + strconv.Itoa(thinkingCounts[turnID]),
 			TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt,
 		})
@@ -4473,6 +4481,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 		lastReasoning[executionKey] = text
 	}
 	for entryIndex, entry := range entries {
+		canonicalOrdinal = uint64(entryIndex + 1)
 		occurredAt, err := sessiontree.EntryOccurrenceTime(entry)
 		if err != nil {
 			return nil, nil, runtimeHostError(err)
@@ -4518,7 +4527,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				items[previous].Activity = &activity
 			} else {
 				toolItemIndex[toolKey] = len(items)
-				items = appendThreadItem(items, ThreadItem{ID: toolKey, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, CreatedAt: occurredAt, Activity: &activity})
+				items = appendItem(items, ThreadItem{ID: toolKey, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, CreatedAt: occurredAt, Activity: &activity})
 			}
 			reasoningOpen[threadExecutionKey(turnID, runID)] = false
 			continue
@@ -4529,7 +4538,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			if goalErr != nil {
 				return nil, nil, goalErr
 			}
-			items = appendThreadItem(items, item)
+			items = appendItem(items, item)
 		case sessiontree.EntryUserMessage, sessiontree.EntrySteeringRequested:
 			if entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindGoalReview {
 				continue
@@ -4538,7 +4547,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 			if identityErr != nil {
 				return nil, nil, identityErr
 			}
-			items = appendThreadItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: occurredAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References), Context: runtimeMessageContext(entry.Message.Context)})
+			items = appendItem(items, ThreadItem{ID: entry.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: entry.Message.Content, CreatedAt: occurredAt, Attachments: runtimeMessageAttachments(entry.Message.Attachments), References: runtimeMessageReferences(entry.Message.References), Context: runtimeMessageContext(entry.Message.Context)})
 			if entry.Type == sessiontree.EntrySteeringRequested {
 				items[len(items)-1].Kind = ThreadItemSteering
 				status := steeringStates[entry.ID]
@@ -4571,7 +4580,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 					}
 				}
 				assistantCounts[turnID]++
-				items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
+				items = appendItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
 			if entry.Metadata[sessiontree.GoalCompletedMetadataKey] != "" {
@@ -4579,7 +4588,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if goalErr != nil {
 					return nil, nil, goalErr
 				}
-				items = appendThreadItem(items, ThreadItem{ID: entry.ID + ":goal", TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Kind: ThreadItemGoal, CreatedAt: occurredAt, Goal: &ThreadGoalChange{Goal: *publicThreadGoal(state), Operation: "completed", Actor: "model", At: occurredAt}})
+				items = appendItem(items, ThreadItem{ID: entry.ID + ":goal", TurnID: identity.TurnID(entry.TurnID), RunID: identity.RunID(entry.RunID), Kind: ThreadItemGoal, CreatedAt: occurredAt, Goal: &ThreadGoalChange{Goal: *publicThreadGoal(state), Operation: "completed", Actor: "model", At: occurredAt}})
 			}
 			if entry.TurnStatus != sessiontree.TurnCompleted && entry.TurnStatus != sessiontree.TurnFailed && entry.TurnStatus != sessiontree.TurnAborted {
 				continue
@@ -4618,14 +4627,14 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 					interactions = append(interactions, interaction)
 					copy := interaction
 					itemIndex[interaction.ID] = len(items)
-					items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: occurredAt})
+					items = appendItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: occurredAt})
 				} else {
 					text := strings.TrimSpace(signal.OutputText)
 					if text == "" {
 						text = "The agent emitted a historical control signal."
 					}
 					assistantCounts[turnID]++
-					items = appendThreadItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
+					items = appendItem(items, ThreadItem{ID: "assistant:" + turnID.String() + ":" + strconv.Itoa(assistantCounts[turnID]), TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
 				}
 				continue
 			}
@@ -4645,7 +4654,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				reasoningOpen[threadExecutionKey(turnID, runID)] = false
 			} else {
 				toolItemIndex[toolKey] = len(items)
-				items = appendThreadItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
+				items = appendItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
 			}
 			if interaction, err := toolInputInteraction(entry, readyToolInputs); err != nil {
 				return nil, nil, err
@@ -4653,7 +4662,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				interactionIndex[interaction.ID] = len(interactions)
 				interactions = append(interactions, *interaction)
 				itemIndex[interaction.ID] = len(items)
-				items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: interaction, CreatedAt: occurredAt})
+				items = appendItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: turnID, RunID: runID, Kind: ThreadItemInteraction, Interaction: interaction, CreatedAt: occurredAt})
 			}
 		case sessiontree.EntryEffectAttempt:
 			if _, decodeErr := sessiontree.DecodeCanonicalEffectAttempt(entry); decodeErr != nil {
@@ -4698,7 +4707,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				continue
 			}
 			itemIndex[interaction.ID] = len(items)
-			items = appendThreadItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, RunID: interaction.RunID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: occurredAt})
+			items = appendItem(items, ThreadItem{ID: "interaction:" + interaction.ID, TurnID: interaction.TurnID, RunID: interaction.RunID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: occurredAt})
 		case sessiontree.EntryInteractionDone:
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
