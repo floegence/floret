@@ -46,3 +46,9 @@ iconography belongs to the host.
 * [Tool Contract](/tools/webfetch/webfetch.go)
 * [Network Policy](/tools/webfetch/network.go)
 * [Content Processing](/tools/webfetch/content.go)
+
+# Explicit Remote Fetch
+
+`NewDeepSeek(DeepSeekOptions)` adds paid Markdown Fetch without changing Direct.
+Its response contains only requested URL, title, format and Markdown content.
+See [web service contracts](websearch.md) for security, limits and ownership.

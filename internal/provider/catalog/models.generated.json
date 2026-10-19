@@ -1254,11 +1254,13 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-10-19",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
-            "https://api-docs.deepseek.com/quick_start/pricing"
+            "https://api-docs.deepseek.com/quick_start/pricing",
+            "https://api-docs.deepseek.com/updates/",
+            "https://api-docs.deepseek.com/guides/search/"
           ],
           "supported_levels": [
             "low",
@@ -1292,11 +1294,13 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-10-19",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
-            "https://api-docs.deepseek.com/quick_start/pricing"
+            "https://api-docs.deepseek.com/quick_start/pricing",
+            "https://api-docs.deepseek.com/updates/",
+            "https://api-docs.deepseek.com/guides/search/"
           ],
           "supported_levels": [
             "low",
@@ -1321,7 +1325,7 @@
           "image"
         ],
         "max_tokens": 393216,
-        "name": "DeepSeek V4.1 Flash",
+        "name": "DeepSeek V4.1 Flash (1017)",
         "reasoning": {
           "default_level": "high",
           "disable_supported": true,
@@ -1330,11 +1334,13 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-10-19",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
-            "https://api-docs.deepseek.com/quick_start/pricing"
+            "https://api-docs.deepseek.com/quick_start/pricing",
+            "https://api-docs.deepseek.com/updates/",
+            "https://api-docs.deepseek.com/guides/search/"
           ],
           "supported_levels": [
             "low",
@@ -1367,11 +1373,13 @@
             "reasoning.content"
           ],
           "kind": "effort",
-          "source_checked_at": "2026-10-12",
+          "source_checked_at": "2026-10-19",
           "source_urls": [
             "https://api-docs.deepseek.com/guides/responses_api/",
             "https://api-docs.deepseek.com/guides/thinking_mode",
-            "https://api-docs.deepseek.com/quick_start/pricing"
+            "https://api-docs.deepseek.com/quick_start/pricing",
+            "https://api-docs.deepseek.com/updates/",
+            "https://api-docs.deepseek.com/guides/search/"
           ],
           "supported_levels": [
             "low",

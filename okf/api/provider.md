@@ -88,7 +88,7 @@ supplemental secret input and unknown tool effects remain invalidation fences. A
 pre-request compaction only when its own context policy reports pressure.
 
 `provider.NewDeepSeek` owns the stateless DeepSeek Responses transport. The
-2026-10-03 catalog supports `deepseek-flash` (V4.1 Flash, text/image) and
+2026-10-19 review supports `deepseek-flash` (V4.1 Flash 1017, text/image) and
 `deepseek-v4-pro` (text only), with `off`/`low`/`high`/`max` reasoning and a
 `high` default. Context/output ceilings are 1,000,000/393,216 tokens. Official
 legacy Flash aliases retain their exact selected identity and now share Flash
@@ -96,9 +96,9 @@ image/reasoning capabilities. Existing Redeven conversations are the identified
 consumer; no alias removal is scheduled within v7. Any future removal requires
 both supplier retirement and a major-version migration decision.
 
-The official API ignores built-in search tools. The preset disables search;
-previously published explicit hosted-tool input and opaque search-item replay
-remain valid throughout v7. Hosted observations never dispatch local tools. Canonical-prefix hashes
+Pro supports hosted search; Flash uses the independent Search API. The public
+`DeepSeekModelCapabilities` query owns exact-model support. Previously published
+explicit hosted-tool input and opaque search-item replay remain valid throughout v7. Hosted observations never dispatch local tools. Canonical-prefix hashes
 bind opaque provider input/output items to the projected history. Current
 system instructions are rendered from the current request. Invalid state,
 unsupported items, malformed streams, and missing terminal responses fail

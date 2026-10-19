@@ -26,6 +26,8 @@ import (
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
+	"github.com/floegence/floret/v7/tools/webfetch"
+	"github.com/floegence/floret/v7/tools/websearch"
 )
 
 func TestPublishedSubAgentStatusActivity(t *testing.T) {
@@ -1190,4 +1192,21 @@ func TestPublishedCanonicalPresentationContract(t *testing.T) {
 	if item.CanonicalOrdinal >= event.CanonicalOrdinal || turn.IntermediateItemIDs[0] != item.ID {
 		t.Fatal("canonical presentation contract unavailable")
 	}
+}
+
+func TestPublishedDeepSeekWebTools(t *testing.T) {
+	cap, ok := provider.DeepSeekModelCapabilities("deepseek-flash")
+	if !ok || !cap.IndependentSearch {
+		t.Fatalf("capability=%+v", cap)
+	}
+	client, err := websearch.NewDeepSeekClient(websearch.ClientOptions{APIKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	search := websearch.NewTool(client, websearch.ToolOptions{})
+	fetch, err := webfetch.NewDeepSeek(webfetch.DeepSeekOptions{APIKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tools.NewRegistry(search, fetch)
 }

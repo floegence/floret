@@ -56,7 +56,7 @@ type deepSeekGateway struct {
 
 // NewDeepSeek constructs the single DeepSeek Responses execution path, including
 // streaming reasoning and validated stateless history replay. Hosted web_search
-// wire input remains accepted for v7 compatibility; the official API ignores it.
+// is supported by Pro; Flash ignores hosted search and uses the independent Search API.
 // Image input is an optional per-model capability resolved by the host.
 func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 	model, ok := catalog.FindModel(catalog.ProviderDeepSeek, strings.TrimSpace(options.Model))
@@ -579,9 +579,6 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 		}
 		for _, source := range item.Action.Sources {
 			title := source.Title
-			if title == "" {
-				title = source.URL
-			}
 			if source.URL != "" {
 				result.Results = append(result.Results, HostedToolResultItem{Title: title, URL: source.URL, Snippet: source.Snippet})
 			}
