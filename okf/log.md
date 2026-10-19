@@ -1578,3 +1578,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - Added query-Path source ordinals for items and parent events and confirmed intermediate response references; removed timestamp ordering and successful-final-only guidance. Forks preserve every copied occurrence timestamp without new storage records or migration. See [runtime API](api/runtime.md).
 
 - 2026-10-19: Document shared websearch clients, explicit DeepSeek Fetch, reviewed Flash 1017/Pro search capabilities and canonical binding recovery.
+
+- 2026-10-19: Correct native DeepSeek Search count limits and retain Brave model-visible descriptions.
