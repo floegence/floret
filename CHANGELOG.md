@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.67.1 - 2026-10-19
+
+- Install admitted managed context and canonical item positions before publishing an accepted execution, including promoted queued inputs, while keeping execution settlement independent of display projection failures.
+
 ## v7.67.0 - 2026-10-19
 
 - Add complete actor-owned context snapshots to current thread views and subscriptions; share the canonical projection with Context reads and publish committed context changes during active execution.
