@@ -9,6 +9,10 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Summary
 
+Ordinary send and queued promotion install appended canonical intervals. Actor
+turn membership borrows reducer-owned append-only slices; public snapshots still
+copy them, so growing one long turn does not copy its unchanged membership.
+
 Repeated output-source admission compares canonical turn/run/channel identity
 and exact reasoning hashes without reading old body blocks. Inactive sibling
 locators do not contribute source authority to the current path.

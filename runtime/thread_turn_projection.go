@@ -166,7 +166,9 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 	return nil
 }
 
-func (projection *threadTurnProjection) turnSnapshot(id string) (ThreadTurn, bool, error) {
+// turnValue borrows immutable, append-only membership from the reducer. Only
+// the actor installer may retain it; public snapshots clone at their boundary.
+func (projection *threadTurnProjection) turnValue(id string) (ThreadTurn, bool, error) {
 	facts, found := projection.turns[id]
 	if !found {
 		return ThreadTurn{}, false, nil
@@ -184,6 +186,14 @@ func (projection *threadTurnProjection) turnSnapshot(id string) (ThreadTurn, boo
 				return ThreadTurn{}, true, fmt.Errorf("%w: intermediate and final response overlap", ErrAuthorityCorrupt)
 			}
 		}
+	}
+	return turn, true, nil
+}
+
+func (projection *threadTurnProjection) turnSnapshot(id string) (ThreadTurn, bool, error) {
+	turn, found, err := projection.turnValue(id)
+	if err != nil || !found {
+		return ThreadTurn{}, found, err
 	}
 	return cloneThreadTurns([]ThreadTurn{turn})[0], true, nil
 }

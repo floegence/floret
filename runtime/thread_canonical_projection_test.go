@@ -315,3 +315,78 @@ func TestCanonicalSnapshotDoesNotShareMutableReducerObjects(t *testing.T) {
 		t.Fatalf("accepted snapshot shared reducer ownership\nbefore=%s\nafter=%s", before, after)
 	}
 }
+
+// Accepting a new turn must advance the installed reducer rather than reread
+// unrelated history. Provider preparation may read context after admission.
+func TestThreadAdmissionAdvancesCanonicalIntervalWithoutFullPath(t *testing.T) {
+	gateway := newBlockingThreadGateway()
+	host, full := testThreadService(t, gateway)
+	created, err := full.Create(t.Context(), CreateThreadInput{RequestKey: "interval-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := full.(*threadRuntimeService)
+	actor := service.runtime(created.ThreadID)
+	repo := &canonicalReadCountingRepo{Repo: host.store.repo, reader: host.store.repo.(sessiontree.PathEntriesWindowReader)}
+	// Execute only admission under the actor; no provider goroutine or context
+	// preparation can contaminate this display-path read count.
+	err = actor.apply(t.Context(), func() error {
+		accepted, err := service.acceptCanonicalTurn(t.Context(), created.ThreadID, turnExecutionRequest{LogicalRequestID: "interval-send", TurnID: "interval-turn", RunID: "interval-run", Input: UserInput{Text: "new"}, InputFingerprint: "fingerprint"})
+		if err != nil {
+			return err
+		}
+		if accepted.ThreadID != created.ThreadID {
+			t.Fatal("admission identity changed")
+		}
+		host.store.repo = repo
+		defer func() { host.store.repo = repo.Repo }()
+		return service.advanceCanonical(t.Context(), actor)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.paths != 0 || repo.windows != 1 || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "new" {
+		t.Fatalf("paths=%d windows=%d items=%d", repo.paths, repo.windows, len(actor.state.view.Items))
+	}
+}
+
+func TestCanonicalActorBorrowsMembershipButPublicTurnSnapshotIsDetached(t *testing.T) {
+	projection := newThreadCanonicalProjection()
+	entries := []sessiontree.Entry{{ID: "start", TurnID: "turn", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{sessiontree.ResponseSegmentsMetadataKey: "1"}}}
+	for i := range 1000 {
+		id := fmt.Sprint(i)
+		entries = append(entries, sessiontree.Entry{ID: "text-" + id, TurnID: "turn", RunID: "run", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "text", ContentSourceID: "answer-" + id}}, sessiontree.Entry{ID: "call-" + id, TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: id}})
+	}
+	for i := 1; i < len(entries); i++ {
+		entries[i].ParentID = entries[i-1].ID
+	}
+	if err := projection.append(entries); err != nil {
+		t.Fatal(err)
+	}
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread", Activity: ThreadActivityActive}}}
+	if err := actor.installCanonicalChanges(projection); err != nil {
+		t.Fatal(err)
+	}
+	membership := actor.state.view.Turns[0].IntermediateItemIDs
+	if len(membership) != 1000 {
+		t.Fatalf("membership=%d", len(membership))
+	}
+	public, _, err := projection.turns.turnSnapshot("turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	public.IntermediateItemIDs[0] = "caller-change"
+	if membership[0] == "caller-change" {
+		t.Fatal("public snapshot aliases reducer")
+	}
+	projection.resetChanges()
+	if err := projection.append([]sessiontree.Entry{{ID: "progress", ParentID: projection.leafID, TurnID: "turn", RunID: "run", Type: sessiontree.EntryCustom}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.installCanonicalChanges(projection); err != nil {
+		t.Fatal(err)
+	}
+	if &membership[0] != &actor.state.view.Turns[0].IntermediateItemIDs[0] {
+		t.Fatal("unchanged giant membership copied on actor update")
+	}
+}

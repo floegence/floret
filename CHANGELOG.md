@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Advance ordinary send and queued admission through appended canonical intervals; borrow immutable turn membership inside the actor and copy it only at public snapshot boundaries.
+
 - Segment canonical control output alongside other body fields; preserve exact raw whitespace, empty-source presentation, restart integrity and nested-message ownership.
 
 - Add optional scoped ThreadBodyManifestReader for bounded, frozen canonical output-source parts; preserve segmented content, deduplicate reasoning and authorize every page without materializing a ThreadView.

@@ -230,7 +230,7 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 	turnIndices := make([]int, 0, len(projection.changedTurns))
 	for id := range projection.changedTurns {
 		if index, found := projection.turns.indices[id]; found {
-			turn, _, err := projection.turns.turnSnapshot(id)
+			turn, _, err := projection.turns.turnValue(id)
 			if err != nil {
 				return err
 			}
