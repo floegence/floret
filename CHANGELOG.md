@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.68.4 - 2026-10-19
+
+- Clarify compact Goal guidance, preserve existing unfinished objectives, and distinguish new logical requests from frozen transport retries.
+- Explain that schema-invalid calls did not execute and that the model rewrites arguments within runtime-owned correction limits; preserve canonical feedback and recovery boundaries.
+
 ## v7.68.3 - 2026-10-19
 
 - Apply committed journal identities consistently to Engine output, effect results, validation feedback and continuation; remove duplicate event-driven persistence.
