@@ -18,6 +18,7 @@ import (
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
 	canonical             *threadCanonicalProjection
+	observedItemIDs       map[string]bool
 	summaryIndexed        bool
 	summaryPreviewIndex   int
 	summaryTimeIndex      int
@@ -353,6 +354,10 @@ func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID
 				continue
 			}
 			item.Activity, item.Live = &activity, live
+			item.activityOmitted = false
+			// An observation is not a canonical source body. Terminal installation
+			// restores the journal association from the same reducer.
+			item.activityEntryIDs = nil
 			runtime.markItem(id, ThreadItemReplaced)
 		} else {
 			runtime.finishLiveTextSegment()
@@ -370,6 +375,10 @@ func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID
 		if index < 0 {
 			runtime.markItem(id, ThreadItemAdded)
 		}
+		if runtime.observedItemIDs == nil {
+			runtime.observedItemIDs = map[string]bool{}
+		}
+		runtime.observedItemIDs[id] = true
 		changed = true
 	}
 	return changed
@@ -411,6 +420,10 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 	if item.CanonicalOrdinal != 0 || item.contentSourceID != source || item.Kind != kind {
 		return
 	}
+	if runtime.observedItemIDs == nil {
+		runtime.observedItemIDs = map[string]bool{}
+	}
+	runtime.observedItemIDs[source] = true
 	if runtime.textBufferID != source {
 		runtime.textBuffer.Reset()
 		runtime.textBuffer.WriteString(item.Text)

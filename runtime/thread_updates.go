@@ -332,9 +332,38 @@ const (
 
 type threadMutations struct {
 	items      []ThreadItemChange
+	itemIndex  map[string]int
 	components threadComponentMask
 	order      bool
 	boundary   bool
+}
+
+func (mutations *threadMutations) itemPosition(id string) (int, bool) {
+	if mutations.itemIndex != nil {
+		index, found := mutations.itemIndex[id]
+		return index, found
+	}
+	if len(mutations.items) > 8 {
+		mutations.itemIndex = make(map[string]int, len(mutations.items))
+		for index, change := range mutations.items {
+			mutations.itemIndex[change.ItemID] = index
+		}
+		index, found := mutations.itemIndex[id]
+		return index, found
+	}
+	for index, change := range mutations.items {
+		if change.ItemID == id {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+func (mutations *threadMutations) appendItem(change ThreadItemChange) {
+	if mutations.itemIndex != nil {
+		mutations.itemIndex[change.ItemID] = len(mutations.items)
+	}
+	mutations.items = append(mutations.items, change)
 }
 
 func (mutations threadMutations) growth() bool {
@@ -347,26 +376,21 @@ func (actor *threadRuntimeState) markItem(id string, kind ThreadItemChangeKind) 
 	if id == "" {
 		return
 	}
-	for i := range actor.mutations.items {
+	if i, found := actor.mutations.itemPosition(id); found {
 		change := &actor.mutations.items[i]
-		if change.ItemID != id {
-			continue
-		}
 		if change.Kind == ThreadItemAdded && kind != ThreadItemRemoved {
 			return
 		}
 		change.Kind, change.Append = kind, nil
 		return
 	}
-	actor.mutations.items = append(actor.mutations.items, ThreadItemChange{ItemID: id, Kind: kind})
+	actor.mutations.appendItem(ThreadItemChange{ItemID: id, Kind: kind})
 }
 func (actor *threadRuntimeState) markAppend(id string, offset int, text string) {
-	for i := range actor.mutations.items {
-		if actor.mutations.items[i].ItemID == id {
-			return
-		}
+	if _, found := actor.mutations.itemPosition(id); found {
+		return
 	}
-	actor.mutations.items = append(actor.mutations.items, ThreadItemChange{ItemID: id, Kind: ThreadItemAppended, Append: &ThreadTextAppend{OffsetBytes: offset, Text: text}})
+	actor.mutations.appendItem(ThreadItemChange{ItemID: id, Kind: ThreadItemAppended, Append: &ThreadTextAppend{OffsetBytes: offset, Text: text}})
 }
 
 // replaceItems records a canonical/path boundary as mutations while installing

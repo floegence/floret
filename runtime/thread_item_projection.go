@@ -23,6 +23,7 @@ type threadItemProjection struct {
 	changedItems        map[int]bool
 	changedInteractions map[int]bool
 	entryItemIndex      map[string]int
+	presentationIndex   map[string]int
 	items               []ThreadItem
 	interactions        []ThreadInteraction
 	interactionIndex    map[string]int
@@ -74,6 +75,12 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 	}()
 	var canonicalOrdinal uint64
 	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
+		if item.ID != "" {
+			if projection.presentationIndex == nil {
+				projection.presentationIndex = map[string]int{}
+			}
+			projection.presentationIndex[item.ID] = len(items)
+		}
 		item.CanonicalOrdinal = canonicalOrdinal
 		item.canonicalText = item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering || item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant
 		return appendThreadItem(items, item)
@@ -130,6 +137,10 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				itemIndex[interaction.ID] = pending.item
 				items[pending.item].Interaction = interaction
 				items[pending.item].ID = "interaction:" + interaction.ID
+				if projection.presentationIndex == nil {
+					projection.presentationIndex = map[string]int{}
+				}
+				projection.presentationIndex[items[pending.item].ID] = pending.item
 				delete(projection.hiddenItems, pending.item)
 				delete(projection.hiddenInteractions, pending.interaction)
 				delete(projection.pendingInputs, id)
@@ -494,6 +505,9 @@ func (projection *threadItemProjection) releaseText() {
 		}
 		if !item.textOmitted {
 			item.textBytes, item.textNonSpace = len(item.Text), strings.TrimSpace(item.Text) != ""
+			item.textSummary, item.textSummaryTail = canonicalTextSummary("", item.Text, false)
+		} else {
+			item.textSummary, item.textSummaryTail = canonicalTextSummary(item.textSummary, item.Text, item.textSummaryTail)
 		}
 		if item.Kind == ThreadItemAssistant && item.contentSourceID != "" {
 			buffer := projection.contentBuffers[index]

@@ -409,16 +409,17 @@ func (mutation *backendDomainMutation) validateEntry(threadID string, entry Entr
 		return err
 	}
 	if entry.TurnID != "" {
-		for _, ordinal := range memory.turnEntryOrdinals[threadID][entry.TurnID] {
-			candidate := memory.entries[threadID][ordinal]
-			if entry.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction && candidate.ID != entry.ID {
-				validation.entries[threadID] = append(validation.entries[threadID], candidate)
-				continue
+		kind := entry.Metadata[TurnKindMetadataKey]
+		if kind == TurnKindContextCompaction || kind == TurnKindGoalContinuation {
+			// Admission of a typed turn must validate every existing member.
+			for _, ordinal := range memory.turnEntryOrdinals[threadID][entry.TurnID] {
+				candidate := memory.entries[threadID][ordinal]
+				if candidate.ID != entry.ID {
+					validation.entries[threadID] = append(validation.entries[threadID], candidate)
+				}
 			}
-			if candidate.Type == EntryTurnMarker && candidate.TurnStatus == TurnStarted && candidate.ID != entry.ID {
-				validation.entries[threadID] = append(validation.entries[threadID], candidate)
-				break
-			}
+		} else if started, found := memory.firstTurnStartedLocked(threadID, entry.TurnID, entry.ID); found {
+			validation.entries[threadID] = append(validation.entries[threadID], started)
 		}
 	}
 	return validateCurrentTurnKindRecords(validation)

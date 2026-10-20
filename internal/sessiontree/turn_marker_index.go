@@ -1,6 +1,9 @@
 package sessiontree
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Only canonical control locators live here; no message body or independent
 // lifecycle is retained. Immutable position prefixes support bounded rollback.
@@ -108,4 +111,24 @@ func (r *MemoryRepo) turnTerminalLocked(threadID, turnID string) (Entry, bool) {
 		return Entry{}, false
 	}
 	return r.entries[threadID][ordinal-1], true
+}
+
+// Ordinary record validation needs only the first other started marker. Locate
+// it through immutable marker prefixes, including turns with no such marker.
+func (r *MemoryRepo) firstTurnStartedLocked(threadID, turnID, excludeID string) (Entry, bool) {
+	r.ensureTurnMarkersLocked(threadID)
+	positions := r.turnMarkers[threadID][turnID].positions
+	index := sort.Search(len(positions), func(index int) bool { return positions[index].started != 0 })
+	if index == len(positions) {
+		return Entry{}, false
+	}
+	position := positions[index].started
+	if r.entries[threadID][position-1].ID == excludeID {
+		index = sort.Search(len(positions), func(index int) bool { return positions[index].started > position })
+		if index == len(positions) {
+			return Entry{}, false
+		}
+		position = positions[index].started
+	}
+	return r.entries[threadID][position-1], true
 }

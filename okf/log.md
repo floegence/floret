@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Read terminal canonical intervals outside the actor lock, share
+  lifecycle precedence and reconcile observed overlays by stable item identity.
+  Qualify SQLite exact output, stale intervals, readable active state and
+  affected-item terminal presence; retain explicit remaining residency limits.
+
 - 2026-10-20: Document accepted canonical text eviction and exact complete/window reconstruction, including legacy snapshot freezing and remaining metadata/initialization limits.
 
 ## 2026-10-20 — Incremental canonical actor installation

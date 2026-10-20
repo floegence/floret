@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Remove quadratic mutation-batch lookup and use existing turn-marker locators
+  for ordinary record validation, including historical turns without a start
+  marker. Validate typed-turn admission against all prior members and preserve
+  transactional rejection of invalid context-only and Goal continuation inputs.
+
+- Install ordinary execution completion from frozen appended canonical intervals
+  outside the actor lock, reconcile only observed presentation overlays, and
+  retain SessionLifecycle failure/cancellation precedence. Maintain terminal
+  presentation presence by affected item instead of scanning historical turns.
+  Explicit complete reads and unsupported custom-store adapters retain their
+  established semantics; bounded cold initialization remains unfinished.
+
 - Read existing actor summaries before canonical history, remove root inventory
   materialization from list refreshes, and maintain preview/time positions by
   explicit item changes. Unloaded summaries still use canonical projection.
