@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Read existing actor summaries before canonical history, remove root inventory
+  materialization from list refreshes, and maintain preview/time positions by
+  explicit item changes. Unloaded summaries still use canonical projection.
+
 - Append the atomic domain 30 -> 31 migration for typed activity body blocks;
   preserve complete API results, cancellation, unknown-effect settlement and
   exact restart bytes while releasing completed ordinary tool presentations.

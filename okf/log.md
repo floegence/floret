@@ -1663,3 +1663,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document scoped item windows, exact shared-version baselines, pending control access and serialized observation queue ownership; retain explicit actor-residency and production-qualification limitations.
 
 - 2026-10-20: Document contiguous domain 30 -> 31 activity body extraction and completed-tool residency in [Storage](api/storage.md) and [Runtime](api/runtime.md).
+
+- 2026-10-20: Record actor-first list/summary reads, mutation-owned preview locators and the remaining cold canonical summary boundary in [Runtime](api/runtime.md).
