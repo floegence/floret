@@ -1,14 +1,9 @@
 package runtime
 
 import (
-	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
-	"github.com/floegence/floret/v7/internal/controlstate"
-	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
@@ -56,179 +51,17 @@ func cloneThreadTurns(turns []ThreadTurn) []ThreadTurn {
 }
 
 func threadRuntimeTurnsFromEntries(entries []sessiontree.Entry, items []ThreadItem) ([]ThreadTurn, error) {
-	type turnEntries struct {
-		start   sessiontree.Entry
-		entries []sessiontree.Entry
-	}
-	byTurn := make(map[string]*turnEntries)
-	order := make([]string, 0)
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
-			if _, found := byTurn[entry.TurnID]; !found {
-				byTurn[entry.TurnID] = &turnEntries{start: entry}
-				order = append(order, entry.TurnID)
-			}
-		}
-		if turn := byTurn[entry.TurnID]; turn != nil {
-			turn.entries = append(turn.entries, entry)
-		}
-	}
 	itemByEntry := make(map[string]ThreadItem)
 	for _, item := range items {
 		for _, id := range item.sourceEntryIDs {
 			itemByEntry[id] = item
 		}
 	}
-	out := make([]ThreadTurn, 0, len(order))
-	for _, id := range order {
-		canonical := byTurn[id]
-		started, err := sessiontree.EntryOccurrenceTime(canonical.start)
-		if err != nil {
+	projection := threadTurnProjection{}
+	for _, entry := range entries {
+		if err := projection.observe(entry, func(id string) (ThreadItem, bool) { item, found := itemByEntry[id]; return item, found }); err != nil {
 			return nil, err
 		}
-		_, runID, _, outcome, _ := threadRuntimeLifecycleFromEntries(sessiontree.ThreadMeta{}, canonical.entries)
-		turn := ThreadTurn{TurnID: identity.TurnID(id), RunID: runID, StartedAt: started,
-			Kind: TurnKind(canonical.start.Metadata[sessiontree.TurnKindMetadataKey]), FinalItemIDs: []string{},
-			segmented: canonical.start.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"}
-		var terminal *sessiontree.Entry
-		for i := range canonical.entries {
-			entry := &canonical.entries[i]
-			if entry.Type == sessiontree.EntryTurnMarker && (entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted) {
-				terminal = entry
-			}
-		}
-		if terminal != nil && outcome != nil {
-			ended, err := sessiontree.EntryOccurrenceTime(*terminal)
-			if err != nil {
-				return nil, err
-			}
-			turn.EndedAt, turn.Outcome = &ended, outcome
-			turn.ElapsedMS = max(0, ended.Sub(started).Milliseconds())
-			turn.WaitingMS, err = turnWaitingDuration(canonical.entries, started, ended)
-			if err != nil {
-				return nil, err
-			}
-			turn.WorkDurationMS = turn.ElapsedMS - turn.WaitingMS
-			refs, known, err := sessiontree.FinalResponseEntryIDs(*terminal)
-			if err != nil {
-				return nil, err
-			}
-			if known && turn.segmented && outcome != nil && *outcome == TurnOutcomeCompleted {
-				seen := map[string]bool{}
-				var lastOrdinal uint64
-				for _, ref := range refs {
-					item, found := itemByEntry[ref]
-					if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant || strings.TrimSpace(item.Text) == "" || item.Ordinal < lastOrdinal {
-						return nil, fmt.Errorf("%w: final response is outside its canonical turn", ErrAuthorityCorrupt)
-					}
-					if !seen[item.ID] {
-						turn.FinalItemIDs = append(turn.FinalItemIDs, item.ID)
-						seen[item.ID] = true
-					}
-					lastOrdinal = item.Ordinal
-				}
-				turn.FinalBoundaryComplete = true
-			}
-		}
-		if turn.segmented {
-			final := make(map[string]bool, len(turn.FinalItemIDs))
-			for _, id := range turn.FinalItemIDs {
-				final[id] = true
-			}
-			pending := []ThreadItem{}
-			seen := map[string]bool{}
-			for _, entry := range canonical.entries {
-				if entry.RunID != turn.RunID.String() {
-					continue
-				}
-				if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" && strings.TrimSpace(entry.Message.Content) != "" {
-					item, found := itemByEntry[entry.ID]
-					if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant {
-						return nil, fmt.Errorf("%w: intermediate response is outside its canonical turn", ErrAuthorityCorrupt)
-					}
-					pending = append(pending, item)
-				}
-				boundary := entry.Type == sessiontree.EntryToolCall && entry.Message.Kind != "control_signal" && entry.Message.Kind != session.MessageKindToolValidationError ||
-					entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind ||
-					entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint && entry.Metadata["reason"] == "context_continue"
-				if !boundary {
-					continue
-				}
-				for _, item := range pending {
-					if final[item.ID] {
-						return nil, fmt.Errorf("%w: intermediate and final response overlap", ErrAuthorityCorrupt)
-					}
-					if !seen[item.ID] {
-						turn.IntermediateItemIDs = append(turn.IntermediateItemIDs, item.ID)
-						seen[item.ID] = true
-					}
-				}
-				pending = pending[:0]
-			}
-		}
-		out = append(out, turn)
 	}
-	return out, nil
-}
-
-func turnWaitingDuration(entries []sessiontree.Entry, start, end time.Time) (int64, error) {
-	type interval struct{ start, end time.Time }
-	pending := map[string]time.Time{}
-	intervals := []interval{}
-	for _, entry := range entries {
-		at, err := sessiontree.EntryOccurrenceTime(entry)
-		if err != nil {
-			return 0, err
-		}
-		switch entry.Type {
-		case sessiontree.EntryInteractionAsked:
-			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
-			if id == "" {
-				id = entry.RequestKey
-			}
-			if _, exists := pending[id]; !exists {
-				pending[id] = at
-			}
-		case sessiontree.EntryToolCall:
-			if controlstate.Classify(entry.Message.ControlSignal) == controlstate.WaitingInput {
-				id := entry.Message.ControlSignal.CallID
-				if _, exists := pending[id]; !exists {
-					pending[id] = at
-				}
-			}
-		case sessiontree.EntryToolResult:
-			if entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
-				pending[sessiontree.ToolInputInteractionID(entry.ID)] = at
-			}
-		case sessiontree.EntryInteractionDone:
-			id := strings.TrimPrefix(entry.ID, "interaction-resolved:")
-			if id == "" {
-				id = entry.RequestKey
-			}
-			if asked, found := pending[id]; found {
-				intervals = append(intervals, interval{asked, at})
-				delete(pending, id)
-			}
-		}
-	}
-	for _, asked := range pending {
-		intervals = append(intervals, interval{asked, end})
-	}
-	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start.Before(intervals[j].start) })
-	var duration time.Duration
-	cursor := start
-	for _, wait := range intervals {
-		left, right := wait.start, wait.end
-		if left.Before(cursor) {
-			left = cursor
-		}
-		if right.After(end) {
-			right = end
-		}
-		if right.After(left) {
-			duration += right.Sub(left)
-			cursor = right
-		}
-	}
-	return min(max(0, end.Sub(start).Milliseconds()), duration.Milliseconds()), nil
+	return projection.snapshot()
 }

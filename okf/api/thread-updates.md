@@ -125,3 +125,32 @@ and checks every prefix and chunk size. It covers delayed input visibility,
 resolution before a tool appears, shared Unicode source segments, exact Goal
 review evidence, steering cancellation and interrupted hosted activity. See
 [tests](../../runtime/thread_item_projection_test.go).
+
+# Incremental canonical installation
+
+Canonical provider commits and persisted context observations advance the actor
+from its last canonical leaf through bounded exact-entry intervals. Full reads,
+turn facts, context facts and actor updates use the same chronological reducers.
+Only affected item and turn snapshots are replaced. Delayed tool-input
+visibility preserves canonical insertion order and keeps the existing observation
+version authority. Failed advancement invalidates its disposable reducer and
+requires an explicit canonical reconstruction before accepting more updates.
+Reducer references never escape in public views.
+
+Historical initialization releases oversized change-map capacity before steady
+updates; clearing a large Go map alone leaves iteration proportional to its old
+capacity. The actor scaling benchmark checks the complete append-and-install
+kernel at 1,096, 10,960 and 109,600 historical turns. It does not measure storage,
+observation encoding, browser performance or bounded retained actor memory.
+The complete projection remains resident; full refresh boundaries, bounded
+windows and downstream production qualification remain outstanding.
+
+Latest request attribution reads the current scope's exact append ordinal from
+the canonical prompt records, including pending observations, rather than loading
+all request attempts. The memory backend borrows indexed request positions.
+Restart, cancellation, deletion and corrupt source identity remain explicit.
+
+See [actor differential and storage recovery tests](../../runtime/thread_canonical_projection_test.go),
+[historical turn digest](../../runtime/thread_turn_projection_test.go),
+[context differential tests](../../internal/agentharness/context_incremental_test.go),
+and [bounded prompt reads](../../internal/storage/prompt_request_reader_test.go).

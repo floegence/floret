@@ -1433,33 +1433,11 @@ func (service *threadRuntimeService) projectThreadContext(ctx context.Context, t
 			ordinals[compact.OperationID] = uint64(i + 1)
 		}
 	}
-	compactions := make([]ThreadContextCompaction, 0, len(contextSnapshot.Compactions))
-	for _, compaction := range contextSnapshot.Compactions {
-		compactions = append(compactions, ThreadContextCompaction{
-			RunID: identity.RunID(compaction.RunID), ThreadID: identity.ThreadID(compaction.ThreadID), TurnID: identity.TurnID(compaction.TurnID),
-			Step: compaction.Step, OperationID: compaction.OperationID, RequestID: compaction.RequestID, AfterItemID: anchors[compaction.OperationID], CanonicalOrdinal: ordinals[compaction.OperationID],
-			Phase: compaction.Phase, Status: compaction.Status, Trigger: compaction.Trigger,
-			Reason: compaction.Reason, Source: compaction.Source, TokensBefore: compaction.TokensBefore,
-			TokensAfterEstimate: compaction.TokensAfterEstimate, Decision: compaction.Decision.Clone(), Error: compaction.Error, ObservedAt: compaction.ObservedAt,
-		})
-	}
 	modelContext, err := service.readModelContext(ctx, threadID, path)
 	if err != nil {
 		return ThreadContextSnapshot{}, runtimeHostError(err)
 	}
-	return ThreadContextSnapshot{
-		ModelContext: modelContext,
-		ContextUsage: runtimeThreadContextUsage(contextSnapshot.ContextUsage),
-		Model:        ThreadContextModel{Provider: contextSnapshot.Model.Provider, Model: contextSnapshot.Model.Model},
-		Policy: ThreadContextPolicy{
-			ModelMaxOutputTokens: contextSnapshot.Policy.ModelMaxOutputTokens,
-			ContextWindowTokens:  contextSnapshot.Policy.ContextWindowTokens,
-			MaxOutputTokens:      contextSnapshot.Policy.MaxOutputTokens,
-			ReservedOutputTokens: contextSnapshot.Policy.ReservedOutputTokens,
-		},
-		Usage: contextSnapshot.Usage, UsageTotals: threadTokenUsageTotals(contextSnapshot.UsageTotals),
-		Compactions: compactions, UpdatedAt: contextSnapshot.UpdatedAt,
-	}, nil
+	return runtimeCanonicalContext(contextSnapshot, modelContext, anchors, ordinals), nil
 }
 
 func threadTokenUsageTotals(in *agentharness.ThreadTokenUsageTotals) *ThreadTokenUsageTotals {
@@ -1956,25 +1934,15 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	canonical := ThreadView{ThreadID: threadID, Activity: ThreadActivityIdle}
+	projection := newThreadCanonicalProjection()
+	if err := projection.append(entries); err != nil {
+		return ThreadView{}, err
+	}
+	canonical, err := projection.snapshot(ctx, service, threadID, entries)
+	if err != nil {
+		return ThreadView{}, err
+	}
 	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	contextSnapshot, err := service.projectThreadContext(ctx, threadID, entries)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Context = &contextSnapshot
-	canonical.Goal, err = goalFromEntries(entries)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Turns, err = threadRuntimeTurnsFromEntries(entries, canonical.Items)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -2000,10 +1968,11 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 		canonical.RunID = runID
 		canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
 		canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
-		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical) {
+		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical.ThreadView) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
-		actor.state.view = canonical
+		actor.state.view = canonical.ThreadView
+		actor.canonical = projection
 		actor.invalidateItemIndex()
 		actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadPreviewsChanged | threadRestoredInputsChanged)
 		for _, item := range canonical.Items {
@@ -2022,7 +1991,7 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 			actor.state.hydrationStarted = true
 			startHydration = true
 		}
-		view = threadResult(canonical, mode)
+		view = threadResult(canonical.ThreadView, mode)
 		return nil
 	})
 	if err == nil && startHydration {
@@ -2761,6 +2730,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		actor.state.view.ToolCallPreviews = nil
 		actor.markComponents(threadPreviewsChanged)
 		if refreshErr == nil {
+			actor.canonical = canonical.projection
 			actor.state.view.Turns = canonical.Turns
 			actor.replaceItems(canonical.Items)
 			actor.state.view.ParentEvents = canonical.ParentEvents
@@ -3108,11 +3078,7 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		}
 		contextChanged := event.contextCommitted
 		if contextChanged {
-			canonical, err := sink.service.loadCanonicalThreadView(context.Background(), event.ThreadID)
-			if err == nil {
-				err = actor.installCanonicalView(canonical)
-			}
-			if err != nil {
+			if err := sink.service.advanceCanonical(context.Background(), actor); err != nil {
 				actor.state.contextErr = err
 				return nil
 			}
@@ -3215,7 +3181,7 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 
 // installCanonicalView runs under the actor and retains only observations that
 // have not yet reached the canonical journal.
-func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) error {
+func (actor *threadRuntimeState) installCanonicalView(canonical canonicalThreadView) error {
 	terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
 	if terminal && canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && actor.state.turnID == canonical.TurnID && actor.state.runID == canonical.RunID {
 		actor.state.view.LastOutcome = canonical.LastOutcome
@@ -3233,6 +3199,7 @@ func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) erro
 	actor.state.view.Context = canonical.Context
 	actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadInteractionsChanged | threadPreviewsChanged)
 	actor.state.contextErr = nil
+	actor.canonical = canonical.projection
 	actor.pruneArgumentPreviews()
 	actor.state.view.Turns = canonical.Turns
 	actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
@@ -3241,36 +3208,26 @@ func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) erro
 	return nil
 }
 
-func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
+func (service *threadRuntimeService) loadCanonicalThreadView(ctx context.Context, threadID identity.ThreadID) (canonicalThreadView, error) {
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
 	if err != nil {
-		return ThreadView{}, fmt.Errorf("canonical refresh thread: %w", err)
+		return canonicalThreadView{}, fmt.Errorf("canonical refresh thread: %w", err)
 	}
 	entries, err := service.host.store.repo.Path(ctx, threadID.String(), meta.LeafID)
 	if err != nil {
-		return ThreadView{}, fmt.Errorf("canonical refresh path: %w", err)
+		return canonicalThreadView{}, fmt.Errorf("canonical refresh path: %w", err)
 	}
-	canonical := ThreadView{ThreadID: threadID}
+	projection := newThreadCanonicalProjection()
+	if err := projection.append(entries); err != nil {
+		return canonicalThreadView{}, err
+	}
+	canonical, err := projection.snapshot(ctx, service, threadID, entries)
+	if err != nil {
+		return canonicalThreadView{}, err
+	}
 	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
 	if err != nil {
-		return ThreadView{}, err
-	}
-	contextSnapshot, err := service.projectThreadContext(ctx, threadID, entries)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Context = &contextSnapshot
-	canonical.Goal, err = goalFromEntries(entries)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Items, canonical.Interactions, err = threadRuntimeItemsFromEntries(entries)
-	if err != nil {
-		return ThreadView{}, fmt.Errorf("canonical refresh hydrate items: %w", err)
-	}
-	canonical.Turns, err = threadRuntimeTurnsFromEntries(entries, canonical.Items)
-	if err != nil {
-		return ThreadView{}, err
+		return canonicalThreadView{}, err
 	}
 	canonical.TurnID, canonical.RunID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
 	canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
@@ -5008,13 +4965,10 @@ func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, com
 		if identity.TurnID(commit.TurnID) != actor.state.turnID || identity.RunID(commit.RunID) != actor.state.runID {
 			return ErrStaleAuthority
 		}
-		canonical, err := sink.service.loadCanonicalThreadView(ctx, threadID)
-		if err != nil {
+		if err := sink.service.advanceCanonical(ctx, actor); err != nil {
 			return err
 		}
-		if err := actor.installCanonicalView(canonical); err != nil {
-			return err
-		}
+
 		// Only this committed response relinquishes draft ownership.
 		for source := range committedSources {
 			delete(actor.state.attemptDraftIDs, source)

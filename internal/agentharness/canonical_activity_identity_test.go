@@ -3,6 +3,7 @@ package agentharness
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -28,5 +29,32 @@ func TestHistoricalToolActivityUsesExactInvocationRun(t *testing.T) {
 	entries[4].Message.ToolCallID = "unknown"
 	if got := newThreadDetailActivityContext(entries).err; !errors.Is(got, sessiontree.ErrAuthorityCorrupt) {
 		t.Fatalf("missing invocation error=%v", got)
+	}
+}
+
+func TestIncrementalContextSharesHistoricalInvocationAuthority(t *testing.T) {
+	cases := [][]sessiontree.Entry{
+		{
+			{ID: "observation", Type: sessiontree.EntryCustom, TurnID: "turn", Message: session.Message{ToolCallID: "call"}, Metadata: map[string]string{threadDetailKindKey: toolActivityEntryKind}},
+			{Type: sessiontree.EntryToolCall, TurnID: "turn", RunID: "run", Message: session.Message{ToolCallID: "call"}},
+		},
+		{
+			{Type: sessiontree.EntryToolCall, TurnID: "turn", RunID: "first", Message: session.Message{ToolCallID: "call"}},
+			{Type: sessiontree.EntryToolCall, TurnID: "turn", RunID: "second", Message: session.Message{ToolCallID: "call"}},
+		},
+	}
+	for _, entries := range cases {
+		projection := ThreadContextProjection{}
+		for i, entry := range entries {
+			observedErr := projection.Observe(entry)
+			_, gotErr := projection.Snapshot(time.Time{})
+			if observedErr != nil {
+				gotErr = observedErr
+			}
+			_, wantErr := ProjectThreadContext(entries[:i+1])
+			if errors.Is(gotErr, sessiontree.ErrAuthorityCorrupt) != errors.Is(wantErr, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("prefix=%d incremental=%v full=%v", i, gotErr, wantErr)
+			}
+		}
 	}
 }

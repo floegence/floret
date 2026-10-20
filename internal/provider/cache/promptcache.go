@@ -456,11 +456,12 @@ type Deleter interface {
 }
 
 type MemoryStore struct {
-	mu        sync.Mutex
-	segments  []Segment
-	toolsets  []ToolsetSnapshot
-	requests  []ProviderRequestRecord
-	responses []ProviderResponseRecord
+	mu             sync.Mutex
+	segments       []Segment
+	toolsets       []ToolsetSnapshot
+	requests       []ProviderRequestRecord
+	latestRequests map[string]int
+	responses      []ProviderResponseRecord
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -502,7 +503,7 @@ func (s *MemoryStore) ActiveToolset(_ context.Context, promptScopeID, provider, 
 func (s *MemoryStore) AppendProviderRequest(_ context.Context, req ProviderRequestRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, cloneProviderRequestRecord(req))
+	s.appendRequest(req)
 	return nil
 }
 
@@ -513,7 +514,7 @@ func (s *MemoryStore) CheckpointProviderRequest(_ context.Context, segments []Se
 	for _, toolset := range toolsets {
 		s.toolsets = append(s.toolsets, cloneToolset(toolset))
 	}
-	s.requests = append(s.requests, cloneProviderRequestRecord(request))
+	s.appendRequest(request)
 	return nil
 }
 
@@ -584,6 +585,10 @@ func (s *MemoryStore) DeletePromptScopes(_ context.Context, promptScopeIDs ...st
 		_, ok := remove[req.PromptScopeID]
 		return ok
 	})
+	clear(s.latestRequests)
+	for index, request := range s.requests {
+		s.latestRequests[request.PromptScopeID] = index
+	}
 	s.responses = slices.DeleteFunc(s.responses, func(resp ProviderResponseRecord) bool {
 		_, ok := remove[resp.PromptScopeID]
 		return ok

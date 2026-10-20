@@ -1,5 +1,13 @@
 # Floret OKF Update Log
 
+## 2026-10-20 — Incremental canonical actor installation
+
+- Share chronological turn/context/lifecycle reducers and exact appended intervals under the existing actor. Preserve canonical interaction ordering, public snapshot isolation and failed-read recovery. Document kernel scaling and the remaining full-residency/window limits in [native updates](api/thread-updates.md#incremental-canonical-installation).
+
+## 2026-10-20 — Canonical metadata windows
+
+- Share [body-free storage reads](api/storage.md) across sequential pages and bidirectional stable-anchor windows. Frozen leaves survive append and reject path changes without body hydration or long database transactions.
+
 ## 2026-10-20 — Explicit Goal continuation after compaction
 
 - Define optional compaction intent, one canonical admission and the existing execution/review/recovery owner. Append schema 28 -> 29 while retaining historical pure compaction. See [Goals](decisions/thread-goals.md), [runtime](api/runtime.md) and [storage](api/storage.md).

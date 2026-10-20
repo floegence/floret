@@ -18,28 +18,31 @@ import (
 )
 
 type threadItemProjection struct {
-	items              []ThreadItem
-	interactions       []ThreadInteraction
-	interactionIndex   map[string]int
-	itemIndex          map[string]int
-	toolItemIndex      map[string]int
-	failedControls     map[string]threadControlIdentity
-	reasoningIndex     map[string]int
-	contentIndex       map[string]int
-	contentBuffers     map[int]*threadContentBuffer
-	goalArguments      map[string]string
-	ordinal            uint64
-	controls           sessiontree.ControlResultProjection
-	goal               sessiontree.GoalProjection
-	goalActivity       goalactivity.Projector
-	steering           threadSteeringProjection
-	toolInputs         sessiontree.ToolInputProjection
-	steeringItems      map[string]int
-	approvalByTool     map[string]string
-	runningHosted      map[string]map[int]bool
-	pendingInputs      map[string]threadPendingInputItem
-	hiddenItems        map[int]bool
-	hiddenInteractions map[int]bool
+	changedItems        map[int]bool
+	changedInteractions map[int]bool
+	entryItemIndex      map[string]int
+	items               []ThreadItem
+	interactions        []ThreadInteraction
+	interactionIndex    map[string]int
+	itemIndex           map[string]int
+	toolItemIndex       map[string]int
+	failedControls      map[string]threadControlIdentity
+	reasoningIndex      map[string]int
+	contentIndex        map[string]int
+	contentBuffers      map[int]*threadContentBuffer
+	goalArguments       map[string]string
+	ordinal             uint64
+	controls            sessiontree.ControlResultProjection
+	goal                sessiontree.GoalProjection
+	goalActivity        goalactivity.Projector
+	steering            threadSteeringProjection
+	toolInputs          sessiontree.ToolInputProjection
+	steeringItems       map[string]int
+	approvalByTool      map[string]string
+	runningHosted       map[string]map[int]bool
+	pendingInputs       map[string]threadPendingInputItem
+	hiddenItems         map[int]bool
+	hiddenInteractions  map[int]bool
 }
 
 // A pending tool input reserves its chronological presentation position until
@@ -50,14 +53,23 @@ type threadPendingInputItem struct {
 }
 
 func newThreadItemProjection() *threadItemProjection {
-	return &threadItemProjection{items: []ThreadItem{}, interactions: []ThreadInteraction{}, interactionIndex: map[string]int{}, itemIndex: map[string]int{}, toolItemIndex: map[string]int{}, failedControls: map[string]threadControlIdentity{}, reasoningIndex: map[string]int{}, contentIndex: map[string]int{}, contentBuffers: map[int]*threadContentBuffer{}, goalArguments: map[string]string{}, steeringItems: map[string]int{}, approvalByTool: map[string]string{}, runningHosted: map[string]map[int]bool{}, pendingInputs: map[string]threadPendingInputItem{}, hiddenItems: map[int]bool{}, hiddenInteractions: map[int]bool{}}
+	return &threadItemProjection{changedItems: map[int]bool{}, changedInteractions: map[int]bool{}, entryItemIndex: map[string]int{}, items: []ThreadItem{}, interactions: []ThreadInteraction{}, interactionIndex: map[string]int{}, itemIndex: map[string]int{}, toolItemIndex: map[string]int{}, failedControls: map[string]threadControlIdentity{}, reasoningIndex: map[string]int{}, contentIndex: map[string]int{}, contentBuffers: map[int]*threadContentBuffer{}, goalArguments: map[string]string{}, steeringItems: map[string]int{}, approvalByTool: map[string]string{}, runningHosted: map[string]map[int]bool{}, pendingInputs: map[string]threadPendingInputItem{}, hiddenItems: map[int]bool{}, hiddenInteractions: map[int]bool{}}
 }
 func (projection *threadItemProjection) append(entries []sessiontree.Entry, anchors map[string]string) error {
 	items, interactions := projection.items, projection.interactions
+	initialItems, initialInteractions := len(items), len(interactions)
 	interactionIndex, itemIndex, toolItemIndex := projection.interactionIndex, projection.itemIndex, projection.toolItemIndex
 	failedControls, reasoningIndex, contentIndex := projection.failedControls, projection.reasoningIndex, projection.contentIndex
 	contentBuffers, goalArguments := projection.contentBuffers, projection.goalArguments
-	defer func() { projection.items, projection.interactions = items, interactions }()
+	defer func() {
+		projection.items, projection.interactions = items, interactions
+		for index := initialItems; index < len(items); index++ {
+			projection.changedItems[index] = true
+		}
+		for index := initialInteractions; index < len(interactions); index++ {
+			projection.changedInteractions[index] = true
+		}
+	}()
 	var canonicalOrdinal uint64
 	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
 		item.CanonicalOrdinal = canonicalOrdinal
@@ -70,9 +82,11 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 		if index, found := reasoningIndex[source]; found {
 			items[index].sourceEntryIDs = append(items[index].sourceEntryIDs, entry.ID)
+			projection.recordEntryItem(entry.ID, index)
 			return
 		}
 		reasoningIndex[source] = len(items)
+		projection.recordEntryItem(entry.ID, len(items))
 		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}})
 	}
 	for entryIndex, entry := range entries {
@@ -94,6 +108,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			if index, found := projection.steeringItems[id]; found {
 				state := projection.steering.states[id]
 				items[index].Steering = &state
+				projection.changedItems[index] = true
 			}
 		}
 		readyInputs := projection.toolInputs.Observe(entry)
@@ -106,6 +121,8 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					return err
 				}
 				interactions[pending.interaction] = *interaction
+				projection.changedInteractions[pending.interaction] = true
+				projection.changedItems[pending.item] = true
 				interactionIndex[interaction.ID] = pending.interaction
 				itemIndex[interaction.ID] = pending.item
 				items[pending.item].Interaction = interaction
@@ -124,6 +141,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			if err != nil {
 				return err
 			}
+			projection.changedItems[toolIndex] = true
 			activity := items[toolIndex].Activity
 			if activity.StartedAtUnixMS == 0 && activity.EndedAtUnixMS == 0 {
 				activity.StartedAtUnixMS = occurredAt.UnixMilli()
@@ -161,6 +179,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
 				items[previous].Activity = &activity
+				projection.changedItems[previous] = true
 			} else {
 				toolItemIndex[toolKey] = len(items)
 				items = appendItem(items, ThreadItem{ID: toolKey, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, CreatedAt: occurredAt, Activity: &activity})
@@ -210,6 +229,8 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					continue
 				}
 				if index, found := contentIndex[entry.Message.ContentSourceID]; found {
+					projection.changedItems[index] = true
+					projection.recordEntryItem(entry.ID, index)
 					previous := &items[index]
 					if previous.TurnID == turnID && previous.RunID == runID {
 						buffer := contentBuffers[index]
@@ -233,6 +254,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					}
 				}
 				contentIndex[entry.Message.ContentSourceID] = len(items)
+				projection.recordEntryItem(entry.ID, len(items))
 				items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
 			}
 		case sessiontree.EntryTurnMarker:
@@ -245,6 +267,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			}
 			runKey := threadExecutionKey(identity.TurnID(entry.TurnID), identity.RunID(entry.RunID))
 			for index := range projection.runningHosted[runKey] {
+				projection.changedItems[index] = true
 				item := &items[index]
 				if item.TurnID.String() != entry.TurnID || item.RunID.String() != entry.RunID || item.Activity == nil || item.Activity.Kind != observation.ActivityKindHosted || item.Activity.Status != observation.ActivityStatusRunning {
 					continue
@@ -312,6 +335,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
 				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				items[previous].Activity = &activity
+				projection.changedItems[previous] = true
 				items[previous].Live = false
 				if entry.Message.ToolResult != nil {
 					items[previous].Attachments = runtimeMessageAttachments(entry.Message.ToolResult.Attachments)
@@ -325,6 +349,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					copy := interactions[index]
 					toolIndex := toolItemIndex[toolKey]
 					items[toolIndex].Interaction = &copy
+					projection.changedItems[toolIndex] = true
 					itemIndex[approvalID] = toolIndex
 				}
 			}
@@ -386,6 +411,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				if toolIndex, exists := toolItemIndex[threadToolKey(interaction.TurnID, interaction.RunID, interaction.ToolCallID)]; exists {
 					itemIndex[interaction.ID] = toolIndex
 					items[toolIndex].Interaction = &copy
+					projection.changedItems[toolIndex] = true
 				}
 				continue
 			}
@@ -412,6 +438,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			if err != nil {
 				return err
 			}
+			projection.changedInteractions[index] = true
 			interactions[index].Resolved = true
 			interactions[index].Resolution = &resolution
 			if resolution.Approved != nil {
@@ -421,6 +448,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			if index, exists := itemIndex[interactionID]; exists {
 				copy := interactions[interactionIndex[interactionID]]
 				items[index].Interaction = &copy
+				projection.changedItems[index] = true
 			}
 		}
 	}
@@ -446,4 +474,30 @@ func (projection *threadItemProjection) snapshot() ([]ThreadItem, []ThreadIntera
 		}
 	}
 	return items, interactions
+}
+
+// An entry can contribute reasoning and text. The public full adapter assigns
+// it to the last presentation item in canonical order, not processing order.
+func (projection *threadItemProjection) recordEntryItem(id string, index int) {
+	if old, found := projection.entryItemIndex[id]; !found || index > old {
+		projection.entryItemIndex[id] = index
+	}
+}
+func (projection *threadItemProjection) itemForEntry(id string) (ThreadItem, bool) {
+	index, found := projection.entryItemIndex[id]
+	if !found || projection.hiddenItems[index] {
+		return ThreadItem{}, false
+	}
+	item := projection.items[index]
+	item.Ordinal = projection.visibleOrdinal(index)
+	return item, true
+}
+func (projection *threadItemProjection) visibleOrdinal(index int) uint64 {
+	ordinal := index + 1
+	for hidden := range projection.hiddenItems {
+		if hidden <= index {
+			ordinal--
+		}
+	}
+	return uint64(ordinal)
 }
