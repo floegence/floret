@@ -21,12 +21,13 @@ type threadTurnProjection struct {
 	indices map[string]int
 }
 type threadTurnFacts struct {
-	turn      ThreadTurn
-	lifecycle sessionlifecycle.Projection
-	terminal  *sessiontree.Entry
-	runs      map[string]*threadTurnRunFacts
-	waits     threadWaitProjection
-	finalErr  error
+	turn       ThreadTurn
+	lifecycle  sessionlifecycle.Projection
+	terminal   *sessiontree.Entry
+	runs       map[string]*threadTurnRunFacts
+	waits      threadWaitProjection
+	finalErr   error
+	finalItems map[string]bool
 }
 type threadTurnRunFacts struct {
 	pending      []string
@@ -111,6 +112,7 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 	turn.EndedAt, turn.Outcome = nil, nil
 	turn.ElapsedMS, turn.WaitingMS, turn.WorkDurationMS = 0, 0, 0
 	turn.FinalItemIDs = []string{}
+	facts.finalItems = nil
 	turn.FinalBoundaryComplete = false
 	facts.finalErr = nil
 	switch facts.lifecycle.Snapshot(sessionlifecycle.PhaseTurn).Status() {
@@ -152,6 +154,10 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 				}
 				if !seen[item.ID] {
 					turn.FinalItemIDs = append(turn.FinalItemIDs, item.ID)
+					if facts.finalItems == nil {
+						facts.finalItems = map[string]bool{}
+					}
+					facts.finalItems[item.ID] = true
 					seen[item.ID] = true
 				}
 				lastOrdinal = item.Ordinal

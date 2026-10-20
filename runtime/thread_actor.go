@@ -17,28 +17,29 @@ import (
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
-	canonical            *threadCanonicalProjection
-	threadID             string
-	mu                   sync.Mutex
-	closed               bool
-	deleting             bool
-	deleted              bool
-	lookupErr            error
-	state                threadRuntimeData
-	itemIndex            map[string]int
-	indexedItems         int
-	interactionIndex     map[string]int
-	indexedInteractions  int
-	interactionAttention AttentionSummary
-	interactionItems     map[string][]string
-	textBuffer           strings.Builder
-	textBufferID         string
-	outputOrder          []string
-	service              *threadRuntimeService
-	mutations            threadMutations
-	pendingUpdate        *ThreadUpdate
-	pendingText          strings.Builder
-	updateTimer          *time.Timer
+	canonical             *threadCanonicalProjection
+	threadID              string
+	mu                    sync.Mutex
+	closed                bool
+	deleting              bool
+	deleted               bool
+	lookupErr             error
+	state                 threadRuntimeData
+	itemIndex             map[string]int
+	indexedItems          int
+	interactionIndex      map[string]int
+	indexedInteractions   int
+	interactionAttention  AttentionSummary
+	pendingInteractionIDs map[string]bool
+	interactionItems      map[string][]string
+	textBuffer            strings.Builder
+	textBufferID          string
+	outputOrder           []string
+	service               *threadRuntimeService
+	mutations             threadMutations
+	pendingUpdate         *ThreadUpdate
+	pendingText           strings.Builder
+	updateTimer           *time.Timer
 }
 
 type threadRuntimeData struct {

@@ -335,9 +335,10 @@ type ThreadItem struct {
 	// Zero denotes an uncommitted live item, not a timestamp or durable cursor.
 	CanonicalOrdinal uint64 `json:"canonical_ordinal,omitempty"`
 	// Ordinal is the stable one-based position in the thread presentation.
-	Ordinal uint64         `json:"ordinal"`
-	Kind    ThreadItemKind `json:"kind"`
-	Text    string         `json:"text,omitempty"`
+	Ordinal uint64          `json:"ordinal"`
+	Kind    ThreadItemKind  `json:"kind"`
+	Text    string          `json:"text,omitempty"`
+	Body    *ThreadItemBody `json:"body,omitempty"`
 	// Live reports that this segment may still grow in place.
 	Live        bool                      `json:"live,omitempty"`
 	CreatedAt   time.Time                 `json:"created_at,omitempty"`
@@ -4385,6 +4386,10 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		if item.Body != nil {
+			body := *item.Body
+			out[index].Body = &body
+		}
 		if item.Goal != nil {
 			copy := *item.Goal
 			out[index].Goal = &copy

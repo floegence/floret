@@ -1657,3 +1657,5 @@ Document optional Goal management, same-context reflection, request-bound update
   [thread updates](api/thread-updates.md#chronological-presentation-reducer).
 - Add [body-free metadata pages](api/storage.md#body-free-canonical-metadata-pages)
   on the canonical ancestry kernel; no second transcript or public window claim.
+
+- 2026-10-20: Document scoped item windows, exact shared-version baselines, pending control access and serialized observation queue ownership; retain explicit actor-residency and production-qualification limitations.
