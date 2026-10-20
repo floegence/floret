@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional frozen live-body search with bounded UTF-8 pages, fresh authorization and explicit source expiry; share canonical search overlap and progress logic.
+
 - Release canonical display reducers, window membership and interaction indexes with deleted actors after canonical commit; preserve all indexes when deletion rolls back.
 
 - Share active text with the Engine attempt owner instead of retaining a second
