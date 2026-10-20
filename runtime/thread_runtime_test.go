@@ -117,6 +117,24 @@ func (repo *blockingCanonicalPathRepo) Path(ctx context.Context, threadID, leafI
 	return repo.Repo.Path(ctx, threadID, leafID)
 }
 
+func (repo *blockingCanonicalPathRepo) PathEntriesWindow(ctx context.Context, options sessiontree.PathWindowOptions) (sessiontree.PathEntriesWindow, error) {
+	repo.once.Do(func() { close(repo.started) })
+	select {
+	case <-repo.release:
+	case <-ctx.Done():
+		return sessiontree.PathEntriesWindow{}, ctx.Err()
+	}
+	return repo.Repo.(sessiontree.PathEntriesWindowReader).PathEntriesWindow(ctx, options)
+}
+
+func (repo *blockingCanonicalPathRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, field string, offset, limit int) (sessiontree.CanonicalBodyChunk, error) {
+	return repo.Repo.(sessiontree.CanonicalBodyReader).ReadCanonicalBody(ctx, threadID, entryID, field, offset, limit)
+}
+
+func (repo *blockingCanonicalPathRepo) SourceBodyPage(ctx context.Context, options sessiontree.SourceBodyPageOptions) (sessiontree.SourceBodyPage, error) {
+	return repo.Repo.(sessiontree.SourceBodyPageReader).SourceBodyPage(ctx, options)
+}
+
 func (repo *blockingInteractionAppendRepo) AppendRuntimeFacts(ctx context.Context, threadID string, entries []sessiontree.Entry) ([]sessiontree.Entry, error) {
 	appended, err := repo.writer.AppendRuntimeFacts(ctx, threadID, entries)
 	if err != nil {

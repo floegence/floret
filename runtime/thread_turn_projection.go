@@ -16,9 +16,10 @@ import (
 // threadTurnProjection retains presentation facts and open waits, never journal
 // messages. One append visits only its turn and semantic boundary dependencies.
 type threadTurnProjection struct {
-	order   []string
-	turns   map[string]*threadTurnFacts
-	indices map[string]int
+	lifecycle threadLifecycleProjection
+	order     []string
+	turns     map[string]*threadTurnFacts
+	indices   map[string]int
 }
 type threadTurnFacts struct {
 	turn       ThreadTurn
@@ -42,6 +43,7 @@ type threadWaitProjection struct {
 }
 
 func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemForEntry func(string) (ThreadItem, bool)) error {
+	projection.lifecycle.observe(entry)
 	if projection.turns == nil {
 		projection.turns = map[string]*threadTurnFacts{}
 		projection.indices = map[string]int{}

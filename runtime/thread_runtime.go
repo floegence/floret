@@ -22,7 +22,6 @@ import (
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/session"
-	"github.com/floegence/floret/v7/internal/sessionlifecycle"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/observation"
 	publicprovider "github.com/floegence/floret/v7/provider"
@@ -2727,83 +2726,84 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	// Keep the execution active until its complete canonical terminal snapshot
 	// can be installed in one actor transition. View and Send read this state
 	// directly; delaying publication alone cannot prevent partial settlement.
-	canonical, refreshErr := service.loadCanonicalThreadView(context.Background(), identity.ThreadID(actor.threadID))
+	read, refreshErr := service.readTerminalCanonical(context.Background(), actor)
+	var canonical canonicalThreadView
 	startQueue := false
 	changed := false
-	_ = actor.apply(context.Background(), func() error {
-		if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
-			return nil
-		}
-		if actor.state.cancelOwner == "run:"+runID.String() {
-			actor.state.cancel = nil
-			actor.state.cancelOwner = ""
-		}
-		actor.state.contextErr = refreshErr
-		actor.state.view.ViewVersion++
-		actor.finishLiveTextSegment()
-		actor.state.view.Activity = ThreadActivityIdle
-		if completed.Status != TurnStatusWaiting {
-			actor.state.steering = nil
-			actor.state.executionSealed = false
-		}
-		actor.state.view.RunProgress = nil
-		actor.state.view.ToolCallPreviews = nil
-		actor.markComponents(threadPreviewsChanged)
-		if refreshErr == nil {
-			actor.canonical = canonical.projection
-			actor.state.view.Turns = canonical.Turns
-			actor.replaceItems(canonical.Items)
-			actor.state.view.ParentEvents = canonical.ParentEvents
-			actor.state.view.Goal = canonical.Goal
-			actor.state.view.Context = canonical.Context
-			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadInteractionsChanged | threadPreviewsChanged)
-			actor.state.contextErr = nil
-			actor.replaceInteractions(mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions))
-			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
-			actor.canonical.items.releaseText()
-			actor.retainItems()
-		}
-		outcome := TurnOutcomeCompleted
-		if completed.Status == TurnStatusWaiting {
-			actor.state.executionSealed = false
-			actor.state.view.Activity = ThreadActivityActive
-			actor.state.view.LastOutcome = nil
-			actor.normalizeRunProgress()
-		} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted {
-			outcome = TurnOutcomeCancelled
-		} else if runErr != nil || completed.Status == TurnStatusFailed {
-			outcome = TurnOutcomeFailed
-		}
-		actor.state.view.Failure = nil
-		if outcome == TurnOutcomeFailed {
-			actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
-			if actor.state.view.Failure == nil && runErr != nil {
-				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: strings.TrimSpace(runErr.Error())}
+	for {
+		retry := false
+		_ = actor.apply(context.Background(), func() error {
+			if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
+				return nil
 			}
-		}
-		if completed.Status != TurnStatusWaiting {
-			actor.state.view.LastOutcome = &outcome
+			if refreshErr == nil && !read.current(actor) {
+				retry = true
+				return nil
+			}
 			if refreshErr == nil {
-				if canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && canonical.TurnID == turnID && canonical.RunID == runID {
-					actor.state.view.LastOutcome = canonical.LastOutcome
-					actor.state.view.Failure = canonical.Failure
-					actor.state.view.Cancellation = canonical.Cancellation
+				canonical, refreshErr = service.installTerminalCanonical(context.Background(), actor, read)
+			}
+			if actor.state.cancelOwner == "run:"+runID.String() {
+				actor.state.cancel = nil
+				actor.state.cancelOwner = ""
+			}
+			actor.state.contextErr = refreshErr
+			actor.state.view.ViewVersion++
+			actor.finishLiveTextSegment()
+			actor.state.view.Activity = ThreadActivityIdle
+			if completed.Status != TurnStatusWaiting {
+				actor.state.steering = nil
+				actor.state.executionSealed = false
+			}
+			actor.state.view.RunProgress = nil
+			actor.state.view.ToolCallPreviews = nil
+			actor.markComponents(threadPreviewsChanged)
+			outcome := TurnOutcomeCompleted
+			if completed.Status == TurnStatusWaiting {
+				actor.state.executionSealed = false
+				actor.state.view.Activity = ThreadActivityActive
+				actor.state.view.LastOutcome = nil
+				actor.normalizeRunProgress()
+			} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted {
+				outcome = TurnOutcomeCancelled
+			} else if runErr != nil || completed.Status == TurnStatusFailed {
+				outcome = TurnOutcomeFailed
+			}
+			actor.state.view.Failure = nil
+			if outcome == TurnOutcomeFailed {
+				actor.state.view.Failure = cloneThreadTurnFailure(completed.Failure)
+				if actor.state.view.Failure == nil && runErr != nil {
+					actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: strings.TrimSpace(runErr.Error())}
 				}
-			} else {
-				actor.replaceItems(settleTerminalToolSegments(cloneThreadItems(actor.state.view.Items), turnID, completed.ActivityTimeline))
 			}
-			if outcome == TurnOutcomeCompleted && refreshErr == nil && actor.state.view.TurnKind != TurnKindContextCompaction && !(actor.state.view.TurnKind == TurnKindGoalContinuation && actor.state.view.Goal != nil && actor.state.view.Goal.Status != "active") && !hasTerminalPresentation(actor.state.view.Items, turnID) {
-				failed := TurnOutcomeFailed
-				actor.state.view.LastOutcome = &failed
-				message := "The turn completed without a visible response."
-				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: message}
+			if completed.Status != TurnStatusWaiting {
+				actor.state.view.LastOutcome = &outcome
+				if refreshErr == nil {
+					if canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && canonical.TurnID == turnID && canonical.RunID == runID {
+						actor.state.view.LastOutcome = canonical.LastOutcome
+						actor.state.view.Failure = canonical.Failure
+						actor.state.view.Cancellation = canonical.Cancellation
+					}
+				} else {
+					actor.replaceItems(settleTerminalToolSegments(cloneThreadItems(actor.state.view.Items), turnID, completed.ActivityTimeline))
+				}
+				if outcome == TurnOutcomeCompleted && refreshErr == nil && actor.state.view.TurnKind != TurnKindContextCompaction && !(actor.state.view.TurnKind == TurnKindGoalContinuation && actor.state.view.Goal != nil && actor.state.view.Goal.Status != "active") && !actor.hasTerminalPresentation(turnID) {
+					failed := TurnOutcomeFailed
+					actor.state.view.LastOutcome = &failed
+					message := "The turn completed without a visible response."
+					actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: message}
+				}
 			}
+			view := actor.state.view
+			startQueue = view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && view.Cancellation == nil
+			changed = true
+			return nil
+		})
+		if !retry {
+			break
 		}
-		view := actor.state.view
-		startQueue = view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && view.Cancellation == nil
-		changed = true
-		return nil
-	})
+		read, refreshErr = service.readTerminalCanonical(context.Background(), actor)
+	}
 	if !changed {
 		return
 	}
@@ -2814,23 +2814,28 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 
 func hasTerminalPresentation(items []ThreadItem, turnID identity.TurnID) bool {
 	for _, item := range items {
-		if item.TurnID != turnID {
-			continue
+		if item.TurnID == turnID && threadItemTerminalPresentation(item) {
+			return true
 		}
-		switch item.Kind {
-		case ThreadItemAssistant:
-			if threadItemHasText(item) {
-				return true
-			}
-		case ThreadItemTool:
-			if item.Activity != nil && item.Activity.Status != observation.ActivityStatusRunning {
-				return true
-			}
-		case ThreadItemInteraction:
-			if item.Interaction != nil && item.Interaction.Resolved {
-				return true
-			}
-		}
+	}
+	return false
+}
+
+func (actor *threadRuntimeState) hasTerminalPresentation(turnID identity.TurnID) bool {
+	if actor.canonical != nil {
+		return actor.canonical.terminalCounts[turnID] > 0
+	}
+	return hasTerminalPresentation(actor.state.view.Items, turnID)
+}
+
+func threadItemTerminalPresentation(item ThreadItem) bool {
+	switch item.Kind {
+	case ThreadItemAssistant:
+		return threadItemHasText(item)
+	case ThreadItemTool:
+		return item.Activity != nil && item.Activity.Status != observation.ActivityStatusRunning
+	case ThreadItemInteraction:
+		return item.Interaction != nil && item.Interaction.Resolved
 	}
 	return false
 }
@@ -4788,64 +4793,11 @@ func hydrateThreadRuntimeLifecycle(ctx context.Context, repo sessiontree.Journal
 }
 
 func threadRuntimeLifecycleFromEntries(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (identity.TurnID, identity.RunID, ThreadActivity, *TurnOutcome, *ThreadTurnFailure) {
-	activity := ThreadActivityIdle
-	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseTurn)
-	var turnID identity.TurnID = identity.TurnID(lifecycle.LatestTurnID())
-	var runID identity.RunID
-	failureMessage := ""
-	failureCode := ThreadTurnFailureCode("")
-	var timeoutDetails *publicprovider.RequestTimeoutDetails
+	projection := threadLifecycleProjection{}
 	for _, entry := range path {
-		if entry.TurnID != turnID.String() {
-			continue
-		}
-		if value := strings.TrimSpace(entry.RunID); entry.Type != sessiontree.EntryCustom && value != "" {
-			runID = identity.RunID(value)
-		}
-		if entry.Type == sessiontree.EntryRunFailure {
-			failureMessage = strings.TrimSpace(entry.Error)
-		}
-		if failureMessage == "" {
-			failureMessage = strings.TrimSpace(entry.Metadata["failure_reason"])
-		}
-		if entry.Type == sessiontree.EntryTurnMarker && entry.Metadata["provider_timeout"] != "" {
-			var details publicprovider.RequestTimeoutDetails
-			if json.Unmarshal([]byte(entry.Metadata["provider_timeout"]), &details) == nil && details.Validate() == nil {
-				timeoutDetails = &details
-			}
-		}
-		if value := strings.TrimSpace(entry.Metadata[sessiontree.TurnFailureCodeMetadataKey]); value != "" {
-			failureCode = ThreadTurnFailureCode(value)
-		}
+		projection.observe(entry)
 	}
-	var outcome *TurnOutcome
-	switch lifecycle.Status() {
-	case sessionlifecycle.StatusRunning, sessionlifecycle.StatusWaiting:
-		activity = ThreadActivityActive
-	case sessionlifecycle.StatusCompleted:
-		value := TurnOutcomeCompleted
-		outcome = &value
-	case sessionlifecycle.StatusFailed:
-		value := TurnOutcomeFailed
-		outcome = &value
-	case sessionlifecycle.StatusInterrupted:
-		value := TurnOutcomeInterrupted
-		outcome = &value
-	case sessionlifecycle.StatusCancelled:
-		value := TurnOutcomeCancelled
-		outcome = &value
-	}
-	var failure *ThreadTurnFailure
-	if failureMessage != "" && (lifecycle.Status() == sessionlifecycle.StatusFailed || lifecycle.Status() == sessionlifecycle.StatusInterrupted) {
-		if !failureCode.Valid() {
-			failureCode = ThreadTurnFailureLegacyUnclassified
-		}
-		failure = &ThreadTurnFailure{Code: failureCode, Message: failureMessage, Reason: classifyThreadTurnFailureReason(failureCode, failureMessage)}
-		if failureCode == ThreadTurnFailureProvider {
-			failure.ProviderTimeout = providerattempt.CloneTimeoutDetails(timeoutDetails)
-		}
-	}
-	return turnID, runID, activity, outcome, failure
+	return projection.snapshot()
 }
 
 func cloneThreadTurnFailure(failure *ThreadTurnFailure) *ThreadTurnFailure {

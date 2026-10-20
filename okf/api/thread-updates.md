@@ -9,6 +9,30 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Summary
 
+Execution completion reads the appended canonical interval outside the actor
+mutex. The accepted view remains active and readable until installation; a
+changed reducer or starting leaf requires a fresh interval. The shared item,
+turn, context and SessionLifecycle reducers remain authoritative. Terminal
+installation discards stream-only drafts and replaces observed tool overlays
+with exact canonical facts, without republishing untouched historical items.
+Terminal presentation presence is updated only for affected canonical items.
+Complete recovery reads and custom stores lacking exact source readers still
+use the complete adapter. This does not complete bounded cold initialization,
+metadata residency, draft spilling or downstream performance qualification.
+
+The real SQLite fixed-completion benchmark (Apple M5 Pro, Go 1.27.2, 200
+iterations) measured 2,104 / 2,315 / 2,447 ns per installation with 1,096 /
+10,960 / 109,600 synthetic historical items, respectively, and 996 bytes / 20
+allocations at every size. The final journal commit is already accepted for
+this measurement; it does not time fixture creation, cold loading, model-context
+changes, browser delivery or UI rendering. Reproduce with:
+
+    GOWORK=off go test ./runtime -run '^$' -bench '^BenchmarkTerminalCanonicalSQLiteFixedBoundary$' -benchtime=200x -count=1
+
+Large initialization batches use one transient ordered mutation index rather
+than repeated linear deduplication. Ordinary turn-kind validation uses existing
+marker positions; typed-turn admission still checks all historical members.
+
 Ordinary send and queued promotion install appended canonical intervals. Actor
 turn membership borrows reducer-owned append-only slices; public snapshots still
 copy them, so growing one long turn does not copy its unchanged membership.

@@ -28,11 +28,13 @@ type threadCanonicalProjection struct {
 	anchors                                   map[string]string
 	compactionOrdinals                        map[string]uint64
 	changedTurns                              map[string]bool
+	terminalItems                             map[int]bool
+	terminalCounts                            map[identity.TurnID]int
 	contextChanged, goalChanged, modelChanged bool
 }
 
 func newThreadCanonicalProjection() *threadCanonicalProjection {
-	return &threadCanonicalProjection{items: newThreadItemProjection(), anchors: map[string]string{}, compactionOrdinals: map[string]uint64{}, changedTurns: map[string]bool{}}
+	return &threadCanonicalProjection{items: newThreadItemProjection(), anchors: map[string]string{}, compactionOrdinals: map[string]uint64{}, changedTurns: map[string]bool{}, terminalItems: map[int]bool{}, terminalCounts: map[identity.TurnID]int{}}
 }
 func (projection *threadCanonicalProjection) append(entries []sessiontree.Entry) error {
 	for _, entry := range entries {
@@ -69,10 +71,24 @@ func (projection *threadCanonicalProjection) append(entries []sessiontree.Entry)
 		if entry.Type == sessiontree.EntryGoal || entry.Type == sessiontree.EntryTurnMarker {
 			projection.goalChanged = true
 		}
-		if entry.Message.ModelContextSnapshot != nil || entry.Type == sessiontree.EntryCompaction || entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted && entry.Metadata[sessiontree.RetrySourceEntryIDMetadataKey] != "" {
+		if canonicalEntryChangesModel(entry) {
 			projection.modelChanged = true
 		}
 		projection.leafID = entry.ID
+	}
+	for index := range projection.items.changedItems {
+		item := projection.items.items[index]
+		previous := projection.terminalItems[index]
+		current := !projection.items.hiddenItems[index] && threadItemTerminalPresentation(item)
+		if current != previous {
+			if current {
+				projection.terminalCounts[item.TurnID]++
+				projection.terminalItems[index] = true
+			} else {
+				projection.terminalCounts[item.TurnID]--
+				delete(projection.terminalItems, index)
+			}
+		}
 	}
 	return nil
 }
@@ -141,26 +157,13 @@ func (service *threadRuntimeService) advanceCanonical(ctx context.Context, actor
 		return actor.installCanonicalView(canonical)
 	}
 	projection := actor.canonical
-	reader, ok := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
-	if !ok {
-		return ErrUnsupportedStoreCapability
+	tail, err := service.readCanonicalTail(ctx, actor.threadID, projection.leafID)
+	if err != nil {
+		return err
 	}
 	projection.resetChanges()
-	leaf := ""
-	for {
-		page, err := reader.PathEntriesWindow(ctx, sessiontree.PathWindowOptions{ThreadID: actor.threadID, LeafID: leaf, AnchorID: projection.leafID, Direction: sessiontree.PathWindowAfter, Limit: 256})
-		if err != nil {
-			actor.canonical = nil
-			return runtimeHostError(err)
-		}
-		leaf = page.LeafID
-		if err := projection.append(page.Entries); err != nil {
-			actor.canonical = nil
-			return err
-		}
-		if !page.HasAfter {
-			break
-		}
+	if err := projection.append(tail.entries); err != nil {
+		return err
 	}
 	var model *ThreadModelContext
 	if actor.state.view.Context != nil && actor.state.view.Context.ModelContext != nil {
@@ -177,22 +180,74 @@ func (service *threadRuntimeService) advanceCanonical(ctx context.Context, actor
 			return err
 		}
 	}
-	modelChanged := projection.modelChanged
-	if model != nil {
-		request, found, err := cache.LatestProviderRequest(ctx, service.host.store.prompt, actor.threadID)
+	return service.installCanonicalTail(ctx, actor, model, projection.modelChanged)
+}
+
+// A frozen appended interval can be read without holding the actor mutex. Its
+// starting leaf is checked again before the existing reducer accepts it.
+type canonicalThreadTail struct {
+	after, leaf string
+	entries     []sessiontree.Entry
+}
+
+func (service *threadRuntimeService) readCanonicalTail(ctx context.Context, threadID, after string) (canonicalThreadTail, error) {
+	reader, ok := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
+	if !ok {
+		return canonicalThreadTail{}, ErrUnsupportedStoreCapability
+	}
+	tail := canonicalThreadTail{after: after}
+	anchor := after
+	for {
+		page, err := reader.PathEntriesWindow(ctx, sessiontree.PathWindowOptions{ThreadID: threadID, LeafID: tail.leaf, AnchorID: anchor, Direction: sessiontree.PathWindowAfter, Limit: 256})
 		if err != nil {
-			return err
+			return canonicalThreadTail{}, runtimeHostError(err)
 		}
-		if found && request.ThreadID == actor.threadID && request.ModelContextEntryID == model.EntryID && request.ID != model.UsedByRequestID {
+		tail.leaf = page.LeafID
+		tail.entries = append(tail.entries, page.Entries...)
+		if !page.HasAfter {
+			break
+		}
+		if len(page.Entries) == 0 {
+			return canonicalThreadTail{}, fmt.Errorf("%w: canonical interval made no progress", ErrAuthorityCorrupt)
+		}
+		anchor = page.Entries[len(page.Entries)-1].ID
+	}
+	return tail, nil
+}
+
+func (service *threadRuntimeService) installCanonicalTail(ctx context.Context, actor *threadRuntimeState, model *ThreadModelContext, modelChanged bool) error {
+	model, modelChanged, err := service.resolveCanonicalModel(ctx, actor.threadID, model, modelChanged)
+	if err != nil {
+		return err
+	}
+	if err := actor.installCanonicalChanges(actor.canonical); err != nil {
+		return err
+	}
+	actor.installCanonicalModel(model, modelChanged)
+	actor.state.contextErr = nil
+	actor.state.view.ViewVersion++
+	return nil
+}
+
+func (service *threadRuntimeService) resolveCanonicalModel(ctx context.Context, threadID string, model *ThreadModelContext, modelChanged bool) (*ThreadModelContext, bool, error) {
+	if model != nil {
+		request, found, err := cache.LatestProviderRequest(ctx, service.host.store.prompt, threadID)
+		if err != nil {
+			return nil, false, err
+		}
+		if found && request.ThreadID == threadID && request.ModelContextEntryID == model.EntryID && request.ID != model.UsedByRequestID {
+			copy := *model
+			model = &copy
 			model.UsedByRequestID, model.UsedByTurnID, model.UsedByRunID = request.ID, identity.TurnID(request.TurnID), identity.RunID(request.RunID)
 			at := request.CreatedAt
 			model.UsedAt = &at
 			modelChanged = true
 		}
 	}
-	if err := actor.installCanonicalChanges(projection); err != nil {
-		return err
-	}
+	return model, modelChanged, nil
+}
+
+func (actor *threadRuntimeState) installCanonicalModel(model *ThreadModelContext, modelChanged bool) {
 	if modelChanged {
 		if actor.state.view.Context == nil {
 			actor.state.view.Context = &ThreadContextSnapshot{}
@@ -200,12 +255,13 @@ func (service *threadRuntimeService) advanceCanonical(ctx context.Context, actor
 		actor.state.view.Context.ModelContext = model
 		actor.markComponents(threadContextChanged)
 	}
-	actor.state.contextErr = nil
-	actor.state.view.ViewVersion++
-	return nil
 }
 
 func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanonicalProjection) error {
+	return actor.installCanonicalChangesMode(projection, false)
+}
+
+func (actor *threadRuntimeState) installCanonicalChangesMode(projection *threadCanonicalProjection, terminal bool) error {
 	indices := make([]int, 0, len(projection.items.changedItems))
 	for index := range projection.items.changedItems {
 		if !projection.items.hiddenItems[index] {
@@ -219,7 +275,7 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		item := projection.items.items[index]
 		if current := actor.itemIndexByID(item.ID); current >= 0 {
 			previous := actor.state.view.Items[current]
-			if item.textOmitted {
+			if item.textOmitted && !terminal {
 				previousBytes := len(previous.Text)
 				if previous.textOmitted {
 					previousBytes = previous.textBytes
@@ -314,8 +370,15 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		current := actor.itemIndexByID(item.ID)
 		if current >= 0 {
 			previous := actor.state.view.Items[current]
-			if previous.Kind == ThreadItemTool && previous.Activity != nil && item.Activity != nil && (threadToolActivityTerminal(previous.Activity.Status) || previous.Live && !threadToolActivityTerminal(item.Activity.Status)) {
+			preservedObservation := false
+			if !terminal && actor.observedItemIDs[item.ID] && previous.Kind == ThreadItemTool && previous.Activity != nil && item.Activity != nil && (threadToolActivityTerminal(previous.Activity.Status) || previous.Live && !threadToolActivityTerminal(item.Activity.Status)) {
 				item.Activity, item.Live = previous.Activity, previous.Live
+				item.activityOmitted = previous.activityOmitted
+				item.activityEntryIDs = previous.activityEntryIDs
+				preservedObservation = true
+			}
+			if !preservedObservation {
+				delete(actor.observedItemIDs, item.ID)
 			}
 			item.Ordinal = previous.Ordinal
 			if previous.Interaction == nil && item.Interaction != nil && actor.interactionItems != nil {

@@ -58,6 +58,11 @@ func TestCanonicalActorChangesMatchEveryCompletePrefix(t *testing.T) {
 				compare("context", actor.state.view.Context, &context)
 			}
 			compare("goal", actor.state.view.Goal, publicThreadGoal(projection.items.goal.State))
+			for _, turn := range turns {
+				if got, want := projection.terminalCounts[turn.TurnID] > 0, hasTerminalPresentation(items, turn.TurnID); got != want {
+					t.Fatalf("chunk=%d prefix=%d terminal presentation differs", size, end)
+				}
+			}
 		}
 	}
 }
