@@ -23,6 +23,10 @@ Native usage remains authoritative. Historical absent categories are unavailable
 not zero usage; hosts must label category token counts as estimates.
 
 * `BuildActivityTimeline` creates a stable activity summary.
+* `ActivityReducer` applies sanitized activity facts incrementally; `ChangedItems`
+  drains detached affected items and `Snapshot` materializes the full timeline.
+  `BuildActivityTimeline` uses this same reducer. Provider token events do not
+  retain text or invalidate Activity. Callers serialize reducer access.
 * `RebuildActivitySummary` recomputes a timeline summary from its current items.
 * `ContextStatusesFromObservations` combines projected request, provider usage,
   and event-derived context status.

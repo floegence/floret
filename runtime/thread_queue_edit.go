@@ -142,6 +142,7 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 			return runtimeHostError(err)
 		}
 		actor.state.view.Queue[index] = item
+		actor.markComponents(threadQueueChanged)
 		actor.state.view.ViewVersion++
 		actor.state.requestKeys[key] = threadRuntimeRequest{fingerprint: fingerprint}
 		return nil
@@ -150,6 +151,5 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 		return ThreadView{}, err
 	}
 	view := service.currentView(actor)
-	service.publish(view)
 	return view, nil
 }

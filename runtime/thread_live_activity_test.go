@@ -119,6 +119,7 @@ func liveActivityFixture(t *testing.T) (*threadRuntimeService, *threadRuntimeSta
 	service := &threadRuntimeService{runtimes: map[string]*threadRuntimeState{"thread-live": actor}, subscribers: make(map[*WorkspaceSubscription]struct{}), published: make(map[string]uint64)}
 	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{})}
 	service.subscribers[subscription] = struct{}{}
+	actor.service = service
 	t.Cleanup(subscription.Close)
 	return service, actor, threadRuntimeEventSink{service: service}, subscription
 }

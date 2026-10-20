@@ -172,9 +172,11 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 			}
 			if queueIndex >= 0 {
 				actor.state.view.Queue = slices.Delete(actor.state.view.Queue, queueIndex, queueIndex+1)
+				actor.markComponents(threadQueueChanged)
 			}
 			actor.state.steering = append(actor.state.steering, request.ID)
 			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: request.ID, TurnID: actor.state.turnID, RunID: actor.state.runID, Kind: ThreadItemSteering, Text: input.Text, CreatedAt: now, Attachments: cloneMessageAttachments(input.Attachments), References: slices.Clone(input.References), Context: slices.Clone(input.Context), Steering: &ThreadSteering{Status: ThreadSteeringPending}})
+			actor.markItem(request.ID, ThreadItemAdded)
 			actor.state.view.ViewVersion++
 			if actor.state.fragmentCancel != nil {
 				actor.state.fragmentCancel(&agentharness.GracefulCancellation{Deadline: time.Now().Add(gracefulCancellationLimit)})
@@ -214,7 +216,6 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 				return ThreadView{}, err
 			}
 		}
-		service.publish(current)
 		if suspended {
 			go service.continueCanonicalInput(actor, in.ThreadID, ThreadInteraction{ID: "steer:" + key, TurnID: current.TurnID, RunID: current.RunID}, InteractionResolution{}, nil, true)
 		}
@@ -287,9 +288,6 @@ func (service *threadRuntimeService) steeringControl(actor *threadRuntimeState) 
 				install()
 				return nil
 			})
-			if err == nil {
-				service.publish(service.currentView(actor))
-			}
 			return fragment, history, err
 		},
 		Finish: func(ctx context.Context) (bool, error) {
@@ -332,7 +330,7 @@ func (service *threadRuntimeService) resolveSteeringInteractions(ctx context.Con
 	}
 	for _, interaction := range actor.state.view.Interactions {
 		if !interaction.Resolved && interaction.TurnID == actor.state.turnID {
-			resolveThreadInteractionCanonical(&actor.state.view, interaction.ID, resolution)
+			actor.resolveInteraction(interaction.ID, resolution)
 			delete(actor.state.pendingInteractions, interaction.ID)
 		}
 	}
@@ -355,6 +353,7 @@ func (service *threadRuntimeService) applySteering(ctx context.Context, actor *t
 		item := &actor.state.view.Items[i]
 		if slices.Contains(actor.state.steering, item.ID) {
 			item.Steering = &ThreadSteering{Status: ThreadSteeringApplied}
+			actor.markItem(item.ID, ThreadItemReplaced)
 		}
 	}
 	actor.state.steering = nil

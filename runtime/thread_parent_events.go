@@ -214,8 +214,7 @@ func (host *Host) observeParentEvents(threadIDs []string) {
 	for _, id := range threadIDs {
 		threadID := identity.ThreadID(id)
 		actor := service.runtime(threadID)
-		var view ThreadView
-		err := actor.apply(context.Background(), func() error {
+		_ = actor.apply(context.Background(), func() error {
 			if actor.state.view.ViewVersion == 0 {
 				return nil
 			}
@@ -224,12 +223,9 @@ func (host *Host) observeParentEvents(threadIDs []string) {
 				return err
 			}
 			actor.state.view.ParentEvents = page
+			actor.markComponents(threadParentEventsChanged)
 			actor.state.view.ViewVersion++
-			view = cloneThreadRuntimeView(actor.state.view)
 			return nil
 		})
-		if err == nil && view.ViewVersion > 0 {
-			service.publish(view)
-		}
 	}
 }

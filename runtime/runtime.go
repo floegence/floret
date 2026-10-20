@@ -717,6 +717,7 @@ type Event struct {
 	Sources           []publicprovider.Source           `json:"sources,omitempty"`
 	Metadata          map[string]any                    `json:"metadata,omitempty"`
 	Timestamp         time.Time                         `json:"timestamp,omitempty"`
+	activityItems     []observation.ActivityItem
 	contextCommitted  bool
 	outputSourceID    string
 	outputOrder       []string
@@ -1552,7 +1553,7 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 		ToolSurfaceProvider: runtimeToolSurfaceProvider(req.Options.ToolSurfaceProvider),
 		SupplementalContext: agentHarnessSupplementalContext(req.Options.SupplementalContext),
 	})
-	return turnResult(result, string(threadID), nil, time.Now().UnixMilli()), runtimeHostError(runErr)
+	return turnResult(result, string(threadID), observation.NewActivityReducer(observation.ActivityRunMeta{ThreadID: threadID, TurnID: identity.TurnID(result.ID), RunID: identity.RunID(result.RunID), TraceID: identity.TraceID(result.RunID)}).Snapshot(time.Now().UnixMilli())), runtimeHostError(runErr)
 }
 
 type acceptedTurn struct {
@@ -1609,7 +1610,7 @@ func (h *providerHost) ExecuteAcceptedTurn(ctx context.Context, accepted accepte
 		SupplementalContext:      supplementalContext,
 		Sink:                     activityRecorder,
 	})
-	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
+	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(observation.ActivityRunMeta{ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, TraceID: identity.TraceID(req.RunID)}))
 	if err := out.Validate(); err != nil {
 		if (out.ThreadID == "" || out.TurnID == "" || out.RunID == "") && runErr != nil {
 			return out, runtimeHostError(runErr)
@@ -1798,7 +1799,7 @@ func sessionMessageReferences(in []MessageReference) []session.MessageReference 
 	return out
 }
 
-func turnResult(in agentharness.TurnResult, threadID string, events []observation.Event, nowUnixMS int64) TurnResult {
+func turnResult(in agentharness.TurnResult, threadID string, timeline observation.ActivityTimeline) TurnResult {
 	status := TurnStatus(in.Status)
 	if in.AdmissionRunning {
 		status = TurnStatusRunning
@@ -1817,13 +1818,8 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
 		Signal:             runtimeTurnSignal(in.ControlSignal),
-		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    identity.RunID(in.RunID),
-			ThreadID: identity.ThreadID(threadID),
-			TurnID:   identity.TurnID(in.ID),
-			TraceID:  identity.TraceID(in.RunID),
-		}, events, nowUnixMS),
-		Replayed: in.Replayed,
+		ActivityTimeline:   timeline,
+		Replayed:           in.Replayed,
 	}
 	if in.Err != nil {
 		out.Failure = &ThreadTurnFailure{
@@ -2672,48 +2668,86 @@ func cloneRuntimeActivityTimeline(in observation.ActivityTimeline) observation.A
 }
 
 type runtimeActivityEventRecorder struct {
-	mu     sync.Mutex
-	events []observation.Event
-	sink   runtimeEventSink
+	mu             sync.Mutex
+	reducer        *observation.ActivityReducer
+	hostedAttempts map[string]map[string]bool
+	sink           runtimeEventSink
 }
 
 func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
-	observed := runtimeObservationEvent(ev)
-	var timeline *observation.ActivityTimeline
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now().UnixMilli()
+	if r.reducer == nil {
+		r.reducer = observation.NewActivityReducer(observation.ActivityRunMeta{RunID: identity.RunID(ev.RunID), ThreadID: identity.ThreadID(ev.ThreadID), TurnID: identity.TurnID(ev.TurnID), TraceID: identity.TraceID(ev.TraceID)})
+	}
 	if ev.Retry != nil {
-		kept := r.events[:0]
-		for _, previous := range r.events {
-			_, attempt, epoch := runtimeAttemptIdentity(previous.Metadata)
-			if (previous.Type == observation.EventTypeHostedToolCall || previous.Type == observation.EventTypeHostedToolResult) && attempt == ev.Retry.ReplacedAttemptID && epoch == ev.Retry.ReplacedAttemptEpoch {
-				continue
-			}
-			kept = append(kept, previous)
+		key := fmt.Sprintf("%s:%d", ev.Retry.ReplacedAttemptID, ev.Retry.ReplacedAttemptEpoch)
+		var ids []string
+		for id := range r.hostedAttempts[key] {
+			ids = append(ids, id)
 		}
-		r.events = kept
+		if len(ids) > 0 {
+			r.reducer.RemoveItems(ids)
+		}
+		delete(r.hostedAttempts, key)
 	}
-	r.events = append(r.events, observed)
 	if runtimeActivityTimelineEvent(ev.Type) {
-		built := observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    observed.RunID,
-			ThreadID: observed.ThreadID,
-			TurnID:   observed.TurnID,
-			TraceID:  observed.TraceID,
-		}, r.events, time.Now().UnixMilli())
-		if len(built.Items) > 0 {
-			timeline = &built
+		observed := runtimeObservationEvent(ev)
+		r.reducer.Apply(observed, now)
+		if ev.Type == event.HostedToolCall || ev.Type == event.HostedToolResult {
+			_, attempt, epoch := runtimeAttemptIdentity(ev.Metadata)
+			key := fmt.Sprintf("%s:%d", attempt, epoch)
+			if r.hostedAttempts == nil {
+				r.hostedAttempts = make(map[string]map[string]bool)
+			}
+			if r.hostedAttempts[key] == nil {
+				r.hostedAttempts[key] = make(map[string]bool)
+			}
+			r.hostedAttempts[key]["tool:"+observed.ToolID] = true
 		}
+		r.sink.emitActivityChanges(ev, r.reducer, now)
+	} else {
+		// Preserve stable fallback item identities without retaining token events.
+		r.reducer.Apply(observation.Event{}, now)
+		r.sink.Emit(ev)
 	}
-	// Parallel tools must publish snapshots in the order they were reduced.
-	// Otherwise a delayed earlier snapshot can overwrite a completed tool.
-	r.sink.EmitWithActivityTimeline(ev, timeline)
 }
 
-func (r *runtimeActivityEventRecorder) Snapshot() []observation.Event {
+func (r *runtimeActivityEventRecorder) Snapshot(meta observation.ActivityRunMeta) observation.ActivityTimeline {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]observation.Event(nil), r.events...)
+	if r.reducer == nil {
+		r.reducer = observation.NewActivityReducer(meta)
+	}
+	return r.reducer.Snapshot(time.Now().UnixMilli())
+}
+
+func (s runtimeEventSink) emitActivityChanges(ev event.Event, reducer *observation.ActivityReducer, now int64) {
+	if s.sink == nil {
+		reducer.ChangedItems(now)
+		return
+	}
+	if s.mu != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	out := runtimeEvent(ev)
+	if sink, ok := s.sink.(combinedThreadEventSink); ok {
+		if sink.primary != nil {
+			timeline := reducer.Snapshot(now)
+			out.ActivityTimeline = &timeline
+			sink.primary.EmitEvent(out)
+			out.ActivityTimeline = nil
+		}
+		out.activityItems = reducer.ChangedItems(now)
+		sink.runtime.EmitEvent(out)
+	} else {
+		timeline := reducer.Snapshot(now)
+		out.ActivityTimeline = &timeline
+		reducer.ChangedItems(now)
+		s.sink.EmitEvent(out)
+	}
 }
 
 func runtimeActivityTimelineEvent(typ event.Type) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,12 +17,22 @@ import (
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
-	threadID string
-	mu       sync.Mutex
-	closed   bool
-	deleting bool
-	deleted  bool
-	state    threadRuntimeData
+	threadID      string
+	mu            sync.Mutex
+	closed        bool
+	deleting      bool
+	deleted       bool
+	state         threadRuntimeData
+	itemIndex     map[string]int
+	indexedItems  int
+	textBuffer    strings.Builder
+	textBufferID  string
+	outputOrder   []string
+	service       *threadRuntimeService
+	mutations     threadMutations
+	pendingUpdate *ThreadUpdate
+	pendingText   strings.Builder
+	updateTimer   *time.Timer
 }
 
 type threadRuntimeData struct {
@@ -102,6 +113,9 @@ func (runtime *threadRuntimeState) beginRun(input beginThreadRunInput) (<-chan s
 		runtime.state.view.Failure = nil
 		runtime.state.view.Cancellation = nil
 	}
+	runtime.markComponents(threadPreviewsChanged)
+	runtime.outputOrder = nil
+	runtime.mutations.boundary = true
 	runtime.state.view.ViewVersion++
 	return previousExecution, nil
 }
@@ -128,7 +142,26 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 	if runtime.deleting || runtime.deleted {
 		return ErrThreadDeleted
 	}
-	return mutate()
+	base := runtime.state.view.ViewVersion
+	runtime.mutations = threadMutations{}
+	err := mutate()
+	runtime.refreshAttention()
+	if runtime.service != nil {
+		switch {
+		case runtime.state.contextErr != nil:
+			runtime.stopUpdateTimer()
+			runtime.service.invalidateUpdates()
+		case runtime.state.view.ViewVersion > base:
+			if runtime.service.hasObservers() {
+				update := runtime.takeUpdate(base)
+				runtime.service.publishUpdateLocked(runtime, update, runtime.mutations.growth())
+			} else {
+				runtime.stopUpdateTimer()
+			}
+		}
+	}
+	runtime.mutations = threadMutations{}
+	return err
 }
 
 // acceptLiveEvent applies the current provider-attempt fence and records the
@@ -255,32 +288,41 @@ func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.Activ
 	if timeline == nil {
 		return false
 	}
+	return runtime.applyActivityItems(timeline.ThreadID, timeline.TurnID, timeline.RunID, timeline.Items, observedAt)
+}
+
+func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, items []observation.ActivityItem, observedAt time.Time) bool {
+	if threadID != runtime.state.view.ThreadID || turnID != runtime.state.turnID || runID != runtime.state.runID {
+		return false
+	}
 	changed := false
-	for _, activity := range observation.CloneActivityTimeline(timeline).Items {
+	for _, activity := range items {
 		if (activity.Kind != observation.ActivityKindTool && activity.Kind != observation.ActivityKindHosted) || activity.ToolID == "" {
 			continue
 		}
-		id := threadToolSegmentID(timeline.TurnID, activity.ToolID)
+		id := threadToolSegmentID(turnID, activity.ToolID)
 		if activity.Kind == observation.ActivityKindHosted {
-			id = "hosted:" + threadToolKey(timeline.TurnID, timeline.RunID, activity.ToolID)
-			if threadItemIndexByID(runtime.state.view.Items, id) < 0 {
+			id = "hosted:" + threadToolKey(turnID, runID, activity.ToolID)
+			if runtime.itemIndexByID(id) < 0 {
 				if runtime.state.attemptDraftIDs == nil {
 					runtime.state.attemptDraftIDs = make(map[string]bool)
 				}
 				runtime.state.attemptDraftIDs[id] = true
 			}
 		}
-		index := threadItemIndexByID(runtime.state.view.Items, id)
+		index := runtime.itemIndexByID(id)
 		live := !threadToolActivityTerminal(activity.Status)
+		activity = observation.CloneActivityTimeline(&observation.ActivityTimeline{Items: []observation.ActivityItem{activity}}).Items[0]
 		if index >= 0 {
 			item := &runtime.state.view.Items[index]
-			if item.TurnID != timeline.TurnID || item.RunID != timeline.RunID {
+			if item.TurnID != turnID || item.RunID != runID {
 				continue
 			}
 			if reflect.DeepEqual(item.Activity, &activity) && item.Live == live {
 				continue
 			}
 			item.Activity, item.Live = &activity, live
+			runtime.markItem(id, ThreadItemReplaced)
 		} else {
 			runtime.finishLiveTextSegment()
 			createdAt := observedAt
@@ -291,8 +333,11 @@ func (runtime *threadRuntimeState) applyToolActivity(timeline *observation.Activ
 				createdAt = time.Now().UTC()
 			}
 			runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-				ID: id, TurnID: timeline.TurnID, RunID: timeline.RunID, Kind: ThreadItemTool, Live: live, Activity: &activity, CreatedAt: createdAt,
+				ID: id, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Live: live, Activity: &activity, CreatedAt: createdAt,
 			})
+		}
+		if index < 0 {
+			runtime.markItem(id, ThreadItemAdded)
 		}
 		changed = true
 	}
@@ -315,23 +360,34 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 	if runtime.state.openTextSegmentID != source {
 		runtime.finishLiveTextSegment()
 	}
-	index := threadItemIndexByID(runtime.state.view.Items, source)
+	index := runtime.itemIndexByID(source)
 	if index < 0 {
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
 		}
 		runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{ID: source, contentSourceID: source, TurnID: runtime.state.turnID, RunID: runtime.state.runID, Kind: kind, Live: true, CreatedAt: createdAt})
 		index = len(runtime.state.view.Items) - 1
+		runtime.markItem(source, ThreadItemAdded)
 		if runtime.state.attemptDraftIDs == nil {
 			runtime.state.attemptDraftIDs = make(map[string]bool)
 		}
 		runtime.state.attemptDraftIDs[source] = true
 	}
 	item := &runtime.state.view.Items[index]
+	if !item.Live {
+		runtime.markItem(source, ThreadItemReplaced)
+	}
 	if item.CanonicalOrdinal != 0 || item.contentSourceID != source || item.Kind != kind {
 		return
 	}
-	item.Text += text
+	if runtime.textBufferID != source {
+		runtime.textBuffer.Reset()
+		runtime.textBuffer.WriteString(item.Text)
+		runtime.textBufferID = source
+	}
+	runtime.markAppend(source, len(item.Text), text)
+	runtime.textBuffer.WriteString(text)
+	item.Text = runtime.textBuffer.String()
 	item.Live = true
 	runtime.state.openTextSegmentID = source
 	runtime.state.openTextKind = kind
@@ -341,11 +397,16 @@ func (runtime *threadRuntimeState) finishLiveTextSegment() {
 	if runtime == nil {
 		return
 	}
-	if index := threadItemIndexByID(runtime.state.view.Items, runtime.state.openTextSegmentID); index >= 0 {
+	if index := runtime.itemIndexByID(runtime.state.openTextSegmentID); index >= 0 {
+		if runtime.state.view.Items[index].Live {
+			runtime.markItem(runtime.state.openTextSegmentID, ThreadItemReplaced)
+		}
 		runtime.state.view.Items[index].Live = false
 	}
 	runtime.state.openTextSegmentID = ""
 	runtime.state.openTextKind = ""
+	runtime.textBuffer.Reset()
+	runtime.textBufferID = ""
 }
 
 func settleTerminalToolSegments(items []ThreadItem, turnID identity.TurnID, timeline observation.ActivityTimeline) []ThreadItem {
@@ -394,23 +455,34 @@ func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, i
 }
 
 func (runtime *threadRuntimeState) discardAttemptDraft() {
+	runtime.mutations.order = true
+	runtime.mutations.boundary = true
+	runtime.outputOrder = nil
 	runtime.state.openTextSegmentID = ""
 	runtime.state.openTextKind = ""
 	items := runtime.state.view.Items[:0]
 	for _, item := range runtime.state.view.Items {
 		if runtime.state.attemptDraftIDs[item.ID] && item.CanonicalOrdinal == 0 {
+			runtime.markItem(item.ID, ThreadItemRemoved)
 			continue
 		}
 		item.Ordinal = uint64(len(items) + 1)
 		items = append(items, item)
 	}
 	runtime.state.view.Items = items
+	runtime.invalidateItemIndex()
+	runtime.textBuffer.Reset()
+	runtime.textBufferID = ""
 	runtime.state.attemptDraftIDs = nil
 }
 
 // The Engine publishes its ordered fragment sources. The actor applies that
 // order only to this uncommitted attempt, preserving all canonical positions.
 func (runtime *threadRuntimeState) orderAttemptOutput(order []string) {
+	if slices.Equal(runtime.outputOrder, order) {
+		return
+	}
+	runtime.outputOrder = slices.Clone(order)
 	if len(order) < 2 {
 		return
 	}
@@ -445,4 +517,28 @@ func (runtime *threadRuntimeState) orderAttemptOutput(order []string) {
 		drafts[i].Ordinal = uint64(position + 1)
 		runtime.state.view.Items[position] = drafts[i]
 	}
+	runtime.invalidateItemIndex()
+	runtime.mutations.order = true
+}
+
+// itemIndexByID indexes structural changes once. Ordinary growth touches one row.
+func (runtime *threadRuntimeState) itemIndexByID(id string) int {
+	if id == "" {
+		return -1
+	}
+	if runtime.itemIndex == nil || runtime.indexedItems != len(runtime.state.view.Items) {
+		runtime.itemIndex = make(map[string]int, len(runtime.state.view.Items))
+		for i := range runtime.state.view.Items {
+			runtime.itemIndex[runtime.state.view.Items[i].ID] = i
+		}
+		runtime.indexedItems = len(runtime.state.view.Items)
+	}
+	if i, ok := runtime.itemIndex[id]; ok {
+		return i
+	}
+	return -1
+}
+func (runtime *threadRuntimeState) invalidateItemIndex() {
+	runtime.itemIndex = nil
+	runtime.indexedItems = 0
 }

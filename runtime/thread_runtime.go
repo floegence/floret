@@ -562,6 +562,7 @@ type threadRuntimeService struct {
 	factory             AgentFactory
 	mu                  sync.Mutex
 	subscribers         map[*WorkspaceSubscription]struct{}
+	updateSubscribers   map[*ThreadUpdateSubscription]struct{}
 	subscriptionsClosed bool
 	published           map[string]uint64
 	cancellationMu      sync.Mutex
@@ -589,6 +590,7 @@ type WorkspaceSubscription struct {
 	closed   bool
 	closeErr error
 	changed  chan struct{}
+	wakeOnly bool
 	service  *threadRuntimeService
 }
 
@@ -917,6 +919,9 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 	for _, drain := range drains {
 		drain.actor.mu.Lock()
 		_, committed := deleted[drain.actor.threadID]
+		if committed {
+			drain.actor.stopUpdateTimer()
+		}
 		drain.actor.deleted = committed
 		drain.actor.deleting = false
 		drain.actor.mu.Unlock()
@@ -929,6 +934,7 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 		}
 	}
 	service.mu.Unlock()
+	service.invalidateUpdates()
 	return nil
 }
 
@@ -1302,24 +1308,30 @@ func (service *threadRuntimeService) applyActiveThreadSummary(summary *ThreadSum
 	if actor == nil {
 		return
 	}
-	view := service.currentView(actor)
-	if view.ViewVersion == 0 {
-		return
-	}
 	meta := sessiontree.ThreadMeta{
 		ID: summary.ID.String(), ParentThreadID: summary.ParentThreadID.String(), ParentTurnID: summary.ParentTurnID.String(),
 		TaskName: summary.TaskName, TaskDescription: summary.TaskDescription, HostProfileRef: summary.HostProfileRef, ForkMode: summary.ForkMode,
 		Title: summary.Title, TitleStatus: sessiontree.ThreadTitleStatus(summary.TitleStatus), TitleGeneration: summary.TitleGeneration, CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt,
 	}
-	*summary = threadSummaryFromView(meta, view)
+	_ = actor.apply(context.Background(), func() error {
+		if actor.state.view.ViewVersion > 0 {
+			// Project the small summary while its source is actor-owned. No slice
+			// or mutable payload escapes the lock and no history copy is needed.
+			*summary = threadSummaryFromView(meta, actor.state.view)
+		}
+		return nil
+	})
 }
 
 func truncateThreadSummaryPreview(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
+	count := 0
+	for offset := range value {
+		if count == limit {
+			return value[:offset]
+		}
+		count++
 	}
-	return string(runes[:limit])
+	return value
 }
 
 func (service *threadRuntimeService) History(ctx context.Context, threadID identity.ThreadID, before string, limit int) (HistoryPage, error) {
@@ -1548,13 +1560,13 @@ func (service *threadRuntimeService) ReorderQueue(ctx context.Context, in Reorde
 			return err
 		}
 		actor.state.view.Queue = reordered
+		actor.markComponents(threadQueueChanged)
 		actor.state.view.ViewVersion++
 		return nil
 	}); err != nil {
 		return ThreadView{}, err
 	}
 	view := service.currentView(actor)
-	service.publish(view)
 	return view, nil
 }
 
@@ -1598,6 +1610,7 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 					return err
 				}
 				actor.state.view.Queue = append(actor.state.view.Queue[:index], actor.state.view.Queue[index+1:]...)
+				actor.markComponents(threadQueueChanged)
 				actor.state.view.ViewVersion++
 				actor.state.requestKeys[key] = threadRuntimeRequest{fingerprint: fingerprint}
 				return nil
@@ -1611,7 +1624,6 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 		return ThreadView{}, err
 	}
 	view := service.currentView(actor)
-	service.publish(view)
 	return view, nil
 }
 
@@ -1725,15 +1737,23 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 	if err != nil {
 		return ImportResult{}, err
 	}
-	_ = actor.apply(ctx, func() error { actor.state.view.Queue = queue; actor.state.view.ViewVersion++; return nil })
+	_ = actor.apply(ctx, func() error {
+		actor.state.view.Queue = queue
+		actor.markComponents(threadQueueChanged)
+		actor.state.view.ViewVersion++
+		return nil
+	})
 	view := service.currentView(actor)
-	service.publish(view)
 	return ImportResult{ThreadID: in.ThreadID, Imported: imported, View: view}, nil
 }
 
 func (service *threadRuntimeService) currentView(actor *threadRuntimeState) ThreadView {
 	var view ThreadView
-	_ = actor.apply(context.Background(), func() error { view = cloneThreadRuntimeView(actor.state.view); return nil })
+	_ = actor.apply(context.Background(), func() error {
+		service.flushUpdateLocked(actor)
+		view = cloneThreadRuntimeView(actor.state.view)
+		return nil
+	})
 	return view
 }
 
@@ -1754,7 +1774,7 @@ func (service *threadRuntimeService) runtime(threadID identity.ThreadID) *thread
 	if runtime := service.runtimes[threadID.String()]; runtime != nil {
 		return runtime
 	}
-	runtime := &threadRuntimeState{threadID: threadID.String()}
+	runtime := &threadRuntimeState{threadID: threadID.String(), service: service}
 	if service.closed {
 		runtime.closed = true
 		return runtime
@@ -1774,7 +1794,15 @@ func (service *threadRuntimeService) close() error {
 		subscriptions = append(subscriptions, subscription)
 	}
 	service.subscribers = make(map[*WorkspaceSubscription]struct{})
+	updates := make([]*ThreadUpdateSubscription, 0, len(service.updateSubscribers))
+	for subscription := range service.updateSubscribers {
+		updates = append(updates, subscription)
+	}
+	service.updateSubscribers = nil
 	service.mu.Unlock()
+	for _, subscription := range updates {
+		subscription.closeWithError(ErrHostClosed)
+	}
 	for _, subscription := range subscriptions {
 		subscription.mu.Lock()
 		subscription.closeLocked()
@@ -1791,6 +1819,7 @@ func (service *threadRuntimeService) close() error {
 	var closeErr error
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
+		runtime.stopUpdateTimer()
 		drains = append(drains, threadRuntimeDrain{
 			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
 		})
@@ -1827,6 +1856,7 @@ func (service *threadRuntimeService) close() error {
 	closeErr = errors.Join(closeErr, waitThreadRuntimeDrains(context.Background(), drains))
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
+		runtime.stopUpdateTimer()
 		runtime.closed = true
 		runtime.mu.Unlock()
 	}
@@ -1849,6 +1879,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 				return err
 			}
 		}
+		service.flushUpdateLocked(actor)
 		if actor.state.view.ViewVersion > 0 {
 			view = cloneThreadRuntimeView(actor.state.view)
 		}
@@ -1896,6 +1927,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	}
 	startHydration := false
 	err = actor.apply(ctx, func() error {
+		service.flushUpdateLocked(actor)
 		if actor.state.view.ViewVersion > 0 {
 			view = cloneThreadRuntimeView(actor.state.view)
 			return nil
@@ -1911,6 +1943,11 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
 		actor.state.view = canonical
+		actor.invalidateItemIndex()
+		actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadPreviewsChanged | threadRestoredInputsChanged)
+		for _, item := range canonical.Items {
+			actor.markItem(item.ID, ThreadItemAdded)
+		}
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = runID
 		actor.state.requestKeys = hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
@@ -2134,7 +2171,6 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 	executionCtx, cancel := context.WithCancelCause(context.Background())
 	done := make(chan struct{})
 	actor := service.runtime(threadID)
-	var current ThreadView
 	if err := actor.apply(ctx, func() error {
 		if _, beginErr := actor.beginRun(beginThreadRunInput{
 			turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(requestKey),
@@ -2143,14 +2179,12 @@ func (service *threadRuntimeService) redispatchAcceptedTurn(ctx context.Context,
 			return beginErr
 		}
 		actor.state.agent = agent
-		current = cloneThreadRuntimeView(actor.state.view)
 		return nil
 	}); err != nil {
 		cancel(context.Canceled)
 		close(done)
 		return
 	}
-	service.publish(current)
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID, Input: input,
 		TurnKind: kind, RetrySourceTurnID: retrySourceTurnID, RetrySourceEntryID: retrySourceEntryID,
@@ -2280,6 +2314,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 			}
 			actor.state.view.ViewVersion++
 			actor.state.view.Queue = append(actor.state.view.Queue, queued)
+			actor.markComponents(threadQueueChanged)
 			result := cloneThreadRuntimeView(actor.state.view)
 			if actor.state.requestKeys == nil {
 				actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -2294,7 +2329,6 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 		if replayedQueue {
 			return service.currentView(actor), nil
 		}
-		service.publish(replay)
 		return replay, nil
 	}
 	turnID, runID, err := service.host.nextTurnRunIDs()
@@ -2349,6 +2383,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 		}
 		if kind == "" {
 			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
+			actor.markItem("user:"+requestKey, ThreadItemAdded)
 		}
 		if canonical, err := service.loadCanonicalThreadView(context.Background(), threadID); err != nil {
 			actor.state.contextErr = err
@@ -2370,7 +2405,6 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 		cancel(context.Canceled)
 		return result, nil
 	}
-	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
 		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input, TurnKind: kind,
 	})
@@ -2495,6 +2529,9 @@ func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntim
 		for index := len(actor.state.view.Items) - 1; index >= 0; index-- {
 			if actor.state.view.Items[index].ID == "user:"+requestKey {
 				actor.state.view.Items = append(actor.state.view.Items[:index], actor.state.view.Items[index+1:]...)
+				actor.markItem("user:"+requestKey, ThreadItemRemoved)
+				actor.invalidateItemIndex()
+				actor.mutations.order = true
 				break
 			}
 		}
@@ -2504,8 +2541,8 @@ func (service *threadRuntimeService) rollbackProvisionalSend(actor *threadRuntim
 		actor.state.view.RunID = ""
 		actor.state.view.RunProgress = nil
 		actor.state.view.ToolCallPreviews = nil
+		actor.markComponents(threadPreviewsChanged)
 		actor.state.view.ViewVersion++
-		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
 	})
 }
@@ -2603,7 +2640,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 	// can be installed in one actor transition. View and Send read this state
 	// directly; delaying publication alone cannot prevent partial settlement.
 	canonical, refreshErr := service.loadCanonicalThreadView(context.Background(), identity.ThreadID(actor.threadID))
-	var current ThreadView
+	startQueue := false
 	changed := false
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.turnID != turnID || actor.state.runID != runID || actor.state.view.Activity != ThreadActivityActive {
@@ -2623,12 +2660,14 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 		}
 		actor.state.view.RunProgress = nil
 		actor.state.view.ToolCallPreviews = nil
+		actor.markComponents(threadPreviewsChanged)
 		if refreshErr == nil {
 			actor.state.view.Turns = canonical.Turns
-			actor.state.view.Items = canonical.Items
+			actor.replaceItems(canonical.Items)
 			actor.state.view.ParentEvents = canonical.ParentEvents
 			actor.state.view.Goal = canonical.Goal
 			actor.state.view.Context = canonical.Context
+			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadInteractionsChanged | threadPreviewsChanged)
 			actor.state.contextErr = nil
 			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
 			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
@@ -2660,7 +2699,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 					actor.state.view.Cancellation = canonical.Cancellation
 				}
 			} else {
-				actor.state.view.Items = settleTerminalToolSegments(actor.state.view.Items, turnID, completed.ActivityTimeline)
+				actor.replaceItems(settleTerminalToolSegments(cloneThreadItems(actor.state.view.Items), turnID, completed.ActivityTimeline))
 			}
 			if outcome == TurnOutcomeCompleted && refreshErr == nil && actor.state.view.TurnKind != TurnKindContextCompaction && !hasTerminalPresentation(actor.state.view.Items, turnID) {
 				failed := TurnOutcomeFailed
@@ -2669,15 +2708,15 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 				actor.state.view.Failure = &ThreadTurnFailure{Code: ThreadTurnFailureEngineContract, Message: message}
 			}
 		}
-		current = cloneThreadRuntimeView(actor.state.view)
+		view := actor.state.view
+		startQueue = view.LastOutcome != nil && *view.LastOutcome == TurnOutcomeCompleted && view.Cancellation == nil
 		changed = true
 		return nil
 	})
 	if !changed {
 		return
 	}
-	service.publish(current)
-	if completed.Status == TurnStatusCompleted && runErr == nil && current.LastOutcome != nil && *current.LastOutcome == TurnOutcomeCompleted && current.Cancellation == nil {
+	if completed.Status == TurnStatusCompleted && runErr == nil && startQueue {
 		service.startNextQueued(actor)
 	}
 }
@@ -2923,16 +2962,18 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 		}
 		if canonicalErr == nil {
 			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false, actor.state.attemptDraftIDs); ok {
-				actor.state.view.Items = reconciled
+				actor.replaceItems(reconciled)
 			}
 		}
 		actor.state.view.Interactions = append(actor.state.view.Interactions, interaction)
+		actor.markComponents(threadInteractionsChanged)
 		copy := interaction
 		if interaction.Kind == ThreadInteractionApproval {
 			for itemIndex := range actor.state.view.Items {
 				item := &actor.state.view.Items[itemIndex]
 				if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == interaction.ToolCallID {
 					item.Interaction = &copy
+					actor.markItem(item.ID, ThreadItemReplaced)
 					break
 				}
 			}
@@ -2940,8 +2981,10 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 			itemID := "interaction:" + interaction.ID
 			if itemIndex := threadItemIndexByID(actor.state.view.Items, itemID); itemIndex >= 0 {
 				actor.state.view.Items[itemIndex].Interaction = &copy
+				actor.markItem(itemID, ThreadItemReplaced)
 			} else {
 				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: itemID, TurnID: interaction.TurnID, RunID: interaction.RunID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: entry.CreatedAt})
+				actor.markItem(itemID, ThreadItemAdded)
 			}
 		}
 		actor.state.view.RunProgress = nil
@@ -2952,7 +2995,6 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 		releaseReservedWaiter()
 		return nil, err
 	}
-	service.publish(service.currentView(actor))
 	return waiter, nil
 }
 
@@ -2961,8 +3003,6 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		return
 	}
 	actor := sink.service.runtime(event.ThreadID)
-	var current ThreadView
-	changed := false
 	_ = actor.apply(context.Background(), func() error {
 		if !actor.acceptLiveEvent(event) {
 			return nil
@@ -2979,26 +3019,24 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 			}
 		}
 		activityChanged := actor.applyToolActivity(event.ActivityTimeline, event.Timestamp)
+		if len(event.activityItems) > 0 {
+			activityChanged = actor.applyActivityItems(event.ThreadID, event.TurnID, event.RunID, event.activityItems, event.Timestamp) || activityChanged
+		}
 		actor.orderAttemptOutput(event.outputOrder)
 		previewChanged := actor.applyArgumentPreview(event)
 		progress, progressEvent := threadRunProgressForEvent(event)
 		if progressEvent {
 			progress = mergeRequestProgress(actor.state.view.RunProgress, progress, event)
 		}
-		progressChanged := progressEvent && !threadRuntimeViewNeedsAttention(actor.state.view) && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
+		progressChanged := progressEvent && actor.state.view.Attention == (AttentionSummary{}) && !sameThreadRunProgress(actor.state.view.RunProgress, progress)
 		if progressChanged {
 			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
 		}
 		if contextChanged || event.Stream != nil || progressChanged || activityChanged || previewChanged {
 			actor.state.view.ViewVersion++
-			current = cloneThreadRuntimeView(actor.state.view)
-			changed = true
 		}
 		return nil
 	})
-	if changed {
-		sink.service.publish(current)
-	}
 	if event.committed != nil && !event.contextCommitted || event.Type == observation.EventTypeToolApprovalRequested || event.Type == observation.EventTypeToolApprovalApproved || event.Type == observation.EventTypeToolApprovalRejected || event.Type == observation.EventTypeControlSignal {
 		go sink.service.refreshCanonical(event.ThreadID, event.TurnID)
 	}
@@ -3045,22 +3083,20 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 		return fmt.Errorf("canonical refresh ensure thread: %w", err)
 	}
 	actor := service.runtime(threadID)
-	baseVersion := service.currentView(actor).ViewVersion
+	var baseVersion uint64
+	_ = actor.apply(context.Background(), func() error { baseVersion = actor.state.view.ViewVersion; return nil })
 	canonical, err := service.loadCanonicalThreadView(context.Background(), threadID)
 	if err != nil {
 		return err
 	}
-	var current ThreadView
-	changed := false
 	var refreshErr error
 	_ = actor.apply(context.Background(), func() error {
 		if actor.state.view.ViewVersion != baseVersion {
 			previous := actor.state.view.Goal
 			if canonical.Goal != nil && (previous == nil || canonical.Goal.Version > previous.Version) {
 				actor.state.view.Goal = canonical.Goal
+				actor.markComponents(threadGoalChanged)
 				actor.state.view.ViewVersion++
-				current = cloneThreadRuntimeView(actor.state.view)
-				changed = true
 			}
 			refreshErr = fmt.Errorf("%w: view version changed", errCanonicalRefreshDiscarded)
 			return nil
@@ -3073,13 +3109,8 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 			refreshErr = err
 			return nil
 		}
-		current = cloneThreadRuntimeView(actor.state.view)
-		changed = true
 		return nil
 	})
-	if changed {
-		service.publish(current)
-	}
 	return refreshErr
 }
 
@@ -3097,10 +3128,11 @@ func (actor *threadRuntimeState) installCanonicalView(canonical ThreadView) erro
 		return fmt.Errorf("%w: item identity or canonical order conflict", errCanonicalRefreshDiscarded)
 	}
 	actor.state.view.ViewVersion++
-	actor.state.view.Items = reconciled
+	actor.replaceItems(reconciled)
 	actor.state.view.ParentEvents = canonical.ParentEvents
 	actor.state.view.Goal = canonical.Goal
 	actor.state.view.Context = canonical.Context
+	actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadInteractionsChanged | threadPreviewsChanged)
 	actor.state.contextErr = nil
 	actor.pruneArgumentPreviews()
 	actor.state.view.Turns = canonical.Turns
@@ -3367,7 +3399,7 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 			if interaction.Resolved || interaction.TurnID != turnID {
 				continue
 			}
-			resolveThreadInteractionCanonical(&actor.state.view, interaction.ID, resolution)
+			actor.resolveInteraction(interaction.ID, resolution)
 			if waiter := actor.state.pendingInteractions[interaction.ID]; waiter != nil {
 				waiters = append(waiters, waiter.resolution)
 				delete(actor.state.pendingInteractions, interaction.ID)
@@ -3593,7 +3625,7 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		}
 		for id, resolution := range resolutions {
 			resolution.At = now
-			resolveThreadInteractionCanonical(&actor.state.view, id, resolution)
+			actor.resolveInteraction(id, resolution)
 			if pending := actor.state.pendingInteractions[id]; pending != nil {
 				delete(actor.state.pendingInteractions, id)
 				resumedLocally[id] = true
@@ -3617,7 +3649,6 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		delivery.waiter <- delivery.resolution
 	}
 	view := service.currentView(actor)
-	service.publish(view)
 	go service.resumeCanonicalInteractions(actor, threadID, resolutions, secretInputs, pendingAnswers, byID, resumedLocally)
 	return view, nil
 }
@@ -3777,7 +3808,6 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	if previousExecution != nil {
 		<-previousExecution
 	}
-	var preparing ThreadView
 	claimed := false
 	claimErr := actor.apply(context.Background(), func() error {
 		if actor.state.turnID != interaction.TurnID || actor.state.runID != waitingRunID || actor.state.view.Activity != ThreadActivityActive || actor.state.view.Cancellation != nil {
@@ -3816,7 +3846,6 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 			return beginErr
 		}
 		actor.state.steering = pendingSteering
-		preparing = cloneThreadRuntimeView(actor.state.view)
 		claimed = true
 		return nil
 	})
@@ -3828,7 +3857,6 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		cancel(context.Canceled)
 		return
 	}
-	service.publish(preparing)
 	defer cancel(context.Canceled)
 	defer close(executionDone)
 	_, canonicalInput, canonicalErr := service.retrySource(executionCtx, threadID, interaction.TurnID)
@@ -3925,7 +3953,6 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 		cancel(context.Canceled)
 		return result, nil
 	}
-	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: sourceInput, CanonicalTurnInput: sourceInput, RetrySource: sourceTurnID})
 	request := turnExecutionRequest{
 		LogicalRequestID: identity.LogicalRequestID(requestKey), TurnID: turnID, RunID: runID,
@@ -4035,20 +4062,24 @@ func (service *threadRuntimeService) rollbackProvisionalRetry(actor *threadRunti
 		actor.state.view.RunID = ""
 		actor.state.view.RunProgress = nil
 		actor.state.view.ToolCallPreviews = nil
+		actor.markComponents(threadPreviewsChanged)
 		actor.state.view.ViewVersion++
-		service.publish(cloneThreadRuntimeView(actor.state.view))
 		return nil
 	})
 }
 
 func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceSubscription, error) {
+	return service.subscribe(ctx, false)
+}
+
+func (service *threadRuntimeService) subscribe(ctx context.Context, wakeOnly bool) (*WorkspaceSubscription, error) {
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), changed: make(chan struct{}, 1), service: service}
+	subscription := &WorkspaceSubscription{views: make(chan ThreadView, 64), done: make(chan struct{}), changed: make(chan struct{}, 1), service: service, wakeOnly: wakeOnly}
 	service.mu.Lock()
 	if service.subscriptionsClosed {
 		service.mu.Unlock()
@@ -4064,44 +4095,6 @@ func (service *threadRuntimeService) Subscribe(ctx context.Context) (*WorkspaceS
 		}
 	}()
 	return subscription, nil
-}
-
-func (service *threadRuntimeService) publish(current ThreadView) {
-	actor := service.runtime(current.ThreadID)
-	actor.mu.Lock()
-	invalid := actor.state.contextErr != nil
-	actor.mu.Unlock()
-	if invalid {
-		return
-	}
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	threadID := current.ThreadID.String()
-	if current.ViewVersion == 0 || current.ViewVersion <= service.published[threadID] {
-		return
-	}
-	service.published[threadID] = current.ViewVersion
-	for subscriber := range service.subscribers {
-		view := cloneThreadRuntimeView(current)
-		subscriber.mu.Lock()
-		if subscriber.closed {
-			subscriber.mu.Unlock()
-			continue
-		}
-		select {
-		case subscriber.views <- view:
-		default:
-			select {
-			case <-subscriber.views:
-			default:
-			}
-			select {
-			case subscriber.views <- view:
-			default:
-			}
-		}
-		subscriber.mu.Unlock()
-	}
 }
 
 func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) {
@@ -4128,7 +4121,6 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 				actor.state.view.Activity = ThreadActivityIdle
 				outcome := TurnOutcomeFailed
 				actor.state.view.LastOutcome = &outcome
-				service.publish(actor.state.view)
 				return nil
 			})
 		}
@@ -4226,11 +4218,13 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 			for index := range actor.state.view.Queue {
 				if actor.state.view.Queue[index].ID == promotedQueueID {
 					actor.state.view.Queue = append(actor.state.view.Queue[:index], actor.state.view.Queue[index+1:]...)
+					actor.markComponents(threadQueueChanged)
 					break
 				}
 			}
 		}
 		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
+		actor.markItem("user:"+requestKey, ThreadItemAdded)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -4250,7 +4244,6 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		cancel(context.Canceled)
 		return ThreadView{}, err
 	}
-	service.publish(result)
 	prepared := service.prepareExecution(executionCtx, actor, AgentRequest{
 		ThreadID: threadID, TurnID: turnID, RequestKey: requestKey, Input: input, CanonicalTurnInput: input,
 	})
@@ -4259,6 +4252,11 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 }
 
 func cloneThreadRuntimeView(view ThreadView) ThreadView {
+	view.Items = cloneThreadItems(view.Items)
+	return cloneThreadRuntimeFields(view)
+}
+
+func cloneThreadRuntimeFields(view ThreadView) ThreadView {
 	view.Context = cloneThreadContextSnapshot(view.Context)
 	if view.Goal != nil {
 		copy := *view.Goal
@@ -4284,7 +4282,6 @@ func cloneThreadRuntimeView(view ThreadView) ThreadView {
 		}
 	}
 	view.Turns = cloneThreadTurns(view.Turns)
-	view.Items = cloneThreadItems(view.Items)
 	view.Queue = append([]QueuedInput(nil), view.Queue...)
 	for index := range view.Queue {
 		view.Queue[index].Input.Attachments = cloneMessageAttachments(view.Queue[index].Input.Attachments)
@@ -5181,7 +5178,6 @@ func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, com
 			}
 		}
 	}
-	var next ThreadView
 	err := actor.apply(ctx, func() error {
 		if identity.TurnID(commit.TurnID) != actor.state.turnID || identity.RunID(commit.RunID) != actor.state.runID {
 			return ErrStaleAuthority
@@ -5200,12 +5196,10 @@ func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, com
 		if committedSources[actor.state.openTextSegmentID] {
 			actor.finishLiveTextSegment()
 		}
-		next = cloneThreadRuntimeView(actor.state.view)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	sink.service.publish(next)
 	return nil
 }

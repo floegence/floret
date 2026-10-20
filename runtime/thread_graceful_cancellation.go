@@ -109,7 +109,6 @@ func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Con
 		return current, nil
 	}
 	service.recordCancellation(threadID, turnID, runID, "user_stop", "graceful stop requested")
-	service.publish(current)
 	go func() {
 		timer := time.NewTimer(time.Until(deadline))
 		defer timer.Stop()

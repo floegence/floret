@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -178,373 +177,439 @@ type activityItemState struct {
 	lastSeen int64
 }
 
-// BuildActivityTimeline projects sanitized runtime events into a stable
-// activity summary. Tool-facing display details enter the timeline only through
-// an explicit tools.ActivityPresentation that has already crossed the event sanitizer.
+// ActivityReducer incrementally folds sanitized events. It retains activity
+// facts only, never provider text or the event history. Callers serialize Apply.
+type ActivityReducer struct {
+	meta                       ActivityRunMeta
+	items                      map[string]*activityItemState
+	order                      []string
+	changed                    map[string]bool
+	runEnd                     *Event
+	firstAt, lastAt            int64
+	index                      int
+	hasExplicitControlActivity bool
+}
+
+func NewActivityReducer(meta ActivityRunMeta) *ActivityReducer {
+	return &ActivityReducer{meta: ActivityRunMeta{RunID: identity.RunID(strings.TrimSpace(meta.RunID.String())), ThreadID: identity.ThreadID(strings.TrimSpace(meta.ThreadID.String())), TurnID: identity.TurnID(strings.TrimSpace(meta.TurnID.String())), TraceID: identity.TraceID(strings.TrimSpace(meta.TraceID.String()))}, items: make(map[string]*activityItemState), changed: make(map[string]bool)}
+}
+
+// BuildActivityTimeline uses the same reducer as live observation. Tool-facing
+// details must already have crossed the event sanitizer.
 func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64) ActivityTimeline {
-	timeline := ActivityTimeline{
-		SchemaVersion: ActivityTimelineSchemaVersion,
-		RunID:         identity.RunID(strings.TrimSpace(meta.RunID.String())),
-		ThreadID:      identity.ThreadID(strings.TrimSpace(meta.ThreadID.String())),
-		TurnID:        identity.TurnID(strings.TrimSpace(meta.TurnID.String())),
-		TraceID:       identity.TraceID(strings.TrimSpace(meta.TraceID.String())),
-		Summary: ActivitySummary{
-			Status:   ActivityStatusPending,
-			Severity: ActivitySeverityQuiet,
-		},
-		Items: []ActivityItem{},
+	reducer := NewActivityReducer(meta)
+	for _, ev := range events {
+		reducer.Apply(ev, nowUnixMS)
 	}
+	return reducer.Snapshot(nowUnixMS)
+}
+
+// Apply records one fact. Unrelated events consume only their stable sequence
+// position; they are not retained and do not invalidate existing activity.
+func (reducer *ActivityReducer) Apply(ev Event, nowUnixMS int64) {
+	index := reducer.index
+	reducer.index++
 	if nowUnixMS <= 0 {
 		nowUnixMS = time.Now().UnixMilli()
 	}
-	items := map[string]*activityItemState{}
-	order := []string{}
-	var runEnd *Event
-	var firstAt int64
-	var lastAt int64
-	hasExplicitControlActivity := false
-	for index, ev := range events {
-		if ev.Metadata["tool_validation_error"] == true {
-			continue
+	if ev.Metadata["tool_validation_error"] == true {
+		return
+	}
+	if reducer.meta.RunID == "" {
+		reducer.meta.RunID = identity.RunID(strings.TrimSpace(ev.RunID.String()))
+	}
+	if reducer.meta.ThreadID == "" {
+		reducer.meta.ThreadID = identity.ThreadID(strings.TrimSpace(ev.ThreadID.String()))
+	}
+	if reducer.meta.TurnID == "" {
+		reducer.meta.TurnID = identity.TurnID(strings.TrimSpace(ev.TurnID.String()))
+	}
+	if reducer.meta.TraceID == "" {
+		reducer.meta.TraceID = identity.TraceID(strings.TrimSpace(ev.TraceID.String()))
+	}
+	observedAt := eventUnixMS(ev, nowUnixMS)
+	switch ev.Type {
+	case EventTypeToolCall, EventTypeHostedToolCall:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		initialStatus := ActivityStatusPending
+		initialSeverity := ActivitySeverityQuiet
+		if ev.Type == EventTypeHostedToolCall {
+			initialStatus = ActivityStatusRunning
+			initialSeverity = ActivitySeverityNormal
 		}
-		if timeline.RunID == "" {
-			timeline.RunID = identity.RunID(strings.TrimSpace(ev.RunID.String()))
-		}
-		if timeline.ThreadID == "" {
-			timeline.ThreadID = identity.ThreadID(strings.TrimSpace(ev.ThreadID.String()))
-		}
-		if timeline.TurnID == "" {
-			timeline.TurnID = identity.TurnID(strings.TrimSpace(ev.TurnID.String()))
-		}
-		if timeline.TraceID == "" {
-			timeline.TraceID = identity.TraceID(strings.TrimSpace(ev.TraceID.String()))
-		}
-		observedAt := eventUnixMS(ev, nowUnixMS)
-		switch ev.Type {
-		case EventTypeToolCall, EventTypeHostedToolCall:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			initialStatus := ActivityStatusPending
-			initialSeverity := ActivitySeverityQuiet
-			if ev.Type == EventTypeHostedToolCall {
-				initialStatus = ActivityStatusRunning
-				initialSeverity = ActivitySeverityNormal
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:          key,
+				ToolID:          strings.TrimSpace(ev.ToolID),
+				ToolName:        strings.TrimSpace(ev.ToolName),
+				Kind:            activityToolKind(ev),
+				Status:          initialStatus,
+				Severity:        initialSeverity,
+				StartedAtUnixMS: observedAt,
+				Metadata:        activityMetadata(ev),
 			}
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:          key,
-					ToolID:          strings.TrimSpace(ev.ToolID),
-					ToolName:        strings.TrimSpace(ev.ToolName),
-					Kind:            activityToolKind(ev),
-					Status:          initialStatus,
-					Severity:        initialSeverity,
-					StartedAtUnixMS: observedAt,
-					Metadata:        activityMetadata(ev),
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			if state.item.StartedAtUnixMS == 0 {
-				state.item.StartedAtUnixMS = observedAt
-			}
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			if activityMetadataBool(ev.Metadata, "pending_tool_result") {
-				state.item.Status = ActivityStatusRunning
-				state.item.Severity = ActivitySeverityWarning
-			}
-			state.lastSeen = observedAt
-		case EventTypeToolDispatchStarted:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:          key,
-					ToolID:          strings.TrimSpace(ev.ToolID),
-					ToolName:        strings.TrimSpace(ev.ToolName),
-					Kind:            activityToolKind(ev),
-					Status:          ActivityStatusRunning,
-					Severity:        ActivitySeverityNormal,
-					StartedAtUnixMS: observedAt,
-					Metadata:        activityMetadata(ev),
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		})
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		if state.item.StartedAtUnixMS == 0 {
 			state.item.StartedAtUnixMS = observedAt
+		}
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		if !activityStatusIsTerminal(state.item.Status) && activityMetadataBool(ev.Metadata, "pending_tool_result") {
+			state.item.Status = ActivityStatusRunning
+			state.item.Severity = ActivitySeverityWarning
+		}
+		state.lastSeen = observedAt
+	case EventTypeToolDispatchStarted:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:          key,
+				ToolID:          strings.TrimSpace(ev.ToolID),
+				ToolName:        strings.TrimSpace(ev.ToolName),
+				Kind:            activityToolKind(ev),
+				Status:          ActivityStatusRunning,
+				Severity:        ActivitySeverityNormal,
+				StartedAtUnixMS: observedAt,
+				Metadata:        activityMetadata(ev),
+			}
+		})
+		if activityStatusIsTerminal(state.item.Status) {
+			return
+		}
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		state.item.StartedAtUnixMS = observedAt
+		state.item.Status = ActivityStatusRunning
+		state.item.Severity = ActivitySeverityNormal
+		state.item.EndedAtUnixMS = 0
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		state.lastSeen = observedAt
+	case EventTypeToolActivityUpdated:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:          key,
+				ToolID:          strings.TrimSpace(ev.ToolID),
+				ToolName:        strings.TrimSpace(ev.ToolName),
+				Kind:            activityToolKind(ev),
+				Status:          ActivityStatusRunning,
+				Severity:        ActivitySeverityNormal,
+				StartedAtUnixMS: observedAt,
+				Metadata:        activityMetadata(ev),
+			}
+		})
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		if state.item.StartedAtUnixMS == 0 {
+			state.item.StartedAtUnixMS = observedAt
+		}
+		if !activityStatusIsTerminal(state.item.Status) && state.item.Status != ActivityStatusWaiting {
 			state.item.Status = ActivityStatusRunning
 			state.item.Severity = ActivitySeverityNormal
 			state.item.EndedAtUnixMS = 0
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			state.lastSeen = observedAt
-		case EventTypeToolActivityUpdated:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:          key,
-					ToolID:          strings.TrimSpace(ev.ToolID),
-					ToolName:        strings.TrimSpace(ev.ToolName),
-					Kind:            activityToolKind(ev),
-					Status:          ActivityStatusRunning,
-					Severity:        ActivitySeverityNormal,
-					StartedAtUnixMS: observedAt,
-					Metadata:        activityMetadata(ev),
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			if state.item.StartedAtUnixMS == 0 {
-				state.item.StartedAtUnixMS = observedAt
-			}
-			if !activityStatusIsTerminal(state.item.Status) && state.item.Status != ActivityStatusWaiting {
-				state.item.Status = ActivityStatusRunning
-				state.item.Severity = ActivitySeverityNormal
-				state.item.EndedAtUnixMS = 0
-			}
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			state.lastSeen = observedAt
-		case EventTypeToolResult, EventTypeHostedToolResult:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				startedAt := int64(0)
-				if ev.DurationMS > 0 && observedAt > ev.DurationMS {
-					startedAt = observedAt - ev.DurationMS
-				}
-				return ActivityItem{
-					ItemID:          key,
-					ToolID:          strings.TrimSpace(ev.ToolID),
-					ToolName:        strings.TrimSpace(ev.ToolName),
-					Kind:            activityToolKind(ev),
-					Status:          ActivityStatusPending,
-					Severity:        ActivitySeverityNormal,
-					StartedAtUnixMS: startedAt,
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			state.item.EndedAtUnixMS = observedAt
+		}
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		state.lastSeen = observedAt
+	case EventTypeToolResult, EventTypeHostedToolResult:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			startedAt := int64(0)
 			if ev.DurationMS > 0 && observedAt > ev.DurationMS {
-				durationStart := observedAt - ev.DurationMS
-				state.item.StartedAtUnixMS = durationStart
+				startedAt = observedAt - ev.DurationMS
 			}
-			resultStatus := activityMetadataValue(ev, "tool_result_status")
-			if state.item.ApprovalState == "rejected" || resultStatus == string(ActivityStatusDeclined) {
-				// A canonical user decision is terminal and must not be
-				// overwritten by a legacy/success-shaped tool result event. A
-				// structured declined result is sufficient terminal evidence when
-				// the matching approval event is not present in this projection.
-				state.item.Status = ActivityStatusDeclined
-				state.item.Severity = ActivitySeverityQuiet
-				state.item.RequiresApproval = false
-				state.item.ApprovalState = "rejected"
-			} else if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
-				state.item.Status = ActivityStatusError
-				state.item.Severity = ActivitySeverityError
-			} else if activityMetadataBool(ev.Metadata, "pending_tool_result") {
-				state.item.Status = ActivityStatusRunning
-				state.item.Severity = ActivitySeverityWarning
-				state.item.EndedAtUnixMS = 0
-			} else if resultStatus == string(ActivityStatusCanceled) {
-				state.item.Status = ActivityStatusCanceled
-				state.item.Severity = ActivitySeverityWarning
-			} else {
-				state.item.Status = ActivityStatusSuccess
-				state.item.Severity = ActivitySeverityNormal
+			return ActivityItem{
+				ItemID:          key,
+				ToolID:          strings.TrimSpace(ev.ToolID),
+				ToolName:        strings.TrimSpace(ev.ToolName),
+				Kind:            activityToolKind(ev),
+				Status:          ActivityStatusPending,
+				Severity:        ActivitySeverityNormal,
+				StartedAtUnixMS: startedAt,
 			}
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			if state.item.Status != ActivityStatusRunning {
-				state.item.Metadata = activityTerminalMetadata(state.item.Metadata)
-				if state.item.Status == ActivityStatusDeclined {
-					state.item.Presentation = tools.FinalizeActivityPresentation(state.item.Presentation, string(state.item.Status))
-				} else {
-					state.item.Presentation = tools.ClearPendingActivity(state.item.Presentation)
-				}
-			}
-			state.lastSeen = observedAt
-		case EventTypeToolApprovalRequested:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:           key,
-					ToolID:           strings.TrimSpace(ev.ToolID),
-					ToolName:         strings.TrimSpace(ev.ToolName),
-					Kind:             activityToolKind(ev),
-					Status:           ActivityStatusWaiting,
-					Severity:         ActivitySeverityBlocking,
-					RequiresApproval: true,
-					ApprovalState:    "requested",
-					StartedAtUnixMS:  observedAt,
-					Metadata:         activityMetadata(ev),
-				}
-			})
-			if activityStatusIsTerminal(state.item.Status) {
-				// A late or replayed request must not reopen a canonical terminal
-				// tool result for the same stable tool identity.
-				state.lastSeen = observedAt
-				continue
-			}
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			if state.item.StartedAtUnixMS == 0 {
-				state.item.StartedAtUnixMS = observedAt
-			}
-			state.item.Status = ActivityStatusWaiting
-			state.item.Severity = ActivitySeverityBlocking
-			state.item.RequiresApproval = true
-			state.item.ApprovalState = "requested"
+		})
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		state.item.EndedAtUnixMS = observedAt
+		if ev.DurationMS > 0 && observedAt > ev.DurationMS {
+			durationStart := observedAt - ev.DurationMS
+			state.item.StartedAtUnixMS = durationStart
+		}
+		resultStatus := activityMetadataValue(ev, "tool_result_status")
+		if state.item.ApprovalState == "rejected" || resultStatus == string(ActivityStatusDeclined) {
+			// A canonical user decision is terminal and must not be
+			// overwritten by a legacy/success-shaped tool result event. A
+			// structured declined result is sufficient terminal evidence when
+			// the matching approval event is not present in this projection.
+			state.item.Status = ActivityStatusDeclined
+			state.item.Severity = ActivitySeverityQuiet
+			state.item.RequiresApproval = false
+			state.item.ApprovalState = "rejected"
+		} else if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
+			state.item.Status = ActivityStatusError
+			state.item.Severity = ActivitySeverityError
+		} else if activityMetadataBool(ev.Metadata, "pending_tool_result") {
+			state.item.Status = ActivityStatusRunning
+			state.item.Severity = ActivitySeverityWarning
 			state.item.EndedAtUnixMS = 0
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			state.lastSeen = observedAt
-		case EventTypeToolApprovalApproved, EventTypeToolApprovalRejected, EventTypeToolApprovalTimedOut, EventTypeToolApprovalCanceled:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityToolKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:           key,
-					ToolID:           strings.TrimSpace(ev.ToolID),
-					ToolName:         strings.TrimSpace(ev.ToolName),
-					Kind:             activityToolKind(ev),
-					Status:           ActivityStatusPending,
-					Severity:         ActivitySeverityNormal,
-					RequiresApproval: true,
-					StartedAtUnixMS:  observedAt,
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			if state.item.StartedAtUnixMS == 0 {
-				state.item.StartedAtUnixMS = observedAt
+		} else if resultStatus == string(ActivityStatusCanceled) {
+			state.item.Status = ActivityStatusCanceled
+			state.item.Severity = ActivitySeverityWarning
+		} else {
+			state.item.Status = ActivityStatusSuccess
+			state.item.Severity = ActivitySeverityNormal
+		}
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		if state.item.Status != ActivityStatusRunning {
+			state.item.Metadata = activityTerminalMetadata(state.item.Metadata)
+			if state.item.Status == ActivityStatusDeclined {
+				state.item.Presentation = tools.FinalizeActivityPresentation(state.item.Presentation, string(state.item.Status))
+			} else {
+				state.item.Presentation = tools.ClearPendingActivity(state.item.Presentation)
 			}
-			state.item.RequiresApproval = true
-			switch ev.Type {
-			case EventTypeToolApprovalApproved:
-				state.item.Status = ActivityStatusPending
-				state.item.Severity = ActivitySeverityNormal
-				state.item.ApprovalState = "approved"
-				state.item.EndedAtUnixMS = 0
-			case EventTypeToolApprovalRejected:
-				state.item.Status = ActivityStatusDeclined
-				state.item.Severity = ActivitySeverityQuiet
-				state.item.RequiresApproval = false
-				state.item.ApprovalState = "rejected"
-				state.item.EndedAtUnixMS = observedAt
-			case EventTypeToolApprovalTimedOut:
-				state.item.Status = ActivityStatusError
-				state.item.Severity = ActivitySeverityBlocking
-				state.item.ApprovalState = "timed_out"
-				state.item.EndedAtUnixMS = observedAt
-			case EventTypeToolApprovalCanceled:
-				state.item.Status = ActivityStatusCanceled
-				state.item.Severity = ActivitySeverityWarning
-				state.item.ApprovalState = "canceled"
-				state.item.EndedAtUnixMS = observedAt
+		}
+		state.lastSeen = observedAt
+	case EventTypeToolApprovalRequested:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:           key,
+				ToolID:           strings.TrimSpace(ev.ToolID),
+				ToolName:         strings.TrimSpace(ev.ToolName),
+				Kind:             activityToolKind(ev),
+				Status:           ActivityStatusWaiting,
+				Severity:         ActivitySeverityBlocking,
+				RequiresApproval: true,
+				ApprovalState:    "requested",
+				StartedAtUnixMS:  observedAt,
+				Metadata:         activityMetadata(ev),
 			}
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		})
+		if activityStatusIsTerminal(state.item.Status) {
+			// A late or replayed request must not reopen a canonical terminal
+			// tool result for the same stable tool identity.
 			state.lastSeen = observedAt
-		case EventTypeControlSignal:
-			hasExplicitControlActivity = true
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityControlKey(ev, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:          key,
-					ToolID:          strings.TrimSpace(ev.ToolID),
-					ToolName:        strings.TrimSpace(ev.ToolName),
-					Kind:            ActivityKindControl,
-					Status:          activityControlStatus(ev),
-					Severity:        activityControlSeverity(ev),
-					StartedAtUnixMS: observedAt,
-					EndedAtUnixMS:   observedAt,
-					Metadata:        activityMetadata(ev),
-				}
-			})
-			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
-			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
-			state.item.Kind = ActivityKindControl
-			state.item.Status = activityControlStatus(ev)
-			state.item.Severity = activityControlSeverity(ev)
+			return
+		}
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		if state.item.StartedAtUnixMS == 0 {
 			state.item.StartedAtUnixMS = observedAt
+		}
+		state.item.Status = ActivityStatusWaiting
+		state.item.Severity = ActivitySeverityBlocking
+		state.item.RequiresApproval = true
+		state.item.ApprovalState = "requested"
+		state.item.EndedAtUnixMS = 0
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		state.lastSeen = observedAt
+	case EventTypeToolApprovalApproved, EventTypeToolApprovalRejected, EventTypeToolApprovalTimedOut, EventTypeToolApprovalCanceled:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityToolKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:           key,
+				ToolID:           strings.TrimSpace(ev.ToolID),
+				ToolName:         strings.TrimSpace(ev.ToolName),
+				Kind:             activityToolKind(ev),
+				Status:           ActivityStatusPending,
+				Severity:         ActivitySeverityNormal,
+				RequiresApproval: true,
+				StartedAtUnixMS:  observedAt,
+			}
+		})
+		if activityStatusIsTerminal(state.item.Status) && ev.Type == EventTypeToolApprovalApproved {
+			return
+		}
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+		if state.item.StartedAtUnixMS == 0 {
+			state.item.StartedAtUnixMS = observedAt
+		}
+		state.item.RequiresApproval = true
+		switch ev.Type {
+		case EventTypeToolApprovalApproved:
+			state.item.Status = ActivityStatusPending
+			state.item.Severity = ActivitySeverityNormal
+			state.item.ApprovalState = "approved"
+			state.item.EndedAtUnixMS = 0
+		case EventTypeToolApprovalRejected:
+			state.item.Status = ActivityStatusDeclined
+			state.item.Severity = ActivitySeverityQuiet
+			state.item.RequiresApproval = false
+			state.item.ApprovalState = "rejected"
 			state.item.EndedAtUnixMS = observedAt
-			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			state.lastSeen = observedAt
-		case EventTypeBudgetExceeded:
-			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := fmt.Sprintf("budget:%d:%d", ev.Step, index)
-			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-				return ActivityItem{
-					ItemID:          key,
-					Kind:            ActivityKindBudget,
-					Status:          ActivityStatusError,
-					Severity:        ActivitySeverityBlocking,
-					StartedAtUnixMS: observedAt,
-					EndedAtUnixMS:   observedAt,
-				}
-			})
+		case EventTypeToolApprovalTimedOut:
 			state.item.Status = ActivityStatusError
 			state.item.Severity = ActivitySeverityBlocking
-			state.lastSeen = observedAt
-		case EventTypeRunEnd:
-			evCopy := ev
-			runEnd = &evCopy
-			if item, ok := activityRunEndControlItem(ev, index, observedAt); ok && !hasExplicitControlActivity {
-				noteActivityTime(observedAt, &firstAt, &lastAt)
-				key := item.ItemID
-				state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
-					return item
-				})
-				state.item.Status = item.Status
-				state.item.Severity = item.Severity
-				state.item.StartedAtUnixMS = item.StartedAtUnixMS
-				state.item.EndedAtUnixMS = item.EndedAtUnixMS
-				mergeActivityPresentationIntoItem(&state.item, ev.Activity)
-				state.lastSeen = observedAt
+			state.item.ApprovalState = "timed_out"
+			state.item.EndedAtUnixMS = observedAt
+		case EventTypeToolApprovalCanceled:
+			state.item.Status = ActivityStatusCanceled
+			state.item.Severity = ActivitySeverityWarning
+			state.item.ApprovalState = "canceled"
+			state.item.EndedAtUnixMS = observedAt
+		}
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		state.lastSeen = observedAt
+	case EventTypeControlSignal:
+		reducer.hasExplicitControlActivity = true
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := activityControlKey(ev, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:          key,
+				ToolID:          strings.TrimSpace(ev.ToolID),
+				ToolName:        strings.TrimSpace(ev.ToolName),
+				Kind:            ActivityKindControl,
+				Status:          activityControlStatus(ev),
+				Severity:        activityControlSeverity(ev),
+				StartedAtUnixMS: observedAt,
+				EndedAtUnixMS:   observedAt,
+				Metadata:        activityMetadata(ev),
 			}
+		})
+		state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+		state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+		state.item.Kind = ActivityKindControl
+		state.item.Status = activityControlStatus(ev)
+		state.item.Severity = activityControlSeverity(ev)
+		state.item.StartedAtUnixMS = observedAt
+		state.item.EndedAtUnixMS = observedAt
+		mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+		state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+		state.lastSeen = observedAt
+	case EventTypeBudgetExceeded:
+		noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+		key := fmt.Sprintf("budget:%d:%d", ev.Step, index)
+		state := reducer.ensureItem(key, func() ActivityItem {
+			return ActivityItem{
+				ItemID:          key,
+				Kind:            ActivityKindBudget,
+				Status:          ActivityStatusError,
+				Severity:        ActivitySeverityBlocking,
+				StartedAtUnixMS: observedAt,
+				EndedAtUnixMS:   observedAt,
+			}
+		})
+		state.item.Status = ActivityStatusError
+		state.item.Severity = ActivitySeverityBlocking
+		state.lastSeen = observedAt
+	case EventTypeRunEnd:
+		evCopy := ev
+		reducer.runEnd = &evCopy
+		for key := range reducer.items {
+			reducer.changed[key] = true
+		}
+		if item, ok := activityRunEndControlItem(ev, index, observedAt); ok && !reducer.hasExplicitControlActivity {
+			noteActivityTime(observedAt, &reducer.firstAt, &reducer.lastAt)
+			key := item.ItemID
+			state := reducer.ensureItem(key, func() ActivityItem {
+				return item
+			})
+			state.item.Status = item.Status
+			state.item.Severity = item.Severity
+			state.item.StartedAtUnixMS = item.StartedAtUnixMS
+			state.item.EndedAtUnixMS = item.EndedAtUnixMS
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+			state.lastSeen = observedAt
 		}
 	}
-	for _, key := range order {
-		state := items[key]
-		if runEnd == nil && state.item.RequiresApproval && state.item.ApprovalState == "requested" {
-			// A terminal tool result can commit before interrupted-turn recovery
-			// appends its run marker. Close the approval from that durable outcome
-			// so the intermediate timeline remains readable after a restart.
-			switch state.item.Status {
-			case ActivityStatusError:
-				state.item.ApprovalState = "timed_out"
-			case ActivityStatusCanceled:
-				state.item.ApprovalState = "canceled"
-			}
+}
+
+func (reducer *ActivityReducer) ensureItem(key string, create func() ActivityItem) *activityItemState {
+	reducer.changed[key] = true
+	return ensureActivityItem(reducer.items, &reducer.order, key, len(reducer.order), create)
+}
+
+func (reducer *ActivityReducer) projectedItem(state *activityItemState, nowUnixMS int64) ActivityItem {
+	item := cloneActivityItem(state.item)
+	if reducer.runEnd == nil && item.RequiresApproval && item.ApprovalState == "requested" {
+		switch item.Status {
+		case ActivityStatusError:
+			item.ApprovalState = "timed_out"
+		case ActivityStatusCanceled:
+			item.ApprovalState = "canceled"
 		}
-		if runEnd != nil {
-			settleUnresolvedActivityItemAtRunEnd(&state.item, *runEnd, nowUnixMS)
+	}
+	if reducer.runEnd != nil {
+		settleUnresolvedActivityItemAtRunEnd(&item, *reducer.runEnd, nowUnixMS)
+	}
+	item.AttentionReasons = activityItemAttentionReasons(item)
+	item.NeedsAttention = len(item.AttentionReasons) > 0
+	return item
+}
+
+// ChangedItems drains changed facts, detached from reducer ownership. A run-end
+// fact settles every unresolved activity and therefore invalidates those items.
+func (reducer *ActivityReducer) ChangedItems(nowUnixMS int64) []ActivityItem {
+	if nowUnixMS <= 0 {
+		nowUnixMS = time.Now().UnixMilli()
+	}
+	items := make([]ActivityItem, 0, len(reducer.changed))
+	for key := range reducer.changed {
+		if state := reducer.items[key]; state != nil {
+			items = append(items, reducer.projectedItem(state, nowUnixMS))
 		}
-		state.item.AttentionReasons = activityItemAttentionReasons(state.item)
-		state.item.NeedsAttention = len(state.item.AttentionReasons) > 0
-		timeline.Items = append(timeline.Items, state.item)
+	}
+	reducer.changed = make(map[string]bool)
+	sort.SliceStable(items, func(i, j int) bool {
+		return reducer.items[items[i].ItemID].order < reducer.items[items[j].ItemID].order
+	})
+	return items
+}
+
+// RemoveItems retires uncommitted hosted activity from a replaced attempt.
+func (reducer *ActivityReducer) RemoveItems(ids []string) {
+	for _, id := range ids {
+		delete(reducer.items, id)
+		delete(reducer.changed, id)
+	}
+	kept := reducer.order[:0]
+	for _, id := range reducer.order {
+		if reducer.items[id] != nil {
+			kept = append(kept, id)
+		}
+	}
+	reducer.order = kept
+	for i, id := range reducer.order {
+		reducer.items[id].order = i
+	}
+}
+
+func (reducer *ActivityReducer) Snapshot(nowUnixMS int64) ActivityTimeline {
+	if nowUnixMS <= 0 {
+		nowUnixMS = time.Now().UnixMilli()
+	}
+	timeline := ActivityTimeline{SchemaVersion: ActivityTimelineSchemaVersion, RunID: reducer.meta.RunID, ThreadID: reducer.meta.ThreadID, TurnID: reducer.meta.TurnID, TraceID: reducer.meta.TraceID, Items: []ActivityItem{}}
+	for _, key := range reducer.order {
+		timeline.Items = append(timeline.Items, reducer.projectedItem(reducer.items[key], nowUnixMS))
 	}
 	sort.SliceStable(timeline.Items, func(i, j int) bool {
-		left := activityItemSortTime(timeline.Items[i])
-		right := activityItemSortTime(timeline.Items[j])
+		left, right := activityItemSortTime(timeline.Items[i]), activityItemSortTime(timeline.Items[j])
 		if left != 0 && right != 0 && left != right {
 			return left < right
 		}
-		return slices.Index(order, timeline.Items[i].ItemID) < slices.Index(order, timeline.Items[j].ItemID)
+		return reducer.items[timeline.Items[i].ItemID].order < reducer.items[timeline.Items[j].ItemID].order
 	})
-	timeline.Summary = activitySummary(timeline.Items, runEnd, firstAt, lastAt, nowUnixMS)
+	timeline.Summary = activitySummary(timeline.Items, reducer.runEnd, reducer.firstAt, reducer.lastAt, nowUnixMS)
 	return timeline
 }
 
