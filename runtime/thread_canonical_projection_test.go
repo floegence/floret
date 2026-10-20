@@ -115,6 +115,7 @@ type canonicalReadCountingRepo struct {
 	reader         sessiontree.PathEntriesWindowReader
 	paths, windows int
 	windowErr      error
+	failWindow     int
 }
 
 func (repo *canonicalReadCountingRepo) Path(ctx context.Context, threadID, leaf string) ([]sessiontree.Entry, error) {
@@ -123,7 +124,7 @@ func (repo *canonicalReadCountingRepo) Path(ctx context.Context, threadID, leaf 
 }
 func (repo *canonicalReadCountingRepo) PathEntriesWindow(ctx context.Context, options sessiontree.PathWindowOptions) (sessiontree.PathEntriesWindow, error) {
 	repo.windows++
-	if repo.windowErr != nil {
+	if repo.windowErr != nil && (repo.failWindow == 0 || repo.windows == repo.failWindow) {
 		return sessiontree.PathEntriesWindow{}, repo.windowErr
 	}
 	return repo.reader.PathEntriesWindow(ctx, options)
@@ -182,5 +183,135 @@ func TestCanonicalActorReadsOnlyAppendedStorageIntervalAndRecoversAfterFailure(t
 	}
 	if repo.paths != 0 || repo.windows != 1 || len(actor.state.view.Items) != 601 {
 		t.Fatalf("resume paths=%d windows=%d items=%d", repo.paths, repo.windows, len(actor.state.view.Items))
+	}
+}
+
+func TestCanonicalCommittedEventAndInteractionUseOnlyIncrementalReads(t *testing.T) {
+	host, full := testThreadService(t, newBlockingThreadGateway())
+	created, err := full.Create(t.Context(), CreateThreadInput{RequestKey: "canonical-event"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := full.(*threadRuntimeService)
+	repo := &canonicalReadCountingRepo{Repo: host.store.repo, reader: host.store.repo.(sessiontree.PathEntriesWindowReader)}
+	host.store.repo = repo
+	actor := service.runtime(created.ThreadID)
+	entry, err := repo.Append(t.Context(), sessiontree.Entry{ThreadID: created.ThreadID.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "committed event"}}, sessiontree.AppendOptions{ID: "entry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := threadRuntimeEventSink{service: service}
+	sink.EmitEvent(Event{ThreadID: created.ThreadID, TurnID: "turn", RunID: "run", committed: &agentharness.ThreadDetailEvent{ID: entry.ID}})
+	if repo.paths != 0 || repo.windows != 1 || len(actor.state.view.Items) != 1 || actor.state.view.Items[0].Text != "committed event" {
+		t.Fatalf("committed event paths=%d windows=%d items=%+v", repo.paths, repo.windows, actor.state.view.Items)
+	}
+	interaction := ThreadInteraction{ID: "approval:event", TurnID: "turn", RunID: "run", Kind: ThreadInteractionApproval, ToolCallID: "tool"}
+	waiter, err := service.requestInteraction(t.Context(), actor, created.ThreadID, interaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiter == nil || repo.paths != 0 || repo.windows != 2 || len(actor.state.view.Interactions) != 1 || actor.state.view.Interactions[0].ID != interaction.ID {
+		t.Fatalf("interaction paths=%d windows=%d interactions=%+v", repo.paths, repo.windows, actor.state.view.Interactions)
+	}
+}
+
+func (repo *canonicalReadCountingRepo) AppendRuntimeFacts(ctx context.Context, threadID string, entries []sessiontree.Entry) ([]sessiontree.Entry, error) {
+	return repo.Repo.(sessiontree.RuntimeJournalRepo).AppendRuntimeFacts(ctx, threadID, entries)
+}
+
+func TestCanonicalInstallationRejectsLateErrorsBeforeChangingAcceptedView(t *testing.T) {
+	entries := []sessiontree.Entry{
+		{ID: "start", TurnID: "turn", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted},
+		{ID: "user", ParentID: "start", TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "original"}},
+	}
+	projection := newThreadCanonicalProjection()
+	if err := projection.append(entries); err != nil {
+		t.Fatal(err)
+	}
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread"}}}
+	if err := actor.installCanonicalChanges(projection); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(actor.state.view)
+	projection.resetChanges()
+	if err := projection.append([]sessiontree.Entry{{ID: "new", ParentID: "user", TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "must remain uninstalled"}}}); err != nil {
+		t.Fatal(err)
+	}
+	projection.turns.turns["turn"].finalErr = errors.New("late turn validation failure")
+	if err := actor.installCanonicalChanges(projection); err == nil {
+		t.Fatal("late validation failure accepted")
+	}
+	after, _ := json.Marshal(actor.state.view)
+	if string(before) != string(after) {
+		t.Fatalf("late error changed accepted view\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestCanonicalSecondPageFailureRetainsAcceptedSnapshot(t *testing.T) {
+	host, full := testThreadService(t, newBlockingThreadGateway())
+	created, err := full.Create(t.Context(), CreateThreadInput{RequestKey: "second-page-failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := full.(*threadRuntimeService)
+	for i := range 3 {
+		if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{ThreadID: created.ThreadID.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: fmt.Sprint(i)}}, sessiontree.AppendOptions{ID: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.refreshCanonical(created.ThreadID, ""); err != nil {
+		t.Fatal(err)
+	}
+	actor := service.runtime(created.ThreadID)
+	before, _ := json.Marshal(actor.state.view)
+	for i := 3; i < 600; i++ {
+		if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{ThreadID: created.ThreadID.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: fmt.Sprint(i)}}, sessiontree.AppendOptions{ID: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := &canonicalReadCountingRepo{Repo: host.store.repo, reader: host.store.repo.(sessiontree.PathEntriesWindowReader), windowErr: errors.New("second page unavailable"), failWindow: 2}
+	host.store.repo = repo
+	if err := actor.apply(t.Context(), func() error { return service.advanceCanonical(t.Context(), actor) }); !errors.Is(err, repo.windowErr) {
+		t.Fatalf("failure=%v", err)
+	}
+	after, _ := json.Marshal(actor.state.view)
+	if string(before) != string(after) || actor.canonical != nil {
+		t.Fatalf("failed partial interval changed accepted snapshot\nbefore=%s\nafter=%s", before, after)
+	}
+	repo.windowErr = nil
+	view, err := full.View(t.Context(), created.ThreadID)
+	if err != nil || len(view.Items) != 600 {
+		t.Fatalf("recovery items=%d err=%v", len(view.Items), err)
+	}
+}
+
+func TestCanonicalSnapshotDoesNotShareMutableReducerObjects(t *testing.T) {
+	_, full := testThreadService(t, newBlockingThreadGateway())
+	created, err := full.Create(t.Context(), CreateThreadInput{RequestKey: "projection-isolation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := full.(*threadRuntimeService)
+	projection := newThreadCanonicalProjection()
+	interaction := ThreadInteraction{ID: "approval:isolation", TurnID: "turn", RunID: "run", Kind: ThreadInteractionApproval, ToolCallID: "tool"}
+	payload, _ := json.Marshal(interaction)
+	entries := []sessiontree.Entry{
+		{ID: "tool", ThreadID: created.ThreadID.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolCallID: "tool", ToolName: "read", ToolArgs: "{}"}},
+		{ID: "interaction-requested:" + interaction.ID, ParentID: "tool", ThreadID: created.ThreadID.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryInteractionAsked, Payload: payload},
+	}
+	if err := projection.append(entries); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := projection.snapshot(t.Context(), service, created.ThreadID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(canonical.ThreadView)
+	projection.items.items[0].Activity.ToolName = "mutated disposable projection"
+	projection.items.items[0].Interaction.Resolved = true
+	projection.items.interactions[0].Resolved = true
+	after, _ := json.Marshal(canonical.ThreadView)
+	if string(before) != string(after) {
+		t.Fatalf("accepted snapshot shared reducer ownership\nbefore=%s\nafter=%s", before, after)
 	}
 }

@@ -128,14 +128,19 @@ review evidence, steering cancellation and interrupted hosted activity. See
 
 # Incremental canonical installation
 
-Canonical provider commits and persisted context observations advance the actor
+Canonical provider commits, committed journal observations and interaction requests advance the actor
 from its last canonical leaf through bounded exact-entry intervals. Full reads,
 turn facts, context facts and actor updates use the same chronological reducers.
 Only affected item and turn snapshots are replaced. Delayed tool-input
 visibility preserves canonical insertion order and keeps the existing observation
 version authority. Failed advancement invalidates its disposable reducer and
 requires an explicit canonical reconstruction before accepting more updates.
-Reducer references never escape in public views.
+Reducer references never escape in public views. Canonical snapshots detach mutable
+activity and interaction objects before actor installation. Reads and fallible
+item, turn, interaction and context checks complete before accepted presentation
+changes. A failed later page or late turn validation preserves the accepted view;
+explicit recovery rebuilds the invalidated disposable reducer. Precommit approval
+and control observations do not manufacture canonical presentation changes.
 
 Historical initialization releases oversized change-map capacity before steady
 updates; clearing a large Go map alone leaves iteration proportional to its old

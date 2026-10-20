@@ -83,6 +83,10 @@ type blockingInteractionAppendRepo struct {
 	once      sync.Once
 }
 
+func (repo *blockingInteractionAppendRepo) PathEntriesWindow(ctx context.Context, options sessiontree.PathWindowOptions) (sessiontree.PathEntriesWindow, error) {
+	return repo.Repo.(sessiontree.PathEntriesWindowReader).PathEntriesWindow(ctx, options)
+}
+
 func (repo *blockingInteractionAppendRepo) AcceptTurn(ctx context.Context, request sessiontree.AcceptTurnRequest) (sessiontree.AcceptTurnResult, error) {
 	return repo.turns.AcceptTurn(ctx, request)
 }
@@ -3061,7 +3065,13 @@ func TestThreadServiceApprovalTransitionKeepsViewsCompleteAndReservesWaiter(t *t
 	beforeEvent := service.currentView(actor)
 	sink.EmitEvent(Event{Type: observation.EventTypeToolApprovalRequested, ThreadID: created.ThreadID, TurnID: started.TurnID, RunID: started.RunID})
 
-	between := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool { return view.ViewVersion > beforeEvent.ViewVersion })
+	between, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if between.ViewVersion != beforeEvent.ViewVersion {
+		t.Fatal("approval observation changed the canonical view before its interaction was committed")
+	}
 	if between.Activity != ThreadActivityActive || between.RunProgress == nil || threadRuntimeViewNeedsAttention(between) {
 		t.Fatalf("view between approval event and interaction = %#v", between)
 	}
