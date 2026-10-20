@@ -13,8 +13,11 @@ import (
 const (
 	threadDisplayPageItems = 150
 	threadDisplayPageBytes = 512 << 10
-	threadDisplayTextBytes = 64 << 10
-	threadDisplayPages     = 3
+	// JSON escapes one source byte into at most six encoded bytes. Reserve
+	// this aggregate source allowance before hydration, not after encoding.
+	threadDisplayPreviewBytes = threadDisplayPageBytes / 6
+	threadDisplayTextBytes    = 64 << 10
+	threadDisplayPages        = 3
 )
 
 type threadWindowDirection string
@@ -79,9 +82,10 @@ func (actor *threadRuntimeState) itemWindowContext(ctx context.Context, input th
 	default:
 		return threadItemWindow{}, errors.New("invalid thread window direction")
 	}
-	items := cloneWindowItems(actor.state.view.Items[first:last])
+	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, last-first)-(utf8.UTFMax-1))
+	items := cloneWindowItemsLimit(actor.state.view.Items[first:last], previewLimit)
 	for index, item := range items {
-		detached, err := actor.windowItem(ctx, item, threadDisplayTextBytes)
+		detached, err := actor.windowItem(ctx, item, previewLimit)
 		if err != nil {
 			return threadItemWindow{}, err
 		}
@@ -106,9 +110,13 @@ func boundedThreadText(text string, limit int) (string, bool) {
 // Truncate the source before detaching it. In particular, private source-entry
 // membership can be arbitrarily large for one segmented assistant response.
 func cloneWindowItems(items []ThreadItem) []ThreadItem {
+	return cloneWindowItemsLimit(items, threadDisplayTextBytes)
+}
+
+func cloneWindowItemsLimit(items []ThreadItem, limit int) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for i, item := range items {
-		out[i] = boundedWindowItem(item, threadDisplayTextBytes)
+		out[i] = boundedWindowItem(item, limit)
 	}
 	return cloneThreadItems(out)
 }

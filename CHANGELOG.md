@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Allocate one aggregate window preview source budget before reading or cloning
+  text and completed activity. Preserve exact UTF-8 prefixes and explicit full
+  body locators; keep the encoded metadata budget and stable-anchor reduction.
+
 - Stream cold canonical summaries through frozen metadata pages instead of
   decoding complete historical bodies. Share one chronological summary reducer
   with complete adapters, preserve waiting-input admission and historical

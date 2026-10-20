@@ -202,8 +202,14 @@ func (service *threadRuntimeService) completeViewResult(ctx context.Context, vie
 }
 
 func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem, limit int) (ThreadItem, error) {
+	// Text and reconstructible activity share one per-item source allowance.
+	// Pending controls remain in their existing owner and are never truncated.
+	activityLimit := limit
+	if item.activityOmitted && (item.textBytes > 0 || item.Text != "") {
+		activityLimit, limit = limit/2, limit-limit/2
+	}
 	var err error
-	item, err = actor.windowActivity(ctx, item, limit)
+	item, err = actor.windowActivity(ctx, item, activityLimit)
 	if err != nil {
 		return ThreadItem{}, err
 	}
