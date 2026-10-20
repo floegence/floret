@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.72.0 - 2026-10-20
+
 - Reset tool argument correction after each fully committed validation-clean batch, sharing one bounded episode across ordinary and control tools while retaining valid sibling results.
 - Add ThreadTurnFailureToolArgumentCorrectionExhausted for safe live and historical failure projection without changing failure codes, storage schemas or published Engine error formats.
 - Qualify exact published v7.69.1 synthetic failures through Retry, Send, Fork and restart, including schema 28 upgrade and confirmed tool-result preservation.
