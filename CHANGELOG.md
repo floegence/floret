@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v7.69.1 - 2026-10-19
+
+- Scope Ask User guidance to required execution input and requested guided questions; allow ordinary discussion and optional feedback in prose without changing schemas or interaction lifecycle.
+
 ## v7.69.0 - 2026-10-19
 
 - Add tools.InputPropertyOrder and provider.OrderToolSchemas for deterministic required-first root property rendering without changing validation semantics.

@@ -505,6 +505,8 @@ their definition was removed; only current definitions are exposed for new
 calls. Public Ask User answers appear once in the paired tool result. Secret
 answers leave a redacted result and reach only the current resume request as an
 ephemeral overlay.
+Use Ask User for required execution input and requested guided questions. Ordinary
+discussion and optional feedback may use prose without opening an interaction.
 
 Pending Ask User input requires a validated, non-error control signal with at
 least one complete question. A failed projection terminates the Turn and never
