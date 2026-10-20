@@ -412,7 +412,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 29).
+schema change (current domain schema 30).
 
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
@@ -710,7 +710,7 @@ or a migration. ThreadTurnFailureToolArgumentCorrectionExhausted identifies
 both tool_dispatch and control_error correction exhaustion, including exact
 v7.69.1 historical Engine messages. Raw validation details are not safe UI copy.
 Explicit Retry starts a new Run and retains confirmed results; unknown effects
-keep their existing no-replay boundary. Domain schema remains 29.
+keep their existing no-replay boundary. The subsequent domain 29 -> 30 edge segments canonical body storage.
 See [runtime source](../../runtime/thread_wait.go) and
 [failure classification](../../runtime/thread_failure_reason.go).
 

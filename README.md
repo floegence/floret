@@ -1316,3 +1316,19 @@ Schema 20 -> 21 preserves historical
 facts and requires current writers.
 
 Search and DeepSeek Fetch clients may use `ResolveAPIKey` to resolve live credentials immediately before dispatch. The callback must enforce current host authorization; its errors remain explicit and do not switch services. Credentials are never part of a tool definition or checkpoint.
+
+## Segmented canonical bodies
+
+Domain schema 30 -> 30 stores immutable content, reasoning, tool arguments,
+summaries and error text as content-addressed 16 KiB byte blocks. Entry records
+carry field references and their original canonical raw hash. Complete reads
+reconstruct the exact canonical message and validate that hash; no host reads
+opaque records. Equal fields and Fork prefixes share blocks, with ownership
+counts updated in the same transaction as entry admission and deletion.
+Startup validates all body ownership, key sets, lengths and content hashes.
+Missing, orphaned or corrupt blocks fail without mutation; cancellation, panic
+and write failure roll back the entire migration. Current restart is byte-stable.
+
+This storage foundation does not yet establish bounded historical body residency
+or the presentation-window API. See the explicit qualification limits in
+[history performance](okf/workflows/history-performance.md).
