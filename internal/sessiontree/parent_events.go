@@ -285,7 +285,7 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 	if !ok {
 		return nil, ErrThreadNotFound
 	}
-	path, err := pathLocked(r.threads, r.entries, threadID, meta.LeafID)
+	path, err := r.canonicalPathLocked(context.Background(), threadID, meta.LeafID)
 	if err != nil {
 		return nil, err
 	}

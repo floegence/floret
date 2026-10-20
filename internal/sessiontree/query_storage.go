@@ -210,7 +210,10 @@ func (r *MemoryRepo) materializeQueryDocument(document spi.IndexDocument) (*quer
 		if !ok {
 			return nil, ErrAuthorityCorrupt
 		}
-		entry := r.entries[document.ThreadID][ordinal]
+		entry, err := r.completeEntryLocked(r.entries[document.ThreadID][ordinal])
+		if err != nil {
+			return nil, err
+		}
 		if record.row.Object == threadquery.Messages && sourceIndex > 0 {
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
 		} else {

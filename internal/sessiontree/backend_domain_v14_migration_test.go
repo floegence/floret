@@ -134,7 +134,10 @@ func TestBackendDomainV13ToV14RepairsCanonicalRunMarkers(t *testing.T) {
 		t.Fatal("legacy custom observation unexpectedly acquired a run identity")
 	}
 	for threadID, entries := range beforeByThread {
-		migrated := repo.domainMemory.entries[threadID]
+		migrated, err := repo.Entries(t.Context(), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(migrated) != len(entries) {
 			t.Fatalf("thread %q lost journal entries", threadID)
 		}

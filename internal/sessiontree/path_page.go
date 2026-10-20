@@ -54,7 +54,14 @@ func (r *MemoryRepo) rebuildPathIndexLocked(threadID string) {
 	}
 	index := make([]pathIndexEntry, 0, len(r.entries[threadID]))
 	for _, entry := range r.entries[threadID] {
+		complete, err := r.completeEntryLocked(entry)
+		if err == nil {
+			entry = complete
+		}
 		index = appendPathIndex(index, r.entryOrdinals[threadID], entry)
+		if err != nil {
+			index[len(index)-1].err = err
+		}
 	}
 	r.pathIndexes[threadID] = index
 }
@@ -124,7 +131,10 @@ func (r *MemoryRepo) pathPageLocked(ctx context.Context, threadID, leafID, befor
 			return PathPage{}, err
 		}
 		node := index[ordinal]
-		entry := r.entries[threadID][ordinal]
+		entry, err := r.completeEntryLocked(r.entries[threadID][ordinal])
+		if err != nil {
+			return PathPage{}, err
+		}
 		if entry.ID != node.id || entry.ThreadID != threadID || entry.PathDepth != node.depth || (node.parent < 0 && entry.ParentID != "") || (node.parent >= 0 && entry.ParentID != index[node.parent].id) {
 			return PathPage{}, ErrAuthorityCorrupt
 		}

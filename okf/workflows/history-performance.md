@@ -87,6 +87,8 @@ the requested result and is not a bounded-window implementation.
 
 Startup now decodes one storage page at a time instead of retaining the complete
 encoded namespace beside decoded state. Cancellation, later-page corruption,
-non-advancing cursors and borrowed page buffers have direct regressions. The
-decoded canonical repository still retains historical bodies; this change does
-not establish the required body-residency budget or chunked storage contract.
+non-advancing cursors and borrowed page buffers have direct regressions. The decoded canonical repository now retains immutable body locators after
+validation. Complete reads hydrate only requested entries into detached results.
+The process-wide hash-verified source cache is bounded to 128 MiB. This source
+byte budget does not measure Go heap or RSS; runtime actor views and provider
+context preparation still require separate qualification.

@@ -734,6 +734,9 @@ func (t *Thread) acceptedTurnReplayResult(ctx context.Context, admission session
 		result.Err = errors.New(admission.Terminal.Failure.Error)
 	}
 	result.FailureCode = strings.TrimSpace(admission.Terminal.Terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey])
+	if result.FailureCode == sessiontree.TurnFailureEffectOutcomeUnknown {
+		result.Err = errors.Join(sessiontree.ErrEffectOutcomeUnknown, result.Err)
+	}
 	return result, result.Err
 }
 
@@ -1117,6 +1120,26 @@ func mergeTerminalMetadata(dst, src map[string]string) {
 }
 
 func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string, origin engine.FailureOrigin, execution ...*engine.Result) (TurnResult, error) {
+	// An effect owner may already have committed the exact execution's terminal
+	// while sibling tools were draining. Observe that result, never compete with
+	// it by appending a save point or replacing its failure classification.
+	terminal, terminalErr := t.harness.options.Repo.Entry(ctx, t.id, terminalTurnEntryID(t.id, turnID, runID))
+	if terminalErr == nil && terminal.TurnStatus != sessiontree.TurnWaiting {
+		outcome := &sessiontree.TurnTerminalOutcome{Terminal: terminal}
+		if terminal.TurnStatus == sessiontree.TurnFailed || terminal.TurnStatus == sessiontree.TurnAborted {
+			failure, readErr := t.harness.options.Repo.Entry(ctx, t.id, terminal.ParentID)
+			if readErr != nil {
+				return TurnResult{}, readErr
+			}
+			if failure.Type == sessiontree.EntryRunFailure {
+				outcome.Failure = &failure
+			}
+		}
+		return t.acceptedTurnReplayResult(ctx, sessiontree.AcceptTurnResult{Terminal: outcome}, turnID, runID)
+	}
+	if terminalErr != nil && !errors.Is(terminalErr, sessiontree.ErrEntryNotFound) {
+		return TurnResult{}, terminalErr
+	}
 	if status == "" {
 		status = engine.Failed
 	}

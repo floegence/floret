@@ -119,7 +119,7 @@ func (r *MemoryRepo) mutateGoalLocked(ctx context.Context, in GoalMutation) (Goa
 	if !ok {
 		return GoalMutationResult{}, ErrThreadNotFound
 	}
-	path, err := pathLocked(r.threads, r.entries, in.ThreadID, meta.LeafID)
+	path, err := r.canonicalPathLocked(context.Background(), in.ThreadID, meta.LeafID)
 	if err != nil {
 		return GoalMutationResult{}, err
 	}
@@ -180,7 +180,7 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 	if !ok {
 		return Entry{}, ErrThreadNotFound
 	}
-	path, err := pathLocked(r.threads, r.entries, threadID, meta.LeafID)
+	path, err := r.canonicalPathLocked(context.Background(), threadID, meta.LeafID)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -229,7 +229,7 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 
 func validateGoalRecords(memory *MemoryRepo) error {
 	for id, meta := range memory.threads {
-		path, err := pathLocked(memory.threads, memory.entries, id, meta.LeafID)
+		path, err := memory.canonicalPathLocked(context.Background(), id, meta.LeafID)
 		if err != nil {
 			return err
 		}

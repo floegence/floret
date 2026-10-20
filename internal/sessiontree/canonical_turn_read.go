@@ -117,7 +117,10 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 		if ordinal < 0 || ordinal >= len(r.entries[threadID]) {
 			return CanonicalTurn{}, ErrAuthorityCorrupt
 		}
-		entry := r.entries[threadID][ordinal]
+		entry, err := r.completeEntryLocked(r.entries[threadID][ordinal])
+		if err != nil {
+			return CanonicalTurn{}, err
+		}
 		depth, exists := r.entryDepths[threadID][entry.ID]
 		if !exists || entry.ThreadID != threadID || strings.TrimSpace(entry.TurnID) != turnID || entry.PathDepth != depth {
 			return CanonicalTurn{}, ErrAuthorityCorrupt

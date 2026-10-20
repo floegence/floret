@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/storagecodec"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 const rootThreadInventoryVersion = 1
@@ -40,22 +41,13 @@ func (repo *BackendRepo) ListRootThreadInventory(ctx context.Context, opts ListT
 	if repo == nil || ctx == nil {
 		return nil, errors.New("root thread inventory requires context and repository")
 	}
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if repo.domainMemory == nil {
-		return nil, errors.New("session-tree state is missing")
-	}
-	items, err := repo.domainMemory.rootThreadInventoryLocked()
-	if err != nil {
-		return nil, err
-	}
-	if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
-		return nil, err
-	}
-	return applyRootThreadInventoryOptions(items, opts), nil
+	var items []RootThreadInventoryItem
+	err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
+		var err error
+		items, err = memory.rootThreadInventoryPageLocked(ctx, opts)
+		return err
+	})
+	return items, err
 }
 
 func encodeRootThreadInventory(memory *MemoryRepo) ([]byte, error) {
@@ -130,7 +122,7 @@ func (r *MemoryRepo) rootThreadInventoryLocked() ([]RootThreadInventoryItem, err
 	metas = ApplyThreadListOptions(metas, ListThreadsOptions{IncludeArchived: true, RootOnly: true})
 	items := make([]RootThreadInventoryItem, 0, len(metas))
 	for _, meta := range metas {
-		path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
+		path, err := r.canonicalPathLocked(context.Background(), meta.ID, meta.LeafID)
 		if err != nil {
 			return nil, err
 		}
@@ -209,16 +201,31 @@ func applyRootThreadInventoryOptions(items []RootThreadInventoryItem, opts ListT
 	return out
 }
 
-func (r *MemoryRepo) ListRootThreadInventory(_ context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
+func (r *MemoryRepo) rootThreadInventoryPageLocked(ctx context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
+	metas := make([]ThreadMeta, 0, len(r.threads))
+	for _, meta := range r.threads {
+		if strings.TrimSpace(meta.ParentThreadID) == "" {
+			metas = append(metas, meta)
+		}
+	}
+	opts.RootOnly = true
+	metas = ApplyThreadListOptions(metas, opts)
+	items := make([]RootThreadInventoryItem, 0, len(metas))
+	for _, meta := range metas {
+		path, err := r.canonicalPathLocked(ctx, meta.ID, meta.LeafID)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, RootThreadInventoryItem{Meta: meta, Path: path})
+	}
+	if err := attachRootThreadInventoryProjectionFingerprints(items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (r *MemoryRepo) ListRootThreadInventory(ctx context.Context, opts ListThreadsOptions) ([]RootThreadInventoryItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out, err := r.rootThreadInventoryLocked()
-	if err != nil {
-		return nil, err
-	}
-	out = applyRootThreadInventoryOptions(out, opts)
-	if err := attachRootThreadInventoryProjectionFingerprints(out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return r.rootThreadInventoryPageLocked(ctx, opts)
 }

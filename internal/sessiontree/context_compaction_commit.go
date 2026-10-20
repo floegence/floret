@@ -74,7 +74,7 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 		return ContextCompactionCommitResult{}, context.Canceled
 	}
 
-	path, err := pathLocked(r.threads, r.entries, threadID, r.threads[threadID].LeafID)
+	path, err := r.canonicalPathLocked(context.Background(), threadID, r.threads[threadID].LeafID)
 	if err != nil {
 		return ContextCompactionCommitResult{}, err
 	}
@@ -134,7 +134,7 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 		}
 		out.Facts = append(out.Facts, finish.Terminal)
 	}
-	path, err = pathLocked(r.threads, r.entries, threadID, r.threads[threadID].LeafID)
+	path, err = r.canonicalPathLocked(context.Background(), threadID, r.threads[threadID].LeafID)
 	if err != nil {
 		return ContextCompactionCommitResult{}, err
 	}

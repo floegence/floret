@@ -1622,19 +1622,35 @@ func newBackendRepoThroughV29(ctx context.Context, backend spi.Backend, tx spi.W
 // VerifyCurrentStateInTransaction verifies the final current-schema domain
 // invariant without rewriting canonical bytes.
 func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if repo != nil && repo.domainMemory != nil {
+		repo.domainMemory.bodyTx, repo.domainMemory.bodyContext = tx, ctx
+		defer func() { repo.domainMemory.bodyTx, repo.domainMemory.bodyContext = nil, nil }()
+	}
 	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
 		return err
 	}
-	return repo.prepareQueryStorage(ctx, tx, false)
+	if err := repo.prepareQueryStorage(ctx, tx, false); err != nil {
+		return err
+	}
+	repo.domainMemory.compactBodiesLocked(repo.backend)
+	return nil
 }
 
 // VerifyInspectionStateInTransaction retains canonical and projection checks
 // while omitting text postings that a read-only inspection cannot query.
 func (repo *BackendRepo) VerifyInspectionStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
+	if repo != nil && repo.domainMemory != nil {
+		repo.domainMemory.bodyTx, repo.domainMemory.bodyContext = tx, ctx
+		defer func() { repo.domainMemory.bodyTx, repo.domainMemory.bodyContext = nil, nil }()
+	}
 	if err := repo.verifyPersistedStateInTransaction(ctx, tx); err != nil {
 		return err
 	}
-	return repo.prepareQueryStorage(ctx, tx, true)
+	if err := repo.prepareQueryStorage(ctx, tx, true); err != nil {
+		return err
+	}
+	repo.domainMemory.compactBodiesLocked(repo.backend)
+	return nil
 }
 
 func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
@@ -1931,9 +1947,8 @@ func (repo *BackendRepo) view(ctx context.Context, read func(*MemoryRepo) error)
 	return repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error { return read(memory) })
 }
 
-// ViewDomain executes one read against the current validated in-memory
-// authority. The callback must be observational only; durable mutations belong
-// in UpdateDomain.
+// ViewDomain reads canonical metadata and hydrates requested immutable bodies
+// in one backend snapshot. Durable mutations belong in UpdateDomain.
 func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, spi.ReadTx) error) error {
 	if repo == nil || ctx == nil || read == nil {
 		return errors.New("backend domain view requires context, repository, and callback")
@@ -1943,12 +1958,19 @@ func (repo *BackendRepo) ViewDomain(ctx context.Context, read func(*MemoryRepo, 
 	if repo.domainMemory == nil {
 		return errors.New("session-tree state is missing")
 	}
-	return read(repo.domainMemory, nil)
+	if repo.domainMemory.bodyBackend == nil {
+		return read(repo.domainMemory, nil)
+	}
+	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		memory := repo.domainMemory
+		memory.bodyTx, memory.bodyContext = tx, ctx
+		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
+		return read(memory, tx)
+	})
 }
 
-// ViewDomainWithRecords joins the live memory authority with ancillary
-// durable records in one read transaction. Hot thread projections should use
-// ViewDomain so they never enter SQL while the process authority is live.
+// ViewDomainWithRecords joins canonical metadata, requested bodies and ancillary
+// durable records in one read transaction.
 func (repo *BackendRepo) ViewDomainWithRecords(ctx context.Context, read func(*MemoryRepo, spi.ReadTx) error) error {
 	if repo == nil || read == nil {
 		return errors.New("backend domain record view requires repository and callback")
@@ -1959,7 +1981,10 @@ func (repo *BackendRepo) ViewDomainWithRecords(ctx context.Context, read func(*M
 		if repo.domainMemory == nil {
 			return errors.New("session-tree state is missing")
 		}
-		return read(repo.domainMemory, tx)
+		memory := repo.domainMemory
+		memory.bodyTx, memory.bodyContext = tx, ctx
+		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
+		return read(memory, tx)
 	})
 }
 
@@ -2055,6 +2080,7 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 			return errors.New("session-tree state is missing")
 		}
 		mutation := newBackendDomainMutation(repo.domainMemory)
+		mutation.memory.bodyTx, mutation.memory.bodyContext = tx, ctx
 		// Restore the borrowed maps before the callback returns, including on a
 		// panic. A failed backend commit must leave the prior memory authoritative.
 		defer mutation.install(repo.domainMemory)
@@ -2085,6 +2111,12 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 					observed = append(observed, threadID)
 					break
 				}
+			}
+		}
+		for threadID, previous := range mutation.journals {
+			entries := mutation.memory.entries[threadID]
+			for ordinal := len(previous.entries); ordinal < len(entries); ordinal++ {
+				entries[ordinal] = compactCanonicalEntry(entries[ordinal])
 			}
 		}
 		committed = mutation.snapshot()

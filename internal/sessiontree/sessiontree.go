@@ -417,6 +417,7 @@ func ThreadAuthorityTreeIDs(threads []ThreadMeta, rootThreadID string) ([]string
 }
 
 type Entry struct {
+	bodyFields              map[string]canonicalBodyRef
 	ID                      string                        `json:"id"`
 	ThreadID                string                        `json:"thread_id"`
 	ParentID                string                        `json:"parent_id,omitempty"`
@@ -724,6 +725,9 @@ type AgentTodoStateRepo interface {
 }
 
 type MemoryRepo struct {
+	bodyBackend       spi.Backend
+	bodyTx            spi.ReadTx
+	bodyContext       context.Context
 	parentEvents      bool
 	mu                sync.Mutex
 	mutation          *backendDomainMutation
@@ -1277,7 +1281,10 @@ func (r *MemoryRepo) Entry(_ context.Context, threadID, entryID string) (Entry, 
 	if ordinal < 0 || ordinal >= len(entries) {
 		return Entry{}, ErrAuthorityCorrupt
 	}
-	entry := entries[ordinal]
+	entry, err := r.completeEntryLocked(entries[ordinal])
+	if err != nil {
+		return Entry{}, err
+	}
 	depth, depthOK := r.entryDepths[threadID][entryID]
 	if entry.ID != entryID || entry.ThreadID != threadID || !depthOK || depth <= 0 || entry.PathDepth != depth {
 		return Entry{}, ErrAuthorityCorrupt
@@ -1294,7 +1301,7 @@ func (r *MemoryRepo) Entries(_ context.Context, threadID string) ([]Entry, error
 	if _, ok := r.threads[threadID]; !ok {
 		return nil, ErrThreadNotFound
 	}
-	return cloneEntries(r.entries[threadID]), nil
+	return r.completeEntriesLocked(r.entries[threadID])
 }
 
 func (r *MemoryRepo) CanonicalTurnEntries(_ context.Context, threadID, turnID, runID string) ([]Entry, bool, error) {
@@ -1320,7 +1327,10 @@ func (r *MemoryRepo) CanonicalTurnEntries(_ context.Context, threadID, turnID, r
 		if ordinal <= previous || ordinal < 0 || ordinal >= len(all) {
 			return nil, true, ErrAuthorityCorrupt
 		}
-		entry := all[ordinal]
+		entry, err := r.completeEntryLocked(all[ordinal])
+		if err != nil {
+			return nil, true, err
+		}
 		if entry.ThreadID != threadID || entry.TurnID != turnID {
 			return nil, true, ErrAuthorityCorrupt
 		}
@@ -1489,10 +1499,10 @@ func isCanonicalPostTerminalTurnEntry(entry Entry) bool {
 		strings.TrimSpace(entry.Message.ToolName) != ""
 }
 
-func (r *MemoryRepo) Path(_ context.Context, threadID, leafID string) ([]Entry, error) {
+func (r *MemoryRepo) Path(ctx context.Context, threadID, leafID string) ([]Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return pathLocked(r.threads, r.entries, threadID, leafID)
+	return r.canonicalPathLocked(ctx, threadID, leafID)
 }
 
 func (r *MemoryRepo) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
@@ -1562,7 +1572,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		}
 		return ThreadMeta{}, ErrThreadExists
 	}
-	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
+	path, err := r.canonicalPathLocked(context.Background(), opts.SourceThreadID, targetID)
 	if err != nil {
 		return ThreadMeta{}, err
 	}

@@ -89,6 +89,7 @@ func newBackendDomainMutation(source *MemoryRepo) *backendDomainMutation {
 	}
 	mutation.memory = &MemoryRepo{
 		mutation: mutation, now: source.now, seq: source.seq, parentEvents: source.parentEvents,
+		bodyBackend: source.bodyBackend, bodyTx: source.bodyTx, bodyContext: source.bodyContext,
 		threads: source.threads, entries: source.entries, entryOrdinals: source.entryOrdinals,
 		entryDepths: source.entryDepths, turnEntryOrdinals: source.turnEntryOrdinals,
 		pathIndexes:     source.pathIndexes,
@@ -325,7 +326,7 @@ func (mutation *backendDomainMutation) validate() error {
 			}
 		}
 		if goalFacts {
-			if err := validateGoalRecords(&MemoryRepo{threads: map[string]ThreadMeta{threadID: memory.threads[threadID]}, entries: map[string][]Entry{threadID: next}}); err != nil {
+			if err := validateGoalRecords(&MemoryRepo{bodyBackend: memory.bodyBackend, bodyTx: memory.bodyTx, bodyContext: memory.bodyContext, threads: map[string]ThreadMeta{threadID: memory.threads[threadID]}, entries: map[string][]Entry{threadID: next}}); err != nil {
 				return err
 			}
 		}

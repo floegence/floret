@@ -542,6 +542,8 @@ func (repo *BackendRepo) queryView(ctx context.Context, callback func(*MemoryRep
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
 		memory := repo.domainMemory
 		memory.queryReader = queryIndexReader(tx)
+		memory.bodyTx, memory.bodyContext = tx, ctx
+		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 		defer func() { memory.queryReader = nil }()
 		return callback(memory)
 	})

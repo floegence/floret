@@ -40,8 +40,10 @@ func validateTurnTerminalOutcome(threadID, turnID, runID string, outcome *sessio
 			return errors.New("failed turn requires a matching failure entry and code")
 		}
 	case sessiontree.TurnAborted:
-		if failureMessage == "" || (failureCode != sessiontree.TurnFailureCancelled && failureCode != sessiontree.TurnFailureInterrupted) {
-			return errors.New("aborted turn requires a cancelled or interrupted failure")
+		// Runtime CancelTurn records an explicit cancellation terminal without
+		// a failure entry. A harness error terminal carries the paired failure.
+		if failureCode != sessiontree.TurnFailureCancelled && failureCode != sessiontree.TurnFailureInterrupted {
+			return errors.New("aborted turn requires a cancelled or interrupted code")
 		}
 	default:
 		return fmt.Errorf("invalid terminal turn status %q", terminal.TurnStatus)
