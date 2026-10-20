@@ -343,6 +343,16 @@ func (repo *BackendRepo) Path(ctx context.Context, threadID, leafID string) ([]E
 	return result0, err
 }
 
+func (repo *BackendRepo) PathMetadataPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathMetadataPage, error) {
+	var result0 PathMetadataPage
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.PathMetadataPage(ctx, threadID, leafID, beforeEntryID, limit)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
 	var result0 PathPage
 	err := repo.view(ctx, func(memory *MemoryRepo) error {

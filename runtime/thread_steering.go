@@ -361,33 +361,69 @@ func (service *threadRuntimeService) applySteering(ctx context.Context, actor *t
 	return nil
 }
 
+// threadSteeringProjection advances only affected pending requests. Historical
+// reads and incremental item presentation use the same chronological reducer.
+type threadSteeringProjection struct {
+	states   map[string]ThreadSteering
+	pending  map[string]map[string]bool
+	terminal map[string]bool
+}
+
+func (projection *threadSteeringProjection) observe(entry sessiontree.Entry) ([]string, error) {
+	if projection.states == nil {
+		projection.states = map[string]ThreadSteering{}
+		projection.pending = map[string]map[string]bool{}
+		projection.terminal = map[string]bool{}
+	}
+	switch entry.Type {
+	case sessiontree.EntrySteeringRequested:
+		state := ThreadSteering{Status: ThreadSteeringPending}
+		if projection.terminal[entry.TurnID] {
+			state = ThreadSteering{Status: ThreadSteeringCancelled, Reason: "task_ended"}
+		} else {
+			if projection.pending[entry.TurnID] == nil {
+				projection.pending[entry.TurnID] = map[string]bool{}
+			}
+			projection.pending[entry.TurnID][entry.ID] = true
+		}
+		projection.states[entry.ID] = state
+		return []string{entry.ID}, nil
+	case sessiontree.EntrySteeringApplied, sessiontree.EntrySteeringCancelled:
+		resolution, err := sessiontree.DecodeSteeringResolution(entry)
+		if err != nil {
+			return nil, err
+		}
+		status := ThreadSteeringApplied
+		if entry.Type == sessiontree.EntrySteeringCancelled {
+			status = ThreadSteeringCancelled
+		}
+		projection.states[resolution.SteeringID] = ThreadSteering{Status: status, Reason: resolution.Reason}
+		delete(projection.pending[entry.TurnID], resolution.SteeringID)
+		return []string{resolution.SteeringID}, nil
+	case sessiontree.EntryTurnMarker:
+		if entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted {
+			projection.terminal[entry.TurnID] = true
+			changed := make([]string, 0, len(projection.pending[entry.TurnID]))
+			for id := range projection.pending[entry.TurnID] {
+				projection.states[id] = ThreadSteering{Status: ThreadSteeringCancelled, Reason: "task_ended"}
+				changed = append(changed, id)
+			}
+			delete(projection.pending, entry.TurnID)
+			return changed, nil
+		}
+	}
+	return nil, nil
+}
+
 func steeringProjection(entries []sessiontree.Entry) (map[string]ThreadSteering, error) {
-	states := make(map[string]ThreadSteering)
-	terminal := make(map[string]bool)
+	projection := threadSteeringProjection{}
 	for _, entry := range entries {
-		switch entry.Type {
-		case sessiontree.EntrySteeringRequested:
-			states[entry.ID] = ThreadSteering{Status: ThreadSteeringPending}
-		case sessiontree.EntrySteeringApplied, sessiontree.EntrySteeringCancelled:
-			resolution, err := sessiontree.DecodeSteeringResolution(entry)
-			if err != nil {
-				return nil, err
-			}
-			status := ThreadSteeringApplied
-			if entry.Type == sessiontree.EntrySteeringCancelled {
-				status = ThreadSteeringCancelled
-			}
-			states[resolution.SteeringID] = ThreadSteering{Status: status, Reason: resolution.Reason}
-		case sessiontree.EntryTurnMarker:
-			if entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted {
-				terminal[entry.TurnID] = true
-			}
+		if _, err := projection.observe(entry); err != nil {
+			return nil, err
 		}
 	}
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntrySteeringRequested && states[entry.ID].Status == ThreadSteeringPending && terminal[entry.TurnID] {
-			states[entry.ID] = ThreadSteering{Status: ThreadSteeringCancelled, Reason: "task_ended"}
-		}
+	if projection.states == nil {
+		return map[string]ThreadSteering{}, nil
 	}
-	return states, nil
+	return projection.states, nil
 }

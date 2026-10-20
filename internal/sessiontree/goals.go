@@ -53,31 +53,50 @@ func latestGoalInput(path []Entry) string {
 	}
 	return ""
 }
+
+// GoalProjection is the canonical chronological Goal reducer. It retains one
+// current fact; full reads and incremental presentation share its validation.
+type GoalProjection struct{ State session.GoalState }
+
+func (projection *GoalProjection) Observe(e Entry) error {
+	state := projection.State
+	if state.Status == "" {
+		state.Status = "absent"
+	}
+
+	if e.Type == EntryUserMessage && e.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission {
+		state.Text = ""
+		state.Status = "absent"
+		state.Actor = ""
+		state.SuppressedAtInput = ""
+	}
+	if e.Type == EntryGoal {
+		var change GoalChange
+		if err := json.Unmarshal(e.Payload, &change); err != nil {
+			return ErrAuthorityCorrupt
+		}
+		if change.State.Version != state.Version+1 || change.State.Actor != "user" && change.State.Actor != "model" || change.Operation != "set" && change.Operation != "delete" || change.Operation == "set" && (change.State.Status != "active" || strings.TrimSpace(change.State.Text) == "") || change.Operation == "delete" && (change.State.Status != "absent" || change.State.Text != "") {
+			return ErrAuthorityCorrupt
+		}
+		state = change.State
+	}
+	if e.Type == EntryTurnMarker && e.TurnStatus == TurnCompleted && e.Metadata[GoalCompletedMetadataKey] == fmt.Sprint(state.Version) && state.Text != "" {
+		state.Status = "completed"
+	}
+
+	projection.State = state
+	return nil
+}
 func GoalFromPath(path []Entry) (session.GoalState, error) {
-	state := session.GoalState{Status: "absent"}
-	for _, e := range path {
-		if e.Type == EntryUserMessage && e.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission {
-			state.Text = ""
-			state.Status = "absent"
-			state.Actor = ""
-			state.SuppressedAtInput = ""
-		}
-		if e.Type == EntryGoal {
-			var change GoalChange
-			if err := json.Unmarshal(e.Payload, &change); err != nil {
-				return state, ErrAuthorityCorrupt
-			}
-			if change.State.Version != state.Version+1 || change.State.Actor != "user" && change.State.Actor != "model" || change.Operation != "set" && change.Operation != "delete" || change.Operation == "set" && (change.State.Status != "active" || strings.TrimSpace(change.State.Text) == "") || change.Operation == "delete" && (change.State.Status != "absent" || change.State.Text != "") {
-				return state, ErrAuthorityCorrupt
-			}
-			state = change.State
-		}
-		if e.Type == EntryTurnMarker && e.TurnStatus == TurnCompleted && e.Metadata[GoalCompletedMetadataKey] == fmt.Sprint(state.Version) && state.Text != "" {
-			state.Status = "completed"
+	projection := GoalProjection{State: session.GoalState{Status: "absent"}}
+	for _, entry := range path {
+		if err := projection.Observe(entry); err != nil {
+			return projection.State, err
 		}
 	}
-	return state, nil
+	return projection.State, nil
 }
+
 func GoalWorkBoundary(path []Entry) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		e := path[i]
