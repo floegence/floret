@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stream startup record decoding by storage page, generate Unicode search terms without full-field copies or per-character encoded allocations, and assemble shared assistant sources without quadratic text copying or citation-offset rescans.
 - Add optional ThreadCommandService acknowledgments using existing command admission and idempotency without materializing complete results.
 - Add optional scoped IndexDocumentReader for exact derived-document lookup while preserving custom IndexReader contracts.
 - Page canonical ancestry through derived locators; remove historical journal copies from append rollback and projected-body cache rebuilds from ordinary index updates.

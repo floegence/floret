@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/agentharness"
@@ -4689,6 +4688,7 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 	failedControls := make(map[string]threadControlIdentity)
 	reasoningIndex := make(map[string]int)
 	contentIndex := make(map[string]int)
+	contentBuffers := make(map[int]*threadContentBuffer)
 	appendReasoning := func(entry sessiontree.Entry, turnID identity.TurnID, runID identity.RunID, createdAt time.Time) {
 		text, source := entry.Message.Reasoning, entry.Message.ReasoningSourceID
 		if text == "" {
@@ -4787,7 +4787,13 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 				if index, found := contentIndex[entry.Message.ContentSourceID]; found {
 					previous := &items[index]
 					if previous.TurnID == turnID && previous.RunID == runID {
-						offset := utf8.RuneCountInString(previous.Text)
+						buffer := contentBuffers[index]
+						if buffer == nil {
+							buffer = &threadContentBuffer{}
+							buffer.append(previous.Text)
+							contentBuffers[index] = buffer
+						}
+						offset := buffer.runes
 						for _, source := range citation.Clone(entry.Message.Sources) {
 							if source.StartIndex != nil {
 								*source.StartIndex += offset
@@ -4795,7 +4801,8 @@ func threadRuntimeItemsWithAnchors(entries []sessiontree.Entry, anchors map[stri
 							}
 							previous.Sources = append(previous.Sources, publicprovider.Source(source))
 						}
-						previous.Text += entry.Message.Content
+						buffer.append(entry.Message.Content)
+						previous.Text = buffer.text.String()
 						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
 						continue
 					}

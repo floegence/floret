@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,26 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/observation"
 )
+
+func BenchmarkCanonicalSharedContentProjection(b *testing.B) {
+	for _, count := range []int{1096, 10960} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			entries := make([]sessiontree.Entry, count)
+			for i := range entries {
+				entries[i] = sessiontree.Entry{ID: fmt.Sprint(i), ThreadID: "thread", TurnID: "turn", RunID: "run", Type: sessiontree.EntryAssistantMessage, CreatedAt: time.Unix(1, 0), Message: session.Message{Role: session.Assistant, ContentSourceID: "source", Content: strings.Repeat("中a", 32)}}
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(count * 128))
+			b.ResetTimer()
+			for range b.N {
+				items, _, err := threadRuntimeItemsFromEntries(entries)
+				if err != nil || len(items) != 1 || len(items[0].Text) != count*128 {
+					b.Fatalf("items=%d err=%v", len(items), err)
+				}
+			}
+		})
+	}
+}
 
 func TestCanonicalIntermediateResponsesAndOrdinals(t *testing.T) {
 	for _, scenario := range []struct {

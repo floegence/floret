@@ -61,23 +61,6 @@ func queryDocument(record *queryRecord, terms bool) (spi.IndexDocument, error) {
 func queryAtomicTerm(field, term string) string {
 	return "x" + hex.EncodeToString([]byte(field+"\x00"+term))
 }
-func queryDocumentTerms(record *queryRecord) []string {
-	terms := map[string]bool{}
-	for _, field := range []string{"text", "title", "arguments", "result"} {
-		runes := []rune(strings.ToLower(record.text(field)))
-		for n := 1; n <= 3; n++ {
-			for i := 0; i+n <= len(runes); i++ {
-				terms[queryAtomicTerm(field, string(runes[i:i+n]))] = true
-			}
-		}
-	}
-	result := make([]string, 0, len(terms))
-	for term := range terms {
-		result = append(result, term)
-	}
-	sort.Strings(result)
-	return result
-}
 func queryCandidateTerms(filter threadquery.Filter) [][]string {
 	var groups [][]string
 	for field, match := range map[string]threadquery.TextMatch{"text": filter.Text, "title": filter.Title, "arguments": filter.Arguments, "result": filter.Result} {

@@ -63,3 +63,30 @@ One diagnostic run on the same machine and toolchain measured:
 
 These short runs have timing/cache noise; they demonstrate removal of the
 history-scan trend, not a stable total speedup or production acceptance.
+
+## Large-field initialization diagnostics
+
+    GOWORK=off go test ./internal/sessiontree -run TestQueryDocumentTermsMatch -bench BenchmarkQueryDocumentTermsLargeBody -benchtime=1x -benchmem
+    GOWORK=off go test ./runtime -run TestCanonicalSharedContent -bench BenchmarkCanonicalSharedContentProjection -benchtime=1x -benchmem
+
+The first diagnostic indexes repeated mixed ASCII/CJK/emoji text in 16 KiB
+segments. A joined-string oracle checks identical sorted unigram, bigram and
+trigram terms, including separators, presentation JSON, NUL, case mapping and
+UTF-8 split across segments. Source bytes are visited once; only unique grams
+are encoded. Memory still depends on distinct grams, not a fixed constant for
+arbitrary content. On the same machine a single 40 MiB sample changed from
+4.29 s / 1,999,104,776 allocated bytes to 0.60 s / 3,816 bytes. This is an
+initialization subpath, not an incremental merged-source acceptance result.
+
+The second diagnostic projects 10,960 canonical segments with one shared source
+into the explicitly requested complete view. One append buffer and a streaming
+character count preserve citation offsets without copying or recounting the
+growing prefix. A single sample changed from 3.97 s / 7,735,860,400 allocated
+bytes to 4.76 ms / 12,313,792 bytes. Full materialization remains proportional to
+the requested result and is not a bounded-window implementation.
+
+Startup now decodes one storage page at a time instead of retaining the complete
+encoded namespace beside decoded state. Cancellation, later-page corruption,
+non-advancing cursors and borrowed page buffers have direct regressions. The
+decoded canonical repository still retains historical bodies; this change does
+not establish the required body-residency budget or chunked storage contract.
