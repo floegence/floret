@@ -9,6 +9,10 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Summary
 
+Canonical body metadata resolves exact field hashes and byte lengths without
+loading source blocks. Metadata and chunk reads share one active-path locator
+check; a locator never grants access or permits an inactive sibling.
+
 The thread actor owns execution state, view versions and publication. Hosts use
 optional `ThreadUpdateSource` to observe explicit mutations without copying
 history on ordinary growth. Updates are transient observations, never durable

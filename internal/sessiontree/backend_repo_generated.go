@@ -85,6 +85,16 @@ func (repo *BackendRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) 
 	return result0, err
 }
 
+func (repo *BackendRepo) CanonicalBodyMetadata(ctx context.Context, threadID, entryID, field string) (CanonicalBodyMetadata, error) {
+	var result0 CanonicalBodyMetadata
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.CanonicalBodyMetadata(ctx, threadID, entryID, field)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]Entry, bool, error) {
 	var result0 []Entry
 	var result1 bool

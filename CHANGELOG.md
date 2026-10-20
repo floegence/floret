@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve exact active-path canonical body metadata without reading source blocks; share integrity checks with chunk reads.
+
 - Advance canonical provider/context commits by appended storage intervals and affected item/turn reducers; share full-read semantics, preserve delayed interaction order, invalidate failed projections and avoid retaining historical mutation-map capacity.
 - Read the latest scope-bound provider request by exact append ordinal with restart, pending-observation and source-integrity checks.
 
