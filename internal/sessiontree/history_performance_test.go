@@ -62,3 +62,23 @@ func BenchmarkSQLiteFixedHistoryAppend(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkSQLiteFixedHistoryProviderCommit(b *testing.B) {
+	for _, count := range []int{1096, 10960, 109600} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			repo := newFixedHistorySQLiteRepo(b, count)
+			rollback := errors.New("fixed-history provider rollback")
+			repo.backend = &domainCommitBoundaryBackend{Backend: repo.backend, afterCallback: func() error { return rollback }}
+			request := ProviderContextCommit{ThreadID: "history", TurnID: "turn", RunID: "run", Entries: []Entry{
+				{ID: "new-segment", ThreadID: "history", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "new segment", ContentSourceID: "new-source"}},
+			}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := repo.CommitProviderContext(b.Context(), request); !errors.Is(err, rollback) {
+					b.Fatalf("provider commit: %v", err)
+				}
+			}
+		})
+	}
+}

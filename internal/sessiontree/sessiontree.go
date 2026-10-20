@@ -737,6 +737,7 @@ type MemoryRepo struct {
 	turnEntryOrdinals map[string]map[string][]int
 	turnEntryCounts   map[string]map[string]int
 	turnMarkers       map[string]map[string]turnMarkerIndex
+	activeTurns       map[string]map[string]int
 	outputSources     map[string]map[string][]int
 	now               func() time.Time
 	todos             map[string]AgentTodoState
@@ -763,6 +764,7 @@ func newMemoryRepo(now func() time.Time) *MemoryRepo {
 		turnEntryOrdinals: map[string]map[string][]int{},
 		turnEntryCounts:   map[string]map[string]int{},
 		turnMarkers:       map[string]map[string]turnMarkerIndex{},
+		activeTurns:       map[string]map[string]int{},
 		outputSources:     map[string]map[string][]int{},
 		now:               now,
 		todos:             map[string]AgentTodoState{},
@@ -988,9 +990,9 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		if entry.Type != EntrySteeringRequested && entry.Type != EntrySteeringApplied && entry.Type != EntryModelContext {
 			continue
 		}
-		turnID, active := runtimeActiveTurn(r.entries[threadID])
-		runID, identityErr := activeRunIdentity(r.entries[threadID], entry.TurnID)
-		if !active || turnID != entry.TurnID || identityErr != nil || runID != entry.RunID || turnCancellationRequested(r.entries[threadID], entry.TurnID) {
+		turnID, active := r.runtimeActiveTurnLocked(threadID)
+		runID, identityErr := r.activeRunIdentityLocked(threadID, entry.TurnID)
+		if !active || turnID != entry.TurnID || identityErr != nil || runID != entry.RunID || r.turnCancellationRequestedLocked(threadID, entry.TurnID) {
 			return nil, ErrStaleAuthority
 		}
 	}
@@ -1250,6 +1252,7 @@ func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
 	delete(r.turnEntryOrdinals, threadID)
 	delete(r.turnEntryCounts, threadID)
 	delete(r.turnMarkers, threadID)
+	delete(r.activeTurns, threadID)
 	delete(r.outputSources, threadID)
 }
 

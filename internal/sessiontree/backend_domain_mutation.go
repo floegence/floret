@@ -53,6 +53,7 @@ type domainJournal struct {
 	turnOrdinals  map[string][]int
 	turnCounts    map[string]int
 	turnMarkers   map[string]turnMarkerIndex
+	activeTurns   map[string]int
 	outputSources map[string][]int
 	replaced      bool
 	indexes       domainJournalIndexes
@@ -90,7 +91,7 @@ func newBackendDomainMutation(source *MemoryRepo) *backendDomainMutation {
 		threads: source.threads, entries: source.entries, entryOrdinals: source.entryOrdinals,
 		entryDepths: source.entryDepths, turnEntryOrdinals: source.turnEntryOrdinals,
 		pathIndexes:     source.pathIndexes,
-		turnEntryCounts: source.turnEntryCounts, turnMarkers: source.turnMarkers, outputSources: source.outputSources, todos: source.todos, tombstones: source.tombstones,
+		turnEntryCounts: source.turnEntryCounts, turnMarkers: source.turnMarkers, activeTurns: source.activeTurns, outputSources: source.outputSources, todos: source.todos, tombstones: source.tombstones,
 		providerStates: source.providerStates, artifacts: source.artifacts,
 	}
 	return mutation
@@ -166,7 +167,7 @@ func readDomainJournal(memory *MemoryRepo, threadID string) domainJournal {
 		entries: memory.entries[threadID], ordinals: memory.entryOrdinals[threadID],
 		pathIndex: memory.pathIndexes[threadID],
 		depths:    memory.entryDepths[threadID], turnOrdinals: memory.turnEntryOrdinals[threadID],
-		turnCounts: memory.turnEntryCounts[threadID], turnMarkers: memory.turnMarkers[threadID], outputSources: memory.outputSources[threadID],
+		turnCounts: memory.turnEntryCounts[threadID], turnMarkers: memory.turnMarkers[threadID], activeTurns: memory.activeTurns[threadID], outputSources: memory.outputSources[threadID],
 	}
 }
 
@@ -184,6 +185,7 @@ func (journal domainJournal) install(memory *MemoryRepo, threadID string) {
 	installDomainMapValue(memory.turnEntryOrdinals, threadID, journal.turnOrdinals)
 	installDomainMapValue(memory.turnEntryCounts, threadID, journal.turnCounts)
 	installDomainMapValue(memory.turnMarkers, threadID, journal.turnMarkers)
+	installDomainMapValue(memory.activeTurns, threadID, journal.activeTurns)
 	installDomainMapValue(memory.outputSources, threadID, journal.outputSources)
 }
 

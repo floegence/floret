@@ -1631,3 +1631,4 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document optional non-semantic provider transport progress and fresh retry measurement boundaries.
 
 - 2026-10-20: Document post-deletion actor release after joined execution/effects and committed tombstones; preserve late-event fencing and failure recovery without retaining deleted actors in the runtime registry.
+- 2026-10-20: Document canonical control locators and the limited scope of fixed-history SQLite provider-commit measurements in [history performance](workflows/history-performance.md).

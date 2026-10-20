@@ -54,7 +54,7 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	if started, found := findEntry(r.entries[meta.ID], startedID); found {
 		return r.replayRuntimeTurnAcceptanceLocked(req, started, userID)
 	}
-	if activeTurnID, active := runtimeActiveTurn(r.entries[meta.ID]); active && activeTurnID != req.TurnID {
+	if activeTurnID, active := r.runtimeActiveTurnLocked(meta.ID); active && activeTurnID != req.TurnID {
 		return AcceptTurnResult{}, ErrActiveTurn
 	}
 	baseLeafID := meta.LeafID
@@ -167,7 +167,7 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
 		return result, nil
 	}
-	if activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID]); active && activeTurnID != req.TurnID {
+	if activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID); active && activeTurnID != req.TurnID {
 		return AcceptTurnResult{}, ErrActiveTurn
 	}
 	return result, nil
@@ -300,7 +300,7 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 		}
 		return FinishTurnResult{Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
-	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
+	activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID)
 	if !active || activeTurnID != req.TurnID {
 		return FinishTurnResult{}, ErrStaleAuthority
 	}
@@ -311,7 +311,7 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 	if req.Status != TurnWaiting && runtimeTurnHasPendingInteraction(r.entries[meta.ID], req.TurnID) {
 		return FinishTurnResult{}, ErrRequestConflict
 	}
-	if (req.Status == TurnCompleted || req.Status == TurnWaiting) && turnCancellationRequested(r.entries[meta.ID], req.TurnID) {
+	if (req.Status == TurnCompleted || req.Status == TurnWaiting) && r.turnCancellationRequestedLocked(meta.ID, req.TurnID) {
 		return FinishTurnResult{}, context.Canceled
 	}
 	attempts := canonicalEffectAttemptsForTurn(r.entries[meta.ID], req.TurnID)
@@ -429,11 +429,11 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 		return FailUnknownEffectTurnResult{Failure: cloneEntry(failure), Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
 
-	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
+	activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID)
 	if !active || activeTurnID != req.TurnID {
 		return FailUnknownEffectTurnResult{}, ErrStaleAuthority
 	}
-	activeRunID, identityErr := activeRunIdentity(r.entries[req.ThreadID], req.TurnID)
+	activeRunID, identityErr := r.activeRunIdentityLocked(req.ThreadID, req.TurnID)
 	if identityErr != nil || activeRunID != req.RunID {
 		return FailUnknownEffectTurnResult{}, fmt.Errorf("unknown effect run %q, current %q: %w", req.RunID, activeRunID, ErrStaleAuthority)
 	}
@@ -592,7 +592,7 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		committed = true
 		return CancelTurnResult{Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
-	activeTurnID, active := runtimeActiveTurn(r.entries[req.ThreadID])
+	activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID)
 	if !active || activeTurnID != req.TurnID {
 		return CancelTurnResult{}, ErrStaleAuthority
 	}
