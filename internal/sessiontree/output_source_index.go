@@ -1,8 +1,8 @@
 package sessiontree
 
-// Source locators retain the first occurrence on each independent branch.
-// Repeated segments on the same path share that locator. Canonical entries own
-// the content and identity; this rebuildable index contains ordinals only.
+// Source locators retain append-ordered occurrences, including independent
+// branches. Canonical entries own content and identity; this rebuildable index
+// contains ordinals only, supporting bounded source-manifest scans.
 func (r *MemoryRepo) ensureOutputSourcesLocked(threadID string) {
 	if r.outputSources == nil {
 		r.outputSources = map[string]map[string][]int{}
@@ -37,16 +37,6 @@ func (r *MemoryRepo) observeOutputSourcesLocked(threadID string, ordinal int, en
 		if source == "" {
 			continue
 		}
-		locators := r.outputSources[threadID][source]
-		covered := false
-		for _, previous := range locators {
-			if r.outputSourceAncestorLocked(threadID, entry.ParentID, previous) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			r.outputSources[threadID][source] = append(locators, ordinal)
-		}
+		r.outputSources[threadID][source] = append(r.outputSources[threadID][source], ordinal)
 	}
 }

@@ -1233,6 +1233,7 @@ field ThreadBodyChunk.Bytes int tag="json:\"bytes\""
 field ThreadBodyChunk.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadBodyChunk.Text string tag="json:\"text\""
 const ThreadBodyContent github.com/floegence/floret/v7/runtime.ThreadBodyField = "content"
+const ThreadBodyControlOutput github.com/floegence/floret/v7/runtime.ThreadBodyField = "control_output"
 const ThreadBodyError github.com/floegence/floret/v7/runtime.ThreadBodyField = "error"
 type ThreadBodyField string
 type ThreadBodyInput struct
@@ -1242,9 +1243,29 @@ field ThreadBodyInput.Field github.com/floegence/floret/v7/runtime.ThreadBodyFie
 field ThreadBodyInput.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadBodyInput.LimitBytes int tag="json:\"limit_bytes\""
 field ThreadBodyInput.SHA256 string tag="json:\"sha256\""
+type ThreadBodyManifestInput struct
+field ThreadBodyManifestInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadBodyManifestInput.LeafID string tag="json:\"leaf_id,omitempty\""
+field ThreadBodyManifestInput.SourceID string tag="json:\"source_id\""
+field ThreadBodyManifestInput.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
+field ThreadBodyManifestInput.AfterEntryID string tag="json:\"after_entry_id,omitempty\""
+field ThreadBodyManifestInput.Limit int tag="json:\"limit,omitempty\""
+type ThreadBodyManifestPage struct
+field ThreadBodyManifestPage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadBodyManifestPage.LeafID string tag="json:\"leaf_id\""
+field ThreadBodyManifestPage.SourceID string tag="json:\"source_id\""
+field ThreadBodyManifestPage.Parts []github.com/floegence/floret/v7/runtime.ThreadBodyPart tag="json:\"parts\""
+field ThreadBodyManifestPage.NextEntryID string tag="json:\"next_entry_id,omitempty\""
+field ThreadBodyManifestPage.HasMore bool tag="json:\"has_more\""
+type ThreadBodyManifestReader interface interface{BodyManifest(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadBodyManifestInput) (github.com/floegence/floret/v7/runtime.ThreadBodyManifestPage, error)}
 type ThreadBodyMatch struct
 field ThreadBodyMatch.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadBodyMatch.LengthBytes int tag="json:\"length_bytes\""
+type ThreadBodyPart struct
+field ThreadBodyPart.EntryID string tag="json:\"entry_id\""
+field ThreadBodyPart.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
+field ThreadBodyPart.SHA256 string tag="json:\"sha256\""
+field ThreadBodyPart.Bytes int tag="json:\"bytes\""
 type ThreadBodyReader interface interface{ReadBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadBodyInput) (github.com/floegence/floret/v7/runtime.ThreadBodyChunk, error)}
 const ThreadBodyReasoning github.com/floegence/floret/v7/runtime.ThreadBodyField = "reasoning"
 type ThreadBodySearchInput struct

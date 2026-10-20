@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Segment canonical control output alongside other body fields; preserve exact raw whitespace, empty-source presentation, restart integrity and nested-message ownership.
+
+- Add optional scoped ThreadBodyManifestReader for bounded, frozen canonical output-source parts; preserve segmented content, deduplicate reasoning and authorize every page without materializing a ThreadView.
+
 - Validate repeated canonical output sources from immutable identity and reasoning hashes without hydrating old fields or reading inactive sibling bodies.
 
 - Maintain actor interaction positions, item associations and attention counts by affected control; rebuild only at full replacement and preserve answered controls against stale canonical requests.
