@@ -18,6 +18,9 @@ import (
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
 	canonical             *threadCanonicalProjection
+	summaryIndexed        bool
+	summaryPreviewIndex   int
+	summaryTimeIndex      int
 	threadID              string
 	mu                    sync.Mutex
 	closed                bool
@@ -169,6 +172,7 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 	base := runtime.state.view.ViewVersion
 	runtime.mutations = threadMutations{}
 	err := mutate()
+	runtime.refreshSummaryPositions()
 	runtime.refreshAttention()
 	if runtime.service != nil {
 		switch {

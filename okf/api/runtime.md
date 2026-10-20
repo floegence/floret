@@ -749,3 +749,11 @@ Bounded windows return ordered ActivityBodies and use ThreadBodyActivityJSON
 when the combined source exceeds their preview budget. A consumer reads each
 complete field, verifies SHA256, then applies tools.MergeActivityPresentations
 in source order. Active and derived Goal activity retain existing ownership.
+
+List and Summary read existing actors through the same accepted-state owner
+before any canonical path. Preview/time positions track explicit item changes;
+only reorder/removal boundaries rebuild them. Summary reads visit pending input
+controls rather than resolved historical interactions. Unloaded summaries remain
+canonical path reads and do not create actors; cold summary indexing is not yet
+complete. The fixed-history summary benchmark isolates this actor kernel and
+must not be presented as storage or UI qualification.

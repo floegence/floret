@@ -1106,35 +1106,20 @@ func (service *threadRuntimeService) setTitleCommand(ctx context.Context, in Set
 }
 
 func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope) ([]ThreadSummary, error) {
-	if scope.ParentID == nil {
-		inventory, ok := service.host.store.repo.(interface {
-			ListRootThreadInventory(context.Context, sessiontree.ListThreadsOptions) ([]sessiontree.RootThreadInventoryItem, error)
-		})
-		if !ok {
-			return nil, ErrUnsupportedStoreCapability
-		}
-		items, err := inventory.ListRootThreadInventory(ctx, sessiontree.ListThreadsOptions{IncludeArchived: false})
-		if err != nil {
-			return nil, runtimeHostError(err)
-		}
-		out := make([]ThreadSummary, 0, len(items))
-		for _, item := range items {
-			summary, err := threadSummaryFromCanonicalPath(item.Meta, item.Path)
-			if err != nil {
-				return nil, err
-			}
-			service.applyActiveThreadSummary(&summary)
-			out = append(out, summary)
-		}
-		return out, nil
-	}
-	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: false})
+
+	metas, err := sessiontree.ListThreads(ctx, service.host.store.repo, sessiontree.ListThreadsOptions{IncludeArchived: false, RootOnly: scope.ParentID == nil})
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
 	out := make([]ThreadSummary, 0, len(metas))
 	for _, meta := range metas {
-		if meta.ParentThreadID != scope.ParentID.String() {
+		if scope.ParentID != nil && meta.ParentThreadID != scope.ParentID.String() {
+			continue
+		}
+		if summary, found, err := service.activeThreadSummary(ctx, meta); err != nil {
+			return nil, err
+		} else if found {
+			out = append(out, summary)
 			continue
 		}
 		path, err := service.host.store.repo.Path(ctx, meta.ID, meta.LeafID)
@@ -1145,7 +1130,6 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 		if err != nil {
 			return nil, err
 		}
-		service.applyActiveThreadSummary(&summary)
 		out = append(out, summary)
 	}
 	return out, nil
@@ -1349,29 +1333,28 @@ func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadS
 	return summary
 }
 
-func (service *threadRuntimeService) applyActiveThreadSummary(summary *ThreadSummary) {
-	if service == nil || summary == nil {
-		return
-	}
+// activeThreadSummary reads only the existing actor. Listing must not decode
+// canonical history before replacing it with these newer in-process facts.
+func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, meta sessiontree.ThreadMeta) (ThreadSummary, bool, error) {
 	service.runtimesMu.Lock()
-	actor := service.runtimes[summary.ID.String()]
+	actor := service.runtimes[meta.ID]
 	service.runtimesMu.Unlock()
 	if actor == nil {
-		return
+		return ThreadSummary{}, false, nil
 	}
-	meta := sessiontree.ThreadMeta{
-		ID: summary.ID.String(), ParentThreadID: summary.ParentThreadID.String(), ParentTurnID: summary.ParentTurnID.String(),
-		TaskName: summary.TaskName, TaskDescription: summary.TaskDescription, HostProfileRef: summary.HostProfileRef, ForkMode: summary.ForkMode,
-		Title: summary.Title, TitleStatus: sessiontree.ThreadTitleStatus(summary.TitleStatus), TitleGeneration: summary.TitleGeneration, CreatedAt: summary.CreatedAt, UpdatedAt: summary.UpdatedAt,
-	}
-	_ = actor.apply(context.Background(), func() error {
+	var summary ThreadSummary
+	found := false
+	err := actor.apply(ctx, func() error {
+		if actor.state.contextErr != nil {
+			return actor.state.contextErr
+		}
 		if actor.state.view.ViewVersion > 0 {
-			// Project the small summary while its source is actor-owned. No slice
-			// or mutable payload escapes the lock and no history copy is needed.
-			*summary = threadSummaryFromView(meta, actor.state.view)
+			summary = actor.threadSummary(meta)
+			found = true
 		}
 		return nil
 	})
+	return summary, found, err
 }
 
 func truncateThreadSummaryPreview(value string, limit int) string {
