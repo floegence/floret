@@ -394,6 +394,8 @@ type State struct {
 type EventType string
 
 const (
+	// EventTransport reports non-semantic protocol progress.
+	EventTransport EventType = "transport"
 	// EventDelta appends assistant text.
 	EventDelta EventType = "delta"
 	// EventReasoning appends assistant reasoning.
@@ -442,19 +444,20 @@ type OutputPart struct {
 
 // Event carries one streamed provider output.
 type Event struct {
-	OutputPart     *OutputPart       `json:"output_part,omitempty"`
-	Type           EventType         `json:"type"`
-	Text           string            `json:"text,omitempty"`
-	ToolCallStream *ToolCallStream   `json:"tool_call_stream,omitempty"`
-	ToolCalls      []ToolCall        `json:"tool_calls,omitempty"`
-	HostedToolCall *ToolCall         `json:"hosted_tool_call,omitempty"`
-	HostedResult   *HostedToolResult `json:"hosted_result,omitempty"`
-	Sources        []Source          `json:"sources,omitempty"`
-	Reason         string            `json:"reason,omitempty"`
-	Usage          Usage             `json:"usage,omitempty"`
-	ResponseID     string            `json:"response_id,omitempty"`
-	ResponseState  *State            `json:"response_state,omitempty"`
-	Err            error             `json:"-"`
+	Transport      *TransportObservation `json:"transport,omitempty"`
+	OutputPart     *OutputPart           `json:"output_part,omitempty"`
+	Type           EventType             `json:"type"`
+	Text           string                `json:"text,omitempty"`
+	ToolCallStream *ToolCallStream       `json:"tool_call_stream,omitempty"`
+	ToolCalls      []ToolCall            `json:"tool_calls,omitempty"`
+	HostedToolCall *ToolCall             `json:"hosted_tool_call,omitempty"`
+	HostedResult   *HostedToolResult     `json:"hosted_result,omitempty"`
+	Sources        []Source              `json:"sources,omitempty"`
+	Reason         string                `json:"reason,omitempty"`
+	Usage          Usage                 `json:"usage,omitempty"`
+	ResponseID     string                `json:"response_id,omitempty"`
+	ResponseState  *State                `json:"response_state,omitempty"`
+	Err            error                 `json:"-"`
 }
 
 // HostedToolResult is a provider-neutral projection of provider-native tool

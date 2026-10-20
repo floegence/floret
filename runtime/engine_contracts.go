@@ -296,19 +296,20 @@ const (
 )
 
 type modelEvent struct {
-	OutputPart     *publicprovider.OutputPart       `json:"output_part,omitempty"`
-	Type           modelEventType                   `json:"type"`
-	Text           string                           `json:"text,omitempty"`
-	ToolCallStream *ToolCallStream                  `json:"tool_call_stream,omitempty"`
-	ToolCalls      []tools.ToolCall                 `json:"tool_calls,omitempty"`
-	HostedToolCall *publicprovider.ToolCall         `json:"hosted_tool_call,omitempty"`
-	HostedResult   *publicprovider.HostedToolResult `json:"hosted_result,omitempty"`
-	Sources        []publicprovider.Source          `json:"sources,omitempty"`
-	Reason         string                           `json:"reason,omitempty"`
-	Usage          publicprovider.Usage             `json:"usage,omitempty"`
-	ResponseID     string                           `json:"response_id,omitempty"`
-	ResponseState  *modelStateEnvelope              `json:"response_state,omitempty"`
-	Err            error                            `json:"-"`
+	Transport      *publicprovider.TransportObservation `json:"transport,omitempty"`
+	OutputPart     *publicprovider.OutputPart           `json:"output_part,omitempty"`
+	Type           modelEventType                       `json:"type"`
+	Text           string                               `json:"text,omitempty"`
+	ToolCallStream *ToolCallStream                      `json:"tool_call_stream,omitempty"`
+	ToolCalls      []tools.ToolCall                     `json:"tool_calls,omitempty"`
+	HostedToolCall *publicprovider.ToolCall             `json:"hosted_tool_call,omitempty"`
+	HostedResult   *publicprovider.HostedToolResult     `json:"hosted_result,omitempty"`
+	Sources        []publicprovider.Source              `json:"sources,omitempty"`
+	Reason         string                               `json:"reason,omitempty"`
+	Usage          publicprovider.Usage                 `json:"usage,omitempty"`
+	ResponseID     string                               `json:"response_id,omitempty"`
+	ResponseState  *modelStateEnvelope                  `json:"response_state,omitempty"`
+	Err            error                                `json:"-"`
 }
 
 type ToolCallStream struct {

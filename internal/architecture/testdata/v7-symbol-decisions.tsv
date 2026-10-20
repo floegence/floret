@@ -57,3 +57,5 @@ runtime.ThreadGoal	add	ThreadView.Goal	current exact objective and transient ref
 runtime.ThreadGoalChange	add	ThreadItemGoal	auditable user and model changes with atomic terminal completion
 tools.Registry.WithTools	add	independent registry snapshot	install runtime-owned tools without redispatching external effects
 runtime.ThreadTurnFailureToolArgumentCorrectionExhausted	add	ThreadTurnFailure.Reason	Redeven Flower needs a safe canonical correction-exhaustion reason for current and released historical failures without parsing raw errors
+provider.TransportObservation	add	Redeven transport adapters	optional typed non-semantic protocol facts owned by adapters
+observation.ProviderTransportProgress	add	Engine events and ThreadRunProgress	attempt-bound memory-only transport presentation

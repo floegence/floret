@@ -282,9 +282,10 @@ const (
 // ThreadRunProgress is the process-local presentation of an advancing run.
 // It is absent while the thread is idle, terminal, or waiting for interaction.
 type ThreadRunProgress struct {
-	Request *ProviderRequestProgress `json:"request,omitempty"`
-	Retry   *ProviderRetryProgress   `json:"retry,omitempty"`
-	Phase   ThreadRunPhase           `json:"phase"`
+	Transport *observation.ProviderTransportProgress `json:"transport,omitempty"`
+	Request   *ProviderRequestProgress               `json:"request,omitempty"`
+	Retry     *ProviderRetryProgress                 `json:"retry,omitempty"`
+	Phase     ThreadRunPhase                         `json:"phase"`
 }
 
 // TurnOutcome is a terminal outcome rendered on one turn, never as thread failure.
@@ -3050,7 +3051,7 @@ func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
 	switch event.Type {
 	case observation.EventTypeStepStart:
 		phase = ThreadRunPhasePreparing
-	case observation.EventTypeProviderRequest, observation.EventTypeHostedToolResult:
+	case observation.EventTypeProviderTransport, observation.EventTypeProviderRequest, observation.EventTypeHostedToolResult:
 		phase = ThreadRunPhaseWaitingResponse
 	case observation.EventTypeProviderDelta,
 		observation.EventTypeProviderReasoning,
@@ -4314,6 +4315,7 @@ func cloneThreadRunProgress(progress *ThreadRunProgress) *ThreadRunProgress {
 	}
 	copy := *progress
 	copy.Retry = cloneProviderRetryProgress(progress.Retry)
+	copy.Transport = cloneProviderTransportProgress(progress.Transport)
 	if progress.Request != nil {
 		request := *progress.Request
 		if request.LastProgressAt != nil {

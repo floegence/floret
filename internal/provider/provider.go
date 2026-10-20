@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providertransport"
 	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/usageaccounting"
 	"strings"
@@ -141,6 +142,7 @@ type HostedToolDefinition struct {
 type EventType string
 
 const (
+	TransportEvent   EventType = "transport"
 	Delta            EventType = "delta"
 	Reasoning        EventType = "reasoning"
 	ToolCallStart    EventType = "tool_call_start"
@@ -291,6 +293,7 @@ type OutputPart struct {
 }
 
 type StreamEvent struct {
+	Transport      *providertransport.Observation
 	OutputPart     *OutputPart
 	Type           EventType
 	Text           string
@@ -372,6 +375,11 @@ func (v *StreamValidator) Observe(ev StreamEvent) error {
 		}
 	}
 	switch ev.Type {
+	case TransportEvent:
+		if ev.Transport == nil {
+			return errors.New("missing provider transport observation")
+		}
+		return ev.Transport.Validate()
 	case Delta, Reasoning, UsageEvent, SourcesEvent:
 		return nil
 	case ToolCallStart, ToolCallDelta, ToolCallEnd:

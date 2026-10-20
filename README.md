@@ -602,6 +602,17 @@ a five-minute window from the first failure. `WithAgentProviderRetryPolicy`
 accepts an explicit validated policy; use `ProviderRetryPolicy{Disabled: true}`
 to disable recovery. SDK transport retries must be disabled.
 
+Gateways may emit optional typed `provider.EventTransport` observations for
+connection, send, receive, completion and failure phases. The Engine binds its
+own logical request and attempt identity; `ThreadRunProgress.Transport` exposes
+only the current request's memory-only snapshot. Planned transport changes remain
+visible during backoff. These events never append model output, count tokens,
+renew semantic timeouts, or authorize retries. Product transport selection and
+connection pools remain gateway-owned. Retry preparations preserve the frozen
+payload and estimate while refreshing the attempt's transport measurement prefix;
+usage without matching transport evidence remains billable but cannot establish
+an exact context anchor.
+
 `WithAgentProviderRequestTimeoutPolicy` configures one physical request clock,
 shared by ordinary requests, compaction and titles. Zero fields use
 `DefaultProviderRequestTimeoutPolicy`: five minutes without first semantic output,

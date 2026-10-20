@@ -2126,7 +2126,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 }
 
 func (p *turnProjection) acceptProviderAttemptLocked(ev event.Event) (bool, error) {
-	tracked := ev.Type == event.ProviderRetry || ev.Type == event.HostedToolCall || ev.Type == event.HostedToolResult || ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
+	tracked := ev.Type == event.ProviderTransport || ev.Type == event.ProviderRetry || ev.Type == event.HostedToolCall || ev.Type == event.HostedToolResult || ev.Type == event.ProviderRequest || ev.Type == event.ProviderUsage || ev.Type == event.ProviderDelta ||
 		ev.Type == event.ProviderReasoning || ev.Type == event.ProviderSources || ev.Type == event.ProviderToolCallStart ||
 		ev.Type == event.ProviderToolCallDelta || ev.Type == event.ProviderToolCallEnd
 	if !tracked {

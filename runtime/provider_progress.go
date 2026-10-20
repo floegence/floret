@@ -38,12 +38,31 @@ type ThreadToolCallPreview struct {
 	Preview           *tools.ArgumentPreview    `json:"preview"`
 }
 
+func cloneProviderTransportProgress(in *observation.ProviderTransportProgress) *observation.ProviderTransportProgress {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	return &copy
+}
+
 func mergeRequestProgress(previous, next *ThreadRunProgress, event Event) *ThreadRunProgress {
 	if previous != nil {
 		next.Request = cloneThreadRunProgress(previous).Request
+		next.Transport = cloneProviderTransportProgress(previous.Transport)
 	}
 	switch event.Type {
-	case observation.EventTypeStepStart, observation.EventTypeProviderRetry:
+	case observation.EventTypeProviderTransport:
+		next.Transport = cloneProviderTransportProgress(event.Transport)
+		if previous != nil {
+			next.Phase = previous.Phase
+		}
+	case observation.EventTypeStepStart:
+		next.Transport = nil
+		next.Request = nil
+	case observation.EventTypeProviderFinish:
+		next.Transport = nil
+	case observation.EventTypeProviderRetry:
 		next.Request = nil
 	case observation.EventTypeProviderRequest:
 		logical, attempt, epoch, ok := liveEventAttemptIdentity(event)

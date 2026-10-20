@@ -33,6 +33,7 @@ const (
 	ProviderUsage          = observation.EventTypeProviderUsage
 	ProviderSources        = observation.EventTypeProviderSources
 	ProviderFinish         = observation.EventTypeProviderFinish
+	ProviderTransport      = observation.EventTypeProviderTransport
 	ProviderRetry          = observation.EventTypeProviderRetry
 	ToolCall               = observation.EventTypeToolCall
 	ToolDispatchStarted    = observation.EventTypeToolDispatchStarted
@@ -70,6 +71,7 @@ const (
 )
 
 type Event struct {
+	Transport *observation.ProviderTransportProgress `json:"transport,omitempty"`
 	// OutputSourceID is assigned by the Engine before publishing any text.
 	OutputSourceID string   `json:"-"`
 	OutputOrder    []string `json:"-"`
@@ -204,6 +206,10 @@ func SanitizePathRefs(e Event) Event {
 }
 
 func sanitize(e Event, policy SinkPolicy) Event {
+	if e.Transport != nil {
+		copy := *e.Transport
+		e.Transport = &copy
+	}
 	if e.Retry != nil {
 		copy := *e.Retry
 		e.Retry = &copy

@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"io"
 	"testing"
 	"time"
@@ -158,6 +159,32 @@ type replayRecoveryHandle struct {
 	req          provider.Request
 	closed, used bool
 	fingerprint  string
+}
+
+func (h *replayRecoveryHandle) InputMeasurementPrefix() requestmeasure.Prefix {
+	return requestmeasure.Prefix{ExecutionIdentity: h.req.AttemptID, Format: "test:v1", Fingerprint: "frozen", ItemCount: 1, Boundary: "input"}
+}
+func (h *replayRecoveryHandle) MeasurementSuffix(requestmeasure.Prefix) ([]byte, bool) {
+	return nil, false
+}
+
+func TestProviderRecoveryRefreshesAttemptMeasurementPrefix(t *testing.T) {
+	p := &replayRecoveryProvider{recoveryProvider: recoveryProvider{failCount: 1}}
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ProviderRetryPolicy = fastRecoveryPolicy()
+	got := e.Run(t.Context(), "work")
+	if got.Status != engine.Completed || len(p.requests) != 2 {
+		t.Fatalf("result=%+v requests=%d", got, len(p.requests))
+	}
+	records, err := e.Prompt.ProviderRequests(t.Context(), p.requests[0].PromptScopeID)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("records=%v err=%v", records, err)
+	}
+	for _, record := range records {
+		if record.MeasurementPrefix.ExecutionIdentity != record.AttemptID {
+			t.Fatalf("attempt %s reused measurement identity %s", record.AttemptID, record.MeasurementPrefix.ExecutionIdentity)
+		}
+	}
 }
 
 func (p *replayRecoveryProvider) PrepareRequest(_ context.Context, req provider.Request) (provider.PreparedRequest, error) {

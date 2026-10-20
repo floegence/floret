@@ -291,6 +291,7 @@ var ErrContextOverflow error
 var ErrRequestTimeout error
 func EstimateRenderedRequest func(request github.com/floegence/floret/v7/provider.RenderedRequest) (github.com/floegence/floret/v7/provider.TokenEstimate, error)
 type Event struct
+field Event.Transport *github.com/floegence/floret/v7/provider.TransportObservation tag="json:\"transport,omitempty\""
 field Event.OutputPart *github.com/floegence/floret/v7/provider.OutputPart tag="json:\"output_part,omitempty\""
 field Event.Type github.com/floegence/floret/v7/provider.EventType tag="json:\"type\""
 field Event.Text string tag="json:\"text,omitempty\""
@@ -316,6 +317,7 @@ const EventToolCallDelta github.com/floegence/floret/v7/provider.EventType = "to
 const EventToolCallEnd github.com/floegence/floret/v7/provider.EventType = "tool_call_end"
 const EventToolCallStart github.com/floegence/floret/v7/provider.EventType = "tool_call_start"
 const EventToolCalls github.com/floegence/floret/v7/provider.EventType = "tool_calls"
+const EventTransport github.com/floegence/floret/v7/provider.EventType = "transport"
 const EventTruncated github.com/floegence/floret/v7/provider.EventType = "truncated"
 type EventType string
 const EventUsage github.com/floegence/floret/v7/provider.EventType = "usage"
@@ -531,6 +533,24 @@ field ToolResult.CallID string tag="json:\"call_id\""
 field ToolResult.ToolName string tag="json:\"tool_name\""
 field ToolResult.Text string tag="json:\"text,omitempty\""
 field ToolResult.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
+const TransportCompleted github.com/floegence/floret/v7/internal/providertransport.Phase = "completed"
+const TransportConnecting github.com/floegence/floret/v7/internal/providertransport.Phase = "connecting"
+const TransportFailed github.com/floegence/floret/v7/internal/providertransport.Phase = "failed"
+const TransportHTTP github.com/floegence/floret/v7/internal/providertransport.Kind = "http"
+const TransportHTTPSSE github.com/floegence/floret/v7/internal/providertransport.Kind = "http_sse"
+type TransportKind = github.com/floegence/floret/v7/provider.TransportKind
+method TransportKind.Valid func() bool
+type TransportObservation = github.com/floegence/floret/v7/provider.TransportObservation
+field TransportObservation.Transport github.com/floegence/floret/v7/internal/providertransport.Kind tag="json:\"transport\""
+field TransportObservation.Phase github.com/floegence/floret/v7/internal/providertransport.Phase tag="json:\"phase\""
+field TransportObservation.NextTransport github.com/floegence/floret/v7/internal/providertransport.Kind tag="json:\"next_transport,omitempty\""
+field TransportObservation.Reason string tag="json:\"reason,omitempty\""
+method TransportObservation.Validate func() error
+type TransportPhase = github.com/floegence/floret/v7/provider.TransportPhase
+method TransportPhase.Valid func() bool
+const TransportReceiving github.com/floegence/floret/v7/internal/providertransport.Phase = "receiving"
+const TransportSending github.com/floegence/floret/v7/internal/providertransport.Phase = "sending"
+const TransportWebSocket github.com/floegence/floret/v7/internal/providertransport.Kind = "websocket"
 type Usage struct
 field Usage.OutputTokensReported bool tag="json:\"output_tokens_reported,omitempty\""
 field Usage.Measurement *github.com/floegence/floret/v7/provider.RequestMeasurement tag="json:\"measurement,omitempty\""
@@ -741,6 +761,7 @@ var ErrTurnNotFound error
 var ErrUnsupportedSchema error
 var ErrUnsupportedStoreCapability error
 type Event struct
+field Event.Transport *github.com/floegence/floret/v7/observation.ProviderTransportProgress tag="json:\"transport,omitempty\""
 field Event.ProviderLastProgressAt *time.Time tag="json:\"provider_last_progress_at,omitempty\""
 field Event.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field Event.Type github.com/floegence/floret/v7/observation.EventType tag="json:\"type\""
@@ -1344,6 +1365,7 @@ const ThreadRunPhaseStreaming github.com/floegence/floret/v7/runtime.ThreadRunPh
 const ThreadRunPhaseToolExecution github.com/floegence/floret/v7/runtime.ThreadRunPhase = "tool_execution"
 const ThreadRunPhaseWaitingResponse github.com/floegence/floret/v7/runtime.ThreadRunPhase = "waiting_response"
 type ThreadRunProgress struct
+field ThreadRunProgress.Transport *github.com/floegence/floret/v7/observation.ProviderTransportProgress tag="json:\"transport,omitempty\""
 field ThreadRunProgress.Request *github.com/floegence/floret/v7/runtime.ProviderRequestProgress tag="json:\"request,omitempty\""
 field ThreadRunProgress.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field ThreadRunProgress.Phase github.com/floegence/floret/v7/runtime.ThreadRunPhase tag="json:\"phase\""
@@ -2687,6 +2709,7 @@ const ContinuationReasonProviderTruncated github.com/floegence/floret/v7/observa
 const ContinuationReasonRetryEmpty github.com/floegence/floret/v7/observation.ContinuationReason = "retry_empty"
 const ContinuationReasonToolResults github.com/floegence/floret/v7/observation.ContinuationReason = "tool_results"
 type Event struct
+field Event.Transport *github.com/floegence/floret/v7/observation.ProviderTransportProgress tag="json:\"transport,omitempty\""
 field Event.Retry *github.com/floegence/floret/v7/observation.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field Event.Type github.com/floegence/floret/v7/observation.EventType tag="json:\"type\""
 field Event.TraceID github.com/floegence/floret/v7/identity.TraceID tag="json:\"trace_id,omitempty\""
@@ -2739,6 +2762,7 @@ const EventTypeProviderSources github.com/floegence/floret/v7/observation.EventT
 const EventTypeProviderToolCallDelta github.com/floegence/floret/v7/observation.EventType = "provider_tool_call_delta"
 const EventTypeProviderToolCallEnd github.com/floegence/floret/v7/observation.EventType = "provider_tool_call_end"
 const EventTypeProviderToolCallStart github.com/floegence/floret/v7/observation.EventType = "provider_tool_call_start"
+const EventTypeProviderTransport github.com/floegence/floret/v7/observation.EventType = "provider_transport"
 const EventTypeProviderUsage github.com/floegence/floret/v7/observation.EventType = "provider_usage"
 const EventTypeRunEnd github.com/floegence/floret/v7/observation.EventType = "run_end"
 const EventTypeSkillBlocked github.com/floegence/floret/v7/observation.EventType = "skill_blocked"
@@ -2778,6 +2802,11 @@ field ProviderRetryProgress.NextAttemptAt time.Time tag="json:\"next_attempt_at\
 field ProviderRetryProgress.Reason string tag="json:\"reason\""
 field ProviderRetryProgress.ReplacedAttemptID string tag="json:\"replaced_attempt_id,omitempty\""
 field ProviderRetryProgress.ReplacedAttemptEpoch int tag="json:\"replaced_attempt_epoch,omitempty\""
+type ProviderTransportProgress struct
+field ProviderTransportProgress.LogicalRequestID github.com/floegence/floret/v7/identity.LogicalRequestID tag="json:\"logical_request_id\""
+field ProviderTransportProgress.AttemptID string tag="json:\"attempt_id\""
+field ProviderTransportProgress.AttemptEpoch int tag="json:\"attempt_epoch\""
+field ProviderTransportProgress.<embedded> github.com/floegence/floret/v7/internal/providertransport.Observation
 type ProviderUsage struct
 field ProviderUsage.InputTokensReported bool tag="json:\"input_tokens_reported,omitempty\""
 field ProviderUsage.InputTokenScope string tag="json:\"input_token_scope,omitempty\""

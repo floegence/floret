@@ -54,6 +54,7 @@ func TestAttemptOnlySemanticProgressExtendsIdle(t *testing.T) {
 		for range 7 {
 			time.Sleep(15 * time.Second)
 			a.Observe(StreamEvent{Type: UsageEvent})
+			a.Observe(StreamEvent{Type: TransportEvent})
 			a.Observe(StreamEvent{Type: Delta})
 		}
 		time.Sleep(15 * time.Second)

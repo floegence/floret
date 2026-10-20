@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providertransport"
 	"strings"
 	"sync"
 
@@ -378,7 +379,7 @@ func providerStreamEvent(event modelEvent) provider.StreamEvent {
 	if event.OutputPart != nil {
 		part = &provider.OutputPart{ItemID: event.OutputPart.ItemID, OutputIndex: event.OutputPart.OutputIndex, ContentIndex: event.OutputPart.ContentIndex}
 	}
-	return provider.StreamEvent{OutputPart: part, Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: engineProviderError(event.Err)}
+	return provider.StreamEvent{Transport: providertransport.Clone(event.Transport), OutputPart: part, Type: provider.EventType(event.Type), Text: event.Text, ToolCallStream: providerToolCallStream(event.ToolCallStream), ToolCalls: providerToolCalls(event.ToolCalls), ToolCall: hosted, HostedResult: internalHostedToolResult(event.HostedResult), Sources: providerSourceRefs(event.Sources), Reason: event.Reason, Usage: providerUsage(event.Usage), ResponseID: event.ResponseID, ResponseState: providerState(event.ResponseState), Err: engineProviderError(event.Err)}
 }
 
 func providerToolCallStream(value *ToolCallStream) provider.ToolCallStream {

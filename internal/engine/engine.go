@@ -4042,6 +4042,8 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				lastProgressAt = attempt.Observe(ev)
 			}
 			switch ev.Type {
+			case provider.TransportEvent:
+				e.emit(opts, event.Event{Type: event.ProviderTransport, RunID: opts.RunID, ThreadID: opts.ThreadID, TraceID: opts.TraceID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metadata: attemptMetadata, Transport: &observation.ProviderTransportProgress{LogicalRequestID: identity.LogicalRequestID(req.LogicalRequestID), AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch, Observation: *ev.Transport}})
 			case provider.Delta:
 				if ev.Text == "" {
 					break

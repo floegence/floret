@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add optional typed provider transport observations with Engine-issued attempt identity and memory-only ThreadRunProgress snapshots, preserving semantic timeouts and canonical history.
+- Refresh retry measurement prefixes from fresh prepared handles while retaining frozen model input, payload fingerprints and estimates.
+
 ## v7.72.0 - 2026-10-20
 
 - Reset tool argument correction after each fully committed validation-clean batch, sharing one bounded episode across ordinary and control tools while retaining valid sibling results.

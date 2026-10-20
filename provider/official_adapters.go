@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providertransport"
 	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"net/http"
 	"strings"
@@ -291,7 +292,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 		hostedResult = publicHostedResult(event.HostedResult)
 	}
 	return Event{
-		OutputPart: part, Type: EventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		Transport: providertransport.Clone(event.Transport), OutputPart: part, Type: EventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
 		HostedToolCall: hostedCall, HostedResult: hostedResult, Sources: sources, Reason: event.Reason,
 		Usage: Usage{
 			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
