@@ -385,14 +385,18 @@ func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
 			if (boundary != "unknown_effect" && *stopped.LastOutcome != TurnOutcomeCancelled) || stopped.Goal.Status != "active" || len(g.Requests()) != len(steps) {
 				t.Fatalf("stop after preparation=%+v requests=%d", stopped, len(g.Requests()))
 			}
-			restoredGateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "compact", StateCompatibilityKey: "test:compact"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, goalCall("review", `{"operation":"review","expected_version":1,"outcome":"completed","evidence":"Restart result verified."}`), parentEventDone())
+			restoredSteps := []florettest.Step{goalCall("review", `{"operation":"review","expected_version":1,"outcome":"completed","evidence":"Restart result verified."}`), parentEventDone()}
+			if boundary == "unknown_effect" {
+				restoredSteps = append([]florettest.Step{compactionTestStep("The launch code is CERULEAN-739. Work in /work/first."), parentEventDone()}, restoredSteps...)
+			}
+			restoredGateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "compact", StateCompatibilityKey: "test:compact"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, restoredSteps...)
 			restored, err := Open(t.Context(), Options{Storage: storage.SQLite(copyPath)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer restored.Shutdown(context.Background())
 			resumed, err := restored.ThreadService(AgentFactoryFunc(func(_ context.Context, req AgentRequest) (*Agent, error) {
-				if req.TurnKind != TurnKindGoalContinuation || req.CanonicalTurnInput.Text != "" {
+				if req.RequestKey == "compact" && (req.TurnKind != TurnKindGoalContinuation || req.CanonicalTurnInput.Text != "") {
 					t.Errorf("factory=%+v", req)
 				}
 				if boundary == "factory_failure" {
@@ -413,6 +417,11 @@ func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
 			if boundary == "unknown_effect" && (final.Failure.Code != ThreadTurnFailureEffectOutcomeUnknown || len(restoredGateway.Requests()) != 0 || final.Goal.Status != "active") {
 				t.Fatalf("unsafe recovery: failure=%+v requests=%d goal=%+v", final.Failure, len(restoredGateway.Requests()), final.Goal)
 			}
+			if boundary == "unknown_effect" {
+				if _, err = resumed.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: th.ThreadID, RequestKey: "unsafe-compact", ContinueGoal: true}); !errors.Is(err, ErrEffectOutcomeUnknown) {
+					t.Fatalf("compaction bypassed inspection: %v", err)
+				}
+			}
 			if boundary != "factory_failure" && boundary != "unknown_effect" && final.Goal.Status != "completed" {
 				t.Fatal(final.Goal)
 			}
@@ -422,6 +431,28 @@ func TestGoalCompactionRestartFromCanonicalBoundary(t *testing.T) {
 			}
 			if len(snapshot.Compactions) != 1 {
 				t.Fatalf("preparation repeated=%+v", snapshot.Compactions)
+			}
+			if boundary == "unknown_effect" {
+				pure, compactErr := resumed.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: th.ThreadID, RequestKey: "pure-after-unknown"})
+				if compactErr != nil {
+					t.Fatal(compactErr)
+				}
+				waitGoalCompactionView(t, resumed, th.ThreadID, func(v ThreadView) bool {
+					return v.TurnID == pure.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
+				})
+				if _, err = resumed.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: th.ThreadID, RequestKey: "still-unsafe-compact", ContinueGoal: true}); !errors.Is(err, ErrEffectOutcomeUnknown) {
+					t.Fatalf("pure compaction cleared inspection boundary: %v", err)
+				}
+				recovered, sendErr := resumed.Send(t.Context(), SendInput{ThreadID: th.ThreadID, RequestKey: "inspected-continue", Input: UserInput{Text: "I inspected the tool outcome. Continue without repeating the uncertain action."}})
+				if sendErr != nil {
+					t.Fatal(sendErr)
+				}
+				finished := waitGoalCompactionView(t, resumed, th.ThreadID, func(v ThreadView) bool {
+					return v.TurnID == recovered.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
+				})
+				if finished.Failure != nil || finished.Goal.Status != "completed" {
+					t.Fatalf("explicit recovery stranded: failure=%+v goal=%+v", finished.Failure, finished.Goal)
+				}
 			}
 			if boundary == "confirmed_tool" {
 				count := 0
