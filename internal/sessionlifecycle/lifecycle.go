@@ -119,11 +119,42 @@ func Running(latestTurnID string) Lifecycle {
 // recoverability, and appendability. Do not derive these decisions directly from
 // engine status, thread phase, sessiontree markers, or inspector transitions.
 func Derive(path []sessiontree.Entry, rawPhase string) Lifecycle {
+	projection := Projection{}
+	for _, entry := range path {
+		projection.Observe(entry)
+	}
+	return projection.Snapshot(rawPhase)
+}
+
+// Projection is the incremental form of the same host/UI lifecycle authority.
+// Only canonical marker identities and waiting text are retained.
+type Projection struct {
+	facts          sessiontree.CanonicalLifecycle
+	waitingPrompts map[string]string
+}
+
+func (projection *Projection) Observe(entry sessiontree.Entry) {
+	projection.facts.Observe(entry, true)
+	if prompt, found := waitingPromptEntry(entry); found {
+		if projection.waitingPrompts == nil {
+			projection.waitingPrompts = map[string]string{}
+		}
+		projection.waitingPrompts[entry.TurnID] = prompt
+	}
+}
+
+func (projection *Projection) Snapshot(rawPhase string) Lifecycle {
 	phase := normalizePhase(rawPhase)
-	facts := sessiontree.DeriveCanonicalLifecycle(path, phase == phaseTurn)
+	facts := projection.facts
+	if phase != phaseTurn && facts.Status == StatusRunning {
+		facts.Status, facts.Recoverable = StatusInterrupted, true
+	}
+	if facts.Status == "" {
+		facts.Status = StatusIdle
+	}
 	result := Lifecycle{status: status(facts.Status), phase: phase, latestTurnID: facts.LatestTurnID, recoverable: facts.Recoverable}
 	if result.status == statusWaiting {
-		result.waitingPrompt = waitingPromptForTurn(path, facts.LatestTurnID)
+		result.waitingPrompt = projection.waitingPrompts[facts.LatestTurnID]
 	}
 	return result
 }
@@ -207,24 +238,15 @@ func isRunning(currentStatus status, currentPhase phase) bool {
 	return currentStatus == statusRunning || currentPhase == phaseTurn
 }
 
-func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		entry := path[i]
-		if entry.TurnID != turnID {
-			continue
-		}
-		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
-			return entry.Message.ToolResult.InputRequired.Summary
-		}
-		if entry.Type != sessiontree.EntryToolCall {
-			continue
-		}
-		if entry.Message.ToolName == "ask_user" {
-			if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
-				return signal.Prompt
-			}
-			return ""
-		}
+func waitingPromptEntry(entry sessiontree.Entry) (string, bool) {
+	if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+		return entry.Message.ToolResult.InputRequired.Summary, true
 	}
-	return ""
+	if entry.Type != sessiontree.EntryToolCall || entry.Message.ToolName != "ask_user" {
+		return "", false
+	}
+	if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
+		return signal.Prompt, true
+	}
+	return "", true
 }

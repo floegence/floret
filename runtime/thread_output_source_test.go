@@ -213,7 +213,7 @@ func TestStoppedProviderRetainsPartialOutputSourcesAndAllowsNextTurn(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, view := range []ThreadView{stopped, canonical} {
+	for _, view := range []ThreadView{stopped, canonical.ThreadView} {
 		if len(view.Items) != len(live.Items) {
 			t.Fatalf("partial output lost: live=%+v restored=%+v", live.Items, view.Items)
 		}

@@ -19,7 +19,7 @@ var readMethods = map[string]bool{
 	"ArtifactClosure":      true,
 	"CanonicalTurnEntries": true, "EffectAttempt": true, "Entries": true, "FindTurnRequest": true, "Entry": true,
 	"ListCanonicalTurns": true, "ListSubAgentInputs": true, "ListThreads": true,
-	"Path": true, "PathPage": true, "PathMetadataPage": true, "PathMetadataWindow": true, "PendingAutomaticThreadTitles": true,
+	"Path": true, "PathPage": true, "PathMetadataPage": true, "PathMetadataWindow": true, "PathEntriesWindow": true, "PendingAutomaticThreadTitles": true,
 	"ProviderState": true, "ReadAgentTodoState": true,
 	"ReadArtifact": true, "ReadCanonicalTurn": true, "ReadCanonicalBody": true, "ReadCompaction": true,
 	"ReadPendingToolCompletion": true, "ReadSubAgentInput": true,

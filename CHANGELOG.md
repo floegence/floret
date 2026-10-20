@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Advance canonical provider/context commits by appended storage intervals and affected item/turn reducers; share full-read semantics, preserve delayed interaction order, invalidate failed projections and avoid retaining historical mutation-map capacity.
+- Read the latest scope-bound provider request by exact append ordinal with restart, pending-observation and source-integrity checks.
+
+- Read bidirectional body-free canonical windows by stable anchors and frozen active-path boundaries, retaining append validity and rejecting changed branches without whole-path materialization.
+
 - Advance canonical item presentation through shared chronological reducers for Goal, controls, steering, tool inputs, approvals and hosted activity; preserve original output and arbitrary chunk boundaries.
 - Add internal body-free canonical metadata paging through the existing ancestry/cursor kernel without hydrating historical source fields.
 

@@ -39,6 +39,32 @@ type PathWindowReader interface {
 }
 
 func (r *MemoryRepo) PathMetadataWindow(ctx context.Context, options PathWindowOptions) (PathMetadataWindow, error) {
+	return r.readPathWindow(ctx, options, false)
+}
+
+// PathEntriesWindow reads exact complete entries through the same interval
+// selector. This is for incremental canonical reducers, never bounded display.
+type PathEntriesWindow struct {
+	PathMetadataWindow
+	Entries []Entry
+}
+type PathEntriesWindowReader interface {
+	PathEntriesWindow(context.Context, PathWindowOptions) (PathEntriesWindow, error)
+}
+
+func (r *MemoryRepo) PathEntriesWindow(ctx context.Context, options PathWindowOptions) (PathEntriesWindow, error) {
+	page, err := r.readPathWindow(ctx, options, true)
+	if err != nil {
+		return PathEntriesWindow{}, err
+	}
+	entries := make([]Entry, len(page.Entries))
+	for i, source := range page.Entries {
+		entries[i] = source.Entry
+	}
+	page.Entries = nil
+	return PathEntriesWindow{PathMetadataWindow: page, Entries: entries}, nil
+}
+func (r *MemoryRepo) readPathWindow(ctx context.Context, options PathWindowOptions, complete bool) (PathMetadataWindow, error) {
 	if ctx == nil || options.Limit < 1 || options.Limit > 256 {
 		return PathMetadataWindow{}, spi.ErrInvalidArgument
 	}
@@ -60,7 +86,7 @@ func (r *MemoryRepo) PathMetadataWindow(ctx context.Context, options PathWindowO
 	}
 	result := PathMetadataWindow{LeafID: leafID, Entries: []PathMetadata{}}
 	if leafID == "" {
-		if options.AnchorID != "" || options.Direction != PathWindowBefore {
+		if options.AnchorID != "" || options.Direction != PathWindowBefore && options.Direction != PathWindowAfter {
 			return PathMetadataWindow{}, ErrEntryNotFound
 		}
 		return result, nil
@@ -97,7 +123,7 @@ func (r *MemoryRepo) PathMetadataWindow(ctx context.Context, options PathWindowO
 		if pathAncestor(index, leaf, anchor) != ordinal {
 			return PathMetadataWindow{}, ErrEntryNotFound
 		}
-	} else if options.Direction != PathWindowBefore {
+	} else if options.Direction == PathWindowAround {
 		return PathMetadataWindow{}, spi.ErrInvalidArgument
 	}
 	limit := int64(options.Limit)
@@ -133,7 +159,19 @@ func (r *MemoryRepo) PathMetadataWindow(ctx context.Context, options PathWindowO
 		if node.depth != depth || entry.ID != node.id || entry.ThreadID != options.ThreadID || entry.PathDepth != depth || node.parent < 0 && entry.ParentID != "" || node.parent >= 0 && entry.ParentID != index[node.parent].id {
 			return PathMetadataWindow{}, ErrAuthorityCorrupt
 		}
-		metadata, err := canonicalPathMetadata(entry)
+		var metadata PathMetadata
+		var err error
+		if complete {
+			entry, err = r.completeEntryLocked(entry)
+			if err == nil {
+				err = ValidateEntryIntegrity(entry)
+			}
+			if err == nil {
+				metadata.Entry = cloneEntry(entry)
+			}
+		} else {
+			metadata, err = canonicalPathMetadata(entry)
+		}
 		if err != nil {
 			return PathMetadataWindow{}, err
 		}

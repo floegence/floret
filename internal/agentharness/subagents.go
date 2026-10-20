@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -282,81 +281,143 @@ func projectThreadContext(entries []sessiontree.Entry, retainedFrom int64, activ
 	if activityContext.err != nil {
 		return ThreadContextSnapshot{}, activityContext.err
 	}
-	out := ThreadContextSnapshot{}
-	usageProjection := contextUsageProjection{}
-	compactions := make([]ThreadContextCompaction, 0)
-	seenCompactions := map[string]int{}
-	latestContextObservedAt := time.Time{}
-	hasPolicy := false
+	projection := ThreadContextProjection{}
 	for index, entry := range entries {
 		if int64(index+1) < retainedFrom {
 			continue
 		}
-		// A canonical terminal settles an interrupted observation even if shutdown
-		// prevented its final compaction event. Never leave a completed turn running.
-		if entry.Type == sessiontree.EntryTurnMarker && (entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted) {
-			for i := range compactions {
-				compact := &compactions[i]
-				if compact.Status != "running" || compact.TurnID != entry.TurnID || compact.RunID != entry.RunID {
-					continue
-				}
-				compact.Phase, compact.Status = "failed", "failed"
-				if entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureCancelled {
-					compact.Phase, compact.Status = "cancelled", "cancelled"
-				}
-				compact.ObservedAt = entry.CreatedAt
-			}
-		}
-		switch {
-		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextPolicyEntryKind:
-			record, err := sessiontree.DecodeThreadContextPolicyEntry(entry)
-			if err != nil {
-				return ThreadContextSnapshot{}, err
-			}
-			out.Model.Provider = record.Provider
-			out.Model.Model = record.Model
-			out.Policy = record.Policy
-			usageProjection.applyPolicy(out.Model, out.Policy)
-			out.Usage = nil
-			hasPolicy = true
-			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
-		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextStatusEntryKind:
-			status, err := sessiontree.DecodeThreadContextStatusEntry(entry)
-			if err != nil {
-				return ThreadContextSnapshot{}, err
-			}
-			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
-				return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
-			}
-			if status.Phase == observation.ContextPhaseProviderUsage {
-				if out.UsageTotals == nil {
-					out.UsageTotals = &ThreadTokenUsageTotals{}
-				}
-				out.UsageTotals.add(status.Usage)
-			}
-			out.Usage = &status
-			usageProjection.applyStatus(status)
-			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
-		case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind:
-			compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
-			if err != nil {
-				return ThreadContextSnapshot{}, err
-			}
-			usageProjection.applyCompaction(compact)
-			compactions = upsertThreadDetailCompaction(compactions, seenCompactions, compact)
-			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
+		if err := projection.Observe(entry); err != nil {
+			return ThreadContextSnapshot{}, err
 		}
 	}
-	if !hasPolicy && (out.Usage != nil || len(compactions) > 0) {
+	return projection.Snapshot(generatedAt)
+}
+
+// ThreadContextProjection advances canonical context facts once, without owning
+// messages or provider history. Full readers and runtime use this same reducer.
+type ThreadContextProjection struct {
+	state                   ThreadContextSnapshot
+	usageProjection         contextUsageProjection
+	seenCompactions         map[string]int
+	running                 map[string]map[int]bool
+	hasPolicy               bool
+	latestContextObservedAt time.Time
+	activityIdentity        threadActivityIdentityProjection
+}
+
+func (projection *ThreadContextProjection) Observe(entry sessiontree.Entry) error {
+	projection.activityIdentity.observe(entry)
+	if projection.activityIdentity.err != nil {
+		return projection.activityIdentity.err
+	}
+	if projection.seenCompactions == nil {
+		projection.seenCompactions = map[string]int{}
+		projection.running = map[string]map[int]bool{}
+		projection.state.Compactions = []ThreadContextCompaction{}
+	}
+	out := &projection.state
+	compactions := out.Compactions
+	defer func() { out.Compactions = compactions }()
+
+	// A canonical terminal settles an interrupted observation even if shutdown
+	// prevented its final compaction event. Never leave a completed turn running.
+	if entry.Type == sessiontree.EntryTurnMarker && (entry.TurnStatus == sessiontree.TurnCompleted || entry.TurnStatus == sessiontree.TurnFailed || entry.TurnStatus == sessiontree.TurnAborted) {
+		for i := range projection.running[entry.TurnID+"\x00"+entry.RunID] {
+			compact := &compactions[i]
+			if compact.Status != "running" || compact.TurnID != entry.TurnID || compact.RunID != entry.RunID {
+				continue
+			}
+			compact.Phase, compact.Status = "failed", "failed"
+			if entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureCancelled {
+				compact.Phase, compact.Status = "cancelled", "cancelled"
+			}
+			compact.ObservedAt = entry.CreatedAt
+		}
+		delete(projection.running, entry.TurnID+"\x00"+entry.RunID)
+	}
+	switch {
+	case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextPolicyEntryKind:
+		record, err := sessiontree.DecodeThreadContextPolicyEntry(entry)
+		if err != nil {
+			return err
+		}
+		out.Model.Provider = record.Provider
+		out.Model.Model = record.Model
+		out.Policy = record.Policy
+		projection.usageProjection.applyPolicy(out.Model, out.Policy)
+		out.Usage = nil
+		projection.hasPolicy = true
+		projection.latestContextObservedAt = maxTime(projection.latestContextObservedAt, entry.CreatedAt)
+	case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextStatusEntryKind:
+		status, err := sessiontree.DecodeThreadContextStatusEntry(entry)
+		if err != nil {
+			return err
+		}
+		if projection.hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
+			return errors.New("thread context status model identity mismatch")
+		}
+		if status.Phase == observation.ContextPhaseProviderUsage {
+			if out.UsageTotals == nil {
+				out.UsageTotals = &ThreadTokenUsageTotals{}
+			}
+			out.UsageTotals.add(status.Usage)
+		}
+		out.Usage = &status
+		projection.usageProjection.applyStatus(status)
+		projection.latestContextObservedAt = maxTime(projection.latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
+	case sessiontree.ThreadContextEntryKind(entry) == sessiontree.ThreadContextCompactionEntryKind:
+		compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
+		if err != nil {
+			return err
+		}
+		projection.usageProjection.applyCompaction(compact)
+		compactions = upsertThreadDetailCompaction(compactions, projection.seenCompactions, compact)
+		key := compact.TurnID + "\x00" + compact.RunID
+		index := len(compactions) - 1
+		if compact.OperationID != "" {
+			index = projection.seenCompactions[threadDetailContextCompactionKey(compact)]
+		}
+		if compact.Status == "running" {
+			if projection.running[key] == nil {
+				projection.running[key] = map[int]bool{}
+			}
+			projection.running[key][index] = true
+		} else {
+			delete(projection.running[key], index)
+			if len(projection.running[key]) == 0 {
+				delete(projection.running, key)
+			}
+		}
+		projection.latestContextObservedAt = maxTime(projection.latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
+	}
+	return nil
+}
+
+func (projection *ThreadContextProjection) Snapshot(generatedAt time.Time) (ThreadContextSnapshot, error) {
+	if err := projection.activityIdentity.validate(); err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	out := projection.state
+	if !projection.hasPolicy && (out.Usage != nil || len(out.Compactions) > 0) {
 		return ThreadContextSnapshot{}, errors.New("thread context lifecycle is missing its policy")
 	}
 	if out.Usage != nil && (out.Usage.Provider != out.Model.Provider || out.Usage.Model != out.Model.Model) {
 		return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
 	}
-	out.ContextUsage = event.CloneThreadContextUsage(usageProjection.usage)
-	out.Compactions = compactions
-	if !latestContextObservedAt.IsZero() {
-		out.UpdatedAt = latestContextObservedAt
+	out.ContextUsage = event.CloneThreadContextUsage(projection.usageProjection.usage)
+	out.Compactions = append([]ThreadContextCompaction{}, out.Compactions...)
+	for index := range out.Compactions {
+		out.Compactions[index].Decision = out.Compactions[index].Decision.Clone()
+	}
+	if out.Usage != nil {
+		out.Usage = event.CloneThreadContextUsage(&event.ThreadContextUsage{Estimate: out.Usage}).Estimate
+	}
+	if out.UsageTotals != nil {
+		value := *out.UsageTotals
+		out.UsageTotals = &value
+	}
+	if !projection.latestContextObservedAt.IsZero() {
+		out.UpdatedAt = projection.latestContextObservedAt
 	} else if !generatedAt.IsZero() && (out.Model.Provider != "" || out.Model.Model != "" || out.Policy.ContextWindowTokens > 0 || out.Usage != nil || len(out.Compactions) > 0) {
 		out.UpdatedAt = generatedAt
 	}
@@ -804,33 +865,11 @@ func newThreadDetailActivityContext(entries []sessiontree.Entry) threadDetailAct
 		presentations:  threadDetailToolPresentations(entries),
 		invocationRuns: map[threadDetailActivityKey]string{},
 	}
+	identity := threadActivityIdentityProjection{}
 	for _, entry := range entries {
-		if entry.Type != sessiontree.EntryToolCall {
-			continue
-		}
-		key := threadDetailActivityKey{turnID: entry.TurnID, callID: entry.Message.ToolCallID}
-		if key.turnID == "" || key.callID == "" || entry.RunID == "" {
-			continue
-		}
-		if prior := out.invocationRuns[key]; prior != "" && prior != entry.RunID {
-			out.err = errors.Join(sessiontree.ErrAuthorityCorrupt, errors.New("tool activity has ambiguous canonical invocation identity"))
-			return out
-		}
-		out.invocationRuns[key] = entry.RunID
+		identity.observe(entry)
 	}
-	for _, entry := range entries {
-		if entry.Type != sessiontree.EntryCustom || entry.RunID != "" {
-			continue
-		}
-		switch entry.Metadata[threadDetailKindKey] {
-		case toolDispatchEntryKind, toolActivityEntryKind, subAgentApprovalEntryKind, pendingToolSettlementEntryKind:
-			callID := firstThreadDetailNonEmpty(entry.Message.ToolCallID, entry.Metadata["tool_id"])
-			if out.invocationRuns[threadDetailActivityKey{turnID: entry.TurnID, callID: callID}] == "" {
-				out.err = errors.Join(sessiontree.ErrAuthorityCorrupt, fmt.Errorf("tool observation %q has no exact canonical invocation", entry.ID))
-				return out
-			}
-		}
-	}
+	out.invocationRuns, out.err = identity.invocationRuns, identity.validate()
 	return out
 }
 

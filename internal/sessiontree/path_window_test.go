@@ -57,6 +57,10 @@ func TestMetadataWindowMatchesCanonicalBranchIntervals(t *testing.T) {
 						first = max(0, last-limit)
 					}
 					want := path[first:last]
+					complete, err := repo.PathEntriesWindow(t.Context(), PathWindowOptions{ThreadID: "thread", LeafID: leaf.ID, AnchorID: anchor.ID, Direction: direction, Limit: limit})
+					if err != nil || !reflect.DeepEqual(complete.Entries, want) {
+						t.Fatalf("complete interval differs: %v", err)
+					}
 					if len(page.Entries) != len(want) || page.HasBefore != (first > 0) || page.HasAfter != (last < len(path)) || page.ThroughOrdinal != int64(len(path)) {
 						t.Fatalf("bounds direction=%s anchor=%d limit=%d page=%+v", direction, anchorIndex, limit, page)
 					}
@@ -159,5 +163,42 @@ func BenchmarkSQLiteFixedHistoryMetadataWindow(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestUnanchoredForwardWindowStartsAtRootAndFreezesLeaf(t *testing.T) {
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	options := PathWindowOptions{ThreadID: "thread", Direction: PathWindowAfter, Limit: 2}
+	empty, err := repo.PathEntriesWindow(t.Context(), options)
+	if err != nil || len(empty.Entries) != 0 {
+		t.Fatalf("empty root: %+v %v", empty, err)
+	}
+	for i := range 5 {
+		appendPathTestEntry(t, repo, fmt.Sprint(i), "")
+	}
+	page, err := repo.PathEntriesWindow(t.Context(), options)
+	if err != nil || len(page.Entries) != 2 || page.Entries[0].ID != "0" || !page.HasAfter {
+		t.Fatalf("first: %+v %v", page, err)
+	}
+	options.LeafID = page.LeafID
+	options.AnchorID = page.LastEntryID
+	appendPathTestEntry(t, repo, "5", "")
+	page, err = repo.PathEntriesWindow(t.Context(), options)
+	if err != nil || len(page.Entries) != 2 || page.Entries[0].ID != "2" || page.ThroughOrdinal != 5 {
+		t.Fatalf("next: %+v %v", page, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := repo.PathEntriesWindow(ctx, options); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := repo.MoveLeaf(t.Context(), "thread", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.PathEntriesWindow(t.Context(), options); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("inactive: %v", err)
 	}
 }
