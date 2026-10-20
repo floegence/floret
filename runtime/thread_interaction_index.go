@@ -8,6 +8,7 @@ func (actor *threadRuntimeState) ensureInteractionIndex() {
 	}
 	actor.interactionIndex = make(map[string]int, len(actor.state.view.Interactions))
 	actor.interactionAttention = AttentionSummary{}
+	actor.pendingInteractionIDs = map[string]bool{}
 	for index, interaction := range actor.state.view.Interactions {
 		actor.interactionIndex[interaction.ID] = index
 		actor.countInteraction(interaction, 1)
@@ -18,6 +19,14 @@ func (actor *threadRuntimeState) ensureInteractionIndex() {
 func (actor *threadRuntimeState) countInteraction(interaction ThreadInteraction, delta int) {
 	if interaction.Resolved {
 		return
+	}
+	if delta > 0 {
+		if actor.pendingInteractionIDs == nil {
+			actor.pendingInteractionIDs = map[string]bool{}
+		}
+		actor.pendingInteractionIDs[interaction.ID] = true
+	} else {
+		delete(actor.pendingInteractionIDs, interaction.ID)
 	}
 	switch interaction.Kind {
 	case ThreadInteractionApproval:

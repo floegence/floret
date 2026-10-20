@@ -172,7 +172,7 @@ with attention counts updated by the changed control. Explicit full replacement
 rebuilds those disposable indexes. Fixed-history benchmarks include append and
 resolution; they do not certify full observation component encoding.
 The complete projection remains resident; full refresh boundaries, bounded
-windows and downstream production qualification remain outstanding.
+bounded retained actors and downstream production qualification remain outstanding.
 
 Latest request attribution reads the current scope's exact append ordinal from
 the canonical prompt records, including pending observations, rather than loading
@@ -183,3 +183,40 @@ See [actor differential and storage recovery tests](../../runtime/thread_canonic
 [historical turn digest](../../runtime/thread_turn_projection_test.go),
 [context differential tests](../../internal/agentharness/context_incremental_test.go),
 and [bounded prompt reads](../../internal/storage/prompt_request_reader_test.go).
+
+
+# Scoped item windows
+
+Optional ThreadWindowSource registers authorized workspace observation through
+one ThreadUpdateSubscription. SetWindow freshly authorizes each page and queues
+an exact actor baseline before installing interest. Baselines replace Window,
+selected Turns and applicable Interactions at the same ViewVersion authority;
+accept explicit baselines even if their version is already known. Normal deltas
+continue by BaseVersion. Thread and canonical leaf identity remain explicit.
+
+Pages contain at most 150 items and 512 KiB of encoded item data. UTF-8 text
+prefixes are at most 64 KiB and detached before cloning private source locators.
+ThreadItem.Body identifies omitted text; partial Markdown is raw preview. Active
+text has no canonical locator until commit. Turn membership tests selected IDs
+against canonical membership rather than scanning an enormous turn. Pending
+interaction IDs belong to the existing interaction index, so controls remain
+reachable independently of historical page selection.
+
+Append preserves stable completed-history anchors. Reordering and tail interest
+beyond three pages install bounded geometry in place. Missing accepted anchors
+report AnchorUnavailable and the available tail. Failed explicit target reads
+preserve the previous interest. ClearWindow releases queued items and turns;
+queue reads, clears and writes share the subscription lock. Waiters release the
+lock before waiting, preventing concurrent receive/clear deadlocks. Scope grants
+no persistent access; hosts close the stream on permission revocation.
+
+This is an observation substrate, not completed extreme-history qualification.
+Initial actor hydration and retained reducers still materialize complete history.
+Queue, context and restored-input components retain complete semantics and can
+exceed the observation budget. Oversized components fail explicitly, never drop
+accepted controls. Bounded actor residency, large structured metadata access,
+live body access and downstream production acceptance remain unfinished.
+
+See [window contract](../../runtime/thread_window_observation.go),
+[SQLite, restart, authorization and race regressions](../../runtime/thread_window_observation_test.go),
+and [window geometry selector](../../runtime/thread_item_window.go).

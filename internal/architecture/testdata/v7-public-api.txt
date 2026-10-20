@@ -1377,6 +1377,7 @@ field ThreadItem.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal,omitempty
 field ThreadItem.Ordinal uint64 tag="json:\"ordinal\""
 field ThreadItem.Kind github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kind\""
 field ThreadItem.Text string tag="json:\"text,omitempty\""
+field ThreadItem.Body *github.com/floegence/floret/v7/runtime.ThreadItemBody tag="json:\"body,omitempty\""
 field ThreadItem.Live bool tag="json:\"live,omitempty\""
 field ThreadItem.CreatedAt time.Time tag="json:\"created_at,omitempty\""
 field ThreadItem.Attachments []github.com/floegence/floret/v7/runtime.MessageAttachment tag="json:\"attachments,omitempty\""
@@ -1387,6 +1388,12 @@ field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInter
 const ThreadItemAdded github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "add"
 const ThreadItemAppended github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "append"
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
+type ThreadItemBody struct
+field ThreadItemBody.EntryID string tag="json:\"entry_id,omitempty\""
+field ThreadItemBody.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadItemBody.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
+field ThreadItemBody.Bytes int tag="json:\"bytes\""
+field ThreadItemBody.PreviewBytes int tag="json:\"preview_bytes\""
 type ThreadItemChange struct
 field ThreadItemChange.Kind github.com/floegence/floret/v7/runtime.ThreadItemChangeKind tag="json:\"kind\""
 field ThreadItemChange.ItemID string tag="json:\"item_id\""
@@ -1568,6 +1575,7 @@ const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurn
 const ThreadTurnFailureToolArgumentCorrectionExhausted github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "tool_argument_correction_exhausted"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadUpdate struct
+field ThreadUpdate.Window *github.com/floegence/floret/v7/runtime.ThreadComponent[*github.com/floegence/floret/v7/runtime.ThreadWindowSnapshot] tag="json:\"window,omitempty\""
 field ThreadUpdate.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadUpdate.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
 field ThreadUpdate.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
@@ -1588,6 +1596,8 @@ type ThreadUpdateSource interface interface{SubscribeUpdates(context.Context) (*
 type ThreadUpdateSubscription struct
 method *ThreadUpdateSubscription.Next func(ctx context.Context) (github.com/floegence/floret/v7/runtime.ThreadUpdate, error)
 method *ThreadUpdateSubscription.Close func()
+method *ThreadUpdateSubscription.SetWindow func(ctx context.Context, scope github.com/floegence/floret/v7/threadquery.Scope, input github.com/floegence/floret/v7/runtime.ThreadWindowInput) error
+method *ThreadUpdateSubscription.ClearWindow func(threadID github.com/floegence/floret/v7/identity.ThreadID)
 type ThreadView struct
 field ThreadView.Context *github.com/floegence/floret/v7/runtime.ThreadContextSnapshot tag="json:\"context,omitempty\""
 field ThreadView.Goal *github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal,omitempty\""
@@ -1621,6 +1631,26 @@ field ThreadWaitResult.MissingThreadIDs []github.com/floegence/floret/v7/identit
 field ThreadWaitResult.Reason github.com/floegence/floret/v7/runtime.ThreadWaitReason tag="json:\"reason\""
 const ThreadWaitTimedOut github.com/floegence/floret/v7/runtime.ThreadWaitReason = "timed_out"
 type ThreadWaiter interface interface{WaitThreads(context.Context, github.com/floegence/floret/v7/runtime.WaitThreadsInput) (github.com/floegence/floret/v7/runtime.ThreadWaitResult, error)}
+const ThreadWindowAfter github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "after"
+const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "around"
+const ThreadWindowBefore github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "before"
+type ThreadWindowDirection string
+type ThreadWindowInput struct
+field ThreadWindowInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadWindowInput.AnchorID string tag="json:\"anchor_id,omitempty\""
+field ThreadWindowInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction\""
+field ThreadWindowInput.Limit int tag="json:\"limit,omitempty\""
+type ThreadWindowSnapshot struct
+field ThreadWindowSnapshot.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadWindowSnapshot.ViewVersion uint64 tag="json:\"view_version\""
+field ThreadWindowSnapshot.LeafID string tag="json:\"leaf_id,omitempty\""
+field ThreadWindowSnapshot.AnchorUnavailable bool tag="json:\"anchor_unavailable,omitempty\""
+field ThreadWindowSnapshot.FirstItemID string tag="json:\"first_item_id,omitempty\""
+field ThreadWindowSnapshot.LastItemID string tag="json:\"last_item_id,omitempty\""
+field ThreadWindowSnapshot.HasBefore bool tag="json:\"has_before\""
+field ThreadWindowSnapshot.HasAfter bool tag="json:\"has_after\""
+field ThreadWindowSnapshot.Items []github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"items\""
+type ThreadWindowSource interface interface{SubscribeWindowUpdates(context.Context, github.com/floegence/floret/v7/threadquery.Scope) (*github.com/floegence/floret/v7/runtime.ThreadUpdateSubscription, error)}
 type ToolCallStream struct
 field ToolCallStream.ID string tag="json:\"id,omitempty\""
 field ToolCallStream.Name string tag="json:\"name,omitempty\""

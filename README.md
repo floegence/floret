@@ -1020,6 +1020,33 @@ and authoritative view, never replay or inferred missing events. The old
 subscription materializes complete isolated views only for existing legacy
 consumers. See [native thread updates](okf/api/thread-updates.md).
 
+Optional `runtime.ThreadWindowSource` uses the same actor publication
+channel and versions for authorized item windows. Subscribe with an explicit
+scope, then call `SetWindow` with freshly authorized scope. The channel delivers
+a replacement `Window` baseline before subsequent deltas; a baseline can use
+the current version, and must be accepted even when that version is already
+known. Pages select at most 150 items and 512 KiB encoded item data. Text previews
+are exact UTF-8 prefixes of at most 64 KiB; partial text is raw preview, never a
+standalone Markdown document. Committed text locators resolve through the body
+reader or manifest. Live text remains actor-owned until committed.
+
+Pending approvals and input requests remain accessible outside the selected
+history. Window turn membership includes only selected items. Append preserves
+history anchors; reordering replaces bounded geometry. An unavailable accepted
+anchor is reported explicitly with a replacement at the available tail. Tail
+interest evicts through an in-place bounded replacement after three pages rather
+than reconnecting the workspace. `ClearWindow` releases queued item detail without
+cancelling execution. Queue reads and clear operations share one lock and never
+wait while owning it. Revocation requires the host to close the scoped stream.
+
+This capability currently bounds delivered item detail, not retained actor
+history or every control component. Initial actor hydration still constructs the
+complete canonical projection; queue, context and restored-input components
+retain their complete semantics and may exceed the observation queue budget.
+Oversized observation fails explicitly. Storage-backed bounded actor residency,
+live full-body access and complete production-chain qualification remain required
+before claiming extreme-history performance acceptance.
+
 Context failures carry distinct `ThreadTurnFailure` codes: `context_budget_invalid`
 when output headroom leaves no input capacity, `context_fixed_overhead` when
 non-compressible input cannot fit, and `context_compaction_limit` when a rebuilt

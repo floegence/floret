@@ -73,6 +73,7 @@ type ThreadRuntimeFacts struct {
 // ItemOrder is present only when existing items move. Additions carry Ordinal.
 // A batch may span several actor versions when ordinary growth is coalesced.
 type ThreadUpdate struct {
+	Window           *ThreadComponent[*ThreadWindowSnapshot]   `json:"window,omitempty"`
 	ThreadID         identity.ThreadID                         `json:"thread_id"`
 	TurnID           identity.TurnID                           `json:"turn_id,omitempty"`
 	RunID            identity.RunID                            `json:"run_id,omitempty"`
@@ -94,43 +95,62 @@ type ThreadUpdate struct {
 type ThreadUpdateSubscription struct {
 	mu          sync.Mutex
 	updates     chan queuedThreadUpdate
+	wake        chan struct{}
 	queuedBytes int
 	done        chan struct{}
 	closed      bool
 	closeErr    error
 	service     *threadRuntimeService
+	windowed    bool
+	authorized  map[string]bool
+	windows     map[string]threadWindowInterest
 }
 
 func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadUpdate, error) {
 	if subscription == nil || ctx == nil {
 		return ThreadUpdate{}, errors.New("thread update subscription and context are required")
 	}
-	// Prefer terminal errors to queued mutations after continuity was lost.
-	subscription.mu.Lock()
-	if subscription.closed {
-		err := subscription.closeErr
-		subscription.mu.Unlock()
-		return ThreadUpdate{}, err
-	}
-	subscription.mu.Unlock()
-	select {
-	case <-ctx.Done():
-		return ThreadUpdate{}, ctx.Err()
-	case <-subscription.done:
-		subscription.mu.Lock()
-		err := subscription.closeErr
-		subscription.mu.Unlock()
-		return ThreadUpdate{}, err
-	case queued := <-subscription.updates:
+	for {
+		// Queue reads, clears and writes share one lock. Waiting never owns it;
+		// in particular ClearWindow cannot race a channel receive and then block.
 		subscription.mu.Lock()
 		if subscription.closed {
 			err := subscription.closeErr
 			subscription.mu.Unlock()
 			return ThreadUpdate{}, err
 		}
-		subscription.queuedBytes -= queued.bytes
+		select {
+		case queued := <-subscription.updates:
+			subscription.queuedBytes -= queued.bytes
+			if len(subscription.updates) > 0 {
+				subscription.signalLocked()
+			}
+			subscription.mu.Unlock()
+			return cloneThreadUpdate(queued.update), nil
+		default:
+		}
+		if subscription.wake == nil {
+			subscription.wake = make(chan struct{}, 1)
+		}
+		wake := subscription.wake
 		subscription.mu.Unlock()
-		return cloneThreadUpdate(queued.update), nil
+		select {
+		case <-ctx.Done():
+			return ThreadUpdate{}, ctx.Err()
+		case <-subscription.done:
+		case <-wake:
+		}
+	}
+}
+
+// signalLocked wakes waiting readers without moving queue ownership out of mu.
+func (subscription *ThreadUpdateSubscription) signalLocked() {
+	if subscription.wake == nil {
+		subscription.wake = make(chan struct{}, 1)
+	}
+	select {
+	case subscription.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -161,6 +181,8 @@ type queuedThreadUpdate struct {
 
 func (subscription *ThreadUpdateSubscription) finishLocked(err error) {
 	subscription.closed = true
+	subscription.windows = nil
+	subscription.authorized = nil
 	subscription.closeErr = err
 	close(subscription.done)
 	for {
@@ -195,6 +217,10 @@ func (service *threadRuntimeService) invalidateUpdates() {
 var _ ThreadUpdateSource = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) SubscribeUpdates(ctx context.Context) (*ThreadUpdateSubscription, error) {
+	return service.subscribeUpdates(ctx, nil)
+}
+
+func (service *threadRuntimeService) subscribeUpdates(ctx context.Context, authorized map[string]bool) (*ThreadUpdateSubscription, error) {
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
@@ -204,7 +230,7 @@ func (service *threadRuntimeService) SubscribeUpdates(ctx context.Context) (*Thr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, threadUpdateQueueCount), done: make(chan struct{}), service: service}
+	subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, threadUpdateQueueCount), done: make(chan struct{}), service: service, windowed: authorized != nil, authorized: authorized}
 	service.mu.Lock()
 	if service.subscriptionsClosed {
 		service.mu.Unlock()
@@ -226,6 +252,15 @@ func (service *threadRuntimeService) SubscribeUpdates(ctx context.Context) (*Thr
 }
 
 func cloneThreadUpdate(update ThreadUpdate) ThreadUpdate {
+	if update.Window != nil {
+		component := *update.Window
+		if component.Value != nil {
+			window := *component.Value
+			window.Items = cloneThreadItems(window.Items)
+			component.Value = &window
+		}
+		update.Window = &component
+	}
 	// The queued batch is immutable. Copy at the public read boundary only.
 	update.Items = append([]ThreadItemChange(nil), update.Items...)
 	for i := range update.Items {
@@ -491,7 +526,14 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 	}
 	service.published[update.ThreadID.String()] = update.ViewVersion
 	var queued queuedThreadUpdate
-	if len(service.updateSubscribers) > 0 {
+	fullObservers := false
+	for subscription := range service.updateSubscribers {
+		if !subscription.windowed {
+			fullObservers = true
+			break
+		}
+	}
+	if fullObservers {
 		raw, err := json.Marshal(update)
 		if err != nil {
 			for subscription := range service.updateSubscribers {
@@ -512,20 +554,24 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 	}
 	for subscription := range service.updateSubscribers {
 		subscription.mu.Lock()
-		if !subscription.closed {
-			overflow := queued.bytes > threadUpdateQueueBytes-subscription.queuedBytes
-			if !overflow {
-				select {
-				case subscription.updates <- queued:
-					subscription.queuedBytes += queued.bytes
-				default:
-					overflow = true
+		if !subscription.closed && subscription.windowed {
+			projected, deliver := subscription.projectWindowUpdate(actor, update)
+			if deliver {
+				raw, err := json.Marshal(projected)
+				if err != nil {
+					subscription.finishLocked(ErrThreadUpdateInvalidated)
+				} else {
+					subscription.enqueueLocked(cloneThreadUpdate(projected), len(raw))
 				}
 			}
-			if overflow {
-				subscription.finishLocked(ErrThreadUpdateOverflow)
+			if subscription.closed {
 				delete(service.updateSubscribers, subscription)
 			}
+			subscription.mu.Unlock()
+			continue
+		}
+		if !subscription.closed && !subscription.enqueueLocked(queued.update, queued.bytes) {
+			delete(service.updateSubscribers, subscription)
 		}
 		subscription.mu.Unlock()
 	}
@@ -594,4 +640,20 @@ func (actor *threadRuntimeState) stopUpdateTimer() {
 	}
 	actor.pendingUpdate = nil
 	actor.pendingText.Reset()
+}
+
+func (subscription *ThreadUpdateSubscription) enqueueLocked(update ThreadUpdate, bytes int) bool {
+	if bytes > threadUpdateQueueBytes-subscription.queuedBytes {
+		subscription.finishLocked(ErrThreadUpdateOverflow)
+		return false
+	}
+	select {
+	case subscription.updates <- queuedThreadUpdate{update: update, bytes: bytes}:
+		subscription.queuedBytes += bytes
+		subscription.signalLocked()
+		return true
+	default:
+		subscription.finishLocked(ErrThreadUpdateOverflow)
+		return false
+	}
 }

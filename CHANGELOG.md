@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional scoped item-window observation through the existing actor/version channel, with explicit replacement baselines, stable anchors, pending controls, selected turn membership and in-place tail eviction; serialize queue reads and clears to prevent concurrent deadlocks. Actor residency and complete production performance qualification remain unfinished.
+
 - Advance ordinary send and queued admission through appended canonical intervals; borrow immutable turn membership inside the actor and copy it only at public snapshot boundaries.
 
 - Segment canonical control output alongside other body fields; preserve exact raw whitespace, empty-source presentation, restart integrity and nested-message ownership.
