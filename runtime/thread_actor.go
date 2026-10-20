@@ -80,8 +80,18 @@ type threadRuntimeData struct {
 func (runtime *threadRuntimeState) releaseDeletedState() {
 	runtime.stopUpdateTimer()
 	runtime.state = threadRuntimeData{}
+	runtime.canonical = nil
+	runtime.observedItemIDs = nil
+	runtime.summaryIndexed = false
+	runtime.summaryPreviewIndex = 0
+	runtime.summaryTimeIndex = 0
 	runtime.itemIndex = nil
 	runtime.indexedItems = 0
+	runtime.interactionIndex = nil
+	runtime.indexedInteractions = 0
+	runtime.interactionAttention = AttentionSummary{}
+	runtime.pendingInteractionIDs = nil
+	runtime.interactionItems = nil
 	runtime.textBuffer.Reset()
 	runtime.textBufferID = ""
 	runtime.outputOrder = nil
