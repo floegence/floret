@@ -38,27 +38,10 @@ func (r *MemoryRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, f
 	if offset < 0 || limit < utf8.UTFMax || limit > canonicalBodyBlockBytes {
 		return CanonicalBodyChunk{}, spi.ErrInvalidArgument
 	}
-	meta, found := r.threads[threadID]
-	if !found {
-		return CanonicalBodyChunk{}, ErrThreadNotFound
+	entry, err := r.activeBodyEntryLocked(threadID, entryID)
+	if err != nil {
+		return CanonicalBodyChunk{}, err
 	}
-	ordinal, found := r.entryOrdinals[threadID][entryID]
-	if !found {
-		return CanonicalBodyChunk{}, ErrEntryNotFound
-	}
-	r.ensurePathIndexLocked(threadID)
-	index := r.pathIndexes[threadID]
-	leaf, found := r.entryOrdinals[threadID][meta.LeafID]
-	if !found || ordinal < 0 || ordinal >= len(index) || leaf < 0 || leaf >= len(index) {
-		return CanonicalBodyChunk{}, ErrAuthorityCorrupt
-	}
-	if index[leaf].err != nil {
-		return CanonicalBodyChunk{}, index[leaf].err
-	}
-	if pathAncestor(index, leaf, index[ordinal].depth) != ordinal {
-		return CanonicalBodyChunk{}, ErrEntryNotFound
-	}
-	entry := r.entries[threadID][ordinal]
 	fields := canonicalEntryBodyFields(&entry)
 	value, valid := fields[field]
 	if !valid {
