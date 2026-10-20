@@ -507,6 +507,10 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		if !ok {
 			return FinishEffectDispatchResult{}, ErrAuthorityCorrupt
 		}
+		entry, err := r.completeEntryLocked(entry)
+		if err != nil {
+			return FinishEffectDispatchResult{}, err
+		}
 		ref, err := r.validateEffectArtifactReplayLocked(attempt, entry, req)
 		return FinishEffectDispatchResult{Attempt: attempt, Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(ref), Replayed: true}, err
 	}

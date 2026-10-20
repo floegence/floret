@@ -146,7 +146,10 @@ func (r *MemoryRepo) validateNewOutputSourcesLocked(entry Entry) error {
 	r.ensureOutputSourcesLocked(entry.ThreadID)
 	for source, fact := range next {
 		for _, ordinal := range r.outputSources[entry.ThreadID][source] {
-			previous := r.entries[entry.ThreadID][ordinal]
+			previous, err := r.completeEntryLocked(r.entries[entry.ThreadID][ordinal])
+			if err != nil {
+				return err
+			}
 			old, err := outputSourceFacts(previous)
 			if err != nil {
 				return err

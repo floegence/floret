@@ -138,6 +138,7 @@ func releaseCanonicalBody(ctx context.Context, tx spi.WriteTx, ref canonicalBody
 			return err
 		}
 	}
+	releaseCachedBody(ref)
 	return tx.Delete(canonicalBodyNamespace, canonicalBodyKey(ref.SHA256))
 }
 

@@ -115,7 +115,10 @@ func verifyHistoricalCompactionBackend(t *testing.T, backend *migrationTestBacke
 	}
 	checkpoints := 0
 	for threadID, entries := range before.entries {
-		after := repo.domainMemory.entries[threadID]
+		after, err := repo.Entries(t.Context(), threadID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(entries) != len(after) {
 			t.Fatalf("changed entry count in %s", threadID)
 		}

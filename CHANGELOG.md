@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Evict extracted historical bodies from retained canonical journals, hydrate requested entries from their backend snapshot, and bound the shared verified source cache to 128 MiB.
+- Settle early execution cancellation before publishing idle; replay the exact canonical terminal after concurrent effect settlement, including its paired failure and safety classification.
+
 - Append the transactional domain 29 -> 30 migration for shared canonical body blocks; preserve complete message bytes, raw hashes, Fork ownership, deletion, fail-closed validation and current restart idempotency.
 
 - Stream startup record decoding by storage page, generate Unicode search terms without full-field copies or per-character encoded allocations, and assemble shared assistant sources without quadratic text copying or citation-offset rescans.

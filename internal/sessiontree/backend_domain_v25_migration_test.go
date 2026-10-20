@@ -72,7 +72,11 @@ func TestBackendDomainV24ToV25OutputSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, entries := range repo.domainMemory.entries {
+	for id := range repo.domainMemory.entries {
+		entries, err := repo.Entries(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
 		original := before.entries[id]
 		for i, entry := range entries {
 			stripped := entry
@@ -86,7 +90,10 @@ func TestBackendDomainV24ToV25OutputSources(t *testing.T) {
 			}
 		}
 	}
-	entries := repo.domainMemory.entries["thread"]
+	entries, err := repo.Entries(t.Context(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
 	byID := map[string]Entry{}
 	for _, e := range entries {
 		byID[e.ID] = e

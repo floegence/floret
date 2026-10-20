@@ -1635,3 +1635,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Record page-streamed startup validation, segmented Unicode term generation and linear shared-content projection, with differential regressions and explicit remaining residency/window limits in [history performance](workflows/history-performance.md).
 
 - 2026-10-20: Document permanent domain 29 -> 30 canonical body blocks, transactional sharing/deletion, byte-exact reconstruction and fail-closed startup validation in [Storage](api/storage.md).
+
+- 2026-10-20: Document canonical journal body eviction, bounded verified source caching and detached hydration; preserve canonical terminal replay across early cancellation and concurrent tool settlement.

@@ -68,7 +68,7 @@ func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryT
 	if !found {
 		return nil, nil
 	}
-	path, err := pathLocked(r.threads, r.entries, id, meta.LeafID)
+	path, err := r.canonicalPathLocked(context.Background(), id, meta.LeafID)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,10 @@ func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryT
 			if !ok {
 				return nil, ErrAuthorityCorrupt
 			}
-			source := r.entries[id][ordinal]
+			source, sourceErr := r.completeEntryLocked(r.entries[id][ordinal])
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
 			entry.Type = EntryUserMessage
 			entry.Message = source.Message
 			entry.ID = source.ID
@@ -409,7 +412,10 @@ func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous 
 			if !ok {
 				return nil, nil, ErrAuthorityCorrupt
 			}
-			source := r.entries[id][ordinal]
+			source, sourceErr := r.completeEntryLocked(r.entries[id][ordinal])
+			if sourceErr != nil {
+				return nil, nil, sourceErr
+			}
 			entry.Type = EntryUserMessage
 			entry.Message = source.Message
 			entry.ID = source.ID

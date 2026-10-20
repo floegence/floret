@@ -65,7 +65,16 @@ func (repo *MemoryRepo) EncodeMemoryState() ([]byte, error) {
 	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	return json.Marshal(repo.memoryStateLocked())
+	state := repo.memoryStateLocked()
+	state.Entries = make(map[string][]Entry, len(repo.entries))
+	for threadID, entries := range repo.entries {
+		complete, err := repo.completeEntriesLocked(entries)
+		if err != nil {
+			return nil, err
+		}
+		state.Entries[threadID] = complete
+	}
+	return json.Marshal(state)
 }
 
 func (repo *MemoryRepo) memoryStateLocked() memoryState {

@@ -355,5 +355,9 @@ rejects orphans, unsupported fields and corrupt data without mutation.
 Body range reads touch only intersecting blocks and return whole UTF-8 runes.
 Explicit complete materialization streams and hashes all blocks. These are
 internal storage mechanics, not a host authorization or presentation API.
-Decoded repository and actor residency remain separate unfinished work; the
-storage format alone does not qualify Flower's memory or interaction budgets.
+After validation, decoded journals retain body locators instead of the extracted
+strings. Requested complete entries hydrate in the caller's backend snapshot
+and remain detached from retained journal headers. A process-wide 128 MiB LRU
+caches immutable, hash-verified source bytes; oversized bodies bypass it.
+Actor residency, other payload fields, actual heap/RSS and complete Flower
+interaction budgets still require separate qualification.

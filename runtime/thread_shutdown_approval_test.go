@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
@@ -18,7 +19,20 @@ func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
 	for _, boundary := range []string{"shutdown", "immediate_stop", "execution_context"} {
 		t.Run(boundary, func(t *testing.T) {
 			gateway := newBlockingThreadGateway()
-			host, threadService := testThreadService(t, gateway)
+			path := t.TempDir() + "/shutdown.db"
+			agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "test", Name: "Test"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			threadService, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
 			service := threadService.(*threadRuntimeService)
 			created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create"})
 			if err != nil {
@@ -70,7 +84,12 @@ func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
 			if err := host.Shutdown(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			entries, err := host.store.repo.Entries(t.Context(), created.ThreadID.String())
+			reopened, err := Open(t.Context(), Options{Storage: storage.SQLite(path)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Shutdown(context.Background()) })
+			entries, err := reopened.store.repo.Entries(t.Context(), created.ThreadID.String())
 			if err != nil {
 				t.Fatal(err)
 			}

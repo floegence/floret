@@ -430,7 +430,10 @@ func (r *MemoryRepo) canonicalTurnEntryLocked(threadID, entryID string) (Entry, 
 	if !ok || ordinal < 0 || ordinal >= len(entries) {
 		return Entry{}, 0, ErrEntryNotFound
 	}
-	entry := entries[ordinal]
+	entry, err := r.completeEntryLocked(entries[ordinal])
+	if err != nil {
+		return Entry{}, 0, err
+	}
 	depth, ok := r.entryDepths[threadID][entryID]
 	if !ok || depth <= 0 || entry.ID != entryID || entry.ThreadID != threadID || entry.PathDepth != depth {
 		return Entry{}, 0, ErrAuthorityCorrupt
@@ -543,7 +546,10 @@ func (r *MemoryRepo) retrySourceHasRetryEligibleDurableInputLocked(threadID, ret
 			if ordinal < 0 || ordinal >= len(entries) {
 				return false, ErrAuthorityCorrupt
 			}
-			entry := entries[ordinal]
+			entry, err := r.completeEntryLocked(entries[ordinal])
+			if err != nil {
+				return false, err
+			}
 			if entry.ThreadID != threadID || strings.TrimSpace(entry.TurnID) != turnID || entry.PathDepth != r.entryDepths[threadID][entry.ID] {
 				return false, ErrAuthorityCorrupt
 			}

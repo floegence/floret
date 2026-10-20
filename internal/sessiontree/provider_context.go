@@ -115,7 +115,7 @@ func (r *MemoryRepo) reanchorProviderStateLocked(threadID, terminalID, compatibi
 		r.deleteProviderStateLocked(threadID)
 		return
 	}
-	path, err := pathLocked(r.threads, r.entries, threadID, terminalID)
+	path, err := r.canonicalPathLocked(context.Background(), threadID, terminalID)
 	if err != nil {
 		r.deleteProviderStateLocked(threadID)
 		return

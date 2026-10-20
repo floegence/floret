@@ -2718,6 +2718,12 @@ func (service *threadRuntimeService) executeAcceptedSend(ctx context.Context, ac
 		Signals: request.Signals, Limits: request.Limits, Reasoning: request.Reasoning,
 		ManualCompactions: request.ManualCompactions, ToolSurfaceProvider: request.ToolSurfaceProvider,
 	})
+	if completed.Status == "" && err != nil {
+		// Resume or accepted-turn validation can fail before the harness owns
+		// finalization. Settle canonical admission before publishing actor idle.
+		service.finishUnloadedTerminal(ctx, actor, accepted.ThreadID, request.TurnID, request.RunID, completed, err)
+		return
+	}
 	if completed.Status == TurnStatusCancelled && ctx.Err() != nil {
 		service.recordCancellation(accepted.ThreadID, request.TurnID, request.RunID, "execution_context", ctx.Err().Error())
 	}
@@ -3994,11 +4000,19 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 		ManualCompactions: agent.manualCompactions, SupplementalContext: supplemental,
 	}
 	applyAgentExecutionPolicy(&request, agent)
-	result, runErr := runner.ResumeInput(executionCtx, resumeInputRequest{
+	service.executeInputResume(executionCtx, actor, runner, threadID, resumeInputRequest{
 		TurnID: interaction.TurnID, WaitingRunID: waitingRunID, RunID: runID, Answer: string(payload), Steering: isSteering,
 		Options: request,
 	})
-	service.finishSend(actor, interaction.TurnID, runID, result, runErr)
+}
+
+func (service *threadRuntimeService) executeInputResume(ctx context.Context, actor *threadRuntimeState, runner *turnRunnerHandle, threadID identity.ThreadID, request resumeInputRequest) {
+	result, runErr := runner.ResumeInput(ctx, request)
+	if result.Status == "" && runErr != nil {
+		service.finishUnloadedTerminal(ctx, actor, threadID, request.TurnID, request.RunID, result, runErr)
+		return
+	}
+	service.finishSend(actor, request.TurnID, request.RunID, result, runErr)
 }
 
 func (service *threadRuntimeService) retryResult(ctx context.Context, threadID identity.ThreadID, sourceTurnID identity.TurnID, requestKey string, mode threadResultMode) (ThreadView, error) {

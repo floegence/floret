@@ -157,14 +157,24 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
 	if req.RetrySourceEntryID == "" && req.TurnKind == "" {
 		user, found := findEntry(r.entries[req.ThreadID], userID)
+		if found {
+			var err error
+			user, err = r.completeEntryLocked(user)
+			if err != nil {
+				return AcceptTurnResult{}, err
+			}
+		}
 		if !found || user.ParentID != started.ID || user.RequestFingerprint != req.InputRequestFingerprint || !sameCanonicalUserInput(user.Message, req.Input) {
 			return AcceptTurnResult{}, ErrAuthorityCorrupt
 		}
 		result.UserMessage = cloneEntry(user)
 	}
 	if terminal, found := r.turnTerminalLocked(req.ThreadID, req.TurnID); found {
-		copy := cloneEntry(terminal)
-		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
+		outcome, err := r.runtimeTurnTerminalOutcomeLocked(terminal)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
+		result.Terminal = outcome
 		return result, nil
 	}
 	if activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID); active && activeTurnID != req.TurnID {
@@ -194,6 +204,13 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
 	if started.Metadata[RetrySourceEntryIDMetadataKey] == "" && started.Metadata[TurnKindMetadataKey] == "" {
 		user, ok := findEntry(r.entries[threadID], runtimeUserEntryID(started.RequestKey))
+		if ok {
+			var err error
+			user, err = r.completeEntryLocked(user)
+			if err != nil {
+				return AcceptTurnResult{}, true, err
+			}
+		}
 		if !ok || user.Type != EntryUserMessage || user.ParentID != started.ID || user.TurnID != turnID || user.RunID != runID || user.RequestKey != started.RequestKey {
 			return AcceptTurnResult{}, true, ErrAuthorityCorrupt
 		}
@@ -203,10 +220,46 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 		result.UserMessage = cloneEntry(user)
 	}
 	if terminal, ok := r.turnTerminalLocked(threadID, turnID); ok {
-		copy := cloneEntry(terminal)
-		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
+		outcome, err := r.runtimeTurnTerminalOutcomeLocked(terminal)
+		if err != nil {
+			return AcceptTurnResult{}, true, err
+		}
+		result.Terminal = outcome
 	}
 	return result, true, nil
+}
+
+// runtimeTurnTerminalOutcomeLocked materializes only the exact terminal and
+// paired failure. The canonical outcome remains authoritative when concurrent
+// tool settlement has already ended the admitted execution.
+func (r *MemoryRepo) runtimeTurnTerminalOutcomeLocked(terminal Entry) (*TurnTerminalOutcome, error) {
+	complete, err := r.completeEntryLocked(terminal)
+	if err != nil {
+		return nil, err
+	}
+	outcome := &TurnTerminalOutcome{Terminal: cloneEntry(complete)}
+	if terminal.TurnStatus != TurnFailed && terminal.TurnStatus != TurnAborted {
+		return outcome, nil
+	}
+	ordinal, found := r.entryOrdinals[terminal.ThreadID][terminal.ParentID]
+	if !found || ordinal < 0 || ordinal >= len(r.entries[terminal.ThreadID]) {
+		return nil, ErrAuthorityCorrupt
+	}
+	failure, err := r.completeEntryLocked(r.entries[terminal.ThreadID][ordinal])
+	if err != nil {
+		return nil, err
+	}
+	// CancelTurn owns an explicit aborted marker and does not append a run
+	// failure. Harness failures instead pair the terminal with its exact error.
+	if terminal.TurnStatus == TurnAborted && failure.Type != EntryRunFailure {
+		return outcome, nil
+	}
+	if failure.ID != terminal.ParentID || failure.Type != EntryRunFailure || failure.ThreadID != terminal.ThreadID || failure.TurnID != terminal.TurnID || failure.RunID != terminal.RunID || strings.TrimSpace(failure.Error) == "" {
+		return nil, ErrAuthorityCorrupt
+	}
+	copy := cloneEntry(failure)
+	outcome.Failure = &copy
+	return outcome, nil
 }
 
 // runtimeAdmissionBaseLeafLocked resolves only the canonical admission edge.
@@ -234,7 +287,10 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		if !ok || ordinal >= before || ordinal < 0 || ordinal >= len(entries) {
 			return Entry{}, 0, ErrAuthorityCorrupt
 		}
-		entry := entries[ordinal]
+		entry, err := r.completeEntryLocked(entries[ordinal])
+		if err != nil {
+			return Entry{}, 0, err
+		}
 		if entry.ThreadID != started.ThreadID || entry.ID != id {
 			return Entry{}, 0, ErrAuthorityCorrupt
 		}
@@ -267,7 +323,7 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		if started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction || base == "" {
 			return "", ErrAuthorityCorrupt
 		}
-		path, err := pathLocked(r.threads, r.entries, started.ThreadID, base)
+		path, err := r.canonicalPathLocked(context.Background(), started.ThreadID, base)
 		if err != nil {
 			return "", err
 		}
@@ -320,7 +376,7 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 			return FinishTurnResult{}, ErrEffectOutcomeUnknown
 		}
 	}
-	path, goalErr := pathLocked(r.threads, r.entries, req.ThreadID, meta.LeafID)
+	path, goalErr := r.canonicalPathLocked(context.Background(), req.ThreadID, meta.LeafID)
 	if goalErr != nil {
 		return FinishTurnResult{}, goalErr
 	}
@@ -418,6 +474,13 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 
 	if terminal, found := findEntry(r.entries[req.ThreadID], terminalID); found {
 		failure, failureFound := findEntry(r.entries[req.ThreadID], failureID)
+		if failureFound {
+			var err error
+			failure, err = r.completeEntryLocked(failure)
+			if err != nil {
+				return FailUnknownEffectTurnResult{}, err
+			}
+		}
 		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID ||
 			terminal.TurnStatus != TurnFailed || terminal.RequestFingerprint != outcomeFingerprint ||
 			strings.TrimSpace(terminal.Metadata[TurnFailureCodeMetadataKey]) != TurnFailureEffectOutcomeUnknown ||

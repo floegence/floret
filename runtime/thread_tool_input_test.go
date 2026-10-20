@@ -276,6 +276,12 @@ func TestToolRequestedInputBatchWaitsForEveryAnswer(t *testing.T) {
 				if waiting.Failure == nil || len(waiting.Interactions) != 0 || len(gateway.Requests()) != 1 {
 					t.Fatalf("failed batch exposed input: %+v", waiting)
 				}
+				// Concurrent settlement must publish the canonical terminal even
+				// when a sibling's late write observes stale execution authority.
+				accepted, found, readErr := host.store.repo.(sessiontree.RuntimeTurnRepo).ReadAcceptedTurn(t.Context(), created.ThreadID.String(), waiting.TurnID.String(), waiting.RunID.String())
+				if readErr != nil || !found || accepted.Terminal == nil || accepted.Terminal.Failure == nil || accepted.Terminal.Failure.Error != waiting.Failure.Message {
+					t.Fatalf("canonical failure replay incomplete: found=%t err=%v", found, readErr)
+				}
 				return
 			}
 			if len(waiting.Interactions) != 2 || len(gateway.Requests()) != 1 {
