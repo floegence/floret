@@ -112,3 +112,17 @@ This removes full historical body hydration, not all cold-summary scaling.
 Metadata is still scanned, lifecycle and interaction maps grow with history,
 and required control/error semantics may themselves be large. It does not
 qualify bounded cold initialization or the production Flower stack.
+
+## Aggregate window hydration
+
+    GOWORK=off go test ./runtime -run 'TestThreadWindow(Hydrates|Escaped|Around|Preview)' -count=1
+
+The bounded window divides one aggregate source allowance before hydrating
+text or completed activity, accounting for worst-case JSON escaping and UTF-8
+read slack. Each item still exposes its exact complete extent and source
+locator; oversized typed activity stays an explicit complete-body reference.
+The encoded page check remains authoritative for metadata. Synthetic 40 MiB
+live extents test 1, 5 and 150 selected items, count actual source reads, and
+verify exact mixed UTF-8 prefixes, owner preservation and escaped JSON bounds.
+This bounds preview source hydration, not arbitrary inline control metadata,
+actor metadata residency or complete production-stack latency.
