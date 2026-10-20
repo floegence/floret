@@ -297,6 +297,9 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 				item.Activity, item.Live = previous.Activity, previous.Live
 			}
 			item.Ordinal = previous.Ordinal
+			if previous.Interaction == nil && item.Interaction != nil && actor.interactionItems != nil {
+				actor.interactionItems[item.Interaction.ID] = append(actor.interactionItems[item.Interaction.ID], item.ID)
+			}
 			actor.state.view.Items[current] = cloneThreadItems([]ThreadItem{item})[0]
 			actor.markItem(item.ID, ThreadItemReplaced)
 		} else {
@@ -315,43 +318,16 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		}
 	}
 
-	if len(projection.items.changedInteractions) > 0 {
-		byID := make(map[string]int, len(actor.state.view.Interactions))
-		for index, item := range actor.state.view.Interactions {
-			byID[item.ID] = index
-		}
-		changed := make([]int, 0, len(projection.items.changedInteractions))
-		for index := range projection.items.changedInteractions {
-			changed = append(changed, index)
-		}
-		sort.Ints(changed)
-		for _, index := range changed {
-			if projection.items.hiddenInteractions[index] {
-				continue
-			}
-			interaction := projection.items.interactions[index]
-			if previous, ok := byID[interaction.ID]; ok {
-				if actor.state.view.Interactions[previous].Resolved && !interaction.Resolved {
-					continue
-				}
-				actor.state.view.Interactions[previous] = cloneThreadInteractions([]ThreadInteraction{interaction})[0]
-			} else {
-				position := index
-				for hidden := range projection.items.hiddenInteractions {
-					if hidden < index {
-						position--
-					}
-				}
-				actor.state.view.Interactions = append(actor.state.view.Interactions, ThreadInteraction{})
-				copy(actor.state.view.Interactions[position+1:], actor.state.view.Interactions[position:])
-				actor.state.view.Interactions[position] = cloneThreadInteractions([]ThreadInteraction{interaction})[0]
-				for tail := position; tail < len(actor.state.view.Interactions); tail++ {
-					byID[actor.state.view.Interactions[tail].ID] = tail
-				}
+	for _, index := range interactionIndices {
+		position := index
+		for hidden := range projection.items.hiddenInteractions {
+			if hidden < index {
+				position--
 			}
 		}
-		actor.markComponents(threadInteractionsChanged)
+		actor.installInteraction(projection.items.interactions[index], position)
 	}
+
 	for _, index := range turnIndices {
 		turn := turnChanges[index]
 		if index < len(actor.state.view.Turns) {
@@ -377,6 +353,6 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 			actor.removeArgumentPreview(item.Activity.ToolID)
 		}
 	}
-	normalizeActiveThreadRunProgress(&actor.state.view)
+	actor.normalizeRunProgress()
 	return nil
 }

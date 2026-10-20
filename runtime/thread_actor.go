@@ -17,24 +17,28 @@ import (
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
-	canonical     *threadCanonicalProjection
-	threadID      string
-	mu            sync.Mutex
-	closed        bool
-	deleting      bool
-	deleted       bool
-	lookupErr     error
-	state         threadRuntimeData
-	itemIndex     map[string]int
-	indexedItems  int
-	textBuffer    strings.Builder
-	textBufferID  string
-	outputOrder   []string
-	service       *threadRuntimeService
-	mutations     threadMutations
-	pendingUpdate *ThreadUpdate
-	pendingText   strings.Builder
-	updateTimer   *time.Timer
+	canonical            *threadCanonicalProjection
+	threadID             string
+	mu                   sync.Mutex
+	closed               bool
+	deleting             bool
+	deleted              bool
+	lookupErr            error
+	state                threadRuntimeData
+	itemIndex            map[string]int
+	indexedItems         int
+	interactionIndex     map[string]int
+	indexedInteractions  int
+	interactionAttention AttentionSummary
+	interactionItems     map[string][]string
+	textBuffer           strings.Builder
+	textBufferID         string
+	outputOrder          []string
+	service              *threadRuntimeService
+	mutations            threadMutations
+	pendingUpdate        *ThreadUpdate
+	pendingText          strings.Builder
+	updateTimer          *time.Timer
 }
 
 type threadRuntimeData struct {
@@ -549,20 +553,30 @@ func (runtime *threadRuntimeState) itemIndexByID(id string) int {
 	if id == "" {
 		return -1
 	}
-	if runtime.itemIndex == nil || runtime.indexedItems > len(runtime.state.view.Items) {
-		runtime.itemIndex = make(map[string]int, len(runtime.state.view.Items))
-		runtime.indexedItems = 0
-	}
-	for i := runtime.indexedItems; i < len(runtime.state.view.Items); i++ {
-		runtime.itemIndex[runtime.state.view.Items[i].ID] = i
-	}
-	runtime.indexedItems = len(runtime.state.view.Items)
+	runtime.ensureItemIndex()
 	if i, ok := runtime.itemIndex[id]; ok {
 		return i
 	}
 	return -1
 }
+
+func (runtime *threadRuntimeState) ensureItemIndex() {
+	if runtime.itemIndex == nil || runtime.indexedItems > len(runtime.state.view.Items) {
+		runtime.itemIndex = make(map[string]int, len(runtime.state.view.Items))
+		runtime.interactionItems = make(map[string][]string)
+		runtime.indexedItems = 0
+	}
+	for i := runtime.indexedItems; i < len(runtime.state.view.Items); i++ {
+		item := runtime.state.view.Items[i]
+		runtime.itemIndex[item.ID] = i
+		if item.Interaction != nil {
+			runtime.interactionItems[item.Interaction.ID] = append(runtime.interactionItems[item.Interaction.ID], item.ID)
+		}
+	}
+	runtime.indexedItems = len(runtime.state.view.Items)
+}
 func (runtime *threadRuntimeState) invalidateItemIndex() {
 	runtime.itemIndex = nil
+	runtime.interactionItems = nil
 	runtime.indexedItems = 0
 }

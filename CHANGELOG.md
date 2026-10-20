@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Maintain actor interaction positions, item associations and attention counts by affected control; rebuild only at full replacement and preserve answered controls against stale canonical requests.
+
 - Resolve exact active-path canonical body metadata without reading source blocks; share integrity checks with chunk reads.
 
 - Advance canonical provider/context commits by appended storage intervals and affected item/turn reducers; share full-read semantics, preserve delayed interaction order, invalidate failed projections and avoid retaining historical mutation-map capacity.
