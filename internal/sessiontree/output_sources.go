@@ -146,20 +146,35 @@ func (r *MemoryRepo) validateNewOutputSourcesLocked(entry Entry) error {
 	r.ensureOutputSourcesLocked(entry.ThreadID)
 	for source, fact := range next {
 		for _, ordinal := range r.outputSources[entry.ThreadID][source] {
-			previous, err := r.completeEntryLocked(r.entries[entry.ThreadID][ordinal])
-			if err != nil {
-				return err
+			if !r.outputSourceAncestorLocked(entry.ThreadID, entry.ParentID, ordinal) {
+				continue
 			}
-			old, err := outputSourceFacts(previous)
-			if err != nil {
-				return err
-			}
-			if !sameOutputSource(old[source], fact) && r.outputSourceAncestorLocked(entry.ThreadID, entry.ParentID, ordinal) {
+			previous := r.entries[entry.ThreadID][ordinal]
+			if !matchesStoredOutputSource(previous, source, fact) {
 				return fmt.Errorf("%w: conflicting output source on %s", ErrAuthorityCorrupt, entry.ID)
 			}
 		}
 	}
 	return nil
+}
+
+// Validated immutable source metadata is sufficient for later admission. Content
+// may append under one source; repeated reasoning must preserve exact bytes.
+// Neither decision requires historical content, reasoning or unrelated fields.
+func matchesStoredOutputSource(previous Entry, source string, next outputSourceFact) bool {
+	if previous.TurnID != next.turn || previous.RunID != next.run || previous.Message.Role != session.Assistant {
+		return false
+	}
+	if next.kind == "content" {
+		return previous.Message.ContentSourceID == source && previous.Message.ReasoningSourceID != source
+	}
+	if next.kind != "reasoning" || previous.Message.ReasoningSourceID != source || previous.Message.ContentSourceID == source {
+		return false
+	}
+	if ref, stored := previous.bodyFields["reasoning"]; stored {
+		return ref.Bytes == len(next.text) && ref.SHA256 == stableHash(next.text)
+	}
+	return previous.Message.Reasoning == next.text
 }
 
 type legacyOutputState struct {
