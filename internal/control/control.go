@@ -30,7 +30,7 @@ func ToolDefinitions() []tools.ToolDefinition {
 	return []tools.ToolDefinition{{
 		Name:        AskUserTool,
 		Title:       "Ask user",
-		Description: "Ask the user for information and wait for their response. You MUST use this tool whenever another user answer is required to continue; do not end the turn with a prose question.",
+		Description: "Ask and wait when execution needs user input or guided questions are requested. Ordinary discussion and optional feedback may use prose.",
 		InputSchema: askUserInputSchema(),
 		Strict:      true,
 		Annotations: map[string]any{

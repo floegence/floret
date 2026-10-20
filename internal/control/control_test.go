@@ -7,6 +7,18 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 )
 
+func TestAskUserGuidanceDistinguishesExecutionFromDiscussion(t *testing.T) {
+	definitions := ToolDefinitions()
+	if len(definitions) != 1 || definitions[0].Name != AskUserTool {
+		t.Fatalf("control definitions=%+v", definitions)
+	}
+	for _, boundary := range []string{"execution needs user input", "guided questions are requested", "Ordinary discussion and optional feedback may use prose"} {
+		if !strings.Contains(definitions[0].Description, boundary) {
+			t.Fatalf("question guidance missing %q: %s", boundary, definitions[0].Description)
+		}
+	}
+}
+
 func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {
 	cases := []struct {
 		name string
