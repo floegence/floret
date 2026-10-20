@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 func TestOutputSourceIndexMatchesCanonicalBranches(t *testing.T) {
@@ -87,6 +90,60 @@ func TestOutputSourceIndexRollbackDoesNotPoisonFutureAdmission(t *testing.T) {
 		}
 		if _, err := repo.Append(t.Context(), Entry{ThreadID: "thread", Type: EntryAssistantMessage, TurnID: "new", RunID: "run", Message: session.Message{Role: session.Assistant, Reasoning: "keep", ReasoningSourceID: source}}, AppendOptions{ID: source}); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestOutputSourceAdmissionDoesNotReadHistoricalBodies(t *testing.T) {
+	backend := newMigrationTestBackend()
+	repo, err := NewBackendRepo(t.Context(), backend, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	reasoning := strings.Repeat("reasoning 中文🌸", 10000)
+	first := Entry{ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: strings.Repeat("first", 100000), ContentSourceID: "source", Reasoning: reasoning, ReasoningSourceID: "reason"}}
+	if _, err := repo.Append(t.Context(), first, AppendOptions{ID: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range repo.domainMemory.entries["thread"][0].bodyFields {
+		releaseCachedBody(ref)
+	}
+	continued := Entry{ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "next", ContentSourceID: "source", Reasoning: reasoning, ReasoningSourceID: "reason"}}
+	for restart := range 2 {
+		for _, test := range []struct {
+			name     string
+			change   func(*Entry)
+			conflict bool
+		}{
+			{"same", func(*Entry) {}, false},
+			{"reasoning", func(e *Entry) { e.Message.Reasoning += "changed" }, true},
+			{"turn", func(e *Entry) { e.TurnID = "other" }, true},
+			{"run", func(e *Entry) { e.RunID = "other" }, true},
+			{"channel", func(e *Entry) { e.Message.ReasoningSourceID, e.Message.ContentSourceID = "source", "reason" }, true},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", restart, test.name), func(t *testing.T) {
+				candidate := continued
+				candidate.ID, candidate.ParentID = "next", "first"
+				test.change(&candidate)
+				err := repo.ViewDomain(t.Context(), func(memory *MemoryRepo, tx spi.ReadTx) error {
+					memory.bodyTx = failingBodyReadTx{ReadTx: tx, failure: errors.New("admission read old source")}
+					memory.mu.Lock()
+					defer memory.mu.Unlock()
+					return memory.validateNewOutputSourcesLocked(candidate)
+				})
+				if test.conflict && !errors.Is(err, ErrAuthorityCorrupt) || !test.conflict && err != nil {
+					t.Fatalf("source validation conflict=%t: %v", test.conflict, err)
+				}
+			})
+		}
+		if restart == 0 {
+			repo, err = NewBackendRepo(t.Context(), backend, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }

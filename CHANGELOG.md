@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate repeated canonical output sources from immutable identity and reasoning hashes without hydrating old fields or reading inactive sibling bodies.
+
 - Maintain actor interaction positions, item associations and attention counts by affected control; rebuild only at full replacement and preserve answered controls against stale canonical requests.
 
 - Resolve exact active-path canonical body metadata without reading source blocks; share integrity checks with chunk reads.

@@ -9,6 +9,10 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Summary
 
+Repeated output-source admission compares canonical turn/run/channel identity
+and exact reasoning hashes without reading old body blocks. Inactive sibling
+locators do not contribute source authority to the current path.
+
 Canonical body metadata resolves exact field hashes and byte lengths without
 loading source blocks. Metadata and chunk reads share one active-path locator
 check; a locator never grants access or permits an inactive sibling.
