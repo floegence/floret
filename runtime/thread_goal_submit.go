@@ -42,7 +42,7 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 	if _, err := service.ensureThread(ctx, in.ThreadID); err != nil {
 		return GoalSubmissionResult{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, threadAckResult); err != nil {
 		return GoalSubmissionResult{}, err
 	}
 	input, err := normalizeTurnInput(UserInput{Text: in.Text})

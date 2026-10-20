@@ -38,7 +38,8 @@ type EditQueuedInput struct {
 var _ ThreadQueueController = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueuedInput) (ThreadView, error) {
-	return service.editQueuedCommand(ctx, in, threadFullResult)
+	view, err := service.editQueuedCommand(ctx, in, threadFullResult)
+	return service.completeViewResult(ctx, view, err)
 }
 
 func (service *threadRuntimeService) editQueuedCommand(ctx context.Context, in EditQueuedInput, mode threadResultMode) (ThreadView, error) {

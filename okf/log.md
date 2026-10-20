@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Document accepted canonical text eviction and exact complete/window reconstruction, including legacy snapshot freezing and remaining metadata/initialization limits.
+
 ## 2026-10-20 — Incremental canonical actor installation
 
 - Share chronological turn/context/lifecycle reducers and exact appended intervals under the existing actor. Preserve canonical interaction ordering, public snapshot isolation and failed-read recovery. Document kernel scaling and the remaining full-residency/window limits in [native updates](api/thread-updates.md#incremental-canonical-installation).

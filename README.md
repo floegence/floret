@@ -1039,7 +1039,14 @@ than reconnecting the workspace. `ClearWindow` releases queued item detail witho
 cancelling execution. Queue reads and clear operations share one lock and never
 wait while owning it. Revocation requires the host to close the scoped stream.
 
-This capability currently bounds delivered item detail, not retained actor
+Accepted ordinary user, steering, reasoning and assistant text is released from
+actor/reducer storage after installation. Exact canonical extents restore explicit
+complete reads; window reads hydrate only bounded prefixes. Complete legacy
+publications freeze text before enqueueing, independently of later deletion.
+Transformed control labels, structured metadata and live drafts retain their
+existing ownership.
+
+This capability currently bounds delivered item detail, not all retained actor
 history or every control component. Initial actor hydration still constructs the
 complete canonical projection; queue, context and restored-input components
 retain their complete semantics and may exceed the observation queue budget.

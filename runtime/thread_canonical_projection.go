@@ -94,6 +94,9 @@ func (projection *threadCanonicalProjection) resetChanges() {
 	projection.contextChanged, projection.goalChanged, projection.modelChanged = false, false, false
 }
 func (projection *threadCanonicalProjection) snapshot(ctx context.Context, service *threadRuntimeService, threadID identity.ThreadID, path []sessiontree.Entry) (canonicalThreadView, error) {
+	if projection.items.metadataOnly {
+		return canonicalThreadView{}, fmt.Errorf("%w: complete snapshot requires complete source entries", ErrAuthorityCorrupt)
+	}
 	items, interactions := projection.items.snapshot()
 	turns, err := projection.turns.snapshot()
 	if err != nil {
@@ -211,10 +214,27 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 	}
 	sort.Ints(indices)
 	itemCount := len(actor.state.view.Items)
+	prepared := make(map[int]ThreadItem, len(indices))
 	for _, index := range indices {
 		item := projection.items.items[index]
 		if current := actor.itemIndexByID(item.ID); current >= 0 {
 			previous := actor.state.view.Items[current]
+			if item.textOmitted {
+				previousBytes := len(previous.Text)
+				if previous.textOmitted {
+					previousBytes = previous.textBytes
+				}
+				if previousBytes+len(item.Text) != item.textBytes {
+					return fmt.Errorf("%w: canonical text extent changed", ErrAuthorityCorrupt)
+				}
+				if previous.textOmitted {
+					item.textSummary, item.textSummaryTail = canonicalTextSummary(previous.textSummary, item.Text, previous.textSummaryTail)
+					item.Text = ""
+				} else {
+					item.Text = previous.Text + item.Text
+					item.textOmitted, item.textBytes, item.textNonSpace = false, 0, false
+				}
+			}
 			if previous.Kind != item.Kind || previous.TurnID != item.TurnID || previous.RunID != item.RunID || previous.CanonicalOrdinal != 0 && previous.CanonicalOrdinal != item.CanonicalOrdinal {
 				return fmt.Errorf("%w: canonical item identity changed", ErrAuthorityCorrupt)
 			}
@@ -225,6 +245,7 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 			}
 			itemCount++
 		}
+		prepared[index] = actor.retainItem(item, projection.leafID)
 	}
 	turnChanges := make(map[int]ThreadTurn, len(projection.changedTurns))
 	turnIndices := make([]int, 0, len(projection.changedTurns))
@@ -288,7 +309,7 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 	}
 	// All storage reads and fallible projection checks precede installation.
 	for _, index := range indices {
-		item := projection.items.items[index]
+		item := prepared[index]
 		item.Ordinal = projection.items.visibleOrdinal(index)
 		current := actor.itemIndexByID(item.ID)
 		if current >= 0 {
@@ -354,5 +375,6 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		}
 	}
 	actor.normalizeRunProgress()
+	projection.items.releaseText()
 	return nil
 }
