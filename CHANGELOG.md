@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Hydrate cold actors through cancellable frozen canonical pages, releasing
+  accepted text and completed ordinary activity after each page. Restore queue
+  and snapshot inputs through one body-free physical inventory, preserving
+  inactive branches and exact historical removal semantics. Context-dependent
+  paths keep complete canonical validation; retained metadata remains unbounded.
+
 - Remove quadratic mutation-batch lookup and use existing turn-marker locators
   for ordinary record validation, including historical turns without a start
   marker. Validate typed-turn admission against all prior members and preserve

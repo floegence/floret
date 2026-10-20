@@ -1670,3 +1670,7 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document contiguous domain 30 -> 31 activity body extraction and completed-tool residency in [Storage](api/storage.md) and [Runtime](api/runtime.md).
 
 - 2026-10-20: Record actor-first list/summary reads, mutation-owned preview locators and the remaining cold canonical summary boundary in [Runtime](api/runtime.md).
+
+- 2026-10-20: Document page-released cold presentation and shared body-free queue
+  recovery in [thread updates](api/thread-updates.md) and [storage](api/storage.md);
+  retain explicit metadata-residency and context-validation limits.

@@ -16,6 +16,7 @@ import (
 
 var readMethods = map[string]bool{
 	"ParentEvents":         true,
+	"JournalMetadata":      true,
 	"ArtifactClosure":      true,
 	"CanonicalTurnEntries": true, "EffectAttempt": true, "Entries": true, "FindTurnRequest": true, "Entry": true,
 	"ListCanonicalTurns": true, "ListSubAgentInputs": true, "ListThreads": true,

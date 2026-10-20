@@ -1947,27 +1947,11 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	entries, err := service.host.store.repo.Path(ctx, threadID.String(), meta.LeafID)
-	if err != nil {
-		return ThreadView{}, runtimeHostError(err)
-	}
-	projection := newThreadCanonicalProjection()
-	if err := projection.append(entries); err != nil {
-		return ThreadView{}, err
-	}
-	canonical, err := projection.snapshot(ctx, service, threadID, entries)
+	canonical, err := service.loadRetainedThreadView(ctx, threadID, meta)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.RestoredInputs, err = restoredQueueInputs(ctx, service.host.store.repo, threadID)
-	if err != nil {
-		return ThreadView{}, err
-	}
-	canonical.Queue, err = hydrateCanonicalQueue(ctx, service.host.store.repo, threadID)
+	canonical.Queue, canonical.RestoredInputs, err = hydrateThreadQueues(ctx, service.host.store.repo, threadID)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1980,18 +1964,13 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 		}
 		canonical.ViewVersion = 1
 		canonical.ThreadID = threadID
-		var runID identity.RunID
-		canonical.TurnID, runID, canonical.Activity, canonical.LastOutcome, canonical.Failure = threadRuntimeLifecycleFromEntries(meta, entries)
-		canonical.RunID = runID
-		canonical.TurnKind = turnKindFromEntries(entries, canonical.TurnID)
-		canonical.Cancellation = threadCancellationForTurn(entries, canonical.TurnID)
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical.ThreadView) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
 		actor.state.view = canonical.ThreadView
 		actor.interactionIndex = nil
-		actor.canonical = projection
-		projection.items.releaseText()
+		actor.canonical = canonical.projection
+		actor.canonical.items.releaseText()
 		actor.retainItems()
 		actor.invalidateItemIndex()
 		actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadPreviewsChanged | threadRestoredInputsChanged)
@@ -1999,14 +1978,9 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 			actor.markItem(item.ID, ThreadItemAdded)
 		}
 		actor.state.turnID = canonical.TurnID
-		actor.state.runID = runID
+		actor.state.runID = canonical.RunID
 		actor.state.requestKeys = hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
-		states, _ := steeringProjection(entries)
-		for _, entry := range entries {
-			if entry.Type == sessiontree.EntrySteeringRequested && entry.TurnID == canonical.TurnID.String() && states[entry.ID].Status == ThreadSteeringPending {
-				actor.state.steering = append(actor.state.steering, entry.ID)
-			}
-		}
+		actor.state.steering = actor.canonical.pendingSteering(canonical.TurnID)
 		if canonical.Activity == ThreadActivityActive && !actor.state.hydrationStarted && service.host.requireExecution() == nil {
 			actor.state.hydrationStarted = true
 			startHydration = true
@@ -2034,11 +2008,24 @@ func hydrateThreadRequestKeys(ctx context.Context, repo sessiontree.JournalRepo,
 	if strings.TrimSpace(meta.LeafID) == "" {
 		return keys
 	}
-	page, err := repo.PathPage(ctx, meta.ID, meta.LeafID, "", 256)
-	if err != nil {
-		return keys
+	var entries []sessiontree.Entry
+	if reader, ok := repo.(sessiontree.PathMetadataReader); ok {
+		page, err := reader.PathMetadataPage(ctx, meta.ID, meta.LeafID, "", 256)
+		if err != nil {
+			return keys
+		}
+		entries = make([]sessiontree.Entry, len(page.Entries))
+		for i, metadata := range page.Entries {
+			entries[i] = metadata.Entry
+		}
+	} else {
+		page, err := repo.PathPage(ctx, meta.ID, meta.LeafID, "", 256)
+		if err != nil {
+			return keys
+		}
+		entries = page.Entries
 	}
-	for _, entry := range page.Entries {
+	for _, entry := range entries {
 		key := strings.TrimSpace(entry.RequestKey)
 		if key == "" {
 			continue
@@ -4501,15 +4488,15 @@ func cloneInputPresentation(input *InputPresentation) *InputPresentation {
 }
 
 func hydrateCanonicalQueue(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]QueuedInput, error) {
-	entries, err := repo.Entries(ctx, threadID.String())
-	if err != nil {
-		return nil, runtimeHostError(err)
-	}
-	return canonicalQueueFromEntries(entries)
+	queue, _, err := hydrateThreadQueues(ctx, repo, threadID)
+	return queue, err
 }
 
 func canonicalQueueFromEntries(entries []sessiontree.Entry) ([]QueuedInput, error) {
-	queue := make([]QueuedInput, 0)
+	return appendCanonicalQueue(make([]QueuedInput, 0), entries)
+}
+
+func appendCanonicalQueue(queue []QueuedInput, entries []sessiontree.Entry) ([]QueuedInput, error) {
 	for _, entry := range entries {
 		switch entry.Type {
 		case sessiontree.EntryQueueAdded:
