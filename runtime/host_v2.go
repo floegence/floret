@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/providertransport"
 	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"strconv"
 	"strings"
@@ -837,7 +838,7 @@ func projectModelEvent(event provider.Event) modelEvent {
 		hostedResult = &result
 	}
 	return modelEvent{
-		OutputPart: cloneOutputPart(event.OutputPart), Type: modelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
+		Transport: providertransport.Clone(event.Transport), OutputPart: cloneOutputPart(event.OutputPart), Type: modelEventType(event.Type), Text: event.Text, ToolCallStream: stream, ToolCalls: calls,
 		HostedToolCall: hostedCall, HostedResult: hostedResult,
 		Sources: sources, Reason: event.Reason,
 		Usage:      event.Usage,

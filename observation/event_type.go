@@ -16,6 +16,7 @@ const (
 	EventTypeProviderUsage          EventType = "provider_usage"
 	EventTypeProviderSources        EventType = "provider_sources"
 	EventTypeProviderFinish         EventType = "provider_finish"
+	EventTypeProviderTransport      EventType = "provider_transport"
 	EventTypeProviderRetry          EventType = "provider_retry"
 	EventTypeToolCall               EventType = "tool_call"
 	EventTypeToolDispatchStarted    EventType = "tool_dispatch_started"
@@ -54,7 +55,7 @@ const (
 
 func (t EventType) Valid() bool {
 	switch t {
-	case EventTypeStepStart, EventTypeProviderRequest, EventTypeProviderDelta,
+	case EventTypeProviderTransport, EventTypeStepStart, EventTypeProviderRequest, EventTypeProviderDelta,
 		EventTypeProviderReasoning, EventTypeProviderToolCallStart,
 		EventTypeProviderToolCallDelta, EventTypeProviderToolCallEnd,
 		EventTypeProviderUsage, EventTypeProviderSources, EventTypeProviderFinish,
@@ -82,6 +83,14 @@ func (t EventType) Valid() bool {
 func (e Event) Validate() error {
 	if !e.Type.Valid() {
 		return fmt.Errorf("unsupported observation event type %q", e.Type)
+	}
+	if e.Transport != nil {
+		if err := e.Transport.Observation.Validate(); err != nil {
+			return err
+		}
+		if e.Transport.LogicalRequestID == "" || e.Transport.AttemptID == "" || e.Transport.AttemptEpoch < 1 {
+			return fmt.Errorf("invalid provider transport identity")
+		}
 	}
 	if e.Compaction != nil {
 		if err := e.Compaction.Validate(); err != nil {

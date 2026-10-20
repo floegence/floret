@@ -396,3 +396,8 @@ without rewriting historical messages, usage, summaries or missing evidence.
 Historical input anchors remain eligible under their original transparent-input
 contract; new response boundaries require new evidence. Invalid calibration falls
 back to estimation and cannot prevent historical thread opening.
+
+Optional TransportObservation events describe protocol progress and a machine-code
+reason or next transport. They do not represent model output or retry permission.
+PreparedRequestReplay keeps immutable input while a fresh measurement prefix may
+bind a changed transport; Engine retries use the new handle's prefix.

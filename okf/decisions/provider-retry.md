@@ -66,3 +66,12 @@ for Redeven transport boundaries. It shares Engine classification, recognizes
 ordinary and wrapped EOF, and preserves the outermost explicit advice including
 empty advice, Forbidden and absolute NotBefore. It never schedules retries;
 non-provider failures retain their permanent origin override. No schema changes.
+
+The additive v7.73 API decision exposes optional typed transport observations
+through provider streams, Engine events and ThreadRunProgress. The Engine binds
+request identities. Observations are non-semantic and process-local; retry waits
+retain the switch hint, stale attempts and auxiliary runs cannot replace primary
+progress, and terminal settlement clears it. Gateways retain transport policy.
+Retry preparation refreshes the measurement prefix from its new prepared handle
+without changing frozen input or estimates. Mismatched native evidence cannot
+qualify an exact pressure anchor. No durable schema or recovery queue is added.

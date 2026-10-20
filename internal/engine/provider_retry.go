@@ -9,6 +9,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	"reflect"
@@ -71,6 +72,14 @@ func (e *Engine) sendProviderRequestWithRetry(ctx context.Context, opts Options,
 				next.Prepared = prepared
 				if prepared.PayloadFingerprint() != fingerprint || !reflect.DeepEqual(prepared.TokenEstimate(), estimate) {
 					return providerAttemptResult{request: current}, errors.Join(errors.New("provider retry rendering changed frozen model input"), prepared.Close())
+				}
+			}
+			// Frozen input is unchanged, but the new preparation can select another
+			// transport or connection. Never copy the predecessor's measurement proof.
+			next.RawPlan.MeasurementPrefix = requestmeasure.Prefix{}
+			if next.EphemeralUser == nil {
+				if measured, ok := next.Prepared.(requestmeasure.Prepared); ok {
+					next.RawPlan.MeasurementPrefix = measured.InputMeasurementPrefix()
 				}
 			}
 			current = next

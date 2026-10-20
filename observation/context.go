@@ -10,6 +10,7 @@ import (
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/providertransport"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -54,7 +55,17 @@ type ProviderRetryProgress struct {
 	ReplacedAttemptEpoch int       `json:"replaced_attempt_epoch,omitempty"`
 }
 
+// ProviderTransportProgress binds non-semantic transport feedback to Engine identity.
+// It is memory-only current-request progress.
+type ProviderTransportProgress struct {
+	LogicalRequestID identity.LogicalRequestID `json:"logical_request_id"`
+	AttemptID        string                    `json:"attempt_id"`
+	AttemptEpoch     int                       `json:"attempt_epoch"`
+	providertransport.Observation
+}
+
 type Event struct {
+	Transport          *ProviderTransportProgress  `json:"transport,omitempty"`
 	Retry              *ProviderRetryProgress      `json:"retry,omitempty"`
 	Type               EventType                   `json:"type"`
 	TraceID            identity.TraceID            `json:"trace_id,omitempty"`

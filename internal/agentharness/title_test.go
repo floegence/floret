@@ -41,7 +41,8 @@ func TestProviderTitleAllowsReasoningBeforeVisibleTitle(t *testing.T) {
 				if request.Reasoning.Level != tc.level {
 					t.Fatalf("reasoning=%+v, want %s", request.Reasoning, tc.level)
 				}
-				stream := make(chan provider.StreamEvent, 3)
+				stream := make(chan provider.StreamEvent, 4)
+				stream <- provider.StreamEvent{Type: provider.TransportEvent}
 				if request.Reasoning.Level != provider.ReasoningLevelOff {
 					stream <- provider.StreamEvent{Type: provider.Reasoning, Text: "Private planning must not become the title."}
 					// A short visible title can follow more than 64 reasoning tokens.

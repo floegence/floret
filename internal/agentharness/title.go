@@ -123,7 +123,7 @@ func (g ProviderTitleGenerator) generateTitleAttempt(ctx context.Context, reques
 		switch ev.Type {
 		case provider.Delta:
 			text.WriteString(ev.Text)
-		case provider.Reasoning, provider.UsageEvent:
+		case provider.Reasoning, provider.UsageEvent, provider.TransportEvent:
 			continue
 		case provider.Done:
 			return g.titleResult(text.String())

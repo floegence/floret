@@ -680,7 +680,8 @@ type EventSink interface {
 }
 
 type Event struct {
-	ProviderLastProgressAt *time.Time `json:"provider_last_progress_at,omitempty"`
+	Transport              *observation.ProviderTransportProgress `json:"transport,omitempty"`
+	ProviderLastProgressAt *time.Time                             `json:"provider_last_progress_at,omitempty"`
 
 	Retry              *ProviderRetryProgress         `json:"retry,omitempty"`
 	Type               observation.EventType          `json:"type"`
@@ -730,6 +731,18 @@ type Event struct {
 func (e Event) Validate() error {
 	if !e.Type.Valid() {
 		return fmt.Errorf("unsupported runtime event type %q", e.Type)
+	}
+	if e.Transport != nil {
+		if e.Transport.LogicalRequestID == "" || e.Transport.AttemptID == "" || e.Transport.AttemptEpoch < 1 {
+			return errors.New("invalid provider transport identity")
+		}
+		if err := e.Transport.Observation.Validate(); err != nil {
+			return err
+		}
+		logical, attempt, epoch, ok := liveEventAttemptIdentity(e)
+		if ok && (logical != e.Transport.LogicalRequestID || attempt != e.Transport.AttemptID || epoch != e.Transport.AttemptEpoch) {
+			return errors.New("provider transport identity mismatch")
+		}
 	}
 	if e.FinishReason != "" && !e.FinishReason.Valid() {
 		return fmt.Errorf("unsupported finish reason %q", e.FinishReason)
@@ -2104,6 +2117,7 @@ func runtimeEvent(ev event.Event) Event {
 		outputSourceID:   ev.OutputSourceID, outputOrder: ev.OutputOrder,
 		ProviderLastProgressAt: lastProgressAt,
 		Type:                   ev.Type,
+		Transport:              cloneProviderTransportProgress(ev.Transport),
 		Retry:                  cloneProviderRetryProgress(ev.Retry),
 		TraceID:                identity.TraceID(ev.TraceID),
 		RunID:                  identity.RunID(ev.RunID),
@@ -2627,6 +2641,7 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.SanitizeWithPolicy(ev, event.SinkPolicy{PreserveActivityNavigation: true})
 	return observation.Event{
 		Type:               sanitized.Type,
+		Transport:          cloneProviderTransportProgress(sanitized.Transport),
 		Retry:              cloneProviderRetryProgress(sanitized.Retry),
 		TraceID:            identity.TraceID(sanitized.TraceID),
 		RunID:              identity.RunID(sanitized.RunID),

@@ -1615,3 +1615,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-19: Document canonical compaction decision evidence, missing-history semantics, terminal recovery, and the byte-preserving domain 25 -> 26 edge.
 
 - 2026-10-19: Document required-first tool schema rendering, exact frozen payloads and the rendering-only lineage upgrade without canonical history migration.
+
+- 2026-10-20: Document optional non-semantic provider transport progress and fresh retry measurement boundaries.
