@@ -692,7 +692,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 
 func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual ManualCompactionRequest) (result ContextCompactionResult) {
 	defer func() {
-		if isContextCancellation(result.Err) {
+		if isExecutionCancellation(ctx, result.Err) {
 			result.Status = Cancelled
 		}
 		if result.Err != nil && result.FailureOrigin == FailureOriginNone {
@@ -1001,7 +1001,7 @@ steps:
 		}
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
-			if isContextCancellation(err) {
+			if isExecutionCancellation(ctx, err) {
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && opts.Steering.CanContinue(err) {
 					continue
 				}
@@ -1647,9 +1647,6 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	if err != nil {
 		if errors.Is(err, ErrCompactionNoop) {
 			return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
-		}
-		if isContextCancellation(err) {
-			return ContextCompactionResult{Status: Cancelled, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 		}
 		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 	}
@@ -2835,8 +2832,8 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
 		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-		e.emitManualCompactionPollDebug(opts, step, usage, pressure, err)
-		if isContextCancellation(err) {
+		e.emitManualCompactionPollDebug(ctx, opts, step, usage, pressure, err)
+		if isExecutionCancellation(ctx, err) {
 			return provider.Request{}, history, false, err
 		}
 	} else if ok {
@@ -2851,7 +2848,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		}
 		if errors.Is(err, ErrCompactionNoop) {
 			history = next
-		} else if isContextCancellation(err) {
+		} else if isExecutionCancellation(ctx, err) {
 			return provider.Request{}, history, false, err
 		}
 	}
@@ -2909,13 +2906,13 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	return req, next, true, nil
 }
 
-func (e *Engine) emitManualCompactionPollDebug(opts Options, step int, usage contextpolicy.Usage, pressure contextpolicy.ContextPressure, err error) {
+func (e *Engine) emitManualCompactionPollDebug(ctx context.Context, opts Options, step int, usage contextpolicy.Usage, pressure contextpolicy.ContextPressure, err error) {
 	if err == nil {
 		return
 	}
 	status := ContextCompactDebugStatusFailed
 	nextAction := ContextCompactDebugNextActionProviderRequest
-	if isContextCancellation(err) {
+	if isExecutionCancellation(ctx, err) {
 		status = ContextCompactDebugStatusCancelled
 		nextAction = ContextCompactDebugNextActionFailTurn
 	}
@@ -3062,12 +3059,18 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	return out, latency, false, withFailureOrigin(err, FailureOriginProvider)
 }
 
+// Execution cancellation is established by its owning context, never by a
+// physical request's deadline. Independent failures retain their origin.
+func isExecutionCancellation(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && (isContextCancellation(err) || failureOrigin(Failed, err) == FailureOriginProvider)
+}
+
 func isContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func compactionErrorNextAction(trigger compaction.Trigger, reason compaction.Reason, configured string, err error) string {
-	if isContextCancellation(err) {
+func compactionErrorNextAction(ctx context.Context, trigger compaction.Trigger, reason compaction.Reason, configured string, err error) string {
+	if isExecutionCancellation(ctx, err) {
 		return ContextCompactDebugNextActionFailTurn
 	}
 	if trigger == compaction.TriggerManual && reason == compaction.ReasonManual && strings.TrimSpace(configured) == ContextCompactDebugNextActionProviderRequest {
@@ -3214,14 +3217,14 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	}
 	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
 		err := fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
-		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(beginDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(beginDebug, compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, time.Time{})
 		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	manager := e.compactor
 	if manager == nil {
 		err := errors.New("compaction manager is required when context exceeds policy")
-		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(beginDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(beginDebug, compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, time.Time{})
 		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
@@ -3284,10 +3287,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		})
 		if err != nil {
 			status := ContextCompactDebugStatusFailed
-			if isContextCancellation(err) {
+			if isExecutionCancellation(ctx, err) {
 				status = ContextCompactDebugStatusCancelled
 			}
-			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(attemptDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, attemptStarted)
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(attemptDebug, compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, attemptStarted)
 			if manualCompactionNoopError(err, trigger, reason) || (trigger == compaction.TriggerPreRequest && reason == compaction.ReasonThreshold && !beforePressure.HardLimitExceeded && errors.Is(err, compaction.ErrNoCutPoint)) {
 				e.emitCompactionNoop(opts, step, operationID, trigger, "no_compactable_context", beforePressure, usage, lifecycle)
 				return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
@@ -3332,7 +3335,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		req, err = e.buildProjectedProviderRequest(ctx, candidateOptions, step, active, tracker, attempt, overflowRetried)
 		if err != nil {
 			status := ContextCompactDebugStatusFailed
-			if isContextCancellation(err) {
+			if isExecutionCancellation(ctx, err) {
 				status = ContextCompactDebugStatusCancelled
 			}
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(map[string]any{
@@ -3341,7 +3344,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 				"compaction_id":                  result.CompactionID,
 				"compaction_generation":          result.CompactionGeneration,
 				"compaction_window_id":           result.CompactionWindowID,
-			}, compactionErrorNextAction(trigger, reason, nextAction, err)), err, rebuildStarted)
+			}, compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, rebuildStarted)
 			break
 		}
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, map[string]any{
@@ -3368,12 +3371,12 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			} else {
 				err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit)
 			}
-			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, time.Time{})
 			break
 		}
 		if sameCompactionBudget(policy, nextPolicy) {
 			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d compacted_context_target_tokens=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, policy.CompactedContextTargetTokens)
-			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, time.Time{})
 			break
 		}
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusRetrying, trigger, reason, beforePressure, usage, lifecycle, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), nil, time.Time{})
@@ -3386,10 +3389,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	}
 	if err != nil {
 		err = errors.Join(err, closePreparedRequest(req))
-		if failures != nil && !isContextCancellation(err) {
+		if failures != nil && !isExecutionCancellation(ctx, err) {
 			*failures++
 		}
-		if isContextCancellation(err) {
+		if isExecutionCancellation(ctx, err) {
 			e.emitCompactionCancelled(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		} else {
 			e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
@@ -3436,15 +3439,15 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	})
 	if err != nil {
 		err = errors.Join(err, closePreparedRequest(req))
-		if failures != nil && !isContextCancellation(err) {
+		if failures != nil && !isExecutionCancellation(ctx, err) {
 			*failures++
 		}
 		status := ContextCompactDebugStatusFailed
-		if isContextCancellation(err) {
+		if isExecutionCancellation(ctx, err) {
 			status = ContextCompactDebugStatusCancelled
 		}
-		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(installDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, installStarted)
-		if isContextCancellation(err) {
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(installDebug, compactionErrorNextAction(ctx, trigger, reason, nextAction, err)), err, installStarted)
+		if isExecutionCancellation(ctx, err) {
 			e.emitCompactionCancelled(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		} else {
 			e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)

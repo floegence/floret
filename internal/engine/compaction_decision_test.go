@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
@@ -22,6 +23,11 @@ func (c decisionFailingCompactor) Compact(context.Context, CompactionRequest) (c
 func TestCompactionFailureAndCancellationKeepTriggerEvidence(t *testing.T) {
 	for _, cause := range []error{errors.New("summary unavailable"), context.Canceled} {
 		t.Run(cause.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if errors.Is(cause, context.Canceled) {
+				cancel()
+			}
 			rec := &event.Recorder{}
 			e := &Engine{sink: rec, compactor: decisionFailingCompactor{cause}}
 			policy := contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
@@ -29,7 +35,7 @@ func TestCompactionFailureAndCancellationKeepTriggerEvidence(t *testing.T) {
 			request.RawPlan.PayloadHash = "frozen"
 			request.ContextPressure = contextpolicy.PressureFromProjectedRequest(request.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, policy)
 			candidate := compactionRequestSnapshot(request, nil)
-			_, _, _, err := e.runCompaction(t.Context(), Options{RunID: "run", ThreadID: "thread", TurnID: "turn", Model: "model", ContextPolicy: policy}, 1, []session.Message{{Role: session.User, Content: "old"}, {Role: session.Assistant, Content: "answer"}, {Role: session.User, Content: "new"}}, NewContextPressureTracker("scope"), 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, contextpolicy.Usage{InputTokens: 1000}, nil, request.ContextPressure, ManualCompactionRequest{}, candidate, ContextCompactDebugNextActionProviderRequest)
+			_, _, _, err := e.runCompaction(ctx, Options{RunID: "run", ThreadID: "thread", TurnID: "turn", Model: "model", ContextPolicy: policy}, 1, []session.Message{{Role: session.User, Content: "old"}, {Role: session.Assistant, Content: "answer"}, {Role: session.User, Content: "new"}}, NewContextPressureTracker("scope"), 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, contextpolicy.Usage{InputTokens: 1000}, nil, request.ContextPressure, ManualCompactionRequest{}, candidate, ContextCompactDebugNextActionProviderRequest)
 			if !errors.Is(err, cause) {
 				t.Fatalf("err=%v", err)
 			}
@@ -49,6 +55,37 @@ func TestCompactionFailureAndCancellationKeepTriggerEvidence(t *testing.T) {
 			}
 			if terminal["phase"] != want {
 				t.Fatalf("terminal=%+v", terminal)
+			}
+		})
+	}
+}
+
+func TestCompactionTimeoutIsFailureForEveryTrigger(t *testing.T) {
+	now := time.Now()
+	timeout := &provider.RequestTimeoutError{Details: provider.RequestTimeoutDetails{Stage: "output_idle", StartedAt: now, TimedOutAt: now}}
+	for _, trigger := range []compaction.Trigger{compaction.TriggerManual, compaction.TriggerPreRequest, compaction.TriggerOverflow} {
+		t.Run(string(trigger), func(t *testing.T) {
+			rec := &event.Recorder{}
+			e := &Engine{sink: rec, compactor: decisionFailingCompactor{withFailureOrigin(timeout, FailureOriginProvider)}}
+			policy := contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, CompactedContextTargetTokens: 100}
+			_, _, _, err := e.runCompaction(t.Context(), Options{RunID: "run", ThreadID: "thread", TurnID: "turn", ContextPolicy: policy}, 1,
+				[]session.Message{{Role: session.User, Content: "old"}, {Role: session.Assistant, Content: "answer"}, {Role: session.User, Content: "new"}},
+				NewContextPressureTracker("scope"), 1, false, trigger, compaction.ReasonThreshold, contextpolicy.Usage{InputTokens: 1000}, nil,
+				contextpolicy.ContextPressure{}, ManualCompactionRequest{}, nil, ContextCompactDebugNextActionFailTurn)
+			if !errors.Is(err, timeout) {
+				t.Fatalf("lost timeout: %v", err)
+			}
+			terminal := ""
+			for _, ev := range rec.Events {
+				if ev.Type == event.ContextCompact {
+					terminal, _ = ev.Metadata.(map[string]any)["phase"].(string)
+				}
+				if ev.Type == event.ContextCompactDebug && ev.Metadata.(map[string]any)["status"] == "cancelled" {
+					t.Fatal("timeout debug classified as cancelled")
+				}
+			}
+			if terminal != "failed" {
+				t.Fatalf("terminal=%s, want failed", terminal)
 			}
 		})
 	}

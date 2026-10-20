@@ -68,11 +68,11 @@ func compactionTestStep(text string) florettest.Step {
 	return florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: text}, {Type: provider.EventDone, ResponseState: &provider.State{Kind: "test", ID: "continuation"}, Usage: provider.Usage{InputTokens: 9000, OutputTokens: 10, Available: true}}}}
 }
 
-func compactionTestAgent(t *testing.T, gateway provider.Gateway) *Agent {
+func compactionTestAgent(t *testing.T, gateway provider.Gateway, options ...AgentOption) *Agent {
 	t.Helper()
 	agent, err := NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "compact", Name: "Compact"}, SystemPrompt: "Follow the task.", Context: config.ContextPolicy{
 		ContextWindowTokens: 256000, CompactedContextTargetTokens: 2000, RecentTailTokens: 100, RecentUserTokens: 100, ReservedSummaryTokens: 1000,
-	}}, gateway)
+	}}, gateway, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

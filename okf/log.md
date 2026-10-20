@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Clarify compaction timeout cancellation authority, Provider failure diagnostics and restart-safe explicit recovery.
+
 ## 2026-10-20 — Tool argument correction episodes
 
 - Scope [argument correction](api/tools.md#argument-correction-episodes) to consecutive invalid batches, preserving committed siblings and existing effect boundaries.
