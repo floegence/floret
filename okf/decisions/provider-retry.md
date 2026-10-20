@@ -59,7 +59,12 @@ Typed timeout details are optional canonical terminal annotations for Provider
 failures, retained through restart. They do not control lifecycle. Recovery-window
 exhaustion preserves the originating failure evidence, while independent contract
 and storage errors retain priority. Actual execution cancellation remains the
-only Stop authority. No persistent retry queue or new schema is introduced.
+only Stop authority. Compaction generation, validation, installation diagnostics
+and its enclosing execution use that same context-based cancellation decision.
+A timeout exhausted inside an active execution remains a failed compaction and
+retains its typed terminal annotation after restart; another explicit compaction
+can use the unchanged canonical history. No persistent retry queue or new schema
+is introduced.
 
 The additive v7.58 API decision exposes `provider.RetryAdviceForError`
 for Redeven transport boundaries. It shares Engine classification, recognizes

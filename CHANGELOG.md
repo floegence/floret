@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.73.1 - 2026-10-20
+
+- Classify compaction request timeouts and recovery exhaustion as Provider failures while the execution context remains active; share cancellation authority across lifecycle, diagnostics and turn settlement.
+- Preserve typed timeout details, frozen retries, original context and continuation across failed compaction and restart; keep explicit Stop and atomic installation authoritative.
+
 ## v7.73.0 - 2026-10-20
 
 - Add optional typed provider transport observations with Engine-issued attempt identity and memory-only ThreadRunProgress snapshots, preserving semantic timeouts and canonical history.
