@@ -971,20 +971,42 @@ func turnCancellationRequested(entries []Entry, turnID string) bool {
 	return false
 }
 
-// ReadyToolInputResultIDs exposes host input requests only once their entire
-// tool batch has settled at its canonical waiting boundary. This prevents an
-// early answer from racing a later sibling result into another provider run.
-func ReadyToolInputResultIDs(entries []Entry) map[string]bool {
-	waiting := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
-			waiting[entry.TurnID+"\x00"+entry.RunID] = true
-		}
+// ToolInputProjection exposes requests only after their entire tool batch has
+// settled at the canonical waiting boundary. It retains pending source IDs, not
+// historical result bodies, and is shared by full and incremental projections.
+type ToolInputProjection struct {
+	waiting map[string]bool
+	pending map[string][]string
+}
+
+func (projection *ToolInputProjection) Observe(entry Entry) []string {
+	if projection.waiting == nil {
+		projection.waiting = map[string]bool{}
+		projection.pending = map[string][]string{}
 	}
+	key := entry.TurnID + "\x00" + entry.RunID
+	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
+		projection.waiting[key] = true
+		ready := projection.pending[key]
+		delete(projection.pending, key)
+		return ready
+	}
+	if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+		if projection.waiting[key] {
+			return []string{entry.ID}
+		}
+		projection.pending[key] = append(projection.pending[key], entry.ID)
+	}
+	return nil
+}
+
+// ReadyToolInputResultIDs is the explicit full-path adapter.
+func ReadyToolInputResultIDs(entries []Entry) map[string]bool {
+	projection := ToolInputProjection{}
 	ready := make(map[string]bool)
 	for _, entry := range entries {
-		if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil && waiting[entry.TurnID+"\x00"+entry.RunID] {
-			ready[entry.ID] = true
+		for _, id := range projection.Observe(entry) {
+			ready[id] = true
 		}
 	}
 	return ready

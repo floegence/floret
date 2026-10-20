@@ -75,6 +75,26 @@ func (r *MemoryRepo) ensurePathIndexLocked(threadID string) {
 }
 
 func (r *MemoryRepo) pathPageLocked(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
+	entries := []Entry{}
+	page, err := r.visitPathPageLocked(ctx, threadID, leafID, beforeEntryID, limit, func(source Entry) error {
+		entry, err := r.completeEntryLocked(source)
+		if err != nil {
+			return err
+		}
+		if err := ValidateEntryIntegrity(entry); err != nil {
+			return err
+		}
+		entries = append(entries, cloneEntry(entry))
+		return nil
+	})
+	if err != nil {
+		return PathPage{}, err
+	}
+	page.Entries = entries
+	return page, nil
+}
+
+func (r *MemoryRepo) visitPathPageLocked(ctx context.Context, threadID, leafID, beforeEntryID string, limit int, visit func(Entry) error) (PathPage, error) {
 	if err := ctx.Err(); err != nil {
 		return PathPage{}, err
 	}
@@ -121,32 +141,27 @@ func (r *MemoryRepo) pathPageLocked(ctx context.Context, threadID, leafID, befor
 		return page, nil
 	}
 	page.NewestOrdinal = index[ordinal].depth
-	capacity := limit
-	if int64(capacity) > page.NewestOrdinal {
-		capacity = int(page.NewestOrdinal)
-	}
-	page.Entries = make([]Entry, 0, capacity)
-	for ordinal >= 0 && len(page.Entries) < limit {
+	count := 0
+	lastID := ""
+	for ordinal >= 0 && count < limit {
 		if err := ctx.Err(); err != nil {
 			return PathPage{}, err
 		}
 		node := index[ordinal]
-		entry, err := r.completeEntryLocked(r.entries[threadID][ordinal])
-		if err != nil {
-			return PathPage{}, err
-		}
+		entry := r.entries[threadID][ordinal]
 		if entry.ID != node.id || entry.ThreadID != threadID || entry.PathDepth != node.depth || (node.parent < 0 && entry.ParentID != "") || (node.parent >= 0 && entry.ParentID != index[node.parent].id) {
 			return PathPage{}, ErrAuthorityCorrupt
 		}
-		if err := ValidateEntryIntegrity(entry); err != nil {
+		if err := visit(entry); err != nil {
 			return PathPage{}, err
 		}
-		page.Entries = append(page.Entries, cloneEntry(entry))
+		count++
+		lastID = entry.ID
 		ordinal = node.parent
 	}
 	page.HasMore = ordinal >= 0
 	if page.HasMore {
-		page.NextEntryID = page.Entries[len(page.Entries)-1].ID
+		page.NextEntryID = lastID
 	}
 	return page, nil
 }

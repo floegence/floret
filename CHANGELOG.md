@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Advance canonical item presentation through shared chronological reducers for Goal, controls, steering, tool inputs, approvals and hosted activity; preserve original output and arbitrary chunk boundaries.
+- Add internal body-free canonical metadata paging through the existing ancestry/cursor kernel without hydrating historical source fields.
+
 - Add optional scoped ThreadBodySearcher with bounded exact UTF-8 matching, cross-page overlap, source-pinned continuation and cancellation.
 
 - Add optional freshly scoped ThreadBodyReader for exact current-path canonical fields with 16 KiB source chunks, encoded response budgets, complete-field hashes and restart-stable identity; no full-entry materialization.

@@ -78,3 +78,22 @@ func TestBatchedReviewsMatchExactConfirmedEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectorKeepsFirstConfirmedInvocationSpan(t *testing.T) {
+	review, _ := json.Marshal(sessiontree.GoalReview{Version: 1, Outcome: "completed", Evidence: "later invocation"})
+	projector := Projector{}
+	for _, entry := range []sessiontree.Entry{
+		{Type: sessiontree.EntryToolCall, Message: session.Message{ToolName: "goal", ToolCallID: "same"}},
+		{Type: sessiontree.EntryToolResult, Message: session.Message{ToolCallID: "same"}},
+		{Type: sessiontree.EntryToolCall, Message: session.Message{ToolName: "goal", ToolCallID: "same"}},
+		{Type: sessiontree.EntryGoalReview, Payload: review},
+	} {
+		entry.TurnID, entry.RunID = "turn", "run"
+		projector.Observe(entry)
+	}
+	args := json.RawMessage("{\"operation\":\"review\",\"expected_version\":1,\"outcome\":\"completed\",\"evidence\":\"later invocation\"}")
+	goal := projector.Presentation("turn", "run", "same", string(args), "success", "").Payload.(tools.StructuredActivityPayload).Goal
+	if goal.Outcome != "" || goal.Evidence != "" {
+		t.Fatal("reused key borrowed a later invocation")
+	}
+}

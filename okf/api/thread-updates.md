@@ -107,3 +107,21 @@ Cancelling a read never cancels Agent execution. No display preview is used as
 provider context. See [reader](../../runtime/thread_body.go),
 [search](../../runtime/thread_body_search.go) and
 [differential tests](../../runtime/thread_body_search_test.go).
+
+# Chronological presentation reducer
+
+Full item reads now advance one chronological reducer for control ownership,
+Goal state and confirmed review evidence, steering settlement, whole-batch tool
+input readiness, approval attachment and hosted-tool completion. Appending a
+canonical batch visits that batch and its affected identities; it does not
+rescan prior items to attach approvals or finish hosted tools. Pending tool
+inputs reserve their source position privately until the waiting boundary and
+never escape as actionable controls early. Full reads materialize an explicit
+snapshot. This reducer still retains its complete projection and is not yet the
+bounded actor/window implementation.
+
+The fixed mixed-history fixture records the original implementation's SHA256
+and checks every prefix and chunk size. It covers delayed input visibility,
+resolution before a tool appears, shared Unicode source segments, exact Goal
+review evidence, steering cancellation and interrupted hosted activity. See
+[tests](../../runtime/thread_item_projection_test.go).

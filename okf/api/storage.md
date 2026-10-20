@@ -373,3 +373,15 @@ verify streaming copy or export after restart. No complete entry or source-cache
 population is needed for a chunk. Hosts must separately authorize private tool
 arguments and reasoning, as for ThreadQueryReader. This capability is one part
 of long-history delivery; it does not qualify bounded presentation or product UI.
+
+# Body-free canonical metadata pages
+
+The internal PathMetadataReader shares PathPage's validated ancestry/cursor
+kernel and returns source field hashes and lengths without reading body blocks.
+Its Entry is deliberately incomplete: extracted fields and Raw are absent and
+must never be used as provider context. The capability is internal substrate,
+not a public display window or a 512 KiB presentation guarantee. Metadata may
+still contain large structured Activity fields. Tests use a backend that rejects
+body reads and verify detached ownership, active-path cursor rejection,
+cancellation and restart. See [implementation](../../internal/sessiontree/path_metadata.go)
+and [tests](../../internal/sessiontree/path_metadata_test.go).

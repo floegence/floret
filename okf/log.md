@@ -1641,3 +1641,11 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document optional authorized canonical body reads, bounded wire chunks, immutable hashes and restart-stable source identity.
 
 - 2026-10-20: Document bounded canonical body search, exact UTF-8 continuation and per-page authorization.
+
+## 2026-10-20 — Incremental presentation substrate
+
+- Share chronological item reducers, preserve an original mixed-history digest,
+  and qualify every chunk boundary. Document retained-projection limitations in
+  [thread updates](api/thread-updates.md#chronological-presentation-reducer).
+- Add [body-free metadata pages](api/storage.md#body-free-canonical-metadata-pages)
+  on the canonical ancestry kernel; no second transcript or public window claim.
