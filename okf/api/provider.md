@@ -352,7 +352,7 @@ frozen bytes; output-budget refits retain tool declarations.
 The internal tool-schema rendering revision advances render lineage through the
 existing provider-surface boundary. It stops old exact-envelope continuation reuse
 without changing provider identity, canonical history, valid native history, cache
-namespaces or domain schema 28. Historical rendered facts remain immutable.
+namespaces or domain schema 29. Historical rendered facts remain immutable.
 
 ### Native measured prefixes
 

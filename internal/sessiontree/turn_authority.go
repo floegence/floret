@@ -18,6 +18,8 @@ var ErrProviderStateNotFound = errors.New("provider state not found")
 const (
 	TurnKindMetadataKey           = "turn_kind"
 	TurnKindContextCompaction     = "context_compaction"
+	TurnKindGoalContinuation      = "goal_continuation"
+	ContinueGoalMetadataKey       = "continue_goal"
 	LogicalRequestIDMetadataKey   = "logical_request_id"
 	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
 	RetrySourceEntryIDMetadataKey = "retry_source_entry_id"
@@ -48,6 +50,7 @@ type ProviderStateStore interface {
 }
 
 type AcceptTurnRequest struct {
+	ContinueGoal                bool
 	TurnKind                    string
 	ThreadID                    string
 	TurnID                      string
@@ -172,12 +175,18 @@ func validateAcceptTurnRequest(req AcceptTurnRequest, validateAttachments func([
 	if err := ValidateAcceptTurnRequestEnvelope(req); err != nil {
 		return err
 	}
-	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction {
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation {
 		return errors.New("unknown turn kind")
 	}
-	if req.TurnKind == TurnKindContextCompaction {
-		if req.RetrySourceTurnID != "" || req.RetrySourceEntryID != "" || req.PromotedQueueID != "" || req.Input.Role != "" || req.Input.Content != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 || len(req.Input.Context) != 0 {
-			return errors.New("context compaction cannot contain user input or a retry source")
+	if req.ContinueGoal && req.TurnKind != TurnKindGoalContinuation {
+		return ErrAuthorityCorrupt
+	}
+	if req.TurnKind != "" {
+		if req.RetrySourceTurnID == req.TurnID || req.TurnKind == TurnKindGoalContinuation && !req.ContinueGoal && req.RetrySourceTurnID == "" {
+			return ErrAuthorityCorrupt
+		}
+		if (req.TurnKind == TurnKindContextCompaction && (req.RetrySourceTurnID != "" || req.RetrySourceEntryID != "")) || (req.RetrySourceTurnID == "") != (req.RetrySourceEntryID == "") || req.PromotedQueueID != "" || req.Input.Role != "" || req.Input.Content != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 || len(req.Input.Context) != 0 {
+			return errors.New("typed turn has invalid user input, queue promotion, or retry source")
 		}
 		return nil
 	}
@@ -226,6 +235,7 @@ func ValidateAcceptTurnRequestEnvelope(req AcceptTurnRequest) error {
 func TurnAcceptanceRequestFingerprint(req AcceptTurnRequest) (string, error) {
 	payload, err := json.Marshal(struct {
 		TurnKind                    string          `json:"turn_kind,omitempty"`
+		ContinueGoal                bool            `json:"continue_goal,omitempty"`
 		ThreadID                    string          `json:"thread_id"`
 		TurnID                      string          `json:"turn_id"`
 		RunID                       string          `json:"run_id"`
@@ -238,7 +248,7 @@ func TurnAcceptanceRequestFingerprint(req AcceptTurnRequest) (string, error) {
 		PromotionRequestFingerprint string          `json:"promotion_request_fingerprint,omitempty"`
 		InputRequestFingerprint     string          `json:"input_request_fingerprint,omitempty"`
 	}{
-		TurnKind: req.TurnKind, ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
+		TurnKind: req.TurnKind, ContinueGoal: req.ContinueGoal, ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
 		LogicalRequestID: strings.TrimSpace(req.LogicalRequestID), Input: session.CloneMessage(req.Input),
 		RetrySourceTurnID: strings.TrimSpace(req.RetrySourceTurnID), RetrySourceEntryID: strings.TrimSpace(req.RetrySourceEntryID),
 		PromotedQueueID: strings.TrimSpace(req.PromotedQueueID), PromotionRequestKey: strings.TrimSpace(req.PromotionRequestKey),
@@ -283,6 +293,9 @@ func RetrySourceHasRetryEligibleDurableInput(path []Entry, sourceTurnID, sourceE
 func RetryPathHasRetryEligibleDurableInput(path []Entry) (bool, error) {
 	for index := len(path) - 1; index >= 0; index-- {
 		entry := path[index]
+		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+			return true, nil
+		}
 		if !isCanonicalUserEntry(entry) {
 			continue
 		}
@@ -299,7 +312,7 @@ func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceE
 	if entry.ID != sourceEntryID || strings.TrimSpace(entry.TurnID) != sourceTurnID {
 		return ErrInvalidThreadAuthority
 	}
-	if isCanonicalUserEntry(entry) {
+	if isCanonicalUserEntry(entry) || entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
 		return nil
 	}
 	if uncertainResultTerminalBoundary(path, index) {

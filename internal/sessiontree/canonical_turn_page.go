@@ -196,7 +196,7 @@ func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID str
 			if err != nil {
 				return CanonicalTurnsPage{}, err
 			}
-			if _, visible := userTurns[turnID]; visible || retrySource != nil {
+			if _, visible := userTurns[turnID]; visible || retrySource != nil || entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
 				candidatesNewestFirst = append(candidatesNewestFirst, canonicalTurnCandidate{
 					turnID: turnID, runID: runID, startedEntryID: entry.ID, ordinal: depth, retrySource: retrySource,
 				})
@@ -488,6 +488,10 @@ func (r *MemoryRepo) withCanonicalPageRetryEligibilityLocked(threadID string, pa
 	if latest.TurnID != page.LatestTurnID {
 		return CanonicalTurnsPage{}, ErrAuthorityCorrupt
 	}
+	if latest.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+		page.HasRetryTarget = true
+		return page, nil
+	}
 	if latest.RetrySource == nil {
 		for index := len(latest.Entries) - 1; index >= 0; index-- {
 			entry := latest.Entries[index].Entry
@@ -651,6 +655,9 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 		return false, nil, "", "", ErrAuthorityCorrupt
 	}
 	sourceEntry := entries[sourceIndex]
+	if sourceEntry.ID == started.ID && started.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+		return true, nil, started.ID, runID, nil
+	}
 	if isCanonicalUserEntry(sourceEntry) {
 		if userIndex != sourceIndex || retrySource != nil {
 			return false, nil, "", "", ErrAuthorityCorrupt
@@ -671,6 +678,9 @@ func ValidateCanonicalRetrySourceTurn(entries []Entry, threadID string, source C
 			return false, nil, "", "", ErrAuthorityCorrupt
 		}
 		return session.HasRetryEligibleDurableInput(entries[userIndex].Message), nil, started.ID, runID, nil
+	}
+	if started.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+		return true, nil, started.ID, runID, nil
 	}
 	if retrySource == nil {
 		return false, nil, "", "", ErrAuthorityCorrupt

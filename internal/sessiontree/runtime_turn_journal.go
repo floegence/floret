@@ -84,7 +84,22 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 		started.Metadata[RetrySourceEntryIDMetadataKey] = req.RetrySourceEntryID
 	}
 	if req.TurnKind != "" {
-		started.Metadata[TurnKindMetadataKey] = req.TurnKind
+		kind := req.TurnKind
+		if req.ContinueGoal {
+			path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
+			if err != nil {
+				return AcceptTurnResult{}, err
+			}
+			goal, err := GoalFromPath(path)
+			if err != nil {
+				return AcceptTurnResult{}, err
+			}
+			if goal.Status != "active" {
+				kind = TurnKindContextCompaction
+			}
+			started.Metadata[ContinueGoalMetadataKey] = "1"
+		}
+		started.Metadata[TurnKindMetadataKey] = kind
 	}
 	started.Raw = rawForEntry(started)
 	started.RawHash = stableHash(started.Raw)
@@ -123,7 +138,7 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 		started.RequestKey != req.LogicalRequestID || started.RequestFingerprint != req.RequestFingerprint {
 		return AcceptTurnResult{}, ErrRequestConflict
 	}
-	if started.Metadata[RetrySourceEntryIDMetadataKey] != req.RetrySourceEntryID || started.Metadata[RetrySourceTurnIDMetadataKey] != req.RetrySourceTurnID || started.Metadata[TurnKindMetadataKey] != req.TurnKind {
+	if started.Metadata[RetrySourceEntryIDMetadataKey] != req.RetrySourceEntryID || started.Metadata[RetrySourceTurnIDMetadataKey] != req.RetrySourceTurnID || (started.Metadata[TurnKindMetadataKey] != req.TurnKind && !(req.ContinueGoal && started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction)) || (started.Metadata[ContinueGoalMetadataKey] == "1") != req.ContinueGoal {
 		return AcceptTurnResult{}, ErrRequestConflict
 	}
 	base, err := r.runtimeAdmissionBaseLeafLocked(started, nil)
@@ -240,7 +255,7 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		return "", ErrAuthorityCorrupt
 	}
 	if retryID != "" {
-		if started.Metadata[TurnKindMetadataKey] != "" || base == "" {
+		if started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction || base == "" {
 			return "", ErrAuthorityCorrupt
 		}
 		path, err := pathLocked(r.threads, r.entries, started.ThreadID, base)
@@ -252,7 +267,7 @@ func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entr
 		}
 		return retryID, nil
 	}
-	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction {
+	if kind := started.Metadata[TurnKindMetadataKey]; kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation {
 		return "", ErrAuthorityCorrupt
 	}
 	return base, nil

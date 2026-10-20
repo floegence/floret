@@ -164,10 +164,11 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 	}
 	userCount := canonicalTurnUserEntryCount(pathEntries)
 	contextOnly := started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction
-	if retrySource == nil && userCount == 0 && !contextOnly {
+	typed := started.Metadata[TurnKindMetadataKey] != ""
+	if retrySource == nil && userCount == 0 && !typed {
 		return CanonicalTurn{}, ErrCanonicalTurnNotFound
 	}
-	if !contextOnly && retrySource == nil && userCount != 1 || retrySource != nil && userCount != 0 || contextOnly && (retrySource != nil || userCount != 0) {
+	if !typed && retrySource == nil && userCount != 1 || retrySource != nil && userCount != 0 || contextOnly && (retrySource != nil || userCount != 0) {
 		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	turn := CanonicalTurn{
@@ -234,7 +235,7 @@ func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (strin
 			if err != nil {
 				return "", err
 			}
-			if _, admitted := userTurns[turnID]; admitted || retrySource != nil {
+			if _, admitted := userTurns[turnID]; admitted || retrySource != nil || entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
 				return turnID, nil
 			}
 		}
@@ -244,6 +245,9 @@ func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (strin
 }
 
 func (r *MemoryRepo) canonicalTurnRetryEligibilityLocked(threadID string, turn CanonicalTurn) (bool, error) {
+	if turn.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
+		return true, nil
+	}
 	if turn.RetrySource != nil {
 		return r.retrySourceHasRetryEligibleDurableInputLocked(
 			threadID, turn.TurnID, turn.RunID, turn.StartedEntryID, *turn.RetrySource,

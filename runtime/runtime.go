@@ -1571,6 +1571,7 @@ func (h *providerHost) ResumeInput(ctx context.Context, threadID identity.Thread
 }
 
 type acceptedTurn struct {
+	TurnKind    TurnKind
 	ThreadID    identity.ThreadID
 	TurnID      identity.TurnID
 	RunID       identity.RunID
@@ -1651,11 +1652,11 @@ func validateRunTurnRequest(req runTurnRequest) (validatedRunTurnRequest, error)
 		return validatedRunTurnRequest{}, errors.New("turn id is required")
 	}
 	input := req.Input
-	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction {
+	if req.TurnKind != "" && req.TurnKind != TurnKindContextCompaction && req.TurnKind != TurnKindGoalContinuation {
 		return validatedRunTurnRequest{}, errors.New("unknown turn kind")
 	}
 	var err error
-	if req.TurnKind == TurnKindContextCompaction {
+	if req.TurnKind != "" {
 		if input.Text != "" || len(input.Attachments) != 0 || len(input.References) != 0 || len(input.Context) != 0 || len(req.SupplementalContext) != 0 {
 			return validatedRunTurnRequest{}, errors.New("context compaction cannot contain user input")
 		}

@@ -90,6 +90,30 @@ Product authorization persists under the public GoalSubmissionRequestKey before
 SubmitGoal. The factory receives that same ordinary execution identity; products
 must not derive private hashes or duplicate admission decisions.
 
+# Explicit compaction continuation
+
+ContinueGoal on CompactContextInput is an additive public API decision. Omission
+or false preserves the published pure-compaction contract. True authorizes one
+idle-only admission that selects goal_continuation from an active canonical Goal,
+otherwise context_compaction. The journal stores requested intent, effective kind
+and fingerprint atomically; exact replay cannot reevaluate Goal or wake work.
+
+One execution first performs required compaction or explicit noop, then enters the
+existing Engine loop. Installation does not commit its terminal. Preparation
+errors, bounded reflection exhaustion and provider errors settle recoverably with
+the Goal retained. Questions, approvals, Stop, Retry and restart use existing
+owners. Canonical preparation facts and confirmed tools prevent repeated work;
+unknown effects retain inspection-and-continue recovery without automatic replay.
+Goal context admission is the first business-request boundary. A deletion before
+it prevents work; later deletion keeps the established review-only cancellation
+semantics. Edits and stale-review protection retain the existing journal owner.
+
+Schema 28 -> 29 preserves historical pure compaction and every migration edge.
+Hosts authorize, pass intent and display canonical state. They never send a second
+message after completion, reconnect or initialization. See
+[behavioral coverage](../../runtime/thread_goal_compaction_test.go) and
+[migration coverage](../../internal/sessiontree/backend_domain_v29_migration_test.go).
+
 # Goal activity presentation
 
 Structured activity optionally carries a detached GoalActivity: operation, version,

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.74.0 - 2026-10-20
+
+- Add optional CompactContextInput.ContinueGoal and TurnKindGoalContinuation: atomically admit explicit intent, prepare compaction, and continue the canonical Goal through the existing Engine and review loop without fabricated user input.
+- Retain pure-compaction defaults and exact replay; preserve Stop, ordinary Retry, questions, approvals, canonical preparation and confirmed tools across restart. Settle recovery preparation failures instead of leaving active executions stranded.
+- Append transactional domain schema 28 -> 29 without rewriting historical facts; share current validation while retaining every released migration and old-schema constraints.
+
 ## v7.73.1 - 2026-10-20
 
 - Classify compaction request timeouts and recovery exhaustion as Provider failures while the execution context remains active; share cancellation authority across lifecycle, diagnostics and turn settlement.

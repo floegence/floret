@@ -312,3 +312,13 @@ authority and changes the writer envelope without rewriting canonical messages,
 compactions, native usage or absent evidence. Existing input anchors are
 revalidated; response-end calibration requires new attempt-bound protocol proof.
 Current-schema restart is byte-stable, and old writers reject the new envelope.
+
+### Explicit Goal continuation migration
+
+Domain schema 29 appends the atomic 28 -> 29 edge. Shared current validation
+admits a typed Goal continuation with durable requested intent and no user entry;
+historical validators retain their released pure-compaction constraints. Migration
+preserves every canonical fact and earlier edge, changes the writer envelope in
+the existing namespace, and rejects older writers. Invalid source, future schema,
+write failure, cancellation and panic roll back the entire startup transaction.
+Current restart is byte-stable. See [Goal execution](../decisions/thread-goals.md).

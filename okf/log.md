@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-20 — Explicit Goal continuation after compaction
+
+- Define optional compaction intent, one canonical admission and the existing execution/review/recovery owner. Append schema 28 -> 29 while retaining historical pure compaction. See [Goals](decisions/thread-goals.md), [runtime](api/runtime.md) and [storage](api/storage.md).
+
 - 2026-10-20: Clarify compaction timeout cancellation authority, Provider failure diagnostics and restart-safe explicit recovery.
 
 ## 2026-10-20 — Tool argument correction episodes

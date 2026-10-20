@@ -442,6 +442,7 @@ func (host *Host) applyThreadMutation(ctx context.Context, threadID identity.Thr
 // turnExecutionRequest describes one provider execution after ThreadID is bound by a
 // turnRunnerHandle.
 type turnExecutionRequest struct {
+	ContinueGoal                bool
 	TurnKind                    TurnKind
 	LogicalRequestID            identity.LogicalRequestID
 	RunID                       identity.RunID
