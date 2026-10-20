@@ -1639,3 +1639,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document canonical journal body eviction, bounded verified source caching and detached hydration; preserve canonical terminal replay across early cancellation and concurrent tool settlement.
 
 - 2026-10-20: Document optional authorized canonical body reads, bounded wire chunks, immutable hashes and restart-stable source identity.
+
+- 2026-10-20: Document bounded canonical body search, exact UTF-8 continuation and per-page authorization.

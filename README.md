@@ -977,6 +977,13 @@ entries and revoked scopes are unavailable. Tool arguments and reasoning are
 private facts and require the same host policy as ThreadQueryReader. Display
 previews must never become provider context or silently replace full content.
 
+The optional runtime.ThreadBodySearcher searches exact case-sensitive UTF-8
+source without loading the full field. Each call scans at most 64 KiB and returns
+at most 100 overlapping match offsets. Queries are limited to 4 KiB. Resume with
+NextOffsetBytes and SHA256 while HasMore is true, including pages with no matches.
+Every page requires fresh scope and private-fact authorization. Cancellation
+abandons only the read, never the Agent run; source hashes prevent mixed results.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the
