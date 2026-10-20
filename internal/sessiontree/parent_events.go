@@ -257,9 +257,9 @@ func (r *MemoryRepo) ReportToParent(ctx context.Context, req ParentReportRequest
 		}
 		return event, nil
 	}
-	turnID, active := runtimeActiveTurn(r.entries[child.ID])
-	runID, err := activeRunIdentity(r.entries[child.ID], inv.TurnID)
-	if !active || turnID != inv.TurnID || err != nil || runID != inv.RunID || turnCancellationRequested(r.entries[child.ID], inv.TurnID) {
+	turnID, active := r.runtimeActiveTurnLocked(child.ID)
+	runID, err := r.activeRunIdentityLocked(child.ID, inv.TurnID)
+	if !active || turnID != inv.TurnID || err != nil || runID != inv.RunID || r.turnCancellationRequestedLocked(child.ID, inv.TurnID) {
 		return ParentEvent{}, ErrStaleAuthority
 	}
 	if err := lifecycleRejectsWrite(child); err != nil {
@@ -489,9 +489,9 @@ func (r *MemoryRepo) AdmitParentEvents(ctx context.Context, threadID, turnID, ru
 	if !r.parentEvents {
 		return Entry{}, nil
 	}
-	activeTurn, active := runtimeActiveTurn(r.entries[threadID])
-	currentRun, err := activeRunIdentity(r.entries[threadID], turnID)
-	if !active || activeTurn != turnID || err != nil || currentRun != runID || turnCancellationRequested(r.entries[threadID], turnID) {
+	activeTurn, active := r.runtimeActiveTurnLocked(threadID)
+	currentRun, err := r.activeRunIdentityLocked(threadID, turnID)
+	if !active || activeTurn != turnID || err != nil || currentRun != runID || r.turnCancellationRequestedLocked(threadID, turnID) {
 		return Entry{}, ErrStaleAuthority
 	}
 	records, err := r.parentEventRecordsLocked(threadID)

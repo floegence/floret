@@ -178,6 +178,7 @@ func (repo *MemoryRepo) ensurePersistentMaps() {
 	emptyMap(&repo.turnEntryOrdinals)
 	emptyMap(&repo.turnEntryCounts)
 	emptyMap(&repo.turnMarkers)
+	emptyMap(&repo.activeTurns)
 	emptyMap(&repo.outputSources)
 	emptyMap(&repo.todos)
 	emptyMap(&repo.tombstones)

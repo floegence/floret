@@ -140,9 +140,9 @@ func (r *MemoryRepo) mutateGoalLocked(ctx context.Context, in GoalMutation) (Goa
 		return GoalMutationResult{State: state, Conflict: true}, nil
 	}
 	if in.Actor == "model" {
-		active, ok := runtimeActiveTurn(r.entries[in.ThreadID])
-		run, err := activeRunIdentity(r.entries[in.ThreadID], in.TurnID)
-		if !ok || active != in.TurnID || err != nil || run != in.RunID || turnCancellationRequested(r.entries[in.ThreadID], in.TurnID) {
+		active, ok := r.runtimeActiveTurnLocked(in.ThreadID)
+		run, err := r.activeRunIdentityLocked(in.ThreadID, in.TurnID)
+		if !ok || active != in.TurnID || err != nil || run != in.RunID || r.turnCancellationRequestedLocked(in.ThreadID, in.TurnID) {
 			return GoalMutationResult{}, ErrStaleAuthority
 		}
 		if in.Operation == "set" && state.SuppressedAtInput != "" && (!in.NewTask || latestGoalInput(path) == state.SuppressedAtInput) {
@@ -196,9 +196,9 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 	if err != nil {
 		return Entry{}, err
 	}
-	active, ok := runtimeActiveTurn(r.entries[threadID])
-	activeRun, identityErr := activeRunIdentity(r.entries[threadID], turnID)
-	if !ok || active != turnID || identityErr != nil || activeRun != runID || turnCancellationRequested(r.entries[threadID], turnID) {
+	active, ok := r.runtimeActiveTurnLocked(threadID)
+	activeRun, identityErr := r.activeRunIdentityLocked(threadID, turnID)
+	if !ok || active != turnID || identityErr != nil || activeRun != runID || r.turnCancellationRequestedLocked(threadID, turnID) {
 		return Entry{}, ErrStaleAuthority
 	}
 	if state.Version != version {

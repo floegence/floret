@@ -59,12 +59,12 @@ func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderCont
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return nil, err
 	}
-	active, running := runtimeActiveTurn(r.entries[req.ThreadID])
-	runID, identityErr := activeRunIdentity(r.entries[req.ThreadID], req.TurnID)
+	active, running := r.runtimeActiveTurnLocked(req.ThreadID)
+	runID, identityErr := r.activeRunIdentityLocked(req.ThreadID, req.TurnID)
 	if !running || active != req.TurnID || identityErr != nil || runID != req.RunID {
 		return nil, ErrStaleAuthority
 	}
-	if !req.Partial && turnCancellationRequested(r.entries[req.ThreadID], req.TurnID) {
+	if !req.Partial && r.turnCancellationRequestedLocked(req.ThreadID, req.TurnID) {
 		return nil, context.Canceled
 	}
 	if req.Clear {

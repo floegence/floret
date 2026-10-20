@@ -39,15 +39,15 @@ func (checkpoint journalAppendCheckpoint) restore(r *MemoryRepo) {
 			continue
 		}
 		marker := r.turnMarkers[id][entry.TurnID]
-		if marker.started > len(previous.entries) {
-			marker.started = 0
+		endPositions := len(marker.positions)
+		for endPositions > 0 && marker.positions[endPositions-1].through > len(previous.entries) {
+			endPositions--
 		}
-		if marker.terminal > len(previous.entries) {
-			marker.terminal = 0
-		}
-		if marker == (turnMarkerIndex{}) {
+		if endPositions == 0 {
 			delete(r.turnMarkers[id], entry.TurnID)
 		} else {
+			marker.positions = marker.positions[:endPositions]
+			marker.turnMarkerPosition = marker.positions[endPositions-1]
 			r.turnMarkers[id][entry.TurnID] = marker
 		}
 		ordinals := r.turnEntryOrdinals[id][entry.TurnID]

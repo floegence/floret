@@ -376,10 +376,10 @@ func (r *MemoryRepo) PrepareEffectAttempt(_ context.Context, req PrepareEffectAt
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return PrepareEffectAttemptResult{}, err
 	}
-	if turnCancellationRequested(r.entries[req.Invocation.ThreadID], req.Invocation.TurnID) {
+	if r.turnCancellationRequestedLocked(req.Invocation.ThreadID, req.Invocation.TurnID) {
 		return PrepareEffectAttemptResult{}, context.Canceled
 	}
-	if activeTurnID, active := runtimeActiveTurn(r.entries[meta.ID]); !active || activeTurnID != req.Invocation.TurnID {
+	if activeTurnID, active := r.runtimeActiveTurnLocked(meta.ID); !active || activeTurnID != req.Invocation.TurnID {
 		return PrepareEffectAttemptResult{}, ErrStaleAuthority
 	}
 	if existing, found, err := effectAttemptByInvocation(r.entries[meta.ID], req.Invocation); err != nil {
@@ -457,10 +457,10 @@ func (r *MemoryRepo) BeginEffectDispatch(_ context.Context, req BeginEffectDispa
 	if attempt.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 		return EffectAttempt{}, ErrRequestConflict
 	}
-	if turnCancellationRequested(r.entries[attempt.Invocation.ThreadID], attempt.Invocation.TurnID) {
+	if r.turnCancellationRequestedLocked(attempt.Invocation.ThreadID, attempt.Invocation.TurnID) {
 		return EffectAttempt{}, context.Canceled
 	}
-	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
+	if activeTurnID, active := r.runtimeActiveTurnLocked(attempt.Invocation.ThreadID); !active || activeTurnID != attempt.Invocation.TurnID {
 		return EffectAttempt{}, ErrStaleAuthority
 	}
 	if attempt.State != EffectAttemptPrepared {
@@ -510,7 +510,7 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		ref, err := r.validateEffectArtifactReplayLocked(attempt, entry, req)
 		return FinishEffectDispatchResult{Attempt: attempt, Result: cloneEntry(entry), Artifact: artifact.CloneRefPtr(ref), Replayed: true}, err
 	}
-	if activeTurnID, active := runtimeActiveTurn(r.entries[attempt.Invocation.ThreadID]); !active || activeTurnID != attempt.Invocation.TurnID {
+	if activeTurnID, active := r.runtimeActiveTurnLocked(attempt.Invocation.ThreadID); !active || activeTurnID != attempt.Invocation.TurnID {
 		return FinishEffectDispatchResult{}, ErrStaleAuthority
 	}
 	if attempt.State != EffectAttemptDispatching {

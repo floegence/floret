@@ -72,7 +72,7 @@ func (r *MemoryRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (GoalSub
 		committed = true
 		return result, nil
 	}
-	if _, active := runtimeActiveTurn(r.entries[m.ThreadID]); active {
+	if _, active := r.runtimeActiveTurnLocked(m.ThreadID); active {
 		committed = true
 		return result, nil
 	}
