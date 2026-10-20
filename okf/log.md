@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-10-20 — Tool argument correction episodes
+
+- Scope [argument correction](api/tools.md#argument-correction-episodes) to consecutive invalid batches, preserving committed siblings and existing effect boundaries.
+- Add the safe [canonical failure reason](api/runtime.md#bounded-thread-observation-and-failure-reasons) for live and exact released historical failures without schema changes.
+- Qualify immutable v7.69.1 failures through public Retry, Send, Fork and restart in ordinary tests and blank-module adoption gates.
+
 ## 2026-10-19 — Question interaction scope
 
 - Unify frozen-request pressure around qualified native prefixes and Floret-estimated suffixes; remove post-response triggering and append schema 27 -> 28 without rewriting historical facts.

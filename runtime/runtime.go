@@ -979,10 +979,11 @@ func (c ThreadTurnFailureCode) Valid() bool {
 type ThreadTurnFailureReason string
 
 const (
-	ThreadTurnFailureRepeatedToolCalls   ThreadTurnFailureReason = "repeated_tool_calls"
-	ThreadTurnFailureNoProgress          ThreadTurnFailureReason = "no_progress"
-	ThreadTurnFailureDuplicateToolCallID ThreadTurnFailureReason = "duplicate_tool_call_id"
-	ThreadTurnFailureStopHookLoop        ThreadTurnFailureReason = "stop_hook_loop"
+	ThreadTurnFailureRepeatedToolCalls               ThreadTurnFailureReason = "repeated_tool_calls"
+	ThreadTurnFailureNoProgress                      ThreadTurnFailureReason = "no_progress"
+	ThreadTurnFailureDuplicateToolCallID             ThreadTurnFailureReason = "duplicate_tool_call_id"
+	ThreadTurnFailureStopHookLoop                    ThreadTurnFailureReason = "stop_hook_loop"
+	ThreadTurnFailureToolArgumentCorrectionExhausted ThreadTurnFailureReason = "tool_argument_correction_exhausted"
 )
 
 type ThreadTurnFailure struct {

@@ -692,7 +692,12 @@ input requests and resume only after explicit user input.
 
 `ThreadTurnFailure.Reason` is derived from canonical code and exact Engine
 messages for both live and historical reads. It is not another persisted ledger
-or a migration. See [runtime source](../../runtime/thread_wait.go) and
+or a migration. ThreadTurnFailureToolArgumentCorrectionExhausted identifies
+both tool_dispatch and control_error correction exhaustion, including exact
+v7.69.1 historical Engine messages. Raw validation details are not safe UI copy.
+Explicit Retry starts a new Run and retains confirmed results; unknown effects
+keep their existing no-replay boundary. Domain schema remains 28.
+See [runtime source](../../runtime/thread_wait.go) and
 [failure classification](../../runtime/thread_failure_reason.go).
 
 ## Visual Compaction And Media Locators

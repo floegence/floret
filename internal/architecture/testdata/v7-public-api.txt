@@ -1478,6 +1478,7 @@ type ThreadTurnFailureReason string
 const ThreadTurnFailureRepeatedToolCalls github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "repeated_tool_calls"
 const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "stop_hook_loop"
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
+const ThreadTurnFailureToolArgumentCorrectionExhausted github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "tool_argument_correction_exhausted"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
 type ThreadUpdate struct
 field ThreadUpdate.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""

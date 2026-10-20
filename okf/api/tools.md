@@ -32,6 +32,18 @@ original validation error to the provider as an ordered tool result, but emits
 no public tool activity for the invalid call. Malformed JSON and callback
 failure or panic produce no presentation fallback.
 
+## Argument correction episodes
+
+One Engine-owned in-memory counter counts invalid batches, not individual calls
+or all errors in a Run. The initial invalid batch allows two regeneration
+opportunities. A validation-clean committed tool batch resets the counter; a
+valid sibling within an invalid batch does not. All sibling results settle before
+exhaustion is decided, so no rejected call executes or opens an interaction.
+Text, empty responses, transport retries, compaction, steering and Stop Hook
+continuation leave the episode unchanged. New Runs begin at zero. Ordinary
+business errors retain normal tool semantics. Existing no-progress, repeated-call,
+budget and cancellation controls retain their separate responsibilities.
+
 # Permission Model
 
 `ActivityTargetRef.ResourceRef` carries an opaque host-owned media identifier
