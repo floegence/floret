@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release deleted thread actors' presentation, draft buffers, indexes, request caches and execution references only after canonical deletion and execution/effect drains. Preserve permanent identity fences, exact deletion replay and failure rollback.
+
 ## v7.74.0 - 2026-10-20
 
 - Add optional CompactContextInput.ContinueGoal and TurnKindGoalContinuation: atomically admit explicit intent, prepare compaction, and continue the canonical Goal through the existing Engine and review loop without fabricated user input.

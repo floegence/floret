@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,6 +105,105 @@ func TestThreadServiceDeleteCancelsAndJoinsActiveSubtree(t *testing.T) {
 		if _, err := service.View(t.Context(), threadID); !errors.Is(err, ErrThreadDeleted) {
 			t.Fatalf("View(%s) error = %v, want ErrThreadDeleted", threadID, err)
 		}
+	}
+}
+
+func TestThreadServiceDeleteReleasesActorPresentation(t *testing.T) {
+	_, typed := testThreadService(t, newBlockingThreadGateway())
+	service := typed.(*threadRuntimeService)
+	root, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "release-root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := service.Create(t.Context(), CreateThreadInput{ParentThreadID: root.ThreadID, TaskName: "child", HostProfileRef: "test", RequestKey: "release-child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actors := []*threadRuntimeState{service.runtime(root.ThreadID), service.runtime(child.ThreadID)}
+	for _, actor := range actors {
+		actor.mu.Lock()
+		actor.state.view.Items = []ThreadItem{{ID: "large", Text: strings.Repeat("retained presentation", 4096)}}
+		actor.state.requestKeys = map[string]threadRuntimeRequest{"request": {fingerprint: "retained"}}
+		actor.itemIndex = map[string]int{"large": 0}
+		actor.indexedItems = 1
+		actor.textBuffer.WriteString(strings.Repeat("draft", 4096))
+		actor.textBufferID = "large"
+		actor.outputOrder = []string{"large"}
+		actor.mu.Unlock()
+	}
+	if err := service.Delete(t.Context(), DeleteThreadInput{ThreadID: root.ThreadID, RequestKey: "release-delete"}); err != nil {
+		t.Fatal(err)
+	}
+	service.runtimesMu.Lock()
+	remaining := len(service.runtimes)
+	service.runtimesMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("deleted subtree retains %d actors in the runtime registry", remaining)
+	}
+	for _, actor := range actors {
+		actor.mu.Lock()
+		released := reflect.DeepEqual(actor.state, threadRuntimeData{}) && actor.itemIndex == nil && actor.indexedItems == 0 && actor.textBuffer.Len() == 0 && actor.textBufferID == "" && actor.outputOrder == nil && actor.pendingUpdate == nil && actor.pendingText.Len() == 0 && actor.updateTimer == nil
+		fenced := actor.deleted && !actor.deleting
+		actor.mu.Unlock()
+		if !released {
+			t.Errorf("deleted actor %s retains execution or presentation state", actor.threadID)
+		}
+		if !fenced {
+			t.Errorf("deleted actor %s lost its permanent fence", actor.threadID)
+		}
+		if err := actor.apply(t.Context(), func() error { t.Error("late mutation ran"); return nil }); !errors.Is(err, ErrThreadDeleted) {
+			t.Errorf("late mutation error = %v", err)
+		}
+		if err := actor.claimEffectDispatch(); !errors.Is(err, ErrThreadDeleted) {
+			t.Errorf("late effect error = %v", err)
+		}
+		if err := service.runtime(identity.ThreadID(actor.threadID)).claimEffectDispatch(); !errors.Is(err, ErrThreadDeleted) {
+			t.Errorf("late lookup effect error = %v", err)
+		}
+		if _, err := service.View(t.Context(), identity.ThreadID(actor.threadID)); !errors.Is(err, ErrThreadDeleted) {
+			t.Errorf("deleted view error = %v", err)
+		}
+	}
+	if err := service.Delete(t.Context(), DeleteThreadInput{ThreadID: root.ThreadID, RequestKey: "release-delete"}); err != nil {
+		t.Fatalf("delete replay: %v", err)
+	}
+}
+
+type failingThreadDeleteRepo struct {
+	sessiontree.Repo
+	sessiontree.ThreadListRepo
+	err error
+}
+
+func (repo failingThreadDeleteRepo) DeleteRootTreeWithRequest(context.Context, string, string, string) (sessiontree.DeleteRootTreeResult, error) {
+	return sessiontree.DeleteRootTreeResult{}, repo.err
+}
+
+func TestThreadServiceFailedDeleteRetainsActorPresentation(t *testing.T) {
+	_, typed := testThreadService(t, newBlockingThreadGateway())
+	service := typed.(*threadRuntimeService)
+	created, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "failed-release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := service.runtime(created.ThreadID)
+	actor.mu.Lock()
+	actor.state.view.Items = []ThreadItem{{ID: "retained", Text: "keep on rollback"}}
+	actor.itemIndex = map[string]int{"retained": 0}
+	before := actor.state.view
+	actor.mu.Unlock()
+	original := service.host.store.repo
+	failure := errors.New("delete transaction failed")
+	service.host.store.repo = failingThreadDeleteRepo{Repo: original, ThreadListRepo: original.(sessiontree.ThreadListRepo), err: failure}
+	err = service.Delete(t.Context(), DeleteThreadInput{ThreadID: created.ThreadID, RequestKey: "failed-release-delete"})
+	service.host.store.repo = original
+	if !errors.Is(err, failure) {
+		t.Fatalf("delete error = %v", err)
+	}
+	actor.mu.Lock()
+	defer actor.mu.Unlock()
+	if actor.deleted || actor.deleting || !reflect.DeepEqual(actor.state.view, before) || actor.itemIndex["retained"] != 0 || len(actor.itemIndex) != 1 {
+		t.Fatal("failed deletion discarded presentation or retained a delete fence")
 	}
 }
 

@@ -927,13 +927,23 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 		drain.actor.mu.Lock()
 		_, committed := deleted[drain.actor.threadID]
 		if committed {
-			drain.actor.stopUpdateTimer()
+			drain.actor.releaseDeletedState()
 		}
 		drain.actor.deleted = committed
 		drain.actor.deleting = false
 		drain.actor.mu.Unlock()
 	}
+	service.runtimesMu.Lock()
+	for _, drain := range drains {
+		if _, committed := deleted[drain.actor.threadID]; committed && service.runtimes[drain.actor.threadID] == drain.actor {
+			delete(service.runtimes, drain.actor.threadID)
+		}
+	}
+	service.runtimesMu.Unlock()
 	service.mu.Lock()
+	for threadID := range deleted {
+		delete(service.published, threadID)
+	}
 	for subscription := range service.subscribers {
 		select {
 		case subscription.changed <- struct{}{}:
@@ -1785,6 +1795,14 @@ func (service *threadRuntimeService) runtime(threadID identity.ThreadID) *thread
 	if service.closed {
 		runtime.closed = true
 		return runtime
+	}
+	// Deleted identities live in canonical tombstones, not an unbounded actor
+	// cache. Check cold lookups before installing a new lifecycle owner.
+	if service.host != nil {
+		if _, err := service.ensureThread(context.Background(), threadID); err != nil {
+			runtime.lookupErr = err
+			return runtime
+		}
 	}
 	service.runtimes[threadID.String()] = runtime
 	return runtime
