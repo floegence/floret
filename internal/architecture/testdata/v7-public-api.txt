@@ -376,6 +376,7 @@ field OpenAICompatibleOptions.APIKey string
 field OpenAICompatibleOptions.StateCompatibilityKey string
 field OpenAICompatibleOptions.HTTPClient *net/http.Client
 field OpenAICompatibleOptions.Capabilities github.com/floegence/floret/v7/provider.Capabilities
+func OrderToolSchemas func(format github.com/floegence/floret/v7/provider.RequestFormat, payload []byte) ([]byte, error)
 type OutputControl string
 const OutputControlClient github.com/floegence/floret/v7/provider.OutputControl = "client"
 const OutputControlServer github.com/floegence/floret/v7/provider.OutputControl = "server"
@@ -1968,6 +1969,7 @@ field GoalActivity.Version int64 tag="json:\"version\""
 field GoalActivity.Text string tag="json:\"text,omitempty\""
 field GoalActivity.Outcome string tag="json:\"outcome,omitempty\""
 field GoalActivity.Evidence string tag="json:\"evidence,omitempty\""
+func InputPropertyOrder func(schema map[string]any) ([]string, error)
 type InputQuestion struct
 field InputQuestion.ID string tag="json:\"id\""
 field InputQuestion.Prompt string tag="json:\"prompt\""

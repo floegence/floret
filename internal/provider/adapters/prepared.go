@@ -21,11 +21,7 @@ type preparedWire struct {
 }
 
 func freezeWire(req provider.Request, format string, body []byte, stream func(context.Context, []byte) (<-chan provider.StreamEvent, error)) (provider.PreparedRequest, error) {
-	var decoded any
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, err
-	}
-	estimate, err := estimateRenderedRequest(req, format, decoded)
+	estimate, err := estimateRenderedRequest(req, format, body)
 	if err != nil {
 		return nil, err
 	}

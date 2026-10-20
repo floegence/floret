@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.69.0 - 2026-10-19
+
+- Add tools.InputPropertyOrder and provider.OrderToolSchemas for deterministic required-first root property rendering without changing validation semantics.
+- Share final request and raw tool segment rendering across official adapters; estimate and retry frozen bytes, preserving nested schemas and hosted tools.
+- Advance tool-schema render lineage once at the existing provider-surface boundary, retaining canonical history, native history and domain schema 27.
+
 ## v7.68.4 - 2026-10-19
 
 - Clarify compact Goal guidance, preserve existing unfinished objectives, and distinguish new logical requests from frozen transport retries.

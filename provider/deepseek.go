@@ -367,6 +367,10 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 		body["tool_choice"] = "auto"
 	}
 	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, history, err
+	}
+	raw, err = OrderToolSchemas(RequestFormatOpenAIResponses, raw)
 	return raw, history, err
 }
 
