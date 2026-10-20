@@ -2448,9 +2448,7 @@ func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Cont
 			actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: "user:" + requestKey, TurnID: turnID, RunID: runID, Kind: ThreadItemUser, Text: input.Text, CreatedAt: time.Now().UTC(), Attachments: cloneMessageAttachments(input.Attachments), References: append([]MessageReference(nil), input.References...), Context: append([]MessageContextItem(nil), input.Context...)})
 			actor.markItem("user:"+requestKey, ThreadItemAdded)
 		}
-		if canonical, err := service.loadCanonicalThreadView(context.Background(), threadID); err != nil {
-			actor.state.contextErr = err
-		} else if err := actor.installCanonicalView(canonical); err != nil {
+		if err := service.advanceCanonical(context.Background(), actor); err != nil {
 			actor.state.contextErr = err
 		}
 		result = threadResult(actor.state.view, mode)
@@ -4275,9 +4273,7 @@ func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, ac
 		if promotionRequestKey != "" {
 			actor.state.requestKeys[promotionRequestKey] = threadRuntimeRequest{fingerprint: promotionFingerprint}
 		}
-		if canonical, err := service.loadCanonicalThreadView(context.Background(), threadID); err != nil {
-			actor.state.contextErr = err
-		} else if err := actor.installCanonicalView(canonical); err != nil {
+		if err := service.advanceCanonical(context.Background(), actor); err != nil {
 			actor.state.contextErr = err
 		}
 		result = threadResult(actor.state.view, mode)
