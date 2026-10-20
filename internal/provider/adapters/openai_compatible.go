@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/toolrender"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -331,11 +332,11 @@ func (p OpenAICompatibleProvider) EstimateTokens(_ context.Context, req provider
 	if err := validateOpenAICompatibleHostedTools(req.HostedTools); err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	chatReq, err := p.contextChatRequest(req)
+	body, err := p.chatRequestBody(req)
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	return estimateRenderedRequest(req, "openai_chat", chatReq)
+	return estimateRenderedRequest(req, "openai_chat", body)
 }
 
 func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte, error) {
@@ -372,7 +373,11 @@ func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte,
 	if err := p.applyChatReasoning(&chatReq, req); err != nil {
 		return nil, err
 	}
-	return json.Marshal(chatReq)
+	raw, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, err
+	}
+	return toolrender.OrderSchemas("openai_chat", raw)
 }
 
 func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req provider.Request) error {
@@ -564,7 +569,11 @@ func (p OpenAICompatibleProvider) ToolRaw(def cache.ToolDefinition) (string, str
 	if err != nil {
 		return "", "", err
 	}
-	return raw, cache.FragmentOpenAITool, nil
+	ordered, err := toolrender.OrderTool("openai_chat", []byte(raw))
+	if err != nil {
+		return "", "", err
+	}
+	return string(ordered), cache.FragmentOpenAITool, nil
 }
 
 func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-chan provider.StreamEvent, error) {

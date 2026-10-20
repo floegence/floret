@@ -332,3 +332,24 @@ Shared reasoning is a separate canonical fragment, never copied onto every call.
 Call-specific reasoning retains its own source. Chat Completions combines adjacent
 canonical assistant fragments only at its protocol rendering boundary.
 See [the output-source decision](../decisions/output-sources.md).
+
+## Tool schema rendering order
+
+Local tool input schemas render root properties in their existing `required` array
+order, followed by remaining properties alphabetically. `tools.InputPropertyOrder`
+is the single ordering rule; it does not mutate schemas or constrain model argument
+order. `StrictObject` retains its existing alphabetically sorted required array.
+Hosts that need a declaration order can supply that array directly.
+
+Custom transports call `provider.OrderToolSchemas` after their final protocol encoding,
+before estimation, fingerprinting and request freezing. It covers Chat Completions,
+Responses (including namespace functions), Anthropic Messages and generic model-input
+JSON. Hosted tools, nested schemas, historical messages and argument strings retain
+their content. Invalid ordering declarations fail explicitly. Official adapters use
+the same renderer for final requests and raw tool segments. Network retries preserve
+frozen bytes; output-budget refits retain tool declarations.
+
+The internal tool-schema rendering revision advances render lineage through the
+existing provider-surface boundary. It stops old exact-envelope continuation reuse
+without changing provider identity, canonical history, valid native history, cache
+namespaces or domain schema 27. Historical rendered facts remain immutable.

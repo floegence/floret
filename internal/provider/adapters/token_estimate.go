@@ -8,11 +8,7 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 )
 
-func estimateRenderedRequest(req provider.Request, format string, body any) (provider.TokenEstimate, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return provider.TokenEstimate{}, err
-	}
+func estimateRenderedRequest(req provider.Request, format string, raw []byte) (provider.TokenEstimate, error) {
 	model := req.Model
 	if model == "" {
 		model = "unknown"

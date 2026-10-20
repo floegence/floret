@@ -17,6 +17,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/toolrender"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -1224,7 +1225,7 @@ func canonicalPrefixHash(envelopeHash string, messageHashes []string) string {
 }
 
 func renderLineageKey(providerName, model, adapterVersion, cacheNamespace string) string {
-	return HashStrings(providerName, model, adapterVersion, cacheNamespace, ContextProjectionRevision)
+	return HashStrings(providerName, model, adapterVersion, cacheNamespace, ContextProjectionRevision, toolrender.Revision)
 }
 
 func segmentForCurrentRef(existing, current Segment) Segment {

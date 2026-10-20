@@ -256,3 +256,7 @@ persists this fact and continues to the model. Receipt uncertainty does not mean
 application failure or success. The model inspects evidence before another action;
 no automatic tool replay or mandatory user confirmation is introduced. Actual
 unsettled execution remains terminal.
+
+## Input property order
+
+`tools.InputPropertyOrder` returns declared required root properties first and remaining properties alphabetically, without changing validation. See [provider rendering](provider.md#tool-schema-rendering-order) for final encoding and freezing. `StrictObject` retains its existing sorted required array.

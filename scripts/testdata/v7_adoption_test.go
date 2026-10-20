@@ -30,6 +30,22 @@ import (
 	"github.com/floegence/floret/v7/tools/websearch"
 )
 
+func TestPublishedToolSchemaOrder(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"content": tools.String("body"), "file_path": tools.String("path")}, "required": []string{"file_path", "content"}}
+	order, err := tools.InputPropertyOrder(schema)
+	if err != nil || !reflect.DeepEqual(order, []string{"file_path", "content"}) {
+		t.Fatalf("order=%v err=%v", order, err)
+	}
+	raw, err := json.Marshal(map[string]any{"tools": []any{map[string]any{"type": "function", "parameters": schema}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := provider.OrderToolSchemas(provider.RequestFormatOpenAIResponses, raw)
+	if err != nil || !strings.Contains(string(ordered), `"properties":{"file_path":`) {
+		t.Fatalf("ordered=%s err=%v", ordered, err)
+	}
+}
+
 func TestPublishedSubAgentStatusActivity(t *testing.T) {
 	presentation := tools.ActivityPresentation{Renderer: tools.ActivityRendererSubAgentOperation, Payload: tools.SubAgentOperationActivityPayload{Action: tools.SubAgentOperationStatus, Status: "success", RequestedCount: 1, Targets: []tools.SubAgentOperationTarget{{ThreadID: "child", Status: "running"}}}}
 	data, err := json.Marshal(presentation)

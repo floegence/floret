@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider/catalog"
 	"github.com/floegence/floret/v7/internal/searchcap"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/toolrender"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -411,11 +412,11 @@ func (p AnthropicProvider) EstimateTokens(_ context.Context, req provider.Reques
 	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	anthropicReq, err := p.contextAnthropicRequest(req)
+	body, err := p.anthropicRequestBody(req)
 	if err != nil {
 		return provider.TokenEstimate{}, err
 	}
-	return estimateRenderedRequest(req, "anthropic_messages", anthropicReq)
+	return estimateRenderedRequest(req, "anthropic_messages", body)
 }
 
 func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, error) {
@@ -440,7 +441,11 @@ func (p AnthropicProvider) anthropicRequestBody(req provider.Request) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(anthropicReq)
+	raw, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, err
+	}
+	return toolrender.OrderSchemas("anthropic_messages", raw)
 }
 
 func (p AnthropicProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {
@@ -478,7 +483,11 @@ func (p AnthropicProvider) ToolRaw(def cache.ToolDefinition) (string, string, er
 	if err != nil {
 		return "", "", err
 	}
-	return raw, cache.FragmentAnthropicTool, nil
+	ordered, err := toolrender.OrderTool("anthropic_messages", []byte(raw))
+	if err != nil {
+		return "", "", err
+	}
+	return string(ordered), cache.FragmentAnthropicTool, nil
 }
 
 func anthropicSystemBlocks(messages []session.Message, cacheControl *anthropicCacheControl) []anthropicContentBlock {
