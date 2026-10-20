@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 29 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 30 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
@@ -704,7 +704,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 29).
+schema change (current domain schema 30).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -1201,7 +1201,7 @@ frozen bytes; output-budget refits retain tool declarations.
 The internal tool-schema rendering revision advances render lineage through the
 existing provider-surface boundary. It stops old exact-envelope continuation reuse
 without changing provider identity, canonical history, valid native history, cache
-namespaces or domain schema 29. Historical rendered facts remain immutable.
+namespaces or domain schema 30. Historical rendered facts remain immutable.
 
 ## Model-aware request estimates
 
@@ -1330,7 +1330,7 @@ Search and DeepSeek Fetch clients may use `ResolveAPIKey` to resolve live creden
 
 ## Segmented canonical bodies
 
-Domain schema 30 -> 30 stores immutable content, reasoning, tool arguments,
+Domain schema 29 -> 30 stores immutable content, reasoning, tool arguments,
 summaries and error text as content-addressed 16 KiB byte blocks. Entry records
 carry field references and their original canonical raw hash. Complete reads
 reconstruct the exact canonical message and validate that hash; no host reads
@@ -1340,6 +1340,7 @@ Startup validates all body ownership, key sets, lengths and content hashes.
 Missing, orphaned or corrupt blocks fail without mutation; cancellation, panic
 and write failure roll back the entire migration. Current restart is byte-stable.
 
-This storage foundation does not yet establish bounded historical body residency
-or the presentation-window API. See the explicit qualification limits in
+Historical journals retain immutable body locators, and detached complete reads
+use a shared 128 MiB verified source cache. Runtime actor presentation and the
+presentation-window API still require separate bounded implementation. See the explicit qualification limits in
 [history performance](okf/workflows/history-performance.md).
