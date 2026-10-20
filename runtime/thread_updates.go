@@ -411,7 +411,8 @@ func (actor *threadRuntimeState) refreshAttention() {
 
 func (actor *threadRuntimeState) takeUpdate(base uint64) ThreadUpdate {
 	view := actor.state.view
-	update := ThreadUpdate{ThreadID: view.ThreadID, TurnID: view.TurnID, RunID: view.RunID, BaseVersion: base, ViewVersion: view.ViewVersion, Facts: ThreadRuntimeFacts{Activity: view.Activity, Attention: view.Attention, TurnKind: view.TurnKind, LastOutcome: view.LastOutcome, Failure: view.Failure, Cancellation: view.Cancellation, RunProgress: view.RunProgress, QueueCount: len(view.Queue)}, Items: actor.mutations.items}
+	update := actor.runtimeFactsUpdate(base)
+	update.Items = actor.mutations.items
 	for i := range update.Items {
 		change := &update.Items[i]
 		if change.Kind == ThreadItemAdded || change.Kind == ThreadItemReplaced {
@@ -454,6 +455,11 @@ func (actor *threadRuntimeState) takeUpdate(base uint64) ThreadUpdate {
 		update.RestoredInputs = &ThreadComponent[[]RestoredInput]{view.RestoredInputs}
 	}
 	return update
+}
+
+func (actor *threadRuntimeState) runtimeFactsUpdate(base uint64) ThreadUpdate {
+	view := actor.state.view
+	return ThreadUpdate{ThreadID: view.ThreadID, TurnID: view.TurnID, RunID: view.RunID, BaseVersion: base, ViewVersion: view.ViewVersion, Facts: ThreadRuntimeFacts{Activity: view.Activity, Attention: view.Attention, TurnKind: view.TurnKind, LastOutcome: view.LastOutcome, Failure: view.Failure, Cancellation: view.Cancellation, RunProgress: view.RunProgress, QueueCount: len(view.Queue)}}
 }
 
 const (
@@ -534,9 +540,27 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 		}
 	}
 	if fullObservers {
-		raw, err := json.Marshal(update)
+		complete := cloneThreadUpdate(update)
+		var err error
+		for _, change := range complete.Items {
+			if change.Item == nil || !change.Item.textOmitted {
+				continue
+			}
+			change.Item.Text, err = service.readItemText(context.Background(), update.ThreadID.String(), *change.Item, -1)
+			if err != nil {
+				break
+			}
+			change.Item.textOmitted = false
+		}
+		var raw []byte
+		if err == nil {
+			raw, err = json.Marshal(complete)
+		}
 		if err != nil {
 			for subscription := range service.updateSubscribers {
+				if subscription.windowed {
+					continue
+				}
 				subscription.mu.Lock()
 				if !subscription.closed {
 					subscription.finishLocked(ErrThreadUpdateInvalidated)
@@ -548,7 +572,7 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			queued.bytes = len(raw)
 			// Oversized batches invalidate observers without retaining a copy.
 			if queued.bytes <= threadUpdateQueueBytes {
-				queued.update = cloneThreadUpdate(update)
+				queued.update = complete
 			}
 		}
 	}
@@ -576,10 +600,14 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 		subscription.mu.Unlock()
 	}
 	// Legacy view queues are replaceable. They never close their data channel,
-	// so observing done is sufficient and delivery never acquires observer locks.
+	// so observing done is sufficient. Freeze complete text before enqueueing;
+	// Next must remain independent of later canonical deletion or path changes.
 	if update.ViewVersion != actor.state.view.ViewVersion {
 		return
 	}
+	var fullView ThreadView
+	var fullViewErr error
+	fullViewReady := false
 	for subscription := range service.subscribers {
 		select {
 		case <-subscription.done:
@@ -593,7 +621,18 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			}
 			continue
 		}
-		view := cloneThreadRuntimeView(actor.state.view)
+		if !fullViewReady {
+			fullView, fullViewErr = service.completeViewResult(context.Background(), cloneThreadRuntimeView(actor.state.view), nil)
+			fullViewReady = true
+		}
+		if fullViewErr != nil {
+			subscription.mu.Lock()
+			subscription.closeLockedWithError(fullViewErr)
+			subscription.mu.Unlock()
+			delete(service.subscribers, subscription)
+			continue
+		}
+		view := fullView
 		select {
 		case subscription.views <- view:
 		default:

@@ -55,14 +55,16 @@ type ThreadSteering struct {
 var _ ThreadSteeringController = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) Steer(ctx context.Context, in SteerInput) (ThreadView, error) {
-	return service.steer(ctx, in, nil)
+	view, err := service.steer(ctx, in, nil)
+	return service.completeViewResult(ctx, view, err)
 }
 
 func (service *threadRuntimeService) SteerQueued(ctx context.Context, in SteerQueuedInput) (ThreadView, error) {
 	if strings.TrimSpace(in.QueueItemID) == "" {
 		return ThreadView{}, ErrRequestConflict
 	}
-	return service.steer(ctx, SteerInput{ThreadID: in.ThreadID, Input: in.ExpectedInput, RequestKey: in.RequestKey}, &in)
+	view, err := service.steer(ctx, SteerInput{ThreadID: in.ThreadID, Input: in.ExpectedInput, RequestKey: in.RequestKey}, &in)
+	return service.completeViewResult(ctx, view, err)
 }
 
 func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, queued *SteerQueuedInput) (ThreadView, error) {
@@ -77,7 +79,7 @@ func (service *threadRuntimeService) steer(ctx context.Context, in SteerInput, q
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, threadAckResult); err != nil {
 		return ThreadView{}, err
 	}
 	fingerprint, err := stableFingerprint(input)

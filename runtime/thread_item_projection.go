@@ -18,6 +18,7 @@ import (
 )
 
 type threadItemProjection struct {
+	metadataOnly        bool
 	changedItems        map[int]bool
 	changedInteractions map[int]bool
 	entryItemIndex      map[string]int
@@ -73,6 +74,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 	var canonicalOrdinal uint64
 	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
 		item.CanonicalOrdinal = canonicalOrdinal
+		item.canonicalText = item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering || item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant
 		return appendThreadItem(items, item)
 	}
 	appendReasoning := func(entry sessiontree.Entry, turnID identity.TurnID, runID identity.RunID, createdAt time.Time) {
@@ -249,6 +251,9 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 						}
 						buffer.append(entry.Message.Content)
 						previous.Text = buffer.text.String()
+						if projection.metadataOnly {
+							previous.textOmitted, previous.textBytes, previous.textNonSpace = true, buffer.bytes, buffer.nonSpace
+						}
 						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
 						continue
 					}
@@ -312,6 +317,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 						text = "The agent emitted a historical control signal."
 					}
 					items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
+					items[len(items)-1].canonicalText = false
 				}
 				continue
 			}
@@ -454,6 +460,50 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 	}
 	projection.ordinal += uint64(len(entries))
 	return nil
+}
+
+// releaseText removes only derived text after its complete result has been
+// detached. Canonical fields remain in storage; byte/rune facts keep future
+// append and final-response validation exact without retaining source bytes.
+// The initial pass is linear; later calls visit only changed items.
+func (projection *threadItemProjection) releaseText() {
+	first := !projection.metadataOnly
+	projection.metadataOnly = true
+	release := func(index int) {
+		item := &projection.items[index]
+		if !item.canonicalText {
+			return
+		}
+		if !item.textOmitted {
+			item.textBytes, item.textNonSpace = len(item.Text), strings.TrimSpace(item.Text) != ""
+		}
+		if item.Kind == ThreadItemAssistant && item.contentSourceID != "" {
+			buffer := projection.contentBuffers[index]
+			if buffer == nil {
+				buffer = &threadContentBuffer{}
+				buffer.append(item.Text)
+				projection.contentBuffers[index] = buffer
+			}
+			buffer.text.Reset()
+		}
+		item.Text, item.textOmitted = "", true
+	}
+	if first {
+		for index := range projection.items {
+			release(index)
+		}
+		return
+	}
+	for index := range projection.changedItems {
+		release(index)
+	}
+}
+
+func threadItemHasText(item ThreadItem) bool {
+	if item.textOmitted {
+		return item.textNonSpace
+	}
+	return strings.TrimSpace(item.Text) != ""
 }
 
 // snapshot materializes the complete public adapter only when explicitly asked.

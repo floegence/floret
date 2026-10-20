@@ -1,0 +1,177 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/floegence/floret/v7/internal/sessiontree"
+)
+
+// retainCanonicalItem drops reconstructible text from the actor. The locator
+// and exact extent are disposable metadata; canonical storage remains the only
+// owner of accepted content. Live drafts and transformed control labels stay
+// with their existing owner until their own representation can be reconstructed.
+func retainCanonicalItem(item ThreadItem, leafID string) ThreadItem {
+	if !item.canonicalText || item.CanonicalOrdinal == 0 {
+		return item
+	}
+	if !item.textOmitted {
+		item.textBytes, item.textNonSpace = len(item.Text), threadItemHasText(item)
+		item.textSummary, item.textSummaryTail = canonicalTextSummary("", item.Text, false)
+	}
+	item.Text, item.textOmitted, item.textLeafID = "", true, leafID
+	return item
+}
+
+func canonicalTextSummary(prefix, appended string, hasTail bool) (string, bool) {
+	if hasTail {
+		return prefix, true
+	}
+	if prefix == "" {
+		appended = strings.TrimLeftFunc(appended, unicode.IsSpace)
+	}
+	remaining := 160 - utf8.RuneCountInString(prefix)
+	part := truncateThreadSummaryPreview(appended, remaining)
+	return strings.Clone(prefix + part), strings.TrimSpace(appended[len(part):]) != ""
+}
+
+// readItemText reconstructs only the requested prefix, or the exact frozen
+// extent for an explicit full adapter. It never reads a complete source entry.
+func (service *threadRuntimeService) readItemText(ctx context.Context, threadID string, item ThreadItem, limit int) (string, error) {
+	if !item.textOmitted {
+		if limit >= 0 {
+			text, _ := boundedThreadText(item.Text, limit)
+			return text, nil
+		}
+		return item.Text, nil
+	}
+	want := item.textBytes
+	if limit >= 0 {
+		want = min(want, limit)
+	}
+	if want == 0 {
+		return "", nil
+	}
+	reader, ok := service.host.store.repo.(sessiontree.CanonicalBodyReader)
+	if !ok {
+		return "", ErrUnsupportedStoreCapability
+	}
+	var result strings.Builder
+	finished := false
+	field := "content"
+	if item.Kind == ThreadItemThinking {
+		field = "reasoning"
+	}
+	read := func(entryID string, bytes int) error {
+		for offset := 0; offset < bytes && result.Len() < want; {
+			chunk, err := reader.ReadCanonicalBody(ctx, threadID, entryID, field, offset, max(4, min(16<<10, want-result.Len())))
+			if err != nil {
+				return runtimeHostError(err)
+			}
+			if chunk.Text == "" {
+				return ErrAuthorityCorrupt
+			}
+			text, partial := boundedThreadText(chunk.Text, want-result.Len())
+			result.WriteString(text)
+			offset += len(chunk.Text)
+			if partial {
+				finished = true
+				return nil
+			}
+		}
+		return nil
+	}
+	if item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering {
+		if err := read(item.ID, item.textBytes); err != nil {
+			return "", err
+		}
+	} else {
+		manifest, ok := service.host.store.repo.(sessiontree.SourceBodyPageReader)
+		if !ok {
+			return "", ErrUnsupportedStoreCapability
+		}
+		options := sessiontree.SourceBodyPageOptions{ThreadID: threadID, LeafID: item.textLeafID, SourceID: item.ID, Field: field, Limit: 150}
+		for {
+			page, err := manifest.SourceBodyPage(ctx, options)
+			if err != nil {
+				return "", runtimeHostError(err)
+			}
+			for _, part := range page.Bodies {
+				if err := read(part.EntryID, part.Bytes); err != nil {
+					return "", err
+				}
+				if result.Len() >= want || finished {
+					break
+				}
+			}
+			if result.Len() >= want || finished || !page.HasMore {
+				break
+			}
+			options.LeafID, options.AfterEntryID = page.LeafID, page.NextEntryID
+		}
+	}
+	if limit < 0 && result.Len() != item.textBytes {
+		return "", fmt.Errorf("%w: canonical text extent is unavailable", ErrAuthorityCorrupt)
+	}
+	return result.String(), nil
+}
+
+// Custom repositories implementing only JournalRepo keep complete reads. Body
+// eviction requires both exact source readers; all built-in stores provide them.
+func (actor *threadRuntimeState) retainItem(item ThreadItem, leafID string) ThreadItem {
+	if actor.service == nil {
+		return item
+	}
+	if _, ok := actor.service.host.store.repo.(sessiontree.CanonicalBodyReader); !ok {
+		return item
+	}
+	if _, ok := actor.service.host.store.repo.(sessiontree.SourceBodyPageReader); !ok {
+		return item
+	}
+	return retainCanonicalItem(item, leafID)
+}
+
+func (actor *threadRuntimeState) retainItems() {
+	if actor.canonical == nil {
+		return
+	}
+	for index, item := range actor.state.view.Items {
+		actor.state.view.Items[index] = actor.retainItem(item, actor.canonical.leafID)
+	}
+}
+
+func (service *threadRuntimeService) completeViewResult(ctx context.Context, view ThreadView, err error) (ThreadView, error) {
+	if err != nil {
+		return ThreadView{}, err
+	}
+	for index, item := range view.Items {
+		if !item.textOmitted {
+			continue
+		}
+		text, err := service.readItemText(ctx, view.ThreadID.String(), item, -1)
+		if err != nil {
+			return ThreadView{}, err
+		}
+		view.Items[index].Text = text
+		view.Items[index].textOmitted = false
+	}
+	return view, nil
+}
+
+func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem, limit int) (ThreadItem, error) {
+	if item.textOmitted {
+		item = boundedWindowItem(item, limit)
+		text, err := actor.service.readItemText(ctx, actor.threadID, item, limit)
+		if err != nil {
+			return ThreadItem{}, err
+		}
+		item.Text, item.textOmitted = text, false
+		if len(text) == item.textBytes {
+			item.Body = nil
+		}
+	}
+	return boundedWindowItem(item, limit), nil
+}

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -13,18 +14,26 @@ type threadContentBuffer struct {
 	text       strings.Builder
 	runes      int
 	incomplete string
+	bytes      int
+	nonSpace   bool
 }
 
 func (buffer *threadContentBuffer) append(text string) {
+	buffer.bytes += len(text)
+	if !buffer.nonSpace {
+		buffer.nonSpace = strings.IndexFunc(text, func(r rune) bool { return !unicode.IsSpace(r) }) >= 0
+	}
+	tail := text
 	if buffer.incomplete == "" {
 		buffer.runes += utf8.RuneCountInString(text)
 	} else {
+		tail = buffer.incomplete + text
 		buffer.runes -= utf8.RuneCountInString(buffer.incomplete)
 		buffer.runes += utf8.RuneCountInString(buffer.incomplete + text)
 	}
 	buffer.text.WriteString(text)
 	buffer.incomplete = ""
-	full := buffer.text.String()
+	full := tail
 	if len(full) == 0 {
 		return
 	}
@@ -33,6 +42,6 @@ func (buffer *threadContentBuffer) append(text string) {
 		start--
 	}
 	if !utf8.FullRuneInString(full[start:]) {
-		buffer.incomplete = full[start:]
+		buffer.incomplete = strings.Clone(full[start:])
 	}
 }

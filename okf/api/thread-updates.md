@@ -171,8 +171,15 @@ Interaction admission and resolution use actor-owned position and item indexes,
 with attention counts updated by the changed control. Explicit full replacement
 rebuilds those disposable indexes. Fixed-history benchmarks include append and
 resolution; they do not certify full observation component encoding.
-The complete projection remains resident; full refresh boundaries, bounded
-bounded retained actors and downstream production qualification remain outstanding.
+Ordinary accepted text is released from the actor and reducers after canonical
+installation, including terminal refresh. Frozen source extents preserve explicit
+complete reads; bounded windows read only exact prefixes. Complete legacy queues
+freeze text before enqueueing, so subsequent deletion cannot break an accepted
+snapshot. Byte/rune facts and bounded summaries preserve append offsets, citation
+positions, whitespace and terminal validation. Transformed control labels remain
+resident; historical metadata, full refresh boundaries, bounded initialization
+and downstream production qualification remain outstanding. See
+[text residency tests](../../runtime/thread_text_residency_test.go).
 
 Latest request attribution reads the current scope's exact append ordinal from
 the canonical prompt records, including pending observations, rather than loading

@@ -13,7 +13,8 @@ import (
 // is accepted, independently of the requesting connection. If the host closes
 // before admission, the input remains queued and requires explicit resubmission.
 func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in PromoteQueuedInput) (ThreadView, error) {
-	return service.sendQueuedNowCommand(ctx, in, threadFullResult)
+	view, err := service.sendQueuedNowCommand(ctx, in, threadFullResult)
+	return service.completeViewResult(ctx, view, err)
 }
 
 func (service *threadRuntimeService) sendQueuedNowCommand(ctx context.Context, in PromoteQueuedInput, mode threadResultMode) (ThreadView, error) {

@@ -402,3 +402,43 @@ func TestThreadWindowTurnsMatchCanonicalSelectedMembership(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkThreadWindowNativeAppendFixedHistory(b *testing.B) {
+	for _, count := range []int{1096, 10960, 109600} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			actor := textGrowthActor(count)
+			actor.state.view.ThreadID = "thread"
+			actor.state.view.TurnID, actor.state.view.RunID = "turn", "run"
+			actor.state.view.ViewVersion = 1
+			actor.appendLiveTextSegment(ThreadItemAssistant, "start", time.Time{}, "source")
+			sub := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, 64), done: make(chan struct{}), windowed: true, authorized: map[string]bool{"thread": true}}
+			service := &threadRuntimeService{published: map[string]uint64{}, updateSubscribers: map[*ThreadUpdateSubscription]struct{}{sub: {}}}
+			actor.service, sub.service = service, service
+			if err := sub.setActorWindow(b.Context(), actor, ThreadWindowInput{ThreadID: "thread"}); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := sub.Next(b.Context()); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := actor.apply(b.Context(), func() error {
+					actor.appendLiveTextSegment(ThreadItemAssistant, "x", time.Time{}, "source")
+					actor.state.view.ViewVersion++
+					return nil
+				}); err != nil {
+					b.Fatal(err)
+				}
+				actor.mu.Lock()
+				service.flushUpdateLocked(actor)
+				actor.mu.Unlock()
+				if _, err := sub.Next(b.Context()); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			actor.stopUpdateTimer()
+		})
+	}
+}

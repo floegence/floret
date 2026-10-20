@@ -117,7 +117,7 @@ func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context
 		if actor.state.contextErr != nil {
 			return actor.state.contextErr
 		}
-		snapshot, err := actor.windowSnapshot(input)
+		snapshot, err := actor.windowSnapshotContext(ctx, input)
 		if err != nil {
 			return err
 		}
@@ -199,12 +199,15 @@ func setWindowBounds(snapshot *ThreadWindowSnapshot) {
 
 func boundedWindowItem(item ThreadItem, limit int) ThreadItem {
 	bytes := len(item.Text)
+	if item.textOmitted {
+		bytes = item.textBytes
+	}
 	if item.Body != nil {
 		bytes = item.Body.Bytes
 	}
 	text, partial := boundedThreadText(item.Text, limit)
 	item.Text = text
-	if partial || item.Body != nil {
+	if partial || item.Body != nil || item.textOmitted {
 		field := ThreadBodyContent
 		if item.Kind == ThreadItemThinking {
 			field = ThreadBodyReasoning
@@ -258,7 +261,11 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 			continue
 		}
 		if change.Item != nil {
-			item := boundedWindowItem(*change.Item, threadDisplayTextBytes)
+			item, err := actor.windowItem(context.Background(), *change.Item, threadDisplayTextBytes)
+			if err != nil {
+				subscription.finishLocked(ErrThreadUpdateInvalidated)
+				return ThreadUpdate{}, false
+			}
 			change.Item = &item
 		}
 		if change.Kind == ThreadItemAppended && change.Append != nil {
@@ -294,7 +301,7 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 // windowBaseline explicitly snapshots control components. takeUpdate only
 // contains this mutation's mask and cannot serve as an initial baseline.
 func (actor *threadRuntimeState) windowBaseline() ThreadUpdate {
-	update := actor.takeUpdate(actor.state.view.ViewVersion)
+	update := actor.runtimeFactsUpdate(actor.state.view.ViewVersion)
 	view := actor.state.view
 	update.Items, update.ItemOrder = nil, nil
 	update.Context = &ThreadComponent[*ThreadContextSnapshot]{Value: view.Context}
@@ -308,6 +315,10 @@ func (actor *threadRuntimeState) windowBaseline() ThreadUpdate {
 }
 
 func (actor *threadRuntimeState) windowSnapshot(input ThreadWindowInput) (ThreadWindowSnapshot, error) {
+	return actor.windowSnapshotContext(context.Background(), input)
+}
+
+func (actor *threadRuntimeState) windowSnapshotContext(ctx context.Context, input ThreadWindowInput) (ThreadWindowSnapshot, error) {
 	limit := input.Limit
 	if limit == 0 {
 		limit = threadDisplayPageItems
@@ -316,7 +327,7 @@ func (actor *threadRuntimeState) windowSnapshot(input ThreadWindowInput) (Thread
 	if direction == "" {
 		direction = ThreadWindowBefore
 	}
-	page, err := actor.itemWindow(threadItemWindowInput{anchor: input.AnchorID, direction: threadWindowDirection(direction), limit: limit})
+	page, err := actor.itemWindowContext(ctx, threadItemWindowInput{anchor: input.AnchorID, direction: threadWindowDirection(direction), limit: limit})
 	if err != nil {
 		return ThreadWindowSnapshot{}, err
 	}

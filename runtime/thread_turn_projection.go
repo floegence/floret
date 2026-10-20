@@ -148,7 +148,7 @@ func (facts *threadTurnFacts) refresh(itemForEntry func(string) (ThreadItem, boo
 			var lastOrdinal uint64
 			for _, ref := range refs {
 				item, found := itemForEntry(ref)
-				if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant || strings.TrimSpace(item.Text) == "" || item.Ordinal < lastOrdinal {
+				if !found || item.TurnID != turn.TurnID || item.RunID != turn.RunID || item.Kind != ThreadItemAssistant || !threadItemHasText(item) || item.Ordinal < lastOrdinal {
 					facts.finalErr = fmt.Errorf("%w: final response is outside its canonical turn", ErrAuthorityCorrupt)
 					break
 				}

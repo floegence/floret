@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -42,6 +43,10 @@ var errThreadWindowAnchorUnavailable = errors.New("thread window anchor is unava
 // 150 items does not visit, clone or encode any item outside that interval.
 // The caller owns the actor boundary and the returned detached item metadata.
 func (actor *threadRuntimeState) itemWindow(input threadItemWindowInput) (threadItemWindow, error) {
+	return actor.itemWindowContext(context.Background(), input)
+}
+
+func (actor *threadRuntimeState) itemWindowContext(ctx context.Context, input threadItemWindowInput) (threadItemWindow, error) {
 	if input.limit < 1 || input.limit > threadDisplayPageItems {
 		return threadItemWindow{}, errors.New("invalid thread window limit")
 	}
@@ -74,7 +79,15 @@ func (actor *threadRuntimeState) itemWindow(input threadItemWindowInput) (thread
 	default:
 		return threadItemWindow{}, errors.New("invalid thread window direction")
 	}
-	return threadItemWindow{first: first, last: last, hasBefore: first > 0, hasAfter: last < count, items: cloneWindowItems(actor.state.view.Items[first:last])}, nil
+	items := cloneWindowItems(actor.state.view.Items[first:last])
+	for index, item := range items {
+		detached, err := actor.windowItem(ctx, item, threadDisplayTextBytes)
+		if err != nil {
+			return threadItemWindow{}, err
+		}
+		items[index] = detached
+	}
+	return threadItemWindow{first: first, last: last, hasBefore: first > 0, hasAfter: last < count, items: items}, nil
 }
 
 // boundedThreadText returns an exact UTF-8 prefix and detaches it from a giant
