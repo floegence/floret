@@ -1040,6 +1040,13 @@ execution. Existing path-reference redaction is preserved by a budgeted display
 tail, sharing the unchanged raw prefix. Diagnostic observers never retain the
 internal output-body reference.
 
+Optional `runtime.ThreadLiveBodySearcher` searches the same frozen displayed
+prefix with exact case-sensitive UTF-8 matching. Each page scans at most 64 KiB
+source and returns at most 100 overlapping matches. Resume with the unchanged
+source identity and `ThroughBytes` plus `NextOffsetBytes`; later appends do not
+extend the search. Commit, retry, deletion or restart explicitly expires it.
+Live and canonical search share one overlap and progress implementation.
+
 Pending approvals and input requests remain accessible outside the selected
 history. Window turn membership includes only selected items. Append preserves
 history anchors; reordering replaces bounded geometry. An unavailable accepted

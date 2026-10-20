@@ -1680,3 +1680,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document page-released cold presentation and shared body-free queue
   recovery in [thread updates](api/thread-updates.md) and [storage](api/storage.md);
   retain explicit metadata-residency and context-validation limits.
+
+- 2026-10-20: Document optional frozen live-body search sharing canonical search boundaries and fresh scope authorization.

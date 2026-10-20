@@ -1433,6 +1433,19 @@ field ThreadLiveBodyInput.ThroughBytes int tag="json:\"through_bytes\""
 field ThreadLiveBodyInput.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadLiveBodyInput.LimitBytes int tag="json:\"limit_bytes\""
 type ThreadLiveBodyReader interface interface{ReadLiveBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadLiveBodyInput) (github.com/floegence/floret/v7/runtime.ThreadLiveBodyChunk, error)}
+type ThreadLiveBodySearchInput struct
+field ThreadLiveBodySearchInput.Body github.com/floegence/floret/v7/runtime.ThreadLiveBodyInput tag="json:\"body\""
+field ThreadLiveBodySearchInput.Query string tag="json:\"query\""
+field ThreadLiveBodySearchInput.Limit int tag="json:\"limit\""
+type ThreadLiveBodySearchPage struct
+field ThreadLiveBodySearchPage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadLiveBodySearchPage.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadLiveBodySearchPage.SourceID string tag="json:\"source_id\""
+field ThreadLiveBodySearchPage.ThroughBytes int tag="json:\"through_bytes\""
+field ThreadLiveBodySearchPage.Matches []github.com/floegence/floret/v7/runtime.ThreadBodyMatch tag="json:\"matches\""
+field ThreadLiveBodySearchPage.NextOffsetBytes int tag="json:\"next_offset_bytes\""
+field ThreadLiveBodySearchPage.HasMore bool tag="json:\"has_more\""
+type ThreadLiveBodySearcher interface interface{SearchLiveBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadLiveBodySearchInput) (github.com/floegence/floret/v7/runtime.ThreadLiveBodySearchPage, error)}
 type ThreadModelContext struct
 field ThreadModelContext.Snapshot github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"snapshot\""
 field ThreadModelContext.EntryID string tag="json:\"entry_id\""

@@ -63,31 +63,43 @@ func (service *threadRuntimeService) SearchBody(ctx context.Context, scope threa
 	if err != nil {
 		return ThreadBodySearchPage{}, err
 	}
-	page := ThreadBodySearchPage{SHA256: first.SHA256, Bytes: first.Bytes, Matches: []ThreadBodyMatch{}, NextOffsetBytes: start}
-	// The first read establishes the immutable source identity. Pin all later
-	// chunks, including after a concurrent append, branch change or restart.
+	// Pin canonical identity for every chunk used by the shared search kernel.
 	body.SHA256 = first.SHA256
-	var source strings.Builder
-	source.Grow(min(threadBodySearchBytes, first.Bytes-start))
-	source.WriteString(first.Text)
-	for start+source.Len() < page.Bytes && source.Len() < threadBodySearchBytes-utf8.UTFMax {
-		body.OffsetBytes = start + source.Len()
-		body.LimitBytes = min(16<<10, threadBodySearchBytes-source.Len())
+	page, err := searchBodyText(ctx, start, first.Bytes, first.Text, input.Query, limit, func(offset, size int) (string, error) {
+		body.OffsetBytes, body.LimitBytes = offset, size
 		part, err := service.ReadBody(ctx, scope, body)
+		return part.Text, err
+	})
+	if err != nil {
+		return ThreadBodySearchPage{}, err
+	}
+	page.SHA256 = first.SHA256
+	return page, nil
+}
+
+// One kernel owns overlap, UTF-8 boundaries and progress for immutable canonical
+// fields and frozen live prefixes. It never reads or retains a complete body.
+func searchBodyText(ctx context.Context, start, size int, first, query string, limit int, read func(int, int) (string, error)) (ThreadBodySearchPage, error) {
+	page := ThreadBodySearchPage{Bytes: size, Matches: []ThreadBodyMatch{}, NextOffsetBytes: start}
+	var source strings.Builder
+	source.Grow(min(threadBodySearchBytes, size-start))
+	source.WriteString(first)
+	for start+source.Len() < size && source.Len() < threadBodySearchBytes-utf8.UTFMax {
+		part, err := read(start+source.Len(), min(16<<10, threadBodySearchBytes-source.Len()))
 		if err != nil {
 			return ThreadBodySearchPage{}, err
 		}
-		if part.Text == "" {
+		if part == "" {
 			return ThreadBodySearchPage{}, ErrAuthorityCorrupt
 		}
-		source.WriteString(part.Text)
+		source.WriteString(part)
 	}
 	text := source.String()
 	end := len(text)
 	if start+end < page.Bytes {
 		// Retain only the possible cross-page candidates. Every byte read in
 		// overlap is covered by the same 64 KiB budget on the following call.
-		end = max(0, end-len(input.Query)+1)
+		end = max(0, end-len(query)+1)
 		for end < len(text) && !utf8.RuneStart(text[end]) {
 			end++
 		}
@@ -97,12 +109,12 @@ func (service *threadRuntimeService) SearchBody(ctx context.Context, scope threa
 		if err := ctx.Err(); err != nil {
 			return ThreadBodySearchPage{}, err
 		}
-		found := strings.Index(text[position:], input.Query)
+		found := strings.Index(text[position:], query)
 		if found < 0 || position+found >= end {
 			break
 		}
 		position += found
-		page.Matches = append(page.Matches, ThreadBodyMatch{OffsetBytes: start + position, LengthBytes: len(input.Query)})
+		page.Matches = append(page.Matches, ThreadBodyMatch{OffsetBytes: start + position, LengthBytes: len(query)})
 		_, width := utf8.DecodeRuneInString(text[position:])
 		position += width
 		if len(page.Matches) == limit {

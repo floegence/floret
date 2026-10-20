@@ -283,6 +283,13 @@ prefix. Retry, canonical installation, deletion and restart expire the locator;
 the caller refreshes the item and uses its canonical body locator. Canceling the
 read never cancels the run. Full adapters detach the exact frozen live extent.
 
+Optional ThreadLiveBodySearcher searches that frozen display prefix through the
+same authorized reader. Pages scan at most 64 KiB source, preserve UTF-8 and CRLF,
+and return at most 100 overlapping exact matches. The caller resumes at
+NextOffsetBytes without changing ThroughBytes. Live source expiry stays explicit;
+search never silently switches to canonical bytes. Canonical and live searches
+share one bounded kernel, including cross-page overlap and cancellation.
+
 Completion still materializes complete output for the existing transactional
 provider-context commit. This peak is outside the draft budget and remains a
 separate implementation requirement. SQLite tests cover 44 MiB output, bounded
