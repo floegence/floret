@@ -3,6 +3,7 @@ package provider
 import (
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/internal/requestestimate"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 )
 
 // RequestFormat identifies the rendered input protocol, independently of model
@@ -28,6 +29,21 @@ type RenderedRequest struct {
 	Model       string
 	Format      RequestFormat
 	Payload     []byte
+}
+
+// RenderedMeasurementPrefix fingerprints a complete ordered frozen input. A
+// response_end boundary uses input with the exact replayed output appended.
+// executionIdentity must bind account and transport execution without secrets.
+func RenderedMeasurementPrefix(request RenderedRequest, executionIdentity, boundary string) (MeasurementPrefix, error) {
+	p, err := requestmeasure.RenderedPrefix(request.Payload, string(request.Format), executionIdentity, boundary)
+	return MeasurementPrefix(p), err
+}
+
+// RenderedMeasurementSuffix verifies an earlier prefix against frozen bytes and
+// returns only subsequent input for Floret estimation (nil, true when empty).
+// It performs no I/O.
+func RenderedMeasurementSuffix(request RenderedRequest, executionIdentity string, prefix MeasurementPrefix) ([]byte, bool) {
+	return requestmeasure.RenderedSuffix(request.Payload, string(request.Format), executionIdentity, requestmeasure.Prefix(prefix))
 }
 
 // EstimateRenderedRequest counts model input with a supported official vocabulary

@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 	publicprovider "github.com/floegence/floret/v7/provider"
@@ -424,6 +425,7 @@ func internalHostedToolResult(value *publicprovider.HostedToolResult) provider.H
 func providerUsage(value publicprovider.Usage) provider.Usage {
 	return provider.Usage{
 		InputTokensReported: value.InputTokensReported, InputTokenScope: value.InputTokenScope,
+		OutputTokensReported: value.OutputTokensReported, Measurement: internalRequestMeasurement(value.Measurement),
 		OutputIncludesReasoning: value.OutputIncludesReasoning,
 		TotalTokensReported:     value.TotalTokensReported,
 		InputTokens:             value.InputTokens, OutputTokens: value.OutputTokens, ReasoningTokens: value.ReasoningTokens,
@@ -466,4 +468,30 @@ func (request *modelGatewayPreparedRequest) WithMaxOutputTokens(ctx context.Cont
 		return nil, errors.New("prepared request cannot set output limit")
 	}
 	return request.refit(ctx, limit)
+}
+
+func (request *modelGatewayPreparedRequest) InputMeasurementPrefix() requestmeasure.Prefix {
+	if p, ok := request.prepared.(requestmeasure.Prepared); ok {
+		return p.InputMeasurementPrefix()
+	}
+	return requestmeasure.Prefix{}
+}
+func (request *modelGatewayPreparedRequest) MeasurementSuffix(prefix requestmeasure.Prefix) ([]byte, bool) {
+	if p, ok := request.prepared.(requestmeasure.Prepared); ok {
+		return p.MeasurementSuffix(prefix)
+	}
+	return nil, false
+}
+
+func internalRequestMeasurement(v *publicprovider.RequestMeasurement) *requestmeasure.Evidence {
+	if v == nil {
+		return nil
+	}
+	return &requestmeasure.Evidence{AttemptID: v.AttemptID, CompleteInput: v.CompleteInput, OpaqueInput: v.OpaqueInput, Input: requestmeasure.Prefix(v.Input), ResponseID: v.ResponseID, ResponseEnd: requestmeasure.Prefix(v.ResponseEnd)}
+}
+func publicRequestMeasurement(v *requestmeasure.Evidence) *publicprovider.RequestMeasurement {
+	if v == nil {
+		return nil
+	}
+	return &publicprovider.RequestMeasurement{AttemptID: v.AttemptID, CompleteInput: v.CompleteInput, OpaqueInput: v.OpaqueInput, Input: publicprovider.MeasurementPrefix(v.Input), ResponseID: v.ResponseID, ResponseEnd: publicprovider.MeasurementPrefix(v.ResponseEnd)}
 }

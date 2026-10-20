@@ -258,6 +258,26 @@ func TestProviderCancelledFinishReturnsCancelled(t *testing.T) {
 	}
 }
 
+func TestFailedTerminalRetainsBillingWithoutMeasurement(t *testing.T) {
+	for _, reason := range []string{"error", "content_filter", "cancelled"} {
+		t.Run(reason, func(t *testing.T) {
+			p := harness.NewScriptedProvider(harness.Step(provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 100, OutputTokens: 20, Source: provider.UsageNative}}, harness.DoneReason(reason)))
+			e := newTestEngine(p, &event.Recorder{})
+			result := e.Run(t.Context(), "work")
+			if result.Status == engine.Completed {
+				t.Fatalf("unexpected success: %+v", result)
+			}
+			responses, err := e.Prompt.ProviderResponses(t.Context(), "run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(responses) != 1 || responses[0].InputTokens != 100 || responses[0].OutputTokens != 20 || responses[0].PressureAnchor.InputMeasurementQualified || responses[0].MeasurementCommitted {
+				t.Fatalf("lost billing or retained draft measurement: %+v", responses)
+			}
+		})
+	}
+}
+
 func TestEmptyDoneRetriesThenCompletes(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
@@ -4257,7 +4277,7 @@ func TestPostResponsePressureCompactsNextRequestAndContinues(t *testing.T) {
 		t.Fatalf("context compaction should emit start and complete: %#v", compactions)
 	}
 	completeMeta, ok := compactions[1].Metadata.(map[string]any)
-	if !ok || completeMeta["trigger"] != compaction.TriggerPostResponse || completeMeta["reason"] != compaction.ReasonFollowUpPressure {
+	if !ok || completeMeta["trigger"] != compaction.TriggerPreRequest || completeMeta["reason"] != compaction.ReasonThreshold {
 		t.Fatalf("post-response compaction metadata = %#v", completeMeta)
 	}
 	if got.ContinuationReason != "" {

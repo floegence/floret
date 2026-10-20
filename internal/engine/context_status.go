@@ -282,6 +282,13 @@ func compactionRequestSnapshot(req provider.Request, tracker *ContextPressureTra
 		Pressure: configbridge.PublicContextPressure(req.ContextPressure)}
 	if tracker != nil && req.ContextPressure.Source == contextpolicy.PressureSourceUsageAnchoredDelta {
 		snapshot.CalibrationRequestID = tracker.anchor.RequestID
+		snapshot.CalibrationBoundary = tracker.anchor.MeasurementPrefix.Boundary
+		if snapshot.CalibrationBoundary == "" {
+			snapshot.CalibrationBoundary = "input"
+		}
+	}
+	if tracker != nil {
+		snapshot.CalibrationInvalidReason = tracker.anchorReason
 	}
 	return snapshot
 }

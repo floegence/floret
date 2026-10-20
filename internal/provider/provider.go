@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/usageaccounting"
 	"strings"
 
@@ -582,6 +583,9 @@ const (
 )
 
 type Usage struct {
+	Aggregated           bool                     `json:"-"`
+	OutputTokensReported bool                     `json:"output_tokens_reported,omitempty"`
+	Measurement          *requestmeasure.Evidence `json:"measurement,omitempty"`
 	// InputTokensReported distinguishes an explicit input zero from missing input usage.
 	InputTokensReported bool `json:"input_tokens_reported,omitempty"`
 	// InputTokenScope is request_input, provider_execution, or unknown. It is not inferred from model names.
@@ -644,19 +648,21 @@ func (u Usage) Add(other Usage) Usage {
 		source = UsageMixed
 	}
 	return Usage{
-		TotalTokensReported: true,
-		InputTokensReported: u.InputTokensReported || other.InputTokensReported,
-		InputTokenScope:     usageaccounting.CombinedInputScope(u.InputTokenScope, other.InputTokenScope),
-		InputTokens:         u.InputTokens + other.InputTokens,
-		OutputTokens:        u.OutputTokens + other.OutputTokens,
-		ReasoningTokens:     u.ReasoningTokens + other.ReasoningTokens,
-		CacheReadTokens:     u.CacheReadTokens + other.CacheReadTokens,
-		CacheWriteTokens:    u.CacheWriteTokens + other.CacheWriteTokens,
-		TotalTokens:         u.TotalTokens + other.TotalTokens,
-		CostUSD:             u.CostUSD + other.CostUSD,
-		Source:              source,
-		Available:           u.Available || other.Available,
-		WindowInputTokens:   u.WindowInputTokens + other.WindowInputTokens,
+		Aggregated:           true,
+		TotalTokensReported:  true,
+		OutputTokensReported: u.OutputTokensReported || other.OutputTokensReported,
+		InputTokensReported:  u.InputTokensReported || other.InputTokensReported,
+		InputTokenScope:      usageaccounting.CombinedInputScope(u.InputTokenScope, other.InputTokenScope),
+		InputTokens:          u.InputTokens + other.InputTokens,
+		OutputTokens:         u.OutputTokens + other.OutputTokens,
+		ReasoningTokens:      u.ReasoningTokens + other.ReasoningTokens,
+		CacheReadTokens:      u.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens:     u.CacheWriteTokens + other.CacheWriteTokens,
+		TotalTokens:          u.TotalTokens + other.TotalTokens,
+		CostUSD:              u.CostUSD + other.CostUSD,
+		Source:               source,
+		Available:            u.Available || other.Available,
+		WindowInputTokens:    u.WindowInputTokens + other.WindowInputTokens,
 	}
 }
 

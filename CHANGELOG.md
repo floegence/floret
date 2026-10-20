@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v7.70.0 - 2026-10-19
+
+- Add optional attempt-bound native input/response measurement and frozen protocol-prefix mapping; estimate only unmatched suffix input, including tools, media and context updates, without reapplying whole-history margin.
+- Separate native total qualification from content attribution; require explicit encrypted-reasoning coverage and preserve protocol usage scope, cache and reasoning semantics.
+- Evaluate automatic pressure once at frozen request preparation with the existing 90% threshold; remove post-response pending triggers, share output budgeting, and bound no-op, cancellation and overflow recovery.
+- Append transactional domain schema 27 -> 28 without rewriting canonical history or native usage; revalidate calibration after restart, Retry and Fork and retain every historical migration.
+
 ## v7.69.1 - 2026-10-19
 
 - Scope Ask User guidance to required execution input and requested guided questions; allow ordinary discussion and optional feedback in prose without changing schemas or interaction lifecycle.

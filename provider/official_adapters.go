@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"net/http"
 	"strings"
 
@@ -295,6 +296,7 @@ func publicEvent(event internalprovider.StreamEvent) Event {
 		Usage: Usage{
 			InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens,
 			InputTokensReported: event.Usage.InputTokensReported, InputTokenScope: event.Usage.InputTokenScope,
+			OutputTokensReported: event.Usage.OutputTokensReported, Measurement: officialRequestMeasurement(event.Usage.Measurement),
 			OutputIncludesReasoning: event.Usage.OutputIncludesReasoning, TotalTokensReported: event.Usage.TotalTokensReported,
 			ReasoningTokens: event.Usage.ReasoningTokens, CacheReadTokens: event.Usage.CacheReadTokens,
 			CacheWriteTokens: event.Usage.CacheWriteTokens, TotalTokens: event.Usage.TotalTokens,
@@ -403,4 +405,11 @@ func (p *officialPrepared) WithMaxOutputTokens(ctx context.Context, limit int64)
 		return nil, err
 	}
 	return &officialPrepared{prepared: next, request: p.request}, nil
+}
+
+func officialRequestMeasurement(v *requestmeasure.Evidence) *RequestMeasurement {
+	if v == nil {
+		return nil
+	}
+	return &RequestMeasurement{AttemptID: v.AttemptID, CompleteInput: v.CompleteInput, OpaqueInput: v.OpaqueInput, Input: MeasurementPrefix(v.Input), ResponseID: v.ResponseID, ResponseEnd: MeasurementPrefix(v.ResponseEnd)}
 }

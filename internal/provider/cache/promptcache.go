@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"os"
 	"path/filepath"
 	"slices"
@@ -100,6 +101,7 @@ func (r PromptScopeRef) validate() error {
 }
 
 type RawPlan struct {
+	MeasurementPrefix requestmeasure.Prefix `json:"measurement_prefix,omitzero"`
 	// These transient fields come from validated canonical retry admission, never a host hint.
 	RetrySourceEntryID         string                        `json:"-"`
 	RetryRunID                 string                        `json:"-"`
@@ -204,6 +206,7 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
+	MeasurementPrefix          requestmeasure.Prefix         `json:"measurement_prefix,omitzero"`
 	ModelContextEntryID        string                        `json:"model_context_entry_id,omitempty"`
 	ID                         string                        `json:"id"`
 	PromptScopeID              string                        `json:"prompt_scope_id"`
@@ -260,27 +263,33 @@ type TurnSurfaceSnapshot struct {
 }
 
 type ProviderResponseRecord struct {
-	AttemptID          string                        `json:"attempt_id,omitempty"`
-	AttemptEpoch       int                           `json:"attempt_epoch,omitempty"`
-	RequestID          string                        `json:"request_id"`
-	PromptScopeID      string                        `json:"prompt_scope_id"`
-	RunID              string                        `json:"run_id,omitempty"`
-	ThreadID           string                        `json:"thread_id,omitempty"`
-	TurnID             string                        `json:"turn_id,omitempty"`
-	ProviderResponseID string                        `json:"provider_response_id,omitempty"`
-	StopReason         string                        `json:"stop_reason,omitempty"`
-	InputTokens        int64                         `json:"input_tokens,omitempty"`
-	WindowInputTokens  int64                         `json:"window_input_tokens,omitempty"`
-	OutputTokens       int64                         `json:"output_tokens,omitempty"`
-	ReasoningTokens    int64                         `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens    int64                         `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens   int64                         `json:"cache_write_tokens,omitempty"`
-	TotalTokens        int64                         `json:"total_tokens,omitempty"`
-	UsageSource        string                        `json:"usage_source,omitempty"`
-	UsageAvailable     bool                          `json:"usage_available,omitempty"`
-	NativePressure     contextpolicy.ContextPressure `json:"native_context_pressure,omitempty"`
-	PressureAnchor     PressureAnchorState           `json:"pressure_anchor,omitempty"`
-	CreatedAt          time.Time                     `json:"created_at"`
+	MeasurementCommitted    bool                          `json:"measurement_committed,omitempty"`
+	InputTokensReported     bool                          `json:"input_tokens_reported,omitempty"`
+	InputTokenScope         string                        `json:"input_token_scope,omitempty"`
+	OutputIncludesReasoning bool                          `json:"output_includes_reasoning,omitempty"`
+	Measurement             *requestmeasure.Evidence      `json:"measurement,omitempty"`
+	OutputTokensReported    bool                          `json:"output_tokens_reported,omitempty"`
+	AttemptID               string                        `json:"attempt_id,omitempty"`
+	AttemptEpoch            int                           `json:"attempt_epoch,omitempty"`
+	RequestID               string                        `json:"request_id"`
+	PromptScopeID           string                        `json:"prompt_scope_id"`
+	RunID                   string                        `json:"run_id,omitempty"`
+	ThreadID                string                        `json:"thread_id,omitempty"`
+	TurnID                  string                        `json:"turn_id,omitempty"`
+	ProviderResponseID      string                        `json:"provider_response_id,omitempty"`
+	StopReason              string                        `json:"stop_reason,omitempty"`
+	InputTokens             int64                         `json:"input_tokens,omitempty"`
+	WindowInputTokens       int64                         `json:"window_input_tokens,omitempty"`
+	OutputTokens            int64                         `json:"output_tokens,omitempty"`
+	ReasoningTokens         int64                         `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens         int64                         `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens        int64                         `json:"cache_write_tokens,omitempty"`
+	TotalTokens             int64                         `json:"total_tokens,omitempty"`
+	UsageSource             string                        `json:"usage_source,omitempty"`
+	UsageAvailable          bool                          `json:"usage_available,omitempty"`
+	NativePressure          contextpolicy.ContextPressure `json:"native_context_pressure,omitempty"`
+	PressureAnchor          PressureAnchorState           `json:"pressure_anchor,omitempty"`
+	CreatedAt               time.Time                     `json:"created_at"`
 }
 
 type RequestShapeHashes struct {
@@ -293,30 +302,33 @@ type RequestShapeHashes struct {
 }
 
 type PressureAnchorState struct {
-	InputMeasurementQualified bool                             `json:"input_measurement_qualified,omitempty"`
-	PromptScopeID             string                           `json:"prompt_scope_id,omitempty"`
-	ThreadID                  string                           `json:"thread_id,omitempty"`
-	Provider                  string                           `json:"provider,omitempty"`
-	Model                     string                           `json:"model,omitempty"`
-	AdapterVersion            string                           `json:"adapter_version,omitempty"`
-	RequestID                 string                           `json:"request_id,omitempty"`
-	RunID                     string                           `json:"run_id,omitempty"`
-	LogicalRequestID          string                           `json:"logical_request_id,omitempty"`
-	LastMessageEntryID        string                           `json:"last_message_entry_id,omitempty"`
-	LastMessageIndex          int                              `json:"last_message_index,omitempty"`
-	CompactionGeneration      int                              `json:"compaction_generation,omitempty"`
-	CompactionWindowID        string                           `json:"compaction_window_id,omitempty"`
-	Shape                     RequestShapeHashes               `json:"shape,omitempty"`
-	WindowInputTokens         int64                            `json:"window_input_tokens,omitempty"`
-	PrefixTokens              int64                            `json:"prefix_tokens,omitempty"`
-	MessageTokens             int64                            `json:"message_tokens,omitempty"`
-	ToolDefinitionTokens      int64                            `json:"tool_definition_tokens,omitempty"`
-	ContextWindowTokens       int64                            `json:"context_window_tokens,omitempty"`
-	EstimateSource            string                           `json:"estimate_source,omitempty"`
-	EstimateMethod            contextpolicy.EstimateMethod     `json:"estimate_method,omitempty"`
-	Confidence                contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
-	PressureSource            contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
-	CreatedAt                 time.Time                        `json:"created_at,omitempty"`
+	MeasurementPrefix          requestmeasure.Prefix            `json:"measurement_prefix,omitzero"`
+	CanonicalMessageCount      int                              `json:"canonical_message_count,omitempty"`
+	CanonicalHistoryPrefixHash string                           `json:"canonical_history_prefix_hash,omitempty"`
+	InputMeasurementQualified  bool                             `json:"input_measurement_qualified,omitempty"`
+	PromptScopeID              string                           `json:"prompt_scope_id,omitempty"`
+	ThreadID                   string                           `json:"thread_id,omitempty"`
+	Provider                   string                           `json:"provider,omitempty"`
+	Model                      string                           `json:"model,omitempty"`
+	AdapterVersion             string                           `json:"adapter_version,omitempty"`
+	RequestID                  string                           `json:"request_id,omitempty"`
+	RunID                      string                           `json:"run_id,omitempty"`
+	LogicalRequestID           string                           `json:"logical_request_id,omitempty"`
+	LastMessageEntryID         string                           `json:"last_message_entry_id,omitempty"`
+	LastMessageIndex           int                              `json:"last_message_index,omitempty"`
+	CompactionGeneration       int                              `json:"compaction_generation,omitempty"`
+	CompactionWindowID         string                           `json:"compaction_window_id,omitempty"`
+	Shape                      RequestShapeHashes               `json:"shape,omitempty"`
+	WindowInputTokens          int64                            `json:"window_input_tokens,omitempty"`
+	PrefixTokens               int64                            `json:"prefix_tokens,omitempty"`
+	MessageTokens              int64                            `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens       int64                            `json:"tool_definition_tokens,omitempty"`
+	ContextWindowTokens        int64                            `json:"context_window_tokens,omitempty"`
+	EstimateSource             string                           `json:"estimate_source,omitempty"`
+	EstimateMethod             contextpolicy.EstimateMethod     `json:"estimate_method,omitempty"`
+	Confidence                 contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
+	PressureSource             contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
+	CreatedAt                  time.Time                        `json:"created_at,omitempty"`
 }
 
 type Store interface {
@@ -520,7 +532,7 @@ func (s *MemoryStore) ProviderRequests(_ context.Context, promptScopeID string) 
 func (s *MemoryStore) AppendProviderResponse(_ context.Context, resp ProviderResponseRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.responses = append(s.responses, resp)
+	s.responses = append(s.responses, cloneProviderResponseRecord(resp))
 	return nil
 }
 
@@ -530,7 +542,7 @@ func (s *MemoryStore) ProviderResponses(_ context.Context, promptScopeID string)
 	var out []ProviderResponseRecord
 	for _, resp := range s.responses {
 		if resp.PromptScopeID == promptScopeID {
-			out = append(out, resp)
+			out = append(out, cloneProviderResponseRecord(resp))
 		}
 	}
 	return out, nil
@@ -1626,6 +1638,7 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 		return ProviderRequestRecord{}, err
 	}
 	record := ProviderRequestRecord{
+		MeasurementPrefix:          req.RawPlan.MeasurementPrefix,
 		ModelContextEntryID:        req.ModelContextEntryID,
 		ID:                         fmt.Sprintf("%s:req:%d", ref.RunID, req.Step),
 		PromptScopeID:              ref.PromptScopeID,
@@ -1944,7 +1957,7 @@ func mustCanonical(value any) string {
 }
 
 func pressureAnchorMatches(anchor PressureAnchorState, promptScopeID, providerName, model string) bool {
-	if anchor.WindowInputTokens <= 0 {
+	if anchor.WindowInputTokens < 0 || anchor.WindowInputTokens == 0 && !anchor.InputMeasurementQualified {
 		return false
 	}
 	if promptScopeID != "" && anchor.PromptScopeID != promptScopeID {
@@ -1965,4 +1978,12 @@ func safePath(value string) string {
 		return "default"
 	}
 	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func cloneProviderResponseRecord(record ProviderResponseRecord) ProviderResponseRecord {
+	if record.Measurement != nil {
+		evidence := *record.Measurement
+		record.Measurement = &evidence
+	}
+	return record
 }

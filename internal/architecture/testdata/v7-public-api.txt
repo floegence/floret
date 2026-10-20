@@ -351,6 +351,12 @@ method Identity.Validate func() error
 type Labels struct
 field Labels.Correlation map[string]string tag="json:\"correlation,omitempty\""
 field Labels.Host map[string]string tag="json:\"host,omitempty\""
+type MeasurementPrefix struct
+field MeasurementPrefix.ExecutionIdentity string tag="json:\"execution_identity\""
+field MeasurementPrefix.Format string tag="json:\"format\""
+field MeasurementPrefix.Fingerprint string tag="json:\"fingerprint\""
+field MeasurementPrefix.ItemCount int tag="json:\"item_count\""
+field MeasurementPrefix.Boundary string tag="json:\"boundary\""
 type Message struct
 field Message.Attribution *github.com/floegence/floret/v7/provider.MessageAttribution tag="json:\"attribution,omitempty\""
 field Message.Role github.com/floegence/floret/v7/provider.MessageRole tag="json:\"role\""
@@ -386,6 +392,7 @@ field OutputPart.OutputIndex int tag="json:\"output_index\""
 field OutputPart.ContentIndex int tag="json:\"content_index\""
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
+type PreparedRequestMeasurement interface interface{InputMeasurementPrefix() github.com/floegence/floret/v7/provider.MeasurementPrefix; MeasurementSuffix(github.com/floegence/floret/v7/provider.MeasurementPrefix) ([]byte, bool)}
 type PreparedRequestOutputLimiter interface interface{WithMaxOutputTokens(context.Context, int64) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type PreparedRequestReplay interface interface{PrepareRetry(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type ProviderHTTPError struct
@@ -408,6 +415,8 @@ field RenderedContentAttribution.Key string
 field RenderedContentAttribution.Source string
 field RenderedContentAttribution.Namespace string
 field RenderedContentAttribution.Parts []github.com/floegence/floret/v7/provider.ContentAttributionPart
+func RenderedMeasurementPrefix func(request github.com/floegence/floret/v7/provider.RenderedRequest, executionIdentity string, boundary string) (github.com/floegence/floret/v7/provider.MeasurementPrefix, error)
+func RenderedMeasurementSuffix func(request github.com/floegence/floret/v7/provider.RenderedRequest, executionIdentity string, prefix github.com/floegence/floret/v7/provider.MeasurementPrefix) ([]byte, bool)
 type RenderedRequest struct
 field RenderedRequest.Attribution []github.com/floegence/floret/v7/provider.RenderedContentAttribution
 field RenderedRequest.Provider string
@@ -439,6 +448,13 @@ const RequestFormatAnthropic github.com/floegence/floret/v7/provider.RequestForm
 const RequestFormatJSON github.com/floegence/floret/v7/provider.RequestFormat = "input_json"
 const RequestFormatOpenAIChat github.com/floegence/floret/v7/provider.RequestFormat = "openai_chat"
 const RequestFormatOpenAIResponses github.com/floegence/floret/v7/provider.RequestFormat = "openai_responses"
+type RequestMeasurement struct
+field RequestMeasurement.AttemptID string tag="json:\"attempt_id\""
+field RequestMeasurement.CompleteInput bool tag="json:\"complete_input\""
+field RequestMeasurement.OpaqueInput bool tag="json:\"opaque_input,omitempty\""
+field RequestMeasurement.Input github.com/floegence/floret/v7/provider.MeasurementPrefix tag="json:\"input\""
+field RequestMeasurement.ResponseID string tag="json:\"response_id,omitempty\""
+field RequestMeasurement.ResponseEnd github.com/floegence/floret/v7/provider.MeasurementPrefix tag="json:\"response_end,omitzero\""
 type RequestPreparer interface interface{Prepare(context.Context, github.com/floegence/floret/v7/provider.Request) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
 type RequestReusePolicy struct
 field RequestReusePolicy.PromptCacheEnabled bool tag="json:\"prompt_cache_enabled\""
@@ -516,6 +532,8 @@ field ToolResult.ToolName string tag="json:\"tool_name\""
 field ToolResult.Text string tag="json:\"text,omitempty\""
 field ToolResult.Attachments []github.com/floegence/floret/v7/provider.Attachment tag="json:\"attachments,omitempty\""
 type Usage struct
+field Usage.OutputTokensReported bool tag="json:\"output_tokens_reported,omitempty\""
+field Usage.Measurement *github.com/floegence/floret/v7/provider.RequestMeasurement tag="json:\"measurement,omitempty\""
 field Usage.InputTokensReported bool tag="json:\"input_tokens_reported,omitempty\""
 field Usage.InputTokenScope string tag="json:\"input_token_scope,omitempty\""
 field Usage.OutputIncludesReasoning bool tag="json:\"output_includes_reasoning,omitempty\""
@@ -2536,6 +2554,8 @@ const CompactionPhaseFailed github.com/floegence/floret/v7/observation.Compactio
 const CompactionPhaseNoop github.com/floegence/floret/v7/observation.CompactionPhase = "noop"
 const CompactionPhaseStart github.com/floegence/floret/v7/observation.CompactionPhase = "start"
 type CompactionRequestSnapshot struct
+field CompactionRequestSnapshot.CalibrationBoundary string tag="json:\"calibration_boundary,omitempty\""
+field CompactionRequestSnapshot.CalibrationInvalidReason string tag="json:\"calibration_invalid_reason,omitempty\""
 field CompactionRequestSnapshot.PayloadFingerprint string tag="json:\"payload_fingerprint\""
 field CompactionRequestSnapshot.Provider string tag="json:\"provider\""
 field CompactionRequestSnapshot.Model string tag="json:\"model\""

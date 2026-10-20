@@ -404,9 +404,7 @@ func PressureFromProjectedRequest(estimate RequestEstimate, delta RequestDeltaEs
 	pressure.ProjectedInputTokens = projected
 	budget := ResolveRequestBudget(policy, projected)
 	pressure.HardLimitExceeded = budget.HardLimitExceeded
-	if policy.ModelMaxOutputTokens > 0 {
-		pressure.CompactionNeeded = budget.CompactionNeeded
-	}
+	pressure.CompactionNeeded = budget.CompactionNeeded
 	return pressure
 }
 

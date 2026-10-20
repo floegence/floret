@@ -449,6 +449,7 @@ func runtimeProviderUsage(usage provider.Usage) publicprovider.Usage {
 	usage = usage.Normalized()
 	return publicprovider.Usage{
 		InputTokensReported: usage.InputTokensReported, InputTokenScope: usage.InputTokenScope,
+		OutputTokensReported: usage.OutputTokensReported, Measurement: publicRequestMeasurement(usage.Measurement),
 		OutputIncludesReasoning: usage.OutputIncludesReasoning,
 		TotalTokensReported:     usage.TotalTokensReported,
 		InputTokens:             usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,

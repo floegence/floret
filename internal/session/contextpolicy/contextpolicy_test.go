@@ -278,8 +278,8 @@ func TestPressureFromProjectedRequestUsesAnchorDeltaWhenComparable(t *testing.T)
 	if pressure.WindowInputTokens != 0 || pressure.ProjectedInputTokens != 905 {
 		t.Fatalf("anchored projection tokens = %#v", pressure)
 	}
-	if pressure.CompactionNeeded || !pressure.HardLimitExceeded {
-		t.Fatalf("projected pressure should only mark hard preflight risk: %#v", pressure)
+	if !pressure.CompactionNeeded || !pressure.HardLimitExceeded {
+		t.Fatalf("projected pressure must use the shared threshold and hard budget: %#v", pressure)
 	}
 }
 

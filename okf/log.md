@@ -2,6 +2,8 @@
 
 ## 2026-10-19 — Question interaction scope
 
+- Unify frozen-request pressure around qualified native prefixes and Floret-estimated suffixes; remove post-response triggering and append schema 27 -> 28 without rewriting historical facts.
+
 - Narrow [Ask User guidance](api/runtime.md) to required execution input and requested guided questions; preserve natural discussion without changing control schemas or waiting and cancellation behavior.
 
 ## 2026-10-19 — Concise Goal and argument correction guidance
