@@ -41,6 +41,10 @@ func TestPathMetadataPreservesCanonicalLocatorsWithoutBodyReads(t *testing.T) {
 		ref := repo.domainMemory.entries["thread"][0].bodyFields["content"]
 		releaseCachedBody(ref)
 		repo.backend = failingBodyReadBackend{Backend: backend, failure: errors.New("metadata read a body")}
+		window, err := repo.PathMetadataWindow(t.Context(), PathWindowOptions{ThreadID: "thread", AnchorID: "150", Direction: PathWindowAround, Limit: 150})
+		if err != nil || len(window.Entries) != 150 || window.FirstEntryID != "75" || window.LastEntryID != "224" {
+			t.Fatalf("window hydrated a body or changed boundaries: %v", err)
+		}
 		metadata, err := repo.PathMetadataPage(t.Context(), "thread", "", "200", 150)
 		if err != nil {
 			t.Fatal(err)

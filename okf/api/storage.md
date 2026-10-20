@@ -385,3 +385,11 @@ still contain large structured Activity fields. Tests use a backend that rejects
 body reads and verify detached ownership, active-path cursor rejection,
 cancellation and restart. See [implementation](../../internal/sessiontree/path_metadata.go)
 and [tests](../../internal/sessiontree/path_metadata_test.go).
+
+PathMetadataWindow extends that kernel with chronological before/after/around
+selection in at most 256 entries. It uses ancestry lookup to find the selected
+interval without walking from the root or slicing a complete Path. A frozen
+leaf remains valid during append-only growth, but is rejected if no longer on
+the active path. Around selection reuses the same field detachment path. No
+cursor registry or long-lived backend transaction is retained. Exact wall-time
+and wire facts survive restart; Go monotonic-clock metadata is not durable.

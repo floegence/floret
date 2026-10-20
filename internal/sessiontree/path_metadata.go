@@ -43,30 +43,11 @@ func (r *MemoryRepo) PathMetadataPage(ctx context.Context, threadID, leafID, bef
 	defer r.mu.Unlock()
 	result := PathMetadataPage{Entries: []PathMetadata{}}
 	page, err := r.visitPathPageLocked(ctx, threadID, leafID, beforeEntryID, limit, func(entry Entry) error {
-		fields := maps.Clone(entry.bodyFields)
-		if fields == nil {
-			if err := ValidateEntryIntegrity(entry); err != nil {
-				return err
-			}
-			fields = map[string]canonicalBodyRef{}
-			for field, value := range canonicalEntryBodyFields(&entry) {
-				if *value != "" {
-					fields[field] = canonicalBodyRef{SHA256: stableHash(*value), Bytes: len(*value)}
-				}
-			}
+		metadata, err := canonicalPathMetadata(entry)
+		if err != nil {
+			return err
 		}
-		for _, value := range canonicalEntryBodyFields(&entry) {
-			*value = ""
-		}
-		entry.Raw = ""
-		entry.bodyFields = nil
-		metadata := PathMetadata{Entry: cloneEntry(entry)}
-		// Deterministic field order makes rebuilt metadata stable.
-		for _, field := range []string{"content", "reasoning", "arguments", "summary", "error"} {
-			if ref, ok := fields[field]; ok {
-				metadata.Bodies = append(metadata.Bodies, CanonicalField{Field: field, SHA256: ref.SHA256, Bytes: ref.Bytes})
-			}
-		}
+
 		result.Entries = append(result.Entries, metadata)
 		return nil
 	})
@@ -75,4 +56,33 @@ func (r *MemoryRepo) PathMetadataPage(ctx context.Context, threadID, leafID, bef
 	}
 	result.NextEntryID, result.HasMore, result.NewestOrdinal = page.NextEntryID, page.HasMore, page.NewestOrdinal
 	return result, nil
+}
+
+// canonicalPathMetadata is the sole body-free entry detachment path.
+func canonicalPathMetadata(entry Entry) (PathMetadata, error) {
+	fields := maps.Clone(entry.bodyFields)
+	if fields == nil {
+		if err := ValidateEntryIntegrity(entry); err != nil {
+			return PathMetadata{}, err
+		}
+		fields = map[string]canonicalBodyRef{}
+		for field, value := range canonicalEntryBodyFields(&entry) {
+			if *value != "" {
+				fields[field] = canonicalBodyRef{SHA256: stableHash(*value), Bytes: len(*value)}
+			}
+		}
+	}
+	for _, value := range canonicalEntryBodyFields(&entry) {
+		*value = ""
+	}
+	entry.Raw = ""
+	entry.bodyFields = nil
+	metadata := PathMetadata{Entry: cloneEntry(entry)}
+	// Deterministic field order makes rebuilt metadata stable.
+	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error"} {
+		if ref, ok := fields[field]; ok {
+			metadata.Bodies = append(metadata.Bodies, CanonicalField{Field: field, SHA256: ref.SHA256, Bytes: ref.Bytes})
+		}
+	}
+	return metadata, nil
 }
