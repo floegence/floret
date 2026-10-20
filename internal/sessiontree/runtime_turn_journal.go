@@ -85,7 +85,7 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	if req.TurnKind != "" {
 		kind := req.TurnKind
 		if req.ContinueGoal {
-			path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
+			path, err := r.canonicalPathLocked(context.Background(), meta.ID, meta.LeafID)
 			if err != nil {
 				return AcceptTurnResult{}, err
 			}

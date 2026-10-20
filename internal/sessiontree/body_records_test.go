@@ -117,7 +117,7 @@ func TestBackendDomainV29ToV30PreservesFactsAndSharesBodies(t *testing.T) {
 			}
 			if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
 				if _, _, err := loadBackendDomainV29(t.Context(), tx, time.Now); err == nil {
-					t.Fatal("v28 reader accepted upgraded store")
+					t.Fatal("v29 reader accepted upgraded store")
 				}
 				if populated {
 					entry := before.entries["thread"][0]
