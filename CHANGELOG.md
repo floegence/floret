@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Share active text with the Engine attempt owner instead of retaining a second
+  actor string. Bound aggregate draft source memory to 4 MiB and spill larger
+  bytes to private disposable files. Preserve accepted prefixes on write failure,
+  existing display path redaction, graceful cancellation and canonical restart
+  bytes. Add optional freshly scoped ThreadLiveBodyReader with frozen run/source
+  identity, bounded UTF-8 chunks and explicit expiry. Complete commit
+  materialization and actor metadata residency remain unbounded.
+  Exhausted window previews advance through explicit metadata-only body deltas
+  instead of rereading and retransmitting their unchanged 64 KiB prefix.
+
 - Hydrate cold actors through cancellable frozen canonical pages, releasing
   accepted text and completed ordinary activity after each page. Restore queue
   and snapshot inputs through one body-free physical inventory, preserving

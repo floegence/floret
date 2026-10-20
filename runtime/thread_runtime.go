@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/floret/v7/internal/agentharness"
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
@@ -331,6 +332,7 @@ type ThreadItem struct {
 	activityEntryIDs []string
 	activityOmitted  bool
 	textOmitted      bool
+	liveBody         outputbody.Reader
 	textBytes        int
 	textNonSpace     bool
 	canonicalText    bool

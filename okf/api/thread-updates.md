@@ -18,7 +18,7 @@ with exact canonical facts, without republishing untouched historical items.
 Terminal presentation presence is updated only for affected canonical items.
 Complete recovery reads and custom stores lacking exact source readers still
 use the complete adapter. This does not complete bounded cold initialization,
-metadata residency, draft spilling or downstream performance qualification.
+metadata residency, streamed canonical installation or downstream performance qualification.
 
 The real SQLite fixed-completion benchmark (Apple M5 Pro, Go 1.27.2, 200
 iterations) measured 2,104 / 2,315 / 2,447 ns per installation with 1,096 /
@@ -84,6 +84,14 @@ An addition's ordinal determines insertion order. `ItemOrder`, when present, is
 the complete current ordered ID list and also determines one-based ordinals.
 Run and turn identities are authoritative actor facts, not host inferences.
 
+Only bounded window subscriptions emit `ThreadItemBodyUpdated` (`body`). It
+replaces the item's `Body` locator and exact frozen extent, preserving the
+already accepted preview and every other item field. It carries neither `Item`
+nor `Append`. Once a preview is truncated, later growth therefore performs no
+prefix read or retransmission. Complete `ThreadUpdateSource` consumers retain
+the existing add/replace/remove/append contract. A new window baseline refreshes
+the bounded prefix explicitly; canonical installation uses an ordinary replace.
+
 A nil component wrapper means unchanged. A present wrapper installs its value,
 including nil or empty values that clear the component. Facts are the small
 execution, attention, failure, cancellation, progress and queue-count surface
@@ -106,9 +114,9 @@ fresh small facts. There is no alternate diff algorithm or automatic fallback.
 
 Activity live reduction and batch construction use one `ActivityReducer`. Only
 affected tool facts are projected during execution; canonical and terminal
-boundaries may materialize full state. Engine fragment and actor text buffers
-append without repeatedly copying accumulated text, while public snapshots
-remain immutable.
+boundaries may materialize full state. The Engine and actor share one
+attempt-owned source. Actor reads freeze the exact byte extent; public complete
+snapshots remain immutable.
 
 # Evidence
 
@@ -228,7 +236,7 @@ continue by BaseVersion. Thread and canonical leaf identity remain explicit.
 Pages contain at most 150 items and 512 KiB of encoded item data. UTF-8 text
 prefixes are at most 64 KiB and detached before cloning private source locators.
 ThreadItem.Body identifies omitted text; partial Markdown is raw preview. Active
-text has no canonical locator until commit. Turn membership tests selected IDs
+text uses a frozen ReadLiveBody locator until commit. Turn membership tests selected IDs
 against canonical membership rather than scanning an enormous turn. Pending
 interaction IDs belong to the existing interaction index, so controls remain
 reachable independently of historical page selection.
@@ -256,7 +264,32 @@ this is not bounded initialization or bounded actor metadata.
 Queue, context and restored-input components retain complete semantics and can
 exceed the observation budget. Oversized components fail explicitly, never drop
 accepted controls. Bounded actor residency, large structured metadata access,
-live body access and downstream production acceptance remain unfinished.
+streamed canonical installation and downstream production acceptance remain unfinished.
+
+# Active output residency
+
+The Engine attempt owns raw draft bytes and any path-redacted display tail under
+one aggregate 4 MiB source-memory budget. The display reader shares the unchanged
+prefix; only a transformed suffix is stored separately. Larger bytes spill to
+private disposable files. Failed writes do not advance the accepted extent, and
+every exit closes spill files. This is temporary source storage, not a journal,
+replay mechanism or second execution owner. Diagnostic sanitizers and recorders
+drop internal body references. The actor keeps an exact extent and bounded summary.
+
+Optional ThreadLiveBodyReader freshly authorizes private facts per chunk and
+pins ThreadID, RunID, SourceID and ThroughBytes. It returns at most 16 KiB source
+and 64 KiB encoded, preserving UTF-8 and CRLF. Late append cannot extend a frozen
+prefix. Retry, canonical installation, deletion and restart expire the locator;
+the caller refreshes the item and uses its canonical body locator. Canceling the
+read never cancels the run. Full adapters detach the exact frozen live extent.
+
+Completion still materializes complete output for the existing transactional
+provider-context commit. This peak is outside the draft budget and remains a
+separate implementation requirement. SQLite tests cover 44 MiB output, bounded
+live previews, exact chunk/commit/restart hashes, graceful stop, frozen adapters,
+revocation and cancellation. They do not establish UI or production-chain
+performance acceptance. See [live body tests](../../runtime/thread_live_body_test.go)
+and [spill failure and cleanup tests](../../internal/outputbody/body_test.go).
 
 See [window contract](../../runtime/thread_window_observation.go),
 [SQLite, restart, authorization and race regressions](../../runtime/thread_window_observation_test.go),

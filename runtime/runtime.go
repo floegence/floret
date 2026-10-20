@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/v7/internal/configbridge"
 	"github.com/floegence/floret/v7/internal/engine"
 	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/provider/catalog"
@@ -721,6 +722,8 @@ type Event struct {
 	activityItems     []observation.ActivityItem
 	contextCommitted  bool
 	outputSourceID    string
+	outputBody        outputbody.Reader
+	outputBodyErr     error
 	outputOrder       []string
 	committed         *agentharness.ThreadDetailEvent
 	attemptLogicalID  identity.LogicalRequestID
@@ -2083,6 +2086,26 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 	s.EmitWithActivityTimeline(ev, nil)
 }
 
+func (s runtimeEventSink) EmitWithOutputBody(ev event.Event, body outputbody.Reader, bodyErr error) {
+	if s.sink == nil {
+		return
+	}
+	if s.mu != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	out := runtimeEvent(ev)
+	if sink, ok := s.sink.(combinedThreadEventSink); ok {
+		if sink.primary != nil {
+			sink.primary.EmitEvent(out)
+		}
+		out.outputBody, out.outputBodyErr = body, bodyErr
+		sink.runtime.EmitEvent(out)
+	} else {
+		s.sink.EmitEvent(out)
+	}
+}
+
 func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *observation.ActivityTimeline) {
 	if s.sink == nil {
 		return
@@ -2689,6 +2712,16 @@ type runtimeActivityEventRecorder struct {
 	reducer        *observation.ActivityReducer
 	hostedAttempts map[string]map[string]bool
 	sink           runtimeEventSink
+}
+
+func (r *runtimeActivityEventRecorder) EmitWithOutputBody(ev event.Event, body outputbody.Reader, bodyErr error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reducer == nil {
+		r.reducer = observation.NewActivityReducer(observation.ActivityRunMeta{RunID: identity.RunID(ev.RunID), ThreadID: identity.ThreadID(ev.ThreadID), TurnID: identity.TurnID(ev.TurnID), TraceID: identity.TraceID(ev.TraceID)})
+	}
+	r.reducer.Apply(observation.Event{}, time.Now().UnixMilli())
+	r.sink.EmitWithOutputBody(ev, body, bodyErr)
 }
 
 func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {

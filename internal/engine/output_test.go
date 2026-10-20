@@ -1,15 +1,65 @@
 package engine
 
 import (
+	"errors"
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestResponseOutputPublishesCompleteRunesAcrossNativeParts(t *testing.T) {
+	for split := 1; split < len("中🌸"); split++ {
+		builder := newResponseOutputBuilder("run", "attempt")
+		t.Cleanup(func() { _ = builder.bodies.Close() })
+		answer := &provider.OutputPart{ItemID: "answer", OutputIndex: 1}
+		reason := &provider.OutputPart{ItemID: "reason", OutputIndex: 0}
+		text := "中🌸"
+		var observed strings.Builder
+		builder.appendText(provider.Delta, text[:split], answer)
+		if !utf8.ValidString(builder.delta) {
+			t.Fatal("partial rune published")
+		}
+		observed.WriteString(builder.delta)
+		builder.appendText(provider.Reasoning, "reason", reason)
+		builder.appendText(provider.Delta, text[split:], answer)
+		if !utf8.ValidString(builder.delta) {
+			t.Fatal("continuation did not complete rune")
+		}
+		observed.WriteString(builder.delta)
+		output := builder.finish(nil)
+		if builder.err != nil || observed.String() != text || len(output.Items) != 2 || output.Items[1].Message.Content != text || output.Items[0].Message.Reasoning != "reason" {
+			t.Fatal("fragmented output changed content or native ordering", builder.err)
+		}
+	}
+}
+
+func TestResponseOutputAppendFailureRetainsAcceptedFragments(t *testing.T) {
+	builder := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = builder.bodies.Close() })
+	builder.appendText(provider.Reasoning, "accepted reasoning", nil)
+	source, _ := builder.appendText(provider.Delta, "accepted answer", nil)
+	if len(builder.finish(nil).Items) != 2 {
+		t.Fatal("initial output unavailable")
+	}
+	if err := builder.bodies.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _ = builder.appendText(provider.Delta, "rejected", nil); !errors.Is(builder.err, os.ErrClosed) {
+		t.Fatal(builder.err)
+	}
+	got := builder.finish(nil)
+	if len(got.Items) != 2 || got.Items[0].Message.Reasoning != "accepted reasoning" || got.Items[1].Message.Content != "accepted answer" || got.Items[1].Message.ContentSourceID != source {
+		t.Fatal("accepted output lost")
+	}
+}
 
 func TestResponseOutputNativeSuffixKeepsSourceAndPosition(t *testing.T) {
 	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
 	reason := &provider.OutputPart{ItemID: "reason", OutputIndex: 0}
 	first, _ := b.appendText(provider.Reasoning, "before", reason)
 	b.appendHosted(event.Event{Type: event.HostedToolCall, ToolID: "search"}, &provider.OutputPart{ItemID: "search", OutputIndex: 1})
@@ -31,6 +81,7 @@ func TestResponseOutputNativeSuffixKeepsSourceAndPosition(t *testing.T) {
 
 func TestResponseOutputGrowthDoesNotCopyAccumulatedText(t *testing.T) {
 	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
 	part := &provider.OutputPart{ItemID: "answer"}
 	b.appendText(provider.Delta, strings.Repeat("x", 1<<20), part)
 	first := b.finish(nil)
@@ -49,6 +100,7 @@ func TestResponseOutputGrowthDoesNotCopyAccumulatedText(t *testing.T) {
 }
 func TestResponseOutputSameTextHasDistinctSources(t *testing.T) {
 	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
 	first, _ := b.appendText(provider.Reasoning, "same", nil)
 	b.appendText(provider.Delta, "text", nil)
 	second, _ := b.appendText(provider.Reasoning, "same", nil)

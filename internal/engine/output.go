@@ -2,11 +2,14 @@ package engine
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
 )
@@ -22,7 +25,8 @@ type ResponseOutputItem struct {
 	Hosted  *event.Event
 	part    *provider.OutputPart
 	channel provider.EventType
-	text    *strings.Builder
+	text    *outputbody.Body
+	pending string
 }
 
 type responseOutputBuilder struct {
@@ -32,6 +36,9 @@ type responseOutputBuilder struct {
 	open       int
 	parts      map[responseOutputPartKey]int
 	orderCache []string
+	bodies     *outputbody.Owner
+	err        error
+	delta      string
 }
 
 type responseOutputPartKey struct {
@@ -40,10 +47,11 @@ type responseOutputPartKey struct {
 }
 
 func newResponseOutputBuilder(runID, attemptID string) *responseOutputBuilder {
-	return &responseOutputBuilder{runID: runID, attemptID: attemptID, open: -1}
+	return &responseOutputBuilder{runID: runID, attemptID: attemptID, open: -1, bodies: outputbody.NewOwner()}
 }
 
 func (b *responseOutputBuilder) appendText(kind provider.EventType, text string, part *provider.OutputPart) (string, []string) {
+	b.delta = ""
 	index := -1
 	if part != nil {
 		if i, ok := b.parts[responseOutputPartKey{*part, kind}]; ok {
@@ -68,18 +76,33 @@ func (b *responseOutputBuilder) appendText(kind provider.EventType, text string,
 		} else {
 			msg.ContentSourceID = source
 		}
-		b.output.Items = append(b.output.Items, ResponseOutputItem{Message: msg, part: copyPart, channel: kind, text: &strings.Builder{}})
+		b.output.Items = append(b.output.Items, ResponseOutputItem{Message: msg, part: copyPart, channel: kind, text: b.bodies.NewBody()})
 		index = b.insertLastPart()
 	}
 	b.open = index
 	item := &b.output.Items[index]
 	source := item.Message.ContentSourceID
-	item.text.WriteString(text)
+	// Providers may split a rune between events. Keep only its incomplete
+	// suffix here so every observed extent ends at a readable UTF-8 boundary.
+	text = item.pending + text
+	end := len(text)
+	if end > 0 {
+		start := end - 1
+		for start > 0 && end-start < utf8.UTFMax && !utf8.RuneStart(text[start]) {
+			start--
+		}
+		if !utf8.FullRuneInString(text[start:]) {
+			end = start
+		}
+	}
+	if err := item.text.Append(text[:end]); err != nil {
+		b.err = err
+		return "", nil
+	}
+	item.pending = strings.Clone(text[end:])
+	b.delta = text[:end]
 	if kind == provider.Reasoning {
-		item.Message.Reasoning = item.text.String()
 		source = item.Message.ReasoningSourceID
-	} else {
-		item.Message.Content = item.text.String()
 	}
 	return source, b.order()
 }
@@ -158,7 +181,41 @@ func (b *responseOutputBuilder) appendHosted(ev event.Event, part *provider.Outp
 }
 
 func (b *responseOutputBuilder) finish(sources []citation.Source) ResponseOutput {
+	// Preserve the existing final raw-output semantics even if a provider ends
+	// with an incomplete rune. Partial bytes never become a live body extent.
+	for index := range b.output.Items {
+		item := &b.output.Items[index]
+		if item.pending != "" {
+			if err := item.text.Append(item.pending); err != nil {
+				b.err = errors.Join(b.err, err)
+			} else {
+				item.pending = ""
+			}
+		}
+	}
 	out := ResponseOutput{Items: append([]ResponseOutputItem(nil), b.output.Items...)}
+	for index := range out.Items {
+		item := &out.Items[index]
+		if item.text == nil {
+			continue
+		}
+		text, err := item.text.Materialize()
+		if err != nil {
+			b.err = errors.Join(b.err, err)
+			if text == "" {
+				return ResponseOutput{}
+			}
+		}
+		if item.channel == provider.Reasoning {
+			item.Message.Reasoning = text
+		} else {
+			item.Message.Content = text
+		}
+		item.text = nil
+	}
+	if len(sources) == 0 {
+		return out
+	}
 	var textBuffer strings.Builder
 	var boundaries []int
 	for _, item := range out.Items {
@@ -178,6 +235,34 @@ func (b *responseOutputBuilder) finish(sources []citation.Source) ResponseOutput
 		}
 	}
 	return out
+}
+
+// Reuse the immutable source for the common single-fragment case. Multi-part
+// consumers still receive the established complete concatenation.
+func (output ResponseOutput) text(reasoning bool) string {
+	var first string
+	var joined strings.Builder
+	for _, item := range output.Items {
+		text := item.Message.Content
+		if reasoning {
+			text = item.Message.Reasoning
+		}
+		if text == "" {
+			continue
+		}
+		if first == "" {
+			first = text
+			continue
+		}
+		if joined.Len() == 0 {
+			joined.WriteString(first)
+		}
+		joined.WriteString(text)
+	}
+	if joined.Len() > 0 {
+		return joined.String()
+	}
+	return first
 }
 
 func (output ResponseOutput) assistantMessages() []session.Message {

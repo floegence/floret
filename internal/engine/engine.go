@@ -3966,15 +3966,18 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 
 func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request, attempt *providerattempt.Attempt) (out StepOutput, retErr error) {
 	builder := newResponseOutputBuilder(opts.RunID, req.AttemptID)
+	defer func() {
+		if err := builder.bodies.Close(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 	hasText := false
 	defer func() {
 		out.Output = builder.finish(out.Sources)
-		var text, reasoning strings.Builder
-		for _, item := range out.Output.Items {
-			text.WriteString(item.Message.Content)
-			reasoning.WriteString(item.Message.Reasoning)
+		if builder.err != nil {
+			retErr = errors.Join(retErr, builder.err)
 		}
-		out.Text, out.Reasoning = text.String(), reasoning.String()
+		out.Text, out.Reasoning = out.Output.text(false), out.Output.text(true)
 	}()
 	var lastProgressAt *time.Time
 	var estimate outputEstimate
@@ -4058,16 +4061,26 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					break
 				}
 				source, order := builder.appendText(provider.Delta, ev.Text, ev.OutputPart)
+				if builder.err != nil {
+					return out, builder.err
+				}
 				hasText = true
 				estimate.append("text", ev.Text)
-				emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				if builder.delta != "" {
+					emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
+				}
 			case provider.Reasoning:
 				if ev.Text == "" {
 					break
 				}
 				source, order := builder.appendText(provider.Reasoning, ev.Text, ev.OutputPart)
+				if builder.err != nil {
+					return out, builder.err
+				}
 				estimate.append("reasoning", ev.Text)
-				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				if builder.delta != "" {
+					emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
+				}
 			case provider.ToolCallStart:
 				previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name)
 				emitAttemptEvent(event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})

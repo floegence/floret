@@ -46,6 +46,8 @@ const (
 	ThreadItemReplaced ThreadItemChangeKind = "replace"
 	ThreadItemRemoved  ThreadItemChangeKind = "remove"
 	ThreadItemAppended ThreadItemChangeKind = "append"
+	// ThreadItemBodyUpdated advances only a bounded window body locator.
+	ThreadItemBodyUpdated ThreadItemChangeKind = "body"
 )
 
 // ThreadItemChange is an explicit mutation, never an instruction to infer a diff.
@@ -54,6 +56,7 @@ type ThreadItemChange struct {
 	ItemID string               `json:"item_id"`
 	Item   *ThreadItem          `json:"item,omitempty"`
 	Append *ThreadTextAppend    `json:"append,omitempty"`
+	Body   *ThreadItemBody      `json:"body,omitempty"`
 }
 
 // ThreadRuntimeFacts contains the small execution facts needed by host cleanup
@@ -272,6 +275,10 @@ func cloneThreadUpdate(update ThreadUpdate) ThreadUpdate {
 		if change.Append != nil {
 			value := *change.Append
 			change.Append = &value
+		}
+		if change.Body != nil {
+			value := *change.Body
+			change.Body = &value
 		}
 	}
 	view := cloneThreadRuntimeFields(ThreadView{Context: componentValue(update.Context), Goal: componentValue(update.Goal), ParentEvents: componentValue(update.ParentEvents), Turns: componentValue(update.Turns), Queue: componentValue(update.Queue), Interactions: componentValue(update.Interactions), ToolCallPreviews: componentValue(update.ToolCallPreviews), RestoredInputs: componentValue(update.RestoredInputs), Failure: update.Facts.Failure, Cancellation: update.Facts.Cancellation, RunProgress: update.Facts.RunProgress})
@@ -583,6 +590,7 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 				break
 			}
 			change.Item.textOmitted = false
+			change.Item.liveBody = nil
 		}
 		var raw []byte
 		if err == nil {

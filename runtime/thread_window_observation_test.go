@@ -89,8 +89,30 @@ func TestThreadWindowPreviewBoundedAndQueueRelease(t *testing.T) {
 	}
 	emitText(sink, "4", "tail")
 	update := nextUpdate(t, sub)
-	if len(update.Items) != 1 || update.Items[0].Kind != ThreadItemReplaced || update.Items[0].Item.Body.Bytes != 100004 {
+	if len(update.Items) != 1 || update.Items[0].Kind != ThreadItemBodyUpdated || update.Items[0].Body.Bytes != 100004 || update.Items[0].Item != nil || update.Items[0].Append != nil {
 		t.Fatal("preview overflow did not replace metadata")
+	}
+	previewBytes := update.Items[0].Body.PreviewBytes
+	update.Items[0].Body.Bytes = -1
+	for index := range 20 {
+		emitText(sink, "4", "中🌸\r\n")
+		update = nextUpdate(t, sub)
+		raw, err := json.Marshal(update)
+		if err != nil || len(raw) > 2048 || len(update.Items) != 1 {
+			t.Fatal("exhausted preview copied source", err)
+		}
+		change := update.Items[0]
+		if change.Kind != ThreadItemBodyUpdated || change.Item != nil || change.Append != nil || change.Body.Bytes != 100004+(index+1)*len("中🌸\r\n") || change.Body.PreviewBytes != previewBytes {
+			t.Fatal("metadata delta changed accepted preview or source extent")
+		}
+	}
+	// Establishing another baseline remains explicit and refreshes its extent.
+	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline = nextUpdate(t, sub)
+	if last := baseline.Window.Value.Items[4]; last.Body.Bytes != 100184 || last.Body.PreviewBytes != previewBytes {
+		t.Fatal("new baseline did not retain exact prefix")
 	}
 	sub.Close()
 	if sub.queuedBytes != 0 || sub.windows != nil || sub.authorized != nil {
@@ -98,6 +120,45 @@ func TestThreadWindowPreviewBoundedAndQueueRelease(t *testing.T) {
 	}
 	if _, err := sub.Next(context.Background()); !errors.Is(err, ErrHostClosed) {
 		t.Fatal(err)
+	}
+}
+
+func TestThreadWindowOverflowUsesPublishedExtentBeforeNextMutation(t *testing.T) {
+	service, actor, sink, full := nativeUpdatesFixture(t)
+	full.Close()
+	emitText(sink, "source", strings.Repeat("x", threadDisplayTextBytes-1))
+	scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{"thread-live"}}
+	sub, err := service.SubscribeWindowUpdates(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live"}); err != nil {
+		t.Fatal(err)
+	}
+	nextUpdate(t, sub)
+	// Freeze two mutations under one actor lock, as publication does when a
+	// pending growth batch flushes before a later semantic boundary.
+	actor.mu.Lock()
+	actor.state.view.Items[0].Text += "firstsecond"
+	version := actor.state.view.ViewVersion
+	update := ThreadUpdate{ThreadID: "thread-live", BaseVersion: version, ViewVersion: version + 1, Items: []ThreadItemChange{{Kind: ThreadItemAppended, ItemID: "source", Append: &ThreadTextAppend{OffsetBytes: threadDisplayTextBytes - 1, Text: "first"}}}}
+	sub.mu.Lock()
+	projected, ok := sub.projectWindowUpdate(actor, update)
+	sub.mu.Unlock()
+	actor.mu.Unlock()
+	if !ok || len(projected.Items) != 1 || projected.Items[0].Item == nil || projected.Items[0].Item.Body.Bytes != threadDisplayTextBytes+4 {
+		t.Fatal("first batch exposed later canonical extent")
+	}
+	actor.mu.Lock()
+	sub.mu.Lock()
+	update.BaseVersion, update.ViewVersion = version+1, version+2
+	update.Items = []ThreadItemChange{{Kind: ThreadItemAppended, ItemID: "source", Append: &ThreadTextAppend{OffsetBytes: threadDisplayTextBytes + 4, Text: "second"}}}
+	projected, ok = sub.projectWindowUpdate(actor, update)
+	sub.mu.Unlock()
+	actor.mu.Unlock()
+	if !ok || len(projected.Items) != 1 || projected.Items[0].Body == nil || projected.Items[0].Body.Bytes != threadDisplayTextBytes+10 || projected.Items[0].Item != nil {
+		t.Fatal("second batch did not advance exact frozen extent")
 	}
 }
 

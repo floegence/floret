@@ -58,6 +58,24 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 	if want == 0 {
 		return "", nil
 	}
+	if item.liveBody != nil {
+		var result strings.Builder
+		for result.Len() < want {
+			part, err := item.liveBody.Read(ctx, result.Len(), max(4, min(16<<10, want-result.Len())), item.textBytes)
+			if err != nil {
+				return "", err
+			}
+			if part == "" {
+				return "", ErrAuthorityCorrupt
+			}
+			text, partial := boundedThreadText(part, want-result.Len())
+			result.WriteString(text)
+			if partial {
+				break
+			}
+		}
+		return result.String(), nil
+	}
 	reader, ok := service.host.store.repo.(sessiontree.CanonicalBodyReader)
 	if !ok {
 		return "", ErrUnsupportedStoreCapability
@@ -178,6 +196,7 @@ func (service *threadRuntimeService) completeViewResult(ctx context.Context, vie
 		}
 		view.Items[index].Text = text
 		view.Items[index].textOmitted = false
+		view.Items[index].liveBody = nil
 	}
 	return view, nil
 }
@@ -195,6 +214,7 @@ func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem
 			return ThreadItem{}, err
 		}
 		item.Text, item.textOmitted = text, false
+		item.liveBody = nil
 		if len(text) == item.textBytes {
 			item.Body = nil
 		}

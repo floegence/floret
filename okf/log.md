@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Share Engine-owned active output with bounded display readers,
+  budget draft bytes and spill private temporary blocks. Preserve path redaction,
+  accepted prefixes, graceful stop and exact SQLite restart hashes; document
+  remaining complete commit and actor metadata limits in
+  [native thread updates](api/thread-updates.md#active-output-residency).
+
 - 2026-10-20: Read terminal canonical intervals outside the actor lock, share
   lifecycle precedence and reconcile observed overlays by stable item identity.
   Qualify SQLite exact output, stale intervals, readable active state and

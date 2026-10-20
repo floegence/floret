@@ -1028,7 +1028,17 @@ the current version, and must be accepted even when that version is already
 known. Pages select at most 150 items and 512 KiB encoded item data. Text previews
 are exact UTF-8 prefixes of at most 64 KiB; partial text is raw preview, never a
 standalone Markdown document. Committed text locators resolve through the body
-reader or manifest. Live text remains actor-owned until committed.
+reader or manifest. Live text is borrowed from the Engine attempt's output owner.
+The actor retains only an exact byte extent and bounded summary, rather than a
+second accumulated string. Optional `runtime.ThreadLiveBodyReader` reads that
+display source by `ThreadID`, `RunID`, `SourceID` and frozen `ThroughBytes`.
+Each read freshly authorizes the scope and private-fact policy, returns at most
+16 KiB source and 64 KiB encoded, and preserves UTF-8 and CRLF. A live locator
+expires on retry, canonical installation, deletion or restart; refresh the item
+and use its canonical locator after installation. Canceling a read never stops
+execution. Existing path-reference redaction is preserved by a budgeted display
+tail, sharing the unchanged raw prefix. Diagnostic observers never retain the
+internal output-body reference.
 
 Pending approvals and input requests remain accessible outside the selected
 history. Window turn membership includes only selected items. Append preserves
@@ -1043,15 +1053,21 @@ Accepted ordinary user, steering, reasoning and assistant text is released from
 actor/reducer storage after installation. Exact canonical extents restore explicit
 complete reads; window reads hydrate only bounded prefixes. Complete legacy
 publications freeze text before enqueueing, independently of later deletion.
-Transformed control labels, structured metadata and live drafts retain their
-existing ownership.
+Transformed control labels and structured metadata retain their existing
+ownership. Each active provider attempt shares a 4 MiB source-memory budget
+across raw output and any transformed display tail. Larger draft bytes spill
+to private disposable temporary files, released on every attempt exit. Failed
+appends preserve the accepted prefix; graceful stop commits it through the
+existing canonical owner. Completion still materializes full output once for
+the existing provider-context/transactional commit, so its peak is not bounded
+by the draft budget. Source-byte accounting is not a JS heap or process RSS claim.
 
 This capability currently bounds delivered item detail, not all retained actor
 history or every control component. Initial actor hydration still constructs the
 complete canonical projection; queue, context and restored-input components
 retain their complete semantics and may exceed the observation queue budget.
 Oversized observation fails explicitly. Storage-backed bounded actor residency,
-live full-body access and complete production-chain qualification remain required
+streamed canonical installation and complete production-chain qualification remain required
 before claiming extreme-history performance acceptance.
 
 Context failures carry distinct `ThreadTurnFailure` codes: `context_budget_invalid`

@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/citation"
+	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/tools"
@@ -75,6 +76,8 @@ type Event struct {
 	// OutputSourceID is assigned by the Engine before publishing any text.
 	OutputSourceID string   `json:"-"`
 	OutputOrder    []string `json:"-"`
+	// OutputBody is borrowed only through the internal OutputBodySink boundary.
+	OutputBody *outputbody.Body `json:"-"`
 
 	ProviderLastProgressAt *time.Time             `json:"provider_last_progress_at,omitempty"`
 	EstimatedOutputTokens  int64                  `json:"estimated_output_tokens,omitempty"`
@@ -193,6 +196,12 @@ type SinkPolicy struct {
 	PreserveActivityNavigation bool
 }
 
+// OutputBodySink is an in-process presentation handoff. Diagnostic sinks receive
+// only sanitized events and never retain an attempt's body owner.
+type OutputBodySink interface {
+	EmitWithOutputBody(Event, outputbody.Reader, error)
+}
+
 func Sanitize(e Event) Event {
 	return sanitize(e, SinkPolicy{})
 }
@@ -202,10 +211,12 @@ func SanitizeWithPolicy(e Event, policy SinkPolicy) Event {
 }
 
 func SanitizePathRefs(e Event) Event {
+	e.OutputBody = nil
 	return sanitizePathRefs(e, false)
 }
 
 func sanitize(e Event, policy SinkPolicy) Event {
+	e.OutputBody = nil
 	if e.Transport != nil {
 		copy := *e.Transport
 		e.Transport = &copy
@@ -702,6 +713,7 @@ type Recorder struct {
 func (r *Recorder) Emit(e Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	e.OutputBody = nil
 	r.Events = append(r.Events, e)
 }
 
