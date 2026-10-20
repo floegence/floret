@@ -151,6 +151,10 @@ updates; clearing a large Go map alone leaves iteration proportional to its old
 capacity. The actor scaling benchmark checks the complete append-and-install
 kernel at 1,096, 10,960 and 109,600 historical turns. It does not measure storage,
 observation encoding, browser performance or bounded retained actor memory.
+Interaction admission and resolution use actor-owned position and item indexes,
+with attention counts updated by the changed control. Explicit full replacement
+rebuilds those disposable indexes. Fixed-history benchmarks include append and
+resolution; they do not certify full observation component encoding.
 The complete projection remains resident; full refresh boundaries, bounded
 windows and downstream production qualification remain outstanding.
 

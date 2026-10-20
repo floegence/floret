@@ -1972,6 +1972,7 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
 		}
 		actor.state.view = canonical.ThreadView
+		actor.interactionIndex = nil
 		actor.canonical = projection
 		actor.invalidateItemIndex()
 		actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadQueueChanged | threadInteractionsChanged | threadPreviewsChanged | threadRestoredInputsChanged)
@@ -2738,7 +2739,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.view.Context = canonical.Context
 			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadTurnsChanged | threadInteractionsChanged | threadPreviewsChanged)
 			actor.state.contextErr = nil
-			actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
+			actor.replaceInteractions(mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions))
 			applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
 		}
 		outcome := TurnOutcomeCompleted
@@ -2746,7 +2747,7 @@ func (service *threadRuntimeService) finishSend(actor *threadRuntimeState, turnI
 			actor.state.executionSealed = false
 			actor.state.view.Activity = ThreadActivityActive
 			actor.state.view.LastOutcome = nil
-			normalizeActiveThreadRunProgress(&actor.state.view)
+			actor.normalizeRunProgress()
 		} else if completed.Status == TurnStatusCancelled || completed.Status == TurnStatusInterrupted {
 			outcome = TurnOutcomeCancelled
 		} else if runErr != nil || completed.Status == TurnStatusFailed {
@@ -3009,27 +3010,27 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 		if err := service.advanceCanonical(ctx, actor); err != nil {
 			return err
 		}
-		for _, current := range actor.state.view.Interactions {
-			if current.ID == interaction.ID {
-				if current.Resolved {
-					if current.Resolution == nil {
-						return ErrAuthorityCorrupt
-					}
-					progress := cloneThreadRunProgress(actor.state.view.RunProgress)
-					normalizeActiveThreadRunProgress(&actor.state.view)
-					if !sameThreadRunProgress(progress, actor.state.view.RunProgress) {
-						actor.state.view.ViewVersion++
-					}
-					if reservedWaiter && actor.state.pendingInteractions[interaction.ID] == waiter {
-						delete(actor.state.pendingInteractions, interaction.ID)
-						waiter.resolution <- *current.Resolution
-					}
-				} else if actor.state.view.RunProgress != nil {
-					actor.state.view.RunProgress = nil
+		actor.ensureInteractionIndex()
+		if index, found := actor.interactionIndex[interaction.ID]; found {
+			current := actor.state.view.Interactions[index]
+			if current.Resolved {
+				if current.Resolution == nil {
+					return ErrAuthorityCorrupt
+				}
+				progress := cloneThreadRunProgress(actor.state.view.RunProgress)
+				actor.normalizeRunProgress()
+				if !sameThreadRunProgress(progress, actor.state.view.RunProgress) {
 					actor.state.view.ViewVersion++
 				}
-				return nil
+				if reservedWaiter && actor.state.pendingInteractions[interaction.ID] == waiter {
+					delete(actor.state.pendingInteractions, interaction.ID)
+					waiter.resolution <- *current.Resolution
+				}
+			} else if actor.state.view.RunProgress != nil {
+				actor.state.view.RunProgress = nil
+				actor.state.view.ViewVersion++
 			}
+			return nil
 		}
 		return fmt.Errorf("%w: committed interaction is absent from canonical projection", ErrAuthorityCorrupt)
 	})
@@ -3172,9 +3173,9 @@ func (actor *threadRuntimeState) installCanonicalView(canonical canonicalThreadV
 	actor.canonical = canonical.projection
 	actor.pruneArgumentPreviews()
 	actor.state.view.Turns = canonical.Turns
-	actor.state.view.Interactions = mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions)
+	actor.replaceInteractions(mergeThreadInteractions(actor.state.view.Interactions, canonical.Interactions))
 	applyThreadInteractionsToItems(actor.state.view.Items, actor.state.view.Interactions)
-	normalizeActiveThreadRunProgress(&actor.state.view)
+	actor.normalizeRunProgress()
 	return nil
 }
 
@@ -3435,7 +3436,7 @@ func (service *threadRuntimeService) settleCancellationResult(ctx context.Contex
 				delete(actor.state.pendingInteractions, interaction.ID)
 			}
 		}
-		normalizeActiveThreadRunProgress(&actor.state.view)
+		actor.normalizeRunProgress()
 		actor.state.view.ViewVersion++
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
@@ -3671,7 +3672,7 @@ func (service *threadRuntimeService) respondResult(ctx context.Context, threadID
 				waiters = append(waiters, waiterDelivery{waiter: pending.resolution, resolution: resolution})
 			}
 		}
-		normalizeActiveThreadRunProgress(&actor.state.view)
+		actor.normalizeRunProgress()
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3782,28 +3783,6 @@ func sameOptionalBool(left, right *bool) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
-}
-
-func resolveThreadInteractionCanonical(view *ThreadView, interactionID string, resolution InteractionResolution) {
-	for index := range view.Interactions {
-		if view.Interactions[index].ID != interactionID {
-			continue
-		}
-		view.Interactions[index].Resolved = true
-		copy := resolution
-		view.Interactions[index].Resolution = &copy
-		if resolution.Approved != nil {
-			approved := *resolution.Approved
-			view.Interactions[index].Approved = &approved
-		}
-		for itemIndex := range view.Items {
-			if view.Items[itemIndex].Interaction != nil && view.Items[itemIndex].Interaction.ID == interactionID {
-				resolved := view.Interactions[index]
-				view.Items[itemIndex].Interaction = &resolved
-			}
-		}
-		return
-	}
 }
 
 func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntimeState, threadID identity.ThreadID, interaction ThreadInteraction, resolution InteractionResolution, secretInput map[string]string, steering ...bool) {
@@ -4404,19 +4383,6 @@ func threadRuntimeViewNeedsAttention(view ThreadView) bool {
 		}
 	}
 	return false
-}
-
-func normalizeActiveThreadRunProgress(view *ThreadView) {
-	if view == nil || view.Activity != ThreadActivityActive {
-		return
-	}
-	if threadRuntimeViewNeedsAttention(*view) {
-		view.RunProgress = nil
-		return
-	}
-	if view.RunProgress == nil {
-		view.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-	}
 }
 
 func cloneThreadItems(items []ThreadItem) []ThreadItem {

@@ -369,19 +369,8 @@ func (actor *threadRuntimeState) replaceItems(items []ThreadItem) {
 }
 func (actor *threadRuntimeState) refreshAttention() {
 	if actor.mutations.components&threadInteractionsChanged != 0 {
-		attention := AttentionSummary{}
-		for _, interaction := range actor.state.view.Interactions {
-			if interaction.Resolved {
-				continue
-			}
-			if interaction.Kind == ThreadInteractionApproval {
-				attention.ApprovalCount++
-			}
-			if interaction.Kind == ThreadInteractionInput {
-				attention.InputCount++
-			}
-		}
-		actor.state.view.Attention = attention
+		actor.ensureInteractionIndex()
+		actor.state.view.Attention = actor.interactionAttention
 	}
 }
 
@@ -575,11 +564,25 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 }
 
 func (actor *threadRuntimeState) resolveInteraction(interactionID string, resolution InteractionResolution) {
-	resolveThreadInteractionCanonical(&actor.state.view, interactionID, resolution)
-	actor.markComponents(threadInteractionsChanged)
-	for _, item := range actor.state.view.Items {
-		if item.Interaction != nil && item.Interaction.ID == interactionID {
-			actor.markItem(item.ID, ThreadItemReplaced)
+	actor.ensureInteractionIndex()
+	index, found := actor.interactionIndex[interactionID]
+	if !found {
+		return
+	}
+	interaction := actor.state.view.Interactions[index]
+	interaction.Resolved = true
+	interaction.Resolution = &resolution
+	if resolution.Approved != nil {
+		approved := *resolution.Approved
+		interaction.Approved = &approved
+	}
+	actor.installInteraction(interaction, index)
+	actor.ensureItemIndex()
+	for _, id := range actor.interactionItems[interactionID] {
+		if itemIndex := actor.itemIndexByID(id); itemIndex >= 0 {
+			copy := cloneThreadInteraction(interaction)
+			actor.state.view.Items[itemIndex].Interaction = &copy
+			actor.markItem(id, ThreadItemReplaced)
 		}
 	}
 }
