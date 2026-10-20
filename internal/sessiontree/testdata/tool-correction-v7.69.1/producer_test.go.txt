@@ -1,0 +1,60 @@
+package fixture_test
+
+import (
+ "context"
+ "fmt"
+ "os"
+ "path/filepath"
+ "testing"
+ "time"
+
+ "github.com/floegence/floret/v7/config"
+ "github.com/floegence/floret/v7/florettest"
+ "github.com/floegence/floret/v7/identity"
+ "github.com/floegence/floret/v7/provider"
+ "github.com/floegence/floret/v7/runtime"
+ "github.com/floegence/floret/v7/storage"
+ "github.com/floegence/floret/v7/tools"
+)
+
+// Run only in a blank module requiring the exact published v7.69.1.
+func TestProduceReleasedCorrectionFailures(t *testing.T) {
+ path:=os.Getenv("FLORET_FIXTURE_OUTPUT")
+ if path=="" {t.Fatal("FLORET_FIXTURE_OUTPUT required")}
+ if err:=os.MkdirAll(filepath.Dir(path),0755);err!=nil{t.Fatal(err)}
+ call:=func(id,name,args string)florettest.Step{return florettest.Step{Events:[]provider.Event{{Type:provider.EventToolCalls,ToolCalls:[]provider.ToolCall{{ID:id,Name:name,Args:args}}},{Type:provider.EventDone,Reason:"tool_calls"}}}}
+ steps:=[]florettest.Step{}
+ for i:=0;i<3;i++ {
+  steps=append(steps,call(fmt.Sprint("bad-",i),"terminal.exec",`{"yield_time_ms":1}`))
+  if i<2 {steps=append(steps,call(fmt.Sprint("good-",i),"terminal.exec",`{"yield_ms":1}`))}
+ }
+ steps=append(steps,call("control-confirmed","terminal.exec",`{"yield_ms":1}`))
+ for i:=0;i<3;i++ {steps=append(steps,call(fmt.Sprint("ask-",i),runtime.CoreControlAskUser,`{}`))}
+ gateway:=florettest.NewScriptedGateway(provider.Identity{Provider:"compatibility",Model:"fake",StateCompatibilityKey:"compatibility"},provider.Capabilities{Reasoning:provider.ReasoningUnsupported},steps...)
+ executions:=0
+ tool:=tools.Define[map[string]any](tools.Definition{Name:"terminal.exec",ReadOnly:true,InputSchema:tools.StrictObject(map[string]any{"yield_ms":tools.Integer("yield")},[]string{"yield_ms"}),Permission:tools.PermissionSpec{Mode:tools.PermissionAllow}},nil,nil,func(context.Context,tools.Invocation[map[string]any])(tools.Result,error){executions++;return tools.Result{Text:"CONFIRMED_RELEASED_RESULT"},nil})
+ host,err:=runtime.Open(t.Context(),runtime.Options{Storage:storage.SQLite(path),IDSource:florettest.NewIDSource(florettest.IDSourceOptions{ThreadIDs:[]identity.ThreadID{"ordinary","control","fork","nested"},TurnIDs:[]identity.TurnID{"ordinary-turn","control-turn"},RunIDs:[]identity.RunID{"ordinary-run","control-run"}})})
+ if err!=nil{t.Fatal(err)}
+ service,err:=host.ThreadService(runtime.AgentFactoryFunc(func(context.Context,runtime.AgentRequest)(*runtime.Agent,error){return runtime.NewAgent(config.AgentConfig{Profile:config.AgentProfile{ID:"fixture",Name:"Compatibility"},SystemPrompt:"Inspect.",Context:config.ContextPolicy{ContextWindowTokens:config.DefaultContextWindowTokens}},gateway,runtime.WithAgentTools(tool),runtime.WithAgentEffectAuthorization(runtime.EffectAuthorizationGateFunc(func(ctx context.Context,req runtime.EffectAuthorizationRequest,effect runtime.AuthorizedEffect)(runtime.EffectDispatchResult,error){return effect(ctx,runtime.EffectAuthorizationProof{EffectAttemptID:req.EffectAttemptID,RequestFingerprint:req.RequestFingerprint,ThreadID:req.ThreadID,TurnID:req.TurnID,RunID:req.RunID,ToolCallID:req.ToolCallID,PolicyRevision:"fixture",AuditReference:"fixture",AuditHash:"fixture",AuthorizedAt:time.Now().UTC()})})))}))
+ if err!=nil{t.Fatal(err)}
+ for _,id:=range []string{"ordinary","control"} {
+  view,err:=service.Create(t.Context(),runtime.CreateThreadInput{RequestKey:runtime.RequestKey("create-"+id)});if err!=nil{t.Fatal(err)}
+  if view.ThreadID.String()!=id{t.Fatal(view.ThreadID)}
+  if _,err:=service.Send(t.Context(),runtime.SendInput{ThreadID:view.ThreadID,RequestKey:runtime.RequestKey("send-"+id),Input:runtime.UserInput{Text:"Retain the confirmed result and inspect."}});err!=nil{t.Fatal(err)}
+  deadline:=time.Now().Add(10*time.Second)
+  for {
+   failed,err:=service.View(t.Context(),view.ThreadID);if err!=nil{t.Fatal(err)}
+   if failed.Activity==runtime.ThreadActivityIdle&&failed.LastOutcome!=nil {
+    if failed.Failure==nil||*failed.LastOutcome!=runtime.TurnOutcomeFailed{t.Fatalf("not failed: %+v",failed)}
+    want:=runtime.ThreadTurnFailureToolDispatch;if id=="control"{want=runtime.ThreadTurnFailureControlError}
+    if failed.Failure.Code!=want{t.Fatalf("failure=%+v",failed.Failure)}
+    break
+   }
+   if time.Now().After(deadline){t.Fatal("did not settle")}
+   time.Sleep(time.Millisecond)
+  }
+ }
+ for _,id:=range []identity.ThreadID{"ordinary","fork"}{if _,err:=service.Fork(t.Context(),runtime.ForkThreadInput{SourceThreadID:id,RequestKey:runtime.RequestKey("fork-"+id.String())});err!=nil{t.Fatal(err)}}
+ if executions!=3||len(gateway.Requests())!=9 {t.Fatalf("executions=%d requests=%d",executions,len(gateway.Requests()))}
+ if err:=host.Shutdown(t.Context());err!=nil{t.Fatal(err)}
+}

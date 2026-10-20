@@ -1204,11 +1204,20 @@ Architecture and maintenance knowledge lives in [okf/](okf/).
 ## Model input validation
 
 Invalid tool arguments remain strict errors. The Engine records each rejected
-call and its validation result and allows at most two regeneration opportunities.
+call and its validation result and allows at most two regeneration opportunities
+per correction episode. Each invalid tool batch counts once; a fully committed
+validation-clean batch ends the episode, including ordinary business-error results.
+Valid siblings of rejected calls retain their results without resetting the episode.
+Text, transport retries, compaction, steering and Stop Hook continuation do not
+reset it. New Runs start at zero. This is not an additional whole-Run limit.
 Rejected calls cannot execute tools, request authorization, or open an Ask User
 interaction. Technical feedback stays in canonical history and diagnostics while
 Activity omits it. Exhausted control correction retains `control_error`; failures
-inside control or Activity projectors and storage fail immediately.
+inside control or Activity projectors and storage fail immediately. Both ordinary
+and control exhaustion expose ThreadTurnFailureToolArgumentCorrectionExhausted
+through ThreadTurnFailure.Reason, including exact released historical failures
+without rewriting records. Hosts can offer explicit Retry or model configuration;
+confirmed results remain canonical and uncertain effects must never auto-replay.
 
 Schema v10 adds durable context without rewriting existing journal entries or
 provider request records. The automatic v9 to v10 edge preserves older migration

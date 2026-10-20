@@ -511,9 +511,8 @@ type Engine struct {
 }
 
 type turnState struct {
-	activeMessages                []session.Message
-	internalValidationCorrections map[string]bool
-	validationCorrectionCount     int
+	activeMessages       []session.Message
+	validationCorrection validationCorrectionEpisode
 }
 
 type Config struct {
@@ -798,7 +797,7 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 }
 
 func (e *Engine) run(ctx context.Context, userText string) (result Result) {
-	state := &turnState{internalValidationCorrections: map[string]bool{}}
+	state := &turnState{}
 	opts := normalizeOptions(e.options)
 	owner := &runProviderState{state: provider.CloneState(opts.PreviousProviderState), commit: opts.CommitProviderContext}
 	opts.providerState = owner
@@ -1207,7 +1206,6 @@ steps:
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*tools.ActivityPresentation{}
-		internalValidationCorrections := state.internalValidationCorrections
 		projectedCallBatchMetadata := map[string]map[string]any{}
 		var projectedSignal *ControlSignal
 		var projectedSignalErr error
@@ -1223,7 +1221,6 @@ steps:
 				}
 				if validationErr != nil {
 					validationErrors[call.ID] = validationErr
-					internalValidationCorrections[call.ID] = true
 				}
 			}
 			if len(validationErrors) == 0 {
@@ -1309,7 +1306,6 @@ steps:
 			for _, call := range classifiedCalls.Ordinary {
 				if validationErr := validateModelToolArguments(opts.toolDefinitions, call); validationErr != nil {
 					validationErrors[call.ID] = validationErr
-					internalValidationCorrections[call.ID] = true
 					continue
 				}
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
@@ -1320,7 +1316,7 @@ steps:
 			}
 			for index, call := range calls {
 				projectedCallBatchMetadata[call.ID] = map[string]any{"batch_index": index, "batch_size": len(calls)}
-				if internalValidationCorrections[call.ID] {
+				if validationErrors[call.ID] != nil {
 					projectedCallBatchMetadata[call.ID]["tool_validation_error"] = true
 				}
 			}
@@ -1328,7 +1324,7 @@ steps:
 		callMessages := make([]session.Message, len(calls))
 		for index, call := range calls {
 			kind := session.MessageKindNormal
-			if internalValidationCorrections[call.ID] {
+			if validationErrors[call.ID] != nil {
 				kind = session.MessageKindToolValidationError
 			} else if opts.ControlSpec.isControlTool(call.Name) {
 				kind = session.MessageKindControlSignal
@@ -1352,14 +1348,8 @@ steps:
 				callMessages = append(callMessages, message)
 			}
 		}
-		if len(validationErrors) > 0 {
-			state.validationCorrectionCount++
-			decision.Metadata = mergeAnyMetadata(decision.Metadata, map[string]any{
-				"validation_correction_attempt": state.validationCorrectionCount,
-				"validation_correction_limit":   2,
-				"validation_error_count":        len(validationErrors),
-			})
-		}
+		decision.Metadata = mergeAnyMetadata(decision.Metadata, state.validationCorrection.observeInvalidBatch(len(validationErrors)))
+
 		if len(classifiedCalls.Ordinary) == 0 && len(validationErrors) > 0 {
 			for index, call := range calls {
 				msg := session.CloneMessage(callMessages[index])
@@ -1376,8 +1366,8 @@ steps:
 			}
 			decision.ContinuationReason = ContinueToolResults
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
-			if state.validationCorrectionCount > 2 {
-				return e.end(state, opts, step, Failed, output, withFailureOrigin(fmt.Errorf("control argument correction exhausted: %s", tools.InvalidArgumentsText(calls[0].Name, validationErrors[calls[0].ID])), FailureOriginControl), metrics, started, decision)
+			if err := state.validationCorrection.settleBatch(validationErrors, calls[0], true); err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			continue
 		}
@@ -1391,6 +1381,9 @@ steps:
 			if projectedSignalErr != nil {
 				e.emitControlSignalError(opts, step, projectedSignal, projectedSignalErr)
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(projectedSignalErr, FailureOriginControl), metrics, started, decision)
+			}
+			if err := state.validationCorrection.settleBatch(validationErrors, calls[0], true); err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			if signal := projectedSignal; signal != nil {
 				decision.ControlSignal = signal
@@ -1500,13 +1493,8 @@ steps:
 			dispatchedMu.Lock()
 			wasDispatched := dispatchedCalls[result.CallID]
 			dispatchedMu.Unlock()
-			internalValidationCorrection := internalValidationCorrections[result.CallID]
-			if internalValidationCorrection {
-				result.Activity = nil
-			} else {
-				result.Activity = tools.MergeActivityPresentations(callActivities[result.CallID], result.Activity)
-				result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
-			}
+			result.Activity = tools.MergeActivityPresentations(callActivities[result.CallID], result.Activity)
+			result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
 			resultView := (*session.ToolResultView)(nil)
 			if result.Pending == nil {
 				resultView = toolResultView(projection)
@@ -1590,8 +1578,9 @@ steps:
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
-		if len(validationErrors) > 0 && state.validationCorrectionCount > 2 {
-			return e.end(state, opts, step, Failed, output, withFailureOrigin(errors.New("tool argument correction exhausted"), FailureOriginToolDispatch), metrics, started, decision)
+		if err := state.validationCorrection.settleBatch(validationErrors, calls[0], false); err != nil {
+			e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		}
 		for _, result := range toolResults {
 			if result.InputRequired != nil {
