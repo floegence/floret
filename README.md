@@ -966,6 +966,17 @@ reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle
 authority.
 
+The optional runtime.ThreadBodyReader reads exact canonical fields without
+materializing the complete entry. Supply a freshly authorized threadquery.Scope
+on every call, including resumed reads. ThreadBodyInput identifies the thread,
+entry and field, with a UTF-8 byte offset and at most 16 KiB per chunk. Each
+response stays below 64 KiB encoded, reports total source bytes and the complete
+field's SHA-256, and preserves CRLF and Unicode exactly. A supplied SHA256 pins
+the source across reads and restarts. Locators never grant access; inactive-path
+entries and revoked scopes are unavailable. Tool arguments and reasoning are
+private facts and require the same host policy as ThreadQueryReader. Display
+previews must never become provider context or silently replace full content.
+
 The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
 methods accept the existing command inputs and use the same admission, validation
 and idempotency owner as full-result commands. `ThreadCommandAck` returns the

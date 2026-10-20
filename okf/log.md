@@ -1637,3 +1637,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document permanent domain 29 -> 30 canonical body blocks, transactional sharing/deletion, byte-exact reconstruction and fail-closed startup validation in [Storage](api/storage.md).
 
 - 2026-10-20: Document canonical journal body eviction, bounded verified source caching and detached hydration; preserve canonical terminal replay across early cancellation and concurrent tool settlement.
+
+- 2026-10-20: Document optional authorized canonical body reads, bounded wire chunks, immutable hashes and restart-stable source identity.
