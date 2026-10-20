@@ -42,10 +42,9 @@ func (r *MemoryRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, f
 	if err != nil {
 		return CanonicalBodyChunk{}, err
 	}
-	fields := canonicalEntryBodyFields(&entry)
-	value, valid := fields[field]
-	if !valid {
-		return CanonicalBodyChunk{}, spi.ErrInvalidArgument
+	value, err := canonicalFieldValue(entry, field)
+	if err != nil {
+		return CanonicalBodyChunk{}, err
 	}
 	result := CanonicalBodyChunk{ThreadID: threadID, EntryID: entryID, Field: field, Offset: offset}
 	ref, stored := entry.bodyFields[field]
@@ -71,17 +70,17 @@ func (r *MemoryRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, f
 			return CanonicalBodyChunk{}, err
 		}
 	} else {
-		result.Bytes, result.SHA256 = len(*value), stableHash(*value)
-		if offset > len(*value) || offset < len(*value) && !utf8.RuneStart((*value)[offset]) {
+		result.Bytes, result.SHA256 = len(value), stableHash(value)
+		if offset > len(value) || offset < len(value) && !utf8.RuneStart((value)[offset]) {
 			return CanonicalBodyChunk{}, spi.ErrInvalidArgument
 		}
-		end := min(len(*value), offset+limit)
-		for end < len(*value) && end > offset && !utf8.RuneStart((*value)[end]) {
+		end := min(len(value), offset+limit)
+		for end < len(value) && end > offset && !utf8.RuneStart((value)[end]) {
 			end--
 		}
 		// Copy the small result so an ephemeral repository cannot retain an entire
 		// giant source through a tiny chunk's backing string.
-		result.Text = strings.Clone((*value)[offset:end])
+		result.Text = strings.Clone((value)[offset:end])
 	}
 	// JSON control-character escaping can expand sixfold. Budget the actual wire
 	// representation even for hostile input; never silently skip source bytes.

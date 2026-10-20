@@ -79,11 +79,13 @@ func compactCanonicalEntry(entry Entry) Entry {
 		return entry
 	}
 	refs := map[string]canonicalBodyRef{}
-	for field, value := range canonicalEntryBodyFields(&entry) {
-		if *value != "" {
-			refs[field] = canonicalBodyRef{SHA256: stableHash(*value), Bytes: len(*value)}
-			*value = ""
-		}
+	values, err := canonicalStoredFields(entry, true)
+	if err != nil {
+		panic(err)
+	} // Validated entries have JSON-encodable typed activity.
+	for field, value := range values {
+		refs[field] = canonicalBodyRef{SHA256: stableHash(value), Bytes: len(value)}
+		_ = clearCanonicalField(&entry, field)
 	}
 	if len(refs) == 0 {
 		return entry
@@ -105,11 +107,7 @@ func (r *MemoryRepo) completeEntryLocked(entry Entry) (Entry, error) {
 		return Entry{}, err
 	}
 	complete := entry
-	fields := canonicalEntryBodyFields(&complete)
 	for field, ref := range entry.bodyFields {
-		if fields[field] == nil || *fields[field] != "" {
-			return Entry{}, ErrAuthorityCorrupt
-		}
 		text, found := cachedBody(ref)
 		if !found {
 			read := func(tx spi.ReadTx) error {
@@ -130,7 +128,9 @@ func (r *MemoryRepo) completeEntryLocked(entry Entry) (Entry, error) {
 			}
 			cacheBody(ref, text)
 		}
-		*fields[field] = text
+		if err := restoreCanonicalField(&complete, field, text); err != nil {
+			return Entry{}, err
+		}
 	}
 	complete.bodyFields = nil
 	complete.Raw = rawForEntry(complete)

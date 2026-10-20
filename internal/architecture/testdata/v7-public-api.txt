@@ -1222,7 +1222,12 @@ type StreamObservationType string
 method StreamObservationType.Valid func() bool
 type ThreadActivity string
 const ThreadActivityActive github.com/floegence/floret/v7/runtime.ThreadActivity = "active"
+type ThreadActivityBody struct
+field ThreadActivityBody.EntryID string tag="json:\"entry_id\""
+field ThreadActivityBody.Bytes int tag="json:\"bytes\""
+field ThreadActivityBody.SHA256 string tag="json:\"sha256\""
 const ThreadActivityIdle github.com/floegence/floret/v7/runtime.ThreadActivity = "idle"
+const ThreadBodyActivityJSON github.com/floegence/floret/v7/runtime.ThreadBodyField = "activity_json"
 const ThreadBodyArguments github.com/floegence/floret/v7/runtime.ThreadBodyField = "arguments"
 type ThreadBodyChunk struct
 field ThreadBodyChunk.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
@@ -1384,6 +1389,7 @@ field ThreadItem.Attachments []github.com/floegence/floret/v7/runtime.MessageAtt
 field ThreadItem.References []github.com/floegence/floret/v7/runtime.MessageReference tag="json:\"references,omitempty\""
 field ThreadItem.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 field ThreadItem.Activity *github.com/floegence/floret/v7/observation.ActivityItem tag="json:\"activity,omitempty\""
+field ThreadItem.ActivityBodies []github.com/floegence/floret/v7/runtime.ThreadActivityBody tag="json:\"activity_bodies,omitempty\""
 field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interaction,omitempty\""
 const ThreadItemAdded github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "add"
 const ThreadItemAppended github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "append"

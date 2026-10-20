@@ -41,7 +41,7 @@ func TestBackendDomainV7ToV8ClassifiesContextContinueWithoutChangingCanonicalInp
 		if records, err := scanBackendDomainV7(ctx, tx); err != nil || len(records) != 0 {
 			return errors.Join(err, errors.New("v7 records remain after migration"))
 		}
-		_, found, err := loadBackendDomain(ctx, tx, time.Now, backendDomainV30Format)
+		_, found, err := loadBackendDomain(ctx, tx, time.Now, backendDomainV31Format)
 		if err != nil || !found {
 			return errors.Join(err, errors.New("current records are missing"))
 		}

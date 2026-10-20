@@ -280,11 +280,11 @@ func TestCanonicalBodiesRejectCorruptionWithoutMutation(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					record, err := decodeBackendDomainRecord(backendDomainV30Format, raw)
+					record, err := decodeBackendDomainRecord(backendDomainV31Format, raw)
 					if err != nil {
 						return err
 					}
-					stored, err := decodeCanonicalStoredEntry(record)
+					stored, err := decodeCanonicalStoredEntry(backendDomainV31Format, record)
 					if err != nil {
 						return err
 					}
@@ -293,7 +293,7 @@ func TestCanonicalBodiesRejectCorruptionWithoutMutation(t *testing.T) {
 					} else {
 						stored.Fields["unsupported"] = ref
 					}
-					raw, err = encodeBackendDomainRecord(backendDomainV30Format, record.Kind, record.ID, record.ThreadID, record.Ordinal, stored)
+					raw, err = encodeBackendDomainRecord(backendDomainV31Format, record.Kind, record.ID, record.ThreadID, record.Ordinal, stored)
 					if err != nil {
 						return err
 					}

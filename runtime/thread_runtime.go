@@ -324,21 +324,23 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
-	Goal            *ThreadGoalChange       `json:"goal,omitempty"`
-	Steering        *ThreadSteering         `json:"steering,omitempty"`
-	Sources         []publicprovider.Source `json:"sources,omitempty"`
-	contentSourceID string
-	sourceEntryIDs  []string
-	textOmitted     bool
-	textBytes       int
-	textNonSpace    bool
-	canonicalText   bool
-	textLeafID      string
-	textSummary     string
-	textSummaryTail bool
-	ID              string          `json:"id"`
-	TurnID          identity.TurnID `json:"turn_id,omitempty"`
-	RunID           identity.RunID  `json:"run_id,omitempty"`
+	Goal             *ThreadGoalChange       `json:"goal,omitempty"`
+	Steering         *ThreadSteering         `json:"steering,omitempty"`
+	Sources          []publicprovider.Source `json:"sources,omitempty"`
+	contentSourceID  string
+	sourceEntryIDs   []string
+	activityEntryIDs []string
+	activityOmitted  bool
+	textOmitted      bool
+	textBytes        int
+	textNonSpace     bool
+	canonicalText    bool
+	textLeafID       string
+	textSummary      string
+	textSummaryTail  bool
+	ID               string          `json:"id"`
+	TurnID           identity.TurnID `json:"turn_id,omitempty"`
+	RunID            identity.RunID  `json:"run_id,omitempty"`
 	// CanonicalOrdinal is the one-based source position on the queried Path.
 	// Zero denotes an uncommitted live item, not a timestamp or durable cursor.
 	CanonicalOrdinal uint64 `json:"canonical_ordinal,omitempty"`
@@ -354,7 +356,10 @@ type ThreadItem struct {
 	References  []MessageReference        `json:"references,omitempty"`
 	Context     []MessageContextItem      `json:"context,omitempty"`
 	Activity    *observation.ActivityItem `json:"activity,omitempty"`
-	Interaction *ThreadInteraction        `json:"interaction,omitempty"`
+	// ActivityBodies contains ordered canonical presentations omitted by a bounded
+	// window. Read and decode each complete field, then merge in this order.
+	ActivityBodies []ThreadActivityBody `json:"activity_bodies,omitempty"`
+	Interaction    *ThreadInteraction   `json:"interaction,omitempty"`
 }
 
 type ThreadInteractionKind string
@@ -4438,6 +4443,8 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 		}
 		out[index].Sources = runtimeSourceRefs(citation.Clone(providerSourceRefs(item.Sources)))
 		out[index].sourceEntryIDs = append([]string(nil), item.sourceEntryIDs...)
+		out[index].activityEntryIDs = append([]string(nil), item.activityEntryIDs...)
+		out[index].ActivityBodies = append([]ThreadActivityBody(nil), item.ActivityBodies...)
 		out[index].Attachments = cloneMessageAttachments(item.Attachments)
 		out[index].References = append([]MessageReference(nil), item.References...)
 		out[index].Context = append([]MessageContextItem(nil), item.Context...)

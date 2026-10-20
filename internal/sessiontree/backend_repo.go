@@ -63,6 +63,7 @@ const (
 	backendDomainSourceV28
 	backendDomainSourceV29
 	backendDomainSourceV30
+	backendDomainSourceV31
 	backendDomainSourceV14
 	backendDomainSourceV13
 	backendDomainSourceV12
@@ -1664,7 +1665,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomain(ctx, tx, repo.now, backendDomainV30Format)
+	memory, found, err := loadBackendDomain(ctx, tx, repo.now, backendDomainV31Format)
 	if err != nil {
 		return err
 	}
@@ -1763,6 +1764,9 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 				}
 				if _, err := decodeBackendDomainRecord(backendDomainV30Format, raw); err == nil {
 					candidate.source = backendDomainSourceV30
+				}
+				if _, err := decodeBackendDomainRecord(backendDomainV31Format, raw); err == nil {
+					candidate.source = backendDomainSourceV31
 				}
 			}
 			present = append(present, candidate.source)

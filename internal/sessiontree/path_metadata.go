@@ -66,20 +66,25 @@ func canonicalPathMetadata(entry Entry) (PathMetadata, error) {
 			return PathMetadata{}, err
 		}
 		fields = map[string]canonicalBodyRef{}
-		for field, value := range canonicalEntryBodyFields(&entry) {
-			if *value != "" {
-				fields[field] = canonicalBodyRef{SHA256: stableHash(*value), Bytes: len(*value)}
-			}
+		values, err := canonicalStoredFields(entry, true)
+		if err != nil {
+			return PathMetadata{}, err
+		}
+		for field, value := range values {
+			fields[field] = canonicalBodyRef{SHA256: stableHash(value), Bytes: len(value)}
 		}
 	}
-	for _, value := range canonicalEntryBodyFields(&entry) {
-		*value = ""
+	for field := range fields {
+		if err := clearCanonicalField(&entry, field); err != nil {
+			return PathMetadata{}, err
+		}
 	}
+
 	entry.Raw = ""
 	entry.bodyFields = nil
 	metadata := PathMetadata{Entry: cloneEntry(entry)}
 	// Deterministic field order makes rebuilt metadata stable.
-	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error", "control_output"} {
+	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error", "control_output", "activity_json"} {
 		if ref, ok := fields[field]; ok {
 			metadata.Bodies = append(metadata.Bodies, CanonicalField{Field: field, SHA256: ref.SHA256, Bytes: ref.Bytes})
 		}
