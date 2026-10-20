@@ -1230,6 +1230,13 @@ field ThreadCancellation.Mode github.com/floegence/floret/v7/runtime.CancelMode 
 field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
 field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
+type ThreadCommandAck struct
+field ThreadCommandAck.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadCommandAck.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+field ThreadCommandAck.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadCommandAck.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadCommandAck.ViewVersion uint64 tag="json:\"view_version,omitempty\""
+type ThreadCommandService interface interface{CancelAck(context.Context, github.com/floegence/floret/v7/runtime.CancelInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); CreateAck(context.Context, github.com/floegence/floret/v7/runtime.CreateThreadInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); DeleteQueuedAck(context.Context, github.com/floegence/floret/v7/runtime.DeleteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); EditQueuedAck(context.Context, github.com/floegence/floret/v7/runtime.EditQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); ForkAck(context.Context, github.com/floegence/floret/v7/runtime.ForkThreadInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); PromoteQueuedAck(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); ReorderQueueAck(context.Context, github.com/floegence/floret/v7/runtime.ReorderQueueInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); RespondAck(context.Context, github.com/floegence/floret/v7/runtime.RespondInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); RetryAck(context.Context, github.com/floegence/floret/v7/runtime.RetryInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); SendAck(context.Context, github.com/floegence/floret/v7/runtime.SendInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); SendQueuedNowAck(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error); SetTitleAck(context.Context, github.com/floegence/floret/v7/runtime.SetTitleInput) (github.com/floegence/floret/v7/runtime.ThreadCommandAck, error)}
 type ThreadComponent struct
 field ThreadComponent.Value T tag="json:\"value\""
 type ThreadContextCompaction struct
@@ -1833,6 +1840,7 @@ field IndexDocument.ThreadID string
 field IndexDocument.Object string
 field IndexDocument.Metadata []byte
 field IndexDocument.Terms []string
+type IndexDocumentReader interface interface{ReadIndexDocument(threadID string, key string) (github.com/floegence/floret/v7/storage/spi.IndexDocument, error)}
 type IndexIntegrityChecker interface interface{CheckIndexIntegrity() error}
 type IndexQuery struct
 field IndexQuery.ThreadIDs []string

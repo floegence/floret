@@ -8,6 +8,8 @@ type CanonicalLifecycle struct {
 	Recoverable  bool
 	started      map[string]bool
 	terminal     map[string]bool
+	baseStarted  map[string]bool
+	baseTerminal map[string]bool
 }
 
 func (l *CanonicalLifecycle) Observe(entry Entry, active bool) {
@@ -50,13 +52,33 @@ func (l *CanonicalLifecycle) Observe(entry Entry, active bool) {
 			}
 		}
 	}
-	if l.LatestTurnID != "" && l.started[l.LatestTurnID] && !l.terminal[l.LatestTurnID] {
+	if l.LatestTurnID != "" && (l.started[l.LatestTurnID] || l.baseStarted[l.LatestTurnID]) && !(l.terminal[l.LatestTurnID] || l.baseTerminal[l.LatestTurnID]) {
 		l.Status = "interrupted"
 		if active {
 			l.Status = "running"
 		}
 		l.Recoverable = !active
 	}
+}
+
+func (l CanonicalLifecycle) transactionCopy() CanonicalLifecycle {
+	l.baseStarted, l.baseTerminal = l.started, l.terminal
+	l.started, l.terminal = nil, nil
+	return l
+}
+
+func (l *CanonicalLifecycle) installTransaction() {
+	if l.baseStarted == nil {
+		return
+	}
+	for id, value := range l.started {
+		l.baseStarted[id] = value
+	}
+	for id, value := range l.terminal {
+		l.baseTerminal[id] = value
+	}
+	l.started, l.terminal = l.baseStarted, l.baseTerminal
+	l.baseStarted, l.baseTerminal = nil, nil
 }
 
 func DeriveCanonicalLifecycle(path []Entry, active bool) CanonicalLifecycle {

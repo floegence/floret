@@ -1320,3 +1320,40 @@ func TestPublishedGoalCompactionContinuation(t *testing.T) {
 		t.Fatal("replay restarted execution")
 	}
 }
+
+func TestPublishedThreadCommandAcknowledgments(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(filepath.Join(t.TempDir(), "ack.sqlite"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("execution not expected")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands, ok := service.(runtime.ThreadCommandService)
+	if !ok {
+		t.Fatal("service lacks acknowledgment commands")
+	}
+	created, err := commands.CreateAck(t.Context(), runtime.CreateThreadInput{RequestKey: "  create-ack  "})
+	if err != nil || created.ThreadID == "" || created.RequestKey != "create-ack" || created.ViewVersion != 0 {
+		t.Fatalf("ack=%+v err=%v", created, err)
+	}
+	replay, err := commands.CreateAck(t.Context(), runtime.CreateThreadInput{RequestKey: "create-ack"})
+	if err != nil || replay != created {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if _, err := commands.SetTitleAck(t.Context(), runtime.SetTitleInput{ThreadID: created.ThreadID, Title: "Acknowledged", RequestKey: "title-ack"}); err != nil {
+		t.Fatal(err)
+	}
+	forked, err := commands.ForkAck(t.Context(), runtime.ForkThreadInput{SourceThreadID: created.ThreadID, RequestKey: "fork-ack"})
+	if err != nil || forked.ThreadID == created.ThreadID {
+		t.Fatalf("fork=%+v err=%v", forked, err)
+	}
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil || view.ThreadID != created.ThreadID {
+		t.Fatalf("view=%+v err=%v", view, err)
+	}
+}

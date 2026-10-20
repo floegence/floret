@@ -28,6 +28,14 @@ type IndexReader interface {
 	QueryIndex(IndexQuery) ([]IndexDocument, error)
 }
 
+// IndexDocumentReader optionally reads one derived document without scanning a
+// thread's index. Both the exact key and ThreadID must match; keys grant no
+// access. A missing key or a different scope returns ErrNotFound. Other errors
+// remain explicit and must not cause a second read through another reader.
+type IndexDocumentReader interface {
+	ReadIndexDocument(threadID, key string) (IndexDocument, error)
+}
+
 // IndexWriter maintains projections in the same transaction as their canonical
 // sources. It is optional; Floret supplies a KV adapter for other backends.
 type IndexWriter interface {

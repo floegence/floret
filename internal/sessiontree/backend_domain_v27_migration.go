@@ -68,6 +68,7 @@ func migrateBackendDomainV26ToV27(ctx context.Context, memory *MemoryRepo) error
 				repaired.RawHash = stableHash(repaired.Raw)
 				entries[index] = repaired
 				memory.entries[threadID] = entries
+				delete(memory.pathIndexes, threadID)
 			}
 		}
 		visiting[threadID], done[threadID] = false, true

@@ -713,6 +713,10 @@ func (host *Host) nextTurnRunIDs() (identity.TurnID, identity.RunID, error) {
 }
 
 func (service *threadRuntimeService) Create(ctx context.Context, in CreateThreadInput) (ThreadView, error) {
+	return service.createCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) createCommand(ctx context.Context, in CreateThreadInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -748,7 +752,7 @@ func (service *threadRuntimeService) Create(ctx context.Context, in CreateThread
 		if origin.Thread == nil || origin.Thread.OriginFingerprint != fingerprint || origin.Thread.ParentThreadID != in.ParentThreadID.String() {
 			return ThreadView{}, ErrRequestConflict
 		}
-		return service.View(ctx, identity.ThreadID(origin.Thread.ID))
+		return service.completedCommandResult(ctx, identity.ThreadID(origin.Thread.ID), mode)
 	}
 	if !errors.Is(originErr, sessiontree.ErrThreadNotFound) {
 		return ThreadView{}, runtimeHostError(originErr)
@@ -766,10 +770,14 @@ func (service *threadRuntimeService) Create(ctx context.Context, in CreateThread
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	return service.View(ctx, threadID)
+	return service.completedCommandResult(ctx, threadID, mode)
 }
 
 func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInput) (ThreadView, error) {
+	return service.forkCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) forkCommand(ctx context.Context, in ForkThreadInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -811,7 +819,7 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 		if origin.Thread == nil || origin.Thread.OriginFingerprint != fingerprint || origin.Thread.ForkedFromThreadID != in.SourceThreadID.String() {
 			return ThreadView{}, ErrRequestConflict
 		}
-		return service.View(ctx, identity.ThreadID(origin.Thread.ID))
+		return service.completedCommandResult(ctx, identity.ThreadID(origin.Thread.ID), mode)
 	}
 	if !errors.Is(originErr, sessiontree.ErrThreadNotFound) {
 		return ThreadView{}, runtimeHostError(originErr)
@@ -878,7 +886,7 @@ func (service *threadRuntimeService) Fork(ctx context.Context, in ForkThreadInpu
 	if err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	return service.View(ctx, threadID)
+	return service.completedCommandResult(ctx, threadID, mode)
 }
 
 func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThreadInput) error {
@@ -1048,6 +1056,10 @@ func (service *threadRuntimeService) releaseDeleteFences(drains []threadRuntimeD
 }
 
 func (service *threadRuntimeService) SetTitle(ctx context.Context, in SetTitleInput) (ThreadView, error) {
+	return service.setTitleCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) setTitleCommand(ctx context.Context, in SetTitleInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1075,7 +1087,7 @@ func (service *threadRuntimeService) SetTitle(ctx context.Context, in SetTitleIn
 	}); err != nil {
 		return ThreadView{}, runtimeHostError(err)
 	}
-	return service.View(ctx, in.ThreadID)
+	return service.completedCommandResult(ctx, in.ThreadID, mode)
 }
 
 func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope) ([]ThreadSummary, error) {
@@ -1463,6 +1475,10 @@ func threadTokenUsageTotals(in *agentharness.ThreadTokenUsageTotals) *ThreadToke
 }
 
 func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (ThreadView, error) {
+	return service.sendCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) sendCommand(ctx context.Context, in SendInput, mode threadResultMode) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -1474,10 +1490,14 @@ func (service *threadRuntimeService) Send(ctx context.Context, in SendInput) (Th
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.send(ctx, in.ThreadID, in.Input, supplemental, key)
+	return service.sendResult(ctx, in.ThreadID, in.Input, supplemental, key, mode)
 }
 
 func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput) (ThreadView, error) {
+	return service.cancelCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) cancelCommand(ctx context.Context, in CancelInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
@@ -1486,7 +1506,7 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 		return ThreadView{}, fmt.Errorf("invalid cancellation mode %q", in.Mode)
 	}
 	if !in.IncludeDescendants {
-		return service.cancel(ctx, in.ThreadID, key, in.Mode)
+		return service.cancelResult(ctx, in.ThreadID, key, in.Mode, mode)
 	}
 	// Serialize the subtree snapshot and stop admission with child creation.
 	// No provider work or effect settlement is awaited under this lock.
@@ -1496,7 +1516,7 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	view, err := service.cancel(ctx, in.ThreadID, key, in.Mode)
+	view, err := service.cancelResult(ctx, in.ThreadID, key, in.Mode, mode)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1504,7 +1524,7 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 		if id == in.ThreadID {
 			continue
 		}
-		if _, err := service.cancel(ctx, id, key+":child:"+id.String(), in.Mode); err != nil {
+		if _, err := service.cancelResult(ctx, id, key+":child:"+id.String(), in.Mode, threadAckResult); err != nil {
 			return ThreadView{}, err
 		}
 	}
@@ -1512,6 +1532,10 @@ func (service *threadRuntimeService) Cancel(ctx context.Context, in CancelInput)
 }
 
 func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (ThreadView, error) {
+	return service.retryCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) retryCommand(ctx context.Context, in RetryInput, mode threadResultMode) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -1519,10 +1543,14 @@ func (service *threadRuntimeService) Retry(ctx context.Context, in RetryInput) (
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.retry(ctx, in.ThreadID, in.SourceTurnID, key)
+	return service.retryResult(ctx, in.ThreadID, in.SourceTurnID, key, mode)
 }
 
 func (service *threadRuntimeService) Respond(ctx context.Context, in RespondInput) (ThreadView, error) {
+	return service.respondCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) respondCommand(ctx context.Context, in RespondInput, mode threadResultMode) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -1538,15 +1566,19 @@ func (service *threadRuntimeService) Respond(ctx context.Context, in RespondInpu
 		answers = append([]InteractionAnswer(nil), answers...)
 		answers[0].InteractionID = in.InteractionID
 	}
-	return service.respond(ctx, in.ThreadID, answers, key)
+	return service.respondResult(ctx, in.ThreadID, answers, key, mode)
 }
 
 func (service *threadRuntimeService) ReorderQueue(ctx context.Context, in ReorderQueueInput) (ThreadView, error) {
+	return service.reorderQueueCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) reorderQueueCommand(ctx context.Context, in ReorderQueueInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	actor := service.runtime(in.ThreadID)
@@ -1583,16 +1615,20 @@ func (service *threadRuntimeService) ReorderQueue(ctx context.Context, in Reorde
 	}); err != nil {
 		return ThreadView{}, err
 	}
-	view := service.currentView(actor)
+	view := service.currentResult(actor, mode)
 	return view, nil
 }
 
 func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in DeleteQueuedInput) (ThreadView, error) {
+	return service.deleteQueuedCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) deleteQueuedCommand(ctx context.Context, in DeleteQueuedInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	queueID := strings.TrimSpace(in.QueueItemID)
@@ -1640,11 +1676,15 @@ func (service *threadRuntimeService) DeleteQueued(ctx context.Context, in Delete
 	}); err != nil {
 		return ThreadView{}, err
 	}
-	view := service.currentView(actor)
+	view := service.currentResult(actor, mode)
 	return view, nil
 }
 
 func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in PromoteQueuedInput) (ThreadView, error) {
+	return service.promoteQueuedCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) promoteQueuedCommand(ctx context.Context, in PromoteQueuedInput, mode threadResultMode) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -1652,7 +1692,7 @@ func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in Promo
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	queueID := strings.TrimSpace(in.QueueItemID)
@@ -1688,9 +1728,9 @@ func (service *threadRuntimeService) PromoteQueued(ctx context.Context, in Promo
 		return ThreadView{}, err
 	}
 	if replayed {
-		return service.currentView(actor), nil
+		return service.currentResult(actor, mode), nil
 	}
-	result, err := service.startAccepted(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key)
+	result, err := service.startAcceptedResult(ctx, actor, in.ThreadID, target.Input, target.SupplementalContext, target.RequestKey, target.ID, key, mode)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -1765,13 +1805,7 @@ func (service *threadRuntimeService) ImportPendingInputs(ctx context.Context, in
 }
 
 func (service *threadRuntimeService) currentView(actor *threadRuntimeState) ThreadView {
-	var view ThreadView
-	_ = actor.apply(context.Background(), func() error {
-		service.flushUpdateLocked(actor)
-		view = cloneThreadRuntimeView(actor.state.view)
-		return nil
-	})
-	return view
+	return service.currentResult(actor, threadFullResult)
 }
 
 func (host *Host) threadRuntimeForFence() *threadRuntimeService {
@@ -1889,6 +1923,10 @@ func (service *threadRuntimeService) close() error {
 }
 
 func (service *threadRuntimeService) View(ctx context.Context, threadID identity.ThreadID) (ThreadView, error) {
+	return service.viewResult(ctx, threadID, threadFullResult)
+}
+
+func (service *threadRuntimeService) viewResult(ctx context.Context, threadID identity.ThreadID, mode threadResultMode) (ThreadView, error) {
 	if _, err := service.ensureThread(ctx, threadID); err != nil {
 		return ThreadView{}, err
 	}
@@ -1906,7 +1944,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 		}
 		service.flushUpdateLocked(actor)
 		if actor.state.view.ViewVersion > 0 {
-			view = cloneThreadRuntimeView(actor.state.view)
+			view = threadResult(actor.state.view, mode)
 		}
 		return nil
 	}); err != nil || view.ViewVersion > 0 {
@@ -1954,7 +1992,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 	err = actor.apply(ctx, func() error {
 		service.flushUpdateLocked(actor)
 		if actor.state.view.ViewVersion > 0 {
-			view = cloneThreadRuntimeView(actor.state.view)
+			view = threadResult(actor.state.view, mode)
 			return nil
 		}
 		canonical.ViewVersion = 1
@@ -1986,7 +2024,7 @@ func (service *threadRuntimeService) View(ctx context.Context, threadID identity
 			actor.state.hydrationStarted = true
 			startHydration = true
 		}
-		view = cloneThreadRuntimeView(canonical)
+		view = threadResult(canonical, mode)
 		return nil
 	})
 	if err == nil && startHydration {
@@ -2269,15 +2307,19 @@ func (service *threadRuntimeService) CompactContext(ctx context.Context, in Comp
 	return service.admitThreadExecution(ctx, in.ThreadID, UserInput{}, nil, key, kind)
 }
 
-func (service *threadRuntimeService) send(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) sendResult(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, mode threadResultMode) (ThreadView, error) {
 	normalized, err := normalizeTurnInput(input)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	return service.admitThreadExecution(ctx, threadID, normalized, supplemental, requestKey, "")
+	return service.admitThreadExecutionResult(ctx, threadID, normalized, supplemental, requestKey, "", mode)
 }
 
 func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind) (ThreadView, error) {
+	return service.admitThreadExecutionResult(ctx, threadID, input, supplemental, requestKey, kind, threadFullResult)
+}
+
+func (service *threadRuntimeService) admitThreadExecutionResult(ctx context.Context, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey string, kind TurnKind, mode threadResultMode) (ThreadView, error) {
 	requestKey = strings.TrimSpace(requestKey)
 	if requestKey == "" {
 		return ThreadView{}, errors.New("send request key is required")
@@ -2293,7 +2335,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 		return ThreadView{}, err
 	}
 	actor := service.runtime(threadID)
-	canonical, err := service.View(ctx, threadID)
+	canonical, err := service.viewResult(ctx, threadID, mode)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -2327,7 +2369,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 			if existing.fingerprint != fingerprint {
 				return &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
 			}
-			replay, found = cloneThreadRuntimeView(actor.state.view), true
+			replay, found = threadResult(actor.state.view, mode), true
 		}
 		return nil
 	}); err != nil || found {
@@ -2366,7 +2408,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 			actor.state.view.ViewVersion++
 			actor.state.view.Queue = append(actor.state.view.Queue, queued)
 			actor.markComponents(threadQueueChanged)
-			result := cloneThreadRuntimeView(actor.state.view)
+			result := threadResult(actor.state.view, mode)
 			if actor.state.requestKeys == nil {
 				actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 			}
@@ -2378,7 +2420,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 			return ThreadView{}, err
 		}
 		if replayedQueue {
-			return service.currentView(actor), nil
+			return service.currentResult(actor, mode), nil
 		}
 		return replay, nil
 	}
@@ -2402,7 +2444,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 			if existing.fingerprint != fingerprint {
 				return &RequestConflictError{Operation: "send", RequestID: requestKey, Err: ErrRequestConflict}
 			}
-			result = cloneThreadRuntimeView(actor.state.view)
+			result = threadResult(actor.state.view, mode)
 			replayed = true
 			return nil
 		}
@@ -2443,7 +2485,7 @@ func (service *threadRuntimeService) admitThreadExecution(ctx context.Context, t
 		} else if err := actor.installCanonicalView(canonical); err != nil {
 			actor.state.contextErr = err
 		}
-		result = cloneThreadRuntimeView(actor.state.view)
+		result = threadResult(actor.state.view, mode)
 		if actor.state.requestKeys == nil {
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
@@ -3340,16 +3382,16 @@ func applyThreadInteractionsToItems(items []ThreadItem, interactions []ThreadInt
 	}
 }
 
-func (service *threadRuntimeService) cancel(ctx context.Context, threadID identity.ThreadID, requestKey string, mode CancelMode) (ThreadView, error) {
+func (service *threadRuntimeService) cancelResult(ctx context.Context, threadID identity.ThreadID, requestKey string, mode CancelMode, resultMode threadResultMode) (ThreadView, error) {
 	if _, err := service.ensureThread(ctx, threadID); err != nil {
 		return ThreadView{}, err
 	}
 	actor := service.runtime(threadID)
-	current := service.currentView(actor)
+	current := service.currentResult(actor, resultMode)
 	// A hydrated actor owns Stop even if its next presentation cannot be assembled.
 	if current.ViewVersion == 0 {
 		var err error
-		current, err = service.View(ctx, threadID)
+		current, err = service.viewResult(ctx, threadID, resultMode)
 		if err != nil {
 			return ThreadView{}, err
 		}
@@ -3366,11 +3408,11 @@ func (service *threadRuntimeService) cancel(ctx context.Context, threadID identi
 		return ThreadView{}, err
 	}
 	if mode == CancelModeGraceful {
-		return service.requestGracefulCancellation(ctx, actor, threadID, turnID, requestKey)
+		return service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, requestKey, resultMode)
 	}
-	return service.settleCancellation(ctx, actor, threadID, turnID, "", cancellationRequest{
+	return service.settleCancellationResult(ctx, actor, threadID, turnID, "", cancellationRequest{
 		EntryID: "cancel:" + requestKey, RequestKey: requestKey, RequestFingerprint: fingerprint,
-	}, "user_stop", "user requested stop")
+	}, "user_stop", "user requested stop", resultMode)
 }
 
 type cancellationRequest struct {
@@ -3380,6 +3422,10 @@ type cancellationRequest struct {
 }
 
 func (service *threadRuntimeService) settleCancellation(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, request cancellationRequest, source, reason string) (ThreadView, error) {
+	return service.settleCancellationResult(ctx, actor, threadID, turnID, runID, request, source, reason, threadFullResult)
+}
+
+func (service *threadRuntimeService) settleCancellationResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID, request cancellationRequest, source, reason string, mode threadResultMode) (ThreadView, error) {
 	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
@@ -3488,7 +3534,7 @@ func (service *threadRuntimeService) settleCancellation(ctx context.Context, act
 	} else {
 		service.finishSend(actor, turnID, runID, TurnResult{Status: TurnStatusCancelled}, context.Canceled)
 	}
-	return service.currentView(actor), nil
+	return service.currentResult(actor, mode), nil
 }
 
 func (service *threadRuntimeService) finishUnloadedCancellation(actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, runID identity.RunID) {
@@ -3570,17 +3616,26 @@ func stableCancellationEntryID(threadID identity.ThreadID, turnID identity.TurnI
 	return "terminal-cancelled-" + hash[:24]
 }
 
-func (service *threadRuntimeService) respond(ctx context.Context, threadID identity.ThreadID, answers []InteractionAnswer, requestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) respondResult(ctx context.Context, threadID identity.ThreadID, answers []InteractionAnswer, requestKey string, mode threadResultMode) (ThreadView, error) {
 	if _, err := service.ensureThread(ctx, threadID); err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, threadID); err != nil {
+	if _, err := service.viewResult(ctx, threadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	actor := service.runtime(threadID)
-	current := service.currentView(actor)
-	byID := make(map[string]ThreadInteraction, len(current.Interactions))
-	for _, interaction := range current.Interactions {
+	var current ThreadView
+	var interactions []ThreadInteraction
+	if err := actor.apply(ctx, func() error {
+		service.flushUpdateLocked(actor)
+		current = threadResult(actor.state.view, mode)
+		interactions = cloneThreadInteractions(actor.state.view.Interactions)
+		return nil
+	}); err != nil {
+		return ThreadView{}, err
+	}
+	byID := make(map[string]ThreadInteraction, len(interactions))
+	for _, interaction := range interactions {
 		byID[interaction.ID] = interaction
 	}
 	entries := make([]sessiontree.Entry, 0, len(answers))
@@ -3696,12 +3751,12 @@ func (service *threadRuntimeService) respond(ctx context.Context, threadID ident
 		return ThreadView{}, err
 	}
 	if replayedRespond {
-		return service.currentView(actor), nil
+		return service.currentResult(actor, mode), nil
 	}
 	for _, delivery := range waiters {
 		delivery.waiter <- delivery.resolution
 	}
-	view := service.currentView(actor)
+	view := service.currentResult(actor, mode)
 	go service.resumeCanonicalInteractions(actor, threadID, resolutions, secretInputs, pendingAnswers, byID, resumedLocally)
 	return view, nil
 }
@@ -3947,11 +4002,11 @@ func (service *threadRuntimeService) continueCanonicalInput(actor *threadRuntime
 	service.finishSend(actor, interaction.TurnID, runID, result, runErr)
 }
 
-func (service *threadRuntimeService) retry(ctx context.Context, threadID identity.ThreadID, sourceTurnID identity.TurnID, requestKey string) (ThreadView, error) {
+func (service *threadRuntimeService) retryResult(ctx context.Context, threadID identity.ThreadID, sourceTurnID identity.TurnID, requestKey string, mode threadResultMode) (ThreadView, error) {
 	if _, err := identity.ParseTurnID(sourceTurnID.String()); err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, threadID); err != nil {
+	if _, err := service.viewResult(ctx, threadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	sourceEntryID, sourceInput, err := service.retrySource(ctx, threadID, sourceTurnID)
@@ -3983,7 +4038,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 			if existing.fingerprint != fingerprint {
 				return &RequestConflictError{Operation: "retry", RequestID: requestKey, Err: ErrRequestConflict}
 			}
-			result = cloneThreadRuntimeView(actor.state.view)
+			result = threadResult(actor.state.view, mode)
 			replayed = true
 			return nil
 		}
@@ -4002,7 +4057,7 @@ func (service *threadRuntimeService) retry(ctx context.Context, threadID identit
 			actor.state.requestKeys = make(map[string]threadRuntimeRequest)
 		}
 		actor.state.requestKeys[requestKey] = threadRuntimeRequest{fingerprint: fingerprint}
-		result = cloneThreadRuntimeView(actor.state.view)
+		result = threadResult(actor.state.view, mode)
 		return nil
 	})
 	if err != nil {
@@ -4194,6 +4249,10 @@ func (service *threadRuntimeService) startNextQueued(actor *threadRuntimeState) 
 }
 
 func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
+	return service.startAcceptedResult(ctx, actor, threadID, input, supplemental, requestKey, promotedQueueID, promotionRequestKey, threadFullResult, steeringQueued...)
+}
+
+func (service *threadRuntimeService) startAcceptedResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, input UserInput, supplemental []TurnSupplementalContextItem, requestKey, promotedQueueID, promotionRequestKey string, mode threadResultMode, steeringQueued ...*SteerQueuedInput) (ThreadView, error) {
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
 	}
@@ -4303,7 +4362,7 @@ func (service *threadRuntimeService) startAccepted(ctx context.Context, actor *t
 		} else if err := actor.installCanonicalView(canonical); err != nil {
 			actor.state.contextErr = err
 		}
-		result = cloneThreadRuntimeView(actor.state.view)
+		result = threadResult(actor.state.view, mode)
 		return nil
 	})
 	if err != nil {

@@ -221,6 +221,10 @@ func TestBackendDomainMutationRestoresMemoryBeforeCommitAndOnFailure(t *testing.
 			if _, err := repo.Entry(t.Context(), "active", "staged"); !errors.Is(err, ErrEntryNotFound) {
 				t.Fatalf("failed entry retained an index: %v", err)
 			}
+			page, err := repo.PathPage(t.Context(), "active", "", "", 1)
+			if err != nil || len(page.Entries) != 1 || page.Entries[0].ID != "original" {
+				t.Fatalf("failed append changed path page: %+v %v", page, err)
+			}
 			if got := repo.domainMemory.turnEntryOrdinals["active"]["turn"]; !reflect.DeepEqual(got, []int{0}) || repo.domainMemory.turnEntryCounts["active"]["turn"] != 1 {
 				t.Fatalf("failed append changed canonical turn indexes: %v", got)
 			}

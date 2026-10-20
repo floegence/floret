@@ -24,7 +24,7 @@ func BenchmarkThreadNativeAppendDelivery(b *testing.B) {
 			actor.state.view.TurnID, actor.state.view.RunID = "turn", "run"
 			actor.state.view.ViewVersion = 1
 			actor.appendLiveTextSegment(ThreadItemAssistant, "start", time.Time{}, "source")
-			subscription := &ThreadUpdateSubscription{updates: make(chan ThreadUpdate, 64), done: make(chan struct{})}
+			subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, 64), done: make(chan struct{})}
 			service := &threadRuntimeService{published: make(map[string]uint64), updateSubscribers: map[*ThreadUpdateSubscription]struct{}{subscription: {}}}
 			actor.service = service
 			b.ReportAllocs()

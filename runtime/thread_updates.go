@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -91,12 +92,13 @@ type ThreadUpdate struct {
 }
 
 type ThreadUpdateSubscription struct {
-	mu       sync.Mutex
-	updates  chan ThreadUpdate
-	done     chan struct{}
-	closed   bool
-	closeErr error
-	service  *threadRuntimeService
+	mu          sync.Mutex
+	updates     chan queuedThreadUpdate
+	queuedBytes int
+	done        chan struct{}
+	closed      bool
+	closeErr    error
+	service     *threadRuntimeService
 }
 
 func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadUpdate, error) {
@@ -119,15 +121,16 @@ func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadU
 		err := subscription.closeErr
 		subscription.mu.Unlock()
 		return ThreadUpdate{}, err
-	case update := <-subscription.updates:
+	case queued := <-subscription.updates:
 		subscription.mu.Lock()
 		if subscription.closed {
 			err := subscription.closeErr
 			subscription.mu.Unlock()
 			return ThreadUpdate{}, err
 		}
+		subscription.queuedBytes -= queued.bytes
 		subscription.mu.Unlock()
-		return cloneThreadUpdate(update), nil
+		return cloneThreadUpdate(queued.update), nil
 	}
 }
 
@@ -138,9 +141,7 @@ func (subscription *ThreadUpdateSubscription) closeWithError(err error) {
 	}
 	subscription.mu.Lock()
 	if !subscription.closed {
-		subscription.closed = true
-		subscription.closeErr = err
-		close(subscription.done)
+		subscription.finishLocked(err)
 	}
 	service := subscription.service
 	subscription.mu.Unlock()
@@ -148,6 +149,27 @@ func (subscription *ThreadUpdateSubscription) closeWithError(err error) {
 		service.mu.Lock()
 		delete(service.updateSubscribers, subscription)
 		service.mu.Unlock()
+	}
+}
+
+// queuedThreadUpdate shares one immutable batch across subscribers. The byte
+// count is computed once per publication and includes its complete JSON shape.
+type queuedThreadUpdate struct {
+	update ThreadUpdate
+	bytes  int
+}
+
+func (subscription *ThreadUpdateSubscription) finishLocked(err error) {
+	subscription.closed = true
+	subscription.closeErr = err
+	close(subscription.done)
+	for {
+		select {
+		case <-subscription.updates:
+		default:
+			subscription.queuedBytes = 0
+			return
+		}
 	}
 }
 
@@ -163,9 +185,7 @@ func (service *threadRuntimeService) invalidateUpdates() {
 	for subscription := range service.updateSubscribers {
 		subscription.mu.Lock()
 		if !subscription.closed {
-			subscription.closed = true
-			subscription.closeErr = ErrThreadUpdateInvalidated
-			close(subscription.done)
+			subscription.finishLocked(ErrThreadUpdateInvalidated)
 		}
 		subscription.mu.Unlock()
 		delete(service.updateSubscribers, subscription)
@@ -184,7 +204,7 @@ func (service *threadRuntimeService) SubscribeUpdates(ctx context.Context) (*Thr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	subscription := &ThreadUpdateSubscription{updates: make(chan ThreadUpdate, 64), done: make(chan struct{}), service: service}
+	subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, threadUpdateQueueCount), done: make(chan struct{}), service: service}
 	service.mu.Lock()
 	if service.subscriptionsClosed {
 		service.mu.Unlock()
@@ -481,18 +501,40 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 		return
 	}
 	service.published[update.ThreadID.String()] = update.ViewVersion
+	var queued queuedThreadUpdate
 	if len(service.updateSubscribers) > 0 {
-		update = cloneThreadUpdate(update)
+		raw, err := json.Marshal(update)
+		if err != nil {
+			for subscription := range service.updateSubscribers {
+				subscription.mu.Lock()
+				if !subscription.closed {
+					subscription.finishLocked(ErrThreadUpdateInvalidated)
+				}
+				subscription.mu.Unlock()
+				delete(service.updateSubscribers, subscription)
+			}
+		} else {
+			queued.bytes = len(raw)
+			// Oversized batches invalidate observers without retaining a copy.
+			if queued.bytes <= threadUpdateQueueBytes {
+				queued.update = cloneThreadUpdate(update)
+			}
+		}
 	}
 	for subscription := range service.updateSubscribers {
 		subscription.mu.Lock()
 		if !subscription.closed {
-			select {
-			case subscription.updates <- update:
-			default:
-				subscription.closed = true
-				subscription.closeErr = ErrThreadUpdateOverflow
-				close(subscription.done)
+			overflow := queued.bytes > threadUpdateQueueBytes-subscription.queuedBytes
+			if !overflow {
+				select {
+				case subscription.updates <- queued:
+					subscription.queuedBytes += queued.bytes
+				default:
+					overflow = true
+				}
+			}
+			if overflow {
+				subscription.finishLocked(ErrThreadUpdateOverflow)
 				delete(service.updateSubscribers, subscription)
 			}
 		}

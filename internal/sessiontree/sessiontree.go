@@ -733,8 +733,11 @@ type MemoryRepo struct {
 	entries           map[string][]Entry
 	entryOrdinals     map[string]map[string]int
 	entryDepths       map[string]map[string]int64
+	pathIndexes       map[string][]pathIndexEntry
 	turnEntryOrdinals map[string]map[string][]int
 	turnEntryCounts   map[string]map[string]int
+	turnMarkers       map[string]map[string]turnMarkerIndex
+	outputSources     map[string]map[string][]int
 	now               func() time.Time
 	todos             map[string]AgentTodoState
 	tombstones        map[string]ThreadTombstone
@@ -756,8 +759,11 @@ func newMemoryRepo(now func() time.Time) *MemoryRepo {
 		entries:           map[string][]Entry{},
 		entryOrdinals:     map[string]map[string]int{},
 		entryDepths:       map[string]map[string]int64{},
+		pathIndexes:       map[string][]pathIndexEntry{},
 		turnEntryOrdinals: map[string]map[string][]int{},
 		turnEntryCounts:   map[string]map[string]int{},
+		turnMarkers:       map[string]map[string]turnMarkerIndex{},
+		outputSources:     map[string]map[string][]int{},
 		now:               now,
 		todos:             map[string]AgentTodoState{},
 		tombstones:        map[string]ThreadTombstone{},
@@ -959,12 +965,11 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		}
 		seen[entry.ID] = struct{}{}
 		var existing *Entry
-		for index := range r.entries[threadID] {
-			candidate := &r.entries[threadID][index]
-			if candidate.ID == entry.ID {
-				existing = candidate
-				break
+		if ordinal, found := r.entryOrdinals[threadID][entry.ID]; found {
+			if ordinal < 0 || ordinal >= len(r.entries[threadID]) || r.entries[threadID][ordinal].ID != entry.ID {
+				return nil, ErrAuthorityCorrupt
 			}
+			existing = &r.entries[threadID][ordinal]
 		}
 		if existing != nil {
 			if existing.ID != entry.ID || existing.Type != entry.Type || existing.RequestFingerprint != entry.RequestFingerprint || !bytes.Equal(existing.Payload, entry.Payload) {
@@ -989,34 +994,18 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 			return nil, ErrStaleAuthority
 		}
 	}
-	previousEntries := cloneEntries(r.entries[threadID])
-	previousOrdinals := maps.Clone(r.entryOrdinals[threadID])
-	previousDepths := maps.Clone(r.entryDepths[threadID])
-	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[threadID])
-	previousTurnCounts := maps.Clone(r.turnEntryCounts[threadID])
-	previousMeta := r.threads[threadID]
-	previousSequence := r.seq
-	previousState, hadState := r.providerStates[threadID]
-	rollback := func() {
-		r.entries[threadID] = previousEntries
-		r.entryOrdinals[threadID] = previousOrdinals
-		r.entryDepths[threadID] = previousDepths
-		r.turnEntryOrdinals[threadID] = previousTurnOrdinals
-		r.turnEntryCounts[threadID] = previousTurnCounts
-		r.setThreadLocked(threadID, previousMeta)
-		r.seq = previousSequence
-		if hadState {
-			r.setProviderStateLocked(threadID, previousState)
-		} else {
-			r.deleteProviderStateLocked(threadID)
+	checkpoint := r.checkpointJournalAppendLocked(threadID)
+	committed := false
+	defer func() {
+		if !committed {
+			checkpoint.restore(r)
 		}
-	}
+	}()
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		entry.ThreadID = threadID
 		saved, err := r.appendLocked(writeCtx, entry, AppendOptions{ID: entry.ID})
 		if err != nil {
-			rollback()
 			return nil, err
 		}
 		// Queue metadata never enters model history. Advance only an exact
@@ -1030,6 +1019,7 @@ func (r *MemoryRepo) AppendRuntimeFacts(ctx context.Context, threadID string, en
 		}
 		out = append(out, saved)
 	}
+	committed = true
 	return out, nil
 }
 
@@ -1050,7 +1040,7 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 		return Entry{}, err
 	}
 	if turnID := strings.TrimSpace(entry.TurnID); turnID != "" {
-		if _, terminal := runtimeTurnTerminal(r.entries[entry.ThreadID], turnID); terminal {
+		if _, terminal := r.turnTerminalLocked(entry.ThreadID, turnID); terminal {
 			return Entry{}, ErrStaleAuthority
 		}
 	}
@@ -1073,6 +1063,9 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 			return Entry{}, ErrRequestConflict
 		}
 		entry.Metadata = cloneStringMap(entry.Metadata)
+		if entry.Metadata == nil {
+			entry.Metadata = map[string]string{}
+		}
 		entry.Metadata["run_id"] = runID
 	}
 	if opts.ParentID != "" {
@@ -1121,20 +1114,18 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 }
 
 func (r *MemoryRepo) hasTurnStartedLocked(threadID, turnID string) bool {
-	for _, ordinal := range r.turnEntryOrdinals[threadID][turnID] {
-		entries := r.entries[threadID]
-		if ordinal >= 0 && ordinal < len(entries) && entries[ordinal].Type == EntryTurnMarker && entries[ordinal].TurnStatus == TurnStarted {
-			return true
-		}
-	}
-	return false
+	r.ensureTurnMarkersLocked(threadID)
+	return r.turnMarkers[threadID][turnID].started != 0
 }
 
 func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entry) {
 	if len(entries) == 0 {
 		return
 	}
+	r.ensureTurnMarkersLocked(threadID)
+	r.ensureOutputSourcesLocked(threadID)
 	r.stageJournalLocked(threadID, false)
+	r.ensurePathIndexLocked(threadID)
 	if r.turnEntryOrdinals[threadID] == nil {
 		r.turnEntryOrdinals[threadID] = map[string][]int{}
 	}
@@ -1158,9 +1149,12 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 		r.entries[threadID] = append(r.entries[threadID], copy)
 		r.entryOrdinals[threadID][copy.ID] = ordinal
 		r.entryDepths[threadID][copy.ID] = copy.PathDepth
+		r.pathIndexes[threadID] = appendPathIndex(r.pathIndexes[threadID], r.entryOrdinals[threadID], copy)
+		r.observeOutputSourcesLocked(threadID, ordinal, copy)
 		if strings.TrimSpace(copy.TurnID) != "" {
 			r.turnEntryOrdinals[threadID][copy.TurnID] = append(r.turnEntryOrdinals[threadID][copy.TurnID], ordinal)
 			r.turnEntryCounts[threadID][copy.TurnID]++
+			r.observeTurnMarkerLocked(threadID, ordinal, copy)
 		}
 	}
 }
@@ -1235,12 +1229,15 @@ func (r *MemoryRepo) replaceIndexedEntriesWithStartedRunIdentityLocked(threadID 
 	r.entries[threadID] = cloned
 	r.entryOrdinals[threadID] = entryOrdinals
 	r.entryDepths[threadID] = entryDepths
+	r.rebuildPathIndexLocked(threadID)
 	r.turnEntryOrdinals[threadID] = indexed
 	counts := make(map[string]int, len(indexed))
 	for turnID, ordinals := range indexed {
 		counts[turnID] = len(ordinals)
 	}
 	r.turnEntryCounts[threadID] = counts
+	r.rebuildTurnMarkersLocked(threadID)
+	r.rebuildOutputSourcesLocked(threadID)
 	return nil
 }
 
@@ -1249,15 +1246,18 @@ func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
 	delete(r.entries, threadID)
 	delete(r.entryOrdinals, threadID)
 	delete(r.entryDepths, threadID)
+	delete(r.pathIndexes, threadID)
 	delete(r.turnEntryOrdinals, threadID)
 	delete(r.turnEntryCounts, threadID)
+	delete(r.turnMarkers, threadID)
+	delete(r.outputSources, threadID)
 }
 
 func (r *MemoryRepo) nextEntryID(threadID string) string {
 	for {
 		r.seq++
 		id := fmt.Sprintf("%s-entry-%d", threadID, r.seq)
-		if !containsEntry(r.entries[threadID], id) {
+		if _, exists := r.entryOrdinals[threadID][id]; !exists {
 			return id
 		}
 	}
@@ -1492,42 +1492,13 @@ func (r *MemoryRepo) Path(_ context.Context, threadID, leafID string) ([]Entry, 
 	return pathLocked(r.threads, r.entries, threadID, leafID)
 }
 
-func (r *MemoryRepo) PathPage(_ context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
+func (r *MemoryRepo) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
 	if limit <= 0 {
 		return PathPage{}, errors.New("path page limit must be positive")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	path, err := pathLocked(r.threads, r.entries, threadID, leafID)
-	if err != nil {
-		return PathPage{}, err
-	}
-	end := len(path)
-	if beforeEntryID != "" {
-		end = -1
-		for index, entry := range path {
-			if entry.ID == beforeEntryID {
-				end = index
-				break
-			}
-		}
-		if end < 0 {
-			return PathPage{}, ErrEntryNotFound
-		}
-	}
-	start := end - limit
-	if start < 0 {
-		start = 0
-	}
-	entries := make([]Entry, 0, end-start)
-	for index := end - 1; index >= start; index-- {
-		entries = append(entries, cloneEntry(path[index]))
-	}
-	page := PathPage{Entries: entries, HasMore: start > 0, NewestOrdinal: int64(end)}
-	if page.HasMore {
-		page.NextEntryID = path[start].ID
-	}
-	return page, nil
+	return r.pathPageLocked(ctx, threadID, leafID, beforeEntryID, limit)
 }
 
 func (r *MemoryRepo) MoveLeaf(_ context.Context, threadID, entryID string) error {

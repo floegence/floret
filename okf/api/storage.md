@@ -322,3 +322,20 @@ preserves every canonical fact and earlier edge, changes the writer envelope in
 the existing namespace, and rejects older writers. Invalid source, future schema,
 write failure, cancellation and panic roll back the entire startup transaction.
 Current restart is byte-stable. See [Goal execution](../decisions/thread-goals.md).
+
+## Exact derived-document reads
+
+Optional `storage/spi.IndexDocumentReader` reads one exact key within one thread
+scope. Missing keys and scope mismatches return `ErrNotFound`; other failures
+remain explicit. SQLite and the canonical KV adapter implement it. Existing
+custom `IndexReader` implementations keep their published query contract; the
+owner selects the requested key from their scoped candidates when they do not
+implement the additional capability. No read error switches implementations.
+
+Query projection continuations retain source locators and lifecycle metadata,
+not complete historical projected bodies. Transactions materialize only changed
+records and install their continuation after commit. Path paging follows derived
+ancestor locators, never a complete Path followed by slicing. These indexes are
+rebuildable, memory-only metadata; domain schema and canonical bytes do not change.
+Canonical body residency and giant-message indexing still require bounded storage
+work; these improvements do not establish a global history memory bound.

@@ -160,13 +160,21 @@ func (r *MemoryRepo) continuation(scope threadquery.Scope, token, digest, kind s
 func queryRow(snapshot *querySnapshot, record *queryRecord, filter threadquery.Filter) threadquery.Record {
 	row := record.row
 	row.Ref = snapshot.recordRefs[record.key]
-	text := record.text("text")
 	start := 0
 	terms := []string{}
 	for _, match := range []threadquery.TextMatch{filter.Text, filter.Title, filter.Arguments, filter.Result} {
 		terms = append(terms, match.Contains, match.Phrase)
 		terms = append(terms, match.Keywords...)
 	}
+	hasTerms := false
+	for _, term := range terms {
+		hasTerms = hasTerms || term != ""
+	}
+	if !hasTerms {
+		row.Snippet = record.textPrefix(256)
+		return row
+	}
+	text := record.text("text")
 	// Byte slicing always respects UTF-8 boundaries, including a match in Chinese.
 	lower := strings.ToLower(text)
 	for _, term := range terms {
@@ -318,26 +326,7 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 	if err != nil {
 		return threadquery.ReadPage{}, err
 	}
-	fields := []string{}
-	seen := map[string]bool{}
-	for _, part := range parts {
-		if !seen[part.field] {
-			seen[part.field] = true
-			fields = append(fields, part.field)
-		}
-	}
-	fieldText := func(field string) string {
-		var out strings.Builder
-		for _, part := range parts {
-			if part.field == field {
-				if out.Len() > 0 && field != "body" {
-					out.WriteByte('\n')
-				}
-				out.WriteString(part.text)
-			}
-		}
-		return out.String()
-	}
+	fields := queryReadFields(parts)
 	header, _ := json.Marshal(result.Record)
 	used := len(header) + 512
 	if used >= 64*1024-512 {
@@ -347,34 +336,34 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 		if err := ctx.Err(); err != nil {
 			return threadquery.ReadPage{}, err
 		}
-		text := fieldText(fields[field])
-		if offset >= len(text) {
+		current := fields[field]
+		if offset >= current.bytes {
 			field++
 			offset = 0
 			continue
 		}
 		before := offset
-		end := min(len(text), offset+16*1024)
+		text := current.chunk(offset, 16*1024)
+		end := len(text)
 		for {
-			for end > offset && end < len(text) && !utf8.RuneStart(text[end]) {
+			for end > 0 && end < len(text) && !utf8.RuneStart(text[end]) {
 				end--
 			}
-			if end == offset {
+			if end == 0 {
 				break
 			}
-			chunk := threadquery.Chunk{Field: fields[field], Offset: offset, Text: text[offset:end]}
+			chunk := threadquery.Chunk{Field: current.name, Offset: offset, Text: text[:end]}
 			raw, _ := json.Marshal(chunk)
 			if used+len(raw) <= 64*1024-512 {
 				result.Chunks = append(result.Chunks, chunk)
 				used += len(raw) + 1
-				offset = end
+				offset += end
 				break
 			}
 			if len(result.Chunks) > 0 {
-				end = offset
 				break
 			}
-			end = offset + (end-offset)/2
+			end /= 2
 		}
 		if offset == before {
 			break

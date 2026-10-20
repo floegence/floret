@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -163,7 +162,7 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 		}
 		result.UserMessage = cloneEntry(user)
 	}
-	if terminal, found := runtimeTurnTerminal(r.entries[req.ThreadID], req.TurnID); found {
+	if terminal, found := r.turnTerminalLocked(req.ThreadID, req.TurnID); found {
 		copy := cloneEntry(terminal)
 		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
 		return result, nil
@@ -203,7 +202,7 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 		}
 		result.UserMessage = cloneEntry(user)
 	}
-	if terminal, ok := runtimeTurnTerminal(r.entries[threadID], turnID); ok {
+	if terminal, ok := r.turnTerminalLocked(threadID, turnID); ok {
 		copy := cloneEntry(terminal)
 		result.Terminal = &TurnTerminalOutcome{Terminal: copy}
 	}
@@ -409,35 +408,12 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	outcomeFingerprint := unknownEffectOutcomeFingerprint(req.ThreadID, req.TurnID, req.RunID)
 	failureID := "turn-failure:" + req.TurnID
 
-	previousEntries := cloneEntries(r.entries[req.ThreadID])
-	previousOrdinals := maps.Clone(r.entryOrdinals[req.ThreadID])
-	previousDepths := maps.Clone(r.entryDepths[req.ThreadID])
-	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[req.ThreadID])
-	previousTurnCounts := maps.Clone(r.turnEntryCounts[req.ThreadID])
-	previousMeta, previousMetaFound := r.threads[req.ThreadID]
-	previousProviderState, previousProviderStateFound := r.providerStates[req.ThreadID]
-	previousSequence := r.seq
+	checkpoint := r.checkpointJournalAppendLocked(req.ThreadID)
 	committed := false
 	defer func() {
-		if committed {
-			return
+		if !committed {
+			checkpoint.restore(r)
 		}
-		r.entries[req.ThreadID] = previousEntries
-		r.entryOrdinals[req.ThreadID] = previousOrdinals
-		r.entryDepths[req.ThreadID] = previousDepths
-		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
-		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
-		if previousMetaFound {
-			r.setThreadLocked(req.ThreadID, previousMeta)
-		} else {
-			r.deleteThreadLocked(req.ThreadID)
-		}
-		if previousProviderStateFound {
-			r.setProviderStateLocked(req.ThreadID, previousProviderState)
-		} else {
-			r.deleteProviderStateLocked(req.ThreadID)
-		}
-		r.seq = previousSequence
 	}()
 
 	if terminal, found := findEntry(r.entries[req.ThreadID], terminalID); found {
@@ -587,35 +563,12 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	previousEntries := cloneEntries(r.entries[req.ThreadID])
-	previousOrdinals := maps.Clone(r.entryOrdinals[req.ThreadID])
-	previousDepths := maps.Clone(r.entryDepths[req.ThreadID])
-	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[req.ThreadID])
-	previousTurnCounts := maps.Clone(r.turnEntryCounts[req.ThreadID])
-	previousMeta, previousMetaFound := r.threads[req.ThreadID]
-	previousProviderState, previousProviderStateFound := r.providerStates[req.ThreadID]
-	previousSequence := r.seq
+	checkpoint := r.checkpointJournalAppendLocked(req.ThreadID)
 	committed := false
 	defer func() {
-		if committed {
-			return
+		if !committed {
+			checkpoint.restore(r)
 		}
-		r.entries[req.ThreadID] = previousEntries
-		r.entryOrdinals[req.ThreadID] = previousOrdinals
-		r.entryDepths[req.ThreadID] = previousDepths
-		r.turnEntryOrdinals[req.ThreadID] = previousTurnOrdinals
-		r.turnEntryCounts[req.ThreadID] = previousTurnCounts
-		if previousMetaFound {
-			r.setThreadLocked(req.ThreadID, previousMeta)
-		} else {
-			r.deleteThreadLocked(req.ThreadID)
-		}
-		if previousProviderStateFound {
-			r.setProviderStateLocked(req.ThreadID, previousProviderState)
-		} else {
-			r.deleteProviderStateLocked(req.ThreadID)
-		}
-		r.seq = previousSequence
 	}()
 	if terminal, found := findEntry(r.entries[req.ThreadID], req.TerminalEntryID); found {
 		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID ||
@@ -635,7 +588,7 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		committed = true
 		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
-	if terminal, found := runtimeTurnTerminal(r.entries[req.ThreadID], req.TurnID); found && req.RequestOnly {
+	if terminal, found := r.turnTerminalLocked(req.ThreadID, req.TurnID); found && req.RequestOnly {
 		committed = true
 		return CancelTurnResult{Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}

@@ -143,25 +143,18 @@ func (r *MemoryRepo) validateNewOutputSourcesLocked(entry Entry) error {
 	if len(next) == 0 {
 		return nil
 	}
-	for parent := entry.ParentID; parent != ""; {
-		index, ok := r.entryOrdinals[entry.ThreadID][parent]
-		if !ok {
-			return ErrAuthorityCorrupt
-		}
-		previous := r.entries[entry.ThreadID][index]
-		for source, fact := range next {
-			if source != previous.Message.ContentSourceID && source != previous.Message.ReasoningSourceID {
-				continue
-			}
+	r.ensureOutputSourcesLocked(entry.ThreadID)
+	for source, fact := range next {
+		for _, ordinal := range r.outputSources[entry.ThreadID][source] {
+			previous := r.entries[entry.ThreadID][ordinal]
 			old, err := outputSourceFacts(previous)
 			if err != nil {
 				return err
 			}
-			if !sameOutputSource(old[source], fact) {
+			if !sameOutputSource(old[source], fact) && r.outputSourceAncestorLocked(entry.ThreadID, entry.ParentID, ordinal) {
 				return fmt.Errorf("%w: conflicting output source on %s", ErrAuthorityCorrupt, entry.ID)
 			}
 		}
-		parent = previous.ParentID
 	}
 	return nil
 }

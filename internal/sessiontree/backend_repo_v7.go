@@ -424,8 +424,11 @@ func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 		parentEvents: source.parentEvents, threads: maps.Clone(source.threads), entries: make(map[string][]Entry, len(source.entries)),
 		entryOrdinals:     make(map[string]map[string]int, len(source.entryOrdinals)),
 		entryDepths:       make(map[string]map[string]int64, len(source.entryDepths)),
+		pathIndexes:       make(map[string][]pathIndexEntry, len(source.pathIndexes)),
 		turnEntryOrdinals: make(map[string]map[string][]int, len(source.turnEntryOrdinals)),
 		turnEntryCounts:   make(map[string]map[string]int, len(source.turnEntryCounts)),
+		turnMarkers:       make(map[string]map[string]turnMarkerIndex, len(source.turnMarkers)),
+		outputSources:     make(map[string]map[string][]int, len(source.outputSources)),
 		now:               source.now, todos: maps.Clone(source.todos), tombstones: maps.Clone(source.tombstones),
 		providerStates: maps.Clone(source.providerStates),
 		artifacts:      maps.Clone(source.artifacts), seq: source.seq,
@@ -439,11 +442,20 @@ func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 	for threadID, values := range source.entryDepths {
 		clone.entryDepths[threadID] = maps.Clone(values)
 	}
+	for threadID, values := range source.pathIndexes {
+		clone.pathIndexes[threadID] = values[:len(values):len(values)]
+	}
 	for threadID, values := range source.turnEntryOrdinals {
 		clone.turnEntryOrdinals[threadID] = cloneOrdinalLists(values)
 	}
 	for threadID, values := range source.turnEntryCounts {
 		clone.turnEntryCounts[threadID] = maps.Clone(values)
+	}
+	for threadID, markers := range source.turnMarkers {
+		clone.turnMarkers[threadID] = maps.Clone(markers)
+	}
+	for threadID, sources := range source.outputSources {
+		clone.outputSources[threadID] = cloneOrdinalLists(sources)
 	}
 	return clone
 }
