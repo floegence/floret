@@ -20,7 +20,9 @@ SetGoal and DeleteGoal carry a stable request key and expected Goal version.
 A mutation or review replay preserves its single committed fact; a stale version returns Conflict
 and the current Goal without changing it. Text is retained exactly, with no
 Goal-specific length ceiling or truncation. Prompts ask for clear, concise,
-understandable desired results. User and model mutations share the same journal
+understandable desired results. Multi-stage work with verification normally uses
+a Goal; direct answers and brief read-only checks normally do not. An existing
+unfinished Goal remains in force across those checks. User and model mutations share the same journal
 writer and increment the same version.
 
 User deletion suppresses automatic recreation for the same task. An answer,

@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-10-19 — Concise Goal and argument correction guidance
+
+- Clarify [Goal scope](decisions/thread-goals.md) without changing lifecycle, schemas or public API. Validation feedback states non-execution and model correction ownership within the existing bounded Engine path.
+
 ## 2026-10-19 — Canonical compaction and historical release gate
 
 - Make journal commit results authoritative in [runtime layers](architecture/runtime-layers.md); remove observation-driven duplicate persistence and runtime boundary guessing.

@@ -21,7 +21,7 @@ func validateModelToolArguments(definitions []tools.ToolDefinition, call provide
 func validationFeedbackMessage(call provider.ToolCall, err error) session.Message {
 	return session.Message{
 		Role: session.Tool, Kind: session.MessageKindToolValidationError,
-		Content:    "ERROR: " + tools.InvalidArgumentsText(call.Name, err),
+		Content:    "ERROR: Tool call not executed. " + tools.InvalidArgumentsText(call.Name, err) + " The runtime limits correction attempts.",
 		ToolCallID: call.ID, ToolName: call.Name,
 		ToolResult: &session.ToolResultView{Status: "error"},
 	}
