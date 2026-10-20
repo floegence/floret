@@ -1357,3 +1357,97 @@ func TestPublishedThreadCommandAcknowledgments(t *testing.T) {
 		t.Fatalf("view=%+v err=%v", view, err)
 	}
 }
+
+func TestPublishedCanonicalBodyReadAndSearch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "body.db")
+	source := strings.Repeat("abc中文🌸\r\n", 10000)
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "body", StateCompatibilityKey: "body:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "done"}, {Type: provider.EventDone, Reason: "stop"}}})
+			return runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "body", Name: "Body"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway)
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	host, service := open()
+	created, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "body-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.(runtime.ThreadCommandService).SendAck(t.Context(), runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "body-send", Input: runtime.UserInput{Text: source}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var view runtime.ThreadView
+	for {
+		view, err = service.View(t.Context(), created.ThreadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Activity == runtime.ThreadActivityIdle && view.LastOutcome != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("body fixture did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	var entry string
+	for _, item := range view.Items {
+		if item.Kind == runtime.ThreadItemUser {
+			entry = item.ID
+		}
+	}
+	if entry == "" {
+		t.Fatal("missing canonical user item")
+	}
+	scope := threadquery.Scope{Authority: "body-reader", ThreadIDs: []identity.ThreadID{created.ThreadID}}
+	for restart := range 2 {
+		reader, ok := service.(runtime.ThreadBodyReader)
+		if !ok {
+			t.Fatal("missing reader")
+		}
+		searcher, ok := service.(runtime.ThreadBodySearcher)
+		if !ok {
+			t.Fatal("missing searcher")
+		}
+		input := runtime.ThreadBodyInput{ThreadID: created.ThreadID, EntryID: entry, Field: runtime.ThreadBodyContent}
+		digest := sha256.New()
+		for input.OffsetBytes < len(source) {
+			part, err := reader.ReadBody(t.Context(), scope, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(part.Text) == 0 || part.Bytes != len(source) {
+				t.Fatal("invalid source chunk")
+			}
+			digest.Write([]byte(part.Text))
+			input.OffsetBytes += len(part.Text)
+			input.SHA256 = part.SHA256
+		}
+		expected := sha256.Sum256([]byte(source))
+		if !reflect.DeepEqual(digest.Sum(nil), expected[:]) {
+			t.Fatal("body hash mismatch")
+		}
+		input.OffsetBytes = 0
+		page, err := searcher.SearchBody(t.Context(), scope, runtime.ThreadBodySearchInput{Body: input, Query: "中文🌸", Limit: 2})
+		if err != nil || len(page.Matches) != 2 || !page.HasMore {
+			t.Fatalf("search=%+v err=%v", page, err)
+		}
+		if _, err := searcher.SearchBody(t.Context(), threadquery.Scope{Authority: scope.Authority}, runtime.ThreadBodySearchInput{Body: input, Query: "中文"}); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+			t.Fatalf("revoked scope: %v", err)
+		}
+		if err := host.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if restart == 0 {
+			host, service = open()
+		}
+	}
+}

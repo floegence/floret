@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional scoped ThreadBodySearcher with bounded exact UTF-8 matching, cross-page overlap, source-pinned continuation and cancellation.
+
 - Add optional freshly scoped ThreadBodyReader for exact current-path canonical fields with 16 KiB source chunks, encoded response budgets, complete-field hashes and restart-stable identity; no full-entry materialization.
 
 - Evict extracted historical bodies from retained canonical journals, hydrate requested entries from their backend snapshot, and bound the shared verified source cache to 128 MiB.

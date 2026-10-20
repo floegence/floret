@@ -92,3 +92,18 @@ Overflow, cancellation, invalidation and Close release pending payloads. A consu
 reestablishes a baseline after overflow; canonical execution does not wait for it.
 This queue limit alone does not make full-item replacement or full-view reads
 bounded: the bounded-window capability is separate follow-up work.
+
+# Canonical body reads and search
+
+Optional ThreadBodyReader and ThreadBodySearcher read the canonical owner using
+fresh threadquery.Scope on each request. Neither a source locator nor a hash
+grants access. Hosts also apply private-fact policy to reasoning and arguments.
+Reads preserve exact UTF-8 bytes and CRLF, with 16 KiB source and 64 KiB encoded
+limits. Search scans no more than 64 KiB per call, supports exact overlapping
+matches and carries cross-page candidates through a resumable byte offset.
+Consumers pin the returned SHA256 while resuming and continue empty result pages
+until HasMore is false. Queries are at most 4 KiB; results at most 100 matches.
+Cancelling a read never cancels Agent execution. No display preview is used as
+provider context. See [reader](../../runtime/thread_body.go),
+[search](../../runtime/thread_body_search.go) and
+[differential tests](../../runtime/thread_body_search_test.go).

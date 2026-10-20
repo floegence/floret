@@ -1242,8 +1242,22 @@ field ThreadBodyInput.Field github.com/floegence/floret/v7/runtime.ThreadBodyFie
 field ThreadBodyInput.OffsetBytes int tag="json:\"offset_bytes\""
 field ThreadBodyInput.LimitBytes int tag="json:\"limit_bytes\""
 field ThreadBodyInput.SHA256 string tag="json:\"sha256\""
+type ThreadBodyMatch struct
+field ThreadBodyMatch.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadBodyMatch.LengthBytes int tag="json:\"length_bytes\""
 type ThreadBodyReader interface interface{ReadBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadBodyInput) (github.com/floegence/floret/v7/runtime.ThreadBodyChunk, error)}
 const ThreadBodyReasoning github.com/floegence/floret/v7/runtime.ThreadBodyField = "reasoning"
+type ThreadBodySearchInput struct
+field ThreadBodySearchInput.Body github.com/floegence/floret/v7/runtime.ThreadBodyInput tag="json:\"body\""
+field ThreadBodySearchInput.Query string tag="json:\"query\""
+field ThreadBodySearchInput.Limit int tag="json:\"limit\""
+type ThreadBodySearchPage struct
+field ThreadBodySearchPage.SHA256 string tag="json:\"sha256\""
+field ThreadBodySearchPage.Bytes int tag="json:\"bytes\""
+field ThreadBodySearchPage.Matches []github.com/floegence/floret/v7/runtime.ThreadBodyMatch tag="json:\"matches\""
+field ThreadBodySearchPage.NextOffsetBytes int tag="json:\"next_offset_bytes\""
+field ThreadBodySearchPage.HasMore bool tag="json:\"has_more\""
+type ThreadBodySearcher interface interface{SearchBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadBodySearchInput) (github.com/floegence/floret/v7/runtime.ThreadBodySearchPage, error)}
 const ThreadBodySummary github.com/floegence/floret/v7/runtime.ThreadBodyField = "summary"
 type ThreadCancellation struct
 field ThreadCancellation.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
