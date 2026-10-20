@@ -242,7 +242,17 @@ lock before waiting, preventing concurrent receive/clear deadlocks. Scope grants
 no persistent access; hosts close the stream on permission revocation.
 
 This is an observation substrate, not completed extreme-history qualification.
-Initial actor hydration and retained reducers still materialize complete history.
+Cold actor hydration visits frozen canonical pages of at most 256 entries and
+releases reconstructible text and completed ordinary activity between pages.
+Retry, managed context, compaction, steering, control and interaction dependencies
+retain complete canonical context validation. Queue and restored-input recovery
+share one frozen body-free physical inventory, including inactive branches.
+Request-key hydration reads metadata for the same last 256 canonical records.
+No partial projection is installed after cancellation, a failed page or a
+changed active path. [Differential and public-window regressions](../../runtime/thread_hydration_test.go)
+compare exact full results and exercise append, cancellation and branch changes.
+Cold hydration still visits all metadata and retained reducers keep its indexes;
+this is not bounded initialization or bounded actor metadata.
 Queue, context and restored-input components retain complete semantics and can
 exceed the observation budget. Oversized components fail explicitly, never drop
 accepted controls. Bounded actor residency, large structured metadata access,

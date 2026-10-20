@@ -113,16 +113,22 @@ func (projection *threadCanonicalProjection) snapshot(ctx context.Context, servi
 	if projection.items.metadataOnly {
 		return canonicalThreadView{}, fmt.Errorf("%w: complete snapshot requires complete source entries", ErrAuthorityCorrupt)
 	}
+	model, err := service.readModelContext(ctx, threadID, path)
+	if err != nil {
+		return canonicalThreadView{}, runtimeHostError(err)
+	}
+	return projection.retainedSnapshot(threadID, model)
+}
+
+// Retained assembly shares all canonical reducers with complete adapters; only
+// the latter reconstruct omitted body fields after leaving the actor boundary.
+func (projection *threadCanonicalProjection) retainedSnapshot(threadID identity.ThreadID, model *ThreadModelContext) (canonicalThreadView, error) {
 	items, interactions := projection.items.snapshot()
 	turns, err := projection.turns.snapshot()
 	if err != nil {
 		return canonicalThreadView{}, err
 	}
 	contextSnapshot, err := projection.context.Snapshot(time.Time{})
-	if err != nil {
-		return canonicalThreadView{}, runtimeHostError(err)
-	}
-	model, err := service.readModelContext(ctx, threadID, path)
 	if err != nil {
 		return canonicalThreadView{}, runtimeHostError(err)
 	}

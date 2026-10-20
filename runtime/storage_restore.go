@@ -90,31 +90,6 @@ func (host *Host) PrepareRestore(ctx context.Context) (RestorePreparation, error
 }
 
 func restoredQueueInputs(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]RestoredInput, error) {
-	entries, err := repo.Entries(ctx, threadID.String())
-	if err != nil {
-		return nil, runtimeHostError(err)
-	}
-	added := map[string]UserInput{}
-	var result []RestoredInput
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntryQueueAdded {
-			var queued QueuedInput
-			if err := json.Unmarshal(entry.Payload, &queued); err != nil {
-				return nil, ErrAuthorityCorrupt
-			}
-			added[queued.ID] = queued.Input
-		}
-		if entry.Type == sessiontree.EntryQueueDeleted && entry.Metadata[restoredFromBackupMetadata] == "true" {
-			var id string
-			if err := json.Unmarshal(entry.Payload, &id); err != nil {
-				return nil, ErrAuthorityCorrupt
-			}
-			input, ok := added[id]
-			if !ok {
-				return nil, ErrAuthorityCorrupt
-			}
-			result = append(result, RestoredInput{ID: id, Input: input})
-		}
-	}
-	return result, nil
+	_, restored, err := hydrateThreadQueues(ctx, repo, threadID)
+	return restored, err
 }

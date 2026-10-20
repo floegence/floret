@@ -296,6 +296,16 @@ func (repo *BackendRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOpti
 	return result0, result1, err
 }
 
+func (repo *BackendRepo) JournalMetadata(ctx context.Context, options JournalMetadataOptions) (JournalMetadataPage, error) {
+	var result0 JournalMetadataPage
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.JournalMetadata(ctx, options)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) ListCanonicalTurns(ctx context.Context, opts ListCanonicalTurnsOptions) (CanonicalTurnsPage, error) {
 	var result0 CanonicalTurnsPage
 	err := repo.view(ctx, func(memory *MemoryRepo) error {

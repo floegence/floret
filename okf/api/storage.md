@@ -394,6 +394,14 @@ the active path. Around selection reuses the same field detachment path. No
 cursor registry or long-lived backend transaction is retained. Exact wall-time
 and wire facts survive restart; Go monotonic-clock metadata is not durable.
 
+Internal JournalMetadataReader pages immutable physical inventory in at most
+256 body-free records, including inactive branches. An exclusive frozen ordinal
+boundary survives append and active-leaf movement without holding a database
+transaction. Queue and restored-input hydration consume this one inventory;
+consumed input payloads are released and explicit restore markers resolve the
+latest immutable addition. This inventory is never provider context or a second
+transcript. See [inventory regressions](../../internal/sessiontree/journal_metadata_test.go).
+
 The subsequent [30 -> 31 edge](../../internal/sessiontree/backend_repo_v31.go)
 extracts typed activity JSON into the same body-block inventory. Both source
 and target invariants commit atomically; failed writes, cancellation, panic,
