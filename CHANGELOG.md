@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.71.0 - 2026-10-19
+
 - Add optional actor-native ThreadUpdateSource with explicit item mutations, component clears, UTF-8 append offsets, continuous view versions, bounded growth coalescing, and explicit baseline invalidation.
 - Share one publication kernel with existing View and Subscribe APIs; materialize legacy views only on demand and use lightweight wakeups for internal waits.
 - Accumulate Engine and thread output without repeatedly copying growing text; index native fragments and live items and publish only changed Activity facts through one reducer.
