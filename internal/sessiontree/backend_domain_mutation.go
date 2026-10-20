@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sort"
@@ -422,17 +423,17 @@ func (mutation *backendDomainMutation) validateEntry(threadID string, entry Entr
 	return validateCurrentTurnKindRecords(validation)
 }
 
-func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values map[string]V, kind string) error {
+func persistDomainChanges[V any](ctx context.Context, tx spi.WriteTx, before domainChanges[V], values map[string]V, kind string) error {
 	for key, previous := range before {
 		next, found := values[key]
 		if !found {
 			if previous.found {
-				if err := tx.Delete(backendDomainV29Namespace, backendDomainKey(kind, key)); err != nil {
+				if err := tx.Delete(backendDomainV30Namespace, backendDomainKey(kind, key)); err != nil {
 					return err
 				}
 			}
 		} else if !previous.found || !reflect.DeepEqual(previous.value, next) {
-			if err := putBackendDomainRecord(tx, backendDomainV29Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
+			if err := putBackendDomainRecordContext(ctx, tx, backendDomainV30Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
 				return err
 			}
 		}
@@ -440,10 +441,10 @@ func persistDomainChanges[V any](tx spi.WriteTx, before domainChanges[V], values
 	return nil
 }
 
-func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
+func (mutation *backendDomainMutation) persist(ctx context.Context, tx spi.WriteTx) error {
 	memory := mutation.memory
 	if mutation.sequence != memory.seq {
-		if err := putBackendDomainRecord(tx, backendDomainV29Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV29Version, Sequence: memory.seq}); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV30Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV30Version, Sequence: memory.seq}); err != nil {
 			return err
 		}
 	}
@@ -458,37 +459,37 @@ func (mutation *backendDomainMutation) persist(tx spi.WriteTx) error {
 		}
 	}
 	if rootIndexChanged {
-		if err := putBackendDomainRecord(tx, backendDomainV29Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV30Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
 			return err
 		}
 	}
-	if err := persistDomainChanges(tx, mutation.threads, memory.threads, backendDomainRecordThread); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.threads, memory.threads, backendDomainRecordThread); err != nil {
 		return err
 	}
 	for threadID, previous := range mutation.journals {
 		next := memory.entries[threadID]
 		for ordinal := len(previous.entries); ordinal < len(next); ordinal++ {
 			entry := next[ordinal]
-			if err := putBackendDomainRecord(tx, backendDomainV29Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
+			if err := putBackendDomainRecordContext(ctx, tx, backendDomainV30Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
 				return err
 			}
 		}
 		for ordinal := len(next); ordinal < len(previous.entries); ordinal++ {
-			if err := tx.Delete(backendDomainV29Namespace, backendDomainEntryKey(threadID, ordinal)); err != nil {
+			if err := deleteCanonicalStoredEntry(ctx, tx, threadID, ordinal); err != nil {
 				return err
 			}
 		}
 	}
-	if err := persistDomainChanges(tx, mutation.todos, memory.todos, backendDomainRecordTodo); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.todos, memory.todos, backendDomainRecordTodo); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(tx, mutation.tombstones, memory.tombstones, backendDomainRecordTombstone); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.tombstones, memory.tombstones, backendDomainRecordTombstone); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(tx, mutation.providerStates, memory.providerStates, backendDomainRecordProviderState); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.providerStates, memory.providerStates, backendDomainRecordProviderState); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(tx, mutation.artifacts, memory.artifacts, backendDomainRecordArtifact); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.artifacts, memory.artifacts, backendDomainRecordArtifact); err != nil {
 		return err
 	}
 	return nil

@@ -138,7 +138,7 @@ func TestBackendDomainV6ToV7BackfillsRunIdentityAndTerminatesUnknownEffects(t *t
 		if records, err := scanBackendDomainV6(ctx, tx); err != nil || len(records) != 0 {
 			return fmt.Errorf("v6 records=%d err=%w", len(records), err)
 		}
-		_, found, err := loadBackendDomainV29(ctx, tx, time.Now)
+		_, found, err := loadBackendDomain(ctx, tx, time.Now, backendDomainV30Format)
 		if err != nil || !found {
 			return fmt.Errorf("current found=%v err=%w", found, err)
 		}

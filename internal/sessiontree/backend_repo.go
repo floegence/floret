@@ -62,6 +62,7 @@ const (
 	backendDomainSourceV27
 	backendDomainSourceV28
 	backendDomainSourceV29
+	backendDomainSourceV30
 	backendDomainSourceV14
 	backendDomainSourceV13
 	backendDomainSourceV12
@@ -100,7 +101,8 @@ func NewBackendRepo(ctx context.Context, backend spi.Backend, now func() time.Ti
 // session-tree state using the caller's startup transaction. The returned
 // repository retains backend for ordinary operations after that transaction
 // commits.
-func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendRepo, error) {
+// newBackendRepoThroughV29 preserves every released migration through schema 29.
+func newBackendRepoThroughV29(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendRepo, error) {
 	if ctx == nil || backend == nil || tx == nil || now == nil {
 		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
 	}
@@ -1646,7 +1648,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV29(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomain(ctx, tx, repo.now, backendDomainV30Format)
 	if err != nil {
 		return err
 	}
@@ -1742,6 +1744,9 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 				}
 				if _, err := decodeBackendDomainRecord(backendDomainV29Format, raw); err == nil {
 					candidate.source = backendDomainSourceV29
+				}
+				if _, err := decodeBackendDomainRecord(backendDomainV30Format, raw); err == nil {
+					candidate.source = backendDomainSourceV30
 				}
 			}
 			present = append(present, candidate.source)
@@ -2060,7 +2065,7 @@ func (repo *BackendRepo) updateDomain(ctx context.Context, mutate func(*MemoryRe
 		if err := mutation.validate(); err != nil {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if err := mutation.persist(tx); err != nil {
+		if err := mutation.persist(ctx, tx); err != nil {
 			return err
 		}
 		if err := mutation.persistQuery(ctx, tx, repo.queryThreads); err != nil {

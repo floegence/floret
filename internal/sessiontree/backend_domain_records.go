@@ -160,6 +160,7 @@ func scanBackendDomain(ctx context.Context, tx spi.ReadTx, format backendDomainF
 func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time, format backendDomainFormat) (*MemoryRepo, bool, error) {
 	memory := newMemoryRepo(now)
 	entries := make(map[string]map[int]Entry)
+	bodyReferences := map[string]canonicalBodyRecord{}
 	var manifest *backendDomainManifest
 	var rootIndex *backendDomainRootIndex
 	found, err := visitBackendDomain(ctx, tx, format, func(stored spi.Record) error {
@@ -201,7 +202,25 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordEntry:
 			value := Entry{}
-			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ThreadID == "" || record.ID == "" || record.Ordinal < 0 || value.ThreadID != record.ThreadID || value.ID != record.ID {
+			var entryErr error
+			if format.version == backendDomainV30Version {
+				var stored canonicalStoredEntry
+				stored, entryErr = decodeCanonicalStoredEntry(record)
+				if entryErr == nil {
+					for _, ref := range stored.Fields {
+						body := bodyReferences[ref.SHA256]
+						if body.References > 0 && body.canonicalBodyRef != ref {
+							return ErrAuthorityCorrupt
+						}
+						body.canonicalBodyRef, body.References = ref, body.References+1
+						bodyReferences[ref.SHA256] = body
+					}
+					value, entryErr = materializeCanonicalStoredEntry(ctx, tx, stored)
+				}
+			} else {
+				entryErr = decodeBackendDomainValue(format, record, &value)
+			}
+			if err := entryErr; err != nil || record.ThreadID == "" || record.ID == "" || record.Ordinal < 0 || value.ThreadID != record.ThreadID || value.ID != record.ID {
 				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s entry", format.label)))
 			}
 			if entries[record.ThreadID] == nil {
@@ -269,6 +288,11 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 
 	if manifest == nil || rootIndex == nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s manifest or root index is missing", format.label))
+	}
+	if format.version == backendDomainV30Version {
+		if err := verifyCanonicalBodyRecords(ctx, tx, bodyReferences); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
 	}
 	memory.seq = manifest.Sequence
 	for threadID, byOrdinal := range entries {
@@ -383,45 +407,49 @@ func backendDomainRootThreadIDs(memory *MemoryRepo) []string {
 }
 
 func saveCompleteBackendDomain(tx spi.WriteTx, memory *MemoryRepo, format backendDomainFormat) error {
+	return saveCompleteBackendDomainContext(context.Background(), tx, memory, format)
+}
+
+func saveCompleteBackendDomainContext(ctx context.Context, tx spi.WriteTx, memory *MemoryRepo, format backendDomainFormat) error {
 	if err := format.validate(memory); err != nil {
 		return err
 	}
 	manifest := backendDomainManifest{Version: format.version, Sequence: memory.seq}
-	if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
+	if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 		return err
 	}
-	if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
+	if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
 		return err
 	}
 	for id, value := range memory.threads {
-		if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0, value); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0, value); err != nil {
 			return err
 		}
 	}
 	for threadID, threadEntries := range memory.entries {
 		for ordinal, value := range threadEntries {
-			if err := putBackendDomainRecord(tx, format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, value.ID, threadID, ordinal, value); err != nil {
+			if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, value.ID, threadID, ordinal, value); err != nil {
 				return err
 			}
 		}
 	}
 	for id, value := range memory.todos {
-		if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordTodo, id), backendDomainRecordTodo, id, "", 0, value); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordTodo, id), backendDomainRecordTodo, id, "", 0, value); err != nil {
 			return err
 		}
 	}
 	for id, value := range memory.tombstones {
-		if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordTombstone, id), backendDomainRecordTombstone, id, "", 0, value); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordTombstone, id), backendDomainRecordTombstone, id, "", 0, value); err != nil {
 			return err
 		}
 	}
 	for id, value := range memory.providerStates {
-		if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordProviderState, id), backendDomainRecordProviderState, id, "", 0, value); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordProviderState, id), backendDomainRecordProviderState, id, "", 0, value); err != nil {
 			return err
 		}
 	}
 	for id, value := range memory.artifacts {
-		if err := putBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordArtifact, id), backendDomainRecordArtifact, id, "", 0, value); err != nil {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordArtifact, id), backendDomainRecordArtifact, id, "", 0, value); err != nil {
 			return err
 		}
 	}
@@ -429,6 +457,20 @@ func saveCompleteBackendDomain(tx spi.WriteTx, memory *MemoryRepo, format backen
 }
 
 func putBackendDomainRecord(tx spi.WriteTx, format backendDomainFormat, key []byte, kind, id, threadID string, ordinal int, value any) error {
+	return putBackendDomainRecordContext(context.Background(), tx, format, key, kind, id, threadID, ordinal, value)
+}
+
+func putBackendDomainRecordContext(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, key []byte, kind, id, threadID string, ordinal int, value any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if format.version == backendDomainV30Version && kind == backendDomainRecordEntry {
+		entry, ok := value.(Entry)
+		if !ok {
+			return ErrAuthorityCorrupt
+		}
+		return putCanonicalStoredEntry(ctx, tx, key, id, threadID, ordinal, entry)
+	}
 	encoded, err := encodeBackendDomainRecord(format, kind, id, threadID, ordinal, value)
 	if err != nil {
 		return err
@@ -437,23 +479,21 @@ func putBackendDomainRecord(tx spi.WriteTx, format backendDomainFormat, key []by
 }
 
 func deleteAllBackendDomain(ctx context.Context, tx spi.WriteTx, format backendDomainFormat) error {
-	records, err := scanBackendDomain(ctx, tx, format)
-	if err != nil {
-		return err
-	}
-	for _, record := range records {
-		if err := tx.Delete(format.namespace, record.Key); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := visitBackendDomain(ctx, tx, format, func(record spi.Record) error {
+		return tx.Delete(format.namespace, record.Key)
+	})
+	return err
 }
 
 func persistBackendDomainChanges(tx spi.WriteTx, before, after *MemoryRepo, format backendDomainFormat) (bool, error) {
+	return persistBackendDomainChangesContext(context.Background(), tx, before, after, format)
+}
+
+func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, before, after *MemoryRepo, format backendDomainFormat) (bool, error) {
 	changed := false
 	put := func(key []byte, kind, id, threadID string, ordinal int, value any) error {
 		changed = true
-		return putBackendDomainRecord(tx, format, key, kind, id, threadID, ordinal, value)
+		return putBackendDomainRecordContext(ctx, tx, format, key, kind, id, threadID, ordinal, value)
 	}
 	remove := func(key []byte) error {
 		changed = true
@@ -500,7 +540,14 @@ func persistBackendDomainChanges(tx spi.WriteTx, before, after *MemoryRepo, form
 			}
 		}
 		for ordinal := len(next); ordinal < len(previous); ordinal++ {
-			if err := remove(backendDomainEntryKey(threadID, ordinal)); err != nil {
+			var deleteErr error
+			if format.version == backendDomainV30Version {
+				changed = true
+				deleteErr = deleteCanonicalStoredEntry(ctx, tx, threadID, ordinal)
+			} else {
+				deleteErr = remove(backendDomainEntryKey(threadID, ordinal))
+			}
+			if err := deleteErr; err != nil {
 				return false, err
 			}
 		}

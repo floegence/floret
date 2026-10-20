@@ -18,7 +18,8 @@ must not be decoded into a second Agent model by hosts.
 ## Domain migration
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
--> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 lineage. Version 19 is current. The v2 -> v3 edge reconstructs the exact
+-> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 -> v20 -> v21 -> v22 -> v23 -> v24 -> v25 -> v26
+-> v27 -> v28 -> v30 lineage. Version 29 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -339,3 +340,20 @@ ancestor locators, never a complete Path followed by slicing. These indexes are
 rebuildable, memory-only metadata; domain schema and canonical bytes do not change.
 Canonical body residency and giant-message indexing still require bounded storage
 work; these improvements do not establish a global history memory bound.
+
+## Canonical body blocks
+
+The permanent [29 -> 30 migration](../../internal/sessiontree/backend_repo_v30.go)
+separates large string fields from entry headers into immutable 16 KiB byte
+blocks. [Body records](../../internal/sessiontree/body_records.go) retain SHA-256,
+length and same-transaction reference counts. Equal fields and Fork copies share
+one body. Removing an owner releases its reference; the final owner deletes all
+blocks. The canonical entry raw hash remains unchanged and full reconstruction
+must match it. Startup checks every reference, block key, length and hash and
+rejects orphans, unsupported fields and corrupt data without mutation.
+
+Body range reads touch only intersecting blocks and return whole UTF-8 runes.
+Explicit complete materialization streams and hashes all blocks. These are
+internal storage mechanics, not a host authorization or presentation API.
+Decoded repository and actor residency remain separate unfinished work; the
+storage format alone does not qualify Flower's memory or interaction budgets.

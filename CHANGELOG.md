@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Append the transactional domain 29 -> 30 migration for shared canonical body blocks; preserve complete message bytes, raw hashes, Fork ownership, deletion, fail-closed validation and current restart idempotency.
+
 - Stream startup record decoding by storage page, generate Unicode search terms without full-field copies or per-character encoded allocations, and assemble shared assistant sources without quadratic text copying or citation-offset rescans.
 - Add optional ThreadCommandService acknowledgments using existing command admission and idempotency without materializing complete results.
 - Add optional scoped IndexDocumentReader for exact derived-document lookup while preserving custom IndexReader contracts.

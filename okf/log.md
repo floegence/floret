@@ -1633,3 +1633,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document post-deletion actor release after joined execution/effects and committed tombstones; preserve late-event fencing and failure recovery without retaining deleted actors in the runtime registry.
 - 2026-10-20: Document canonical control locators and the limited scope of fixed-history SQLite provider-commit measurements in [history performance](workflows/history-performance.md).
 - 2026-10-20: Record page-streamed startup validation, segmented Unicode term generation and linear shared-content projection, with differential regressions and explicit remaining residency/window limits in [history performance](workflows/history-performance.md).
+
+- 2026-10-20: Document permanent domain 29 -> 30 canonical body blocks, transactional sharing/deletion, byte-exact reconstruction and fail-closed startup validation in [Storage](api/storage.md).
