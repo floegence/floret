@@ -21,7 +21,7 @@ var readMethods = map[string]bool{
 	"ListCanonicalTurns": true, "ListSubAgentInputs": true, "ListThreads": true,
 	"Path": true, "PathPage": true, "PendingAutomaticThreadTitles": true,
 	"ProviderState": true, "ReadAgentTodoState": true,
-	"ReadArtifact": true, "ReadCanonicalTurn": true, "ReadCompaction": true,
+	"ReadArtifact": true, "ReadCanonicalTurn": true, "ReadCanonicalBody": true, "ReadCompaction": true,
 	"ReadPendingToolCompletion": true, "ReadSubAgentInput": true,
 	"Thread": true, "ThreadTombstone": true,
 	"ValidateArtifactForkDestination": true, "ValidateInterruptedTurnResolution": true,

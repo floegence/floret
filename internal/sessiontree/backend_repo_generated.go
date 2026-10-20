@@ -410,6 +410,16 @@ func (repo *BackendRepo) ReadArtifact(ctx context.Context, req ArtifactReadReque
 	return result0, err
 }
 
+func (repo *BackendRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, field string, offset, limit int) (CanonicalBodyChunk, error) {
+	var result0 CanonicalBodyChunk
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.ReadCanonicalBody(ctx, threadID, entryID, field, offset, limit)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) ReadCanonicalTurn(ctx context.Context, threadID, turnID string) (CanonicalTurnRead, error) {
 	var result0 CanonicalTurnRead
 	err := repo.view(ctx, func(memory *MemoryRepo) error {

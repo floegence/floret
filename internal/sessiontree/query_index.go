@@ -326,6 +326,11 @@ func (record *queryRecord) estimateBytes() int64 {
 	return size
 }
 func (idx *querySnapshots) checkAuthority(scope threadquery.Scope) (map[string]bool, error) {
+	return ValidateQueryScope(scope)
+}
+
+// ValidateQueryScope validates the product-neutral host authority boundary.
+func ValidateQueryScope(scope threadquery.Scope) (map[string]bool, error) {
 	if strings.TrimSpace(scope.Authority) == "" || !utf8.ValidString(scope.Authority) {
 		return nil, fmt.Errorf("%w: host authority is required", threadquery.ErrInvalidQuery)
 	}

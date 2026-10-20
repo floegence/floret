@@ -82,3 +82,21 @@ func BenchmarkSQLiteFixedHistoryProviderCommit(b *testing.B) {
 		})
 	}
 }
+
+// Each sample reads the same small canonical field through the real backend;
+// unrelated history must affect neither body I/O nor allocated result size.
+func BenchmarkSQLiteFixedHistoryBodyRead(b *testing.B) {
+	for _, count := range []int{1096, 10960, 109600} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			repo := newFixedHistorySQLiteRepo(b, count)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				part, err := repo.ReadCanonicalBody(b.Context(), "history", "entry-0", "content", 0, canonicalBodyBlockBytes)
+				if err != nil || part.Text != "fixed historical segment" {
+					b.Fatalf("read: %v", err)
+				}
+			}
+		})
+	}
+}

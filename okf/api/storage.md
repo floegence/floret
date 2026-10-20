@@ -361,3 +361,15 @@ and remain detached from retained journal headers. A process-wide 128 MiB LRU
 caches immutable, hash-verified source bytes; oversized bodies bypass it.
 Actor residency, other payload fields, actual heap/RSS and complete Flower
 interaction budgets still require separate qualification.
+
+## Bounded canonical body access
+
+The optional public runtime.ThreadBodyReader delegates to canonical block
+storage, checking a freshly reconstructed threadquery.Scope and current active
+path on every read. Entry/field locators and optional SHA-256 are identities,
+never authority. Source chunks preserve UTF-8 and CRLF and stay within 16 KiB;
+encoded responses remain below 64 KiB. Full-field hashes allow consumers to
+verify streaming copy or export after restart. No complete entry or source-cache
+population is needed for a chunk. Hosts must separately authorize private tool
+arguments and reasoning, as for ThreadQueryReader. This capability is one part
+of long-history delivery; it does not qualify bounded presentation or product UI.
