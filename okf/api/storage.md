@@ -19,7 +19,7 @@ must not be decoded into a second Agent model by hosts.
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
 -> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 -> v20 -> v21 -> v22 -> v23 -> v24 -> v25 -> v26
--> v27 -> v28 -> v30 lineage. Version 29 is current. The v2 -> v3 edge reconstructs the exact
+-> v27 -> v28 -> v29 -> v30 -> v31 lineage. Version 31 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -393,3 +393,10 @@ leaf remains valid during append-only growth, but is rejected if no longer on
 the active path. Around selection reuses the same field detachment path. No
 cursor registry or long-lived backend transaction is retained. Exact wall-time
 and wire facts survive restart; Go monotonic-clock metadata is not durable.
+
+The subsequent [30 -> 31 edge](../../internal/sessiontree/backend_repo_v31.go)
+extracts typed activity JSON into the same body-block inventory. Both source
+and target invariants commit atomically; failed writes, cancellation, panic,
+corruption and future formats preserve the original bytes. Current restart does
+not rewrite canonical records. [Activity regression](../../internal/sessiontree/activity_body_test.go)
+checks exact canonical state, chunk hashes, sharing deletion and rollback.

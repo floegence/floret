@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Append the atomic domain 30 -> 31 migration for typed activity body blocks;
+  preserve complete API results, cancellation, unknown-effect settlement and
+  exact restart bytes while releasing completed ordinary tool presentations.
+- Add explicit ActivityBodies locators and ThreadBodyActivityJSON for oversized
+  bounded-window presentations; partial JSON never substitutes a complete body.
+
 - Release accepted ordinary text from actor and incremental reducers, retaining exact source extents and bounded summaries; restore explicit full views and freeze complete legacy publications before enqueueing. Preserve UTF-8 prefixes, citation offsets, summary whitespace, restart and deletion semantics. Metadata residency and bounded initialization remain unfinished.
 
 - Add optional scoped item-window observation through the existing actor/version channel, with explicit replacement baselines, stable anchors, pending controls, selected turn membership and in-place tail eviction; serialize queue reads and clears to prevent concurrent deadlocks. Actor residency and complete production performance qualification remain unfinished.

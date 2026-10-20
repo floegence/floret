@@ -543,6 +543,14 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 		complete := cloneThreadUpdate(update)
 		var err error
 		for _, change := range complete.Items {
+			if change.Item != nil {
+				item, restoreErr := service.completeItemActivity(context.Background(), update.ThreadID.String(), *change.Item)
+				if restoreErr != nil {
+					err = restoreErr
+					break
+				}
+				*change.Item = item
+			}
 			if change.Item == nil || !change.Item.textOmitted {
 				continue
 			}

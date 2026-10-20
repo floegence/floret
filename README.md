@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 30 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 31 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
@@ -704,7 +704,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 30).
+schema change (current domain schema 31).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -1255,7 +1255,7 @@ frozen bytes; output-budget refits retain tool declarations.
 The internal tool-schema rendering revision advances render lineage through the
 existing provider-surface boundary. It stops old exact-envelope continuation reuse
 without changing provider identity, canonical history, valid native history, cache
-namespaces or domain schema 30. Historical rendered facts remain immutable.
+namespaces or domain schema 31. Historical rendered facts remain immutable.
 
 ## Model-aware request estimates
 
@@ -1398,3 +1398,15 @@ Historical journals retain immutable body locators, and detached complete reads
 use a shared 128 MiB verified source cache. Runtime actor presentation and the
 presentation-window API still require separate bounded implementation. See the explicit qualification limits in
 [history performance](okf/workflows/history-performance.md).
+
+The contiguous domain 30 -> 31 migration moves typed tool ActivityPresentation
+JSON into the same verified body-block store. It preserves canonical raw bytes,
+hashes, tool pairing and all existing migration edges; old writers reject the
+new entry envelope. Completed ordinary tool payloads are released from the actor
+and its shared reducer. Explicit full views and legacy subscriptions reconstruct
+the exact ordered presentation through the same tools.MergeActivityPresentations
+implementation. Bounded windows inline at most the source preview budget, then
+return ActivityBodies locators and ThreadBodyActivityJSON chunks for complete
+reading. Partial JSON must never be rendered as a complete typed presentation.
+Goal's derived presentation, active tools and provider context retain their
+existing authority. This does not complete the extreme-history qualification.

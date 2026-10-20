@@ -19,6 +19,7 @@ import (
 
 type threadItemProjection struct {
 	metadataOnly        bool
+	restoreActivity     func(ThreadItem) (ThreadItem, error)
 	changedItems        map[int]bool
 	changedInteractions map[int]bool
 	entryItemIndex      map[string]int
@@ -338,6 +339,16 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			}
 			toolKey := threadToolKey(turnID, runID, entry.Message.ToolCallID)
 			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
+				if items[previous].activityOmitted {
+					if projection.restoreActivity == nil {
+						return ErrAuthorityCorrupt
+					}
+					restored, err := projection.restoreActivity(items[previous])
+					if err != nil {
+						return err
+					}
+					items[previous] = restored
+				}
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
 				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				items[previous].Activity = &activity
@@ -349,6 +360,10 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			} else {
 				toolItemIndex[toolKey] = len(items)
 				items = appendItem(items, ThreadItem{ID: threadToolSegmentID(turnID, entry.Message.ToolCallID), TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Activity: &activity, CreatedAt: occurredAt})
+			}
+			toolIndex := toolItemIndex[toolKey]
+			if entry.Message.ToolName != "goal" {
+				items[toolIndex].activityEntryIDs = append(items[toolIndex].activityEntryIDs, entry.ID)
 			}
 			if approvalID := projection.approvalByTool[toolKey]; approvalID != "" {
 				if index, found := interactionIndex[approvalID]; found {
@@ -471,6 +486,9 @@ func (projection *threadItemProjection) releaseText() {
 	projection.metadataOnly = true
 	release := func(index int) {
 		item := &projection.items[index]
+		if projection.restoreActivity != nil {
+			*item = retainCanonicalActivity(*item)
+		}
 		if !item.canonicalText {
 			return
 		}

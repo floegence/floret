@@ -21,6 +21,9 @@ const (
 	ThreadBodySummary       ThreadBodyField = "summary"
 	ThreadBodyError         ThreadBodyField = "error"
 	ThreadBodyControlOutput ThreadBodyField = "control_output"
+	// ThreadBodyActivityJSON is the exact typed ActivityPresentation encoding.
+	// Decode only after reading and verifying the complete field.
+	ThreadBodyActivityJSON ThreadBodyField = "activity_json"
 )
 
 // ThreadBodyInput locates immutable source bytes, never grants access, and may
@@ -78,4 +81,14 @@ func (service *threadRuntimeService) ReadBody(ctx context.Context, scope threadq
 		return ThreadBodyChunk{}, threadquery.ErrRecordUnavailable
 	}
 	return ThreadBodyChunk{ThreadID: input.ThreadID, EntryID: part.EntryID, Field: ThreadBodyField(part.Field), SHA256: part.SHA256, Bytes: part.Bytes, OffsetBytes: part.Offset, Text: part.Text}, nil
+}
+
+// ThreadActivityBody identifies one exact typed presentation. Ordered call and
+// result values use tools.MergeActivityPresentations after complete verified
+// reads. A missing inline Presentation with non-empty ActivityBodies is an
+// explicit omitted body, never an empty activity or a partial JSON document.
+type ThreadActivityBody struct {
+	EntryID string `json:"entry_id"`
+	Bytes   int    `json:"bytes"`
+	SHA256  string `json:"sha256"`
 }

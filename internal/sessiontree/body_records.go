@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/tools"
 )
 
 const (
@@ -270,9 +271,82 @@ func canonicalEntryBodyFields(entry *Entry) map[string]*string {
 	return fields
 }
 
-func decodeCanonicalStoredEntry(record backendDomainRecord) (canonicalStoredEntry, error) {
+// canonicalStoredFields uses one block store for plain text and typed activity.
+// Activity is encoded once as canonical JSON; readers must decode the complete
+// value before interpreting it. A partial JSON chunk is never a presentation.
+func canonicalStoredFields(entry Entry, includeActivity bool) (map[string]string, error) {
+	fields := map[string]string{}
+	for field, value := range canonicalEntryBodyFields(&entry) {
+		if *value != "" {
+			fields[field] = *value
+		}
+	}
+	if includeActivity && entry.Message.Activity != nil {
+		raw, err := json.Marshal(entry.Message.Activity)
+		if err != nil {
+			return nil, err
+		}
+		fields["activity_json"] = string(raw)
+	}
+	return fields, nil
+}
+
+// canonicalFieldValue inspects only the requested field. Ordinary content
+// paging must not serialize unrelated structured payloads on every chunk.
+func canonicalFieldValue(entry Entry, field string) (string, error) {
+	if field == "activity_json" {
+		if entry.Message.Activity == nil {
+			return "", nil
+		}
+		raw, err := json.Marshal(entry.Message.Activity)
+		return string(raw), err
+	}
+	value := canonicalEntryBodyFields(&entry)[field]
+	if value == nil {
+		return "", spi.ErrInvalidArgument
+	}
+	return *value, nil
+}
+
+func clearCanonicalField(entry *Entry, field string) error {
+	if field == "activity_json" {
+		entry.Message.Activity = nil
+		return nil
+	}
+	value := canonicalEntryBodyFields(entry)[field]
+	if value == nil {
+		return ErrAuthorityCorrupt
+	}
+	*value = ""
+	return nil
+}
+
+func restoreCanonicalField(entry *Entry, field, text string) error {
+	if field == "activity_json" {
+		if entry.Message.Activity != nil {
+			return ErrAuthorityCorrupt
+		}
+		var activity tools.ActivityPresentation
+		if err := decodeCanonicalBodyJSON([]byte(text), &activity); err != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if err := activity.Validate(); err != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		entry.Message.Activity = &activity
+		return nil
+	}
+	value := canonicalEntryBodyFields(entry)[field]
+	if value == nil || *value != "" {
+		return ErrAuthorityCorrupt
+	}
+	*value = text
+	return nil
+}
+
+func decodeCanonicalStoredEntry(format backendDomainFormat, record backendDomainRecord) (canonicalStoredEntry, error) {
 	var stored canonicalStoredEntry
-	if err := decodeBackendDomainValue(backendDomainV30Format, record, &stored); err != nil {
+	if err := decodeBackendDomainValue(format, record, &stored); err != nil {
 		return stored, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	if record.Kind != backendDomainRecordEntry || record.ID == "" || record.ThreadID == "" || record.Ordinal < 0 || stored.Entry.ID != record.ID || stored.Entry.ThreadID != record.ThreadID || stored.Entry.Raw != "" {
@@ -285,22 +359,25 @@ func decodeCanonicalStoredEntry(record backendDomainRecord) (canonicalStoredEntr
 		}
 	}
 	for field, ref := range stored.Fields {
-		if fields[field] == nil || !validCanonicalBodyRef(ref) {
+		if (fields[field] == nil && (field != "activity_json" || format.version < backendDomainV31Version)) || !validCanonicalBodyRef(ref) {
 			return stored, ErrAuthorityCorrupt
 		}
+	}
+	if format.version >= backendDomainV31Version && stored.Entry.Message.Activity != nil {
+		return stored, ErrAuthorityCorrupt
 	}
 	return stored, nil
 }
 
 func materializeCanonicalStoredEntry(ctx context.Context, tx spi.ReadTx, stored canonicalStoredEntry) (Entry, error) {
 	entry := stored.Entry
-	for field, value := range canonicalEntryBodyFields(&entry) {
-		if ref, ok := stored.Fields[field]; ok {
-			text, err := materializeCanonicalBody(ctx, tx, ref)
-			if err != nil {
-				return Entry{}, err
-			}
-			*value = text
+	for field, ref := range stored.Fields {
+		text, err := materializeCanonicalBody(ctx, tx, ref)
+		if err != nil {
+			return Entry{}, err
+		}
+		if err := restoreCanonicalField(&entry, field, text); err != nil {
+			return Entry{}, err
 		}
 	}
 	entry.Raw = rawForEntry(entry)
@@ -310,15 +387,15 @@ func materializeCanonicalStoredEntry(ctx context.Context, tx spi.ReadTx, stored 
 	return entry, nil
 }
 
-func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, key []byte, id, threadID string, ordinal int, entry Entry) error {
+func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, key []byte, id, threadID string, ordinal int, entry Entry) error {
 	if err := ValidateEntryIntegrity(entry); err != nil {
 		return err
 	}
 	var previous *canonicalStoredEntry
-	if raw, err := tx.Get(backendDomainV30Namespace, key); err == nil {
-		record, decodeErr := decodeBackendDomainRecord(backendDomainV30Format, raw)
+	if raw, err := tx.Get(format.namespace, key); err == nil {
+		record, decodeErr := decodeBackendDomainRecord(format, raw)
 		if decodeErr == nil {
-			stored, err := decodeCanonicalStoredEntry(record)
+			stored, err := decodeCanonicalStoredEntry(format, record)
 			if err != nil {
 				return err
 			}
@@ -331,15 +408,19 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, key []byte, id
 	}
 	stored := canonicalStoredEntry{Entry: entry, Fields: map[string]canonicalBodyRef{}}
 	stored.Entry.Raw = ""
-	for field, value := range canonicalEntryBodyFields(&stored.Entry) {
-		if *value == "" {
-			continue
-		}
-		ref, err := retainCanonicalBody(ctx, tx, *value)
+	values, err := canonicalStoredFields(entry, format.version >= backendDomainV31Version)
+	if err != nil {
+		return err
+	}
+	for field, value := range values {
+		ref, err := retainCanonicalBody(ctx, tx, value)
 		if err != nil {
 			return err
 		}
-		stored.Fields[field], *value = ref, ""
+		stored.Fields[field] = ref
+		if err := clearCanonicalField(&stored.Entry, field); err != nil {
+			return err
+		}
 	}
 	if previous != nil {
 		for _, ref := range previous.Fields {
@@ -348,24 +429,24 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, key []byte, id
 			}
 		}
 	}
-	encoded, err := encodeBackendDomainRecord(backendDomainV30Format, backendDomainRecordEntry, id, threadID, ordinal, stored)
+	encoded, err := encodeBackendDomainRecord(format, backendDomainRecordEntry, id, threadID, ordinal, stored)
 	if err != nil {
 		return err
 	}
-	return tx.Put(backendDomainV30Namespace, key, encoded)
+	return tx.Put(format.namespace, key, encoded)
 }
 
-func deleteCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, threadID string, ordinal int) error {
+func deleteCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, threadID string, ordinal int) error {
 	key := backendDomainEntryKey(threadID, ordinal)
-	raw, err := tx.Get(backendDomainV30Namespace, key)
+	raw, err := tx.Get(format.namespace, key)
 	if err != nil {
 		return err
 	}
-	record, err := decodeBackendDomainRecord(backendDomainV30Format, raw)
+	record, err := decodeBackendDomainRecord(format, raw)
 	if err != nil {
 		return err
 	}
-	stored, err := decodeCanonicalStoredEntry(record)
+	stored, err := decodeCanonicalStoredEntry(format, record)
 	if err != nil {
 		return err
 	}
@@ -374,7 +455,7 @@ func deleteCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, threadID st
 			return err
 		}
 	}
-	return tx.Delete(backendDomainV30Namespace, key)
+	return tx.Delete(format.namespace, key)
 }
 
 type canonicalBodyKeyParts struct {
@@ -426,4 +507,31 @@ func decodeCanonicalBodyKey(key []byte) (canonicalBodyKeyParts, error) {
 		return result, ErrAuthorityCorrupt
 	}
 	return result, nil
+}
+
+// The migration rewrites validated entries in the same transaction. Release the
+// old block inventory first so sharing counts are rebuilt exactly once.
+func deleteCanonicalBodyRecords(ctx context.Context, tx spi.WriteTx) error {
+	var after []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		page, err := tx.Scan(spi.ScanRequest{Namespace: canonicalBodyNamespace, After: after, Limit: 256})
+		if err != nil {
+			return err
+		}
+		for _, record := range page.Records {
+			if err := tx.Delete(canonicalBodyNamespace, record.Key); err != nil {
+				return err
+			}
+		}
+		if !page.HasMore {
+			return nil
+		}
+		if len(page.Next) == 0 || bytes.Compare(page.Next, after) <= 0 {
+			return ErrAuthorityCorrupt
+		}
+		after = bytes.Clone(page.Next)
+	}
 }

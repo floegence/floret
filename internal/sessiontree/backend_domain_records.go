@@ -203,9 +203,9 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 		case backendDomainRecordEntry:
 			value := Entry{}
 			var entryErr error
-			if format.version == backendDomainV30Version {
+			if format.version >= backendDomainV30Version {
 				var stored canonicalStoredEntry
-				stored, entryErr = decodeCanonicalStoredEntry(record)
+				stored, entryErr = decodeCanonicalStoredEntry(format, record)
 				if entryErr == nil {
 					for _, ref := range stored.Fields {
 						body := bodyReferences[ref.SHA256]
@@ -289,7 +289,7 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 	if manifest == nil || rootIndex == nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s manifest or root index is missing", format.label))
 	}
-	if format.version == backendDomainV30Version {
+	if format.version >= backendDomainV30Version {
 		if err := verifyCanonicalBodyRecords(ctx, tx, bodyReferences); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
@@ -464,12 +464,12 @@ func putBackendDomainRecordContext(ctx context.Context, tx spi.WriteTx, format b
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if format.version == backendDomainV30Version && kind == backendDomainRecordEntry {
+	if format.version >= backendDomainV30Version && kind == backendDomainRecordEntry {
 		entry, ok := value.(Entry)
 		if !ok {
 			return ErrAuthorityCorrupt
 		}
-		return putCanonicalStoredEntry(ctx, tx, key, id, threadID, ordinal, entry)
+		return putCanonicalStoredEntry(ctx, tx, format, key, id, threadID, ordinal, entry)
 	}
 	encoded, err := encodeBackendDomainRecord(format, kind, id, threadID, ordinal, value)
 	if err != nil {
@@ -541,9 +541,9 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 		}
 		for ordinal := len(next); ordinal < len(previous); ordinal++ {
 			var deleteErr error
-			if format.version == backendDomainV30Version {
+			if format.version >= backendDomainV30Version {
 				changed = true
-				deleteErr = deleteCanonicalStoredEntry(ctx, tx, threadID, ordinal)
+				deleteErr = deleteCanonicalStoredEntry(ctx, tx, format, threadID, ordinal)
 			} else {
 				deleteErr = remove(backendDomainEntryKey(threadID, ordinal))
 			}

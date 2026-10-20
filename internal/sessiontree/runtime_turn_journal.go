@@ -562,6 +562,10 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 		}
 	}
 	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+		call, err := r.completeEntryLocked(call)
+		if err != nil {
+			return FailUnknownEffectTurnResult{}, err
+		}
 		status, message := observation.ActivityStatusCanceled, "Tool call was canceled before execution."
 		if unknownCalls[call.Message.ToolCallID] {
 			status, message = observation.ActivityStatusError, EffectOutcomeUnknownFailureMessage
@@ -721,6 +725,10 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		return CancelTurnResult{}, err
 	}
 	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+		call, err := r.completeEntryLocked(call)
+		if err != nil {
+			return CancelTurnResult{}, err
+		}
 		reason := "Tool call was canceled before completion."
 		if unknownToolCalls[call.Message.ToolCallID] {
 			reason = "Tool call was stopped before its effect outcome could be confirmed."

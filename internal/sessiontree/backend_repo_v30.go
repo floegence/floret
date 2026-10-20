@@ -20,9 +20,9 @@ var backendDomainV30Format = backendDomainFormat{
 	scanLimit: 256, validate: validateBackendDomainV29Memory,
 }
 
-// NewBackendRepoInTransaction preserves the released migration chain, then
+// newBackendRepoThroughV30 preserves the released migration chain, then
 // installs segmented canonical bodies in the same startup transaction.
-func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendRepo, error) {
+func newBackendRepoThroughV30(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, progress StartupProgress) (*BackendRepo, error) {
 	if ctx == nil || backend == nil || tx == nil || now == nil {
 		return nil, errors.New("backend repo transaction requires context, backend, transaction, and clock")
 	}

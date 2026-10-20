@@ -412,7 +412,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 30).
+schema change (current domain schema 31).
 
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
@@ -741,3 +741,11 @@ Only Engine produces these facts; hosts do not recompute historical requests.
 Missing fields remain unavailable. Manual preflight has no trigger candidate.
 The canonical terminal turn settles an interrupted running observation so restart
 cannot strand a completed operation in a running state.
+
+Completed ordinary tool activity retains identity, status and exact canonical
+source locators, rather than a full typed payload in every actor/reducer.
+Explicit full API and legacy observers reconstruct before freezing publication.
+Bounded windows return ordered ActivityBodies and use ThreadBodyActivityJSON
+when the combined source exceeds their preview budget. A consumer reads each
+complete field, verifies SHA256, then applies tools.MergeActivityPresentations
+in source order. Active and derived Goal activity retain existing ownership.

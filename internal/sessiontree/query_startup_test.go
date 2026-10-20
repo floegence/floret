@@ -40,7 +40,7 @@ func TestInspectionPreservesProjectionValidation(t *testing.T) {
 			}
 			backend := newMigrationTestBackend()
 			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-				return saveCompleteBackendDomain(tx, memory, backendDomainV30Format)
+				return saveCompleteBackendDomain(tx, memory, backendDomainV31Format)
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +80,7 @@ func TestInspectionDoesNotReplaceLiveSearchIndex(t *testing.T) {
 	memory := newMemoryRepo(time.Now)
 	queryFixture(t, memory)
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		return saveCompleteBackendDomain(tx, memory, backendDomainV30Format)
+		return saveCompleteBackendDomain(tx, memory, backendDomainV31Format)
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/floegence/floret/v7/observation"
+	"github.com/floegence/floret/v7/tools"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -131,16 +134,29 @@ func (actor *threadRuntimeState) retainItem(item ThreadItem, leafID string) Thre
 	if _, ok := actor.service.host.store.repo.(sessiontree.SourceBodyPageReader); !ok {
 		return item
 	}
-	return retainCanonicalItem(item, leafID)
+	item = retainCanonicalItem(item, leafID)
+	if _, ok := actor.service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader); ok {
+		item = retainCanonicalActivity(item)
+	}
+	return item
 }
 
 func (actor *threadRuntimeState) retainItems() {
 	if actor.canonical == nil {
 		return
 	}
+	if _, ok := actor.service.host.store.repo.(sessiontree.CanonicalBodyReader); !ok {
+		return
+	}
+	if _, ok := actor.service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader); ok {
+		actor.canonical.items.restoreActivity = func(item ThreadItem) (ThreadItem, error) {
+			return actor.service.completeItemActivity(context.Background(), actor.threadID, item)
+		}
+	}
 	for index, item := range actor.state.view.Items {
 		actor.state.view.Items[index] = actor.retainItem(item, actor.canonical.leafID)
 	}
+	actor.canonical.items.releaseText()
 }
 
 func (service *threadRuntimeService) completeViewResult(ctx context.Context, view ThreadView, err error) (ThreadView, error) {
@@ -148,6 +164,11 @@ func (service *threadRuntimeService) completeViewResult(ctx context.Context, vie
 		return ThreadView{}, err
 	}
 	for index, item := range view.Items {
+		item, err = service.completeItemActivity(ctx, view.ThreadID.String(), item)
+		if err != nil {
+			return ThreadView{}, err
+		}
+		view.Items[index] = item
 		if !item.textOmitted {
 			continue
 		}
@@ -162,6 +183,11 @@ func (service *threadRuntimeService) completeViewResult(ctx context.Context, vie
 }
 
 func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem, limit int) (ThreadItem, error) {
+	var err error
+	item, err = actor.windowActivity(ctx, item, limit)
+	if err != nil {
+		return ThreadItem{}, err
+	}
 	if item.textOmitted {
 		item = boundedWindowItem(item, limit)
 		text, err := actor.service.readItemText(ctx, actor.threadID, item, limit)
@@ -174,4 +200,99 @@ func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem
 		}
 	}
 	return boundedWindowItem(item, limit), nil
+}
+
+// Completed ordinary tool presentations are reconstructible from their exact
+// call/result fields. Activity identity, status and attention remain resident;
+// pending/running presentations and Goal's derived presentation keep ownership.
+func retainCanonicalActivity(item ThreadItem) ThreadItem {
+	if item.Activity == nil || item.Activity.Status == observation.ActivityStatusRunning || len(item.activityEntryIDs) == 0 || item.activityOmitted {
+		return item
+	}
+	activity := *item.Activity
+	activity.Presentation = nil
+	item.Activity, item.activityOmitted = &activity, true
+	return item
+}
+
+func (service *threadRuntimeService) completeItemActivity(ctx context.Context, threadID string, item ThreadItem) (ThreadItem, error) {
+	if !item.activityOmitted {
+		return item, nil
+	}
+	if item.Activity == nil || len(item.activityEntryIDs) == 0 {
+		return ThreadItem{}, ErrAuthorityCorrupt
+	}
+	reader, ok := service.host.store.repo.(sessiontree.CanonicalBodyReader)
+	if !ok {
+		return ThreadItem{}, ErrUnsupportedStoreCapability
+	}
+	var presentation *tools.ActivityPresentation
+	for index, entryID := range item.activityEntryIDs {
+		var raw strings.Builder
+		for offset := 0; ; {
+			part, err := reader.ReadCanonicalBody(ctx, threadID, entryID, "activity_json", offset, 16<<10)
+			if err != nil {
+				return ThreadItem{}, runtimeHostError(err)
+			}
+			if part.Bytes == 0 {
+				break
+			}
+			if part.Text == "" || offset+len(part.Text) > part.Bytes {
+				return ThreadItem{}, ErrAuthorityCorrupt
+			}
+			raw.WriteString(part.Text)
+			offset += len(part.Text)
+			if offset == part.Bytes {
+				break
+			}
+		}
+		var next *tools.ActivityPresentation
+		if raw.Len() > 0 {
+			next = &tools.ActivityPresentation{}
+			if err := json.Unmarshal([]byte(raw.String()), next); err != nil {
+				return ThreadItem{}, fmt.Errorf("%w: activity body: %v", ErrAuthorityCorrupt, err)
+			}
+		} else {
+			status := observation.ActivityStatusRunning
+			if index == len(item.activityEntryIDs)-1 {
+				status = item.Activity.Status
+			}
+			label := strings.TrimSpace(item.Activity.ToolName)
+			if label == "" {
+				label = "Tool activity"
+			}
+			next = &tools.ActivityPresentation{Label: label, Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: string(status), Operation: "tool", DisplayName: label, Summary: "Historical tool activity"}}
+		}
+		presentation = tools.MergeActivityPresentations(presentation, next)
+	}
+	activity := *item.Activity
+	activity.Presentation = presentation
+	item.Activity, item.activityOmitted = &activity, false
+	return item, nil
+}
+
+func (actor *threadRuntimeState) windowActivity(ctx context.Context, item ThreadItem, limit int) (ThreadItem, error) {
+	if !item.activityOmitted {
+		return item, nil
+	}
+	metadata, ok := actor.service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader)
+	if !ok {
+		return ThreadItem{}, ErrUnsupportedStoreCapability
+	}
+	bodies := make([]ThreadActivityBody, 0, len(item.activityEntryIDs))
+	bytes := 0
+	for _, entryID := range item.activityEntryIDs {
+		body, err := metadata.CanonicalBodyMetadata(ctx, actor.threadID, entryID, "activity_json")
+		if err != nil {
+			return ThreadItem{}, runtimeHostError(err)
+		}
+		bytes += body.Bytes
+		bodies = append(bodies, ThreadActivityBody{EntryID: entryID, Bytes: body.Bytes, SHA256: body.SHA256})
+	}
+	if bytes <= limit {
+		return actor.service.completeItemActivity(ctx, actor.threadID, item)
+	}
+	item.ActivityBodies = bodies
+	item.activityEntryIDs = nil
+	return item, nil
 }

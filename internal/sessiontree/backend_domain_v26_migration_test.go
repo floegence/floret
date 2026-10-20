@@ -29,7 +29,7 @@ func TestBackendDomainV25ToV26PreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
-		after, found, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV30Format)
+		after, found, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV31Format)
 		if err != nil {
 			return err
 		}
@@ -66,7 +66,7 @@ func TestBackendDomainV25ToV26PreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fresh.View(t.Context(), func(tx spi.ReadTx) error {
-		_, found, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV30Format)
+		_, found, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV31Format)
 		if !found {
 			t.Error("fresh store not initialized at current schema")
 		}

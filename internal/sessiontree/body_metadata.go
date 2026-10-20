@@ -33,13 +33,13 @@ func (r *MemoryRepo) CanonicalBodyMetadata(ctx context.Context, threadID, entryI
 	if err != nil {
 		return CanonicalBodyMetadata{}, err
 	}
-	value, valid := canonicalEntryBodyFields(&entry)[field]
-	if !valid {
-		return CanonicalBodyMetadata{}, spi.ErrInvalidArgument
+	value, err := canonicalFieldValue(entry, field)
+	if err != nil {
+		return CanonicalBodyMetadata{}, err
 	}
 	ref, stored := entry.bodyFields[field]
 	if !stored {
-		ref = canonicalBodyRef{SHA256: stableHash(*value), Bytes: len(*value)}
+		ref = canonicalBodyRef{SHA256: stableHash(value), Bytes: len(value)}
 	}
 	return CanonicalBodyMetadata{EntryID: strings.Clone(entryID), Field: field, SHA256: ref.SHA256, Bytes: ref.Bytes}, nil
 }
