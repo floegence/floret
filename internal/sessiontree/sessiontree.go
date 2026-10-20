@@ -1463,7 +1463,10 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 		return ErrRequestConflict
 	}
 	kind := entries[0].Metadata[TurnKindMetadataKey]
-	if kind != "" && kind != TurnKindContextCompaction {
+	if kind != "" && kind != TurnKindContextCompaction && kind != TurnKindGoalContinuation {
+		return ErrAuthorityCorrupt
+	}
+	if kind == TurnKindGoalContinuation && userEntries != 0 {
 		return ErrAuthorityCorrupt
 	}
 	if kind == TurnKindContextCompaction && (userEntries != 0 || retrySource != nil) {

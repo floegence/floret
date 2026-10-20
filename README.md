@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 28 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 29 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
@@ -704,7 +704,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 28).
+schema change (current domain schema 29).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -733,8 +733,8 @@ identity injection belongs to `florettest.NewIDSource`.
 ## Independent Context Compaction
 
 The service returned by `Host.ThreadService` implements the optional
-`ThreadContextCompactor`. Call `CompactContext` with only `ThreadID` and
-`RequestKey`; keep slash-command text, drafts, attachments, and transient host
+`ThreadContextCompactor`. Call `CompactContext` with `ThreadID`, `RequestKey`,
+and optional `ContinueGoal`; keep slash-command text, drafts, attachments, and transient host
 context outside this operation. It accepts an idle thread with no queued input
 or unresolved interaction and returns after durable admission, before resolving
 its Agent or calling the provider. Busy threads return `ErrThreadBusy`.
@@ -742,10 +742,14 @@ its Agent or calling the provider. Busy threads return `ErrThreadBusy`.
 `TurnKindContextCompaction` identifies this control turn in `AgentRequest`,
 `ThreadView`, and `ThreadSummary`; the zero kind remains ordinary execution.
 Factories resolve the thread's configured Agent for this kind without requiring
-a user message. Manual compaction has real Turn and Run identities, uses the
-same summary generation and validation as automatic compaction, and finishes
-without an ordinary assistant answer or tool dispatch. Automatic compaction
-continues the admitted task after installing the summary.
+a user message. Omitted or false ContinueGoal retains pure compaction: real Turn
+and Run identities, shared summary generation, and no ordinary answer or tools.
+True atomically selects TurnKindGoalContinuation when the canonical Goal is active;
+otherwise it remains pure compaction. Requested intent and effective kind are
+canonical admission facts. A continuation completes mandatory compaction or noop,
+then uses the existing Engine loop and Goal review in the same execution without
+inventing user input. Preparation failure prevents business work. Automatic
+compaction continues its admitted task as before.
 
 Summary generation reads the complete eligible provider-history projection,
 including message formatting, tool arguments, references, and admitted runtime
@@ -763,14 +767,24 @@ the configured target (50,000 tokens by default), a missing safe cut point, or
 insufficient savings produces an explicit noop. Failed, cancelled, and noop
 operations preserve the effective context and its provider continuation.
 Installation atomically commits the summary, context lifecycle, new estimate,
-and manual terminal; a committed installation wins later cancellation.
+and, for pure compaction only, its terminal; that committed terminal wins later
+cancellation. Goal continuation installation does not finish the execution. Stop
+still prevents subsequent work while retaining an installed summary.
 Success clears old continuation and confirmed usage. The next ordinary request
 supplies a new native measurement.
 
 Replaying a request key returns the latest canonical view without executing or
 installing again; reusing the key for another operation kind conflicts. Retry a
-failed or cancelled compaction with a new compact request key. Ordinary `Retry`
-returns `ErrNoRetryTarget` for a context-only turn. Context snapshots expose one
+failed or cancelled pure compaction with a new compact request key. Ordinary
+Retry returns ErrNoRetryTarget for that context-only kind. Goal continuation uses
+ordinary Retry, question/approval recovery and restart. Canonical success/noop
+preparation and confirmed tool results are retained; uncertain effects never
+replay automatically. Deletion before the first business request ends preparation
+without starting work; deletion after business admission suppresses subsequent
+Goal review without acting as Stop. Goal edits apply at the next logical request,
+and only a current review plus the atomic terminal can mark completion.
+Schema 28 -> 29 introduces this explicit intent without reclassifying historical
+pure compactions; old writers reject the new envelope. Context snapshots expose one
 result per operation and its canonical `AfterItemID` presentation anchor; an
 empty history has no artificial anchor. Stop, shutdown, restart, and fork use
 the existing thread lifecycle. Domain schema v17 retains the automatic v12 -> v13
@@ -1166,7 +1180,7 @@ frozen bytes; output-budget refits retain tool declarations.
 The internal tool-schema rendering revision advances render lineage through the
 existing provider-surface boundary. It stops old exact-envelope continuation reuse
 without changing provider identity, canonical history, valid native history, cache
-namespaces or domain schema 28. Historical rendered facts remain immutable.
+namespaces or domain schema 29. Historical rendered facts remain immutable.
 
 ## Model-aware request estimates
 

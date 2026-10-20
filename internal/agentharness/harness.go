@@ -625,6 +625,16 @@ func (t *Thread) resumeWaitingTurn(ctx context.Context, turnID, waitingRunID str
 	// the provider state, even though resolving input advances the journal leaf.
 	opts.AdmissionBaseLeafID = terminalTurnEntryID(t.id, turnID, waitingRunID)
 	opts.SkipContextPolicyEvent = true
+	journal, err := t.Journal(ctx)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	for _, entry := range journal.Path {
+		if entry.TurnID == turnID && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+			opts.TurnKind = entry.Metadata[sessiontree.TurnKindMetadataKey]
+			break
+		}
+	}
 	// ThreadRuntime admits the continuation marker before publishing its Run.
 	// Preparation and Stop therefore share the same canonical identity.
 	return t.runAccepted(ctx, "", opts, nil)
@@ -655,7 +665,7 @@ func (t *Thread) ExecuteAccepted(ctx context.Context, accepted AcceptedTurn, inp
 	if opts.TurnKind != canonical.TurnStarted.Metadata[sessiontree.TurnKindMetadataKey] {
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
 	}
-	if opts.TurnKind == sessiontree.TurnKindContextCompaction {
+	if opts.TurnKind != "" && canonical.TurnStarted.Metadata[sessiontree.RetrySourceEntryIDMetadataKey] == "" {
 		opts.LogicalRequestID = canonical.TurnStarted.RequestKey
 		return t.runAccepted(ctx, "", opts, nil)
 	}
@@ -824,6 +834,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	engineOptions.EffectResultFinalizer = t.finalizeEffectResult
 	engineOptions.ProviderRequestGate = nil
 	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
+	if opts.TurnKind == sessiontree.TurnKindGoalContinuation {
+		engineOptions.PreviousProviderState = nil
+	}
 	if !opts.SkipContextPolicyEvent || canonicalContext.Model.Provider == "" && canonicalContext.Model.Model == "" {
 		if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -855,7 +868,9 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		engineOptions.Steering = &control
 	}
 	stopHook := t.harness.options.StopHook
-	if t.harness.options.GoalsEnabled && opts.TurnKind != sessiontree.TurnKindContextCompaction {
+	if (t.harness.options.GoalsEnabled || opts.TurnKind == sessiontree.TurnKindGoalContinuation) && opts.TurnKind != sessiontree.TurnKindContextCompaction {
+		projection.requireActiveGoal = opts.TurnKind == sessiontree.TurnKindGoalContinuation
+		projection.goalWorkStarted = goalWorkStarted(historyPath, preparationTurnIDForRun(turnID, retrySource))
 		engineOptions.AdmitGoalContext = projection.admitGoalContext
 		engineOptions.ToolSurfaceProvider = projection.goalSurface(engineOptions.ToolSurfaceProvider, t.harness.options.Tools)
 		stopHook = projection.goalStopHook(stopHook)
@@ -886,17 +901,22 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
 	}
 	var result engine.Result
-	if opts.TurnKind == sessiontree.TurnKindContextCompaction {
+	preparationTurnID := preparationTurnIDForRun(turnID, retrySource)
+	if opts.TurnKind == sessiontree.TurnKindContextCompaction || opts.TurnKind == sessiontree.TurnKindGoalContinuation && !goalCompactionPrepared(historyPath, preparationTurnID) {
 		compact := eng.CompactContext(ctx, runInput, engine.ManualCompactionRequest{RequestID: opts.LogicalRequestID, Source: "thread_runtime"})
 		result = engine.Result{Status: compact.Status, Err: compact.Err, Metrics: compact.Metrics, Messages: compact.Messages, ProviderState: compact.ProviderState, ProviderStateFresh: compact.ProviderState != nil}
 		result.FailureOrigin = compact.FailureOrigin
-		// Installation and completion are one canonical transaction. A late
-		// cancellation or observation failure cannot replace its result.
-		if compact.Status == engine.Completed && compact.Compaction.CompactionID != "" {
+		// Only pure compaction installs its terminal atomically with the summary.
+		// Goal continuation remains owned by the ordinary execution terminal.
+		if opts.TurnKind == sessiontree.TurnKindContextCompaction && compact.Status == engine.Completed && compact.Compaction.CompactionID != "" {
 			t.harness.emit(HarnessEvent{Type: EventTurnCompleted, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(engine.Completed)})
 			return t.turnResultFromEngine(turnID, runID, result, nil), nil
 		}
-	} else {
+		if opts.TurnKind == sessiontree.TurnKindGoalContinuation && compact.Status == engine.Completed {
+			runInput.History = compact.Messages
+		}
+	}
+	if opts.TurnKind == "" || opts.TurnKind == sessiontree.TurnKindGoalContinuation && result.Err == nil {
 		result = eng.RunTurn(ctx, runInput)
 	}
 	result = normalizeCancelledEngineResult(ctx, result)
@@ -949,7 +969,7 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		t.harness.emitEntryCommitted(entry, runID)
 	}
 	terminalMetadata := markerMetadata(runID, result)
-	if t.harness.options.GoalsEnabled && opts.TurnKind != sessiontree.TurnKindContextCompaction && result.Status == engine.Completed {
+	if (t.harness.options.GoalsEnabled || opts.TurnKind == sessiontree.TurnKindGoalContinuation) && opts.TurnKind != sessiontree.TurnKindContextCompaction && result.Status == engine.Completed {
 		terminalMetadata["goal_guard"] = "1"
 		journal, goalErr := t.Journal(persistCtx)
 		if goalErr != nil {
@@ -1942,6 +1962,8 @@ type ProviderOutputSink interface {
 }
 
 type turnProjection struct {
+	requireActiveGoal     bool
+	goalWorkStarted       bool
 	thread                *Thread
 	stateCompatibilityKey string
 	ctx                   context.Context
@@ -2443,4 +2465,53 @@ func eventString(raw any, key string) string {
 	metadata, _ := raw.(map[string]any)
 	value, _ := metadata[key].(string)
 	return value
+}
+
+// Successful preparation and business admission are canonical facts. Following
+// the existing retry ancestry preserves them across repeated retries and restart.
+func goalContinuationPath(path []sessiontree.Entry, turnID string) map[string]bool {
+	turns := map[string]bool{}
+	for turnID != "" && !turns[turnID] {
+		turns[turnID] = true
+		parent := ""
+		for _, entry := range path {
+			if entry.TurnID == turnID && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+				parent = entry.Metadata[sessiontree.RetrySourceTurnIDMetadataKey]
+				break
+			}
+		}
+		turnID = parent
+	}
+	return turns
+}
+
+func goalCompactionPrepared(path []sessiontree.Entry, turnID string) bool {
+	turns := goalContinuationPath(path, turnID)
+	for _, entry := range path {
+		if !turns[entry.TurnID] || sessiontree.ThreadContextEntryKind(entry) != sessiontree.ThreadContextCompactionEntryKind {
+			continue
+		}
+		compact, err := sessiontree.DecodeThreadContextCompactionEntry(entry)
+		if err == nil && compact.Source == "thread_runtime" && (compact.Status == "compacted" || compact.Status == "noop") {
+			return true
+		}
+	}
+	return false
+}
+
+func preparationTurnIDForRun(turnID string, source *sessiontree.Entry) string {
+	if source != nil {
+		return source.TurnID
+	}
+	return turnID
+}
+
+func goalWorkStarted(path []sessiontree.Entry, turnID string) bool {
+	turns := goalContinuationPath(path, turnID)
+	for _, entry := range path {
+		if turns[entry.TurnID] && entry.Type == sessiontree.EntryGoalContext {
+			return true
+		}
+	}
+	return false
 }

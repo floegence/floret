@@ -71,19 +71,27 @@ supply timing only for a matching canonical invocation and never owns Run
 identity. Hosts display management-tool duration independently of the current
 lifecycle of a referenced child thread.
 
-The optional `ThreadContextCompactor.CompactContext` takes only `ThreadID` and
-`RequestKey` and admits independent compaction on an idle thread with no queue
-or unresolved interaction. `TurnKindContextCompaction` reaches the AgentFactory,
-current view, and summary; zero kind keeps ordinary execution semantics. The
-Factory resolves configuration without inventing user input. Admission returns
-before provider work. Manual and automatic compaction share summary generation,
-validation, and installation; manual completion is atomic with installation,
-while automatic compaction continues the current task.
+The optional ThreadContextCompactor.CompactContext takes ThreadID, RequestKey
+and optional ContinueGoal. Admission requires an idle thread without queued input
+or unresolved interactions and returns before provider work. Omitted/false keeps
+TurnKindContextCompaction, whose installation and terminal are atomic and which
+contains no ordinary answer or tools. True atomically selects
+TurnKindGoalContinuation only for an active canonical Goal. Both kinds reach the
+factory and current/history projections without fabricated user input.
 
-Failure, cancellation, and noop preserve effective context and continuation.
-Successful installation invalidates continuation and confirmed usage and installs
-a current estimate. Same-key replay returns the latest view. Failed compactions
-retry through a new compact key; ordinary `Retry` returns `ErrNoRetryTarget`.
+Continuation performs mandatory compaction or explicit noop, then the existing
+Engine and Goal review loop in the same admitted execution. A preparation failure
+prevents work. Summary installation does not complete the Goal execution. Stop
+covers preparation, tools, review and waits while retaining any installed summary.
+Deletion before business admission prevents work; later deletion suppresses review
+without stopping ongoing work. Current Goal versions and atomic terminal guards
+retain completion authority.
+
+Same-key replay preserves the original intent and admission decision after Goal
+changes or restart. Pure failures use a new compact key and reject ordinary Retry.
+Continuation uses ordinary Retry, interactions and restart, retaining canonical
+preparation and confirmed tools without automatic uncertain-effect replay. Domain
+schema 28 -> 29 preserves historical pure compactions and rejects old writers.
 `ThreadContextCompaction.AfterItemID` is derived from Floret's canonical item
 projection at operation start, including after pagination, fork, and restart.
 Hosts use that anchor and existing live updates without another lifecycle store.
@@ -93,7 +101,7 @@ is published, including during active execution; text deltas reuse it. Failed
 assembly returns an error and explicit reads retry without blocking cancellation
 or execution settlement. CanonicalOrdinal preserves the operation's first lifecycle
 position on the queried Path. Insertion anchors do not substitute for Turn/Run
-ownership. This additive v7 API changes no durable record or migration version.
+ownership. Presentation anchors do not own execution or admission intent.
 See [domain schema v14](storage.md#domain-migration) and the
 [README behavior contract](../../README.md#independent-context-compaction).
 
@@ -398,7 +406,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 28).
+schema change (current domain schema 29).
 
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
@@ -696,7 +704,7 @@ or a migration. ThreadTurnFailureToolArgumentCorrectionExhausted identifies
 both tool_dispatch and control_error correction exhaustion, including exact
 v7.69.1 historical Engine messages. Raw validation details are not safe UI copy.
 Explicit Retry starts a new Run and retains confirmed results; unknown effects
-keep their existing no-replay boundary. Domain schema remains 28.
+keep their existing no-replay boundary. Domain schema remains 29.
 See [runtime source](../../runtime/thread_wait.go) and
 [failure classification](../../runtime/thread_failure_reason.go).
 

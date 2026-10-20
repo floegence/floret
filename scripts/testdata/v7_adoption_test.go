@@ -1272,3 +1272,51 @@ func TestPublishedDeepSeekWebTools(t *testing.T) {
 	}
 	_ = tools.NewRegistry(search, fetch)
 }
+
+func TestPublishedGoalCompactionContinuation(t *testing.T) {
+	review := `{"operation":"review","expected_version":1,"outcome":"completed","evidence":"Verified the result."}`
+	gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "adoption", Model: "goal", StateCompatibilityKey: "adoption:goal"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventToolCalls, ToolCalls: []provider.ToolCall{{ID: "review", Name: "goal", Args: review}}}, {Type: provider.EventDone, Reason: "tool_calls"}}}, florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: "Verified and finished."}, {Type: provider.EventDone, Reason: "stop"}}})
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(_ context.Context, req runtime.AgentRequest) (*runtime.Agent, error) {
+		if req.TurnKind != runtime.TurnKindGoalContinuation || req.CanonicalTurnInput.Text != "" {
+			t.Errorf("invalid typed request: %+v", req)
+		}
+		return runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "goal", Name: "Goal"}, SystemPrompt: "Finish the Goal.", Context: config.ContextPolicy{ContextWindowTokens: 256000}}, gateway, runtime.WithAgentGoals())
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.(runtime.ThreadGoalController).SetGoal(t.Context(), runtime.SetGoalInput{ThreadID: thread.ThreadID, RequestKey: "goal", Text: "Deliver a verified result"}); err != nil {
+		t.Fatal(err)
+	}
+	input := runtime.CompactContextInput{ThreadID: thread.ThreadID, RequestKey: "compact", ContinueGoal: true}
+	admitted, err := service.(runtime.ThreadContextCompactor).CompactContext(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitPublishedToolInputView(t, service, thread.ThreadID, func(v runtime.ThreadView) bool {
+		return v.Activity == runtime.ThreadActivityIdle && v.LastOutcome != nil
+	})
+	if final.Failure != nil || final.Goal.Status != "completed" || final.TurnID != admitted.TurnID || final.TurnKind != runtime.TurnKindGoalContinuation {
+		t.Fatalf("goal=%+v failure=%+v", final.Goal, final.Failure)
+	}
+	for _, item := range final.Items {
+		if item.Kind == runtime.ThreadItemUser {
+			t.Fatal("fabricated user input")
+		}
+	}
+	if _, err = service.(runtime.ThreadContextCompactor).CompactContext(t.Context(), input); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.Requests()) != 2 {
+		t.Fatal("replay restarted execution")
+	}
+}

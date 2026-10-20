@@ -62,6 +62,7 @@ const (
 	backendDomainSourceV26
 	backendDomainSourceV27
 	backendDomainSourceV28
+	backendDomainSourceV29
 	backendDomainSourceV14
 	backendDomainSourceV13
 	backendDomainSourceV12
@@ -109,14 +110,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV28 {
+	if source == backendDomainSourceV29 {
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomainV28(ctx, tx, now)
+		memory, found, err := loadBackendDomainV29(ctx, tx, now)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
-			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v28 authority is missing"))
+			return nil, errors.Join(ErrAuthorityCorrupt, errors.New("detected session-tree v29 authority is missing"))
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		if hasUnknownEffectTurns(memory) {
@@ -126,7 +127,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainV28Changes(tx, before, memory)
+			changed, err := persistBackendDomainV29Changes(tx, before, memory)
 			if err != nil {
 				return nil, err
 			}
@@ -134,6 +135,28 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
 		repo.domainMemory = memory
+		return repo, nil
+	}
+	if source == backendDomainSourceV28 {
+		repo.reportStartupPhase(StartupPhaseMigrating)
+		memory, found, err := loadBackendDomainV28(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrAuthorityCorrupt
+		}
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		memory.parentEvents = parentEventsEnabled(ctx)
+		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
+			return nil, err
+		}
+		repo.domainMemory, repo.requiresPersistedStartupVerification = memory, true
 		return repo, nil
 	}
 	if source == backendDomainSourceV27 {
@@ -152,7 +175,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory, repo.requiresPersistedStartupVerification = memory, true
@@ -178,7 +204,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory, repo.requiresPersistedStartupVerification = memory, true
@@ -206,7 +235,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory, repo.requiresPersistedStartupVerification = memory, true
@@ -241,7 +273,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -279,7 +314,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -320,7 +358,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -364,7 +405,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -411,7 +455,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -461,7 +508,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		repo.domainMemory = memory
@@ -514,7 +564,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -571,7 +624,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -633,7 +689,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
@@ -693,7 +752,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV15Format); err != nil {
@@ -759,7 +821,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV14Format); err != nil {
@@ -828,7 +893,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV13Format); err != nil {
@@ -900,7 +968,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV12Format); err != nil {
@@ -975,7 +1046,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV11Format); err != nil {
@@ -1053,7 +1127,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV10Format); err != nil {
@@ -1134,7 +1211,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomain(ctx, tx, backendDomainV9Format); err != nil {
@@ -1218,7 +1298,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV8(ctx, tx); err != nil {
@@ -1301,7 +1384,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV7(ctx, tx); err != nil {
@@ -1387,7 +1473,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 		if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 			return nil, err
 		}
-		if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+		if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+			return nil, err
+		}
+		if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 			return nil, err
 		}
 		if err := deleteAllBackendDomainV6(ctx, tx); err != nil {
@@ -1512,7 +1601,10 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err := migrateBackendDomainV27ToV28(ctx, memory); err != nil {
 		return nil, err
 	}
-	if err := saveCompleteBackendDomainV28(tx, memory); err != nil {
+	if err := migrateBackendDomainV28ToV29(ctx, memory); err != nil {
+		return nil, err
+	}
+	if err := saveCompleteBackendDomainV29(tx, memory); err != nil {
 		return nil, err
 	}
 	if legacyFound {
@@ -1555,7 +1647,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 		return nil
 	}
 	repo.reportStartupPhase(StartupPhaseVerifying)
-	memory, found, err := loadBackendDomainV28(ctx, tx, repo.now)
+	memory, found, err := loadBackendDomainV29(ctx, tx, repo.now)
 	if err != nil {
 		return err
 	}
@@ -1565,7 +1657,7 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 	if err := rejectPreV16BackendDomain(ctx, tx); err != nil {
 		return err
 	}
-	if err := validateBackendDomainV28Memory(memory); err != nil {
+	if err := validateBackendDomainV29Memory(memory); err != nil {
 		return err
 	}
 	repo.requiresPersistedStartupVerification = false
@@ -1648,6 +1740,9 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 				}
 				if _, err := decodeBackendDomainRecord(backendDomainV28Format, raw); err == nil {
 					candidate.source = backendDomainSourceV28
+				}
+				if _, err := decodeBackendDomainRecord(backendDomainV29Format, raw); err == nil {
+					candidate.source = backendDomainSourceV29
 				}
 			}
 			present = append(present, candidate.source)

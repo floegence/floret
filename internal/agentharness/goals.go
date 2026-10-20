@@ -141,9 +141,14 @@ func (p *turnProjection) admitGoalContext(ctx context.Context, history []session
 	if err != nil {
 		return session.Message{}, err
 	}
+	firstGoalRequest := p.requireActiveGoal && !p.goalWorkStarted
+	if firstGoalRequest && state.Status != "active" {
+		return session.Message{}, engine.ErrGoalContinuationUnneeded
+	}
+	p.goalWorkStarted = true
 	raw, _ := json.Marshal(state)
 	text := "Goal runtime fact: " + string(raw)
-	if session.CurrentGoalContext(history) == text {
+	if session.CurrentGoalContext(history) == text && !firstGoalRequest {
 		return session.Message{}, nil
 	}
 	message := session.Message{Role: session.User, Kind: session.MessageKindGoalContext, Content: text}

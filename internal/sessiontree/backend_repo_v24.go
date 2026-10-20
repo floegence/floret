@@ -39,7 +39,11 @@ func loadBackendDomainV24(ctx context.Context, tx spi.ReadTx, now func() time.Ti
 }
 
 func validateBackendDomainV24Memory(memory *MemoryRepo) error {
-	if err := validateBackendDomainMemory(memory, "v24", true); err != nil {
+	return validateBackendDomainConversationMemory(memory, "v24", false)
+}
+
+func validateBackendDomainConversationMemory(memory *MemoryRepo, label string, continuation bool) error {
+	if err := validateBackendDomainMemory(memory, label, true); err != nil {
 		return err
 	}
 	if err := validateCancellationRecords(memory); err != nil {
@@ -48,7 +52,11 @@ func validateBackendDomainV24Memory(memory *MemoryRepo) error {
 	if err := validateCurrentToolInputRecords(memory); err != nil {
 		return err
 	}
-	if err := validateTurnKindRecords(memory); err != nil {
+	validateKinds := validateTurnKindRecords
+	if continuation {
+		validateKinds = validateCurrentTurnKindRecords
+	}
+	if err := validateKinds(memory); err != nil {
 		return err
 	}
 	if err := validateCanonicalRunIdentities(memory); err != nil {

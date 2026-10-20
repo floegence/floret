@@ -497,6 +497,9 @@ type ManualCompactionRequest struct {
 	Source    string
 }
 
+// ErrGoalContinuationUnneeded ends preparation when its Goal is no longer active.
+var ErrGoalContinuationUnneeded = errors.New("goal continuation is no longer needed")
+
 type Engine struct {
 	provider     provider.Provider
 	tools        *tools.Registry
@@ -981,6 +984,9 @@ steps:
 		}
 		if opts.AdmitGoalContext != nil {
 			message, goalErr := opts.AdmitGoalContext(ctx, activeHistory)
+			if errors.Is(goalErr, ErrGoalContinuationUnneeded) {
+				return e.end(state, opts, step, Completed, output, nil, metrics, started, RunDecision{})
+			}
 			if goalErr != nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(goalErr, FailureOriginStorage), metrics, started, RunDecision{})
 			}

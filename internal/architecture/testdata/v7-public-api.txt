@@ -638,6 +638,7 @@ method *CommittedEffectError.Unwrap func() error
 type CompactContextInput struct
 field CompactContextInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field CompactContextInput.RequestKey github.com/floegence/floret/v7/runtime.RequestKey tag="json:\"request_key\""
+field CompactContextInput.ContinueGoal bool tag="json:\"continue_goal,omitempty\""
 type ContractError struct
 field ContractError.Contract string
 field ContractError.Err error
@@ -1590,6 +1591,7 @@ field TurnInput.Context []github.com/floegence/floret/v7/runtime.MessageContextI
 method TurnInput.Validate func() error
 type TurnKind string
 const TurnKindContextCompaction github.com/floegence/floret/v7/runtime.TurnKind = "context_compaction"
+const TurnKindGoalContinuation github.com/floegence/floret/v7/runtime.TurnKind = "goal_continuation"
 type TurnLimits struct
 field TurnLimits.MaxInputTokens int64
 field TurnLimits.MaxTotalTokens int64
