@@ -126,6 +126,15 @@ func TestThreadServiceDeleteReleasesActorPresentation(t *testing.T) {
 		actor.state.requestKeys = map[string]threadRuntimeRequest{"request": {fingerprint: "retained"}}
 		actor.itemIndex = map[string]int{"large": 0}
 		actor.indexedItems = 1
+		actor.canonical = newThreadCanonicalProjection()
+		actor.canonical.anchors["source"] = "large"
+		actor.observedItemIDs = map[string]bool{"large": true}
+		actor.summaryIndexed = true
+		actor.summaryPreviewIndex, actor.summaryTimeIndex = 3, 4
+		actor.interactionIndex = map[string]int{"interaction": 0}
+		actor.indexedInteractions = 1
+		actor.pendingInteractionIDs = map[string]bool{"interaction": true}
+		actor.interactionItems = map[string][]string{"interaction": {"large"}}
 		actor.textBuffer.WriteString(strings.Repeat("draft", 4096))
 		actor.textBufferID = "large"
 		actor.outputOrder = []string{"large"}
@@ -143,6 +152,7 @@ func TestThreadServiceDeleteReleasesActorPresentation(t *testing.T) {
 	for _, actor := range actors {
 		actor.mu.Lock()
 		released := reflect.DeepEqual(actor.state, threadRuntimeData{}) && actor.itemIndex == nil && actor.indexedItems == 0 && actor.textBuffer.Len() == 0 && actor.textBufferID == "" && actor.outputOrder == nil && actor.pendingUpdate == nil && actor.pendingText.Len() == 0 && actor.updateTimer == nil
+		released = released && actor.canonical == nil && actor.observedItemIDs == nil && !actor.summaryIndexed && actor.summaryPreviewIndex == 0 && actor.summaryTimeIndex == 0 && actor.interactionIndex == nil && actor.indexedInteractions == 0 && actor.interactionAttention == (AttentionSummary{}) && actor.pendingInteractionIDs == nil && actor.interactionItems == nil
 		fenced := actor.deleted && !actor.deleting
 		actor.mu.Unlock()
 		if !released {
@@ -190,6 +200,11 @@ func TestThreadServiceFailedDeleteRetainsActorPresentation(t *testing.T) {
 	actor.mu.Lock()
 	actor.state.view.Items = []ThreadItem{{ID: "retained", Text: "keep on rollback"}}
 	actor.itemIndex = map[string]int{"retained": 0}
+	actor.canonical = newThreadCanonicalProjection()
+	projection := actor.canonical
+	actor.observedItemIDs = map[string]bool{"retained": true}
+	actor.interactionIndex = map[string]int{"interaction": 0}
+	actor.pendingInteractionIDs = map[string]bool{"interaction": true}
 	before := actor.state.view
 	actor.mu.Unlock()
 	original := service.host.store.repo
@@ -204,6 +219,9 @@ func TestThreadServiceFailedDeleteRetainsActorPresentation(t *testing.T) {
 	defer actor.mu.Unlock()
 	if actor.deleted || actor.deleting || !reflect.DeepEqual(actor.state.view, before) || actor.itemIndex["retained"] != 0 || len(actor.itemIndex) != 1 {
 		t.Fatal("failed deletion discarded presentation or retained a delete fence")
+	}
+	if actor.canonical != projection || !actor.observedItemIDs["retained"] || actor.interactionIndex["interaction"] != 0 || !actor.pendingInteractionIDs["interaction"] {
+		t.Fatal("failed deletion discarded canonical or interaction indexes")
 	}
 }
 

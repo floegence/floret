@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release canonical display reducers, window membership and interaction indexes with deleted actors after canonical commit; preserve all indexes when deletion rolls back.
+
 - Share active text with the Engine attempt owner instead of retaining a second
   actor string. Bound aggregate draft source memory to 4 MiB and spill larger
   bytes to private disposable files. Preserve accepted prefixes on write failure,
