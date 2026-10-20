@@ -108,7 +108,7 @@ func (projection *threadCanonicalProjection) snapshot(ctx context.Context, servi
 		return canonicalThreadView{}, runtimeHostError(err)
 	}
 	context := runtimeCanonicalContext(contextSnapshot, model, projection.anchors, projection.compactionOrdinals)
-	return canonicalThreadView{ThreadView: ThreadView{ThreadID: threadID, Items: items, Interactions: interactions, Turns: turns, Context: &context, Goal: publicThreadGoal(projection.items.goal.State)}, projection: projection}, nil
+	return canonicalThreadView{ThreadView: ThreadView{ThreadID: threadID, Items: cloneThreadItems(items), Interactions: cloneThreadInteractions(interactions), Turns: turns, Context: &context, Goal: publicThreadGoal(projection.items.goal.State)}, projection: projection}, nil
 }
 
 func runtimeCanonicalContext(snapshot agentharness.ThreadContextSnapshot, model *ThreadModelContext, anchors map[string]string, ordinals map[string]uint64) ThreadContextSnapshot {
@@ -159,38 +159,43 @@ func (service *threadRuntimeService) advanceCanonical(ctx context.Context, actor
 			break
 		}
 	}
+	var model *ThreadModelContext
+	if actor.state.view.Context != nil && actor.state.view.Context.ModelContext != nil {
+		copy := *actor.state.view.Context.ModelContext
+		model = &copy
+	}
 	if projection.modelChanged {
 		path, err := service.host.store.repo.Path(ctx, actor.threadID, projection.leafID)
 		if err != nil {
-			actor.canonical = nil
 			return runtimeHostError(err)
 		}
-		model, err := service.readModelContext(ctx, threadID, path)
+		model, err = service.readModelContext(ctx, threadID, path)
 		if err != nil {
-			actor.canonical = nil
 			return err
 		}
-		if actor.state.view.Context == nil {
-			actor.state.view.Context = &ThreadContextSnapshot{}
-		}
-		actor.state.view.Context.ModelContext = model
 	}
-	if err := actor.installCanonicalChanges(projection); err != nil {
-		actor.canonical = nil
-		return err
-	}
-	if actor.state.view.Context != nil && actor.state.view.Context.ModelContext != nil {
+	modelChanged := projection.modelChanged
+	if model != nil {
 		request, found, err := cache.LatestProviderRequest(ctx, service.host.store.prompt, actor.threadID)
 		if err != nil {
 			return err
 		}
-		model := actor.state.view.Context.ModelContext
 		if found && request.ThreadID == actor.threadID && request.ModelContextEntryID == model.EntryID && request.ID != model.UsedByRequestID {
 			model.UsedByRequestID, model.UsedByTurnID, model.UsedByRunID = request.ID, identity.TurnID(request.TurnID), identity.RunID(request.RunID)
 			at := request.CreatedAt
 			model.UsedAt = &at
-			actor.markComponents(threadContextChanged)
+			modelChanged = true
 		}
+	}
+	if err := actor.installCanonicalChanges(projection); err != nil {
+		return err
+	}
+	if modelChanged {
+		if actor.state.view.Context == nil {
+			actor.state.view.Context = &ThreadContextSnapshot{}
+		}
+		actor.state.view.Context.ModelContext = model
+		actor.markComponents(threadContextChanged)
 	}
 	actor.state.contextErr = nil
 	actor.state.view.ViewVersion++
@@ -205,15 +210,89 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		}
 	}
 	sort.Ints(indices)
+	itemCount := len(actor.state.view.Items)
+	for _, index := range indices {
+		item := projection.items.items[index]
+		if current := actor.itemIndexByID(item.ID); current >= 0 {
+			previous := actor.state.view.Items[current]
+			if previous.Kind != item.Kind || previous.TurnID != item.TurnID || previous.RunID != item.RunID || previous.CanonicalOrdinal != 0 && previous.CanonicalOrdinal != item.CanonicalOrdinal {
+				return fmt.Errorf("%w: canonical item identity changed", ErrAuthorityCorrupt)
+			}
+		} else {
+			position := int(projection.items.visibleOrdinal(index) - 1)
+			if position < 0 || position > itemCount {
+				return fmt.Errorf("%w: canonical item gap", ErrAuthorityCorrupt)
+			}
+			itemCount++
+		}
+	}
+	turnChanges := make(map[int]ThreadTurn, len(projection.changedTurns))
+	turnIndices := make([]int, 0, len(projection.changedTurns))
+	for id := range projection.changedTurns {
+		if index, found := projection.turns.indices[id]; found {
+			turn, _, err := projection.turns.turnSnapshot(id)
+			if err != nil {
+				return err
+			}
+			turnChanges[index] = turn
+			turnIndices = append(turnIndices, index)
+		}
+	}
+	sort.Ints(turnIndices)
+	turnCount := len(actor.state.view.Turns)
+	for _, index := range turnIndices {
+		if index < turnCount {
+			if actor.state.view.Turns[index].TurnID != turnChanges[index].TurnID {
+				return fmt.Errorf("%w: canonical turn order changed", ErrAuthorityCorrupt)
+			}
+		} else if index == turnCount {
+			turnCount++
+		} else {
+			return fmt.Errorf("%w: canonical turn gap", ErrAuthorityCorrupt)
+		}
+	}
+	var context *ThreadContextSnapshot
+	if projection.contextChanged {
+		snapshot, err := projection.context.Snapshot(time.Time{})
+		if err != nil {
+			return runtimeHostError(err)
+		}
+		var model *ThreadModelContext
+		if actor.state.view.Context != nil {
+			model = actor.state.view.Context.ModelContext
+		}
+		value := runtimeCanonicalContext(snapshot, model, projection.anchors, projection.compactionOrdinals)
+		context = &value
+	}
+	interactionIndices := make([]int, 0, len(projection.items.changedInteractions))
+	interactionCount := len(actor.state.view.Interactions)
+	for index := range projection.items.changedInteractions {
+		if !projection.items.hiddenInteractions[index] {
+			interactionIndices = append(interactionIndices, index)
+		}
+	}
+	sort.Ints(interactionIndices)
+	for _, index := range interactionIndices {
+		position := index
+		for hidden := range projection.items.hiddenInteractions {
+			if hidden < index {
+				position--
+			}
+		}
+		if position > interactionCount {
+			return fmt.Errorf("%w: canonical interaction gap", ErrAuthorityCorrupt)
+		}
+		if position == interactionCount {
+			interactionCount++
+		}
+	}
+	// All storage reads and fallible projection checks precede installation.
 	for _, index := range indices {
 		item := projection.items.items[index]
 		item.Ordinal = projection.items.visibleOrdinal(index)
 		current := actor.itemIndexByID(item.ID)
 		if current >= 0 {
 			previous := actor.state.view.Items[current]
-			if previous.Kind != item.Kind || previous.TurnID != item.TurnID || previous.RunID != item.RunID || previous.CanonicalOrdinal != 0 && previous.CanonicalOrdinal != item.CanonicalOrdinal {
-				return fmt.Errorf("%w: canonical item identity changed", ErrAuthorityCorrupt)
-			}
 			if previous.Kind == ThreadItemTool && previous.Activity != nil && item.Activity != nil && (threadToolActivityTerminal(previous.Activity.Status) || previous.Live && !threadToolActivityTerminal(item.Activity.Status)) {
 				item.Activity, item.Live = previous.Activity, previous.Live
 			}
@@ -222,9 +301,6 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 			actor.markItem(item.ID, ThreadItemReplaced)
 		} else {
 			position := int(item.Ordinal - 1)
-			if position > len(actor.state.view.Items) {
-				return fmt.Errorf("%w: canonical item gap", ErrAuthorityCorrupt)
-			}
 			actor.state.view.Items = append(actor.state.view.Items, ThreadItem{})
 			copy(actor.state.view.Items[position+1:], actor.state.view.Items[position:])
 			actor.state.view.Items[position] = cloneThreadItems([]ThreadItem{item})[0]
@@ -266,9 +342,6 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 						position--
 					}
 				}
-				if position > len(actor.state.view.Interactions) {
-					return fmt.Errorf("%w: canonical interaction gap", ErrAuthorityCorrupt)
-				}
 				actor.state.view.Interactions = append(actor.state.view.Interactions, ThreadInteraction{})
 				copy(actor.state.view.Interactions[position+1:], actor.state.view.Interactions[position:])
 				actor.state.view.Interactions[position] = cloneThreadInteractions([]ThreadInteraction{interaction})[0]
@@ -279,43 +352,19 @@ func (actor *threadRuntimeState) installCanonicalChanges(projection *threadCanon
 		}
 		actor.markComponents(threadInteractionsChanged)
 	}
-	if len(projection.changedTurns) > 0 {
-		indices := make([]int, 0, len(projection.changedTurns))
-		for id := range projection.changedTurns {
-			if index, found := projection.turns.indices[id]; found {
-				indices = append(indices, index)
-			}
+	for _, index := range turnIndices {
+		turn := turnChanges[index]
+		if index < len(actor.state.view.Turns) {
+			actor.state.view.Turns[index] = turn
+		} else {
+			actor.state.view.Turns = append(actor.state.view.Turns, turn)
 		}
-		sort.Ints(indices)
-		for _, index := range indices {
-			turn, _, err := projection.turns.turnSnapshot(projection.turns.order[index])
-			if err != nil {
-				return err
-			}
-			if index < len(actor.state.view.Turns) {
-				if actor.state.view.Turns[index].TurnID != turn.TurnID {
-					return fmt.Errorf("%w: canonical turn order changed", ErrAuthorityCorrupt)
-				}
-				actor.state.view.Turns[index] = turn
-			} else if index == len(actor.state.view.Turns) {
-				actor.state.view.Turns = append(actor.state.view.Turns, turn)
-			} else {
-				return fmt.Errorf("%w: canonical turn gap", ErrAuthorityCorrupt)
-			}
-		}
+	}
+	if len(turnIndices) > 0 {
 		actor.markComponents(threadTurnsChanged)
 	}
-	if projection.contextChanged {
-		snapshot, err := projection.context.Snapshot(time.Time{})
-		if err != nil {
-			return runtimeHostError(err)
-		}
-		var model *ThreadModelContext
-		if actor.state.view.Context != nil {
-			model = actor.state.view.Context.ModelContext
-		}
-		context := runtimeCanonicalContext(snapshot, model, projection.anchors, projection.compactionOrdinals)
-		actor.state.view.Context = &context
+	if context != nil {
+		actor.state.view.Context = context
 		actor.markComponents(threadContextChanged)
 	}
 	if projection.goalChanged {

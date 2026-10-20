@@ -3005,8 +3005,10 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 			return nil, runtimeHostError(err)
 		}
 	}
-	canonicalItems, _, canonicalErr := hydrateThreadRuntimeItems(ctx, service.host.store.repo, threadID)
 	err = actor.apply(ctx, func() error {
+		if err := service.advanceCanonical(ctx, actor); err != nil {
+			return err
+		}
 		for _, current := range actor.state.view.Interactions {
 			if current.ID == interaction.ID {
 				if current.Resolved {
@@ -3029,36 +3031,7 @@ func (service *threadRuntimeService) requestInteraction(ctx context.Context, act
 				return nil
 			}
 		}
-		if canonicalErr == nil {
-			if reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonicalItems, false, actor.state.attemptDraftIDs); ok {
-				actor.replaceItems(reconciled)
-			}
-		}
-		actor.state.view.Interactions = append(actor.state.view.Interactions, interaction)
-		actor.markComponents(threadInteractionsChanged)
-		copy := interaction
-		if interaction.Kind == ThreadInteractionApproval {
-			for itemIndex := range actor.state.view.Items {
-				item := &actor.state.view.Items[itemIndex]
-				if item.Kind == ThreadItemTool && item.Activity != nil && item.Activity.ToolID == interaction.ToolCallID {
-					item.Interaction = &copy
-					actor.markItem(item.ID, ThreadItemReplaced)
-					break
-				}
-			}
-		} else {
-			itemID := "interaction:" + interaction.ID
-			if itemIndex := threadItemIndexByID(actor.state.view.Items, itemID); itemIndex >= 0 {
-				actor.state.view.Items[itemIndex].Interaction = &copy
-				actor.markItem(itemID, ThreadItemReplaced)
-			} else {
-				actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: itemID, TurnID: interaction.TurnID, RunID: interaction.RunID, Kind: ThreadItemInteraction, Interaction: &copy, CreatedAt: entry.CreatedAt})
-				actor.markItem(itemID, ThreadItemAdded)
-			}
-		}
-		actor.state.view.RunProgress = nil
-		actor.state.view.ViewVersion++
-		return nil
+		return fmt.Errorf("%w: committed interaction is absent from canonical projection", ErrAuthorityCorrupt)
 	})
 	if err != nil {
 		releaseReservedWaiter()
@@ -3076,8 +3049,8 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		if !actor.acceptLiveEvent(event) {
 			return nil
 		}
-		contextChanged := event.contextCommitted
-		if contextChanged {
+		canonicalChanged := event.contextCommitted || event.committed != nil
+		if canonicalChanged {
 			if err := sink.service.advanceCanonical(context.Background(), actor); err != nil {
 				actor.state.contextErr = err
 				return nil
@@ -3097,14 +3070,11 @@ func (sink threadRuntimeEventSink) EmitEvent(event Event) {
 		if progressChanged {
 			actor.state.view.RunProgress = cloneThreadRunProgress(progress)
 		}
-		if contextChanged || event.Stream != nil || progressChanged || activityChanged || previewChanged {
+		if event.Stream != nil || progressChanged || activityChanged || previewChanged {
 			actor.state.view.ViewVersion++
 		}
 		return nil
 	})
-	if event.committed != nil && !event.contextCommitted || event.Type == observation.EventTypeToolApprovalRequested || event.Type == observation.EventTypeToolApprovalApproved || event.Type == observation.EventTypeToolApprovalRejected || event.Type == observation.EventTypeControlSignal {
-		go sink.service.refreshCanonical(event.ThreadID, event.TurnID)
-	}
 }
 
 func threadRunProgressForEvent(event Event) (*ThreadRunProgress, bool) {
@@ -4596,18 +4566,6 @@ func queuedInputExists(queue []QueuedInput, id string) bool {
 		}
 	}
 	return false
-}
-
-func hydrateThreadRuntimeItems(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]ThreadItem, []ThreadInteraction, error) {
-	meta, err := repo.Thread(ctx, threadID.String())
-	if err != nil {
-		return nil, nil, runtimeHostError(err)
-	}
-	entries, err := repo.Path(ctx, threadID.String(), meta.LeafID)
-	if err != nil {
-		return nil, nil, runtimeHostError(err)
-	}
-	return threadRuntimeItemsFromEntries(entries)
 }
 
 func (service *threadRuntimeService) ensureThread(ctx context.Context, threadID identity.ThreadID) (sessiontree.ThreadMeta, error) {
