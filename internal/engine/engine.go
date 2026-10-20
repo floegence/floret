@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/providerattempt"
 	"github.com/floegence/floret/v7/internal/providerretry"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/session/artifact"
 	"github.com/floegence/floret/v7/internal/session/compaction"
@@ -802,6 +803,21 @@ func (e *Engine) run(ctx context.Context, userText string) (result Result) {
 	owner := &runProviderState{state: provider.CloneState(opts.PreviousProviderState), commit: opts.CommitProviderContext}
 	opts.providerState = owner
 	var pendingOutput ResponseOutput
+	var pendingResponse *cache.ProviderResponseRecord
+	persistResponse := func() error {
+		if pendingResponse == nil {
+			return nil
+		}
+		record := *pendingResponse
+		pendingResponse = nil
+		return e.prompt.AppendProviderResponse(context.WithoutCancel(ctx), record)
+	}
+	defer func() {
+		if err := persistResponse(); err != nil {
+			result.Status, result.FailureOrigin = Failed, FailureOriginStorage
+			result.Err = errors.Join(result.Err, err)
+		}
+	}()
 	defer func() {
 		result.UncommittedOutput = pendingOutput
 		result.ProviderState, result.ProviderStateFresh = provider.CloneState(owner.state), owner.fresh
@@ -1030,28 +1046,34 @@ steps:
 		normalizedUsage := usage.Normalized()
 		providerHistory, _, _ := session.ProjectProviderHistory(activeHistory, "")
 		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, providerHistory, usage)
+		if err := persistResponse(); err != nil {
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, RunDecision{})
+		}
+		responseRecord := cache.ProviderResponseRecord{
+			Measurement: normalizedUsage.Measurement, OutputTokensReported: normalizedUsage.OutputTokensReported,
+			InputTokensReported: normalizedUsage.InputTokensReported, InputTokenScope: normalizedUsage.InputTokenScope, OutputIncludesReasoning: normalizedUsage.OutputIncludesReasoning,
+			AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch,
+			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
+			PromptScopeID:      opts.PromptScopeID,
+			RunID:              opts.RunID,
+			ThreadID:           opts.ThreadID,
+			TurnID:             opts.TurnID,
+			ProviderResponseID: stepOutput.ResponseID,
+			InputTokens:        normalizedUsage.InputTokens,
+			WindowInputTokens:  normalizedUsage.WindowInputTokens,
+			OutputTokens:       normalizedUsage.OutputTokens,
+			ReasoningTokens:    normalizedUsage.ReasoningTokens,
+			CacheReadTokens:    normalizedUsage.CacheReadTokens,
+			CacheWriteTokens:   normalizedUsage.CacheWriteTokens,
+			TotalTokens:        normalizedUsage.TotalTokens,
+			UsageSource:        string(normalizedUsage.Source),
+			UsageAvailable:     normalizedUsage.Available,
+			NativePressure:     nativePressure,
+
+			CreatedAt: time.Now(),
+		}
 		if !supplementalTurn {
-			_ = e.prompt.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
-				AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch,
-				RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
-				PromptScopeID:      opts.PromptScopeID,
-				RunID:              opts.RunID,
-				ThreadID:           opts.ThreadID,
-				TurnID:             opts.TurnID,
-				ProviderResponseID: stepOutput.ResponseID,
-				InputTokens:        normalizedUsage.InputTokens,
-				WindowInputTokens:  normalizedUsage.WindowInputTokens,
-				OutputTokens:       normalizedUsage.OutputTokens,
-				ReasoningTokens:    normalizedUsage.ReasoningTokens,
-				CacheReadTokens:    normalizedUsage.CacheReadTokens,
-				CacheWriteTokens:   normalizedUsage.CacheWriteTokens,
-				TotalTokens:        normalizedUsage.TotalTokens,
-				UsageSource:        string(normalizedUsage.Source),
-				UsageAvailable:     normalizedUsage.Available,
-				NativePressure:     nativePressure,
-				PressureAnchor:     pressureAnchor,
-				CreatedAt:          time.Now(),
-			})
+			pendingResponse = &responseRecord
 		}
 		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: attemptEventMetadata(req, providerUsageContextStatus(req, normalizedUsage, nativePressure))})
 		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred}
@@ -1070,6 +1092,20 @@ steps:
 		if stepOutput.FinishReason == provider.FinishCancelled {
 			return e.end(state, opts, step, Cancelled, output, context.Canceled, metrics, started, decision)
 		}
+		recordCommittedMeasurement := func() error {
+			if supplementalTurn {
+				return nil
+			}
+			responseRecord.MeasurementCommitted = true
+			responseRecord.PressureAnchor = pressureAnchor
+			if !stepOutput.FinishInferred && !stepOutput.Truncated && !stepOutput.Retry && stepOutput.FinishReason != provider.FinishLength {
+				committedHistory, _, _ := session.ProjectProviderHistory(activeHistory, "")
+				if anchor := pressureTracker.ObserveCommittedResponse(req, committedHistory, usage, stepOutput.ResponseID); anchor.InputMeasurementQualified {
+					responseRecord.PressureAnchor = anchor
+				}
+			}
+			return persistResponse()
+		}
 		stepReasoning := stepOutput.Reasoning
 		if stepText != "" {
 			output += stepText
@@ -1080,6 +1116,9 @@ steps:
 				if opts.Steering != nil && rootCtx.Err() == nil && ctx.Err() != nil && isContextCancellation(err) {
 					continue
 				}
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+			}
+			if err := recordCommittedMeasurement(); err != nil {
 				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
 		}
@@ -1302,6 +1341,9 @@ steps:
 		}
 		responseStart := len(activeHistory)
 		if err := commitOutput(stepOutput.ResponseState, stepOutput.Output, callMessages); err != nil {
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
+		}
+		if err := recordCommittedMeasurement(); err != nil {
 			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 		}
 		callMessages = nil
@@ -2824,14 +2866,6 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 			return provider.Request{}, history, false, err
 		}
 	}
-	if pressure, ok := tracker.ConsumePendingCompaction(); ok && opts.ContextPolicy.ModelMaxOutputTokens <= 0 {
-		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, nil, metrics, failures)
-		if err != nil {
-			return provider.Request{}, history, false, err
-		}
-		history = next
-		return req, history, true, nil
-	}
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
@@ -2849,14 +2883,14 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		}
 		return provider.Request{}, history, compacted, err
 	}
-	soft := req.ContextPolicy.ModelMaxOutputTokens > 0 && req.ContextPressure.CompactionNeeded && !req.ContextPressure.HardLimitExceeded
-	if !req.ContextPressure.HardLimitExceeded && (!soft || tracker.softNoopFingerprint != "" && tracker.softNoopFingerprint == req.RawPlan.PayloadHash) {
+	soft := req.ContextPressure.CompactionNeeded && !req.ContextPressure.HardLimitExceeded
+	if !req.ContextPressure.HardLimitExceeded && (!soft || tracker.softNoopFingerprint != "" && tracker.softNoopFingerprint == softNoopIdentity(req)) {
 		return req, history, compacted, nil
 	}
 	if soft {
 		next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 		if errors.Is(compactErr, ErrCompactionNoop) {
-			tracker.softNoopFingerprint = req.RawPlan.PayloadHash
+			tracker.softNoopFingerprint = softNoopIdentity(req)
 			return req, history, false, nil
 		}
 		if closeErr := closePreparedRequest(req); closeErr != nil {
@@ -2940,6 +2974,9 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 		return provider.Request{}, errors.Join(err, closePreparedRequest(req))
 	}
 	if req.EphemeralUser == nil {
+		if p, ok := req.Prepared.(requestmeasure.Prepared); ok {
+			req.RawPlan.MeasurementPrefix = p.InputMeasurementPrefix()
+		}
 		req.RawPlan.ProjectedPressure = req.ContextPressure
 		req.RawPlan.RequestShape = requestShapeHashes(req)
 	} else {
@@ -3262,7 +3299,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 				status = ContextCompactDebugStatusCancelled
 			}
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, status, trigger, reason, beforePressure, usage, lifecycle, withCompactionNextAction(attemptDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, attemptStarted)
-			if manualCompactionNoopError(err, trigger, reason) || (opts.ContextPolicy.ModelMaxOutputTokens > 0 && !beforePressure.HardLimitExceeded && errors.Is(err, compaction.ErrNoCutPoint)) {
+			if manualCompactionNoopError(err, trigger, reason) || (trigger == compaction.TriggerPreRequest && reason == compaction.ReasonThreshold && !beforePressure.HardLimitExceeded && errors.Is(err, compaction.ErrNoCutPoint)) {
 				e.emitCompactionNoop(opts, step, operationID, trigger, "no_compactable_context", beforePressure, usage, lifecycle)
 				return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
 			}
@@ -3286,7 +3323,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		attemptDoneDebug["tokens_after_estimate"] = result.TokensAfterEstimate
 		attemptDoneDebug["context_after"] = result.UsageAfter
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, attemptDoneDebug, nil, attemptStarted)
-		if manualCompactionResultHasInsufficientSavings(result, trigger, reason) || (opts.ContextPolicy.ModelMaxOutputTokens > 0 && !beforePressure.HardLimitExceeded && result.TokensBefore > 0 && result.TokensAfterEstimate >= result.TokensBefore) {
+		if manualCompactionResultHasInsufficientSavings(result, trigger, reason) || (trigger == compaction.TriggerPreRequest && reason == compaction.ReasonThreshold && !beforePressure.HardLimitExceeded && result.TokensBefore > 0 && result.TokensAfterEstimate >= result.TokensBefore) {
 			noopMeta := withCompactionNextAction(cloneAnyMap(attemptDoneDebug), strings.TrimSpace(nextAction))
 			noopMeta["noop_reason"] = "insufficient_savings"
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, lifecycle, noopMeta, nil, time.Time{})
@@ -3427,6 +3464,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	}
 	if opts.providerState != nil {
 		opts.providerState.state, opts.providerState.fresh = nil, false
+	}
+	if tracker != nil {
+		*tracker = *NewContextPressureTracker(opts.PromptScopeID)
 	}
 	result = committed.Result
 	if err := validateCompactionResultIdentity(result, CompactionRequest{

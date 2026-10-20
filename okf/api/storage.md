@@ -304,3 +304,11 @@ references only and never guesses a replacement tool exchange.
 Release adoption gates must continue immutable, checksummed synthetic
 released-writer conversations and their Forks through public APIs after restart.
 See the [release requirement](../../AGENTS.md#historical-conversation-release-gate).
+
+### Request measurement boundary migration
+
+Domain schema 28 appends the atomic 27 -> 28 edge. It validates schema 27
+authority and changes the writer envelope without rewriting canonical messages,
+compactions, native usage or absent evidence. Existing input anchors are
+revalidated; response-end calibration requires new attempt-bound protocol proof.
+Current-schema restart is byte-stable, and old writers reject the new envelope.

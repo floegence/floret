@@ -495,6 +495,8 @@ type Source struct {
 
 // Usage is normalized provider token and cost usage.
 type Usage struct {
+	OutputTokensReported bool                `json:"output_tokens_reported,omitempty"`
+	Measurement          *RequestMeasurement `json:"measurement,omitempty"`
 	// InputTokensReported distinguishes an explicit input zero from missing input usage.
 	InputTokensReported bool `json:"input_tokens_reported,omitempty"`
 	// InputTokenScope is request_input, provider_execution, or unknown. It is not inferred from model names.
@@ -570,4 +572,38 @@ type PreparedRequestOutputLimiter interface {
 // HasInputUsage reports whether this sample contains an input measurement.
 func (u Usage) HasInputUsage() bool {
 	return usageaccounting.HasInput(u.InputTokensReported, u.InputTokenScope, u.Available, u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.WindowInputTokens, u.OutputTokens, u.ReasoningTokens)
+}
+
+// MeasurementPrefix identifies a frozen protocol input or committed response boundary.
+type MeasurementPrefix struct {
+	ExecutionIdentity string `json:"execution_identity"`
+	Format            string `json:"format"`
+	Fingerprint       string `json:"fingerprint"`
+	ItemCount         int    `json:"item_count"`
+	Boundary          string `json:"boundary"`
+}
+
+// RequestMeasurement is native protocol evidence for exactly one successful attempt.
+// CompleteInput covers all submitted input, including cache. OpaqueInput requires
+// explicit protocol evidence for encrypted reasoning. ResponseEnd requires a complete
+// terminal response matching ResponseID and its actual native replay projection;
+// it represents a conservative output budget, never exact window occupancy.
+type RequestMeasurement struct {
+	AttemptID     string            `json:"attempt_id"`
+	CompleteInput bool              `json:"complete_input"`
+	OpaqueInput   bool              `json:"opaque_input,omitempty"`
+	Input         MeasurementPrefix `json:"input"`
+	ResponseID    string            `json:"response_id,omitempty"`
+	ResponseEnd   MeasurementPrefix `json:"response_end,omitzero"`
+}
+
+// PreparedRequestMeasurement optionally maps measured prefixes to frozen suffix bytes.
+// MeasurementSuffix returns complete protocol items after the matching prefix,
+// excluding already measured fixed input; an empty suffix returns nil, true.
+// Mismatches return false. Both methods
+// read frozen bytes only, without I/O, context collection or authorization.
+// Floret owns suffix estimation and all pressure arithmetic.
+type PreparedRequestMeasurement interface {
+	InputMeasurementPrefix() MeasurementPrefix
+	MeasurementSuffix(MeasurementPrefix) ([]byte, bool)
 }

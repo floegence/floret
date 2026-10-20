@@ -20,7 +20,7 @@ Automatic output is min(model capability, effective window - projected input -
 min(window / 100, 4096)); automatic compaction starts at 90% of that window.
 An explicit ceiling is never silently reduced and may require earlier compaction.
 The margin is inside the default 10% compaction buffer, not another output reserve.
-Policies omitting ModelMaxOutputTokens retain their published v7 behavior.
+Policies omitting ModelMaxOutputTokens retain their published v7 output-reservation semantics.
 Automatic summary and title requests also respect the opted-in model capability.
 
 Gateways declare provider.OutputControlClient or provider.OutputControlServer.
@@ -31,12 +31,56 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 27 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 28 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
 Older writers reject the upgraded envelope. Cancellation, bounded length
 continuation and unknown-effect recovery retain their existing boundaries.
+
+
+### Native measured prefixes
+
+The Engine evaluates each complete frozen next request once. Projected input is
+qualified native input (or native input plus normalized output at a committed
+response boundary) plus an estimate of only the subsequent frozen protocol input.
+Without a matching measurement it uses the complete conservative request estimate.
+The automatic threshold stays min(90% of the window, request safe limit); output
+reservation semantics and the bounded overflow recovery are unchanged.
+
+Gateways may implement provider.PreparedRequestMeasurement and attach
+provider.RequestMeasurement to native Usage. Evidence binds the exact attempt,
+account/execution identity, full frozen input and successful terminal response.
+The provider.RenderedMeasurementPrefix and RenderedMeasurementSuffix helpers hash
+ordered protocol items and the fixed input surface without retaining content.
+Suffix estimation uses Floret's estimator; adapters do not calculate pressure.
+Neither method may read attachments, refresh context, authorize tools or count
+through the network. Output refits and retries preserve the frozen input.
+
+InputTokenScope retains its protocol meaning: provider_execution alone never
+qualifies. Incomplete visible attribution does not invalidate a proven total.
+Encrypted reasoning requires explicit protocol inclusion evidence and a matching
+native boundary, never a ciphertext-length estimate. New opaque suffixes invalidate
+calibration. Model, account/connection, tool/system surface, estimator, canonical
+history and compaction lineage must match. Native cache buckets are counted once;
+OutputTokensReported distinguishes explicit zero, and OutputIncludesReasoning
+prevents duplicate output counting. Aggregated or failed attempts cannot establish
+a response boundary. Input plus output is a conservative projection, not measured
+current occupancy, because some generated tokens may not be replayed.
+
+Automatic pressure is evaluated only after context collection and freezing.
+Responses update measurements without scheduling a second compaction path.
+Manual and overflow compaction retain the same bounded generate/validate/install
+lifecycle. A safe soft-threshold no-op permits sending and is suppressed only for
+the same frozen input and budget; hard-limit failures never dispatch. Successful
+installation clears old measurement and continuation. Existing decision evidence
+retains selected boundary and invalidation reason without a second ledger.
+
+Domain schema 27 -> 28 fences these semantics. It validates canonical authority
+without rewriting historical messages, usage, summaries or missing evidence.
+Historical input anchors remain eligible under their original transparent-input
+contract; new response boundaries require new evidence. Invalid calibration falls
+back to estimation and cannot prevent historical thread opening.
 
 ## Historical conversation compatibility
 
@@ -649,7 +693,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 27).
+schema change (current domain schema 28).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -1098,7 +1142,7 @@ frozen bytes; output-budget refits retain tool declarations.
 The internal tool-schema rendering revision advances render lineage through the
 existing provider-surface boundary. It stops old exact-envelope continuation reuse
 without changing provider identity, canonical history, valid native history, cache
-namespaces or domain schema 27. Historical rendered facts remain immutable.
+namespaces or domain schema 28. Historical rendered facts remain immutable.
 
 ## Model-aware request estimates
 

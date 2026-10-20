@@ -11,12 +11,14 @@ import (
 // been sent. Estimate and Pressure have different scopes when calibration applies.
 // It contains budget diagnostics, never request content or character distribution.
 type CompactionRequestSnapshot struct {
-	PayloadFingerprint   string                 `json:"payload_fingerprint"`
-	Provider             string                 `json:"provider"`
-	Model                string                 `json:"model"`
-	Estimate             config.RequestEstimate `json:"estimate"`
-	Pressure             config.ContextPressure `json:"pressure"`
-	CalibrationRequestID string                 `json:"calibration_request_id,omitempty"`
+	CalibrationBoundary      string                 `json:"calibration_boundary,omitempty"`
+	CalibrationInvalidReason string                 `json:"calibration_invalid_reason,omitempty"`
+	PayloadFingerprint       string                 `json:"payload_fingerprint"`
+	Provider                 string                 `json:"provider"`
+	Model                    string                 `json:"model"`
+	Estimate                 config.RequestEstimate `json:"estimate"`
+	Pressure                 config.ContextPressure `json:"pressure"`
+	CalibrationRequestID     string                 `json:"calibration_request_id,omitempty"`
 }
 
 // CompactionDecision retains the trigger candidate and validated replacement in

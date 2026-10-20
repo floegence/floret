@@ -84,6 +84,27 @@ func TestCanonicalPressureAnchorBoundaries(t *testing.T) {
 	}
 }
 
+func TestMeasuredPrefixDoesNotRepeatWholeHistoryMargin(t *testing.T) {
+	history := []session.Message{{EntryID: "user", Role: session.User, Content: "synthetic history"}}
+	req := provider.Request{PromptScopeID: "scope", RunID: "run", Provider: "test", Model: "model", Step: 1,
+		ContextPolicy:   contextpolicy.Policy{ContextWindowTokens: 525000, ReservedOutputTokens: 1000},
+		RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 464496, Source: "test", Method: contextpolicy.EstimateMethodProviderRenderedPayload, Confidence: contextpolicy.EstimateConservative, Breakdown: contextpolicy.ContextBreakdown{AttributionCoverage: "partial"}}}
+	if err := cache.ValidateCanonicalLineage(t.Context(), nil, "scope", &req.RawPlan, "system", nil, nil, nil, history); err != nil {
+		t.Fatal(err)
+	}
+	tr := NewContextPressureTracker("scope")
+	tr.ObserveSuccess(req, history, provider.Usage{InputTokensReported: true, InputTokenScope: "request_input", InputTokens: 5526, CacheReadTokens: 412160, Available: true, Source: provider.UsageNative})
+	req.RequestEstimate.EstimatedInputTokens = 474100
+	got := tr.Project(req, history)
+	if got.ProjectedInputTokens != 427290 || got.CompactionNeeded {
+		t.Fatalf("measured prefix repeated estimate margin: %+v reason=%s", got, tr.anchorReason)
+	}
+	unmeasured := NewContextPressureTracker("scope").Project(req, history)
+	if unmeasured.ProjectedInputTokens != 474100 || !unmeasured.CompactionNeeded || unmeasured.ThresholdTokens != 472500 {
+		t.Fatalf("missing evidence bypassed estimate: %+v", unmeasured)
+	}
+}
+
 func TestUnqualifiedNativeUsageNeverCalibratesPressure(t *testing.T) {
 	for _, scope := range []string{"", "unknown", "provider_execution", "request_input"} {
 		req := provider.Request{RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 100, Breakdown: contextpolicy.ContextBreakdown{AttributionCoverage: "partial", OpaqueBytes: 5000}}, ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 1000}}

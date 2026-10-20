@@ -225,7 +225,7 @@ func (kernel *BackendKernel) LatestPressureAnchor(ctx context.Context, scope, pr
 	}
 	for index := len(values) - 1; index >= 0; index-- {
 		anchor := values[index].PressureAnchor
-		if anchor.WindowInputTokens > 0 && (scope == "" || anchor.PromptScopeID == scope) && (provider == "" || anchor.Provider == provider) && (model == "" || anchor.Model == model) {
+		if (anchor.WindowInputTokens > 0 || anchor.WindowInputTokens == 0 && anchor.InputMeasurementQualified) && (scope == "" || anchor.PromptScopeID == scope) && (provider == "" || anchor.Provider == provider) && (model == "" || anchor.Model == model) {
 			return anchor, true, nil
 		}
 	}

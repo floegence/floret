@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/requestmeasure"
 	"strconv"
 	"strings"
 	"sync"
@@ -877,4 +878,17 @@ func cloneOutputPart(part *provider.OutputPart) *provider.OutputPart {
 	}
 	copy := *part
 	return &copy
+}
+
+func (request agentPreparedRequest) InputMeasurementPrefix() requestmeasure.Prefix {
+	if p, ok := request.prepared.(provider.PreparedRequestMeasurement); ok {
+		return requestmeasure.Prefix(p.InputMeasurementPrefix())
+	}
+	return requestmeasure.Prefix{}
+}
+func (request agentPreparedRequest) MeasurementSuffix(prefix requestmeasure.Prefix) ([]byte, bool) {
+	if p, ok := request.prepared.(provider.PreparedRequestMeasurement); ok {
+		return p.MeasurementSuffix(provider.MeasurementPrefix(prefix))
+	}
+	return nil, false
 }
