@@ -1395,16 +1395,19 @@ const ThreadItemAdded github.com/floegence/floret/v7/runtime.ThreadItemChangeKin
 const ThreadItemAppended github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "append"
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
 type ThreadItemBody struct
+field ThreadItemBody.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadItemBody.EntryID string tag="json:\"entry_id,omitempty\""
 field ThreadItemBody.SourceID string tag="json:\"source_id,omitempty\""
 field ThreadItemBody.Field github.com/floegence/floret/v7/runtime.ThreadBodyField tag="json:\"field\""
 field ThreadItemBody.Bytes int tag="json:\"bytes\""
 field ThreadItemBody.PreviewBytes int tag="json:\"preview_bytes\""
+const ThreadItemBodyUpdated github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "body"
 type ThreadItemChange struct
 field ThreadItemChange.Kind github.com/floegence/floret/v7/runtime.ThreadItemChangeKind tag="json:\"kind\""
 field ThreadItemChange.ItemID string tag="json:\"item_id\""
 field ThreadItemChange.Item *github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"item,omitempty\""
 field ThreadItemChange.Append *github.com/floegence/floret/v7/runtime.ThreadTextAppend tag="json:\"append,omitempty\""
+field ThreadItemChange.Body *github.com/floegence/floret/v7/runtime.ThreadItemBody tag="json:\"body,omitempty\""
 type ThreadItemChangeKind string
 const ThreadItemGoal github.com/floegence/floret/v7/runtime.ThreadItemKind = "goal"
 const ThreadItemInteraction github.com/floegence/floret/v7/runtime.ThreadItemKind = "interaction"
@@ -1415,6 +1418,21 @@ const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind =
 const ThreadItemThinking github.com/floegence/floret/v7/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v7/runtime.ThreadItemKind = "tool"
 const ThreadItemUser github.com/floegence/floret/v7/runtime.ThreadItemKind = "user"
+type ThreadLiveBodyChunk struct
+field ThreadLiveBodyChunk.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadLiveBodyChunk.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadLiveBodyChunk.SourceID string tag="json:\"source_id\""
+field ThreadLiveBodyChunk.ThroughBytes int tag="json:\"through_bytes\""
+field ThreadLiveBodyChunk.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadLiveBodyChunk.Text string tag="json:\"text\""
+type ThreadLiveBodyInput struct
+field ThreadLiveBodyInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadLiveBodyInput.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadLiveBodyInput.SourceID string tag="json:\"source_id\""
+field ThreadLiveBodyInput.ThroughBytes int tag="json:\"through_bytes\""
+field ThreadLiveBodyInput.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadLiveBodyInput.LimitBytes int tag="json:\"limit_bytes\""
+type ThreadLiveBodyReader interface interface{ReadLiveBody(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadLiveBodyInput) (github.com/floegence/floret/v7/runtime.ThreadLiveBodyChunk, error)}
 type ThreadModelContext struct
 field ThreadModelContext.Snapshot github.com/floegence/floret/v7/runtime.ModelContextSnapshot tag="json:\"snapshot\""
 field ThreadModelContext.EntryID string tag="json:\"entry_id\""

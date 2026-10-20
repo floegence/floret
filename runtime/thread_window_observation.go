@@ -31,9 +31,10 @@ type ThreadWindowInput struct {
 
 // ThreadItemBody identifies complete text omitted from a bounded preview.
 // A source is resolved through BodyManifest; a single field through ReadBody.
-// Live text belongs to the actor until committed and has no canonical locator.
+// Live text uses ReadLiveBody with its RunID and frozen Bytes extent.
 // Locators are associations, never grants. Full views leave this field nil.
 type ThreadItemBody struct {
+	RunID        identity.RunID  `json:"run_id,omitempty"`
 	EntryID      string          `json:"entry_id,omitempty"`
 	SourceID     string          `json:"source_id,omitempty"`
 	Field        ThreadBodyField `json:"field"`
@@ -150,7 +151,7 @@ func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context
 		if subscription.windows == nil {
 			subscription.windows = map[string]threadWindowInterest{}
 		}
-		subscription.windows[input.ThreadID.String()] = threadWindowInterest{items: ids, tail: input.AnchorID == "" && input.Direction == ThreadWindowBefore, version: snapshot.ViewVersion, anchor: snapshot.FirstItemID, limit: limit}
+		subscription.windows[input.ThreadID.String()] = threadWindowInterest{items: ids, bodies: windowBodyLocators(snapshot.Items), tail: input.AnchorID == "" && input.Direction == ThreadWindowBefore, version: snapshot.ViewVersion, anchor: snapshot.FirstItemID, limit: limit}
 		return nil
 	})
 }
@@ -183,6 +184,7 @@ func (subscription *ThreadUpdateSubscription) ClearWindow(threadID identity.Thre
 
 type threadWindowInterest struct {
 	items   map[string]bool
+	bodies  map[string]ThreadItemBody
 	tail    bool
 	version uint64
 	anchor  string
@@ -223,6 +225,8 @@ func boundedWindowItem(item ThreadItem, limit int) ThreadItem {
 			} else {
 				body.EntryID = item.ID
 			}
+		} else if item.liveBody != nil || body.RunID != "" {
+			body.SourceID, body.RunID = item.ID, item.RunID
 		}
 		item.Body = &body
 	}
@@ -269,13 +273,41 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 			change.Item = &item
 		}
 		if change.Kind == ThreadItemAppended && change.Append != nil {
-			// A preview cannot keep growing past its budget. Replace the bounded
-			// prefix with explicit complete-source metadata rather than dropping
-			// offsets or pretending later bytes were applied.
-			if index := actor.itemIndexByID(change.ItemID); index >= 0 && len(actor.state.view.Items[index].Text) > threadDisplayTextBytes {
-				item := boundedWindowItem(actor.state.view.Items[index], threadDisplayTextBytes)
+			if body, truncated := interest.bodies[change.ItemID]; truncated {
+				// The accepted preview is immutable. Advance its frozen source extent
+				// without reading, cloning or encoding the same prefix again.
+				body.Bytes = change.Append.OffsetBytes + len(change.Append.Text)
+				change.Kind, change.Body, change.Append = ThreadItemBodyUpdated, &body, nil
+			} else if index := actor.itemIndexByID(change.ItemID); index >= 0 && max(len(actor.state.view.Items[index].Text), actor.state.view.Items[index].textBytes) > threadDisplayTextBytes {
+				current := actor.state.view.Items[index]
+				// A preceding coalesced batch can flush while the actor already
+				// contains the next append. Freeze this batch's accepted extent.
+				through := change.Append.OffsetBytes + len(change.Append.Text)
+				if current.textOmitted {
+					current.textBytes = through
+				} else {
+					current.Text = current.Text[:through]
+				}
+				item, err := actor.windowItem(context.Background(), current, threadDisplayTextBytes)
+				if err != nil {
+					subscription.finishLocked(ErrThreadUpdateInvalidated)
+					return ThreadUpdate{}, false
+				}
 				change.Kind, change.Item, change.Append = ThreadItemReplaced, &item, nil
 			}
+		}
+		if interest.bodies == nil {
+			interest.bodies = make(map[string]ThreadItemBody)
+		}
+		if change.Item != nil {
+			delete(interest.bodies, change.ItemID)
+			if change.Item.Body != nil {
+				interest.bodies[change.ItemID] = *change.Item.Body
+			}
+		} else if change.Body != nil {
+			interest.bodies[change.ItemID] = *change.Body
+		} else if change.Kind == ThreadItemRemoved {
+			delete(interest.bodies, change.ItemID)
 		}
 		update.Items = append(update.Items, change)
 		if change.Kind == ThreadItemRemoved {
@@ -403,6 +435,7 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 	base := update.BaseVersion
 	update = actor.windowBaseline()
 	update.BaseVersion = base
+	interest.bodies = windowBodyLocators(snapshot.Items)
 	interest.anchor, interest.version = snapshot.FirstItemID, snapshot.ViewVersion
 	subscription.windows[update.ThreadID.String()] = interest
 	update.Items, update.ItemOrder = nil, nil
@@ -410,4 +443,16 @@ func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntime
 	update.Turns = &ThreadComponent[[]ThreadTurn]{Value: actor.windowTurns(interest.items)}
 	update.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: actor.windowInteractions(interest.items)}
 	return update, true
+}
+
+// Window-local locators describe accepted truncated previews only. They never
+// retain source text and have the same budget as the accepted window.
+func windowBodyLocators(items []ThreadItem) map[string]ThreadItemBody {
+	bodies := make(map[string]ThreadItemBody)
+	for _, item := range items {
+		if item.Body != nil {
+			bodies[item.ID] = *item.Body
+		}
+	}
+	return bodies
 }

@@ -2128,7 +2128,13 @@ func (p *turnProjection) Emit(ev event.Event) {
 	}
 
 	if p.downstream != nil {
-		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
+		sanitized := event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy)
+		if sink, ok := p.downstream.(event.OutputBodySink); ok && ev.OutputBody != nil {
+			reader, err := ev.OutputBody.Present(ev.Message, sanitized.Message)
+			sink.EmitWithOutputBody(sanitized, reader, err)
+		} else {
+			p.downstream.Emit(sanitized)
+		}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

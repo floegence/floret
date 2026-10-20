@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/observation"
 )
 
@@ -256,11 +257,15 @@ func (runtime *threadRuntimeState) acceptLiveEvent(event Event) bool {
 		runtime.finishLiveTextSegment()
 	}
 	if event.Stream != nil {
+		if event.outputBodyErr != nil {
+			runtime.state.contextErr = event.outputBodyErr
+			return false
+		}
 		switch event.Stream.Type {
 		case StreamObservationAssistantDelta:
-			runtime.appendLiveTextSegment(ThreadItemAssistant, event.Stream.Text, event.Timestamp, event.outputSourceID)
+			runtime.appendLiveOutput(ThreadItemAssistant, event)
 		case StreamObservationReasoningDelta:
-			runtime.appendLiveTextSegment(ThreadItemThinking, event.Stream.Text, event.Timestamp, event.outputSourceID)
+			runtime.appendLiveOutput(ThreadItemThinking, event)
 		case StreamObservationToolCallStart, StreamObservationToolCallDelta:
 			runtime.finishLiveTextSegment()
 		case StreamObservationToolCallEnd:
@@ -393,7 +398,11 @@ func threadToolActivityTerminal(status observation.ActivityStatus) bool {
 	}
 }
 
-func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time, source string) {
+func (runtime *threadRuntimeState) appendLiveOutput(kind ThreadItemKind, event Event) {
+	runtime.appendLiveTextSegment(kind, event.Stream.Text, event.Timestamp, event.outputSourceID, event.outputBody)
+}
+
+func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time, source string, bodies ...outputbody.Reader) {
 	if runtime == nil || text == "" || source == "" {
 		return
 	}
@@ -424,6 +433,21 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		runtime.observedItemIDs = map[string]bool{}
 	}
 	runtime.observedItemIDs[source] = true
+	if len(bodies) > 0 && bodies[0] != nil {
+		offset := item.textBytes
+		if !item.textOmitted {
+			offset = len(item.Text)
+		}
+		runtime.markAppend(source, offset, text)
+		item.liveBody = bodies[0]
+		item.textBytes = offset + len(text)
+		item.textSummary, item.textSummaryTail = canonicalTextSummary(item.textSummary, text, item.textSummaryTail)
+		item.textNonSpace = item.textNonSpace || strings.TrimSpace(text) != ""
+		item.Text, item.textOmitted = "", true
+		item.Live = true
+		runtime.state.openTextSegmentID, runtime.state.openTextKind = source, kind
+		return
+	}
 	if runtime.textBufferID != source {
 		runtime.textBuffer.Reset()
 		runtime.textBuffer.WriteString(item.Text)
@@ -513,6 +537,7 @@ func (runtime *threadRuntimeState) discardAttemptDraft() {
 		item.Ordinal = uint64(len(items) + 1)
 		items = append(items, item)
 	}
+	clear(runtime.state.view.Items[len(items):])
 	runtime.state.view.Items = items
 	runtime.invalidateItemIndex()
 	runtime.textBuffer.Reset()
