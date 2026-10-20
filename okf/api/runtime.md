@@ -332,7 +332,13 @@ affected. The default remains selected-thread cancellation. See the
 
 `Delete` marks the whole active subtree as deleting, cancels provider and tool
 work, waits for execution/effect drains, then commits the canonical tombstone.
-Late provider output and late effect dispatch are rejected. `Host.Shutdown`
+After that commit, the actor releases its view, draft buffers, item indexes,
+request cache, and execution references and leaves the service registry. Cold
+lookups consult canonical thread/tombstone authority before installing an actor.
+The small identity fence on any previously captured actor remains to
+reject late mutations and effect dispatch through previously captured actors;
+a failed deletion retains recoverable presentation. Late provider output and
+late effect dispatch are rejected. `Host.Shutdown`
 stops admission, canonically cancels active in-memory executions before closing
 their actors, joins Host-managed work, and closes storage only after the join.
 Every settlement path reuses an existing cancel request for the exact Turn/Run

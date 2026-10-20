@@ -22,6 +22,7 @@ type threadRuntimeState struct {
 	closed        bool
 	deleting      bool
 	deleted       bool
+	lookupErr     error
 	state         threadRuntimeData
 	itemIndex     map[string]int
 	indexedItems  int
@@ -60,6 +61,20 @@ type threadRuntimeData struct {
 	agent               *Agent
 	pendingInteractions map[string]*pendingThreadInteraction
 	hydrationStarted    bool
+}
+
+// releaseDeletedState runs under the actor lock only after execution and effects
+// have joined and canonical deletion has committed. Keep the actor identity and
+// permanent fence so captured pointers and late dispatches cannot revive it.
+func (runtime *threadRuntimeState) releaseDeletedState() {
+	runtime.stopUpdateTimer()
+	runtime.state = threadRuntimeData{}
+	runtime.itemIndex = nil
+	runtime.indexedItems = 0
+	runtime.textBuffer.Reset()
+	runtime.textBufferID = ""
+	runtime.outputOrder = nil
+	runtime.mutations = threadMutations{}
 }
 
 type beginThreadRunInput struct {
@@ -138,6 +153,9 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 	defer runtime.mu.Unlock()
 	if runtime.closed {
 		return ErrHostClosed
+	}
+	if runtime.lookupErr != nil {
+		return runtime.lookupErr
 	}
 	if runtime.deleting || runtime.deleted {
 		return ErrThreadDeleted
@@ -251,6 +269,9 @@ func (runtime *threadRuntimeState) claimEffectDispatch() error {
 	defer runtime.mu.Unlock()
 	if runtime.closed {
 		return ErrHostClosed
+	}
+	if runtime.lookupErr != nil {
+		return runtime.lookupErr
 	}
 	if runtime.deleting || runtime.deleted {
 		return ErrThreadDeleted
