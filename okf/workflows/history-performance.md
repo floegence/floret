@@ -92,3 +92,23 @@ validation. Complete reads hydrate only requested entries into detached results.
 The process-wide hash-verified source cache is bounded to 128 MiB. This source
 byte budget does not measure Go heap or RSS; runtime actor views and provider
 context preparation still require separate qualification.
+
+## Cold summary source reads
+
+    GOWORK=off go test ./runtime -run 'TestThreadSummary(Streaming|Cold|Preview|Control|ToolInput)' -count=1
+
+Built-in cold summary reads use the canonical body-free window reader through a
+frozen leaf. A chronological reducer shares lifecycle, queue, attention and
+interaction semantics with the explicit complete adapter. Tool input results
+reserve their source order but remain invisible and unvalidated until the
+canonical waiting boundary. Only the newest nonempty message preview and
+required failure/input fields read body chunks. Late appends do not extend the
+snapshot, empty history stays empty, and path changes, cancellation or later
+page failures return no partial summary. The regression suite freezes the old
+complete algorithm as an independent oracle and checks each fixture prefix,
+control ordering, queue transitions, UTF-8 and trim boundaries.
+
+This removes full historical body hydration, not all cold-summary scaling.
+Metadata is still scanned, lifecycle and interaction maps grow with history,
+and required control/error semantics may themselves be large. It does not
+qualify bounded cold initialization or the production Flower stack.
