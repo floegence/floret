@@ -3,6 +3,7 @@ package engine
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	"github.com/floegence/floret/v7/internal/citation"
 	"github.com/floegence/floret/v7/internal/event"
@@ -21,13 +22,21 @@ type ResponseOutputItem struct {
 	Hosted  *event.Event
 	part    *provider.OutputPart
 	channel provider.EventType
+	text    *strings.Builder
 }
 
 type responseOutputBuilder struct {
-	output    ResponseOutput
-	runID     string
-	attemptID string
-	open      int
+	output     ResponseOutput
+	runID      string
+	attemptID  string
+	open       int
+	parts      map[responseOutputPartKey]int
+	orderCache []string
+}
+
+type responseOutputPartKey struct {
+	part    provider.OutputPart
+	channel provider.EventType
 }
 
 func newResponseOutputBuilder(runID, attemptID string) *responseOutputBuilder {
@@ -37,11 +46,8 @@ func newResponseOutputBuilder(runID, attemptID string) *responseOutputBuilder {
 func (b *responseOutputBuilder) appendText(kind provider.EventType, text string, part *provider.OutputPart) (string, []string) {
 	index := -1
 	if part != nil {
-		for i, item := range b.output.Items {
-			if item.part != nil && *item.part == *part && item.channel == kind {
-				index = i
-				break
-			}
+		if i, ok := b.parts[responseOutputPartKey{*part, kind}]; ok {
+			index = i
 		}
 	} else if b.open >= 0 && b.output.Items[b.open].channel == kind && b.output.Items[b.open].part == nil {
 		index = b.open
@@ -62,17 +68,18 @@ func (b *responseOutputBuilder) appendText(kind provider.EventType, text string,
 		} else {
 			msg.ContentSourceID = source
 		}
-		b.output.Items = append(b.output.Items, ResponseOutputItem{Message: msg, part: copyPart, channel: kind})
+		b.output.Items = append(b.output.Items, ResponseOutputItem{Message: msg, part: copyPart, channel: kind, text: &strings.Builder{}})
 		index = b.insertLastPart()
 	}
 	b.open = index
 	item := &b.output.Items[index]
 	source := item.Message.ContentSourceID
+	item.text.WriteString(text)
 	if kind == provider.Reasoning {
-		item.Message.Reasoning += text
+		item.Message.Reasoning = item.text.String()
 		source = item.Message.ReasoningSourceID
 	} else {
-		item.Message.Content += text
+		item.Message.Content = item.text.String()
 	}
 	return source, b.order()
 }
@@ -81,6 +88,8 @@ func (b *responseOutputBuilder) appendText(kind provider.EventType, text string,
 // Unspecified parts retain encounter order; they never participate in a partial
 // comparator. Later deltas update an existing part without moving it.
 func (b *responseOutputBuilder) insertLastPart() int {
+	b.orderCache = nil
+	defer b.indexParts()
 	last := len(b.output.Items) - 1
 	item := b.output.Items[last]
 	if item.part == nil {
@@ -99,6 +108,15 @@ func (b *responseOutputBuilder) insertLastPart() int {
 	return last
 }
 
+func (b *responseOutputBuilder) indexParts() {
+	b.parts = make(map[responseOutputPartKey]int)
+	for i, item := range b.output.Items {
+		if item.part != nil && item.Hosted == nil {
+			b.parts[responseOutputPartKey{*item.part, item.channel}] = i
+		}
+	}
+}
+
 func outputItemSource(item ResponseOutputItem) string {
 	if item.Hosted != nil {
 		return "hosted:" + item.Hosted.ToolID
@@ -110,6 +128,9 @@ func outputItemSource(item ResponseOutputItem) string {
 }
 
 func (b *responseOutputBuilder) order() []string {
+	if b.orderCache != nil {
+		return b.orderCache
+	}
 	order := make([]string, 0, len(b.output.Items))
 	seen := map[string]bool{}
 	for _, item := range b.output.Items {
@@ -119,6 +140,7 @@ func (b *responseOutputBuilder) order() []string {
 			seen[source] = true
 		}
 	}
+	b.orderCache = order
 	return order
 }
 
@@ -137,14 +159,15 @@ func (b *responseOutputBuilder) appendHosted(ev event.Event, part *provider.Outp
 
 func (b *responseOutputBuilder) finish(sources []citation.Source) ResponseOutput {
 	out := ResponseOutput{Items: append([]ResponseOutputItem(nil), b.output.Items...)}
-	text := ""
+	var textBuffer strings.Builder
 	var boundaries []int
 	for _, item := range out.Items {
 		if item.Message.Content != "" {
-			text += item.Message.Content
-			boundaries = append(boundaries, len(text))
+			textBuffer.WriteString(item.Message.Content)
+			boundaries = append(boundaries, textBuffer.Len())
 		}
 	}
+	text := textBuffer.String()
 	start := 0
 	for i := range out.Items {
 		item := &out.Items[i]

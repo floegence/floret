@@ -56,7 +56,7 @@ func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in Promo
 	if replayed {
 		return service.currentView(actor), nil
 	}
-	subscription, err := service.Subscribe(ctx)
+	subscription, err := service.subscribe(context.WithoutCancel(ctx), true)
 	if err != nil {
 		return ThreadView{}, err
 	}
@@ -85,20 +85,37 @@ func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in Promo
 		defer subscription.Close()
 		transition, cancel := context.WithTimeout(context.Background(), 2*gracefulCancellationLimit+time.Second)
 		defer cancel()
-		current := stopped
-		for current.Activity == ThreadActivityActive && current.TurnID == view.TurnID {
-			next, readErr := subscription.Next(transition)
+		for {
+			var active bool
+			var failure *ThreadTurnFailure
+			readErr := actor.apply(transition, func() error {
+				active = actor.state.view.Activity == ThreadActivityActive && actor.state.view.TurnID == view.TurnID
+				failure = cloneThreadTurnFailure(actor.state.view.Failure)
+				return nil
+			})
 			if readErr != nil {
 				finished <- result{err: readErr}
 				return
 			}
-			if next.ThreadID == in.ThreadID {
-				current = next
+			if !active {
+				if failure != nil && failure.Code == ThreadTurnFailureEffectOutcomeUnknown {
+					finished <- result{err: ErrEffectOutcomeUnknown}
+					return
+				}
+				break
 			}
-		}
-		if current.Failure != nil && current.Failure.Code == ThreadTurnFailureEffectOutcomeUnknown {
-			finished <- result{err: ErrEffectOutcomeUnknown}
-			return
+			select {
+			case <-transition.Done():
+				finished <- result{err: transition.Err()}
+				return
+			case <-subscription.done:
+				subscription.mu.Lock()
+				readErr = subscription.closeErr
+				subscription.mu.Unlock()
+				finished <- result{err: readErr}
+				return
+			case <-subscription.changed:
+			}
 		}
 		promoted, promoteErr := service.PromoteQueued(transition, in)
 		// A concurrent replay can win admission after both requests observe idle.

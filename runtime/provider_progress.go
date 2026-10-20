@@ -84,6 +84,9 @@ func cloneToolCallPreviews(in []ThreadToolCallPreview) []ThreadToolCallPreview {
 }
 
 func (actor *threadRuntimeState) applyArgumentPreview(event Event) bool {
+	if event.Stream != nil && (event.Stream.Type == StreamObservationAssistantDelta || event.Stream.Type == StreamObservationReasoningDelta) {
+		return false
+	}
 	before := cloneToolCallPreviews(actor.state.view.ToolCallPreviews)
 	if event.Type == observation.EventTypeStepStart || event.Type == observation.EventTypeProviderRequest || event.Type == observation.EventTypeProviderRetry || event.Type == observation.EventTypeRunEnd {
 		actor.state.view.ToolCallPreviews = nil
@@ -118,7 +121,11 @@ func (actor *threadRuntimeState) applyArgumentPreview(event Event) bool {
 		}
 	}
 	actor.pruneArgumentPreviews()
-	return !reflect.DeepEqual(before, actor.state.view.ToolCallPreviews)
+	changed := !reflect.DeepEqual(before, actor.state.view.ToolCallPreviews)
+	if changed {
+		actor.markComponents(threadPreviewsChanged)
+	}
+	return changed
 }
 
 func (actor *threadRuntimeState) removeArgumentPreview(callID string) {

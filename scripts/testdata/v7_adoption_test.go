@@ -30,6 +30,52 @@ import (
 	"github.com/floegence/floret/v7/tools/websearch"
 )
 
+func TestPublishedNativeThreadUpdateSource(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.Memory()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("execution not expected")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, ok := service.(runtime.ThreadUpdateSource)
+	if !ok {
+		t.Fatal("released service lacks native thread updates")
+	}
+	subscription, err := source.SubscribeUpdates(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	view, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "native-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.ImportPendingInputs(t.Context(), runtime.ImportPendingInputsInput{ThreadID: view.ThreadID, Items: []runtime.ImportedPendingInput{{RequestKey: "native-queue", Input: runtime.UserInput{Text: "queued"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		update, err := subscription.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if update.ViewVersion <= view.ViewVersion {
+			continue
+		}
+		if update.BaseVersion != view.ViewVersion || update.ViewVersion != changed.View.ViewVersion || update.Queue == nil || len(update.Queue.Value) != 1 || update.Facts.QueueCount != 1 {
+			t.Fatalf("invalid released mutation: %+v", update)
+		}
+		break
+	}
+}
+
 func TestPublishedToolSchemaOrder(t *testing.T) {
 	schema := map[string]any{"type": "object", "properties": map[string]any{"content": tools.String("body"), "file_path": tools.String("path")}, "required": []string{"file_path", "content"}}
 	order, err := tools.InputPropertyOrder(schema)

@@ -74,7 +74,6 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 	var previous <-chan struct{}
 	var accepted acceptedTurn
 	var submission sessiontree.GoalSubmissionResult
-	var view ThreadView
 	start := false
 	err = actor.apply(ctx, func() error {
 		var err error
@@ -92,7 +91,7 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		if a := submission.Accepted; a != nil {
 			// The preceding Turn is terminal: discard its stream-only drafts
 			// before admitting the new canonical prefix.
-			actor.state.view.Items = cloneThreadItems(canonical.Items)
+			actor.replaceItems(cloneThreadItems(canonical.Items))
 			previous, err = actor.beginRun(beginThreadRunInput{turnID: turnID, runID: runID, logicalRequestID: identity.LogicalRequestID(key), cancel: cancel, executionDone: done, clearOutcome: true})
 			if err != nil {
 				return err
@@ -109,15 +108,11 @@ func (service *threadRuntimeService) SubmitGoal(ctx context.Context, in SetGoalI
 		if err := actor.installCanonicalView(canonical); err != nil {
 			return err
 		}
-		view = cloneThreadRuntimeView(actor.state.view)
 		return nil
 	})
 	if err != nil {
 		cancel(context.Canceled)
 		return GoalSubmissionResult{}, err
-	}
-	if !submission.Mutation.Conflict && !submission.Mutation.Replayed {
-		service.publish(view)
 	}
 	if start {
 		prepared := service.prepareExecution(executionCtx, actor, AgentRequest{ThreadID: in.ThreadID, TurnID: turnID, RequestKey: key, Input: input, CanonicalTurnInput: input})

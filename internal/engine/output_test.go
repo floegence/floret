@@ -4,6 +4,7 @@ import (
 	"github.com/floegence/floret/v7/internal/event"
 	"github.com/floegence/floret/v7/internal/provider"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,25 @@ func TestResponseOutputNativeSuffixKeepsSourceAndPosition(t *testing.T) {
 	middle, order := b.appendText(provider.Reasoning, "new", &provider.OutputPart{ItemID: "reason", OutputIndex: 0, ContentIndex: 1})
 	if !reflect.DeepEqual(order, []string{first, middle, "hosted:search", answer}) {
 		t.Fatalf("late order=%v", order)
+	}
+}
+
+func TestResponseOutputGrowthDoesNotCopyAccumulatedText(t *testing.T) {
+	b := newResponseOutputBuilder("run", "attempt")
+	part := &provider.OutputPart{ItemID: "answer"}
+	b.appendText(provider.Delta, strings.Repeat("x", 1<<20), part)
+	first := b.finish(nil)
+	result := testing.Benchmark(func(bench *testing.B) {
+		bench.ReportAllocs()
+		for range bench.N {
+			b.appendText(provider.Delta, "x", part)
+		}
+	})
+	if result.AllocedBytesPerOp() > 4096 {
+		t.Fatalf("output growth copies accumulated text: %d bytes/op", result.AllocedBytesPerOp())
+	}
+	if len(first.Items[0].Message.Content) != 1<<20 {
+		t.Fatal("public output mutated after append")
 	}
 }
 func TestResponseOutputSameTextHasDistinctSources(t *testing.T) {

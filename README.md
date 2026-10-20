@@ -879,7 +879,7 @@ non-retryable.
 
 `ThreadService.View` returns one complete replaceable current view.
 The thread runtime installs ThreadView.Context with canonical items before
-publishing ViewVersion. Views and subscriptions include a complete snapshot,
+publishing ViewVersion. Views and legacy subscriptions include a complete snapshot,
 even when no context facts exist. Committed context changes publish while a Turn
 is active; text deltas reuse the installed snapshot. Failed assembly returns an
 error and the next explicit read retries, without blocking execution settlement
@@ -940,6 +940,19 @@ required; codes, retry savepoints and unknown-effect restrictions stay intact.
 reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle
 authority.
+
+For streaming hosts, the same service implements optional
+`runtime.ThreadUpdateSource` without adding methods to `ThreadService`.
+Subscribe before reading `View`, discard updates through the snapshot version,
+then apply only continuous `BaseVersion -> ViewVersion` batches. Item mutations
+are explicit add, replace, remove, or UTF-8-byte-offset text append operations;
+component wrappers distinguish unchanged from cleared values. Ordinary growth
+is coalesced for at most 50ms, with immediate semantic boundaries and bounded
+buffering. Snapshots flush pending growth to establish an exact baseline.
+Overflow, canonical invalidation, or a version gap requires a fresh subscription
+and authoritative view, never replay or inferred missing events. The old
+subscription materializes complete isolated views only for existing legacy
+consumers. See [native thread updates](okf/api/thread-updates.md).
 
 Context failures carry distinct `ThreadTurnFailure` codes: `context_budget_invalid`
 when output headroom leaves no input capacity, `context_fixed_overhead` when

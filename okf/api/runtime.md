@@ -346,13 +346,16 @@ ordered user, thinking, assistant, tool, and interaction items. `ViewVersion`
 is process-local notification ordering. Publishers reject per-thread version
 regressions. `Subscribe` is observation, not durable replay; a stale or closed
 subscriber must reconnect and obtain a fresh baseline.
+Streaming consumers use the optional [native update contract](thread-updates.md)
+to avoid materializing complete history on ordinary text growth. Both APIs share
+the actor, version and publication owner.
 
 Validated tool calls enter the current view with their Activity presentation
 before dispatch. Provider argument streams do not create running tool items.
-The existing actor applies the Engine's Activity timeline for pending,
+The existing actor applies the Engine's changed Activity facts for pending,
 approval, dispatch, output, and result changes, and publishes each changed
 view without waiting for a journal refresh or the end of the Turn. Parallel
-tools publish these snapshots in reduction order. Canonical refresh retains
+tools publish these mutations in reduction order. Canonical refresh retains
 newer observed tool progress when it has only the older call record; terminal
 turn settlement still uses the complete canonical journal. Hosts consume this
 view rather than maintaining another tool lifecycle or argument cache.

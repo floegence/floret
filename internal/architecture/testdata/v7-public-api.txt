@@ -735,6 +735,8 @@ var ErrThreadBusy error
 var ErrThreadDeleted error
 var ErrThreadNotActive error
 var ErrThreadNotFound error
+var ErrThreadUpdateInvalidated error
+var ErrThreadUpdateOverflow error
 var ErrTurnNotFound error
 var ErrUnsupportedSchema error
 var ErrUnsupportedStoreCapability error
@@ -1206,6 +1208,8 @@ field ThreadCancellation.Mode github.com/floegence/floret/v7/runtime.CancelMode 
 field ThreadCancellation.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
 field ThreadCancellation.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
 field ThreadCancellation.RequestedAt time.Time tag="json:\"requested_at\""
+type ThreadComponent struct
+field ThreadComponent.Value T tag="json:\"value\""
 type ThreadContextCompaction struct
 field ThreadContextCompaction.Decision *github.com/floegence/floret/v7/observation.CompactionDecision tag="json:\"decision,omitempty\""
 field ThreadContextCompaction.CanonicalOrdinal uint64 tag="json:\"canonical_ordinal\""
@@ -1294,10 +1298,20 @@ field ThreadItem.References []github.com/floegence/floret/v7/runtime.MessageRefe
 field ThreadItem.Context []github.com/floegence/floret/v7/runtime.MessageContextItem tag="json:\"context,omitempty\""
 field ThreadItem.Activity *github.com/floegence/floret/v7/observation.ActivityItem tag="json:\"activity,omitempty\""
 field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interaction,omitempty\""
+const ThreadItemAdded github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "add"
+const ThreadItemAppended github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "append"
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
+type ThreadItemChange struct
+field ThreadItemChange.Kind github.com/floegence/floret/v7/runtime.ThreadItemChangeKind tag="json:\"kind\""
+field ThreadItemChange.ItemID string tag="json:\"item_id\""
+field ThreadItemChange.Item *github.com/floegence/floret/v7/runtime.ThreadItem tag="json:\"item,omitempty\""
+field ThreadItemChange.Append *github.com/floegence/floret/v7/runtime.ThreadTextAppend tag="json:\"append,omitempty\""
+type ThreadItemChangeKind string
 const ThreadItemGoal github.com/floegence/floret/v7/runtime.ThreadItemKind = "goal"
 const ThreadItemInteraction github.com/floegence/floret/v7/runtime.ThreadItemKind = "interaction"
 type ThreadItemKind string
+const ThreadItemRemoved github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "remove"
+const ThreadItemReplaced github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "replace"
 const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
 const ThreadItemThinking github.com/floegence/floret/v7/runtime.ThreadItemKind = "thinking"
 const ThreadItemTool github.com/floegence/floret/v7/runtime.ThreadItemKind = "tool"
@@ -1333,6 +1347,15 @@ type ThreadRunProgress struct
 field ThreadRunProgress.Request *github.com/floegence/floret/v7/runtime.ProviderRequestProgress tag="json:\"request,omitempty\""
 field ThreadRunProgress.Retry *github.com/floegence/floret/v7/runtime.ProviderRetryProgress tag="json:\"retry,omitempty\""
 field ThreadRunProgress.Phase github.com/floegence/floret/v7/runtime.ThreadRunPhase tag="json:\"phase\""
+type ThreadRuntimeFacts struct
+field ThreadRuntimeFacts.Activity github.com/floegence/floret/v7/runtime.ThreadActivity tag="json:\"activity\""
+field ThreadRuntimeFacts.Attention github.com/floegence/floret/v7/runtime.AttentionSummary tag="json:\"attention\""
+field ThreadRuntimeFacts.TurnKind github.com/floegence/floret/v7/runtime.TurnKind tag="json:\"turn_kind,omitempty\""
+field ThreadRuntimeFacts.LastOutcome *github.com/floegence/floret/v7/runtime.TurnOutcome tag="json:\"last_outcome,omitempty\""
+field ThreadRuntimeFacts.Failure *github.com/floegence/floret/v7/runtime.ThreadTurnFailure tag="json:\"failure,omitempty\""
+field ThreadRuntimeFacts.Cancellation *github.com/floegence/floret/v7/runtime.ThreadCancellation tag="json:\"cancellation,omitempty\""
+field ThreadRuntimeFacts.RunProgress *github.com/floegence/floret/v7/runtime.ThreadRunProgress tag="json:\"run_progress,omitempty\""
+field ThreadRuntimeFacts.QueueCount int tag="json:\"queue_count\""
 type ThreadScope struct
 field ThreadScope.ParentID *github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_id,omitempty\""
 type ThreadSendReader interface interface{LookupSend(context.Context, github.com/floegence/floret/v7/runtime.LookupSendInput) (github.com/floegence/floret/v7/runtime.UserInput, bool, error)}
@@ -1380,6 +1403,9 @@ field ThreadSummary.PendingInput *github.com/floegence/floret/v7/runtime.InputPr
 field ThreadSummary.LastItemAt time.Time tag="json:\"last_item_at,omitempty\""
 field ThreadSummary.LastItemPreview string tag="json:\"last_item_preview,omitempty\""
 type ThreadSummaryReader interface interface{Summary(context.Context, github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadSummary, error)}
+type ThreadTextAppend struct
+field ThreadTextAppend.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadTextAppend.Text string tag="json:\"text\""
 type ThreadTitleMode string
 const ThreadTitleModeHostOwned github.com/floegence/floret/v7/runtime.ThreadTitleMode = "host_owned"
 const ThreadTitleModeProvider github.com/floegence/floret/v7/runtime.ThreadTitleMode = "provider"
@@ -1453,6 +1479,27 @@ const ThreadTurnFailureRepeatedToolCalls github.com/floegence/floret/v7/runtime.
 const ThreadTurnFailureStopHookLoop github.com/floegence/floret/v7/runtime.ThreadTurnFailureReason = "stop_hook_loop"
 const ThreadTurnFailureStorage github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "storage"
 const ThreadTurnFailureToolDispatch github.com/floegence/floret/v7/runtime.ThreadTurnFailureCode = "tool_dispatch"
+type ThreadUpdate struct
+field ThreadUpdate.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadUpdate.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id,omitempty\""
+field ThreadUpdate.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadUpdate.BaseVersion uint64 tag="json:\"base_version\""
+field ThreadUpdate.ViewVersion uint64 tag="json:\"view_version\""
+field ThreadUpdate.Facts github.com/floegence/floret/v7/runtime.ThreadRuntimeFacts tag="json:\"facts\""
+field ThreadUpdate.Items []github.com/floegence/floret/v7/runtime.ThreadItemChange tag="json:\"items,omitempty\""
+field ThreadUpdate.ItemOrder *github.com/floegence/floret/v7/runtime.ThreadComponent[[]string] tag="json:\"item_order,omitempty\""
+field ThreadUpdate.Context *github.com/floegence/floret/v7/runtime.ThreadComponent[*github.com/floegence/floret/v7/runtime.ThreadContextSnapshot] tag="json:\"context,omitempty\""
+field ThreadUpdate.Goal *github.com/floegence/floret/v7/runtime.ThreadComponent[*github.com/floegence/floret/v7/runtime.ThreadGoal] tag="json:\"goal,omitempty\""
+field ThreadUpdate.ParentEvents *github.com/floegence/floret/v7/runtime.ThreadComponent[*github.com/floegence/floret/v7/runtime.ParentEventPage] tag="json:\"parent_events,omitempty\""
+field ThreadUpdate.Turns *github.com/floegence/floret/v7/runtime.ThreadComponent[[]github.com/floegence/floret/v7/runtime.ThreadTurn] tag="json:\"turns,omitempty\""
+field ThreadUpdate.Queue *github.com/floegence/floret/v7/runtime.ThreadComponent[[]github.com/floegence/floret/v7/runtime.QueuedInput] tag="json:\"queue,omitempty\""
+field ThreadUpdate.Interactions *github.com/floegence/floret/v7/runtime.ThreadComponent[[]github.com/floegence/floret/v7/runtime.ThreadInteraction] tag="json:\"interactions,omitempty\""
+field ThreadUpdate.ToolCallPreviews *github.com/floegence/floret/v7/runtime.ThreadComponent[[]github.com/floegence/floret/v7/runtime.ThreadToolCallPreview] tag="json:\"tool_call_previews,omitempty\""
+field ThreadUpdate.RestoredInputs *github.com/floegence/floret/v7/runtime.ThreadComponent[[]github.com/floegence/floret/v7/runtime.RestoredInput] tag="json:\"restored_inputs,omitempty\""
+type ThreadUpdateSource interface interface{SubscribeUpdates(context.Context) (*github.com/floegence/floret/v7/runtime.ThreadUpdateSubscription, error)}
+type ThreadUpdateSubscription struct
+method *ThreadUpdateSubscription.Next func(ctx context.Context) (github.com/floegence/floret/v7/runtime.ThreadUpdate, error)
+method *ThreadUpdateSubscription.Close func()
 type ThreadView struct
 field ThreadView.Context *github.com/floegence/floret/v7/runtime.ThreadContextSnapshot tag="json:\"context,omitempty\""
 field ThreadView.Goal *github.com/floegence/floret/v7/runtime.ThreadGoal tag="json:\"goal,omitempty\""
@@ -2422,6 +2469,11 @@ const ActivityKindBudget github.com/floegence/floret/v7/observation.ActivityKind
 const ActivityKindControl github.com/floegence/floret/v7/observation.ActivityKind = "control"
 const ActivityKindHosted github.com/floegence/floret/v7/observation.ActivityKind = "hosted_tool"
 const ActivityKindTool github.com/floegence/floret/v7/observation.ActivityKind = "tool"
+type ActivityReducer struct
+method *ActivityReducer.Apply func(ev github.com/floegence/floret/v7/observation.Event, nowUnixMS int64)
+method *ActivityReducer.ChangedItems func(nowUnixMS int64) []github.com/floegence/floret/v7/observation.ActivityItem
+method *ActivityReducer.RemoveItems func(ids []string)
+method *ActivityReducer.Snapshot func(nowUnixMS int64) github.com/floegence/floret/v7/observation.ActivityTimeline
 type ActivityRunMeta struct
 field ActivityRunMeta.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ActivityRunMeta.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id,omitempty\""
@@ -2717,6 +2769,7 @@ const FinishReasonLength github.com/floegence/floret/v7/observation.FinishReason
 const FinishReasonStop github.com/floegence/floret/v7/observation.FinishReason = "stop"
 const FinishReasonToolCalls github.com/floegence/floret/v7/observation.FinishReason = "tool_calls"
 const FinishReasonUnknown github.com/floegence/floret/v7/observation.FinishReason = "unknown"
+func NewActivityReducer func(meta github.com/floegence/floret/v7/observation.ActivityRunMeta) *github.com/floegence/floret/v7/observation.ActivityReducer
 type ProviderRetryProgress struct
 field ProviderRetryProgress.Retry int tag="json:\"retry\""
 field ProviderRetryProgress.MaxRetries int tag="json:\"max_retries\""

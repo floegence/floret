@@ -111,7 +111,6 @@ func (service *threadRuntimeService) mutateGoal(ctx context.Context, in sessiont
 	}
 	actor := service.runtime(identity.ThreadID(in.ThreadID))
 	var result sessiontree.GoalMutationResult
-	var view ThreadView
 	err := actor.apply(ctx, func() error {
 		var err error
 		result, err = repo.MutateGoal(ctx, in)
@@ -130,14 +129,10 @@ func (service *threadRuntimeService) mutateGoal(ctx context.Context, in sessiont
 		if err := actor.installCanonicalView(canonical); err != nil {
 			return err
 		}
-		view = cloneThreadRuntimeView(actor.state.view)
 		return nil
 	})
 	if err != nil {
 		return GoalMutationResult{}, err
-	}
-	if !result.Conflict && !result.Replayed {
-		service.publish(view)
 	}
 	return GoalMutationResult{Goal: *publicThreadGoal(result.State), Conflict: result.Conflict, Replayed: result.Replayed}, nil
 }

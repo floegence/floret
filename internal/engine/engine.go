@@ -3968,13 +3968,15 @@ func rendererForProvider(p provider.Provider) cache.Renderer {
 
 func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent, req provider.Request, attempt *providerattempt.Attempt) (out StepOutput, retErr error) {
 	builder := newResponseOutputBuilder(opts.RunID, req.AttemptID)
+	hasText := false
 	defer func() {
 		out.Output = builder.finish(out.Sources)
-		out.Text, out.Reasoning = "", ""
+		var text, reasoning strings.Builder
 		for _, item := range out.Output.Items {
-			out.Text += item.Message.Content
-			out.Reasoning += item.Message.Reasoning
+			text.WriteString(item.Message.Content)
+			reasoning.WriteString(item.Message.Reasoning)
 		}
+		out.Text, out.Reasoning = text.String(), reasoning.String()
 	}()
 	var lastProgressAt *time.Time
 	var estimate outputEstimate
@@ -4025,11 +4027,11 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				if err := providerStreamCloseError(ctx, &validator); err != nil {
 					return out, err
 				}
-				if out.Text == "" && len(out.Calls) == 0 {
+				if !hasText && len(out.Calls) == 0 {
 					out.Retry = true
 					return out, nil
 				}
-				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, out.Truncated, out.Text != "")
+				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, out.Truncated, hasText)
 				return out, nil
 			}
 			if ev.ResponseID != "" {
@@ -4056,7 +4058,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					break
 				}
 				source, order := builder.appendText(provider.Delta, ev.Text, ev.OutputPart)
-				out.Text += ev.Text
+				hasText = true
 				estimate.append("text", ev.Text)
 				emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
@@ -4064,7 +4066,6 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 					break
 				}
 				source, order := builder.appendText(provider.Reasoning, ev.Text, ev.OutputPart)
-				out.Reasoning += ev.Text
 				estimate.append("reasoning", ev.Text)
 				emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCallStart:
@@ -4142,14 +4143,14 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				return out, errors.New("provider stream error")
 			case provider.Truncated:
 				out.Truncated = true
-				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, true, out.Text != "")
+				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, true, hasText)
 				if err := validateNoEventAfterTerminal(ctx, stream, &validator); err != nil {
 					return out, err
 				}
 				return out, nil
 			case provider.Done:
-				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, false, out.Text != "")
-				if out.Text == "" && len(out.Calls) == 0 && out.FinishReason == provider.FinishUnknown {
+				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, false, hasText)
+				if !hasText && len(out.Calls) == 0 && out.FinishReason == provider.FinishUnknown {
 					out.Retry = true
 				}
 				if err := validateNoEventAfterTerminal(ctx, stream, &validator); err != nil {

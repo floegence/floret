@@ -59,7 +59,7 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, in.Timeout)
 	defer cancel()
-	sub, err := service.Subscribe(waitCtx)
+	sub, err := service.subscribe(waitCtx, true)
 	if err != nil {
 		return ThreadWaitResult{}, err
 	}
