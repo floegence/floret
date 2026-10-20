@@ -96,6 +96,16 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 			}
 			if goal.Status != "active" {
 				kind = TurnKindContextCompaction
+			} else {
+				for index := len(path) - 1; index >= 0; index-- {
+					entry := path[index]
+					if isCanonicalUserEntry(entry) {
+						break
+					}
+					if entry.Metadata[TurnFailureCodeMetadataKey] == TurnFailureEffectOutcomeUnknown {
+						return AcceptTurnResult{}, ErrEffectOutcomeUnknown
+					}
+				}
 			}
 			started.Metadata[ContinueGoalMetadataKey] = "1"
 		}

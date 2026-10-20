@@ -103,7 +103,7 @@ existing Engine loop. Installation does not commit its terminal. Preparation
 errors, bounded reflection exhaustion and provider errors settle recoverably with
 the Goal retained. Questions, approvals, Stop, Retry and restart use existing
 owners. Canonical preparation facts and confirmed tools prevent repeated work;
-unknown effects retain inspection-and-continue recovery without automatic replay.
+Unknown effects reject compaction-driven Goal continuation until a new explicit user input acknowledges the recovery boundary; inspection-and-continue remains available without automatic replay.
 Goal context admission is the first business-request boundary. A deletion before
 it prevents work; later deletion keeps the established review-only cancellation
 semantics. Edits and stale-review protection retain the existing journal owner.
