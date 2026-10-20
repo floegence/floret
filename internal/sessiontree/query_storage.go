@@ -129,6 +129,8 @@ func queryIndexWriter(tx spi.WriteTx) spi.IndexWriter {
 	return &kvQueryIndex{read: tx, write: tx}
 }
 func (index *kvQueryIndex) PutIndexDocument(document spi.IndexDocument) error {
+	document.Terms = append([]string(nil), document.Terms...)
+	sort.Strings(document.Terms)
 	raw, err := json.Marshal(document)
 	if err != nil {
 		return err
@@ -149,7 +151,12 @@ func (index *kvQueryIndex) DeleteIndexThread(threadID string) error {
 }
 func (index *kvQueryIndex) QueryIndex(query spi.IndexQuery) ([]spi.IndexDocument, error) {
 	var result []spi.IndexDocument
+	scanned := map[string]bool{}
 	for _, threadID := range query.ThreadIDs {
+		if scanned[threadID] {
+			continue
+		}
+		scanned[threadID] = true
 		prefix := []byte(threadID + "\x00")
 		end := bytes.Clone(prefix)
 		end[len(end)-1]++
@@ -167,25 +174,7 @@ func (index *kvQueryIndex) QueryIndex(query spi.IndexQuery) ([]spi.IndexDocument
 				if document.Key != string(record.Key) || document.ThreadID != threadID {
 					return nil, errors.New("derived query document identity mismatch")
 				}
-				if query.Object != "" && document.Object != query.Object {
-					continue
-				}
-				valid := true
-				for _, group := range query.Terms {
-					hit := false
-					for _, term := range group {
-						position := sort.SearchStrings(document.Terms, term)
-						if position < len(document.Terms) && document.Terms[position] == term {
-							hit = true
-							break
-						}
-					}
-					if !hit {
-						valid = false
-						break
-					}
-				}
-				if valid {
+				if indexDocumentMatches(document, query) {
 					document.Terms = nil
 					result = append(result, document)
 				}
@@ -196,7 +185,28 @@ func (index *kvQueryIndex) QueryIndex(query spi.IndexQuery) ([]spi.IndexDocument
 			request.After = page.Next
 		}
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
 	return result, nil
+}
+
+func indexDocumentMatches(document spi.IndexDocument, query spi.IndexQuery) bool {
+	if !containsString(query.ThreadIDs, document.ThreadID) || query.Object != "" && document.Object != query.Object {
+		return false
+	}
+	for _, group := range query.Terms {
+		hit := false
+		for _, term := range group {
+			position := sort.SearchStrings(document.Terms, term)
+			if position < len(document.Terms) && document.Terms[position] == term {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *MemoryRepo) materializeQueryDocument(document spi.IndexDocument) (*queryRecord, error) {
@@ -454,6 +464,11 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 			indexed++
 			reportStartupWork(ctx, StartupPhaseIndexing, indexed, 0)
 		}
+		compactQueryThread(state)
+		if repo.queryThreads == nil {
+			repo.queryThreads = map[string]*queryThread{}
+		}
+		repo.queryThreads[id] = state
 		completed++
 		if !rebuilt {
 			reportStartupWork(ctx, StartupPhaseVerifying, completed, total)
@@ -503,12 +518,14 @@ func (mutation *backendDomainMutation) persistQuery(ctx context.Context, tx spi.
 			}
 			continue
 		}
-		state, changed, err := mutation.memory.extendQueryThread(ctx, id, caches[id])
+		state, changed, err := mutation.memory.extendQueryThread(ctx, id, caches[id], func(key string) (*queryRecord, error) {
+			return mutation.memory.queryRecordByKey(index, id, key)
+		})
 		if err != nil {
 			return err
 		}
 		var existing []spi.IndexDocument
-		if caches[id] == nil || caches[id].leaf != state.leaf && len(changed) == len(state.records) {
+		if state.complete {
 			existing, err = index.QueryIndex(spi.IndexQuery{ThreadIDs: []string{id}})
 		}
 		if err != nil {
@@ -520,7 +537,7 @@ func (mutation *backendDomainMutation) persistQuery(ctx context.Context, tx spi.
 		}
 		replaced := false
 		for key := range previous {
-			if state.records[key] == nil {
+			if state.record(key) == nil {
 				replaced = true
 				break
 			}
@@ -552,43 +569,97 @@ func (mutation *backendDomainMutation) persistQuery(ctx context.Context, tx spi.
 	return nil
 }
 
-// Only committed active projections are cached. The global bound is independent
-// of database size; evicting a projection never invalidates frozen query pages.
+// Only the canonical projector's continuation is retained after a commit.
+// Historical records live in the transactionally maintained index and their
+// bodies are materialized from canonical sources only when a record changes.
 func (repo *BackendRepo) installQueryThreads(changed map[string]*queryThread) {
 	if repo.queryThreads == nil {
 		repo.queryThreads = map[string]*queryThread{}
 	}
-	size := func(state *queryThread) int64 {
-		var total int64
-		if state != nil {
-			for _, record := range state.records {
-				total += record.estimateBytes()
-			}
-		}
-		return total
-	}
 	for id, state := range changed {
-		for i, key := range repo.queryThreadOrder {
-			if key == id {
-				repo.queryThreadOrder = append(repo.queryThreadOrder[:i], repo.queryThreadOrder[i+1:]...)
-				break
-			}
-		}
-		delete(repo.queryThreads, id)
-		if state == nil || size(state) > 16*1024*1024 {
+		if state == nil {
+			delete(repo.queryThreads, id)
 			continue
 		}
+		state.lifecycle.installTransaction()
+		compactQueryThread(state)
 		repo.queryThreads[id] = state
-		repo.queryThreadOrder = append(repo.queryThreadOrder, id)
-		var total int64
-		for _, cached := range repo.queryThreads {
-			total += size(cached)
-		}
-		for len(repo.queryThreads) > 8 || total > 16*1024*1024 {
-			oldest := repo.queryThreadOrder[0]
-			repo.queryThreadOrder = repo.queryThreadOrder[1:]
-			total -= size(repo.queryThreads[oldest])
-			delete(repo.queryThreads, oldest)
+	}
+}
+
+func queryRecordLocator(record *queryRecord) *queryRecord {
+	if record == nil {
+		return nil
+	}
+	return &queryRecord{key: record.key, row: record.row}
+}
+
+func compactQueryThread(state *queryThread) {
+	state.records = map[string]*queryRecord{}
+	state.complete = false
+	state.previous = queryRecordLocator(state.previous)
+	for _, pending := range state.hostedPending {
+		for key, record := range pending {
+			pending[key] = queryRecordLocator(record)
 		}
 	}
+}
+
+func (r *MemoryRepo) queryRecordByKey(index spi.IndexReader, threadID, key string) (*queryRecord, error) {
+	var document spi.IndexDocument
+	if reader, ok := index.(spi.IndexDocumentReader); ok {
+		var err error
+		document, err = reader.ReadIndexDocument(threadID, key)
+		if errors.Is(err, spi.ErrNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Published custom native indexes implement only IndexReader. Keep
+		// their existing query contract; select the exact identity explicitly.
+		documents, err := index.QueryIndex(spi.IndexQuery{ThreadIDs: []string{threadID}})
+		if err != nil {
+			return nil, err
+		}
+		found := false
+		for _, candidate := range documents {
+			if candidate.ThreadID != threadID {
+				return nil, errors.New("index returned an unauthorized candidate")
+			}
+			if candidate.Key == key {
+				if found {
+					return nil, errors.New("index returned a duplicate exact candidate")
+				}
+				document, found = candidate, true
+			}
+		}
+		if !found {
+			return nil, nil
+		}
+	}
+	if document.Key != key || document.ThreadID != threadID {
+		return nil, errors.New("index returned a mismatched exact candidate")
+	}
+	return r.materializeQueryDocument(document)
+}
+
+func (index *kvQueryIndex) ReadIndexDocument(threadID, key string) (spi.IndexDocument, error) {
+	raw, err := index.read.Get(queryDocumentNamespace, []byte(key))
+	if err != nil {
+		return spi.IndexDocument{}, err
+	}
+	var document spi.IndexDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return spi.IndexDocument{}, fmt.Errorf("invalid derived query document: %w", err)
+	}
+	if document.Key != key {
+		return spi.IndexDocument{}, errors.New("derived query document identity mismatch")
+	}
+	if document.ThreadID != threadID {
+		return spi.IndexDocument{}, spi.ErrNotFound
+	}
+	document.Terms = nil
+	return document, nil
 }

@@ -27,6 +27,9 @@ func repairLegacyUTF8EntryProjections(repo *MemoryRepo) (bool, error) {
 				return false, err
 			}
 			repaired = repaired || changed
+			if changed {
+				delete(repo.pathIndexes, threadID)
+			}
 		}
 		repo.entries[threadID] = entries
 	}

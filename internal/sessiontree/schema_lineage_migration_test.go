@@ -289,6 +289,10 @@ func TestBackendRepoRepairsLegacyUTF8ToolResultProjection(t *testing.T) {
 			if _, replacements := normalizeLegacyJSONReplacementEscapes(path[0].Raw); replacements != 0 {
 				t.Fatalf("legacy replacement escape survived: %q", path[0].Raw)
 			}
+			page, err := repo.PathPage(ctx, "thread", meta.LeafID, "", 1)
+			if err != nil || len(page.Entries) != 1 || !reflect.DeepEqual(page.Entries[0], path[0]) {
+				t.Fatalf("repaired page=%+v err=%v", page, err)
+			}
 			if err := backend.View(ctx, func(tx spi.ReadTx) error {
 				records, err := scanBackendDomainJournal(ctx, tx)
 				if err != nil {

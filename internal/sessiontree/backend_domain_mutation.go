@@ -46,20 +46,25 @@ func (changes domainChanges[V]) install(values map[string]V) {
 }
 
 type domainJournal struct {
-	entries      []Entry
-	ordinals     map[string]int
-	depths       map[string]int64
-	turnOrdinals map[string][]int
-	turnCounts   map[string]int
-	replaced     bool
-	indexes      domainJournalIndexes
+	entries       []Entry
+	pathIndex     []pathIndexEntry
+	ordinals      map[string]int
+	depths        map[string]int64
+	turnOrdinals  map[string][]int
+	turnCounts    map[string]int
+	turnMarkers   map[string]turnMarkerIndex
+	outputSources map[string][]int
+	replaced      bool
+	indexes       domainJournalIndexes
 }
 
 type domainJournalIndexes struct {
-	ordinals     domainChanges[int]
-	depths       domainChanges[int64]
-	turnOrdinals domainChanges[[]int]
-	turnCounts   domainChanges[int]
+	ordinals      domainChanges[int]
+	depths        domainChanges[int64]
+	turnOrdinals  domainChanges[[]int]
+	turnCounts    domainChanges[int]
+	turnMarkers   domainChanges[turnMarkerIndex]
+	outputSources domainChanges[[]int]
 }
 
 type backendDomainMutation struct {
@@ -84,7 +89,8 @@ func newBackendDomainMutation(source *MemoryRepo) *backendDomainMutation {
 		mutation: mutation, now: source.now, seq: source.seq, parentEvents: source.parentEvents,
 		threads: source.threads, entries: source.entries, entryOrdinals: source.entryOrdinals,
 		entryDepths: source.entryDepths, turnEntryOrdinals: source.turnEntryOrdinals,
-		turnEntryCounts: source.turnEntryCounts, todos: source.todos, tombstones: source.tombstones,
+		pathIndexes:     source.pathIndexes,
+		turnEntryCounts: source.turnEntryCounts, turnMarkers: source.turnMarkers, outputSources: source.outputSources, todos: source.todos, tombstones: source.tombstones,
 		providerStates: source.providerStates, artifacts: source.artifacts,
 	}
 	return mutation
@@ -158,8 +164,9 @@ func (r *MemoryRepo) setTombstoneLocked(key string, value ThreadTombstone) {
 func readDomainJournal(memory *MemoryRepo, threadID string) domainJournal {
 	return domainJournal{
 		entries: memory.entries[threadID], ordinals: memory.entryOrdinals[threadID],
-		depths: memory.entryDepths[threadID], turnOrdinals: memory.turnEntryOrdinals[threadID],
-		turnCounts: memory.turnEntryCounts[threadID],
+		pathIndex: memory.pathIndexes[threadID],
+		depths:    memory.entryDepths[threadID], turnOrdinals: memory.turnEntryOrdinals[threadID],
+		turnCounts: memory.turnEntryCounts[threadID], turnMarkers: memory.turnMarkers[threadID], outputSources: memory.outputSources[threadID],
 	}
 }
 
@@ -168,11 +175,16 @@ func (journal domainJournal) install(memory *MemoryRepo, threadID string) {
 	journal.indexes.depths.install(journal.depths)
 	journal.indexes.turnOrdinals.install(journal.turnOrdinals)
 	journal.indexes.turnCounts.install(journal.turnCounts)
+	journal.indexes.turnMarkers.install(journal.turnMarkers)
+	journal.indexes.outputSources.install(journal.outputSources)
 	installDomainMapValue(memory.entries, threadID, journal.entries)
+	installDomainMapValue(memory.pathIndexes, threadID, journal.pathIndex)
 	installDomainMapValue(memory.entryOrdinals, threadID, journal.ordinals)
 	installDomainMapValue(memory.entryDepths, threadID, journal.depths)
 	installDomainMapValue(memory.turnEntryOrdinals, threadID, journal.turnOrdinals)
 	installDomainMapValue(memory.turnEntryCounts, threadID, journal.turnCounts)
+	installDomainMapValue(memory.turnMarkers, threadID, journal.turnMarkers)
+	installDomainMapValue(memory.outputSources, threadID, journal.outputSources)
 }
 
 func installDomainMapValue[V any](values map[string]V, key string, value V) {
@@ -195,7 +207,7 @@ func (r *MemoryRepo) stageJournalLocked(threadID string, replaced bool) {
 	}
 	previous = readDomainJournal(r, threadID)
 	previous.replaced = replaced
-	previous.indexes = domainJournalIndexes{ordinals: domainChanges[int]{}, depths: domainChanges[int64]{}, turnOrdinals: domainChanges[[]int]{}, turnCounts: domainChanges[int]{}}
+	previous.indexes = domainJournalIndexes{ordinals: domainChanges[int]{}, depths: domainChanges[int64]{}, turnOrdinals: domainChanges[[]int]{}, turnCounts: domainChanges[int]{}, turnMarkers: domainChanges[turnMarkerIndex]{}, outputSources: domainChanges[[]int]{}}
 	r.mutation.journals[threadID] = previous
 }
 
@@ -207,9 +219,15 @@ func (r *MemoryRepo) stageEntryIndexesLocked(threadID string, entry Entry) {
 	indexes := previous.indexes
 	indexes.ordinals.capture(previous.ordinals, entry.ID)
 	indexes.depths.capture(previous.depths, entry.ID)
+	for _, source := range []string{entry.Message.ContentSourceID, entry.Message.ReasoningSourceID} {
+		if source != "" {
+			indexes.outputSources.capture(previous.outputSources, source)
+		}
+	}
 	if entry.TurnID != "" {
 		indexes.turnOrdinals.capture(previous.turnOrdinals, entry.TurnID)
 		indexes.turnCounts.capture(previous.turnCounts, entry.TurnID)
+		indexes.turnMarkers.capture(previous.turnMarkers, entry.TurnID)
 	}
 }
 
@@ -225,7 +243,7 @@ func (mutation *backendDomainMutation) snapshot() *backendDomainMutation {
 		journal := readDomainJournal(memory, threadID)
 		journal.indexes = domainJournalIndexes{
 			ordinals: previous.indexes.ordinals.read(journal.ordinals), depths: previous.indexes.depths.read(journal.depths),
-			turnOrdinals: previous.indexes.turnOrdinals.read(journal.turnOrdinals), turnCounts: previous.indexes.turnCounts.read(journal.turnCounts),
+			turnOrdinals: previous.indexes.turnOrdinals.read(journal.turnOrdinals), turnCounts: previous.indexes.turnCounts.read(journal.turnCounts), turnMarkers: previous.indexes.turnMarkers.read(journal.turnMarkers), outputSources: previous.indexes.outputSources.read(journal.outputSources),
 		}
 		next.journals[threadID] = journal
 	}

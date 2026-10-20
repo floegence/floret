@@ -146,3 +146,85 @@ func TestThreadUpdatesCanonicalFailureInvalidatesAndCanResubscribe(t *testing.T)
 	emitText(sink, "source", " recovered")
 	assertObservedSnapshot(t, recovered, &baseline, service.currentView(actor))
 }
+
+func TestThreadUpdatesByteOverflowReleasesQueuedBodies(t *testing.T) {
+	service, actor, _, sub := nativeUpdatesFixture(t)
+	update := ThreadUpdate{ThreadID: actor.state.view.ThreadID, BaseVersion: 1, ViewVersion: 2, Items: []ThreadItemChange{{Kind: ThreadItemAppended, ItemID: "large", Append: &ThreadTextAppend{Text: strings.Repeat("x", threadUpdateQueueBytes/2)}}}}
+	service.deliverUpdateLocked(actor, update)
+	if sub.queuedBytes == 0 || sub.queuedBytes > threadUpdateQueueBytes || len(sub.updates) != 1 {
+		t.Fatal("first batch was not budgeted")
+	}
+	update.BaseVersion, update.ViewVersion = 2, 3
+	service.deliverUpdateLocked(actor, update)
+	if _, err := sub.Next(t.Context()); !errors.Is(err, ErrThreadUpdateOverflow) {
+		t.Fatalf("overflow=%v", err)
+	}
+	if sub.queuedBytes != 0 || len(sub.updates) != 0 {
+		t.Fatal("overflow retained queued bodies")
+	}
+	if _, exists := service.updateSubscribers[sub]; exists {
+		t.Fatal("overflow retained subscriber")
+	}
+}
+
+func TestThreadUpdatesReadCloseAndInvalidationReleaseBudget(t *testing.T) {
+	for _, mode := range []string{"read", "close", "invalidate", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			service, actor, _, first := nativeUpdatesFixture(t)
+			first.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			sub, err := service.SubscribeUpdates(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sub.Close()
+			update := ThreadUpdate{ThreadID: actor.state.view.ThreadID, BaseVersion: 1, ViewVersion: 2, Items: []ThreadItemChange{{Kind: ThreadItemAppended, ItemID: "body", Append: &ThreadTextAppend{Text: strings.Repeat("x", 400<<10)}}}}
+			service.deliverUpdateLocked(actor, update)
+			switch mode {
+			case "read":
+				if _, err := sub.Next(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			case "close":
+				sub.Close()
+			case "invalidate":
+				service.invalidateUpdates()
+			case "cancel":
+				cancel()
+				select {
+				case <-sub.done:
+				case <-time.After(time.Second):
+					t.Fatal("cancellation did not release subscription")
+				}
+			}
+			sub.mu.Lock()
+			defer sub.mu.Unlock()
+			if sub.queuedBytes != 0 || len(sub.updates) != 0 {
+				t.Fatal("settled subscription retained bodies")
+			}
+		})
+	}
+}
+
+func TestThreadUpdatesOversizedBatchDoesNotBlockCanonicalProgress(t *testing.T) {
+	service, actor, sink, sub := nativeUpdatesFixture(t)
+	emitText(sink, "large", strings.Repeat("x", threadUpdateQueueBytes+1))
+	if _, err := sub.Next(t.Context()); !errors.Is(err, ErrThreadUpdateOverflow) {
+		t.Fatalf("oversized batch=%v", err)
+	}
+	if len(actor.state.view.Items) != 1 || len(actor.state.view.Items[0].Text) != threadUpdateQueueBytes+1 {
+		t.Fatal("observer budget truncated canonical presentation")
+	}
+	replacement, err := service.SubscribeUpdates(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	baseline := service.currentView(actor)
+	emitText(sink, "large", "still running")
+	update := nextUpdate(t, replacement)
+	if update.BaseVersion != baseline.ViewVersion || update.Items[0].Append == nil || update.Items[0].Append.Text != "still running" {
+		t.Fatal("resubscription did not recover")
+	}
+}

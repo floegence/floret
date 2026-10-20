@@ -24,7 +24,6 @@ type BackendRepo struct {
 	mu                                   sync.Mutex
 	domainMemory                         *MemoryRepo
 	queryThreads                         map[string]*queryThread
-	queryThreadOrder                     []string
 	parentEventObserver                  func([]string)
 	startupProgress                      StartupProgress
 	startupPhase                         StartupPhase

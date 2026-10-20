@@ -6,6 +6,12 @@
 
 - 2026-10-20: Clarify compaction timeout cancellation authority, Provider failure diagnostics and restart-safe explicit recovery.
 
+## 2026-10-20 — History hot-path foundations
+
+- Document [command acknowledgments and queue bounds](api/thread-updates.md) under the existing actor and idempotency owner.
+- Document [exact index reads and canonical ancestry locators](api/storage.md#exact-derived-document-reads), retaining custom backend compatibility and unchanged durable schema.
+- Keep full bounded-history storage, window observation and downstream qualification explicitly outstanding.
+
 ## 2026-10-20 — Tool argument correction episodes
 
 - Scope [argument correction](api/tools.md#argument-correction-episodes) to consecutive invalid batches, preserving committed siblings and existing effect boundaries.

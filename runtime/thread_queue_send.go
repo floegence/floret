@@ -13,6 +13,10 @@ import (
 // is accepted, independently of the requesting connection. If the host closes
 // before admission, the input remains queued and requires explicit resubmission.
 func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in PromoteQueuedInput) (ThreadView, error) {
+	return service.sendQueuedNowCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) sendQueuedNowCommand(ctx context.Context, in PromoteQueuedInput, mode threadResultMode) (ThreadView, error) {
 	in.QueueItemID = strings.TrimSpace(in.QueueItemID)
 	if err := service.host.requireExecution(); err != nil {
 		return ThreadView{}, err
@@ -21,12 +25,12 @@ func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in Promo
 	if err != nil {
 		return ThreadView{}, err
 	}
-	view, err := service.View(ctx, in.ThreadID)
+	view, err := service.viewResult(ctx, in.ThreadID, mode)
 	if err != nil {
 		return ThreadView{}, err
 	}
 	if view.Activity != ThreadActivityActive {
-		return service.PromoteQueued(ctx, in)
+		return service.promoteQueuedCommand(ctx, in, mode)
 	}
 	actor := service.runtime(in.ThreadID)
 	// Check a completed replay before touching whichever response is now active.
@@ -54,14 +58,14 @@ func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in Promo
 		return ThreadView{}, err
 	}
 	if replayed {
-		return service.currentView(actor), nil
+		return service.currentResult(actor, mode), nil
 	}
 	subscription, err := service.subscribe(context.WithoutCancel(ctx), true)
 	if err != nil {
 		return ThreadView{}, err
 	}
 	// Subscribe before accepting Stop so a fast terminal update cannot be missed.
-	stopped, err := service.requestGracefulCancellation(ctx, actor, in.ThreadID, view.TurnID, "send-queue-stop:"+key)
+	stopped, err := service.requestGracefulCancellationResult(ctx, actor, in.ThreadID, view.TurnID, "send-queue-stop:"+key, mode)
 	if err != nil {
 		subscription.Close()
 		return ThreadView{}, err
@@ -117,12 +121,12 @@ func (service *threadRuntimeService) SendQueuedNow(ctx context.Context, in Promo
 			case <-subscription.changed:
 			}
 		}
-		promoted, promoteErr := service.PromoteQueued(transition, in)
+		promoted, promoteErr := service.promoteQueuedCommand(transition, in, mode)
 		// A concurrent replay can win admission after both requests observe idle.
 		if errors.Is(promoteErr, ErrThreadBusy) || errors.Is(promoteErr, ErrRequestConflict) {
 			_ = actor.apply(transition, func() error {
 				if previous, ok := actor.state.requestKeys[key]; ok && previous.fingerprint == fingerprint {
-					promoted = cloneThreadRuntimeView(actor.state.view)
+					promoted = threadResult(actor.state.view, mode)
 					promoteErr = nil
 				}
 				return nil

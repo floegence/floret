@@ -36,7 +36,7 @@ func threadCancellationForTurn(entries []sessiontree.Entry, turnID identity.Turn
 	return nil
 }
 
-func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, key string) (ThreadView, error) {
+func (service *threadRuntimeService) requestGracefulCancellationResult(ctx context.Context, actor *threadRuntimeState, threadID identity.ThreadID, turnID identity.TurnID, key string, mode threadResultMode) (ThreadView, error) {
 	repo, ok := service.host.store.repo.(sessiontree.RuntimeTurnRepo)
 	if !ok {
 		return ThreadView{}, ErrUnsupportedStoreCapability
@@ -102,9 +102,9 @@ func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Con
 			return ThreadView{}, ctx.Err()
 		case <-sealedExecution:
 		}
-		return service.requestGracefulCancellation(ctx, actor, threadID, turnID, key)
+		return service.requestGracefulCancellationResult(ctx, actor, threadID, turnID, key, mode)
 	}
-	current := service.currentView(actor)
+	current := service.currentResult(actor, mode)
 	if deadline.IsZero() {
 		return current, nil
 	}
@@ -120,7 +120,7 @@ func (service *threadRuntimeService) requestGracefulCancellation(ctx context.Con
 		}
 		finishCtx, finish := context.WithTimeout(context.Background(), 5*time.Second)
 		defer finish()
-		if _, err := service.settleCancellation(finishCtx, actor, threadID, turnID, runID, request, "user_stop", "graceful stop settled"); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) && !errors.Is(err, ErrThreadDeleted) && !errors.Is(err, ErrHostClosed) {
+		if _, err := service.settleCancellationResult(finishCtx, actor, threadID, turnID, runID, request, "user_stop", "graceful stop settled", threadAckResult); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) && !errors.Is(err, ErrThreadDeleted) && !errors.Is(err, ErrHostClosed) {
 			service.host.store.reportBackgroundError(err)
 		}
 	}()

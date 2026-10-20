@@ -3,7 +3,6 @@ package sessiontree
 import (
 	"context"
 	"errors"
-	"maps"
 	"strings"
 	"time"
 
@@ -80,25 +79,11 @@ func (r *MemoryRepo) CommitProviderContext(ctx context.Context, req ProviderCont
 			return nil, ErrInvalidThreadAuthority
 		}
 	}
-	previousEntries := r.entries[req.ThreadID]
-	previousOrdinals, previousDepths := maps.Clone(r.entryOrdinals[req.ThreadID]), maps.Clone(r.entryDepths[req.ThreadID])
-	previousTurnOrdinals, previousTurnCounts := cloneOrdinalLists(r.turnEntryOrdinals[req.ThreadID]), maps.Clone(r.turnEntryCounts[req.ThreadID])
-	previousState, stateFound := r.providerStates[req.ThreadID]
-	previousSequence := r.seq
+	checkpoint := r.checkpointJournalAppendLocked(req.ThreadID)
 	committed := false
 	defer func() {
-		if committed {
-			return
-		}
-		r.entries[req.ThreadID] = previousEntries
-		r.entryOrdinals[req.ThreadID], r.entryDepths[req.ThreadID] = previousOrdinals, previousDepths
-		r.turnEntryOrdinals[req.ThreadID], r.turnEntryCounts[req.ThreadID] = previousTurnOrdinals, previousTurnCounts
-		r.setThreadLocked(req.ThreadID, meta)
-		r.seq = previousSequence
-		if stateFound {
-			r.setProviderStateLocked(req.ThreadID, previousState)
-		} else {
-			r.deleteProviderStateLocked(req.ThreadID)
+		if !committed {
+			checkpoint.restore(r)
 		}
 	}()
 	out := make([]Entry, 0, len(req.Entries))

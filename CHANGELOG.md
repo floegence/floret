@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add optional ThreadCommandService acknowledgments using existing command admission and idempotency without materializing complete results.
+- Add optional scoped IndexDocumentReader for exact derived-document lookup while preserving custom IndexReader contracts.
+- Page canonical ancestry through derived locators; remove historical journal copies from append rollback and projected-body cache rebuilds from ordinary index updates.
+- Index turn markers and output-source ancestry without scanning complete history for each append; preserve branch-local source validation and transactional rollback.
+- Bound native observation queues by encoded bytes as well as count and release queued payloads on every terminal path.
+
 ## v7.74.1 - 2026-10-20
 
 - Release deleted thread actors' presentation, draft buffers, indexes, request caches and execution references only after canonical deletion and execution/effect drains. Preserve permanent identity fences, exact deletion replay and failure rollback.

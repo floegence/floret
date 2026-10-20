@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 
 	"github.com/floegence/floret/v7/internal/session"
@@ -109,31 +108,12 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 			return ContextCompactionCommitResult{}, fmt.Errorf("%w: generated compaction context differs from canonical projection", ErrAuthorityCorrupt)
 		}
 	}
-	previousEntries := r.entries[threadID]
-	previousOrdinals := maps.Clone(r.entryOrdinals[threadID])
-	previousDepths := maps.Clone(r.entryDepths[threadID])
-	previousTurnOrdinals := cloneOrdinalLists(r.turnEntryOrdinals[threadID])
-	previousTurnCounts := maps.Clone(r.turnEntryCounts[threadID])
-	previousMeta := r.threads[threadID]
-	previousState, stateFound := r.providerStates[threadID]
-	previousSequence := r.seq
+	checkpoint := r.checkpointJournalAppendLocked(threadID)
 	committed := false
 	defer func() {
-		if committed {
-			return
+		if !committed {
+			checkpoint.restore(r)
 		}
-		r.entries[threadID] = previousEntries
-		r.entryOrdinals[threadID] = previousOrdinals
-		r.entryDepths[threadID] = previousDepths
-		r.turnEntryOrdinals[threadID] = previousTurnOrdinals
-		r.turnEntryCounts[threadID] = previousTurnCounts
-		r.setThreadLocked(threadID, previousMeta)
-		if stateFound {
-			r.setProviderStateLocked(threadID, previousState)
-		} else {
-			r.deleteProviderStateLocked(threadID)
-		}
-		r.seq = previousSequence
 	}()
 	out := ContextCompactionCommitResult{}
 	for i, pending := range []Entry{req.Summary, req.Lifecycle, req.Estimate} {

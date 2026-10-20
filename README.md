@@ -966,6 +966,15 @@ reconnecting clients refresh summaries and the currently visible view. There is
 no durable cursor, replay ledger, materialized projection, or second lifecycle
 authority.
 
+The service also implements optional `runtime.ThreadCommandService`. Its `*Ack`
+methods accept the existing command inputs and use the same admission, validation
+and idempotency owner as full-result commands. `ThreadCommandAck` returns the
+canonical trimmed `RequestKey`, thread identity and available Turn, Run and view
+version without materializing a complete result. An omitted view version means
+no presentation baseline was observed. Once acknowledged, a failed presentation
+read does not undo the command and must not cause it to be submitted again under
+a new request key. Full-result APIs retain their existing complete-view semantics.
+
 For streaming hosts, the same service implements optional
 `runtime.ThreadUpdateSource` without adding methods to `ThreadService`.
 Subscribe before reading `View`, discard updates through the snapshot version,
@@ -973,7 +982,8 @@ then apply only continuous `BaseVersion -> ViewVersion` batches. Item mutations
 are explicit add, replace, remove, or UTF-8-byte-offset text append operations;
 component wrappers distinguish unchanged from cleared values. Ordinary growth
 is coalesced for at most 50ms, with immediate semantic boundaries and bounded
-buffering. Snapshots flush pending growth to establish an exact baseline.
+buffering (64 batches and 1MiB of encoded updates per observer). Overflow releases
+pending payloads immediately; it never truncates canonical output. Snapshots flush pending growth to establish an exact baseline.
 Overflow, canonical invalidation, or a version gap requires a fresh subscription
 and authoritative view, never replay or inferred missing events. The old
 subscription materializes complete isolated views only for existing legacy

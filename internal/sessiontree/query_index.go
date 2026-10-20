@@ -24,6 +24,7 @@ type queryRecord struct {
 type queryThread struct {
 	leaf                  string
 	records               map[string]*queryRecord
+	complete              bool
 	hostedPending         map[string]map[string]*queryRecord
 	lifecycle             CanonicalLifecycle
 	previous              *queryRecord
@@ -34,7 +35,10 @@ type queryThread struct {
 
 // queryProjector is the only canonical-to-search projection. It owns no
 // inverted index; its records are disposable source views for one thread.
-type queryProjector struct{ changed map[string]*queryRecord }
+type queryProjector struct {
+	changed map[string]*queryRecord
+	lookup  func(string) (*queryRecord, error)
+}
 
 func (projector *queryProjector) replace(state *queryThread, record *queryRecord) {
 	state.records[record.key] = record
@@ -42,8 +46,22 @@ func (projector *queryProjector) replace(state *queryThread, record *queryRecord
 		projector.changed[record.key] = record
 	}
 }
+
+func (state *queryThread) record(key string) *queryRecord {
+	return state.records[key]
+}
+
+func (projector *queryProjector) read(state *queryThread, key string) (*queryRecord, error) {
+	if record := state.record(key); record != nil {
+		return record, nil
+	}
+	if projector.lookup != nil {
+		return projector.lookup(key)
+	}
+	return nil, nil
+}
 func newQueryThread() *queryThread {
-	return &queryThread{records: map[string]*queryRecord{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
+	return &queryThread{complete: true, records: map[string]*queryRecord{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
 }
 func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryThread, error) {
 	meta, found := r.threads[id]
@@ -133,7 +151,14 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		}
 		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: queryEntryParts(entry), sources: []string{entry.ID}}
 		if assistant && state.previous != nil && state.previousAssistant && state.previousContentSource == entry.Message.ContentSourceID && entry.Message.ContentSourceID != "" && state.previous.row.TurnID.String() == entry.TurnID && state.previous.row.RunID.String() == entry.RunID {
-			record = copyQueryRecord(state.previous)
+			previous, err := projector.read(state, state.previous.key)
+			if err != nil {
+				return err
+			}
+			if previous == nil {
+				return ErrAuthorityCorrupt
+			}
+			record = copyQueryRecord(previous)
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
 			record.sources = append(record.sources, entry.ID)
 		} else {
@@ -162,7 +187,10 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			record.parts = queryEntryParts(entry)
 			state.order++
 		} else {
-			previous := state.records[key]
+			previous, err := projector.read(state, key)
+			if err != nil {
+				return err
+			}
 			// A canonical imported transcript may contain a standalone tool message.
 			// It is not an invocation or a typed confirmation and cannot create one.
 			if previous == nil || entry.Message.ToolResult == nil {
@@ -195,7 +223,11 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + ev.ToolID
 		record := &queryRecord{key: key, row: base, parts: []queryPart{{"tool_name", ev.ToolName}}, sources: []string{entry.ID}}
-		if previous := state.records[key]; previous != nil {
+		previous, err := projector.read(state, key)
+		if err != nil {
+			return err
+		}
+		if previous != nil {
 			record = copyQueryRecord(previous)
 			record.sources = append(record.sources, entry.ID)
 		} else {
@@ -228,7 +260,14 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			executionKey := entry.TurnID + "\x00" + entry.RunID
 			for _, previous := range state.hostedPending[executionKey] {
 				if previous.row.ToolKind == "hosted" && previous.row.TurnID.String() == entry.TurnID && previous.row.RunID.String() == entry.RunID && previous.row.Status == "unconfirmed" {
-					record := copyQueryRecord(previous)
+					complete, err := projector.read(state, previous.key)
+					if err != nil {
+						return err
+					}
+					if complete == nil {
+						return ErrAuthorityCorrupt
+					}
+					record := copyQueryRecord(complete)
 					record.row.Status = "canceled"
 					record.row.CompletedAt = at.UTC()
 					record.row.Elapsed = at.Sub(record.row.Time)
@@ -247,6 +286,28 @@ func copyQueryRecord(record *queryRecord) *queryRecord {
 	result.activities = append([]*tools.ActivityPresentation(nil), record.activities...)
 	return &result
 }
+
+func (record *queryRecord) textPrefix(limit int) string {
+	field := queryReadField{}
+	for _, part := range record.parts {
+		if field.bytes > 0 && part.field != "body" {
+			field.append("\n")
+		}
+		field.append(part.text)
+		if field.bytes >= limit {
+			return field.chunk(0, limit)
+		}
+	}
+	if len(record.activities) > 0 {
+		raw, _ := json.Marshal(record.activities)
+		if field.bytes > 0 {
+			field.append("\n")
+		}
+		field.append(string(raw))
+	}
+	return field.chunk(0, limit)
+}
+
 func (record *queryRecord) text(field string) string {
 	var result strings.Builder
 	for _, part := range record.parts {
@@ -311,10 +372,11 @@ func (projector *queryProjector) finish(state *queryThread, id string, meta Thre
 
 func cloneQueryThread(source *queryThread) *queryThread {
 	result := *source
+	// The transaction owns changed records only. Historical records are read
+	// through their canonical index locators, never copied into an overlay.
 	result.records = map[string]*queryRecord{}
-	for key, record := range source.records {
-		result.records[key] = record
-	}
+	result.complete = false
+	result.lifecycle = source.lifecycle.transactionCopy()
 	result.hostedPending = map[string]map[string]*queryRecord{}
 	for key, values := range source.hostedPending {
 		result.hostedPending[key] = map[string]*queryRecord{}
@@ -324,7 +386,7 @@ func cloneQueryThread(source *queryThread) *queryThread {
 	}
 	return &result
 }
-func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous *queryThread) (*queryThread, map[string]*queryRecord, error) {
+func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous *queryThread, lookup func(string) (*queryRecord, error)) (*queryThread, map[string]*queryRecord, error) {
 	meta, ok := r.threads[id]
 	if !ok {
 		return nil, nil, nil
@@ -353,7 +415,7 @@ func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous 
 		return state, state.records, nil
 	}
 	state := cloneQueryThread(previous)
-	projector := &queryProjector{changed: map[string]*queryRecord{}}
+	projector := &queryProjector{changed: map[string]*queryRecord{}, lookup: lookup}
 	for i := len(tail) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err

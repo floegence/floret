@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/floegence/floret/v7/storage/spi"
 	"strings"
 )
@@ -148,3 +150,19 @@ func (tx *sqliteTx) ResetIndex() error {
 	}
 	return nil
 }
+
+func (tx *sqliteTx) ReadIndexDocument(threadID, key string) (spi.IndexDocument, error) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if err := tx.usable(); err != nil {
+		return spi.IndexDocument{}, err
+	}
+	var document spi.IndexDocument
+	err := tx.tx.QueryRowContext(tx.ctx, "SELECT document_key,thread_id,object,metadata FROM floret_index_documents WHERE document_key=? AND thread_id=?", key, threadID).Scan(&document.Key, &document.ThreadID, &document.Object, &document.Metadata)
+	if errors.Is(err, sql.ErrNoRows) {
+		return spi.IndexDocument{}, spi.ErrNotFound
+	}
+	return document, classifySQLiteError(tx.ctx, err)
+}
+
+var _ spi.IndexDocumentReader = (*sqliteTx)(nil)

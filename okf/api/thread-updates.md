@@ -75,3 +75,20 @@ remain immutable.
 - [Text growth complexity tests](../../runtime/thread_text_growth_test.go)
 - [Engine fragment buffers](../../internal/engine/output.go)
 - [Activity reducer](../../observation/activity.go)
+
+# Lightweight command results
+
+`ThreadCommandService` is an optional capability on the same service. Create,
+Fork, title, Send, Respond, Cancel, Retry and queue operations have `*Ack` return
+forms using the existing input types and command implementation. The Ack confirms
+successful admission, with the canonical trimmed request key and available
+execution identities. It is neither a view baseline nor a durable receipt.
+An omitted `ViewVersion` means no actor baseline was observed. A later read failure
+must not turn success into a repeated command. Existing complete-view APIs remain
+available for consumers explicitly requesting the complete result.
+
+Native observation queues enforce both 64 batches and 1MiB of encoded payload.
+Overflow, cancellation, invalidation and Close release pending payloads. A consumer
+reestablishes a baseline after overflow; canonical execution does not wait for it.
+This queue limit alone does not make full-item replacement or full-view reads
+bounded: the bounded-window capability is separate follow-up work.

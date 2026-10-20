@@ -15,6 +15,8 @@ func migrateBackendDomainV24ToV25(ctx context.Context, memory *MemoryRepo) error
 			return err
 		}
 		memory.entries[id] = normalized
+		delete(memory.pathIndexes, id)
+		delete(memory.outputSources, id)
 	}
 	return validateBackendDomainV25Memory(memory)
 }

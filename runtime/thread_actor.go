@@ -542,18 +542,20 @@ func (runtime *threadRuntimeState) orderAttemptOutput(order []string) {
 	runtime.mutations.order = true
 }
 
-// itemIndexByID indexes structural changes once. Ordinary growth touches one row.
+// itemIndexByID extends the index for appended rows. Reordering and removals
+// explicitly invalidate it, so new output never scans unchanged history.
 func (runtime *threadRuntimeState) itemIndexByID(id string) int {
 	if id == "" {
 		return -1
 	}
-	if runtime.itemIndex == nil || runtime.indexedItems != len(runtime.state.view.Items) {
+	if runtime.itemIndex == nil || runtime.indexedItems > len(runtime.state.view.Items) {
 		runtime.itemIndex = make(map[string]int, len(runtime.state.view.Items))
-		for i := range runtime.state.view.Items {
-			runtime.itemIndex[runtime.state.view.Items[i].ID] = i
-		}
-		runtime.indexedItems = len(runtime.state.view.Items)
+		runtime.indexedItems = 0
 	}
+	for i := runtime.indexedItems; i < len(runtime.state.view.Items); i++ {
+		runtime.itemIndex[runtime.state.view.Items[i].ID] = i
+	}
+	runtime.indexedItems = len(runtime.state.view.Items)
 	if i, ok := runtime.itemIndex[id]; ok {
 		return i
 	}

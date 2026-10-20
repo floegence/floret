@@ -3,7 +3,6 @@ package sessiontree
 import (
 	"context"
 	"errors"
-	"maps"
 )
 
 // GoalSubmission reuses the Goal mutation and normal user-input admission
@@ -47,24 +46,12 @@ func (r *MemoryRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (GoalSub
 	if err := lifecycleRejectsWrite(previousMeta); err != nil {
 		return GoalSubmissionResult{}, err
 	}
-	previousEntries := r.entries[m.ThreadID]
-	previousOrdinals := maps.Clone(r.entryOrdinals[m.ThreadID])
-	previousDepths := maps.Clone(r.entryDepths[m.ThreadID])
-	previousTurns := cloneOrdinalLists(r.turnEntryOrdinals[m.ThreadID])
-	previousCounts := maps.Clone(r.turnEntryCounts[m.ThreadID])
-	previousSequence := r.seq
+	checkpoint := r.checkpointJournalAppendLocked(m.ThreadID)
 	committed := false
 	defer func() {
-		if committed {
-			return
+		if !committed {
+			checkpoint.restore(r)
 		}
-		r.entries[m.ThreadID] = previousEntries
-		r.entryOrdinals[m.ThreadID] = previousOrdinals
-		r.entryDepths[m.ThreadID] = previousDepths
-		r.turnEntryOrdinals[m.ThreadID] = previousTurns
-		r.turnEntryCounts[m.ThreadID] = previousCounts
-		r.setThreadLocked(m.ThreadID, previousMeta)
-		r.seq = previousSequence
 	}()
 	mutation, err := r.mutateGoalLocked(ctx, m)
 	if err != nil {

@@ -38,11 +38,15 @@ type EditQueuedInput struct {
 var _ ThreadQueueController = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueuedInput) (ThreadView, error) {
+	return service.editQueuedCommand(ctx, in, threadFullResult)
+}
+
+func (service *threadRuntimeService) editQueuedCommand(ctx context.Context, in EditQueuedInput, mode threadResultMode) (ThreadView, error) {
 	key, err := cleanRequestKey(in.RequestKey)
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if _, err := service.View(ctx, in.ThreadID); err != nil {
+	if _, err := service.viewResult(ctx, in.ThreadID, mode); err != nil {
 		return ThreadView{}, err
 	}
 	queueID := strings.TrimSpace(in.QueueItemID)
@@ -150,6 +154,6 @@ func (service *threadRuntimeService) EditQueued(ctx context.Context, in EditQueu
 	if err != nil {
 		return ThreadView{}, err
 	}
-	view := service.currentView(actor)
+	view := service.currentResult(actor, mode)
 	return view, nil
 }
