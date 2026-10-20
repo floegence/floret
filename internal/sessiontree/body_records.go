@@ -259,7 +259,15 @@ type canonicalStoredEntry struct {
 }
 
 func canonicalEntryBodyFields(entry *Entry) map[string]*string {
-	return map[string]*string{"content": &entry.Message.Content, "reasoning": &entry.Message.Reasoning, "arguments": &entry.Message.ToolArgs, "summary": &entry.Summary, "error": &entry.Error}
+	fields := map[string]*string{"content": &entry.Message.Content, "reasoning": &entry.Message.Reasoning, "arguments": &entry.Message.ToolArgs, "summary": &entry.Summary, "error": &entry.Error}
+	if entry.Message.ControlSignal != nil {
+		// Entry copies share nested messages. Detach before callers clear or
+		// restore fields so reads cannot mutate canonical state or their inputs.
+		signal := *entry.Message.ControlSignal
+		entry.Message.ControlSignal = &signal
+		fields["control_output"] = &signal.OutputText
+	}
+	return fields
 }
 
 func decodeCanonicalStoredEntry(record backendDomainRecord) (canonicalStoredEntry, error) {

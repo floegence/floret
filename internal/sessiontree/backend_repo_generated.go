@@ -510,6 +510,16 @@ func (repo *BackendRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleR
 	return result0, err
 }
 
+func (repo *BackendRepo) SourceBodyPage(ctx context.Context, options SourceBodyPageOptions) (SourceBodyPage, error) {
+	var result0 SourceBodyPage
+	err := repo.view(ctx, func(memory *MemoryRepo) error {
+		var callErr error
+		result0, callErr = memory.SourceBodyPage(ctx, options)
+		return callErr
+	})
+	return result0, err
+}
+
 func (repo *BackendRepo) SubmitGoal(ctx context.Context, in GoalSubmission) (GoalSubmissionResult, error) {
 	var result0 GoalSubmissionResult
 	err := repo.update(ctx, func(memory *MemoryRepo) error {

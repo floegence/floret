@@ -153,6 +153,9 @@ func (r *MemoryRepo) validateNewOutputSourcesLocked(entry Entry) error {
 			if !matchesStoredOutputSource(previous, source, fact) {
 				return fmt.Errorf("%w: conflicting output source on %s", ErrAuthorityCorrupt, entry.ID)
 			}
+			// Every accepted occurrence on this path has the same authority.
+			// Later segments need not reread or compare the unchanged prefix.
+			break
 		}
 	}
 	return nil

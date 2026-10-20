@@ -79,7 +79,7 @@ func canonicalPathMetadata(entry Entry) (PathMetadata, error) {
 	entry.bodyFields = nil
 	metadata := PathMetadata{Entry: cloneEntry(entry)}
 	// Deterministic field order makes rebuilt metadata stable.
-	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error"} {
+	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error", "control_output"} {
 		if ref, ok := fields[field]; ok {
 			metadata.Bodies = append(metadata.Bodies, CanonicalField{Field: field, SHA256: ref.SHA256, Bytes: ref.Bytes})
 		}

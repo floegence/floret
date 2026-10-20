@@ -15,11 +15,12 @@ import (
 type ThreadBodyField string
 
 const (
-	ThreadBodyContent   ThreadBodyField = "content"
-	ThreadBodyReasoning ThreadBodyField = "reasoning"
-	ThreadBodyArguments ThreadBodyField = "arguments"
-	ThreadBodySummary   ThreadBodyField = "summary"
-	ThreadBodyError     ThreadBodyField = "error"
+	ThreadBodyContent       ThreadBodyField = "content"
+	ThreadBodyReasoning     ThreadBodyField = "reasoning"
+	ThreadBodyArguments     ThreadBodyField = "arguments"
+	ThreadBodySummary       ThreadBodyField = "summary"
+	ThreadBodyError         ThreadBodyField = "error"
+	ThreadBodyControlOutput ThreadBodyField = "control_output"
 )
 
 // ThreadBodyInput locates immutable source bytes, never grants access, and may
@@ -55,23 +56,8 @@ type ThreadBodyReader interface {
 var _ ThreadBodyReader = (*threadRuntimeService)(nil)
 
 func (service *threadRuntimeService) ReadBody(ctx context.Context, scope threadquery.Scope, input ThreadBodyInput) (ThreadBodyChunk, error) {
-	if err := service.host.available(); err != nil {
+	if err := service.authorizeBodyRead(ctx, scope, input.ThreadID); err != nil {
 		return ThreadBodyChunk{}, err
-	}
-	if ctx == nil {
-		return ThreadBodyChunk{}, threadquery.ErrInvalidQuery
-	}
-	if _, err := identity.ParseThreadID(input.ThreadID.String()); err != nil {
-		return ThreadBodyChunk{}, threadquery.ErrInvalidQuery
-	}
-	// Use the canonical scope validator; a caller-supplied body locator never
-	// expands the host's freshly reconstructed readable set.
-	authorized, err := sessiontree.ValidateQueryScope(scope)
-	if err != nil {
-		return ThreadBodyChunk{}, err
-	}
-	if !authorized[input.ThreadID.String()] {
-		return ThreadBodyChunk{}, threadquery.ErrRecordUnavailable
 	}
 	reader, ok := service.host.store.repo.(sessiontree.CanonicalBodyReader)
 	if !ok {

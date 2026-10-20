@@ -977,6 +977,19 @@ entries and revoked scopes are unavailable. Tool arguments and reasoning are
 private facts and require the same host policy as ThreadQueryReader. Display
 previews must never become provider context or silently replace full content.
 
+The optional runtime.ThreadBodyManifestReader resolves a committed assistant or
+reasoning ThreadItem.ID into immutable body parts without materializing text or
+a ThreadView. Supply fresh scope and private-fact authorization on every page.
+Retain the returned LeafID on continuation; ordinary append preserves that cut,
+while an incompatible active-path change rejects it. Content parts concatenate
+in order; identical repeated reasoning contributes one part. Pages contain at
+most 150 parts and 64 KiB encoded data. Empty pages may still have HasMore when
+inactive branches consume the bounded scan budget. Resume with NextEntryID.
+Control output uses ThreadBodyControlOutput and preserves raw whitespace,
+including an empty field; presentation alone supplies its historical empty label.
+Read every part through ThreadBodyReader with its SHA256. The leaf and source
+locators grant no access and introduce no independent lifecycle version.
+
 The optional runtime.ThreadBodySearcher searches exact case-sensitive UTF-8
 source without loading the full field. Each call scans at most 64 KiB and returns
 at most 100 overlapping match offsets. Queries are limited to 4 KiB. Resume with

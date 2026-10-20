@@ -13,6 +13,14 @@ Repeated output-source admission compares canonical turn/run/channel identity
 and exact reasoning hashes without reading old body blocks. Inactive sibling
 locators do not contribute source authority to the current path.
 
+Optional ThreadBodyManifestReader resolves canonical output IDs to at most 150
+source parts and 64 KiB per page, with a 256-locator scan budget. Empty pages
+advance across inactive siblings. A frozen active leaf preserves append validity;
+body reads still authorize each field, and reasoning repeats only once. This is
+source assembly for explicit reading, not a second view or provider projection.
+Control output is an exact separate body field; manifests preserve its raw bytes,
+while the established presentation owns whitespace trimming and the empty label.
+
 Canonical body metadata resolves exact field hashes and byte lengths without
 loading source blocks. Metadata and chunk reads share one active-path locator
 check; a locator never grants access or permits an inactive sibling.
