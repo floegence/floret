@@ -1123,11 +1123,7 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 			out = append(out, summary)
 			continue
 		}
-		path, err := service.host.store.repo.Path(ctx, meta.ID, meta.LeafID)
-		if err != nil {
-			return nil, runtimeHostError(err)
-		}
-		summary, err := threadSummaryFromCanonicalPath(meta, path)
+		summary, err := service.coldThreadSummary(ctx, meta)
 		if err != nil {
 			return nil, err
 		}
@@ -1136,160 +1132,60 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 	return out, nil
 }
 
-func threadSummaryFromCanonicalPath(meta sessiontree.ThreadMeta, path []sessiontree.Entry) (ThreadSummary, error) {
-	readyToolInputs := sessiontree.ReadyToolInputResultIDs(path)
-	turnID, runID, activity, outcome, failure := threadRuntimeLifecycleFromEntries(meta, path)
-	queueCount, err := canonicalQueueCountFromEntries(path)
-	if err != nil {
-		return ThreadSummary{}, err
-	}
-	summary := ThreadSummary{
-		TurnKind:     turnKindFromEntries(path, turnID),
-		Cancellation: threadCancellationForTurn(path, turnID),
-		ID:           identity.ThreadID(meta.ID), ParentThreadID: identity.ThreadID(meta.ParentThreadID), ParentTurnID: identity.TurnID(meta.ParentTurnID),
-		TaskName: meta.TaskName, TaskDescription: meta.TaskDescription, HostProfileRef: meta.HostProfileRef, ForkMode: meta.ForkMode,
-		Title: meta.Title, TitleStatus: ThreadTitleStatus(meta.TitleStatus), TitleGeneration: meta.TitleGeneration, CreatedAt: meta.CreatedAt, UpdatedAt: meta.UpdatedAt,
-		Activity: activity, LastOutcome: outcome, TurnID: turnID, RunID: runID, QueueCount: queueCount,
-		Failure: cloneThreadTurnFailure(failure),
-	}
-	interactions := make(map[string]ThreadInteraction)
-	interactionOrder := make([]string, 0)
-	failedControls := make(map[string]threadControlIdentity)
-	for _, entry := range path {
-		switch entry.Type {
-		case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
-			if entry.Message.Kind == session.MessageKindToolValidationError {
-				continue
-			}
-			if input, err := toolInputInteraction(entry, readyToolInputs); err != nil {
-				return ThreadSummary{}, err
-			} else if input != nil {
-				interactionOrder = append(interactionOrder, input.ID)
-				interactions[input.ID] = *input
-				continue
-			}
-			if entry.Message.Kind != session.MessageKindControlSignal || entry.Message.ControlSignal == nil {
-				continue
-			}
-			signal := entry.Message.ControlSignal
-			input, classification, inputErr := waitingInputFromControlSignal(signal)
-			if inputErr != nil {
-				return ThreadSummary{}, inputErr
-			}
-			if classification == controlstate.Failed {
-				failedControls[signal.CallID] = threadControlIdentity{turnID: entry.TurnID, runID: entry.RunID}
-				delete(interactions, signal.CallID)
-				continue
-			}
-			if classification != controlstate.WaitingInput {
-				continue
-			}
-			if _, found := interactions[signal.CallID]; !found {
-				interactionOrder = append(interactionOrder, signal.CallID)
-			}
-			interactions[signal.CallID] = ThreadInteraction{
-				ID: signal.CallID, TurnID: identity.TurnID(entry.TurnID), Kind: ThreadInteractionInput,
-				Input: input,
-			}
-		case sessiontree.EntryInteractionAsked:
-			interactionID := strings.TrimPrefix(entry.ID, "interaction-requested:")
-			if failed, ok := failedControls[interactionID]; ok && failed.turnID == entry.TurnID && failed.runID == entry.RunID {
-				continue
-			}
-			var interaction ThreadInteraction
-			if err := json.Unmarshal(entry.Payload, &interaction); err != nil {
-				return ThreadSummary{}, fmt.Errorf("decode interaction %q: %w", entry.ID, err)
-			}
-			if strings.TrimSpace(interaction.ID) == "" {
-				return ThreadSummary{}, ErrAuthorityCorrupt
-			}
-			if _, found := interactions[interaction.ID]; found {
-				// The committed control already owns this interaction and any answer.
-				continue
-			}
-			interactionOrder = append(interactionOrder, interaction.ID)
-			interactions[interaction.ID] = interaction
-		case sessiontree.EntryInteractionDone:
-			interactionID := strings.TrimPrefix(entry.ID, "interaction-resolved:")
-			interaction, found := interactions[interactionID]
-			if found {
-				interaction.Resolved = true
-				interactions[interactionID] = interaction
-			}
-		}
-		if entry.Type == sessiontree.EntryUserMessage || entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" {
-			if text := strings.TrimSpace(entry.Message.Content); text != "" {
-				summary.LastItemAt = entry.CreatedAt
-				summary.LastItemPreview = truncateThreadSummaryPreview(text, 160)
-			}
-		}
-	}
-	for _, interactionID := range interactionOrder {
-		interaction := interactions[interactionID]
-		if interaction.Resolved {
-			continue
-		}
-		switch interaction.Kind {
-		case ThreadInteractionApproval:
-			summary.Attention.ApprovalCount++
-		case ThreadInteractionInput:
-			summary.Attention.InputCount++
-			if interaction.Input != nil {
-				summary.PendingInput = cloneInputPresentation(interaction.Input)
-			}
-		}
-	}
-	if summary.Activity == ThreadActivityActive && summary.Attention.ApprovalCount == 0 && summary.Attention.InputCount == 0 {
-		summary.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
-	}
-	return summary, nil
-}
+type canonicalQueueCountProjection struct{ ids []string }
 
 func canonicalQueueCountFromEntries(entries []sessiontree.Entry) (int, error) {
-	queue := make([]string, 0)
+	projection := canonicalQueueCountProjection{}
 	for _, entry := range entries {
-		switch entry.Type {
-		case sessiontree.EntryQueueAdded:
-			var item struct {
-				ID string `json:"id"`
+		if err := projection.observe(entry); err != nil {
+			return 0, err
+		}
+	}
+	return len(projection.ids), nil
+}
+func (projection *canonicalQueueCountProjection) observe(entry sessiontree.Entry) error {
+	switch entry.Type {
+	case sessiontree.EntryQueueAdded:
+		var item struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(entry.Payload, &item); err != nil {
+			return fmt.Errorf("decode canonical queue item %q: %w", entry.ID, err)
+		}
+		if item.ID == "" {
+			item.ID = entry.ID
+		}
+		if !slices.Contains(projection.ids, item.ID) {
+			projection.ids = append(projection.ids, item.ID)
+		}
+	case sessiontree.EntryQueueReordered:
+		var ids []string
+		if err := json.Unmarshal(entry.Payload, &ids); err != nil {
+			return fmt.Errorf("decode canonical queue order %q: %w", entry.ID, err)
+		}
+		if len(ids) != len(projection.ids) {
+			return ErrAuthorityCorrupt
+		}
+		for _, id := range ids {
+			if !slices.Contains(projection.ids, id) {
+				return ErrAuthorityCorrupt
 			}
-			if err := json.Unmarshal(entry.Payload, &item); err != nil {
-				return 0, fmt.Errorf("decode canonical queue item %q: %w", entry.ID, err)
-			}
-			if item.ID == "" {
-				item.ID = entry.ID
-			}
-			if !slices.Contains(queue, item.ID) {
-				queue = append(queue, item.ID)
-			}
-		case sessiontree.EntryQueueReordered:
-			var ids []string
-			if err := json.Unmarshal(entry.Payload, &ids); err != nil {
-				return 0, fmt.Errorf("decode canonical queue order %q: %w", entry.ID, err)
-			}
-			if len(ids) != len(queue) {
-				return 0, ErrAuthorityCorrupt
-			}
-			for _, id := range ids {
-				if !slices.Contains(queue, id) {
-					return 0, ErrAuthorityCorrupt
-				}
-			}
-			queue = append(queue[:0], ids...)
-		case sessiontree.EntryQueueDeleted, sessiontree.EntryQueuePromoted:
-			var id string
-			if err := json.Unmarshal(entry.Payload, &id); err != nil {
-				return 0, fmt.Errorf("decode canonical queue removal %q: %w", entry.ID, err)
-			}
-			for index := range queue {
-				if queue[index] == id {
-					queue = append(queue[:index], queue[index+1:]...)
-					break
-				}
+		}
+		projection.ids = append(projection.ids[:0], ids...)
+	case sessiontree.EntryQueueDeleted, sessiontree.EntryQueuePromoted:
+		var id string
+		if err := json.Unmarshal(entry.Payload, &id); err != nil {
+			return fmt.Errorf("decode canonical queue removal %q: %w", entry.ID, err)
+		}
+		for index := range projection.ids {
+			if projection.ids[index] == id {
+				projection.ids = append(projection.ids[:index], projection.ids[index+1:]...)
+				break
 			}
 		}
 	}
-	return len(queue), nil
+
+	return nil
 }
 
 func threadSummaryFromView(meta sessiontree.ThreadMeta, view ThreadView) ThreadSummary {

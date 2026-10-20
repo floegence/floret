@@ -39,11 +39,7 @@ func (service *threadRuntimeService) Summary(ctx context.Context, id identity.Th
 	} else if found {
 		return summary, nil
 	}
-	path, err := service.host.store.repo.Path(ctx, id.String(), meta.LeafID)
-	if err != nil {
-		return ThreadSummary{}, runtimeHostError(err)
-	}
-	return threadSummaryFromCanonicalPath(meta, path)
+	return service.coldThreadSummary(ctx, meta)
 }
 
 // Summary positions are disposable indexes over the actor's accepted items.

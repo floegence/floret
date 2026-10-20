@@ -1384,7 +1384,11 @@ See [qualification evidence](scripts/context-qualification/REPORT.md) and
 [unified counter](internal/requestestimate/content.go).
 
 Optional ThreadSummaryReader reads canonical summaries without full history or
-thread actor creation. Options.StartupWorkProgress reports real completed thread
+thread actor creation. Built-in cold reads stream frozen metadata pages and read
+only the latest nonempty message preview plus required failure/input fields;
+large transcript and ordinary activity bodies are not hydrated. The remaining
+metadata scan and interaction/lifecycle state are still proportional to history.
+Options.StartupWorkProgress reports real completed thread
 projections and known totals; StartupPhaseIndexing identifies initial index work.
 
 ### Returned effect uncertainty

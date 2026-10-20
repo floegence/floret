@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Document [cold summary source reads](workflows/history-performance.md#cold-summary-source-reads), frozen independent semantic regressions and remaining metadata/residency limits.
+
 - 2026-10-20: Share Engine-owned active output with bounded display readers,
   budget draft bytes and spill private temporary blocks. Preserve path redaction,
   accepted prefixes, graceful stop and exact SQLite restart hashes; document

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Stream cold canonical summaries through frozen metadata pages instead of
+  decoding complete historical bodies. Share one chronological summary reducer
+  with complete adapters, preserve waiting-input admission and historical
+  interaction order, and reject failed/cancelled/path-invalidated reads without
+  partial state. The metadata scan and lifecycle/interaction maps remain
+  proportional to history; this is not bounded cold-summary indexing.
+
 - Add optional frozen live-body search with bounded UTF-8 pages, fresh authorization and explicit source expiry; share canonical search overlap and progress logic.
 
 - Release canonical display reducers, window membership and interaction indexes with deleted actors after canonical commit; preserve all indexes when deletion rolls back.
