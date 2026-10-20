@@ -308,27 +308,6 @@ func (record *queryRecord) textPrefix(limit int) string {
 	return field.chunk(0, limit)
 }
 
-func (record *queryRecord) text(field string) string {
-	var result strings.Builder
-	for _, part := range record.parts {
-		selected := field == "text" || field == part.field
-		if !selected {
-			continue
-		}
-		if result.Len() > 0 && part.field != "body" {
-			result.WriteByte('\n')
-		}
-		result.WriteString(part.text)
-	}
-	if len(record.activities) > 0 && (field == "text" || field == "presentation") {
-		raw, _ := json.Marshal(record.activities)
-		if result.Len() > 0 {
-			result.WriteByte('\n')
-		}
-		result.Write(raw)
-	}
-	return result.String()
-}
 func (record *queryRecord) estimateBytes() int64 {
 	size := int64(768 + len(record.key) + len(record.row.Title))
 	for _, part := range record.parts {

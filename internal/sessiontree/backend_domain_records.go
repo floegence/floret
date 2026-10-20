@@ -115,134 +115,158 @@ func decodeBackendDomainValue(format backendDomainFormat, record backendDomainRe
 	return nil
 }
 
-func scanBackendDomain(ctx context.Context, tx spi.ReadTx, format backendDomainFormat) ([]spi.Record, error) {
-	var records []spi.Record
+// visitBackendDomain releases each encoded page before reading the next one.
+// Startup must validate every record, but need not retain a second encoded copy
+// of the complete canonical journal while constructing its validated state.
+func visitBackendDomain(ctx context.Context, tx spi.ReadTx, format backendDomainFormat, visit func(spi.Record) error) (bool, error) {
 	var after []byte
+	found := false
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return false, err
 		}
 		page, err := tx.Scan(spi.ScanRequest{Namespace: format.namespace, After: after, Limit: format.scanLimit})
 		if err != nil {
-			return nil, err
+			return false, err
 		}
-		records = append(records, page.Records...)
+		for _, record := range page.Records {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if err := visit(record); err != nil {
+				return false, err
+			}
+			found = true
+		}
 		if !page.HasMore {
-			return records, nil
+			return found, nil
 		}
-		after = page.Next
+		if len(page.Next) == 0 || bytes.Compare(page.Next, after) <= 0 {
+			return false, errors.Join(ErrAuthorityCorrupt, errors.New("session-tree scan did not advance"))
+		}
+		after = bytes.Clone(page.Next)
 	}
 }
 
+func scanBackendDomain(ctx context.Context, tx spi.ReadTx, format backendDomainFormat) ([]spi.Record, error) {
+	var records []spi.Record
+	_, err := visitBackendDomain(ctx, tx, format, func(record spi.Record) error {
+		records = append(records, spi.Record{Key: bytes.Clone(record.Key), Value: bytes.Clone(record.Value)})
+		return nil
+	})
+	return records, err
+}
+
 func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time, format backendDomainFormat) (*MemoryRepo, bool, error) {
-	records, err := scanBackendDomain(ctx, tx, format)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(records) == 0 {
-		return nil, false, nil
-	}
 	memory := newMemoryRepo(now)
 	entries := make(map[string]map[int]Entry)
 	var manifest *backendDomainManifest
 	var rootIndex *backendDomainRootIndex
-	for _, stored := range records {
+	found, err := visitBackendDomain(ctx, tx, format, func(stored spi.Record) error {
 		record, decodeErr := decodeBackendDomainRecord(format, stored.Value)
 		if decodeErr != nil {
-			return nil, false, errors.Join(ErrAuthorityCorrupt, decodeErr)
+			return errors.Join(ErrAuthorityCorrupt, decodeErr)
 		}
 		var wantKey []byte
 		switch record.Kind {
 		case backendDomainRecordManifest:
 			if manifest != nil || record.ID != "" || record.ThreadID != "" || record.Ordinal != 0 {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate or malformed session-tree %s manifest", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate or malformed session-tree %s manifest", format.label))
 			}
 			value := backendDomainManifest{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || value.Version != format.version {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s manifest", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s manifest", format.label)))
 			}
 			manifest = &value
 			wantKey = backendDomainKey(record.Kind)
 		case backendDomainRecordRootIndex:
 			if rootIndex != nil || record.ID != "" || record.ThreadID != "" || record.Ordinal != 0 {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate or malformed session-tree %s root index", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate or malformed session-tree %s root index", format.label))
 			}
 			value := backendDomainRootIndex{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || value.ThreadIDs == nil {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s root index", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s root index", format.label)))
 			}
 			rootIndex = &value
 			wantKey = backendDomainKey(record.Kind)
 		case backendDomainRecordThread:
 			value := ThreadMeta{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ID != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s thread", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s thread", format.label)))
 			}
 			if _, duplicate := memory.threads[record.ID]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s thread", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s thread", format.label))
 			}
 			memory.threads[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordEntry:
 			value := Entry{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ThreadID == "" || record.ID == "" || record.Ordinal < 0 || value.ThreadID != record.ThreadID || value.ID != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s entry", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s entry", format.label)))
 			}
 			if entries[record.ThreadID] == nil {
 				entries[record.ThreadID] = make(map[int]Entry)
 			}
 			if _, duplicate := entries[record.ThreadID][record.Ordinal]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s entry ordinal", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s entry ordinal", format.label))
 			}
 			entries[record.ThreadID][record.Ordinal] = value
 			wantKey = backendDomainEntryKey(record.ThreadID, record.Ordinal)
 		case backendDomainRecordTodo:
 			value := AgentTodoState{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ThreadID != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s todo", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s todo", format.label)))
 			}
 			if _, duplicate := memory.todos[record.ID]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s todo", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s todo", format.label))
 			}
 			memory.todos[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordTombstone:
 			value := ThreadTombstone{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ThreadID != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s tombstone", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s tombstone", format.label)))
 			}
 			if _, duplicate := memory.tombstones[record.ID]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s tombstone", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s tombstone", format.label))
 			}
 			memory.tombstones[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordProviderState:
 			value := ProviderStateRecord{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ThreadID != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s provider state", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s provider state", format.label)))
 			}
 			if _, duplicate := memory.providerStates[record.ID]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s provider state", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s provider state", format.label))
 			}
 			memory.providerStates[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordArtifact:
 			value := artifact.Record{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || artifactRecordKey(value.ThreadID, value.Ref.ID) != record.ID {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s artifact", format.label)))
+				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s artifact", format.label)))
 			}
 			if _, duplicate := memory.artifacts[record.ID]; duplicate {
-				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s artifact", format.label))
+				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s artifact", format.label))
 			}
 			memory.artifacts[record.ID] = value
 			wantKey = backendDomainKey(record.Kind, record.ID)
 		default:
-			return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("unknown session-tree %s record kind %q", format.label, record.Kind))
+			return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("unknown session-tree %s record kind %q", format.label, record.Kind))
 		}
 		if !bytes.Equal(stored.Key, wantKey) {
-			return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s %s key does not match value", format.label, record.Kind))
+			return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s %s key does not match value", format.label, record.Kind))
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
 	}
+	if !found {
+		return nil, false, nil
+	}
+
 	if manifest == nil || rootIndex == nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s manifest or root index is missing", format.label))
 	}
