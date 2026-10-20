@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.74.1 - 2026-10-20
+
 - Release deleted thread actors' presentation, draft buffers, indexes, request caches and execution references only after canonical deletion and execution/effect drains. Preserve permanent identity fences, exact deletion replay and failure rollback.
 
 ## v7.74.0 - 2026-10-20
