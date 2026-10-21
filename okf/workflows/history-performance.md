@@ -260,3 +260,32 @@ The baseline used 30 reads per size and the indexed run used 100. This removes
 one measured linear scan; short-run timings are diagnostic. Other lifecycle
 validation, request-key lookup, actor metadata residency and production Flower
 qualification remain separate outstanding work.
+
+## Canonical dense-tool qualification fixtures
+
+`runtime/long_thread_fixture_test.go` writes deterministic synthetic history
+through the real SQLite repository, canonical turn admission and settlement.
+It is test tooling, not a host-facing write API. From the exact published
+module, create an empty output directory and run:
+
+    FLORET_LONG_THREAD_FIXTURE_DIR=/absolute/empty/directory FLORET_LONG_THREAD_FIXTURE_SCALE=100 GOWORK=off go test github.com/floegence/floret/v7/runtime -run '^TestWriteLongThreadQualificationFixture$' -count=1 -timeout=30m -v
+
+Scales 1, 10 and 100 produce 1,096, 10,960 and 109,600 presentation items.
+Each unit has nine completed turns, 1,046 paired tools, and a 661-tool turn.
+Renderer counts per unit are 872 terminal, 92 file, 29 patch, 19 structured,
+17 web search, 16 SubAgent list operations and one web fetch. The completed
+profile uses nine users and 41 assistant items in place of the reference's
+eight users, 33 assistants, eight Goals and one interaction; it does not claim
+to qualify interactive lifecycle correctness. Setting
+`FLORET_LONG_THREAD_FIXTURE_SINGLE_TURN=1` concentrates the same item/tool
+counts in one turn.
+
+The manifest records counts, renderer distribution, the ordered journal hash,
+complete public item hash and closed SQLite file hash. Preserve the exact
+writer version, commit and test-source hash with downstream evidence. Copy the
+closed file into fresh isolated product state; never edit domain records in a
+host. Schema compatibility still applies: a newer fixture cannot qualify an
+older writer that rejects its schema. The ordinary regression reopens the
+fixture, checks completed canonical boundaries and continues it through the
+public runtime. Generation and explicit complete validation are outside every
+measured interval. Fixtures alone do not certify production performance.

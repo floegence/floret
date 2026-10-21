@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-21: Add a canonical SQLite dense-tool fixture writer with exact item,
+  journal and database hashes; verify restart and public continuation. See
+  [history performance](workflows/history-performance.md#canonical-dense-tool-qualification-fixtures).
+
 - 2026-10-21: Resolve full-text item associations independently of window preview
   size through the optional [item body reader](api/thread-updates.md#canonical-body-reads-and-search),
   preserving fresh authorization, restart and live-source ownership.
