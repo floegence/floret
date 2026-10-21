@@ -58,6 +58,13 @@ interpret their own output without reconstructing provider history, dispatching
 a tool, or creating another result store. These private values must not be
 included in public presentation by default.
 
+The built-in backend locates the exact call/result pair through the transactional
+canonical query index. It checks source identity, chronology, current active-path
+membership and integrity before returning detached entries. Unrelated history is
+not scanned or materialized. Released custom journal repositories lacking this
+internal capability retain their complete-read adapter; it can be removed only
+with the next major API boundary.
+
 Live text items use their first delta's occurrence time, and tool items use the
 Activity start time. Updates preserve that creation time. Historical items use
 the journal's original occurrence time, including copied entries in forks;

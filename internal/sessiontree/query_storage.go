@@ -619,42 +619,50 @@ func compactQueryThread(state *queryThread) {
 	}
 }
 
-func (r *MemoryRepo) queryRecordByKey(index spi.IndexReader, threadID, key string) (*queryRecord, error) {
+func readQueryDocumentByKey(index spi.IndexReader, threadID, key string) (spi.IndexDocument, bool, error) {
 	var document spi.IndexDocument
 	if reader, ok := index.(spi.IndexDocumentReader); ok {
 		var err error
 		document, err = reader.ReadIndexDocument(threadID, key)
 		if errors.Is(err, spi.ErrNotFound) {
-			return nil, nil
+			return spi.IndexDocument{}, false, nil
 		}
 		if err != nil {
-			return nil, err
+			return spi.IndexDocument{}, false, err
 		}
 	} else {
 		// Published custom native indexes implement only IndexReader. Keep
 		// their existing query contract; select the exact identity explicitly.
 		documents, err := index.QueryIndex(spi.IndexQuery{ThreadIDs: []string{threadID}})
 		if err != nil {
-			return nil, err
+			return spi.IndexDocument{}, false, err
 		}
 		found := false
 		for _, candidate := range documents {
 			if candidate.ThreadID != threadID {
-				return nil, errors.New("index returned an unauthorized candidate")
+				return spi.IndexDocument{}, false, errors.New("index returned an unauthorized candidate")
 			}
 			if candidate.Key == key {
 				if found {
-					return nil, errors.New("index returned a duplicate exact candidate")
+					return spi.IndexDocument{}, false, errors.New("index returned a duplicate exact candidate")
 				}
 				document, found = candidate, true
 			}
 		}
 		if !found {
-			return nil, nil
+			return spi.IndexDocument{}, false, nil
 		}
 	}
 	if document.Key != key || document.ThreadID != threadID {
-		return nil, errors.New("index returned a mismatched exact candidate")
+		return spi.IndexDocument{}, false, errors.New("index returned a mismatched exact candidate")
+	}
+	return document, true, nil
+}
+
+func (r *MemoryRepo) queryRecordByKey(index spi.IndexReader, threadID, key string) (*queryRecord, error) {
+	document, found, err := readQueryDocumentByKey(index, threadID, key)
+	if err != nil || !found {
+		return nil, err
 	}
 	if document.Object == string(threadquery.Messages) {
 		var metadata queryDocumentMetadata
