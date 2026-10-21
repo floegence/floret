@@ -79,8 +79,10 @@ func TestThreadCommandAckSendAndQueueShareCanonicalCommands(t *testing.T) {
 		t.Fatalf("send conflict=%v", err)
 	}
 	for _, key := range []RequestKey{"a", "b", "c"} {
-		if _, err := commands.SendAck(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: string(key)}, RequestKey: key}); err != nil {
+		if queued, err := commands.SendAck(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: string(key)}, RequestKey: key}); err != nil {
 			t.Fatal(err)
+		} else if queued.TurnID != "" || queued.RunID != "" {
+			t.Fatalf("queued send claimed another request's execution: %+v", queued)
 		}
 	}
 	edit := EditQueuedInput{ThreadID: created.ThreadID, QueueItemID: "queue:b", ExpectedText: "b", Text: "edited", RequestKey: "ack-edit"}
@@ -125,6 +127,14 @@ func TestThreadCommandAckSendAndQueueShareCanonicalCommands(t *testing.T) {
 	view, err = full.PromoteQueued(t.Context(), promote)
 	if err != nil || view.TurnID != ack.TurnID || len(view.Queue) != 1 {
 		t.Fatalf("promote replay=%+v err=%v", view, err)
+	}
+	original, err := commands.SendAck(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "active"}, RequestKey: "ack-send"})
+	if err != nil || original.TurnID != started.TurnID || original.RunID != started.RunID {
+		t.Fatalf("older send acknowledged the latest execution: %+v err=%v", original, err)
+	}
+	promotedSend, err := commands.SendAck(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "b"}, RequestKey: "b"})
+	if err != nil || promotedSend.TurnID != ack.TurnID || promotedSend.RunID != ack.RunID {
+		t.Fatalf("promoted send lost original request identity: %+v err=%v", promotedSend, err)
 	}
 	_, err = commands.SendAck(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "chosen", Input: UserInput{Text: "chosen"}})
 	if err != nil {

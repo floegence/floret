@@ -100,7 +100,22 @@ func (service *threadRuntimeService) SetTitleAck(ctx context.Context, in SetTitl
 
 func (service *threadRuntimeService) SendAck(ctx context.Context, in SendInput) (ThreadCommandAck, error) {
 	view, err := service.sendCommand(ctx, in, threadAckResult)
-	return commandAck(view, in.RequestKey, err)
+	ack, err := commandAck(view, in.RequestKey, err)
+	if err != nil {
+		return ThreadCommandAck{}, err
+	}
+	// Admission may queue the input or replay an older send while a different
+	// run is active. Only this request's canonical marker names its execution.
+	// The command already committed; a canceled transport cannot undo its Ack.
+	ack.TurnID, ack.RunID = "", ""
+	entry, found, err := service.host.store.repo.FindTurnRequest(context.WithoutCancel(ctx), in.ThreadID.String(), string(ack.RequestKey))
+	if err != nil {
+		return ThreadCommandAck{}, runtimeHostError(err)
+	}
+	if found {
+		ack.TurnID, ack.RunID = identity.TurnID(entry.TurnID), identity.RunID(entry.RunID)
+	}
+	return ack, nil
 }
 
 func (service *threadRuntimeService) RespondAck(ctx context.Context, in RespondInput) (ThreadCommandAck, error) {
