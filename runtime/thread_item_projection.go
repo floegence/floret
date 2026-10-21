@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/citation"
@@ -333,7 +334,11 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 						text = "The agent emitted a historical control signal."
 					}
 					items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: text, CreatedAt: occurredAt})
-					items[len(items)-1].canonicalText = false
+					item := &items[len(items)-1]
+					item.controlTextBytes = len(signal.OutputText)
+					item.controlTextStart = len(signal.OutputText) - len(strings.TrimLeftFunc(signal.OutputText, unicode.IsSpace))
+					// The empty label is presentation, not canonical source text.
+					item.canonicalText = strings.TrimSpace(signal.OutputText) != ""
 				}
 				continue
 			}

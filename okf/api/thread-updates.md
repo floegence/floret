@@ -275,6 +275,12 @@ streamed canonical installation and downstream production acceptance remain unfi
 
 # Active output residency
 
+Control output retains its exact raw canonical extent for body reads, including
+whitespace-only sources. The display item keeps trim offsets and its bounded
+summary; full adapters reconstruct the existing trimmed presentation. A large
+raw source still exposes a body locator when its trimmed preview is short.
+See [SQLite control regression](../../runtime/thread_text_residency_test.go).
+
 The Engine attempt owns raw draft bytes and any path-redacted display tail under
 one aggregate 4 MiB source-memory budget. The display reader shares the unchanged
 prefix; only a transformed suffix is stored separately. Larger bytes spill to

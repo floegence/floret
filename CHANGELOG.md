@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep bounded control-output locators at their exact raw canonical byte extent,
+  including large whitespace-only output. Reconstruct trimmed legacy display
+  text from the same source instead of retaining the transformed full body.
+
 ## v7.76.0 - 2026-10-20
 
 - Add optional ThreadFactsSource for in-process cleanup observers through the
