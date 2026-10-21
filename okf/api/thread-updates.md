@@ -147,6 +147,16 @@ bounded: the bounded-window capability is separate follow-up work.
 
 # Canonical body reads and search
 
+Optional `ThreadItemBodyReader.ItemBody` resolves the active-path item association
+at the existing actor boundary without loading text or registering window
+interest. A page-limited preview can become complete in a one-item window, so
+full-text readers must not use preview truncation as source authority. The
+returned locator has zero `PreviewBytes`; all subsequent body, manifest and live
+reads still require fresh authorization. Missing or unsupported text sources
+return `threadquery.ErrRecordUnavailable`. See the
+[locator](../../runtime/thread_item_body.go) and
+[page-size/restart/live regressions](../../runtime/thread_item_body_test.go).
+
 Optional ThreadBodyReader and ThreadBodySearcher read the canonical owner using
 fresh threadquery.Scope on each request. Neither a source locator nor a hash
 grants access. Hosts also apply private-fact policy to reasoning and arguments.

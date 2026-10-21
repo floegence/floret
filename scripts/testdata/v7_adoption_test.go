@@ -1554,6 +1554,17 @@ func TestPublishedScopedWindowAndCanonicalManifest(t *testing.T) {
 		if body == nil || body.SourceID == "" || body.Bytes != len(text) || body.PreviewBytes >= len(text) {
 			t.Fatalf("body=%+v", body)
 		}
+		locator, ok := service.(runtime.ThreadItemBodyReader)
+		if !ok {
+			t.Fatal("missing item body locator")
+		}
+		resolved, err := locator.ItemBody(ctx, scope, runtime.ThreadItemBodyInput{ThreadID: created.ThreadID, ItemID: body.SourceID})
+		if err != nil || resolved.SourceID != body.SourceID || resolved.Field != body.Field || resolved.Bytes != body.Bytes || resolved.PreviewBytes != 0 {
+			t.Fatalf("item body locator=%+v error=%v", resolved, err)
+		}
+		if _, err := locator.ItemBody(ctx, threadquery.Scope{Authority: "revoked"}, runtime.ThreadItemBodyInput{ThreadID: created.ThreadID, ItemID: body.SourceID}); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+			t.Fatalf("revoked body locator=%v", err)
+		}
 		manifest := service.(runtime.ThreadBodyManifestReader)
 		input := runtime.ThreadBodyManifestInput{ThreadID: created.ThreadID, SourceID: body.SourceID, Field: body.Field}
 		hash := sha256.New()
