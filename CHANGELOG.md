@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound ordinary live-text coalescing to 25ms while preserving immediate
+  semantic boundaries and the existing byte limit.
+
 - Resolve send request identities through the existing canonical control index.
   Preserve last-started replay semantics, transactional rollback and restart
   rebuilds without scanning unrelated historical entries.

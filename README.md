@@ -1019,7 +1019,7 @@ Subscribe before reading `View`, discard updates through the snapshot version,
 then apply only continuous `BaseVersion -> ViewVersion` batches. Item mutations
 are explicit add, replace, remove, or UTF-8-byte-offset text append operations;
 component wrappers distinguish unchanged from cleared values. Ordinary growth
-is coalesced for at most 50ms, with immediate semantic boundaries and bounded
+is coalesced for at most 25ms, with immediate semantic boundaries and bounded
 buffering (64 batches and 1MiB of encoded updates per observer). Overflow releases
 pending payloads immediately; it never truncates canonical output. Snapshots flush pending growth to establish an exact baseline.
 Overflow, canonical invalidation, or a version gap requires a fresh subscription

@@ -101,7 +101,7 @@ are detached from actor and other subscriber ownership.
 # Publication and compatibility
 
 Ordinary append growth is coalesced at the actor's publication boundary for at
-most 50ms or 64KiB. First output, segment changes, structural mutations and other
+most 25ms or 64KiB. First output, segment changes, structural mutations and other
 semantic boundaries flush preceding growth before immediate delivery. Each
 subscription has 64 queued batches. Overflow closes it explicitly and never
 blocks the provider or overwrites a semantic mutation. Unobserved execution
