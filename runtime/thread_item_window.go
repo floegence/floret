@@ -13,9 +13,11 @@ import (
 const (
 	threadDisplayPageItems = 150
 	threadDisplayPageBytes = 512 << 10
-	// JSON escapes one source byte into at most six encoded bytes. Reserve
-	// this aggregate source allowance before hydration, not after encoding.
-	threadDisplayPreviewBytes = threadDisplayPageBytes / 6
+	// Start with half the wire budget so ordinary UTF-8 Markdown remains
+	// complete at the standard page size. windowSnapshotContext enforces the
+	// exact encoded limit and reduces only pages containing unusually expensive
+	// escaped content.
+	threadDisplayPreviewBytes = threadDisplayPageBytes / 2
 	threadDisplayTextBytes    = 64 << 10
 	threadDisplayPages        = 3
 )

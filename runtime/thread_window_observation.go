@@ -383,8 +383,8 @@ func (actor *threadRuntimeState) windowSnapshotContext(ctx context.Context, inpu
 		}
 		changed := false
 		for i, item := range snapshot.Items {
-			if len(item.Text) > 1024 {
-				snapshot.Items[i] = boundedWindowItem(item, max(1024, len(item.Text)/2))
+			if len(item.Text) > 128 {
+				snapshot.Items[i] = boundedWindowItem(item, max(128, len(item.Text)/2))
 				changed = true
 			}
 		}
