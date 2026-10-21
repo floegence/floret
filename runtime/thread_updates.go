@@ -18,6 +18,14 @@ type ThreadUpdateSource interface {
 	SubscribeUpdates(context.Context) (*ThreadUpdateSubscription, error)
 }
 
+// ThreadFactsSource observes runtime facts for host resource cleanup without
+// materializing historical items or presentation components. It shares the
+// actor's versions, publication queue and invalidation rules with updates.
+// Hosts must authorize every fact before exposing it outside their process.
+type ThreadFactsSource interface {
+	SubscribeFacts(context.Context) (*ThreadUpdateSubscription, error)
+}
+
 // ErrThreadUpdateOverflow means a slow observer must establish a new baseline.
 // Providers never wait for an observer and semantic boundaries are never dropped.
 var ErrThreadUpdateOverflow = errors.New("thread update subscription overflow; read a new baseline")
@@ -105,6 +113,7 @@ type ThreadUpdateSubscription struct {
 	closeErr    error
 	service     *threadRuntimeService
 	windowed    bool
+	factsOnly   bool
 	authorized  map[string]bool
 	windows     map[string]threadWindowInterest
 }
@@ -223,7 +232,19 @@ func (service *threadRuntimeService) SubscribeUpdates(ctx context.Context) (*Thr
 	return service.subscribeUpdates(ctx, nil)
 }
 
+var _ ThreadFactsSource = (*threadRuntimeService)(nil)
+
+func (service *threadRuntimeService) SubscribeFacts(ctx context.Context) (*ThreadUpdateSubscription, error) {
+	// An empty authorized scope selects the bounded publication path from the
+	// moment registration becomes observable. Facts do not select any bodies.
+	return service.subscribeUpdatesMode(ctx, map[string]bool{}, true)
+}
+
 func (service *threadRuntimeService) subscribeUpdates(ctx context.Context, authorized map[string]bool) (*ThreadUpdateSubscription, error) {
+	return service.subscribeUpdatesMode(ctx, authorized, false)
+}
+
+func (service *threadRuntimeService) subscribeUpdatesMode(ctx context.Context, authorized map[string]bool, factsOnly bool) (*ThreadUpdateSubscription, error) {
 	if err := service.host.available(); err != nil {
 		return nil, err
 	}
@@ -233,7 +254,7 @@ func (service *threadRuntimeService) subscribeUpdates(ctx context.Context, autho
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, threadUpdateQueueCount), done: make(chan struct{}), service: service, windowed: authorized != nil, authorized: authorized}
+	subscription := &ThreadUpdateSubscription{updates: make(chan queuedThreadUpdate, threadUpdateQueueCount), done: make(chan struct{}), service: service, windowed: authorized != nil, authorized: authorized, factsOnly: factsOnly}
 	service.mu.Lock()
 	if service.subscriptionsClosed {
 		service.mu.Unlock()
@@ -618,6 +639,26 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 	}
 	for subscription := range service.updateSubscribers {
 		subscription.mu.Lock()
+		if !subscription.closed && subscription.factsOnly {
+			// Copy only immutable runtime facts; no item hydration, component
+			// cloning, historical order or text enters this observer's queue.
+			facts := update
+			facts.Window, facts.Items, facts.ItemOrder = nil, nil, nil
+			facts.Context, facts.Goal, facts.ParentEvents = nil, nil, nil
+			facts.Turns, facts.Queue, facts.Interactions = nil, nil, nil
+			facts.ToolCallPreviews, facts.RestoredInputs = nil, nil
+			raw, err := json.Marshal(facts)
+			if err != nil {
+				subscription.finishLocked(ErrThreadUpdateInvalidated)
+			} else {
+				subscription.enqueueLocked(cloneThreadUpdate(facts), len(raw))
+			}
+			if subscription.closed {
+				delete(service.updateSubscribers, subscription)
+			}
+			subscription.mu.Unlock()
+			continue
+		}
 		if !subscription.closed && subscription.windowed {
 			projected, deliver := subscription.projectWindowUpdate(actor, update)
 			if deliver {

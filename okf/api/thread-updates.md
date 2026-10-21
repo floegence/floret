@@ -226,6 +226,13 @@ and [bounded prompt reads](../../internal/storage/prompt_request_reader_test.go)
 
 # Scoped item windows
 
+Optional `ThreadFactsSource.SubscribeFacts` uses the same publication owner for
+in-process host resource cleanup. It carries identities, actor versions and
+runtime facts only; no bodies, historical order or presentation components are
+hydrated or retained. Facts observers cannot acquire window interest. Hosts
+authorize every fact before exposing it outside the process. Queue overflow
+and canonical invalidation retain the existing subscription failure rules.
+
 Optional ThreadWindowSource registers authorized workspace observation through
 one ThreadUpdateSubscription. SetWindow freshly authorizes each page and queues
 an exact actor baseline before installing interest. Baselines replace Window,

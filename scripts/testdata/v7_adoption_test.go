@@ -51,6 +51,15 @@ func TestPublishedNativeThreadUpdateSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer subscription.Close()
+	factsSource, ok := service.(runtime.ThreadFactsSource)
+	if !ok {
+		t.Fatal("released service lacks lightweight runtime facts")
+	}
+	facts, err := factsSource.SubscribeFacts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer facts.Close()
 	view, err := service.Create(t.Context(), runtime.CreateThreadInput{RequestKey: "native-create"})
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +83,20 @@ func TestPublishedNativeThreadUpdateSource(t *testing.T) {
 		}
 		break
 	}
+	for {
+		update, err := facts.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if update.ViewVersion <= view.ViewVersion {
+			continue
+		}
+		if update.Facts.QueueCount != 1 || update.Items != nil || update.Queue != nil || update.Turns != nil || update.Window != nil {
+			t.Fatalf("invalid facts projection: %+v", update)
+		}
+		break
+	}
+
 }
 
 func TestPublishedToolSchemaOrder(t *testing.T) {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.76.0 - 2026-10-20
+
+- Add optional ThreadFactsSource for in-process cleanup observers through the
+  existing actor publication owner, without historical body materialization.
+
 ## v7.75.0 - 2026-10-20
 
 - Drop duplicate private source-membership arrays from retained actor items and

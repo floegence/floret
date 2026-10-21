@@ -82,7 +82,7 @@ func (service *threadRuntimeService) SubscribeWindowUpdates(ctx context.Context,
 // the reading interest under the existing actor lock. Failed reads retain the
 // prior accepted interest. The caller must consume the same Next channel.
 func (subscription *ThreadUpdateSubscription) SetWindow(ctx context.Context, scope threadquery.Scope, input ThreadWindowInput) error {
-	if subscription == nil || subscription.service == nil || !subscription.windowed {
+	if subscription == nil || subscription.service == nil || !subscription.windowed || subscription.factsOnly {
 		return errors.New("bounded window subscription required")
 	}
 	service := subscription.service

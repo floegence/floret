@@ -1342,6 +1342,7 @@ field ThreadContextSnapshot.UpdatedAt time.Time tag="json:\"updated_at,omitempty
 type ThreadContextUsage struct
 field ThreadContextUsage.Confirmed *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"confirmed,omitempty\""
 field ThreadContextUsage.Estimate *github.com/floegence/floret/v7/observation.ContextStatus tag="json:\"estimate,omitempty\""
+type ThreadFactsSource interface interface{SubscribeFacts(context.Context) (*github.com/floegence/floret/v7/runtime.ThreadUpdateSubscription, error)}
 type ThreadGoal struct
 field ThreadGoal.Reviewing bool tag="json:\"reviewing,omitempty\""
 field ThreadGoal.Version int64 tag="json:\"version\""
