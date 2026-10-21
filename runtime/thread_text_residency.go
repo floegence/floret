@@ -25,6 +25,10 @@ func retainCanonicalItem(item ThreadItem, leafID string) ThreadItem {
 		item.textBytes, item.textNonSpace = len(item.Text), threadItemHasText(item)
 		item.textSummary, item.textSummaryTail = canonicalTextSummary("", item.Text, false)
 	}
+	// Complete adapters need source membership for turn/Fork assembly. The
+	// retained actor resolves text through the canonical source manifest and
+	// must not clone this growing private list on every accepted segment.
+	item.sourceEntryIDs = nil
 	item.Text, item.textOmitted, item.textLeafID = "", true, leafID
 	return item
 }

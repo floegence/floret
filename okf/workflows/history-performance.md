@@ -196,3 +196,16 @@ append, fixed metadata size and bounded source reads. Physical migration covers
 format 3 source records, rollback, cancellation, panic, restart idempotency and
 unchanged opaque bytes. Production Flower latency, heap/RSS and qualification
 remain outstanding.
+
+## Retained merged-item installation
+
+    GOWORK=off go test ./runtime -run 'TestRetainedActorDropsPrivateSourceMembership|TestThreadCanonicalTextResidency' -bench BenchmarkRetainedActorMergedAppend -benchtime=10x -benchmem
+
+One displayed assistant item merges 1,096, 10,960 or 109,600 canonical sources.
+This isolates runtime reducer/actor installation, without storage or transport.
+Before removing duplicate retained source lists, ten-iteration samples allocated
+19,372 / 181,164 / 1,767,680 bytes per append. Afterward all sizes allocated
+940 bytes in five allocations; timing samples were 1.26 / 1.45 / 1.89 microseconds.
+Exact full-source adapters, final turn references, citations, restart and nested
+Fork behavior remain covered separately. Retained canonical metadata still grows
+with history; these results are not bounded initialization or product acceptance.
