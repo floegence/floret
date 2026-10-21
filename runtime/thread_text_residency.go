@@ -15,8 +15,8 @@ import (
 
 // retainCanonicalItem drops reconstructible text from the actor. The locator
 // and exact extent are disposable metadata; canonical storage remains the only
-// owner of accepted content. Live drafts and transformed control labels stay
-// with their existing owner until their own representation can be reconstructed.
+// owner of accepted content. Live drafts and synthetic empty control labels
+// stay with their existing owner.
 func retainCanonicalItem(item ThreadItem, leafID string) ThreadItem {
 	if !item.canonicalText || item.CanonicalOrdinal == 0 {
 		return item
@@ -90,8 +90,12 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 	if item.Kind == ThreadItemThinking {
 		field = "reasoning"
 	}
-	read := func(entryID string, bytes int) error {
-		for offset := 0; offset < bytes && result.Len() < want; {
+	read := func(entryID, field string, bytes int) error {
+		start := 0
+		if field == string(ThreadBodyControlOutput) {
+			start = item.controlTextStart
+		}
+		for offset := start; offset < bytes && result.Len() < want; {
 			chunk, err := reader.ReadCanonicalBody(ctx, threadID, entryID, field, offset, max(4, min(16<<10, want-result.Len())))
 			if err != nil {
 				return runtimeHostError(err)
@@ -110,7 +114,7 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 		return nil
 	}
 	if item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering {
-		if err := read(item.ID, item.textBytes); err != nil {
+		if err := read(item.ID, field, item.textBytes); err != nil {
 			return "", err
 		}
 	} else {
@@ -125,7 +129,7 @@ func (service *threadRuntimeService) readItemText(ctx context.Context, threadID 
 				return "", runtimeHostError(err)
 			}
 			for _, part := range page.Bodies {
-				if err := read(part.EntryID, part.Bytes); err != nil {
+				if err := read(part.EntryID, part.Field, part.Bytes); err != nil {
 					return "", err
 				}
 				if result.Len() >= want || finished {
@@ -225,7 +229,7 @@ func (actor *threadRuntimeState) windowItem(ctx context.Context, item ThreadItem
 		}
 		item.Text, item.textOmitted = text, false
 		item.liveBody = nil
-		if len(text) == item.textBytes {
+		if len(text) == item.textBytes && item.controlTextBytes <= limit {
 			item.Body = nil
 		}
 	}

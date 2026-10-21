@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Separate raw control-output body extents from trimmed display text, preserve whitespace-only access and evict reconstructible transformed bodies. See [native updates](api/thread-updates.md#active-output-residency).
+
 - 2026-10-20: Keep merged query appends proportional to new source bytes through fixed canonical boundaries and optional atomic term insertion. Append SQLite physical 3 -> 4 with rollback and historical opaque-record preservation; retire runtime FTS replacement. See [canonical queries](api/thread-query.md) and [storage](api/storage.md).
 
 - 2026-10-20: Stream canonical search-index rebuild sources through the shared term collector, preserving exact public fields and excluding private reasoning without complete-source cache residency. See [history diagnostics](workflows/history-performance.md#streaming-query-rebuild-sources).

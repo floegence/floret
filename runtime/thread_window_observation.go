@@ -32,6 +32,8 @@ type ThreadWindowInput struct {
 // ThreadItemBody identifies complete text omitted from a bounded preview.
 // A source is resolved through BodyManifest; a single field through ReadBody.
 // Live text uses ReadLiveBody with its RunID and frozen Bytes extent.
+// Control output Bytes measures the raw source; its preview retains the full
+// view's whitespace trimming and empty-label presentation.
 // Locators are associations, never grants. Full views leave this field nil.
 type ThreadItemBody struct {
 	RunID        identity.RunID  `json:"run_id,omitempty"`
@@ -207,9 +209,12 @@ func boundedWindowItem(item ThreadItem, limit int) ThreadItem {
 	if item.Body != nil {
 		bytes = item.Body.Bytes
 	}
+	if item.controlTextBytes > 0 {
+		bytes = item.controlTextBytes
+	}
 	text, partial := boundedThreadText(item.Text, limit)
 	item.Text = text
-	if partial || item.Body != nil || item.textOmitted {
+	if partial || item.Body != nil || item.textOmitted || item.controlTextBytes > limit {
 		field := ThreadBodyContent
 		if item.Kind == ThreadItemThinking {
 			field = ThreadBodyReasoning

@@ -987,6 +987,8 @@ most 150 parts and 64 KiB encoded data. Empty pages may still have HasMore when
 inactive branches consume the bounded scan budget. Resume with NextEntryID.
 Control output uses ThreadBodyControlOutput and preserves raw whitespace,
 including an empty field; presentation alone supplies its historical empty label.
+For omitted control output, ThreadItemBody.Bytes describes raw source bytes;
+the preview preserves the complete view's trimmed text and empty-label behavior.
 Read every part through ThreadBodyReader with its SHA256. The leaf and source
 locators grant no access and introduce no independent lifecycle version.
 

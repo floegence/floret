@@ -334,6 +334,8 @@ type ThreadItem struct {
 	textOmitted      bool
 	liveBody         outputbody.Reader
 	textBytes        int
+	controlTextBytes int
+	controlTextStart int
 	textNonSpace     bool
 	canonicalText    bool
 	textLeafID       string

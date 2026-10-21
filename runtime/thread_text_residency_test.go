@@ -150,6 +150,79 @@ func TestThreadCanonicalTextResidencyPreservesCompleteAndWindowResults(t *testin
 	}
 }
 
+func TestThreadControlBodyKeepsRawExtentAndLegacyPresentation(t *testing.T) {
+	for _, raw := range []string{
+		"  " + strings.Repeat("control 中文🌸\r\n", 10000) + "  ",
+		strings.Repeat(" ", 100000) + "answer" + strings.Repeat("\t", 100000),
+		strings.Repeat(" ", 100000),
+	} {
+		t.Run(fmt.Sprint(len(raw)), func(t *testing.T) {
+			host, err := Open(t.Context(), Options{Storage: storage.SQLite(t.TempDir() + "/control.sqlite")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			agent, err := testAgent(newBlockingThreadGateway())
+			if err != nil {
+				t.Fatal(err)
+			}
+			public, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := public.(*threadRuntimeService)
+			const id identity.ThreadID = "control-body"
+			if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+				t.Fatal(err)
+			}
+			entry := sessiontree.Entry{ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, Content: "tool_call", ToolCallID: "call", ToolName: "continue", ControlSignal: &session.ControlSignalView{Name: "continue", CallID: "call", Disposition: "continue", OutputText: raw}}}
+			saved, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{ID: "control"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.TrimSpace(raw)
+			if want == "" {
+				want = "The agent emitted a historical control signal."
+			}
+			view, err := service.View(t.Context(), id)
+			if err != nil || len(view.Items) != 1 || view.Items[0].Text != want {
+				t.Fatalf("legacy presentation changed: %v", err)
+			}
+			scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{id}}
+			sub, err := service.SubscribeWindowUpdates(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sub.Close()
+			if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id}); err != nil {
+				t.Fatal(err)
+			}
+			baseline := nextUpdate(t, sub)
+			item := baseline.Window.Value.Items[0]
+			if item.Body == nil || item.Body.Bytes != len(raw) || item.Body.SourceID != saved.Message.ContentSourceID || !strings.HasPrefix(want, item.Text) {
+				t.Fatalf("raw body differs from display: %+v", item.Body)
+			}
+			if len(item.Text) > threadDisplayTextBytes {
+				t.Fatal("preview exceeded budget")
+			}
+			manifest, err := service.BodyManifest(t.Context(), scope, ThreadBodyManifestInput{ThreadID: id, SourceID: item.Body.SourceID, Field: item.Body.Field})
+			if err != nil || len(manifest.Parts) != 1 || manifest.Parts[0].Field != ThreadBodyControlOutput || manifest.Parts[0].Bytes != item.Body.Bytes {
+				t.Fatalf("manifest mismatch: %+v %v", manifest, err)
+			}
+			actor := service.runtime(id)
+			for _, retained := range actor.state.view.Items {
+				if len(retained.Text) > threadDisplayTextBytes {
+					t.Fatal("actor retained huge transformed control")
+				}
+			}
+			full, err := service.View(t.Context(), id)
+			if err != nil || full.Items[0].Text != want || full.Items[0].Body != nil {
+				t.Fatalf("full adapter changed: %v", err)
+			}
+		})
+	}
+}
+
 func TestCanonicalTextSummaryMatchesCompleteAtEveryAppend(t *testing.T) {
 	cases := [][]string{
 		{" ", "\t", "hello ", "world", " "},
