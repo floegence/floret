@@ -8,6 +8,20 @@ import (
 // canonicalPathLocked follows the validated ancestry index. Explicit complete
 // reads still materialize their requested path, but never map inactive siblings.
 func (r *MemoryRepo) canonicalPathLocked(ctx context.Context, threadID, leafID string) ([]Entry, error) {
+	return r.readCanonicalPathLocked(ctx, threadID, leafID, true)
+}
+
+// Metadata validators borrow the same ancestry path without loading bodies.
+// This result never supplies provider context or a public complete path.
+func (r *MemoryRepo) canonicalMetadataPathLocked(threadID, leafID string) ([]Entry, error) {
+	ctx := r.bodyContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.readCanonicalPathLocked(ctx, threadID, leafID, false)
+}
+
+func (r *MemoryRepo) readCanonicalPathLocked(ctx context.Context, threadID, leafID string, complete bool) ([]Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -57,17 +71,24 @@ func (r *MemoryRepo) canonicalPathLocked(ctx context.Context, threadID, leafID s
 			return nil, err
 		}
 		node := index[ordinal]
-		entry, err := r.completeEntryLocked(r.entries[threadID][ordinal])
-		if err != nil {
-			return nil, err
+		entry := r.entries[threadID][ordinal]
+		if complete {
+			var err error
+			entry, err = r.completeEntryLocked(entry)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if entry.ID != node.id || entry.ThreadID != threadID || entry.PathDepth != node.depth || (node.parent < 0 && entry.ParentID != "") || (node.parent >= 0 && entry.ParentID != index[node.parent].id) {
 			return nil, ErrAuthorityCorrupt
 		}
-		if err := ValidateEntryIntegrity(entry); err != nil {
-			return nil, err
+		if complete {
+			if err := ValidateEntryIntegrity(entry); err != nil {
+				return nil, err
+			}
+			entry = cloneEntry(entry)
 		}
-		result = append(result, cloneEntry(entry))
+		result = append(result, entry)
 		ordinal = node.parent
 	}
 	slices.Reverse(result)

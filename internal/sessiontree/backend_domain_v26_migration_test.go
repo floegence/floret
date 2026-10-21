@@ -41,7 +41,11 @@ func TestBackendDomainV25ToV26PreservesHistory(t *testing.T) {
 				t.Fatal("migration changed entry count")
 			}
 			for i, entry := range entries {
-				got := after.entries[id][i]
+				after.bodyTx, after.bodyContext = tx, t.Context()
+				got, readErr := after.completeEntryLocked(after.entries[id][i])
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
 				if entry.ID != got.ID || entry.Raw != got.Raw || entry.RawHash != got.RawHash || !reflect.DeepEqual(entry.Metadata, got.Metadata) {
 					t.Fatalf("migration changed canonical payload %s/%d", id, i)
 				}

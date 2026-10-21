@@ -159,6 +159,14 @@ func scanBackendDomain(ctx context.Context, tx spi.ReadTx, format backendDomainF
 
 func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time, format backendDomainFormat) (*MemoryRepo, bool, error) {
 	memory := newMemoryRepo(now)
+	// Current records validate one complete immutable entry at a time, then
+	// retain only its canonical field locators. Older migration writers keep
+	// their exact complete-source contract until that edge has finished.
+	compact := format.version >= backendDomainV31Version
+	if compact {
+		memory.bodyTx, memory.bodyContext = tx, ctx
+		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
+	}
 	entries := make(map[string]map[int]Entry)
 	bodyReferences := map[string]canonicalBodyRecord{}
 	var manifest *backendDomainManifest
@@ -216,6 +224,10 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 						bodyReferences[ref.SHA256] = body
 					}
 					value, entryErr = materializeCanonicalStoredEntry(ctx, tx, stored)
+					if entryErr == nil && compact && len(stored.Fields) > 0 {
+						value = stored.Entry
+						value.bodyFields = stored.Fields
+					}
 				}
 			} else {
 				entryErr = decodeBackendDomainValue(format, record, &value)
@@ -346,7 +358,11 @@ func validateBackendDomainMemory(memory *MemoryRepo, label string, validateConte
 				if formatVersionBefore(label, 12) && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 					return fmt.Errorf("session-tree %s contains a v12 tool input request", label)
 				}
-				if err := ValidateEntryIntegrity(entry); err != nil {
+				complete, err := memory.completeEntryLocked(entry)
+				if err != nil {
+					return err
+				}
+				if err := ValidateEntryIntegrity(complete); err != nil {
 					return fmt.Errorf("thread %q contains invalid entry %q: %w", threadID, entry.ID, err)
 				}
 				if presentationEntryRequiresRunIdentity(entry.Type) && strings.TrimSpace(entry.TurnID) != "" && strings.TrimSpace(entry.RunID) == "" {

@@ -1675,6 +1675,8 @@ func (repo *BackendRepo) verifyPersistedStateInTransaction(ctx context.Context, 
 	if err := rejectPreV16BackendDomain(ctx, tx); err != nil {
 		return err
 	}
+	memory.bodyTx, memory.bodyContext = tx, ctx
+	defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 	if err := validateBackendDomainV29Memory(memory); err != nil {
 		return err
 	}

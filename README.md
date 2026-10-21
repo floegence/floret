@@ -1069,6 +1069,13 @@ existing canonical owner. Completion still materializes full output once for
 the existing provider-context/transactional commit, so its peak is not bounded
 by the draft budget. Source-byte accounting is not a JS heap or process RSS claim.
 
+Current-schema startup validates complete immutable entries individually, then
+retains canonical body locators. Metadata-only ancestry and query correspondence
+use the same projection as complete reads, preserving exact source-range checks.
+Index rebuilds still read their canonical source documents; required startup
+validation remains proportional to stored data and cancellable. See
+[startup residency diagnostics](okf/workflows/history-performance.md#current-schema-startup-residency).
+
 This capability currently bounds delivered item detail, not all retained actor
 history or every control component. Initial actor hydration still constructs the
 complete canonical projection; queue, context and restored-input components

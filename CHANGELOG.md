@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Verify current canonical entries individually before retaining body locators
+  during startup. Reuse ancestry for metadata-only Goal/parent-event validation,
+  compare reasoning source hashes, and validate query-index correspondence with
+  the same canonical projector without retaining transcript bodies. Rebuild
+  postings from explicit per-document source reads. Historical migration inputs,
+  compaction validation and public complete reads keep their complete semantics;
+  metadata, a giant merged index document and complete checkpoints remain
+  proportional to the requested history.
+
 - Allocate one aggregate window preview source budget before reading or cloning
   text and completed activity. Preserve exact UTF-8 prefixes and explicit full
   body locators; keep the encoded metadata budget and stable-anchor reduction.

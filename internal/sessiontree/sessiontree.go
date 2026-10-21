@@ -1209,7 +1209,17 @@ func (r *MemoryRepo) replaceIndexedEntriesWithStartedRunIdentityLocked(threadID 
 		} else {
 			entryDepths[entry.ID] = entry.PathDepth
 		}
-		if err := ValidateEntryMessageReferences(entry); err != nil {
+		// Source ranges are expressed against exact assistant content. The index
+		// retains locators, but validation must inspect that complete content.
+		referenceEntry := entry
+		if len(entry.Message.Sources) > 0 && entry.bodyFields["content"].Bytes > 0 {
+			var err error
+			referenceEntry, err = r.completeEntryLocked(entry)
+			if err != nil {
+				return err
+			}
+		}
+		if err := ValidateEntryMessageReferences(referenceEntry); err != nil {
 			return ErrAuthorityCorrupt
 		}
 		turnID := strings.TrimSpace(entry.TurnID)

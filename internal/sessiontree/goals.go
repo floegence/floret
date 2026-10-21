@@ -248,7 +248,7 @@ func (r *MemoryRepo) RecordGoalReview(ctx context.Context, threadID, turnID, run
 
 func validateGoalRecords(memory *MemoryRepo) error {
 	for id, meta := range memory.threads {
-		path, err := memory.canonicalPathLocked(context.Background(), id, meta.LeafID)
+		path, err := memory.canonicalMetadataPathLocked(id, meta.LeafID)
 		if err != nil {
 			return err
 		}

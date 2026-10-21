@@ -421,6 +421,7 @@ func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 	source.mu.Lock()
 	defer source.mu.Unlock()
 	clone := &MemoryRepo{
+		bodyBackend: source.bodyBackend, bodyTx: source.bodyTx, bodyContext: source.bodyContext,
 		parentEvents: source.parentEvents, threads: maps.Clone(source.threads), entries: make(map[string][]Entry, len(source.entries)),
 		entryOrdinals:     make(map[string]map[string]int, len(source.entryOrdinals)),
 		entryDepths:       make(map[string]map[string]int64, len(source.entryDepths)),

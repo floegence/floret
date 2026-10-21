@@ -40,6 +40,8 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			return nil, ErrAuthorityCorrupt
 		}
 		memory.parentEvents = parentEventsEnabled(ctx)
+		memory.bodyBackend, memory.bodyTx, memory.bodyContext = backend, tx, ctx
+		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 		if hasUnknownEffectTurns(memory) {
 			before := memory
 			memory = cloneMemoryRepoForStartup(before)

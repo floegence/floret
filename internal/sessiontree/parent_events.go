@@ -285,7 +285,7 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 	if !ok {
 		return nil, ErrThreadNotFound
 	}
-	path, err := r.canonicalPathLocked(context.Background(), threadID, meta.LeafID)
+	path, err := r.canonicalMetadataPathLocked(threadID, meta.LeafID)
 	if err != nil {
 		return nil, err
 	}
@@ -626,7 +626,11 @@ func validateParentEventRecords(memory *MemoryRepo) error {
 				continue
 			}
 			hasEvents = true
-			if err := validateParentEventEntry(memory, threadID, entry); err != nil {
+			complete, err := memory.completeEntryLocked(entry)
+			if err != nil {
+				return err
+			}
+			if err := validateParentEventEntry(memory, threadID, complete); err != nil {
 				return err
 			}
 		}

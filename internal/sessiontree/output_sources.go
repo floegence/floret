@@ -46,13 +46,31 @@ func outputContent(entry Entry) string {
 	return ""
 }
 
-type outputSourceFact struct{ turn, run, kind, text string }
+type outputSourceFact struct {
+	turn, run, kind string
+	body            canonicalBodyRef
+}
 
 func outputSourceFacts(entry Entry) (map[string]outputSourceFact, error) {
 	facts := map[string]outputSourceFact{}
 	msg := entry.Message
-	for _, part := range []struct{ source, text, kind string }{{msg.ContentSourceID, outputContent(entry), "content"}, {msg.ReasoningSourceID, msg.Reasoning, "reasoning"}} {
-		required := msg.Role == session.Assistant && (entry.Type == EntryAssistantMessage || entry.Type == EntryToolCall && (part.kind == "reasoning" || outputContent(entry) != "")) && part.text != ""
+	content := outputContent(entry)
+	contentBody := entry.bodyFields["content"]
+	if entry.Type != EntryAssistantMessage {
+		// Terminal and continuation controls always have a presentation, even
+		// when their exact output is whitespace and uses the default label.
+		contentBody = canonicalBodyRef{}
+	}
+	reasoningBody := entry.bodyFields["reasoning"]
+	for _, part := range []struct {
+		source, text, kind string
+		body               canonicalBodyRef
+	}{
+		{msg.ContentSourceID, content, "content", contentBody},
+		{msg.ReasoningSourceID, msg.Reasoning, "reasoning", reasoningBody},
+	} {
+		present := part.text != "" || part.body.Bytes > 0
+		required := msg.Role == session.Assistant && (entry.Type == EntryAssistantMessage || entry.Type == EntryToolCall && (part.kind == "reasoning" || content != "")) && present
 		if required && part.source == "" {
 			return nil, fmt.Errorf("%w: missing output source on %s", ErrAuthorityCorrupt, entry.ID)
 		}
@@ -65,13 +83,17 @@ func outputSourceFacts(entry Entry) (map[string]outputSourceFact, error) {
 		if _, exists := facts[part.source]; exists {
 			return nil, fmt.Errorf("%w: output source crosses channels on %s", ErrAuthorityCorrupt, entry.ID)
 		}
-		facts[part.source] = outputSourceFact{entry.TurnID, entry.RunID, part.kind, part.text}
+		body := part.body
+		if part.kind == "reasoning" && body.Bytes == 0 {
+			body = canonicalBodyRef{SHA256: stableHash(part.text), Bytes: len(part.text)}
+		}
+		facts[part.source] = outputSourceFact{turn: entry.TurnID, run: entry.RunID, kind: part.kind, body: body}
 	}
 	return facts, nil
 }
 
 func sameOutputSource(previous, next outputSourceFact) bool {
-	return previous.turn == next.turn && previous.run == next.run && previous.kind == next.kind && (next.kind != "reasoning" || previous.text == next.text)
+	return previous.turn == next.turn && previous.run == next.run && previous.kind == next.kind && (next.kind != "reasoning" || previous.body == next.body)
 }
 
 func validateOutputSources(memory *MemoryRepo) error {
@@ -175,9 +197,9 @@ func matchesStoredOutputSource(previous Entry, source string, next outputSourceF
 		return false
 	}
 	if ref, stored := previous.bodyFields["reasoning"]; stored {
-		return ref.Bytes == len(next.text) && ref.SHA256 == stableHash(next.text)
+		return ref == next.body
 	}
-	return previous.Message.Reasoning == next.text
+	return canonicalBodyRef{SHA256: stableHash(previous.Message.Reasoning), Bytes: len(previous.Message.Reasoning)} == next.body
 }
 
 type legacyOutputState struct {
