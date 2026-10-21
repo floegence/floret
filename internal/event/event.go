@@ -744,6 +744,11 @@ func SafePathRefsText(value string) string {
 	if value == "" {
 		return ""
 	}
+	// Every accepted path spelling contains a slash or a Windows separator.
+	// Avoid running the Unicode regexp over large ordinary message bodies.
+	if !strings.ContainsAny(value, `/\`) {
+		return value
+	}
 	matches := pathRefPattern.FindAllStringIndex(value, -1)
 	if len(matches) == 0 {
 		return value
