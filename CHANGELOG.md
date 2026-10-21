@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.75.0 - 2026-10-20
+
 - Drop duplicate private source-membership arrays from retained actor items and
   metadata-only reducers. Complete adapters preserve their exact source mapping;
   bounded reads continue to use canonical manifests without prefix-sized copies.
