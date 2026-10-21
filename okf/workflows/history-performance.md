@@ -9,6 +9,31 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Fixed-history SQLite mutation
 
+## Send request identity lookup
+
+    GOWORK=off go test ./internal/sessiontree -run TestTurnRequest -count=1
+    GOWORK=off go test ./internal/sessiontree -run '^$' -bench '^BenchmarkSQLiteFixedHistoryFindTurnRequest$' -benchtime=100x -count=1
+
+The same SQLite fixture measures a missing request key, the ordinary new-send
+path. The canonical control index retains started-entry ordinals only, rebuilds
+from the journal, and participates in the existing transaction rollback owner.
+It is not another durable command ledger. Randomized tests compare append,
+rollback and rebuild results with the original reverse-scan oracle; corrupt
+locators fail without a fallback scan.
+
+On the same machine and toolchain, one diagnostic comparison measured:
+
+| Segments | Before, ns/op (30x) | After, ns/op (100x) | After, bytes/op | After, allocations/op |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,096 | 31,038 | 2,092 | 2,192 | 18 |
+| 10,960 | 225,139 | 2,068 | 2,192 | 18 |
+| 109,600 | 2,237,882 | 2,813 | 2,192 | 18 |
+
+This qualifies one request lookup only, not complete send admission or Flower
+performance. Canonical metadata and actor residency still need separate work.
+
+## Append mutation
+
 Run with the toolchain pinned by go.mod and workspace discovery disabled:
 
     GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkSQLiteFixedHistoryAppend -benchtime=20x -count=1

@@ -429,6 +429,7 @@ func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 		turnEntryOrdinals: make(map[string]map[string][]int, len(source.turnEntryOrdinals)),
 		turnEntryCounts:   make(map[string]map[string]int, len(source.turnEntryCounts)),
 		turnMarkers:       make(map[string]map[string]turnMarkerIndex, len(source.turnMarkers)),
+		turnRequests:      make(map[string]map[string][]int, len(source.turnRequests)),
 		activeTurns:       make(map[string]map[string]int, len(source.activeTurns)),
 		outputSources:     make(map[string]map[string][]int, len(source.outputSources)),
 		now:               source.now, todos: maps.Clone(source.todos), tombstones: maps.Clone(source.tombstones),
@@ -458,6 +459,9 @@ func cloneMemoryRepoForStartup(source *MemoryRepo) *MemoryRepo {
 	}
 	for threadID, markers := range source.turnMarkers {
 		clone.turnMarkers[threadID] = maps.Clone(markers)
+	}
+	for threadID, requests := range source.turnRequests {
+		clone.turnRequests[threadID] = cloneOrdinalLists(requests)
 	}
 	for threadID, sources := range source.outputSources {
 		clone.outputSources[threadID] = cloneOrdinalLists(sources)
