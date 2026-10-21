@@ -418,8 +418,13 @@ identity, so they use the same current-view and command contracts.
 The optional `runtime.ThreadToolResultReader.LookupToolResult` reads confirmed
 local tool arguments and output from the active journal path using exact thread,
 turn, run, and tool-call identity. Hosts authorize and interpret that private
-output; the query neither runs a tool nor changes history. Live and historical
-items retain their creation times, including original occurrence times in forks.
+output; the query neither runs a tool nor changes history.
+The built-in backend resolves the exact indexed call/result source pair and
+validates current active-path membership before reading their bodies. It does
+not project or scan unrelated historical messages. Custom journal repositories
+without this internal capability retain the published complete-read adapter.
+Live and historical items retain their creation times, including original
+occurrence times in forks.
 Hosts may pin a committed assistant answer with the optional ForkThreadInput.SourceItemID; the runtime resolves its canonical journal boundary and rejects unknown or conflicting anchors.
 
 The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and

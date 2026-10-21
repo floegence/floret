@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Resolve confirmed tool results from exact canonical query-index source pairs
+  instead of scanning the entire active path. Validate execution identity,
+  current path membership and canonical integrity; return detached source facts.
+
 - Keep bounded control-output locators at their exact raw canonical byte extent,
   including large whitespace-only output. Reconstruct trimmed legacy display
   text from the same source instead of retaining the transformed full body.

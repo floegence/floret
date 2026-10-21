@@ -46,6 +46,19 @@ func (service *threadRuntimeService) LookupToolResult(ctx context.Context, in Lo
 	if err != nil {
 		return ThreadToolResult{}, false, err
 	}
+	if reader, ok := service.host.store.repo.(sessiontree.CanonicalToolExchangeReader); ok {
+		call, result, found, err := reader.CanonicalToolExchange(ctx, in.ThreadID.String(), in.TurnID.String(), in.RunID.String(), in.ToolCallID)
+		if err != nil {
+			return ThreadToolResult{}, false, runtimeHostError(err)
+		}
+		if !found {
+			return ThreadToolResult{}, false, nil
+		}
+		return ThreadToolResult{ToolName: call.Message.ToolName, Arguments: call.Message.ToolArgs,
+			EffectOutcome: result.Message.ToolResult.EffectOutcome, Content: result.Message.Content,
+			Status: result.Message.ToolResult.Status}, true, nil
+	}
+	// Released custom journal repositories retain the complete-read adapter.
 	entries, err := service.host.store.repo.Path(ctx, in.ThreadID.String(), meta.LeafID)
 	if err != nil {
 		return ThreadToolResult{}, false, runtimeHostError(err)
