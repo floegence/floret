@@ -145,6 +145,23 @@ The benchmark uses actual SQLite, separate 16 and 160-entry stores, and roughly
 bytes for 16 entries and 362.5 ms / 806,965,616 allocated bytes for 160 entries.
 These are total allocations, not retained heap or RSS. It measures complete domain validation, including
 source reads; it is not a constant-time startup test. Every source is still
-validated. Metadata, migration inputs, complete checkpoint validation, one giant
-merged query document and the verified source cache have separate residency
-costs. Production heap/RSS and complete Flower qualification remain required.
+validated. Metadata, migration inputs, complete checkpoint validation and the verified
+source cache have separate residency costs. Production heap/RSS and complete Flower qualification remain required.
+
+## Streaming query rebuild sources
+
+    GOWORK=off go test ./internal/sessiontree -run 'Test(CanonicalQueryTerms|QueryDocumentTerms)' -count=1
+    GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkCanonicalQueryTermsStorage -benchtime=1x -benchmem
+
+Derived-index rebuilds visit canonical content, arguments, results and typed
+presentation in bounded source chunks. Complete and storage-backed paths share
+one separator/Unicode/ngram collector. SQLite differential fixtures compare
+all terms to an independent joined-string oracle, include split UTF-8, source
+segments, references and hosted tools, reject private-reasoning reads, and
+check that no complete source enters the body cache. Failure and cancellation
+return no partial term set. A single actual-SQLite diagnostic measured 1.7 ms /
+833,888 allocated bytes for one roughly 40 KiB source and 124.0 ms / 81,100,976
+allocated bytes for 100 segments. These totals include physical decoding and
+are not retained heap, RSS or fixed-change latency. Distinct term inventory and source metadata still
+grow with content; incremental updates to a merged query document still require
+separate work. This is not production-stack acceptance.

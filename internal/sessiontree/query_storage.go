@@ -440,11 +440,7 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 				if err != nil {
 					return err
 				}
-				complete, err := memory.materializeQueryDocument(document)
-				if err != nil {
-					return err
-				}
-				document, err = queryDocument(complete, true)
+				document.Terms, err = memory.canonicalQueryDocumentTerms(ctx, tx, document)
 				if err != nil {
 					return err
 				}

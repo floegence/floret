@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Stream canonical source chunks through the shared Unicode search-term collector
+  during derived-index rebuilds. Keep exact separators, references, attachments
+  and hosted presentation order without retaining a merged document body or
+  loading private reasoning; cancellation returns no partial terms.
+
 - Verify current canonical entries individually before retaining body locators
   during startup. Reuse ancestry for metadata-only Goal/parent-event validation,
   compare reasoning source hashes, and validate query-index correspondence with
