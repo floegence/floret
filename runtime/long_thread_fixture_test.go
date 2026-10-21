@@ -259,13 +259,33 @@ func TestLongThreadQualificationFixtureRestartsAndContinues(t *testing.T) {
 			t.Fatalf("incomplete historical turn: %+v", turn)
 		}
 	}
-	admitted, err := service.Send(t.Context(), SendInput{ThreadID: view.ThreadID, RequestKey: "continue-fixture", Input: UserInput{Text: "Continue synthetic history."}})
+	facts, err := service.(ThreadFactsSource).SubscribeFacts(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	completed := waitThreadView(t, service, admitted.ThreadID, func(view ThreadView) bool { return view.Activity == ThreadActivityIdle && view.LastOutcome != nil })
-	if completed.Failure != nil || *completed.LastOutcome != TurnOutcomeCompleted {
-		t.Fatalf("fixture could not continue: %+v", completed.Failure)
+	defer facts.Close()
+	admitted, err := service.(ThreadCommandService).SendAck(t.Context(), SendInput{ThreadID: view.ThreadID, RequestKey: "continue-fixture", Input: UserInput{Text: "Continue synthetic history."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	for {
+		update, err := facts.Next(ctx)
+		if err != nil {
+			t.Fatalf("fixture continuation did not settle: %v", err)
+		}
+		if update.RunID != admitted.RunID || update.Facts.Activity != ThreadActivityIdle || update.Facts.LastOutcome == nil {
+			continue
+		}
+		if update.Facts.Failure != nil || *update.Facts.LastOutcome != TurnOutcomeCompleted {
+			t.Fatalf("fixture could not continue: %+v", update.Facts.Failure)
+		}
+		break
+	}
+	completed, err := service.View(t.Context(), admitted.ThreadID)
+	if err != nil || len(completed.Items) != manifest.Items+2 || len(completed.Turns) != manifest.Turns+1 || completed.Items[len(completed.Items)-1].Text != "continued" {
+		t.Fatalf("continued fixture differs: items=%d turns=%d err=%v", len(completed.Items), len(completed.Turns), err)
 	}
 }
 
