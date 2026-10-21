@@ -185,6 +185,27 @@ func TestSafePathRefsTextKeepsRepositoryNamesAndSlashSeparatedText(t *testing.T)
 	}
 }
 
+func TestSafePathRefsTextNecessarySeparatorMatchesRegexp(t *testing.T) {
+	for _, input := range []string{"", strings.Repeat("中é🌸\r\n", 4096), "C:relative", `C:\Users\alice\secret.txt`, "/Users/alice/secret.txt", "~/secret.txt", "https://example.com/docs", `a\b`, "plain"} {
+		if !strings.ContainsAny(input, `/\`) && pathRefPattern.MatchString(input) {
+			t.Fatalf("separator filter missed a path match in %q", input)
+		}
+		if !pathRefPattern.MatchString(input) && SafePathRefsText(input) != input {
+			t.Fatal("path-free text changed")
+		}
+	}
+}
+
+func BenchmarkSafePathRefsTextLargePlainUnicode(b *testing.B) {
+	input := strings.Repeat("中é🌸\r\n", 1<<20)
+	b.SetBytes(int64(len(input)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = SafePathRefsText(input)
+	}
+}
+
 func TestSanitizeActivityPresentationRedactsPathsAndSecrets(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"
 	got := Sanitize(Event{

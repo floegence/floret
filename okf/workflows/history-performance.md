@@ -263,6 +263,13 @@ qualification remain separate outstanding work.
 
 ## Canonical dense-tool qualification fixtures
 
+The giant Unicode output race profile identified full-body path sanitization
+as a major completion cost. `event.SafePathRefsText` now first checks for the
+slash or Windows separator required by every accepted regexp alternative.
+Text containing either still follows the same sanitizer. This necessary-input
+filter preserves path redaction and avoids Unicode regexp work for path-free
+bodies; it does not bypass canonical integrity validation or qualify startup.
+
 `runtime/long_thread_fixture_test.go` writes deterministic synthetic history
 through the real SQLite repository, canonical turn admission and settlement.
 It is test tooling, not a host-facing write API. From the exact published

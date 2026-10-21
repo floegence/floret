@@ -2,6 +2,10 @@
 
 ## v7.78.0 - 2026-10-21
 
+- Skip path-reference regular expressions for text with no possible path
+  separator. Preserve all path sanitization and URL handling while avoiding
+  repeated Unicode regexp scans over giant ordinary output.
+
 - Add opt-in deterministic dense-tool SQLite qualification fixtures at 1x,
   10x and 100x history, with journal, public item and database hashes; validate
   restart and continuation through public runtime APIs.
