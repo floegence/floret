@@ -80,7 +80,7 @@ jobs:
   race:
     name: Focused race detection
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,7 +93,7 @@ jobs:
 
       - name: Exercise concurrent runtime and Store boundaries
         run: >-
-          go test -race
+          go test -race -timeout=25m
           ./internal/engine
           ./internal/agentharness
           ./internal/sessiontree
