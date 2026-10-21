@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-21: Preserve Goal mutation identity before first presentation hydration, including Ack creation and restart. See [Goals](decisions/thread-goals.md#mutation-before-presentation-hydration).
+
 - 2026-10-21: Bound ordinary live text growth coalescing to 25ms while keeping
   immediate semantic boundaries and the existing byte limit. See [native thread
   updates](api/thread-updates.md#publication-and-compatibility).

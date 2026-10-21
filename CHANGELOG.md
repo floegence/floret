@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.77.1 - 2026-10-21
+
+- Initialize the existing actor through its bounded acknowledgment read before
+  a first Goal mutation. Preserve thread identity and idle lifecycle when
+  CreateAck or a restart precedes SetGoal/DeleteGoal without a View read.
+
 ## v7.77.0 - 2026-10-21
 
 - Bound ordinary live-text coalescing to 25ms while preserving immediate

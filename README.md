@@ -1012,6 +1012,8 @@ version without materializing a complete result. An omitted view version means
 no presentation baseline was observed. Once acknowledged, a failed presentation
 read does not undo the command and must not cause it to be submitted again under
 a new request key. Full-result APIs retain their existing complete-view semantics.
+Goal mutations also work before the first presentation read, including after
+Ack creation and restart; they preserve the canonical thread identity and lifecycle.
 
 For streaming hosts, the same service implements optional
 `runtime.ThreadUpdateSource` without adding methods to `ThreadService`.

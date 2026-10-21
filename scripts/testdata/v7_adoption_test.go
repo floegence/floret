@@ -1596,3 +1596,50 @@ func TestPublishedScopedWindowAndCanonicalManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishedAckGoalBeforeReadAndAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ack-goal.db")
+	factory := runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		return nil, errors.New("goal mutation must not execute")
+	})
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+		service, err := host.ThreadService(factory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	firstHost, first := open()
+	created, err := first.(runtime.ThreadCommandService).CreateAck(t.Context(), runtime.CreateThreadInput{RequestKey: "ack-goal-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := runtime.SetGoalInput{ThreadID: created.ThreadID, RequestKey: "ack-goal-set", Text: "Retain the canonical objective"}
+	if _, err := first.(runtime.ThreadGoalController).SetGoal(t.Context(), set); err != nil {
+		t.Fatal(err)
+	}
+	view, err := first.View(t.Context(), created.ThreadID)
+	if err != nil || view.ThreadID != created.ThreadID || view.Activity != runtime.ThreadActivityIdle || view.TurnID != "" || view.RunID != "" || view.Goal == nil || view.Goal.Text != set.Text || len(view.Items) != 1 {
+		t.Fatalf("initial goal-only view=%+v err=%v", view, err)
+	}
+	if err := firstHost.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, second := open()
+	deleted, err := second.(runtime.ThreadGoalController).DeleteGoal(t.Context(), runtime.DeleteGoalInput{ThreadID: created.ThreadID, RequestKey: "ack-goal-delete", ExpectedVersion: 1})
+	if err != nil || deleted.Goal.Version != 2 {
+		t.Fatalf("delete=%+v err=%v", deleted, err)
+	}
+	view, err = second.View(t.Context(), created.ThreadID)
+	if err != nil || view.ThreadID != created.ThreadID || view.Activity != runtime.ThreadActivityIdle || view.TurnID != "" || view.RunID != "" || view.Goal == nil || view.Goal.Status != "absent" || len(view.Items) != 2 {
+		t.Fatalf("restarted goal-only view=%+v err=%v", view, err)
+	}
+	if _, err := json.Marshal(view); err != nil {
+		t.Fatal(err)
+	}
+}
