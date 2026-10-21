@@ -62,6 +62,26 @@ func TestThreadWindowHydratesWithinAggregateSourceBudget(t *testing.T) {
 	}
 }
 
+func TestThreadWindowKeepsOrdinaryMarkdownCompleteAtMaximumPageSize(t *testing.T) {
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread"}}}
+	for index := range threadDisplayPageItems {
+		actor.state.view.Items = appendThreadItem(actor.state.view.Items, ThreadItem{ID: fmt.Sprint(index), Text: strings.Repeat("Readable Markdown history. ", 24)})
+	}
+	snapshot, err := actor.windowSnapshot(ThreadWindowInput{Direction: ThreadWindowBefore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range snapshot.Items {
+		if item.Body != nil || item.Text != strings.Repeat("Readable Markdown history. ", 24) {
+			t.Fatalf("ordinary history unexpectedly degraded to a preview: body=%+v bytes=%d", item.Body, len(item.Text))
+		}
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil || len(raw) > threadDisplayPageBytes {
+		t.Fatalf("page exceeded encoded budget: bytes=%d err=%v", len(raw), err)
+	}
+}
+
 func TestThreadWindowEscapedPreviewsFitWithoutRepeatedFullEncoding(t *testing.T) {
 	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{ThreadID: "thread"}}}
 	for i := range 150 {
