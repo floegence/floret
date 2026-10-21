@@ -126,3 +126,25 @@ live extents test 1, 5 and 150 selected items, count actual source reads, and
 verify exact mixed UTF-8 prefixes, owner preservation and escaped JSON bounds.
 This bounds preview source hydration, not arbitrary inline control metadata,
 actor metadata residency or complete production-stack latency.
+
+## Current-schema startup residency
+
+    GOWORK=off go test ./internal/sessiontree -run 'Test(CurrentStartup|StartupMetadataQuery|Historical|CanonicalBodies|Inspection|PersistentQuery)' -count=1
+    GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkCurrentStartupCanonicalLoad -benchtime=1x -benchmem
+
+Current-schema startup verifies each complete immutable entry before retaining
+only canonical field locators. Metadata-only Goal and parent-event readers share
+the exact ancestry traversal with complete reads. Reasoning source comparisons
+use verified source hashes. Query correspondence shares the canonical projector
+with a metadata mode, and only an index rebuild loads explicit document bodies.
+The differential checks complete serialized facts, source order, segmented
+assistant messages, steering, hosted tools, cancellation and unchanged storage.
+
+The benchmark uses actual SQLite, separate 16 and 160-entry stores, and roughly
+64 KiB mixed UTF-8 bodies. One sample measured 43.9 ms / 85,010,192 allocated
+bytes for 16 entries and 362.5 ms / 806,965,616 allocated bytes for 160 entries.
+These are total allocations, not retained heap or RSS. It measures complete domain validation, including
+source reads; it is not a constant-time startup test. Every source is still
+validated. Metadata, migration inputs, complete checkpoint validation, one giant
+merged query document and the verified source cache have separate residency
+costs. Production heap/RSS and complete Flower qualification remain required.

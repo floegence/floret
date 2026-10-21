@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Validate current-schema bodies one entry at a time, retain canonical locators before domain checks, and share metadata-only query correspondence. Preserve exact citation-range validation during index construction; record allocation diagnostics and remaining startup limits in [history performance](workflows/history-performance.md#current-schema-startup-residency).
+
 - 2026-10-20: Document [cold summary source reads](workflows/history-performance.md#cold-summary-source-reads), frozen independent semantic regressions and remaining metadata/residency limits.
 
 - 2026-10-20: Share Engine-owned active output with bounded display readers,

@@ -80,7 +80,18 @@ func projectSteering(path []Entry) ([]Entry, error) {
 
 func validateSteeringRecords(memory *MemoryRepo) error {
 	for _, entries := range memory.entries {
-		if _, err := projectSteering(entries); err != nil {
+		selected := make([]Entry, 0)
+		for _, entry := range entries {
+			if entry.Type != EntrySteeringRequested && entry.Type != EntrySteeringApplied && entry.Type != EntrySteeringCancelled {
+				continue
+			}
+			complete, err := memory.completeEntryLocked(entry)
+			if err != nil {
+				return err
+			}
+			selected = append(selected, complete)
+		}
+		if _, err := projectSteering(selected); err != nil {
 			return err
 		}
 	}

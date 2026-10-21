@@ -215,7 +215,7 @@ func validateCompactionBoundariesV27(memory *MemoryRepo) error {
 			if entry.Type != EntryCompaction {
 				continue
 			}
-			path, err := pathLocked(memory.threads, memory.entries, threadID, entry.ID)
+			path, err := memory.canonicalPathLocked(context.Background(), threadID, entry.ID)
 			if err != nil {
 				return err
 			}

@@ -36,11 +36,15 @@ type queryThread struct {
 // queryProjector is the only canonical-to-search projection. It owns no
 // inverted index; its records are disposable source views for one thread.
 type queryProjector struct {
-	changed map[string]*queryRecord
-	lookup  func(string) (*queryRecord, error)
+	metadataOnly bool
+	changed      map[string]*queryRecord
+	lookup       func(string) (*queryRecord, error)
 }
 
 func (projector *queryProjector) replace(state *queryThread, record *queryRecord) {
+	if projector.metadataOnly {
+		record.parts, record.activities = nil, nil
+	}
 	state.records[record.key] = record
 	if projector.changed != nil {
 		projector.changed[record.key] = record
@@ -64,16 +68,20 @@ func newQueryThread() *queryThread {
 	return &queryThread{complete: true, records: map[string]*queryRecord{}, hostedPending: map[string]map[string]*queryRecord{}, lifecycle: CanonicalLifecycle{Status: "idle"}}
 }
 func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryThread, error) {
+	return r.projectQueryThreadMode(ctx, id, false)
+}
+
+func (r *MemoryRepo) projectQueryThreadMode(ctx context.Context, id string, metadataOnly bool) (*queryThread, error) {
 	meta, found := r.threads[id]
 	if !found {
 		return nil, nil
 	}
-	path, err := r.canonicalPathLocked(context.Background(), id, meta.LeafID)
+	path, err := r.readCanonicalPathLocked(ctx, id, meta.LeafID, !metadataOnly)
 	if err != nil {
 		return nil, err
 	}
 	state := newQueryThread()
-	projector := &queryProjector{}
+	projector := &queryProjector{metadataOnly: metadataOnly}
 	for _, entry := range path {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -87,13 +95,18 @@ func (r *MemoryRepo) projectQueryThread(ctx context.Context, id string) (*queryT
 			if !ok {
 				return nil, ErrAuthorityCorrupt
 			}
-			source, sourceErr := r.completeEntryLocked(r.entries[id][ordinal])
-			if sourceErr != nil {
-				return nil, sourceErr
+			source := r.entries[id][ordinal]
+			if !metadataOnly {
+				var sourceErr error
+				source, sourceErr = r.completeEntryLocked(source)
+				if sourceErr != nil {
+					return nil, sourceErr
+				}
 			}
 			entry.Type = EntryUserMessage
 			entry.Message = source.Message
 			entry.ID = source.ID
+			entry.bodyFields = source.bodyFields
 		}
 		if err := projector.observe(state, id, entry); err != nil {
 			return nil, err
@@ -144,7 +157,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			return nil
 		}
 		assistant := entry.Type == EntryAssistantMessage
-		if assistant && entry.Message.Content == "" {
+		if assistant && entry.Message.Content == "" && entry.bodyFields["content"].Bytes == 0 {
 			return nil
 		}
 		base.Object = threadquery.Messages
@@ -161,7 +174,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			if previous == nil {
 				return ErrAuthorityCorrupt
 			}
-			record = copyQueryRecord(previous)
+			record = projector.mutableRecord(previous)
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
 			record.sources = append(record.sources, entry.ID)
 		} else {
@@ -202,7 +215,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			if previous.row.ToolName != entry.Message.ToolName {
 				return ErrAuthorityCorrupt
 			}
-			record = copyQueryRecord(previous)
+			record = projector.mutableRecord(previous)
 			record.row.CompletedAt = at.UTC()
 			record.row.Elapsed = at.Sub(record.row.Time)
 			record.row.Status = entry.Message.ToolResult.Status
@@ -231,7 +244,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			return err
 		}
 		if previous != nil {
-			record = copyQueryRecord(previous)
+			record = projector.mutableRecord(previous)
 			record.sources = append(record.sources, entry.ID)
 		} else {
 			state.order++
@@ -270,7 +283,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 					if complete == nil {
 						return ErrAuthorityCorrupt
 					}
-					record := copyQueryRecord(complete)
+					record := projector.mutableRecord(complete)
 					record.row.Status = "canceled"
 					record.row.CompletedAt = at.UTC()
 					record.row.Elapsed = at.Sub(record.row.Time)
@@ -282,6 +295,16 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 	}
 	return nil
 }
+
+// Full chronological projection owns its records. Only transaction overlays
+// copy prior published locators; a giant source list grows once during startup.
+func (projector *queryProjector) mutableRecord(record *queryRecord) *queryRecord {
+	if projector.changed == nil {
+		return record
+	}
+	return copyQueryRecord(record)
+}
+
 func copyQueryRecord(record *queryRecord) *queryRecord {
 	result := *record
 	result.parts = append([]queryPart(nil), record.parts...)

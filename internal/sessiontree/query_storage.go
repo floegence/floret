@@ -374,7 +374,7 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 	total := int64(len(memory.threads))
 	reportStartupWork(ctx, StartupPhaseVerifying, 0, total)
 	for id := range memory.threads {
-		state, err := memory.projectQueryThread(ctx, id)
+		state, err := memory.projectQueryThreadMode(ctx, id, true)
 		if err != nil {
 			return err
 		}
@@ -436,7 +436,15 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				document, err := queryDocument(record, true)
+				document, err := queryDocument(record, false)
+				if err != nil {
+					return err
+				}
+				complete, err := memory.materializeQueryDocument(document)
+				if err != nil {
+					return err
+				}
+				document, err = queryDocument(complete, true)
 				if err != nil {
 					return err
 				}
