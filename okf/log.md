@@ -1692,3 +1692,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document optional frozen live-body search sharing canonical search boundaries and fresh scope authorization.
 
 - 2026-10-20: Remove duplicate source-membership arrays from retained runtime items; preserve complete adapters and qualify merged-item append allocations.
+
+- 2026-10-20: Qualify scoped display baselines, frozen canonical manifests, complete body hashes, authorization revocation and restart through the blank-module adoption gate.
