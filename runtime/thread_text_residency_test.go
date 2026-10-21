@@ -66,13 +66,13 @@ func TestThreadCanonicalTextResidencyPreservesCompleteAndWindowResults(t *testin
 		}
 		actor := service.runtime(id)
 		for _, item := range actor.state.view.Items {
-			if item.Text != "" || !item.textOmitted || item.textBytes == 0 {
+			if item.Text != "" || !item.textOmitted || item.textBytes == 0 || len(item.sourceEntryIDs) != 0 {
 				t.Fatal("actor retained canonical text")
 			}
 		}
 		for _, item := range actor.canonical.items.items {
-			if item.Text != "" {
-				t.Fatal("reducer retained canonical text")
+			if item.Text != "" || len(item.sourceEntryIDs) != 0 {
+				t.Fatal("reducer retained canonical text or duplicate source membership")
 			}
 		}
 		for _, buffer := range actor.canonical.items.contentBuffers {

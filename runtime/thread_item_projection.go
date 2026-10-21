@@ -91,7 +91,9 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			return
 		}
 		if index, found := reasoningIndex[source]; found {
-			items[index].sourceEntryIDs = append(items[index].sourceEntryIDs, entry.ID)
+			if !projection.metadataOnly {
+				items[index].sourceEntryIDs = append(items[index].sourceEntryIDs, entry.ID)
+			}
 			projection.recordEntryItem(entry.ID, index)
 			return
 		}
@@ -266,7 +268,9 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 						if projection.metadataOnly {
 							previous.textOmitted, previous.textBytes, previous.textNonSpace = true, buffer.bytes, buffer.nonSpace
 						}
-						previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
+						if !projection.metadataOnly {
+							previous.sourceEntryIDs = append(previous.sourceEntryIDs, entry.ID)
+						}
 						continue
 					}
 				}
@@ -518,6 +522,7 @@ func (projection *threadItemProjection) releaseText() {
 			}
 			buffer.text.Reset()
 		}
+		item.sourceEntryIDs = nil
 		item.Text, item.textOmitted = "", true
 	}
 	if first {

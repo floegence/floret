@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Drop duplicate private source-membership arrays from retained actor items and
+  metadata-only reducers. Complete adapters preserve their exact source mapping;
+  bounded reads continue to use canonical manifests without prefix-sized copies.
+
 - Replace growing query-source lists with fixed canonical boundaries and add
   optional atomic index-document append capability. Preserve cross-segment Unicode
   grams while reading at most two short source tails for merged assistant appends.

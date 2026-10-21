@@ -1690,3 +1690,5 @@ Document optional Goal management, same-context reflection, request-bound update
   retain explicit metadata-residency and context-validation limits.
 
 - 2026-10-20: Document optional frozen live-body search sharing canonical search boundaries and fresh scope authorization.
+
+- 2026-10-20: Remove duplicate source-membership arrays from retained runtime items; preserve complete adapters and qualify merged-item append allocations.
