@@ -93,7 +93,7 @@ jobs:
 
       - name: Exercise concurrent runtime and Store boundaries
         run: >-
-          go test -race -timeout=25m
+          go test -race -p=1 -timeout=25m
           ./internal/engine
           ./internal/agentharness
           ./internal/sessiontree
