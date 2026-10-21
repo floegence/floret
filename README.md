@@ -1020,6 +1020,11 @@ and authoritative view, never replay or inferred missing events. The old
 subscription materializes complete isolated views only for existing legacy
 consumers. See [native thread updates](okf/api/thread-updates.md).
 
+Optional `runtime.ThreadFactsSource.SubscribeFacts` observes only runtime facts
+for in-process host cleanup. It uses the same actor versions, bounded queue and
+invalidation rules, never reads bodies or clones presentation components, and
+cannot acquire window interest. Hosts authorize facts before public exposure.
+
 Optional `runtime.ThreadWindowSource` uses the same actor publication
 channel and versions for authorized item windows. Subscribe with an explicit
 scope, then call `SetWindow` with freshly authorized scope. The channel delivers
