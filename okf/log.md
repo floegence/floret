@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-21: Bound ordinary live text growth coalescing to 25ms while keeping
+  immediate semantic boundaries and the existing byte limit. See [native thread
+  updates](api/thread-updates.md#publication-and-compatibility).
+
 - 2026-10-20: Share exact canonical entry locators across lifecycle admission,
   replay and settlement; record SQLite scaling diagnostics and explicit remaining
   limits in [history performance](workflows/history-performance.md#exact-admission-and-terminal-locators).

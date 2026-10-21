@@ -58,6 +58,12 @@ func TestThreadUpdatesAppendUsesByteOffsetsAndContinuousVersions(t *testing.T) {
 	}
 }
 
+func TestThreadUpdatesGrowthCoalescingFitsTwoFrameBudget(t *testing.T) {
+	if threadGrowthInterval > 25*time.Millisecond {
+		t.Fatalf("ordinary growth coalescing is %s, exceeds the two-frame publication budget", threadGrowthInterval)
+	}
+}
+
 func TestThreadUpdatesBoundaryFlushesGrowthAndIsolatesConsumers(t *testing.T) {
 	service, actor, sink, sub := nativeUpdatesFixture(t)
 	other, err := service.SubscribeUpdates(t.Context())

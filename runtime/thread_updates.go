@@ -515,7 +515,7 @@ func (actor *threadRuntimeState) runtimeFactsUpdate(base uint64) ThreadUpdate {
 }
 
 const (
-	threadGrowthInterval = 50 * time.Millisecond
+	threadGrowthInterval = 25 * time.Millisecond
 	threadGrowthBytes    = 64 << 10
 )
 
