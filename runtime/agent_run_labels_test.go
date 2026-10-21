@@ -98,10 +98,31 @@ func TestAgentRunLabelsReachFreshAndResumedExecutions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	updates, err := service.Subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer updates.Close()
+	waitLabelsView := func(ready func(ThreadView) bool) ThreadView {
+		t.Helper()
+		// This asserts label propagation, not wall-clock performance under the
+		// race detector. Observe the real boundary without repeated full reads.
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		defer cancel()
+		for {
+			view, err := updates.Next(ctx)
+			if err != nil {
+				t.Fatalf("run label state did not arrive: %v", err)
+			}
+			if view.ThreadID == created.ThreadID && ready(view) {
+				return view
+			}
+		}
+	}
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "begin"}, RequestKey: "send-run-labels"}); err != nil {
 		t.Fatal(err)
 	}
-	waiting := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+	waiting := waitLabelsView(func(view ThreadView) bool {
 		return len(view.Interactions) == 1 && view.Interactions[0].Kind == ThreadInteractionInput && !view.Interactions[0].Resolved
 	})
 	if _, err := service.Respond(t.Context(), RespondInput{
@@ -110,7 +131,7 @@ func TestAgentRunLabelsReachFreshAndResumedExecutions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	completed := waitThreadView(t, service, created.ThreadID, func(view ThreadView) bool {
+	completed := waitLabelsView(func(view ThreadView) bool {
 		return view.Activity == ThreadActivityIdle && view.LastOutcome != nil
 	})
 	if completed.Failure != nil || *completed.LastOutcome != TurnOutcomeCompleted {
