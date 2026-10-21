@@ -209,3 +209,29 @@ Before removing duplicate retained source lists, ten-iteration samples allocated
 Exact full-source adapters, final turn references, citations, restart and nested
 Fork behavior remain covered separately. Retained canonical metadata still grows
 with history; these results are not bounded initialization or product acceptance.
+
+## Exact admission and terminal locators
+
+    GOWORK=off go test ./internal/sessiontree -run TestRuntimeAdmissionRejectsCorruptExactLocators -count=1
+    GOWORK=off go test ./internal/sessiontree -run '^$' -bench '^BenchmarkSQLiteFixedHistoryReadAcceptedTurn$' -benchtime=100x -count=1
+
+Admission replay, accepted-turn reads, finish/cancel replay, unknown-effect
+settlement and context-only admission checks share the existing exact canonical
+entry index. A metadata lookup validates position, entry/thread identity and
+path depth before accessing a record. It does not create another cache or load
+unrelated bodies. Complete public reads retain their existing materialization
+and integrity validation. Corrupt locators fail closed rather than scanning the
+journal for a substitute.
+
+On the same machine and toolchain, the SQLite read diagnostic measured:
+
+| Segments | Before, ns/op | After, ns/op | After, bytes/op | After, allocations/op |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,096 | 56,325 | 12,975 | 19,174 | 59 |
+| 10,960 | 461,254 | 15,467 | 19,168 | 59 |
+| 109,600 | 4,833,540 | 10,344 | 19,168 | 59 |
+
+The baseline used 30 reads per size and the indexed run used 100. This removes
+one measured linear scan; short-run timings are diagnostic. Other lifecycle
+validation, request-key lookup, actor metadata residency and production Flower
+qualification remain separate outstanding work.
