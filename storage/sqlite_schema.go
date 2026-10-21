@@ -21,8 +21,8 @@ func inspectSQLitePhysicalSchema(ctx context.Context, query sqliteQueryer) (stri
 	if err := query.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name='physical_schema'`).Scan(&version); err != nil {
 		return "", fmt.Errorf("%w: invalid backend metadata: %v", ErrUnsupportedSQLiteFormat, err)
 	}
-	if version != "1" && version != "2" && version != "3" {
-		if number, err := strconv.Atoi(version); err == nil && number > 3 {
+	if version != "1" && version != "2" && version != "3" && version != "4" {
+		if number, err := strconv.Atoi(version); err == nil && number > 4 {
 			return "", fmt.Errorf("%w: %w: version %q", ErrUnsupportedSQLiteFormat, ErrSQLiteTooNew, version)
 		}
 		return "", fmt.Errorf("%w: version %q", ErrUnsupportedSQLiteFormat, version)
@@ -34,10 +34,16 @@ func inspectSQLitePhysicalSchema(ctx context.Context, query sqliteQueryer) (stri
 	if version == "1" {
 		expected["floret_backend_records"] += " WITHOUT ROWID"
 	}
-	if version == "3" {
+	if version == "3" || version == "4" {
 		expected["floret_index_documents"] = sqliteIndexDocuments
 		expected["floret_index_threads"] = sqliteIndexThreads
-		expected["floret_index_terms"] = sqliteIndexTerms
+	}
+	if version == "4" {
+		expected["floret_index_postings"] = sqliteIndexPostings
+		expected["floret_index_posting_documents"] = sqliteIndexPostingDocuments
+	}
+	if version == "3" {
+		expected["floret_index_terms"] = sqliteIndexTermsV3
 		expected["floret_index_terms_data"] = "CREATE TABLE 'floret_index_terms_data'(id INTEGER PRIMARY KEY, block BLOB)"
 		expected["floret_index_terms_idx"] = "CREATE TABLE 'floret_index_terms_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
 		expected["floret_index_terms_docsize"] = "CREATE TABLE 'floret_index_terms_docsize'(id INTEGER PRIMARY KEY, sz BLOB, origin INTEGER)"
@@ -82,7 +88,7 @@ func (tx *sqliteTx) PrepareFloretStorage(access storagebridge.StartupAccess) (bo
 		return false, spi.ErrInvalidArgument
 	}
 	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	if err != nil || version == "3" {
+	if err != nil || version == "4" {
 		return false, err
 	}
 	if access.OnMigration != nil {
@@ -114,7 +120,16 @@ func (tx *sqliteTx) PrepareFloretStorage(access storagebridge.StartupAccess) (bo
 			}
 		}
 	}
-	for _, statement := range []string{sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTerms, "UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'"} {
+	if version != "3" {
+		for _, statement := range []string{sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTermsV3, "UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'"} {
+			if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
+				return false, classifySQLiteError(tx.ctx, err)
+			}
+		}
+	}
+	// Postings are disposable. Canonical-owner startup rebuilds the empty index
+	// from exact source locators in this same transaction.
+	for _, statement := range []string{"DROP TABLE floret_index_terms", "DELETE FROM floret_index_documents", sqliteIndexPostings, sqliteIndexPostingDocuments, "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
 		if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
 			return false, classifySQLiteError(tx.ctx, err)
 		}
@@ -130,5 +145,5 @@ func (tx *sqliteTx) FloretPhysicalMigrationRequired(storagebridge.StartupAccess)
 		return false, spi.ErrTransactionClosed
 	}
 	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	return version != "3", err
+	return version != "4", err
 }

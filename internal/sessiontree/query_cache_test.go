@@ -136,7 +136,7 @@ func assertQueryProjectionMatches(t *testing.T, repo *BackendRepo, id string) {
 	if current == nil || len(current.records) != 0 || current.complete {
 		t.Fatal("commit retained a historical record cache")
 	}
-	if current.previous != nil && (len(current.previous.parts) != 0 || len(current.previous.sources) != 0 || len(current.previous.activities) != 0) {
+	if current.previous != nil && (len(current.previous.parts) != 0 || current.previous.firstSource != "" || current.previous.lastSource != "" || len(current.previous.activities) != 0) {
 		t.Fatal("continuation retained a historical body")
 	}
 	if err := repo.backend.View(t.Context(), func(tx spi.ReadTx) error {

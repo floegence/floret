@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Replace growing query-source lists with fixed canonical boundaries and add
+  optional atomic index-document append capability. Preserve cross-segment Unicode
+  grams while reading at most two short source tails for merged assistant appends.
+  SQLite physical format 3 -> 4 transactionally replaces derived FTS documents
+  with unique indexed term postings; all canonical bytes and earlier migration
+  edges remain intact. Published custom index replacement contracts remain valid.
+
 - Stream canonical source chunks through the shared Unicode search-term collector
   during derived-index rebuilds. Keep exact separators, references, attachments
   and hosted presentation order without retaining a merged document body or
@@ -13,7 +20,7 @@
   the same canonical projector without retaining transcript bodies. Rebuild
   postings from explicit per-document source reads. Historical migration inputs,
   compaction validation and public complete reads keep their complete semantics;
-  metadata, a giant merged index document and complete checkpoints remain
+  metadata and complete checkpoints remain
   proportional to the requested history.
 
 - Allocate one aggregate window preview source budget before reading or cloning

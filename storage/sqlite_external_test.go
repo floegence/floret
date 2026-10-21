@@ -51,7 +51,7 @@ func assertSQLitePhysicalSchema(t *testing.T, path string) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"floret_backend_metadata", "floret_backend_records", "floret_index_documents", "floret_index_terms", "floret_index_terms_config", "floret_index_terms_data", "floret_index_terms_docsize", "floret_index_terms_idx"}
+	want := []string{"floret_backend_metadata", "floret_backend_records", "floret_index_documents", "floret_index_postings"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("physical tables = %v, want %v", names, want)
 	}

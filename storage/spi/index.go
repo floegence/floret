@@ -57,3 +57,12 @@ var ErrIndexCorrupt = errors.New("derived storage index is corrupt")
 // IndexResetter clears only rebuildable physical index state in the active
 // transaction after the canonical owner has validated its complete sources.
 type IndexResetter interface{ ResetIndex() error }
+
+// IndexDocumentAppender optionally adds atomic terms to an existing document
+// while replacing its metadata in the same transaction. Existing terms remain.
+// The exact Key, ThreadID and Object must match; otherwise return ErrNotFound.
+// Terms are a delta, not a complete replacement. Errors must not be retried
+// through another index implementation.
+type IndexDocumentAppender interface {
+	AppendIndexDocument(IndexDocument) error
+}

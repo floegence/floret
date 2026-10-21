@@ -11,7 +11,7 @@ tags: [api, threads, queries, references]
 all previously required methods. `Query`, `Read`, and `Aggregate` use public
 [`threadquery`](../../threadquery/query.go) contracts. The canonical journal
 owner derives metadata and source locators through one canonical projector.
-SQLite maintains contentless FTS5 postings and document metadata in the same
+SQLite maintains contentless indexed atomic-term postings and document metadata in the same
 transaction as canonical writes. Other physical backends use the optional
 transaction-local index SPI or Floret's opaque KV adapter. Native errors never
 switch to a second index or a full canonical scan.
@@ -19,11 +19,21 @@ switch to a second index or a full canonical scan.
 Startup validates canonical state and source correspondence before reusing the
 index. Missing derived state initializes transactionally before Host exposure;
 ordinary reopen does not rebuild postings. Canonical damage and unknown formats
-fail closed. Physical format 2 -> 3 and logical storage 8 -> 9 preserve domain
-schema 19 and every historical migration edge. Atomic ASCII encodings of Go
+fail closed. Physical formats 1 -> 2 -> 3 -> 4 and logical storage 7 -> 8 -> 9 retain
+every historical migration edge. Atomic ASCII encodings of Go
 Unicode-lowercased 1/2/3-rune grams preserve Chinese, code, punctuation, emoji
 and NUL candidate semantics; one exact matcher verifies candidates. No full
-search body or global positions are stored. Only bounded active projections and
+search body or global positions are stored. Fixed canonical first/previous/last
+entry boundaries replace growing source lists. Derived manifest version 1 is
+read only to trigger a rebuild into version 2; no runtime dual read remains.
+Merged assistant appends read at most two short source tails and insert only
+new and cross-boundary terms through optional `IndexDocumentAppender`.
+The SQLite implementation uses indexed unique term/document rows rather than
+replacing an FTS document. Complete replacement, removal and path change retain
+their exact existing semantics. Native errors remain explicit. Custom released
+indexes without append capability retain their supported complete-replacement
+contract. This is a storage capability decision, not another lifecycle owner.
+ Only bounded active projections and
 frozen pagination values remain in memory.
 
 Hosts reconstruct `Scope` before every call. `Authority` identifies the user,
