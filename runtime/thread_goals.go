@@ -102,7 +102,7 @@ func (service *threadRuntimeService) mutateGoal(ctx context.Context, in sessiont
 	if err := service.host.available(); err != nil {
 		return GoalMutationResult{}, err
 	}
-	if _, err := service.ensureThread(ctx, identity.ThreadID(in.ThreadID)); err != nil {
+	if _, err := service.viewResult(ctx, identity.ThreadID(in.ThreadID), threadAckResult); err != nil {
 		return GoalMutationResult{}, err
 	}
 	repo, ok := service.host.store.repo.(sessiontree.GoalRepo)

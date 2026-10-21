@@ -138,3 +138,11 @@ observation redaction still applies. Existing structured renderers remain valid.
   ../../internal/sessiontree/backend_domain_v23_migration_test.go
 
 User Goal changes may precede the first Turn. Public current and history omit absent execution identities; they never invent a run to render a control fact. Executable items retain their populated identities.
+
+## Mutation before presentation hydration
+
+User Goal mutations initialize the existing actor through its acknowledgment
+read before canonical installation. Creating with `CreateAck`, then setting a
+Goal without first reading a view, preserves ThreadID and the idle lifecycle.
+The same rule covers deletion as the first operation after restart. Mutating a
+Goal never relies on a host presentation read for actor initialization.

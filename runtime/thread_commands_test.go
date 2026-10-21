@@ -236,3 +236,33 @@ func TestThreadCommandAckReturnsCanonicalRequestKey(t *testing.T) {
 		t.Fatalf("invalid ack=%+v err=%v", ack, err)
 	}
 }
+
+func TestThreadCommandAckGoalBeforeFirstReadPreservesIdentity(t *testing.T) {
+	_, service := testThreadService(t, newBlockingThreadGateway())
+	commands := service.(ThreadCommandService)
+	created, err := commands.CreateAck(t.Context(), CreateThreadInput{RequestKey: "goal-before-read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goals := service.(ThreadGoalController)
+	if _, err := goals.SetGoal(t.Context(), SetGoalInput{ThreadID: created.ThreadID, RequestKey: "set-before-read", Text: "Preserve the empty thread"}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := service.View(t.Context(), created.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ThreadID != created.ThreadID || view.Activity != ThreadActivityIdle || view.TurnID != "" || view.RunID != "" || view.Goal == nil || view.Goal.Version != 1 || len(view.Items) != 1 {
+		t.Fatalf("goal-only identity=%q activity=%q turns=%q/%q goal=%+v items=%d", view.ThreadID, view.Activity, view.TurnID, view.RunID, view.Goal, len(view.Items))
+	}
+	if _, err := json.Marshal(view); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := goals.DeleteGoal(t.Context(), DeleteGoalInput{ThreadID: created.ThreadID, RequestKey: "delete-before-turn", ExpectedVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	view, err = service.View(t.Context(), created.ThreadID)
+	if err != nil || view.ThreadID != created.ThreadID || view.Activity != ThreadActivityIdle || view.Goal == nil || view.Goal.Status != "absent" {
+		t.Fatalf("delete identity=%q activity=%q goal=%+v err=%v", view.ThreadID, view.Activity, view.Goal, err)
+	}
+}
