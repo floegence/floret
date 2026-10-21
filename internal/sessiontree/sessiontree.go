@@ -1280,24 +1280,38 @@ func (r *MemoryRepo) nextEntryID(threadID string) string {
 	}
 }
 
-func (r *MemoryRepo) Entry(_ context.Context, threadID, entryID string) (Entry, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// entryMetadataLocked resolves an exact journal locator without loading body
+// fields. The existing canonical index is the only identity authority.
+func (r *MemoryRepo) entryMetadataLocked(threadID, entryID string) (Entry, bool, error) {
 	ordinal, ok := r.entryOrdinals[threadID][entryID]
 	if !ok {
-		return Entry{}, ErrEntryNotFound
+		return Entry{}, false, nil
 	}
 	entries := r.entries[threadID]
 	if ordinal < 0 || ordinal >= len(entries) {
-		return Entry{}, ErrAuthorityCorrupt
+		return Entry{}, true, ErrAuthorityCorrupt
 	}
-	entry, err := r.completeEntryLocked(entries[ordinal])
+	entry := entries[ordinal]
+	depth, depthOK := r.entryDepths[threadID][entryID]
+	if entry.ID != entryID || entry.ThreadID != threadID || !depthOK || depth <= 0 || entry.PathDepth != depth {
+		return Entry{}, true, ErrAuthorityCorrupt
+	}
+	return entry, true, nil
+}
+
+func (r *MemoryRepo) Entry(_ context.Context, threadID, entryID string) (Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found, err := r.entryMetadataLocked(threadID, entryID)
 	if err != nil {
 		return Entry{}, err
 	}
-	depth, depthOK := r.entryDepths[threadID][entryID]
-	if entry.ID != entryID || entry.ThreadID != threadID || !depthOK || depth <= 0 || entry.PathDepth != depth {
-		return Entry{}, ErrAuthorityCorrupt
+	if !found {
+		return Entry{}, ErrEntryNotFound
+	}
+	entry, err = r.completeEntryLocked(entry)
+	if err != nil {
+		return Entry{}, err
 	}
 	if err := ValidateEntryIntegrity(entry); err != nil {
 		return Entry{}, err

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Resolve stable admission and terminal identities through the existing exact
+  canonical entry index. Reject corrupt locators without fallback scans and
+  keep accepted-turn reads independent of unrelated history size.
+
 - Resolve confirmed tool results from exact canonical query-index source pairs
   instead of scanning the entire active path. Validate execution identity,
   current path membership and canonical integrity; return detached source facts.

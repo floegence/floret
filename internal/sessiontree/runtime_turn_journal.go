@@ -51,7 +51,11 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 	}
 	startedID := runtimeTurnStartedEntryID(req.TurnID)
 	userID := runtimeUserEntryID(req.LogicalRequestID)
-	if started, found := findEntry(r.entries[meta.ID], startedID); found {
+	started, found, err := r.entryMetadataLocked(meta.ID, startedID)
+	if err != nil {
+		return AcceptTurnResult{}, err
+	}
+	if found {
 		return r.replayRuntimeTurnAcceptanceLocked(req, started, userID)
 	}
 	if activeTurnID, active := r.runtimeActiveTurnLocked(meta.ID); active && activeTurnID != req.TurnID {
@@ -73,7 +77,7 @@ func (r *MemoryRepo) acceptTurnLocked(req AcceptTurnRequest) (AcceptTurnResult, 
 		promotion = &promoted
 		baseLeafID = promoted.ID
 	}
-	started := Entry{
+	started = Entry{
 		ID: startedID, ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,
 		RequestKey: req.LogicalRequestID, RequestFingerprint: req.RequestFingerprint, TurnStatus: TurnStarted, CreatedAt: now,
 		Metadata: map[string]string{"run_id": req.RunID, ResponseSegmentsMetadataKey: "1"},
@@ -156,7 +160,10 @@ func (r *MemoryRepo) replayRuntimeTurnAcceptanceLocked(req AcceptTurnRequest, st
 	}
 	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
 	if req.RetrySourceEntryID == "" && req.TurnKind == "" {
-		user, found := findEntry(r.entries[req.ThreadID], userID)
+		user, found, err := r.entryMetadataLocked(req.ThreadID, userID)
+		if err != nil {
+			return AcceptTurnResult{}, err
+		}
 		if found {
 			var err error
 			user, err = r.completeEntryLocked(user)
@@ -190,7 +197,10 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 	if _, ok := r.threads[threadID]; !ok {
 		return AcceptTurnResult{}, false, ErrThreadNotFound
 	}
-	started, found := findEntry(r.entries[threadID], runtimeTurnStartedEntryID(turnID))
+	started, found, err := r.entryMetadataLocked(threadID, runtimeTurnStartedEntryID(turnID))
+	if err != nil {
+		return AcceptTurnResult{}, found, err
+	}
 	if !found {
 		return AcceptTurnResult{}, false, nil
 	}
@@ -203,7 +213,10 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 	}
 	result := AcceptTurnResult{TurnStarted: cloneEntry(started), BaseLeafID: base, Replayed: true}
 	if started.Metadata[RetrySourceEntryIDMetadataKey] == "" && started.Metadata[TurnKindMetadataKey] == "" {
-		user, ok := findEntry(r.entries[threadID], runtimeUserEntryID(started.RequestKey))
+		user, ok, err := r.entryMetadataLocked(threadID, runtimeUserEntryID(started.RequestKey))
+		if err != nil {
+			return AcceptTurnResult{}, true, err
+		}
 		if ok {
 			var err error
 			user, err = r.completeEntryLocked(user)
@@ -350,11 +363,22 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 }
 
 func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, error) {
-	if terminal, found := findEntry(r.entries[req.ThreadID], strings.TrimSpace(req.TerminalEntryID)); found {
+	terminal, found, err := r.entryMetadataLocked(req.ThreadID, strings.TrimSpace(req.TerminalEntryID))
+	if err != nil {
+		return FinishTurnResult{}, err
+	}
+	if found {
 		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID || terminal.RequestFingerprint != req.OutcomeFingerprint {
 			return FinishTurnResult{}, ErrRequestConflict
 		}
 		return FinishTurnResult{Terminal: cloneEntry(terminal), Replayed: true}, nil
+	}
+	var contextAdmission Entry
+	if req.ClearProviderState && !req.PreserveProviderState && req.ProviderState == nil {
+		contextAdmission, _, err = r.entryMetadataLocked(req.ThreadID, runtimeTurnStartedEntryID(req.TurnID))
+		if err != nil {
+			return FinishTurnResult{}, err
+		}
 	}
 	activeTurnID, active := r.runtimeActiveTurnLocked(req.ThreadID)
 	if !active || activeTurnID != req.TurnID {
@@ -408,7 +432,7 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 		copy := cloneEntry(failure)
 		result.Failure = &copy
 	}
-	terminal := Entry{ID: strings.TrimSpace(req.TerminalEntryID), ThreadID: meta.ID, ParentID: parentID, Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID, RequestFingerprint: req.OutcomeFingerprint, CreatedAt: now, TurnStatus: req.Status, Metadata: cloneStringMap(req.Metadata)}
+	terminal = Entry{ID: strings.TrimSpace(req.TerminalEntryID), ThreadID: meta.ID, ParentID: parentID, Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID, RequestFingerprint: req.OutcomeFingerprint, CreatedAt: now, TurnStatus: req.Status, Metadata: cloneStringMap(req.Metadata)}
 	terminal.Raw, terminal.RawHash = rawForEntry(terminal), stableHash(rawForEntry(terminal))
 	r.appendIndexedEntriesLocked(meta.ID, terminal)
 	meta.LeafID, meta.UpdatedAt = terminal.ID, now
@@ -420,7 +444,7 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 	} else if req.PreserveProviderState {
 		r.reanchorProviderStateLocked(meta.ID, terminal.ID, req.StateCompatibilityKey, now)
 	} else if req.ClearProviderState {
-		r.settleContextOnlyProviderStateLocked(meta.ID, req.TurnID, req.RunID, terminal.ID, now)
+		r.settleContextOnlyProviderStateLocked(contextAdmission, meta.ID, req.TurnID, req.RunID, terminal.ID, now)
 	}
 	for _, attempt := range attempts {
 		if attempt.State == EffectAttemptPrepared {
@@ -472,8 +496,15 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 		}
 	}()
 
-	if terminal, found := findEntry(r.entries[req.ThreadID], terminalID); found {
-		failure, failureFound := findEntry(r.entries[req.ThreadID], failureID)
+	terminal, found, err := r.entryMetadataLocked(req.ThreadID, terminalID)
+	if err != nil {
+		return FailUnknownEffectTurnResult{}, err
+	}
+	if found {
+		failure, failureFound, err := r.entryMetadataLocked(req.ThreadID, failureID)
+		if err != nil {
+			return FailUnknownEffectTurnResult{}, err
+		}
 		if failureFound {
 			var err error
 			failure, err = r.completeEntryLocked(failure)
@@ -593,7 +624,7 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	}
 	failure.Raw, failure.RawHash = rawForEntry(failure), StableHash(rawForEntry(failure))
 	r.appendIndexedEntriesLocked(req.ThreadID, failure)
-	terminal := Entry{
+	terminal = Entry{
 		ID: terminalID, ThreadID: req.ThreadID, ParentID: failure.ID, Type: EntryTurnMarker,
 		TurnID: req.TurnID, RunID: req.RunID, RequestFingerprint: outcomeFingerprint, CreatedAt: now, TurnStatus: TurnFailed,
 		Metadata: map[string]string{
@@ -637,12 +668,19 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 			checkpoint.restore(r)
 		}
 	}()
-	if terminal, found := findEntry(r.entries[req.ThreadID], req.TerminalEntryID); found {
+	terminal, found, err := r.entryMetadataLocked(req.ThreadID, req.TerminalEntryID)
+	if err != nil {
+		return CancelTurnResult{}, err
+	}
+	if found {
 		if terminal.Type != EntryTurnMarker || terminal.TurnID != req.TurnID || terminal.RunID != req.RunID ||
 			terminal.TurnStatus != TurnAborted || terminal.RequestFingerprint != req.OutcomeFingerprint {
 			return CancelTurnResult{}, ErrRequestConflict
 		}
-		cancel, ok := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+		cancel, ok, err := r.entryMetadataLocked(req.ThreadID, req.CancelEntryID)
+		if err != nil {
+			return CancelTurnResult{}, err
+		}
 		if !ok || cancel.Type != EntryCancelRequested || cancel.TurnID != req.TurnID || cancel.RunID != req.RunID ||
 			cancel.RequestFingerprint != req.RequestFingerprint {
 			return CancelTurnResult{}, ErrAuthorityCorrupt
@@ -650,8 +688,16 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		committed = true
 		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
-	if terminal, found := findEntry(r.entries[req.ThreadID], unknownEffectTerminalEntryID(req.ThreadID, req.TurnID, req.RunID)); found && terminal.Metadata[TurnFailureCodeMetadataKey] == TurnFailureEffectOutcomeUnknown {
-		cancel, _ := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+	unknownTerminal, found, err := r.entryMetadataLocked(req.ThreadID, unknownEffectTerminalEntryID(req.ThreadID, req.TurnID, req.RunID))
+	if err != nil {
+		return CancelTurnResult{}, err
+	}
+	if found && unknownTerminal.Metadata[TurnFailureCodeMetadataKey] == TurnFailureEffectOutcomeUnknown {
+		terminal := unknownTerminal
+		cancel, _, err := r.entryMetadataLocked(req.ThreadID, req.CancelEntryID)
+		if err != nil {
+			return CancelTurnResult{}, err
+		}
 		committed = true
 		return CancelTurnResult{CancelRequest: cloneEntry(cancel), Terminal: cloneEntry(terminal), Replayed: true}, nil
 	}
@@ -671,7 +717,10 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		return CancelTurnResult{}, err
 	}
 	now := canonicalTime(req.Now, r.now)
-	cancel, found := findEntry(r.entries[req.ThreadID], req.CancelEntryID)
+	cancel, found, err := r.entryMetadataLocked(req.ThreadID, req.CancelEntryID)
+	if err != nil {
+		return CancelTurnResult{}, err
+	}
 	if found {
 		if cancel.Type != EntryCancelRequested || cancel.TurnID != req.TurnID || cancel.RunID != req.RunID ||
 			cancel.RequestKey != req.RequestKey || cancel.RequestFingerprint != req.RequestFingerprint {
@@ -754,7 +803,7 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	}
 	meta = r.threads[req.ThreadID]
 	r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "stopped", now)
-	terminal := Entry{
+	terminal = Entry{
 		ID: req.TerminalEntryID, ThreadID: req.ThreadID, ParentID: meta.LeafID,
 		Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,
 		RequestFingerprint: req.OutcomeFingerprint, CreatedAt: now, TurnStatus: TurnAborted,
@@ -767,7 +816,11 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	if req.PreserveProviderState {
 		r.reanchorProviderStateLocked(req.ThreadID, terminal.ID, "", now)
 	} else if req.ClearProviderState {
-		r.settleContextOnlyProviderStateLocked(req.ThreadID, req.TurnID, req.RunID, terminal.ID, now)
+		started, _, err := r.entryMetadataLocked(req.ThreadID, runtimeTurnStartedEntryID(req.TurnID))
+		if err != nil {
+			return CancelTurnResult{}, err
+		}
+		r.settleContextOnlyProviderStateLocked(started, req.ThreadID, req.TurnID, req.RunID, terminal.ID, now)
 	}
 	result.Terminal = cloneEntry(terminal)
 	committed = true
@@ -1039,9 +1092,8 @@ func (r *MemoryRepo) FindTurnRequest(ctx context.Context, threadID, requestKey s
 	return Entry{}, false, nil
 }
 
-func (r *MemoryRepo) settleContextOnlyProviderStateLocked(threadID, turnID, runID, terminalID string, now time.Time) {
-	started, found := findEntry(r.entries[threadID], runtimeTurnStartedEntryID(turnID))
-	if !found || started.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
+func (r *MemoryRepo) settleContextOnlyProviderStateLocked(started Entry, threadID, turnID, runID, terminalID string, now time.Time) {
+	if started.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
 		r.deleteProviderStateLocked(threadID)
 		return
 	}

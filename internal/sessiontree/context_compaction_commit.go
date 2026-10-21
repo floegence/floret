@@ -66,7 +66,10 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	if !active || activeTurnID != turnID {
 		return ContextCompactionCommitResult{}, ErrStaleAuthority
 	}
-	started, found := findEntry(r.entries[threadID], runtimeTurnStartedEntryID(turnID))
+	started, found, err := r.entryMetadataLocked(threadID, runtimeTurnStartedEntryID(turnID))
+	if err != nil {
+		return ContextCompactionCommitResult{}, err
+	}
 	if !found || started.RunID != runID || (started.Metadata[TurnKindMetadataKey] == TurnKindContextCompaction) != (req.Finish != nil) {
 		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction turn admission identity conflicts", ErrAuthorityCorrupt)
 	}

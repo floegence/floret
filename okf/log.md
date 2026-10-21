@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Share exact canonical entry locators across lifecycle admission,
+  replay and settlement; record SQLite scaling diagnostics and explicit remaining
+  limits in [history performance](workflows/history-performance.md#exact-admission-and-terminal-locators).
+
 - 2026-10-20: Resolve confirmed tool results through exact indexed canonical sources, validating active-path identity without full historical projection. See [runtime contracts](api/runtime.md).
 
 - 2026-10-20: Separate raw control-output body extents from trimmed display text, preserve whitespace-only access and evict reconstructible transformed bodies. See [native updates](api/thread-updates.md#active-output-residency).
