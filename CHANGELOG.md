@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Resolve send request identities through the existing canonical control index.
+  Preserve last-started replay semantics, transactional rollback and restart
+  rebuilds without scanning unrelated historical entries.
+
 - Resolve stable admission and terminal identities through the existing exact
   canonical entry index. Reject corrupt locators without fallback scans and
   keep accepted-turn reads independent of unrelated history size.

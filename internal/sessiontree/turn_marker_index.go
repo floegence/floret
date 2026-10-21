@@ -22,7 +22,7 @@ func (r *MemoryRepo) ensureTurnMarkersLocked(threadID string) {
 	if r.activeTurns == nil {
 		r.activeTurns = map[string]map[string]int{}
 	}
-	if r.turnMarkers[threadID] == nil || r.activeTurns[threadID] == nil {
+	if r.turnMarkers[threadID] == nil || r.activeTurns[threadID] == nil || r.turnRequests[threadID] == nil {
 		r.rebuildTurnMarkersLocked(threadID)
 	}
 }
@@ -33,6 +33,10 @@ func (r *MemoryRepo) rebuildTurnMarkersLocked(threadID string) {
 	if r.activeTurns == nil {
 		r.activeTurns = map[string]map[string]int{}
 	}
+	if r.turnRequests == nil {
+		r.turnRequests = map[string]map[string][]int{}
+	}
+	r.turnRequests[threadID] = map[string][]int{}
 	r.turnMarkers[threadID] = map[string]turnMarkerIndex{}
 	r.activeTurns[threadID] = map[string]int{}
 	for ordinal, entry := range r.entries[threadID] {
@@ -40,6 +44,9 @@ func (r *MemoryRepo) rebuildTurnMarkersLocked(threadID string) {
 	}
 }
 func (r *MemoryRepo) observeTurnMarkerLocked(threadID string, ordinal int, entry Entry) {
+	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+		r.turnRequests[threadID][entry.RequestKey] = append(r.turnRequests[threadID][entry.RequestKey], ordinal)
+	}
 	if (entry.Type != EntryTurnMarker && entry.Type != EntryCancelRequested) || strings.TrimSpace(entry.TurnID) == "" {
 		return
 	}

@@ -23,6 +23,18 @@ func (checkpoint journalAppendCheckpoint) restore(r *MemoryRepo) {
 	for _, entry := range current[len(previous.entries):] {
 		delete(r.entryOrdinals[id], entry.ID)
 		delete(r.entryDepths[id], entry.ID)
+		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+			positions := r.turnRequests[id][entry.RequestKey]
+			end := len(positions)
+			for end > 0 && positions[end-1] >= len(previous.entries) {
+				end--
+			}
+			if end == 0 {
+				delete(r.turnRequests[id], entry.RequestKey)
+			} else {
+				r.turnRequests[id][entry.RequestKey] = positions[:end]
+			}
+		}
 		for _, source := range []string{entry.Message.ContentSourceID, entry.Message.ReasoningSourceID} {
 			locators := r.outputSources[id][source]
 			end := len(locators)

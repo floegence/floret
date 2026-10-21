@@ -1083,13 +1083,27 @@ func (r *MemoryRepo) FindTurnRequest(ctx context.Context, threadID, requestKey s
 	if _, found := r.threads[threadID]; !found {
 		return Entry{}, false, ErrThreadNotFound
 	}
-	for i := len(r.entries[threadID]) - 1; i >= 0; i-- {
-		entry := r.entries[threadID][i]
-		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && entry.RequestKey == requestKey {
-			return cloneEntry(entry), true, nil
-		}
+	r.ensureTurnMarkersLocked(threadID)
+	positions := r.turnRequests[threadID][requestKey]
+	if len(positions) == 0 {
+		return Entry{}, false, nil
 	}
-	return Entry{}, false, nil
+	ordinal := positions[len(positions)-1]
+	if ordinal < 0 || ordinal >= len(r.entries[threadID]) {
+		return Entry{}, true, ErrAuthorityCorrupt
+	}
+	entry := r.entries[threadID][ordinal]
+	if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.RequestKey != requestKey {
+		return Entry{}, true, ErrAuthorityCorrupt
+	}
+	entry, _, err := r.entryMetadataLocked(threadID, entry.ID)
+	if err != nil {
+		return Entry{}, true, err
+	}
+	if err := ValidateEntryIntegrity(entry); err != nil {
+		return Entry{}, true, err
+	}
+	return cloneEntry(entry), true, nil
 }
 
 func (r *MemoryRepo) settleContextOnlyProviderStateLocked(started Entry, threadID, turnID, runID, terminalID string, now time.Time) {

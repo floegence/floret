@@ -741,6 +741,7 @@ type MemoryRepo struct {
 	turnEntryOrdinals map[string]map[string][]int
 	turnEntryCounts   map[string]map[string]int
 	turnMarkers       map[string]map[string]turnMarkerIndex
+	turnRequests      map[string]map[string][]int
 	activeTurns       map[string]map[string]int
 	outputSources     map[string]map[string][]int
 	now               func() time.Time
@@ -768,6 +769,7 @@ func newMemoryRepo(now func() time.Time) *MemoryRepo {
 		turnEntryOrdinals: map[string]map[string][]int{},
 		turnEntryCounts:   map[string]map[string]int{},
 		turnMarkers:       map[string]map[string]turnMarkerIndex{},
+		turnRequests:      map[string]map[string][]int{},
 		activeTurns:       map[string]map[string]int{},
 		outputSources:     map[string]map[string][]int{},
 		now:               now,
@@ -1160,8 +1162,8 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 		if strings.TrimSpace(copy.TurnID) != "" {
 			r.turnEntryOrdinals[threadID][copy.TurnID] = append(r.turnEntryOrdinals[threadID][copy.TurnID], ordinal)
 			r.turnEntryCounts[threadID][copy.TurnID]++
-			r.observeTurnMarkerLocked(threadID, ordinal, copy)
 		}
+		r.observeTurnMarkerLocked(threadID, ordinal, copy)
 	}
 }
 
@@ -1266,6 +1268,7 @@ func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
 	delete(r.turnEntryOrdinals, threadID)
 	delete(r.turnEntryCounts, threadID)
 	delete(r.turnMarkers, threadID)
+	delete(r.turnRequests, threadID)
 	delete(r.activeTurns, threadID)
 	delete(r.outputSources, threadID)
 }
