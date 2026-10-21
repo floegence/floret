@@ -1451,3 +1451,125 @@ func TestPublishedCanonicalBodyReadAndSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishedScopedWindowAndCanonicalManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "window.sqlite")
+	text := strings.Repeat("中é🌸\r\n", 18000)
+	open := func() (*runtime.Host, runtime.ThreadService) {
+		host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(path)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+			gateway := florettest.NewScriptedGateway(provider.Identity{Provider: "test", Model: "window", StateCompatibilityKey: "window:v1"}, provider.Capabilities{Reasoning: provider.ReasoningUnsupported}, florettest.Step{Events: []provider.Event{{Type: provider.EventDelta, Text: text}, {Type: provider.EventDone, Reason: "stop"}}})
+			return runtime.NewAgent(config.AgentConfig{Profile: config.AgentProfile{ID: "window", Name: "Window"}, SystemPrompt: "Test.", Context: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}}, gateway)
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, service
+	}
+	host, service := open()
+	commands := service.(runtime.ThreadCommandService)
+	created, err := commands.CreateAck(t.Context(), runtime.CreateThreadInput{RequestKey: "window-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = commands.SendAck(t.Context(), runtime.SendInput{ThreadID: created.ThreadID, RequestKey: "window-send", Input: runtime.UserInput{Text: "generate"}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for {
+		summary, err := service.(runtime.ThreadSummaryReader).Summary(ctx, created.ThreadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.Activity == runtime.ThreadActivityIdle && summary.LastOutcome != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	scope := threadquery.Scope{Authority: "window-reader", ThreadIDs: []identity.ThreadID{created.ThreadID}}
+	for restart := range 2 {
+		windows, ok := service.(runtime.ThreadWindowSource)
+		if !ok {
+			t.Fatal("missing bounded window source")
+		}
+		subscription, err := windows.SubscribeWindowUpdates(t.Context(), scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := subscription.SetWindow(ctx, scope, runtime.ThreadWindowInput{ThreadID: created.ThreadID}); err != nil {
+			t.Fatal(err)
+		}
+		update, err := subscription.Next(ctx)
+		for err == nil && update.Window == nil {
+			update, err = subscription.Next(ctx)
+		}
+		if err != nil || update.Window == nil || update.Window.Value == nil {
+			t.Fatalf("baseline=%+v err=%v", update, err)
+		}
+		page := update.Window.Value
+		if page.ViewVersion != update.ViewVersion || len(page.Items) > 150 {
+			t.Fatal("unbounded or mismatched baseline")
+		}
+		raw, err := json.Marshal(page)
+		if err != nil || len(raw) > 512<<10 {
+			t.Fatal("page exceeds wire budget", err)
+		}
+		var body *runtime.ThreadItemBody
+		for _, item := range page.Items {
+			if item.Kind == runtime.ThreadItemAssistant {
+				body = item.Body
+			}
+		}
+		if body == nil || body.SourceID == "" || body.Bytes != len(text) || body.PreviewBytes >= len(text) {
+			t.Fatalf("body=%+v", body)
+		}
+		manifest := service.(runtime.ThreadBodyManifestReader)
+		input := runtime.ThreadBodyManifestInput{ThreadID: created.ThreadID, SourceID: body.SourceID, Field: body.Field}
+		hash := sha256.New()
+		for {
+			parts, err := manifest.BodyManifest(ctx, scope, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(parts.Parts) > 150 || parts.LeafID == "" {
+				t.Fatal("invalid manifest")
+			}
+			for _, part := range parts.Parts {
+				for offset := 0; offset < part.Bytes; {
+					chunk, err := service.(runtime.ThreadBodyReader).ReadBody(ctx, scope, runtime.ThreadBodyInput{ThreadID: created.ThreadID, EntryID: part.EntryID, Field: part.Field, SHA256: part.SHA256, OffsetBytes: offset})
+					if err != nil || len(chunk.Text) == 0 {
+						t.Fatal("body read failed", err)
+					}
+					hash.Write([]byte(chunk.Text))
+					offset += len(chunk.Text)
+				}
+			}
+			if !parts.HasMore {
+				break
+			}
+			input.LeafID, input.AfterEntryID = parts.LeafID, parts.NextEntryID
+		}
+		if fmt.Sprintf("%x", hash.Sum(nil)) != fmt.Sprintf("%x", sha256.Sum256([]byte(text))) {
+			t.Fatal("manifest lost canonical bytes")
+		}
+		subscription.ClearWindow(created.ThreadID)
+		if err := subscription.SetWindow(ctx, threadquery.Scope{Authority: scope.Authority}, runtime.ThreadWindowInput{ThreadID: created.ThreadID}); !errors.Is(err, threadquery.ErrRecordUnavailable) {
+			t.Fatal("revoked scope accepted", err)
+		}
+		subscription.Close()
+		if err := host.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if restart == 0 {
+			host, service = open()
+		}
+	}
+}
