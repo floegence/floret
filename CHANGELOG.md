@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Require Go 1.27.3, including the standard-library certificate verification
+  correction for GO-2026-6809 reported by the release vulnerability gate.
+
 - Add optional `ThreadItemBodyReader.ItemBody` to resolve current canonical or
   live text independently of window preview size, without reading body bytes or
   opening another observation subscription. Preserve fresh scope authorization,
