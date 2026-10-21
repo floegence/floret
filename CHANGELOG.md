@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.77.0 - 2026-10-21
+
 - Bound ordinary live-text coalescing to 25ms while preserving immediate
   semantic boundaries and the existing byte limit.
 
