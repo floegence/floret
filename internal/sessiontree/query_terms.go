@@ -76,29 +76,70 @@ func (stream *queryRuneStream) finish() {
 	}
 }
 
-func queryDocumentTerms(record *queryRecord) []string {
-	result := []string{}
-	for _, field := range []string{"text", "title", "arguments", "result"} {
-		// Negative padding distinguishes short grams from actual U+0000 content.
-		// Encode each unique term only once, never once per source character.
-		grams := map[[3]rune]struct{}{}
+// queryTermCollector receives field parts and arbitrary byte fragments. Both
+// complete projections and storage-backed rebuilds use these exact separator,
+// Unicode and ngram rules without joining source fields.
+type queryTermField struct {
+	name   string
+	bytes  int
+	grams  map[[3]rune]struct{}
+	stream queryRuneStream
+}
+
+type queryTermCollector struct {
+	fields []*queryTermField
+	active []*queryTermField
+}
+
+func newQueryTermCollector() *queryTermCollector {
+	collector := &queryTermCollector{}
+	for _, name := range []string{"text", "title", "arguments", "result"} {
+		field := &queryTermField{name: name, grams: map[[3]rune]struct{}{}}
 		previous := [2]rune{}
 		count := 0
-		stream := queryRuneStream{emit: func(ch rune) {
+		field.stream.emit = func(ch rune) {
 			ch = unicode.ToLower(ch)
-			grams[[3]rune{ch, -1, -1}] = struct{}{}
+			field.grams[[3]rune{ch, -1, -1}] = struct{}{}
 			if count > 0 {
-				grams[[3]rune{previous[1], ch, -1}] = struct{}{}
+				field.grams[[3]rune{previous[1], ch, -1}] = struct{}{}
 			}
 			if count > 1 {
-				grams[[3]rune{previous[0], previous[1], ch}] = struct{}{}
+				field.grams[[3]rune{previous[0], previous[1], ch}] = struct{}{}
 			}
 			previous[0], previous[1] = previous[1], ch
 			count = min(2, count+1)
-		}}
-		record.visitText(field, stream.write)
-		stream.finish()
-		for gram := range grams {
+		}
+		collector.fields = append(collector.fields, field)
+	}
+	return collector
+}
+
+func (collector *queryTermCollector) beginPart(name string) {
+	collector.active = collector.active[:0]
+	for _, field := range collector.fields {
+		if field.name != "text" && field.name != name {
+			continue
+		}
+		if field.bytes > 0 && name != "body" {
+			field.stream.write("\n")
+			field.bytes++
+		}
+		collector.active = append(collector.active, field)
+	}
+}
+
+func (collector *queryTermCollector) write(text string) {
+	for _, field := range collector.active {
+		field.stream.write(text)
+		field.bytes += len(text)
+	}
+}
+
+func (collector *queryTermCollector) finish() []string {
+	result := []string{}
+	for _, field := range collector.fields {
+		field.stream.finish()
+		for gram := range field.grams {
 			size := 1
 			if gram[1] >= 0 {
 				size++
@@ -106,11 +147,25 @@ func queryDocumentTerms(record *queryRecord) []string {
 			if gram[2] >= 0 {
 				size++
 			}
-			result = append(result, queryAtomicTerm(field, string(gram[:size])))
+			result = append(result, queryAtomicTerm(field.name, string(gram[:size])))
 		}
 	}
 	sort.Strings(result)
 	return result
+}
+
+func queryDocumentTerms(record *queryRecord) []string {
+	collector := newQueryTermCollector()
+	for _, part := range record.parts {
+		collector.beginPart(part.field)
+		collector.write(part.text)
+	}
+	if len(record.activities) > 0 {
+		collector.beginPart("presentation")
+		raw, _ := json.Marshal(record.activities)
+		collector.write(string(raw))
+	}
+	return collector.finish()
 }
 
 func (record *queryRecord) text(field string) string {

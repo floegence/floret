@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Stream canonical search-index rebuild sources through the shared term collector, preserving exact public fields and excluding private reasoning without complete-source cache residency. See [history diagnostics](workflows/history-performance.md#streaming-query-rebuild-sources).
+
 - 2026-10-20: Validate current-schema bodies one entry at a time, retain canonical locators before domain checks, and share metadata-only query correspondence. Preserve exact citation-range validation during index construction; record allocation diagnostics and remaining startup limits in [history performance](workflows/history-performance.md#current-schema-startup-residency).
 
 - 2026-10-20: Document [cold summary source reads](workflows/history-performance.md#cold-summary-source-reads), frozen independent semantic regressions and remaining metadata/residency limits.
