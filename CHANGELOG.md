@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v7.78.0 - 2026-10-21
 
 - Require Go 1.27.3, including the standard-library certificate verification
   correction for GO-2026-6809 reported by the release vulnerability gate.

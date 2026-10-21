@@ -143,7 +143,8 @@ Native observation queues enforce both 64 batches and 1MiB of encoded payload.
 Overflow, cancellation, invalidation and Close release pending payloads. A consumer
 reestablishes a baseline after overflow; canonical execution does not wait for it.
 This queue limit alone does not make full-item replacement or full-view reads
-bounded: the bounded-window capability is separate follow-up work.
+bounded. Use the released `ThreadWindowSource` for bounded presentation reads
+and observation through the same actor and canonical version.
 
 # Canonical body reads and search
 
