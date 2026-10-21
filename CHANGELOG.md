@@ -2,6 +2,10 @@
 
 ## v7.78.0 - 2026-10-21
 
+- Add opt-in deterministic dense-tool SQLite qualification fixtures at 1x,
+  10x and 100x history, with journal, public item and database hashes; validate
+  restart and continuation through public runtime APIs.
+
 - Require Go 1.27.3, including the standard-library certificate verification
   correction for GO-2026-6809 reported by the release vulnerability gate.
 
