@@ -174,9 +174,9 @@ func (backend *sqliteBackend) initialize(ctx context.Context) error {
 				value BLOB NOT NULL,
 				PRIMARY KEY (namespace, key)
 			)`,
-			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('3' AS BLOB))`,
+			`INSERT INTO floret_backend_metadata(name, value) VALUES ('physical_schema', CAST('4' AS BLOB))`,
 		}
-		statements = append(statements, sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTerms)
+		statements = append(statements, sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexPostings, sqliteIndexPostingDocuments)
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return err
@@ -288,7 +288,7 @@ func (backend *sqliteBackend) ResetFloretStorage(ctx context.Context) (bool, err
 		return false, err
 	}
 	if physical == "3" {
-		for _, statement := range []string{"DELETE FROM floret_index_terms", "DELETE FROM floret_index_documents"} {
+		for _, statement := range []string{"DELETE FROM floret_index_postings", "DELETE FROM floret_index_documents"} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return false, classifySQLiteError(ctx, err)
 			}

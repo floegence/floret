@@ -15,11 +15,12 @@ import (
 
 type queryPart struct{ field, text string }
 type queryRecord struct {
-	key        string
-	row        threadquery.Record
-	sources    []string
-	parts      []queryPart
-	activities []*tools.ActivityPresentation
+	key                                     string
+	row                                     threadquery.Record
+	firstSource, previousSource, lastSource string
+	appendTerms                             bool
+	parts                                   []queryPart
+	activities                              []*tools.ActivityPresentation
 }
 type queryThread struct {
 	leaf                  string
@@ -165,7 +166,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		if assistant {
 			base.Role = "assistant"
 		}
-		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: queryEntryParts(entry), sources: []string{entry.ID}}
+		record := &queryRecord{key: threadID + "\x00messages\x00" + entry.ID, row: base, parts: queryEntryParts(entry), firstSource: entry.ID, lastSource: entry.ID}
 		if assistant && state.previous != nil && state.previousAssistant && state.previousContentSource == entry.Message.ContentSourceID && entry.Message.ContentSourceID != "" && state.previous.row.TurnID.String() == entry.TurnID && state.previous.row.RunID.String() == entry.RunID {
 			previous, err := projector.read(state, state.previous.key)
 			if err != nil {
@@ -176,7 +177,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			}
 			record = projector.mutableRecord(previous)
 			record.parts = append(record.parts, queryPart{"body", entry.Message.Content})
-			record.sources = append(record.sources, entry.ID)
+			record.previousSource, record.lastSource = record.lastSource, entry.ID
 		} else {
 			state.order++
 		}
@@ -198,7 +199,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		base.ToolKind = "local"
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + entry.Message.ToolCallID
-		record := &queryRecord{key: key, row: base, sources: []string{entry.ID}}
+		record := &queryRecord{key: key, row: base, firstSource: entry.ID, lastSource: entry.ID}
 		if entry.Type == EntryToolCall {
 			record.parts = queryEntryParts(entry)
 			state.order++
@@ -220,7 +221,7 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			record.row.Elapsed = at.Sub(record.row.Time)
 			record.row.Status = entry.Message.ToolResult.Status
 			record.parts = append(record.parts, queryEntryParts(entry)...)
-			record.sources = append(record.sources, entry.ID)
+			record.previousSource, record.lastSource = record.lastSource, entry.ID
 		}
 		projector.replace(state, record)
 	case EntryCustom:
@@ -238,14 +239,14 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 		base.ToolKind = "hosted"
 		base.Status = "unconfirmed"
 		key := threadID + "\x00tool_calls\x00" + entry.TurnID + "\x00" + entry.RunID + "\x00" + ev.ToolID
-		record := &queryRecord{key: key, row: base, parts: []queryPart{{"tool_name", ev.ToolName}}, sources: []string{entry.ID}}
+		record := &queryRecord{key: key, row: base, parts: []queryPart{{"tool_name", ev.ToolName}}, firstSource: entry.ID, lastSource: entry.ID}
 		previous, err := projector.read(state, key)
 		if err != nil {
 			return err
 		}
 		if previous != nil {
 			record = projector.mutableRecord(previous)
-			record.sources = append(record.sources, entry.ID)
+			record.previousSource, record.lastSource = record.lastSource, entry.ID
 		} else {
 			state.order++
 		}
@@ -297,9 +298,9 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 }
 
 // Full chronological projection owns its records. Only transaction overlays
-// copy prior published locators; a giant source list grows once during startup.
+// copy prior published records; accepted transaction records are already owned.
 func (projector *queryProjector) mutableRecord(record *queryRecord) *queryRecord {
-	if projector.changed == nil {
+	if projector.changed == nil || projector.changed[record.key] == record {
 		return record
 	}
 	return copyQueryRecord(record)
@@ -308,7 +309,6 @@ func (projector *queryProjector) mutableRecord(record *queryRecord) *queryRecord
 func copyQueryRecord(record *queryRecord) *queryRecord {
 	result := *record
 	result.parts = append([]queryPart(nil), record.parts...)
-	result.sources = append([]string(nil), record.sources...)
 	result.activities = append([]*tools.ActivityPresentation(nil), record.activities...)
 	return &result
 }
@@ -339,9 +339,7 @@ func (record *queryRecord) estimateBytes() int64 {
 	for _, part := range record.parts {
 		size += int64(len(part.text) + 32)
 	}
-	for _, source := range record.sources {
-		size += int64(len(source) + 16)
-	}
+	size += int64(len(record.firstSource) + len(record.previousSource) + len(record.lastSource))
 	if len(record.activities) > 0 {
 		raw, _ := json.Marshal(record.activities)
 		size += int64(len(raw))

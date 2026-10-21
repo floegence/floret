@@ -230,7 +230,7 @@ Rules:
 - Floret migrates only Floret-owned state through its own storage kernel. Hosts
   and downstream products must treat the backend records as opaque and must
   not reconstruct, patch, or migrate Floret domain records themselves.
-- SQLite physical formats 1 -> 2 -> 3 and logical storage 7 -> 8 -> 9 migrate in the same
+- SQLite physical formats 1 -> 2 -> 3 -> 4 and logical storage 7 -> 8 -> 9 migrate in the same
   runtime startup transaction as the permanent session-tree lineage. Prompt
   history uses append-ordered scope/category records; the global v1 snapshot
   reader belongs exclusively to migration. Do not reintroduce whole-cache

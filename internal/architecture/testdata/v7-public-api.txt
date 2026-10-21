@@ -1964,6 +1964,7 @@ field IndexDocument.ThreadID string
 field IndexDocument.Object string
 field IndexDocument.Metadata []byte
 field IndexDocument.Terms []string
+type IndexDocumentAppender interface interface{AppendIndexDocument(github.com/floegence/floret/v7/storage/spi.IndexDocument) error}
 type IndexDocumentReader interface interface{ReadIndexDocument(threadID string, key string) (github.com/floegence/floret/v7/storage/spi.IndexDocument, error)}
 type IndexIntegrityChecker interface interface{CheckIndexIntegrity() error}
 type IndexQuery struct

@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -64,7 +65,15 @@ func TestCanonicalQueryTermsMatchCompleteProjectionWithoutSourceResidency(t *tes
 			if err != nil {
 				return err
 			}
-			for _, source := range record.sources {
+			var locator queryDocumentMetadata
+			if err := json.Unmarshal(document.Metadata, &locator); err != nil {
+				return err
+			}
+			sources, err := loaded.queryDocumentSources("a", locator)
+			if err != nil {
+				return err
+			}
+			for _, source := range sources {
 				entry := loaded.entries["a"][loaded.entryOrdinals["a"][source]]
 				for _, ref := range entry.bodyFields {
 					releaseCachedBody(ref)
@@ -77,7 +86,7 @@ func TestCanonicalQueryTermsMatchCompleteProjectionWithoutSourceResidency(t *tes
 			if !reflect.DeepEqual(actual, referenceQueryDocumentTerms(want.records[key])) {
 				t.Fatalf("terms differ for %q", key)
 			}
-			for _, source := range record.sources {
+			for _, source := range sources {
 				entry := loaded.entries["a"][loaded.entryOrdinals["a"][source]]
 				for _, ref := range entry.bodyFields {
 					if _, found := cachedBody(ref); found {

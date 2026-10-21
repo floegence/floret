@@ -100,3 +100,48 @@ func BenchmarkSQLiteFixedHistoryBodyRead(b *testing.B) {
 		})
 	}
 }
+
+func newMergedHistorySQLiteRepo(tb testing.TB, count int) *BackendRepo {
+	tb.Helper()
+	backend, err := storagebridge.Open(tb.Context(), storagebridge.Source(publicstorage.SQLite(tb.TempDir()+"/merged.sqlite")))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = backend.Close() })
+	repo, err := NewBackendRepo(tb.Context(), backend, time.Now)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if err := repo.UpdateDomain(tb.Context(), func(memory *MemoryRepo, _ spi.WriteTx) error {
+		if _, err := memory.CreateThread(tb.Context(), ThreadMeta{ID: "history"}); err != nil {
+			return err
+		}
+		for i := range count {
+			if _, err := memory.Append(tb.Context(), Entry{ThreadID: "history", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "fixed merged historical segment", ContentSourceID: "shared-source"}}, AppendOptions{ID: fmt.Sprint(i)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		tb.Fatal(err)
+	}
+	return repo
+}
+
+func BenchmarkSQLiteMergedHistoryAppend(b *testing.B) {
+	for _, count := range []int{1096, 10960, 109600} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			repo := newMergedHistorySQLiteRepo(b, count)
+			rollback := errors.New("fixed merged history rollback")
+			repo.backend = &domainCommitBoundaryBackend{Backend: repo.backend, afterCallback: func() error { return rollback }}
+			entry := Entry{ID: "new-segment", ThreadID: "history", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "new segment", ContentSourceID: "shared-source"}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := repo.Append(b.Context(), entry, AppendOptions{}); !errors.Is(err, rollback) {
+					b.Fatalf("append: %v", err)
+				}
+			}
+		})
+	}
+}

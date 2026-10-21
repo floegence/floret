@@ -43,8 +43,12 @@ func (r *MemoryRepo) canonicalQueryDocumentTerms(ctx context.Context, tx spi.Rea
 		collector.write(part.text)
 		return ctx.Err()
 	}
+	sources, err := r.queryDocumentSources(document.ThreadID, metadata)
+	if err != nil {
+		return nil, err
+	}
 	var activities []Entry
-	for sourceIndex, source := range metadata.Sources {
+	for sourceIndex, source := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

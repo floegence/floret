@@ -1,5 +1,7 @@
 # Floret OKF Update Log
 
+- 2026-10-20: Keep merged query appends proportional to new source bytes through fixed canonical boundaries and optional atomic term insertion. Append SQLite physical 3 -> 4 with rollback and historical opaque-record preservation; retire runtime FTS replacement. See [canonical queries](api/thread-query.md) and [storage](api/storage.md).
+
 - 2026-10-20: Stream canonical search-index rebuild sources through the shared term collector, preserving exact public fields and excluding private reasoning without complete-source cache residency. See [history diagnostics](workflows/history-performance.md#streaming-query-rebuild-sources).
 
 - 2026-10-20: Validate current-schema bodies one entry at a time, retain canonical locators before domain checks, and share metadata-only query correspondence. Preserve exact citation-range validation during index construction; record allocation diagnostics and remaining startup limits in [history performance](workflows/history-performance.md#current-schema-startup-residency).

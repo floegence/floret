@@ -163,5 +163,36 @@ return no partial term set. A single actual-SQLite diagnostic measured 1.7 ms /
 833,888 allocated bytes for one roughly 40 KiB source and 124.0 ms / 81,100,976
 allocated bytes for 100 segments. These totals include physical decoding and
 are not retained heap, RSS or fixed-change latency. Distinct term inventory and source metadata still
-grow with content; incremental updates to a merged query document still require
-separate work. This is not production-stack acceptance.
+grow with content; incremental SQLite merged-source updates now use fixed source boundaries and
+new-term insertion. This is not production-stack acceptance.
+
+## Merged-source append diagnostic
+
+    GOWORK=off go test ./internal/sessiontree -run 'TestMergedQuery' -count=1
+    GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkSQLiteMergedHistoryAppend -benchtime=10x -benchmem
+
+A real SQLite write callback, including derived postings, rolls back after work
+to keep the same measured history. Initial single-sample results on Apple M5 Pro:
+
+| Segments | Before ms | Before allocated bytes | After ms | After allocated bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,096 | 4.09 | 7,416,520 | 0.69 | 88,152 |
+| 10,960 | 36.03 | 73,599,176 | 0.47 | 97,600 |
+| 109,600 | 352.43 | 740,875,728 | 1.62 | 95,376 |
+
+A subsequent ten-iteration run of the completed change measured:
+
+| Segments | Time/op | Allocated bytes/op | Allocations/op |
+| ---: | ---: | ---: | ---: |
+| 1,096 | 313,629 ns | 76,839 | 655 |
+| 10,960 | 506,112 ns | 76,860 | 656 |
+| 109,600 | 236,767 ns | 76,799 | 655 |
+
+These short latency samples remain noisy. The fixed-change allocation trend is
+bounded; they do not certify production CPU or end-to-end latency. Source reads
+and metadata no longer grow with the merged prefix. Correctness covers old and appended content,
+cross-segment Unicode and CRLF, NUL, restart, transactional rollback, batch
+append, fixed metadata size and bounded source reads. Physical migration covers
+format 3 source records, rollback, cancellation, panic, restart idempotency and
+unchanged opaque bytes. Production Flower latency, heap/RSS and qualification
+remain outstanding.

@@ -127,7 +127,19 @@ uncommitted facts; successful dispatch and turn boundaries clear those pending
 facts after commit. Shutdown flushes remaining additions. The legacy global
 snapshot decoder lives only in [startup migration](../../internal/storage/prompt_migration.go).
 
-SQLite physical format 3 adds persistent document metadata and contentless FTS5
+SQLite physical format 4 uses unique indexed atomic term/document rows and
+fixed source-boundary metadata. The transactional 3 -> 4 migration removes only
+the derived FTS5 index, then the canonical owner rebuilds the projection before
+Host exposure. Failure, cancellation and panic roll back the physical change
+and derived rebuild together. Canonical opaque records remain byte-identical.
+Optional `storage/spi.IndexDocumentAppender` atomically inserts delta terms
+and replaces exact-scoped document metadata; missing identity returns
+`spi.ErrNotFound` and errors never switch implementations. Existing
+`IndexWriter.PutIndexDocument` remains complete replacement. The v7 public
+addition serves SQLite's merged-source update path and does not enlarge any
+required backend interface.
+
+SQLite physical format 3 introduced persistent metadata and contentless FTS5
 postings. The contiguous 2 -> 3 edge joins logical storage 8 -> 9 in the runtime
 startup transaction, preserving domain schema 19. Optional transaction-local
 IndexReader and IndexWriter keep physical indexing separate from canonical

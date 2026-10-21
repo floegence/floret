@@ -1130,14 +1130,20 @@ and pending responses for the affected scopes; repeated request attempts retain
 their original order. Turn settlement and shutdown flush only pending facts.
 Compaction changes the effective model context independently of storage history.
 
-SQLite physical format 3 adds source-locator metadata and contentless FTS5
-postings. The contiguous 2 -> 3 edge runs in the same startup transaction.
-Physical format 2 separates large record values from the primary-key
-index using a rowid records table. `runtime.Open` converts format 1, splits the
-legacy global prompt snapshot, migrates the session tree, updates logical
-storage version 9, and verifies the result in one transaction. The session-tree
-schema remains 20. Inspection reports physical upgrades as migration work and
-reuses each merged namespace across pages without writing the source.
+SQLite physical format 4 maintains contentless atomic term postings with
+ordinary indexed rows. Its 3 -> 4 edge retires the FTS5 projection and rebuilds
+derived postings through the canonical owner in the same startup transaction.
+Canonical bytes are unchanged. Source metadata stores fixed first/previous/last
+entry boundaries instead of growing lists. Optional
+`storage/spi.IndexDocumentAppender` adds only new terms and replaces metadata
+atomically; it preserves existing index contracts. A merged assistant append
+reads at most two short source tails for cross-boundary Unicode grams.
+
+All physical edges 1 -> 2 -> 3 -> 4 remain automatic. Format 2 separates large
+record values from the primary-key index. Startup also migrates the prompt
+history and permanent session-tree lineage, updates logical storage version 9,
+and verifies the complete result in one transaction. Inspection reports required
+upgrades without writing the source.
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
 without rebuilding the database. A host that owns an older SQLite file may call
