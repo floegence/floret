@@ -1043,6 +1043,12 @@ known. Pages select at most 150 items and 512 KiB encoded item data. Text previe
 are exact UTF-8 prefixes of at most 64 KiB; partial text is raw preview, never a
 standalone Markdown document. Committed text locators resolve through the body
 reader or manifest. Live text is borrowed from the Engine attempt's output owner.
+Optional `runtime.ThreadItemBodyReader.ItemBody` resolves an active-path item's
+current text locator without reading a preview or opening a subscription. Its
+scope is freshly authorized and its `PreviewBytes` is zero. Use this boundary to
+open full text independently of the page's preview allowance: a small item can
+be partial in a crowded page and complete when read alone. This operation never
+changes window interest, truncates source content or grants subsequent access.
 The actor retains only an exact byte extent and bounded summary, rather than a
 second accumulated string. Optional `runtime.ThreadLiveBodyReader` reads that
 display source by `ThreadID`, `RunID`, `SourceID` and frozen `ThroughBytes`.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add optional `ThreadItemBodyReader.ItemBody` to resolve current canonical or
+  live text independently of window preview size, without reading body bytes or
+  opening another observation subscription. Preserve fresh scope authorization,
+  active-path membership and explicit unavailable-source errors.
+
 ## v7.77.1 - 2026-10-21
 
 - Initialize the existing actor through its bounded acknowledgment read before
