@@ -11,31 +11,14 @@ import (
 func projectCanonicalQuery(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) (*queryThread, error) {
 	state := newQueryThread()
 	projector := &queryProjector{metadataOnly: true}
-	if meta.LeafID != "" {
-		leaf, err := readEntryLocator(tx, meta.ID, meta.LeafID)
+	if err := visitCanonicalPathMetadata(ctx, tx, meta.ID, meta.LeafID, func(entry Entry) error {
+		entry, err := canonicalQueryProjectionEntry(ctx, tx, entry, false)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for depth := int64(1); depth <= leaf.Depth; depth++ {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			node, err := entryAncestor(ctx, tx, meta.ID, leaf, depth)
-			if err != nil {
-				return nil, err
-			}
-			entry, err := readLocatedEntry(tx, backendDomainV32Format, meta.ID, node)
-			if err != nil {
-				return nil, err
-			}
-			entry, err = canonicalQueryProjectionEntry(ctx, tx, entry, false)
-			if err != nil {
-				return nil, err
-			}
-			if err := projector.observe(state, meta.ID, entry); err != nil {
-				return nil, err
-			}
-		}
+		return projector.observe(state, meta.ID, entry)
+	}); err != nil {
+		return nil, err
 	}
 	projector.finish(state, meta.ID, meta)
 	return state, nil

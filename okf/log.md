@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Bound resident query continuations and move cold reconstruction
+  outside mutation transactions, with source revalidation and fixed metadata
+  windows. See [canonical queries](api/thread-query.md).
+
 - 2026-10-22: Document schema 32 per-thread preparation for segmented v6–v31
   sources, complete source-inventory verification before cleanup, and bounded
   query metadata verification. Record the remaining monolithic startup gate in

@@ -15,7 +15,15 @@ No backend builds or persists a full-text index. There are no n-grams, term
 inventories, inverted postings, optional search-backend selection or background
 rebuilds. One metadata-only KV path stores exact source locators and record
 attributes in the canonical transaction. Appending a message does not reread
-historical bodies for query metadata.
+historical bodies for query metadata. Disposable continuations retain at most
+32 threads, each within a conservative 128 KiB allowance. Cold or oversized
+continuations are reconstructed from fixed canonical metadata windows outside
+the repository lock and write transaction. The mutation rechecks pinned thread
+metadata and the query manifest before using that continuation; a changed
+source is reread before any mutation callback runs. Temporary reconstruction
+still scales with one thread's metadata, not all prepared threads.
+See [continuation ownership](../../internal/sessiontree/backend_query_continuation.go)
+and [concurrency regressions](../../internal/sessiontree/backend_query_residency_test.go).
 
 Physical format 5 removes the released FTS/posting tables through the permanent
 1 -> 2 -> 3 -> 4 -> 5 migration lineage. Logical storage 9 -> 10 prevents an older

@@ -1168,7 +1168,11 @@ SQLite physical format 5 contains canonical records and metadata only. The
 4 -> 5 edge deletes the disposable search tables; all canonical bytes remain
 unchanged. Source metadata stores fixed first/previous/last entry boundaries
 without transcript copies, token terms or posting lists. Message appends update
-these locators without reading historical bodies.
+these locators without reading historical bodies. Query continuations retain at
+most 32 threads with a conservative 128 KiB allowance each. Cold or oversized
+continuations reconstruct from canonical metadata outside the write transaction,
+then recheck the thread and query manifest before committing. Chronological
+reconstruction uses fixed metadata windows; it does not retain transcript bodies.
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
 prompt history and the permanent session-tree lineage. Logical storage version
