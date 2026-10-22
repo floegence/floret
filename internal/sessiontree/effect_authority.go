@@ -617,17 +617,22 @@ func effectAttemptTerminalSafe(state EffectAttemptState) bool {
 }
 
 func canonicalEffectAttemptsForTurn(entries []Entry, turnID string) []EffectAttempt {
+	return canonicalEffectAttemptsIn(allRuntimeEntries(entries), turnID)
+}
+
+func canonicalEffectAttemptsIn(entries runtimeEntrySelection, turnID string) []EffectAttempt {
 	latest := make(map[string]EffectAttempt)
-	for _, entry := range entries {
+	entries.each(func(entry Entry) bool {
 		if entry.Type != EntryEffectAttempt || entry.TurnID != strings.TrimSpace(turnID) {
-			continue
+			return true
 		}
 		attempt, err := decodeEffectAttempt(entry)
 		if err != nil {
-			continue
+			return true
 		}
 		latest[attempt.EffectAttemptID] = attempt
-	}
+		return true
+	})
 	out := make([]EffectAttempt, 0, len(latest))
 	for _, attempt := range latest {
 		out = append(out, attempt)

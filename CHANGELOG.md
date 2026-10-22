@@ -1,5 +1,12 @@
 # Changelog
 
+## v7.78.1 - 2026-10-21
+
+- Settle ordinary turns from the existing ordered turn index instead of
+  materializing the complete canonical path. Keep the full path validation for
+  Goal-guarded completion and preserve pending interaction, effect, compaction,
+  steering, cancellation and replay semantics; no public API or schema change.
+
 ## v7.78.0 - 2026-10-21
 
 - Skip path-reference regular expressions for text with no possible path
