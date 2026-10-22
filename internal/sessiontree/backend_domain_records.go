@@ -35,6 +35,7 @@ type backendDomainManifest struct {
 	SourceVersion   int    `json:"source_version,omitempty"`
 	MigrationPhase  string `json:"migration_phase,omitempty"`
 	MigrationCursor []byte `json:"migration_cursor,omitempty"`
+	MigrationRoots  int64  `json:"migration_roots,omitempty"`
 }
 
 type backendDomainRootIndex struct {

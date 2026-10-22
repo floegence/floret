@@ -27,7 +27,7 @@ func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
 		return backendDomainManifest{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	var manifest backendDomainManifest
-	if err := decodeBackendDomainValue(backendDomainV32Format, record, &manifest); err != nil || manifest.Version != backendDomainV32Version || manifest.Sequence < 0 {
+	if err := decodeBackendDomainValue(backendDomainV32Format, record, &manifest); err != nil || manifest.Version != backendDomainV32Version || manifest.Sequence < 0 || manifest.MigrationRoots < 0 || manifest.MigrationPhase != "verify" && manifest.MigrationRoots != 0 {
 		return manifest, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	switch manifest.SourceVersion {
@@ -138,6 +138,7 @@ func verifyMigrationSourceRecord(ctx context.Context, tx spi.ReadTx, source, tar
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		seen := make(map[string]bool, len(roots.ThreadIDs))
+		var previous ThreadMeta
 		for _, id := range roots.ThreadIDs {
 			if seen[id] || id == "" {
 				return ErrAuthorityCorrupt
@@ -148,9 +149,13 @@ func verifyMigrationSourceRecord(ctx context.Context, tx spi.ReadTx, source, tar
 				return errors.Join(ErrAuthorityCorrupt, err)
 			}
 			var meta ThreadMeta
-			if err := decodeBackendDomainValue(source, metaRecord, &meta); err != nil || meta.ParentThreadID != "" {
+			if err := decodeBackendDomainValue(source, metaRecord, &meta); err != nil || meta.ID != id || meta.ParentThreadID != "" || ValidateThreadMetaAuthority(meta) != nil {
 				return errors.Join(ErrAuthorityCorrupt, err)
 			}
+			if previous.ID != "" && (meta.CreatedAt.After(previous.CreatedAt) || meta.CreatedAt.Equal(previous.CreatedAt) && meta.ID <= previous.ID) {
+				return ErrAuthorityCorrupt
+			}
+			previous = meta
 		}
 		wantKey = backendDomainKey(record.Kind)
 	case backendDomainRecordEntry:
