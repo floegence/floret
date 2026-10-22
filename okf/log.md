@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Document schema 32 per-thread preparation for segmented v6–v31
+  sources, complete source-inventory verification before cleanup, and bounded
+  query metadata verification. Record the remaining monolithic startup gate in
+  [storage](api/storage.md#domain-migration) and [runtime](api/runtime.md#storage-startup).
+
 - 2026-10-22: Remove full-text indexing completely. Physical 5/logical 10 retire derived terms transactionally; metadata browsing reads only page bodies. See [canonical queries](api/thread-query.md) and [storage](api/storage.md).
 
 - 2026-10-22: Bound repeated request-history reads to execution-owned turn facts

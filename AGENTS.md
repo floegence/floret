@@ -176,7 +176,7 @@ Rules:
 ### Domain Schema Migration Contract
 
 - The Floret backend session-tree domain schema is a permanent migration
-  lineage. Version 31 is the current schema. The exact version 2 to version 3
+  lineage. Version 32 is the current schema. The exact version 2 to version 3
   SubAgent admission migration, version 3 to version 4 transactional root
   inventory migration, version 4 to version 5 typed runtime migration, version
   5 to version 6 segmented-record migration, version 6 to version 7 exact
@@ -203,7 +203,8 @@ Rules:
   request-bound measurement boundary migration, and version 28 to version 29
   explicit Goal continuation migration, and version 29 to version 30
   canonical body-block migration, and version 30 to version 31
-  structured activity-body migration are required
+  structured activity-body migration, and version 31 to version 32
+  canonical per-thread preparation migration are required
   automatic edges. Version 14 makes
   explicit marker `Entry.RunID` authoritative. Its migration may use only a
   validated canonical marker identity or an unambiguous same-path ancestor;
@@ -217,6 +218,10 @@ Rules:
   a Host-owned worker. No canonical operation may observe unpublished or
   partially migrated state; readiness waits must honor caller cancellation, and
   Host shutdown must wait for the active storage transaction to settle.
+  Segmented sources publish each validated thread dependency closure atomically;
+  bounded staging commits never expose partial journals. Source records remain
+  authoritative until publication and are removed only after complete inventory
+  verification. Already published threads remain usable if another thread fails.
 - Fresh stores initialize directly at the current domain schema. Existing
   current stores open without rewriting canonical bytes. Supported older state
   migrates exactly once, and repeated startup is idempotent.

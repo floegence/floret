@@ -87,3 +87,26 @@ func TestStreamingEnvelopeValidatesCompleteEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordRangeResumesAtExactSourceOffset(t *testing.T) {
+	tx := &boundedStreamTx{data: bytes.Repeat([]byte("retained 中文🌸\n"), 20000)}
+	for _, span := range []struct{ offset, length int64 }{{0, 0}, {17, 91}, {65531, 80000}, {int64(len(tx.data)), -1}, {91, -1}} {
+		reader, err := OpenRecordRange(t.Context(), tx, "history", []byte("snapshot"), span.offset, span.length)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(reader)
+		end := int64(len(tx.data))
+		if span.length >= 0 {
+			end = span.offset + span.length
+		}
+		if err != nil || !bytes.Equal(got, tx.data[span.offset:end]) || tx.maxRead > recordReadBlockBytes {
+			t.Fatalf("span=%+v err=%v", span, err)
+		}
+	}
+	for _, span := range []struct{ offset, length int64 }{{-1, 0}, {0, -2}, {int64(len(tx.data)) + 1, -1}, {1, int64(len(tx.data))}, {1, int64(^uint64(0) >> 1)}} {
+		if _, err := OpenRecordRange(t.Context(), tx, "history", []byte("snapshot"), span.offset, span.length); err == nil {
+			t.Fatalf("invalid span accepted: %+v", span)
+		}
+	}
+}

@@ -19,7 +19,7 @@ must not be decoded into a second Agent model by hosts.
 
 Floret's session-tree domain schema is a permanent v2 -> v3 -> v4 -> v5 -> v6
 -> v7 -> v8 -> v9 -> v10 -> v11 -> v12 -> v13 -> v14 -> v15 -> v16 -> v17 -> v18 -> v19 -> v20 -> v21 -> v22 -> v23 -> v24 -> v25 -> v26
--> v27 -> v28 -> v29 -> v30 -> v31 lineage. Version 31 is current. The v2 -> v3 edge reconstructs the exact
+-> v27 -> v28 -> v29 -> v30 -> v31 -> v32 lineage. Version 32 is current. The v2 -> v3 edge reconstructs the exact
 SubAgent admission authority, v3 -> v4 validates and establishes the root
 inventory projection, and v4 -> v5 moves lifecycle identity onto canonical
 entries and metadata. The v5 -> v6 edge replays any pending recovery frames,
@@ -77,10 +77,15 @@ pagination snapshots never persist.
 schema inspection. Domain migration and final invariant verification run in a
 Host-owned worker. Migration writes and schema publication remain transactional;
 write failure, cancellation, panic, schema drift, corrupt state, and future
-versions roll back or fail closed with prior canonical records intact. Current
-released formats publish through one global transaction, so thread operations
-wait together while status reads remain available. A current store opens
-without rewriting its canonical records. During v5 migration, the exact
+versions roll back or fail closed with prior canonical records intact.
+Segmented v6–v31 sources prepare thread dependency closures through the permanent
+migration chain. Bounded staging yields between transactions; publication of a
+complete validated closure is atomic. Foreground requests preempt background
+preparation, and usable threads remain available after an unrelated failure.
+Source cleanup follows complete root inventory and record verification. The
+monolithic v2–v5 path still gates canonical operations on complete migration;
+status reads remain available. A current store opens without rewriting its
+canonical records. During v5 migration, the exact
 adoption repair accepts a
 tool-result Raw value only when its stored hash is valid and replacing JSON's
 legacy `\\ufffd` escape produces the exact current projection. Floret validates
@@ -423,3 +428,26 @@ lengths and byte ranges to the historical snapshot importer. Built-in Memory
 and SQLite implement it. Third-party backends remain source-compatible through
 Get when they do not implement the capability. Once implemented, range-read
 errors fail closed instead of silently selecting an unbounded read.
+
+## Resumable canonical preparation
+
+Domain 32 owns canonical entry locators and immutable body references directly.
+Segmented historical sources remain in their original namespace while bounded
+staging commits create unpublished records. A source manifest identifies the
+exact permanent migration edge and freezes timestamps for synthesized facts.
+Publication validates the complete dependency closure and rechecks mutable
+metadata in the committing transaction. Only then can runtime operations read
+the new journal. Cleanup validates every retained record and the complete root
+inventory before removing the source. New and already published threads do not
+wait for unrelated history or inherit an unrelated migration failure.
+
+Query preparation stores source metadata only. Both cleanup and verification
+release the backend between pages; a missing manifest hides partial metadata.
+Concurrent canonical changes invalidate the candidate before publication. No
+text terms, postings, or durable query snapshots are introduced.
+
+Logical storage 11 recognizes this resumable state. Host readiness is an
+in-process observation of the canonical owner, not another durable lifecycle.
+The monolithic v2–v5 path still completes its existing migration before canonical
+operations are released; source-span indexing remains migration implementation
+work and is not an alternate public read path.

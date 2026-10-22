@@ -16,6 +16,24 @@ type migrationSourceReader struct {
 	backend spi.Backend
 }
 
+var _ spi.BoundedRecordReader = migrationSourceReader{}
+
+func (reader migrationSourceReader) NamespaceHasRecords(namespace string) (found bool, err error) {
+	if namespace == "" {
+		return false, spi.ErrInvalidArgument
+	}
+	err = reader.backend.View(reader.ctx, func(tx spi.ReadTx) error {
+		if bounded, ok := tx.(spi.BoundedRecordReader); ok {
+			found, err = bounded.NamespaceHasRecords(namespace)
+			return err
+		}
+		page, scanErr := tx.Scan(spi.ScanRequest{Namespace: namespace, Limit: 1})
+		found = len(page.Records) != 0
+		return scanErr
+	})
+	return found, err
+}
+
 func (reader migrationSourceReader) Get(namespace string, key []byte) (value []byte, err error) {
 	err = reader.backend.View(reader.ctx, func(tx spi.ReadTx) error {
 		value, err = tx.Get(namespace, key)
@@ -30,6 +48,44 @@ func (reader migrationSourceReader) Scan(request spi.ScanRequest) (page spi.Scan
 		return err
 	})
 	return page, err
+}
+
+func (reader migrationSourceReader) RecordSize(namespace string, key []byte) (size int64, err error) {
+	if namespace == "" || len(key) == 0 {
+		return 0, spi.ErrInvalidArgument
+	}
+	err = reader.backend.View(reader.ctx, func(tx spi.ReadTx) error {
+		if bounded, ok := tx.(spi.BoundedRecordReader); ok {
+			size, err = bounded.RecordSize(namespace, key)
+			return err
+		}
+		value, readErr := tx.Get(namespace, key)
+		size = int64(len(value))
+		return readErr
+	})
+	return size, err
+}
+
+func (reader migrationSourceReader) ReadRecordRange(namespace string, key []byte, offset int64, length int) (value []byte, err error) {
+	if namespace == "" || len(key) == 0 || offset < 0 || length <= 0 {
+		return nil, spi.ErrInvalidArgument
+	}
+	err = reader.backend.View(reader.ctx, func(tx spi.ReadTx) error {
+		if bounded, ok := tx.(spi.BoundedRecordReader); ok {
+			value, err = bounded.ReadRecordRange(namespace, key, offset, length)
+			return err
+		}
+		raw, readErr := tx.Get(namespace, key)
+		if readErr != nil {
+			return readErr
+		}
+		if offset >= int64(len(raw)) {
+			return nil
+		}
+		value = bytes.Clone(raw[offset : offset+min(int64(length), int64(len(raw))-offset)])
+		return nil
+	})
+	return value, err
 }
 
 type migrationMetadataRead struct {

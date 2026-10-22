@@ -2,14 +2,20 @@
 
 ## Unreleased
 
-- Add optional bounded record reads for historical snapshot migration.
+- Preserve the published comparability of `runtime.Host`; reject newer migration
+  fields in historical manifests. Verify and reclaim query metadata in bounded
+  transactions while detecting concurrent canonical changes before publication.
+
+- Add optional bounded record reads and source-bound resumable indexing primitives
+  for historical snapshot migration; retain exact released UTF-8 repairs.
+  Monolithic snapshot startup still uses the complete legacy migration boundary.
 
 - Add `Host.ThreadMediaInventory` so hosts can retain canonical media by thread
   without collecting descriptors for every thread in one in-memory snapshot.
 
 - Return `runtime.Host` after bounded storage inspection and run domain
   migration and final verification in a Host-owned worker. Add migration status,
-  thread readiness and cancellable preparation APIs; v27–v31 sources
+  thread readiness and cancellable preparation APIs; v6–v31 sources
   publish each validated thread atomically with resumable body checkpoints.
 
 - Treat SQLite v1 records with `WITHOUT ROWID` as a supported physical layout

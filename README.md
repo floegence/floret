@@ -31,7 +31,7 @@ server-controlled gateway cannot accept an explicit client ceiling. Observation
 reports request_output_tokens, output_control and safety_margin_tokens for the
 actual request, separately from input usage and composition estimates.
 
-Domain schema 31 retains the atomic 17 -> 18 output-budget edge and
+Domain schema 32 retains the atomic 17 -> 18 output-budget edge and
 18 -> 19 for canonical parent events, and appends 19 -> 20 for completed-error input, retaining every older migration
 and all historical conversation facts without inferring historical capabilities.
 The 21 -> 22 edge admits request-bound accounting; 23 -> 24 adds frozen character attribution and input measurement scope without rewriting canonical entries.
@@ -711,7 +711,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 31).
+schema change (current domain schema 32).
 
 
 `ThreadView.RunID` identifies only the current execution; hosts must never use
@@ -1140,10 +1140,17 @@ The callback runs synchronously on Floret's startup worker and must return
 promptly. `runtime.Open` returns the Host before domain migration and final
 verification finish. Use `Host.StorageMigrationStatus` to observe the worker,
 `Host.Readiness` to check a thread, and `Host.PrepareThread` for a cancellable
-wait. Current released formats publish through one global transaction, so
-thread operations wait together until verification succeeds; they cannot read
-partially migrated state. A failed migration leaves canonical records intact
-and is available through the status API.
+wait. Segmented v6–v31 sources prepare each requested thread and its explicit
+canonical dependencies, preserving every contiguous historical transform. Body
+staging and query metadata preparation release the backend between bounded
+batches; the complete validated thread publishes atomically. Foreground
+preparation takes priority over background history. Already published threads
+and new conversations remain usable if another historical thread fails.
+
+Monolithic v2–v5 snapshots still use the complete legacy migration boundary
+before canonical operations become available. The Host and migration status
+remain available during that work. No operation reads partially migrated state;
+failed preparation retains the source and can be retried explicitly.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their
@@ -1164,10 +1171,12 @@ without transcript copies, token terms or posting lists. Message appends update
 these locators without reading historical bodies.
 
 All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
-prompt history and the permanent session-tree lineage, updates logical storage
-version 10, and verifies the complete result in one transaction. Released KV
-term documents are removed; current metadata uses its own namespace. Inspection
-reports required upgrades without writing the source.
+prompt history and the permanent session-tree lineage. Logical storage version
+11 recognizes resumable domain schema 32 preparation. Source recognition and
+logical publication commit together; each complete thread then publishes in its
+own transaction, and retained sources are removed only after full inventory
+verification. Released KV term documents are removed; current metadata uses its
+own namespace. Inspection reports required upgrades without writing the source.
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
 without rebuilding the database. A host that owns an older SQLite file may call
