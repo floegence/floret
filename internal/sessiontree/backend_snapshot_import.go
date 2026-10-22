@@ -45,7 +45,11 @@ func snapshotSourceKey(path ...string) []byte {
 }
 
 func readSnapshotImportCheckpoint(tx spi.ReadTx) (snapshotImportCheckpoint, bool, error) {
-	raw, err := tx.Get(snapshotImportNamespace, snapshotImportCheckpointKey)
+	return readJSONImportCheckpoint(tx, snapshotImportCheckpointKey, 2, 5)
+}
+
+func readJSONImportCheckpoint(tx spi.ReadTx, key []byte, minimum, maximum int) (snapshotImportCheckpoint, bool, error) {
+	raw, err := tx.Get(snapshotImportNamespace, key)
 	if errors.Is(err, spi.ErrNotFound) {
 		return snapshotImportCheckpoint{}, false, nil
 	}
@@ -53,10 +57,10 @@ func readSnapshotImportCheckpoint(tx spi.ReadTx) (snapshotImportCheckpoint, bool
 		return snapshotImportCheckpoint{}, false, err
 	}
 	var checkpoint snapshotImportCheckpoint
-	if err := decodeCanonicalBodyJSON(raw, &checkpoint); err != nil || checkpoint.SourceBytes <= 0 || checkpoint.Scan.Offset < 0 || checkpoint.Scan.Offset > checkpoint.SourceBytes || checkpoint.Complete && (!checkpoint.Scan.Done || checkpoint.Scan.Offset != checkpoint.SourceBytes || checkpoint.Version < 2 || checkpoint.Version > 5) {
+	if err := decodeCanonicalBodyJSON(raw, &checkpoint); err != nil || checkpoint.SourceBytes <= 0 || checkpoint.Scan.Offset < 0 || checkpoint.Scan.Offset > checkpoint.SourceBytes || checkpoint.Complete && (!checkpoint.Scan.Done || checkpoint.Scan.Offset != checkpoint.SourceBytes || checkpoint.Version < minimum || checkpoint.Version > maximum) {
 		return checkpoint, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	if err := checkpoint.Scan.Validate(4); err != nil || checkpoint.Version != 0 && (!checkpoint.Scan.Done || checkpoint.Scan.Offset != checkpoint.SourceBytes || checkpoint.Version < 2 || checkpoint.Version > 5) {
+	if err := checkpoint.Scan.Validate(4); err != nil || checkpoint.Version != 0 && (!checkpoint.Scan.Done || checkpoint.Scan.Offset != checkpoint.SourceBytes || checkpoint.Version < minimum || checkpoint.Version > maximum) {
 		return checkpoint, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	if err := checkpoint.validateDigests(); err != nil {
@@ -66,10 +70,14 @@ func readSnapshotImportCheckpoint(tx spi.ReadTx) (snapshotImportCheckpoint, bool
 }
 
 func snapshotRecordSize(tx spi.ReadTx) (int64, error) {
+	return historicalRecordSize(tx, backendDomainNamespace, backendStateKey)
+}
+
+func historicalRecordSize(tx spi.ReadTx, namespace string, key []byte) (int64, error) {
 	if bounded, ok := tx.(spi.BoundedRecordReader); ok {
-		return bounded.RecordSize(backendDomainNamespace, backendStateKey)
+		return bounded.RecordSize(namespace, key)
 	}
-	raw, err := tx.Get(backendDomainNamespace, backendStateKey)
+	raw, err := tx.Get(namespace, key)
 	return int64(len(raw)), err
 }
 
@@ -81,7 +89,43 @@ func indexHistoricalSnapshotBatch(ctx context.Context, tx spi.WriteTx) (snapshot
 	if err != nil {
 		return checkpoint, err
 	}
-	size, err := snapshotRecordSize(tx)
+	fields := snapshotStateFields()
+	return indexJSONSourceBatch(ctx, tx, checkpoint, found, jsonMigrationSource{
+		namespace: backendDomainNamespace, key: backendStateKey,
+		checkpointKey: snapshotImportCheckpointKey, spanKey: snapshotSourceKey,
+		indexPath: func(path []string) (bool, error) {
+			// Only collection members and individual journal entries need random
+			// access. Nested message fields remain inside their original source.
+			if len(path) == 4 && (path[0] != "payload" || path[1] != "entries") {
+				return false, nil
+			}
+			if len(path) > 0 && path[0] != "payload" && len(path) != 1 {
+				return false, ErrAuthorityCorrupt
+			}
+			if len(path) == 1 && path[0] != "payload" && path[0] != "version" && path[0] != "kind" {
+				return false, ErrAuthorityCorrupt
+			}
+			if len(path) >= 2 {
+				if _, ok := fields[path[1]]; !ok {
+					return false, ErrAuthorityCorrupt
+				}
+			}
+			return true, nil
+		},
+		validate: validateSnapshotSourceShape,
+	})
+}
+
+type jsonMigrationSource struct {
+	namespace          string
+	key, checkpointKey []byte
+	spanKey            func(...string) []byte
+	indexPath          func([]string) (bool, error)
+	validate           func(context.Context, spi.ReadTx) (int, error)
+}
+
+func indexJSONSourceBatch(ctx context.Context, tx spi.WriteTx, checkpoint snapshotImportCheckpoint, found bool, source jsonMigrationSource) (snapshotImportCheckpoint, error) {
+	size, err := historicalRecordSize(tx, source.namespace, source.key)
 	if err != nil || size <= 0 {
 		return checkpoint, errors.Join(ErrAuthorityCorrupt, err)
 	}
@@ -95,16 +139,16 @@ func indexHistoricalSnapshotBatch(ctx context.Context, tx spi.WriteTx) (snapshot
 		return checkpoint, nil
 	}
 	if checkpoint.Version != 0 {
-		if err := verifySnapshotSourceBatch(ctx, tx, &checkpoint); err != nil {
+		if err := verifyJSONSourceBatch(ctx, tx, source.namespace, source.key, &checkpoint); err != nil {
 			return checkpoint, err
 		}
 		raw, err := json.Marshal(checkpoint)
 		if err != nil {
 			return checkpoint, err
 		}
-		return checkpoint, tx.Put(snapshotImportNamespace, snapshotImportCheckpointKey, raw)
+		return checkpoint, tx.Put(snapshotImportNamespace, source.checkpointKey, raw)
 	}
-	reader, err := storagecodec.OpenRecordRange(ctx, tx, backendDomainNamespace, backendStateKey, checkpoint.Scan.Offset, -1)
+	reader, err := storagecodec.OpenRecordRange(ctx, tx, source.namespace, source.key, checkpoint.Scan.Offset, -1)
 	if err != nil {
 		return checkpoint, err
 	}
@@ -113,27 +157,16 @@ func indexHistoricalSnapshotBatch(ctx context.Context, tx spi.WriteTx) (snapshot
 		return checkpoint, err
 	}
 	previous := checkpoint
-	fields := snapshotStateFields()
 	err = storagecodec.ScanJSON(bytes.NewReader(batch), &checkpoint.Scan, backendThreadMigrationBatchBytes, 4,
-		func(span storagecodec.JSONSpan) ([]byte, error) { return readSnapshotSourceBytes(ctx, tx, span) },
+		func(span storagecodec.JSONSpan) ([]byte, error) {
+			return readJSONSourceBytes(ctx, tx, source.namespace, source.key, span)
+		},
 		func(path []string, span storagecodec.JSONSpan, kind byte) error {
-			// Only collection members and individual journal entries need random
-			// access. Nested message fields remain inside their original source.
-			if len(path) == 4 && (path[0] != "payload" || path[1] != "entries") {
-				return nil
+			keep, err := source.indexPath(path)
+			if err != nil || !keep {
+				return err
 			}
-			if len(path) > 0 && path[0] != "payload" && len(path) != 1 {
-				return ErrAuthorityCorrupt
-			}
-			if len(path) == 1 && path[0] != "payload" && path[0] != "version" && path[0] != "kind" {
-				return ErrAuthorityCorrupt
-			}
-			if len(path) >= 2 {
-				if _, ok := fields[path[1]]; !ok {
-					return ErrAuthorityCorrupt
-				}
-			}
-			key := snapshotSourceKey(path...)
+			key := source.spanKey(path...)
 			if _, err := tx.Get(snapshotImportNamespace, key); !errors.Is(err, spi.ErrNotFound) {
 				return errors.Join(ErrAuthorityCorrupt, err)
 			}
@@ -170,11 +203,11 @@ func indexHistoricalSnapshotBatch(ctx context.Context, tx spi.WriteTx) (snapshot
 		if !checkpoint.Scan.Done || checkpoint.Scan.Token != 0 || len(checkpoint.Scan.Frames) != 0 {
 			return checkpoint, ErrAuthorityCorrupt
 		}
-		checkpoint.Version, err = validateSnapshotSourceShape(ctx, tx)
+		checkpoint.Version, err = source.validate(ctx, tx)
 		if err != nil {
 			return checkpoint, err
 		}
-		if err := verifySnapshotSourceBatch(ctx, tx, &checkpoint); err != nil {
+		if err := verifyJSONSourceBatch(ctx, tx, source.namespace, source.key, &checkpoint); err != nil {
 			return checkpoint, err
 		}
 	}
@@ -182,7 +215,7 @@ func indexHistoricalSnapshotBatch(ctx context.Context, tx spi.WriteTx) (snapshot
 	if err != nil {
 		return checkpoint, err
 	}
-	return checkpoint, tx.Put(snapshotImportNamespace, snapshotImportCheckpointKey, raw)
+	return checkpoint, tx.Put(snapshotImportNamespace, source.checkpointKey, raw)
 }
 
 func snapshotStateFields() map[string]reflect.StructField {
@@ -197,10 +230,14 @@ func snapshotStateFields() map[string]reflect.StructField {
 }
 
 func readSnapshotSourceBytes(ctx context.Context, tx spi.ReadTx, span storagecodec.JSONSpan) ([]byte, error) {
+	return readJSONSourceBytes(ctx, tx, backendDomainNamespace, backendStateKey, span)
+}
+
+func readJSONSourceBytes(ctx context.Context, tx spi.ReadTx, namespace string, key []byte, span storagecodec.JSONSpan) ([]byte, error) {
 	if span.Offset < 0 || span.Length <= 0 {
 		return nil, ErrAuthorityCorrupt
 	}
-	reader, err := storagecodec.OpenRecordRange(ctx, tx, backendDomainNamespace, backendStateKey, span.Offset, span.Length)
+	reader, err := storagecodec.OpenRecordRange(ctx, tx, namespace, key, span.Offset, span.Length)
 	if err != nil {
 		return nil, errors.Join(ErrAuthorityCorrupt, err)
 	}
@@ -208,7 +245,11 @@ func readSnapshotSourceBytes(ctx context.Context, tx spi.ReadTx, span storagecod
 }
 
 func readSnapshotSourceSpan(tx spi.ReadTx, path ...string) (snapshotSourceSpan, error) {
-	raw, err := tx.Get(snapshotImportNamespace, snapshotSourceKey(path...))
+	return readJSONSourceSpan(tx, snapshotSourceKey(path...))
+}
+
+func readJSONSourceSpan(tx spi.ReadTx, key []byte) (snapshotSourceSpan, error) {
+	raw, err := tx.Get(snapshotImportNamespace, key)
 	if err != nil {
 		return snapshotSourceSpan{}, err
 	}
@@ -224,7 +265,11 @@ func decodeSnapshotSourceValue(ctx context.Context, tx spi.ReadTx, target any, p
 	if err != nil {
 		return err
 	}
-	reader, err := storagecodec.OpenRecordRange(ctx, tx, backendDomainNamespace, backendStateKey, span.Offset, span.Length)
+	return decodeJSONSourceValue(ctx, tx, backendDomainNamespace, backendStateKey, span, target)
+}
+
+func decodeJSONSourceValue(ctx context.Context, tx spi.ReadTx, namespace string, key []byte, span snapshotSourceSpan, target any) error {
+	reader, err := storagecodec.OpenRecordRange(ctx, tx, namespace, key, span.Offset, span.Length)
 	if err != nil {
 		return err
 	}

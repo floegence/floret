@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Add migration-only source locators for v5 recovery journals and
+  historical root inventories. Preserve released patch ordering and intermediate
+  validation, source fingerprints and checkpoint rollback; the monolithic
+  production boundary remains documented in [storage](api/storage.md#domain-migration).
+
 - 2026-10-22: Bound resident query continuations and move cold reconstruction
   outside mutation transactions, with source revalidation and fixed metadata
   windows. See [canonical queries](api/thread-query.md).

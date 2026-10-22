@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add bounded immutable-source indexes for released snapshot recovery frames
+  and root inventories. Match released checksum serialization, validate each
+  intermediate authority state, and preserve atomic locator/checkpoint rollback.
+  These migration primitives do not yet replace the monolithic startup gate.
+
 - Bound resident query continuations; reconstruct cold histories outside write
   transactions and validate their snapshot before mutation. Traverse canonical
   history in fixed windows without repeated per-entry ancestry searches.
