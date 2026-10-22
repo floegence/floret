@@ -150,8 +150,8 @@ func TestBackendDomainV7ToV8ReportsMigrationThenVerification(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(phases) != 3 || phases[0] != StartupPhaseMigrating || phases[1] != StartupPhaseVerifying || phases[2] != StartupPhaseIndexing {
-		t.Fatalf("startup phases = %v, want [%s %s %s]", phases, StartupPhaseMigrating, StartupPhaseVerifying, StartupPhaseIndexing)
+	if len(phases) != 2 || phases[0] != StartupPhaseMigrating || phases[1] != StartupPhaseVerifying {
+		t.Fatalf("startup phases = %v, want [%s %s]", phases, StartupPhaseMigrating, StartupPhaseVerifying)
 	}
 }
 

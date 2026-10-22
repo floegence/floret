@@ -31,7 +31,6 @@ func storageUpgradeFixture(t *testing.T) string {
 	}
 	defer db.Close()
 	for _, statement := range []string{
-		"DROP TABLE floret_index_postings", "DROP TABLE floret_index_documents",
 		`CREATE TABLE records_old(namespace TEXT NOT NULL,key BLOB NOT NULL,value BLOB NOT NULL,PRIMARY KEY(namespace,key)) WITHOUT ROWID`,
 		`INSERT INTO records_old SELECT namespace,key,value FROM floret_backend_records WHERE namespace!='floret.domain.prompt.v2'`,
 		`DROP TABLE floret_backend_records`,
@@ -147,7 +146,7 @@ func TestStartupUpgradeProcessExit(t *testing.T) {
 			version := "1"
 			if mode == "after" {
 				want = 43
-				version = "4"
+				version = "5"
 			}
 			if exit.ExitCode() != want {
 				t.Fatalf("child exit=%d want=%d", exit.ExitCode(), want)

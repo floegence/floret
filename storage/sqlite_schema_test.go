@@ -84,7 +84,7 @@ func TestPhysicalMigrationPreservesOpaqueRecordsAndRollsBack(t *testing.T) {
 			}
 			want := "1"
 			if failure == "none" {
-				want = "4"
+				want = "5"
 			}
 			if version != want {
 				t.Fatalf("version=%s want %s", version, want)
@@ -118,7 +118,7 @@ func TestPhysicalMigrationPreservesOpaqueRecordsAndRollsBack(t *testing.T) {
 
 func TestPhysicalSchemaRejectsFutureAndLayoutDrift(t *testing.T) {
 	for _, mutation := range []string{
-		`UPDATE floret_backend_metadata SET value=CAST('5' AS BLOB) WHERE name='physical_schema'`,
+		`UPDATE floret_backend_metadata SET value=CAST('6' AS BLOB) WHERE name='physical_schema'`,
 		`UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'`,
 		`UPDATE floret_backend_metadata SET value=CAST('2' AS BLOB) WHERE name='physical_schema'`,
 		`ALTER TABLE floret_backend_records ADD COLUMN extra BLOB`,
@@ -201,95 +201,113 @@ func createPhysicalV3Index(t *testing.T, path string) {
 	}
 }
 
-func TestPhysicalV3PostingMigrationIsAtomicAndPreservesCanonicalBytes(t *testing.T) {
-	for _, failure := range []string{"none", "cancel", "write", "panic"} {
-		t.Run(failure, func(t *testing.T) {
-			path := t.TempDir() + "/v3.sqlite"
-			createPhysicalV3Index(t, path)
-			opened, err := (sqliteSource{path: path}).Open(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer opened.Close()
-			backend := opened.(*sqliteBackend)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			func() {
-				defer func() {
-					if failure == "panic" && recover() == nil {
-						t.Fatal("missing panic")
+func TestPhysicalSearchRemovalIsAtomicAndPreservesCanonicalBytes(t *testing.T) {
+	for _, source := range []string{"3", "4"} {
+		t.Run("v"+source, func(t *testing.T) {
+			for _, failure := range []string{"none", "cancel", "write", "panic"} {
+				t.Run(failure, func(t *testing.T) {
+					path := t.TempDir() + "/v3.sqlite"
+					createPhysicalV3Index(t, path)
+					if source == "4" {
+						db, err := sql.Open(sqliteDriverName, path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, statement := range []string{"DROP TABLE floret_index_terms", sqliteIndexPostings, sqliteIndexPostingDocuments, "INSERT INTO floret_index_postings SELECT 'x61',rowid FROM floret_index_documents", "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
+							if _, err := db.Exec(statement); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err := db.Close(); err != nil {
+							t.Fatal(err)
+						}
 					}
-				}()
-				err = backend.Update(ctx, func(tx spi.WriteTx) error {
-					changed, err := storagebridge.PrepareStartup(tx, nil)
+					opened, err := (sqliteSource{path: path}).Open(t.Context())
 					if err != nil {
+						t.Fatal(err)
+					}
+					defer opened.Close()
+					backend := opened.(*sqliteBackend)
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					func() {
+						defer func() {
+							if failure == "panic" && recover() == nil {
+								t.Fatal("missing panic")
+							}
+						}()
+						err = backend.Update(ctx, func(tx spi.WriteTx) error {
+							changed, err := storagebridge.PrepareStartup(tx, nil)
+							if err != nil {
+								return err
+							}
+							if !changed {
+								t.Fatal("migration skipped")
+							}
+							if err := tx.Put("opaque", []byte("after-upgrade"), []byte("committed")); err != nil {
+								return err
+							}
+							switch failure {
+							case "cancel":
+								cancel()
+								return ctx.Err()
+							case "write":
+								return errors.New("write failed")
+							case "panic":
+								panic("injected")
+							}
+							return nil
+						})
+						if failure == "none" && err != nil || failure != "none" && err == nil {
+							t.Fatalf("failure=%s err=%v", failure, err)
+						}
+					}()
+					wantVersion := source
+					if failure == "none" {
+						wantVersion = "5"
+					}
+					version, err := inspectSQLitePhysicalSchema(t.Context(), backend.db)
+					if err != nil || version != wantVersion {
+						t.Fatalf("version=%s err=%v", version, err)
+					}
+					if failure == "none" {
+						var count int
+						if err := backend.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name LIKE 'floret_index_%'").Scan(&count); err != nil || count != 0 {
+							t.Fatalf("search tables remain: %d, %v", count, err)
+						}
+					} else {
+						var key string
+						if err := backend.db.QueryRow("SELECT document_key FROM floret_index_documents").Scan(&key); err != nil || key != "document" {
+							t.Fatalf("rollback lost old index: %s, %v", key, err)
+						}
+					}
+					if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+						raw, err := tx.Get("opaque", []byte{1})
+						if err != nil {
+							return err
+						}
+						if !bytes.Equal(raw, bytes.Repeat([]byte("blob"), 1<<18)) {
+							t.Fatal("canonical bytes changed")
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if failure != "none" {
+						if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { _, err := storagebridge.PrepareStartup(tx, nil); return err }); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+						changed, err := storagebridge.PrepareStartup(tx, nil)
+						if changed {
+							t.Fatal("current schema rewritten")
+						}
 						return err
+					}); err != nil {
+						t.Fatal(err)
 					}
-					if !changed {
-						t.Fatal("migration skipped")
-					}
-					if _, err := tx.(*sqliteTx).tx.ExecContext(ctx, "INSERT INTO floret_index_documents(document_key,thread_id,object,metadata) VALUES('rebuilt','thread','messages',X'0304')"); err != nil {
-						return err
-					}
-					switch failure {
-					case "cancel":
-						cancel()
-						return ctx.Err()
-					case "write":
-						return errors.New("write failed")
-					case "panic":
-						panic("injected")
-					}
-					return nil
 				})
-				if failure == "none" && err != nil || failure != "none" && err == nil {
-					t.Fatalf("failure=%s err=%v", failure, err)
-				}
-			}()
-			wantVersion := "3"
-			if failure == "none" {
-				wantVersion = "4"
-			}
-			version, err := inspectSQLitePhysicalSchema(t.Context(), backend.db)
-			if err != nil || version != wantVersion {
-				t.Fatalf("version=%s err=%v", version, err)
-			}
-			var key string
-			if err := backend.db.QueryRow("SELECT document_key FROM floret_index_documents").Scan(&key); err != nil {
-				t.Fatal(err)
-			}
-			wantKey := "document"
-			if failure == "none" {
-				wantKey = "rebuilt"
-			}
-			if key != wantKey {
-				t.Fatalf("key=%s", key)
-			}
-			if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
-				raw, err := tx.Get("opaque", []byte{1})
-				if err != nil {
-					return err
-				}
-				if !bytes.Equal(raw, bytes.Repeat([]byte("blob"), 1<<18)) {
-					t.Fatal("canonical bytes changed")
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if failure != "none" {
-				if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { _, err := storagebridge.PrepareStartup(tx, nil); return err }); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-				changed, err := storagebridge.PrepareStartup(tx, nil)
-				if changed {
-					t.Fatal("current schema rewritten")
-				}
-				return err
-			}); err != nil {
-				t.Fatal(err)
 			}
 		})
 	}

@@ -132,11 +132,11 @@ func TestStartupMetadataQueryMatchesCompleteProjectionWithoutBodyReads(t *testin
 			t.Fatal("query record count changed")
 		}
 		for key, record := range want.records {
-			expected, err := queryDocument(record, false)
+			expected, err := queryDocument(record)
 			if err != nil {
 				return err
 			}
-			actual, err := queryDocument(got.records[key], false)
+			actual, err := queryDocument(got.records[key])
 			if err != nil || !reflect.DeepEqual(actual, expected) {
 				t.Fatalf("query metadata differs: %s: %v", key, err)
 			}

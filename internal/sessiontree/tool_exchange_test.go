@@ -24,13 +24,18 @@ type exchangeReadTx struct {
 func (b *exchangeReadBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
 	return b.Backend.View(ctx, func(tx spi.ReadTx) error { return read(exchangeReadTx{ReadTx: tx, owner: b}) })
 }
-func (tx exchangeReadTx) QueryIndex(spi.IndexQuery) ([]spi.IndexDocument, error) {
-	tx.owner.scans++
-	return nil, errors.New("exact tool lookup scanned the index")
+func (tx exchangeReadTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	if request.Namespace == queryDocumentNamespace {
+		tx.owner.scans++
+		return spi.ScanPage{}, errors.New("exact tool lookup scanned metadata")
+	}
+	return tx.ReadTx.Scan(request)
 }
-func (tx exchangeReadTx) ReadIndexDocument(threadID, key string) (spi.IndexDocument, error) {
-	tx.owner.exact++
-	return (&kvQueryIndex{read: tx.ReadTx}).ReadIndexDocument(threadID, key)
+func (tx exchangeReadTx) Get(namespace string, key []byte) ([]byte, error) {
+	if namespace == queryDocumentNamespace {
+		tx.owner.exact++
+	}
+	return tx.ReadTx.Get(namespace, key)
 }
 
 func TestCanonicalToolExchangeUsesExactSourcesAcrossUnrelatedHistory(t *testing.T) {
@@ -170,7 +175,7 @@ func TestCanonicalToolExchangeRequiresConfirmedDetachedSources(t *testing.T) {
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
 		key := "thread\x00tool_calls\x00turn\x00run\x00inspect"
-		document, exists, err := readQueryDocumentByKey(queryIndexReader(tx), "thread", key)
+		document, exists, err := readQueryDocumentByKey(queryMetadataReader(tx), "thread", key)
 		if err != nil || !exists {
 			t.Fatalf("document found=%t err=%v", exists, err)
 		}
@@ -183,7 +188,7 @@ func TestCanonicalToolExchangeRequiresConfirmedDetachedSources(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return queryIndexWriter(tx).PutIndexDocument(document)
+		return queryMetadataWriter(tx).putDocument(document)
 	}); err != nil {
 		t.Fatal(err)
 	}

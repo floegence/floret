@@ -10,7 +10,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
+func TestQueryMetadataExactDocumentScopeAndQueryParity(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		t.Run(map[bool]string{false: "kv", true: "sqlite"}[native], func(t *testing.T) {
 			var backend spi.Backend = newMigrationTestBackend()
@@ -22,14 +22,14 @@ func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = backend.Close() })
 			}
-			documents := []spi.IndexDocument{
-				{Key: "a\x00one", ThreadID: "a", Object: "messages", Metadata: []byte("one"), Terms: []string{"x62", "x61"}},
-				{Key: "a\x00two", ThreadID: "a", Object: "tools", Metadata: []byte("two"), Terms: []string{"x62"}},
-				{Key: "b\x00denied", ThreadID: "b", Object: "messages", Metadata: []byte("denied"), Terms: []string{"x61"}},
+			documents := []queryStoredDocument{
+				{Key: "a\x00one", ThreadID: "a", Object: "messages", Metadata: []byte("one")},
+				{Key: "a\x00two", ThreadID: "a", Object: "tools", Metadata: []byte("two")},
+				{Key: "b\x00denied", ThreadID: "b", Object: "messages", Metadata: []byte("denied")},
 			}
 			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
 				for _, document := range documents {
-					if err := queryIndexWriter(tx).PutIndexDocument(document); err != nil {
+					if err := queryMetadataWriter(tx).putDocument(document); err != nil {
 						return err
 					}
 				}
@@ -41,7 +41,7 @@ func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
 			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
 				replacement := documents[0]
 				replacement.ThreadID = "b"
-				if err := queryIndexWriter(tx).PutIndexDocument(replacement); err != nil {
+				if err := queryMetadataWriter(tx).putDocument(replacement); err != nil {
 					return err
 				}
 				return rollback
@@ -49,11 +49,8 @@ func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
-				index := queryIndexReader(tx)
-				reader, ok := index.(spi.IndexDocumentReader)
-				if !ok {
-					t.Fatal("exact lookup capability is missing")
-				}
+				index := queryMetadataReader(tx)
+				reader := index
 				for _, test := range []struct {
 					scope, key string
 					found      bool
@@ -62,7 +59,7 @@ func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
 					{"a", "b\x00denied", false}, {"", "a\x00one", false},
 					{"a", "missing", false}, {"b", "a\x00one", false},
 				} {
-					document, err := reader.ReadIndexDocument(test.scope, test.key)
+					document, err := reader.readDocument(test.scope, test.key)
 					if !test.found {
 						if !errors.Is(err, spi.ErrNotFound) {
 							t.Fatalf("scope=%q key=%q: %v", test.scope, test.key, err)
@@ -72,16 +69,15 @@ func TestQueryIndexExactDocumentScopeAndQueryParity(t *testing.T) {
 					}
 				}
 				for _, test := range []struct {
-					query spi.IndexQuery
+					query queryMetadataSelection
 					want  []string
 				}{
-					{spi.IndexQuery{ThreadIDs: []string{"a", "a"}}, []string{"a\x00one", "a\x00two"}},
-					{spi.IndexQuery{ThreadIDs: []string{"a"}, Object: "messages"}, []string{"a\x00one"}},
-					{spi.IndexQuery{ThreadIDs: []string{"a"}, Terms: [][]string{{"x61", "x63"}, {"x62"}}}, []string{"a\x00one"}},
-					{spi.IndexQuery{ThreadIDs: []string{"a"}, Terms: [][]string{{}}}, nil},
-					{spi.IndexQuery{Terms: [][]string{{"x61"}}}, nil},
+					{queryMetadataSelection{ThreadIDs: []string{"a", "a"}}, []string{"a\x00one", "a\x00two"}},
+					{queryMetadataSelection{ThreadIDs: []string{"a"}, Object: "messages"}, []string{"a\x00one"}},
+
+					{queryMetadataSelection{}, nil},
 				} {
-					documents, err := index.QueryIndex(test.query)
+					documents, err := index.listDocuments(test.query)
 					if err != nil {
 						return err
 					}

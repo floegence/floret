@@ -732,7 +732,7 @@ type MemoryRepo struct {
 	mu                sync.Mutex
 	mutation          *backendDomainMutation
 	querySnapshots    *querySnapshots
-	queryReader       spi.IndexReader
+	queryReader       *queryMetadataStore
 	threads           map[string]ThreadMeta
 	entries           map[string][]Entry
 	entryOrdinals     map[string]map[string]int

@@ -303,7 +303,7 @@ func TestThreadQueryCanonicalOwnerPublishesOnlyCommittedChanges(t *testing.T) {
 		})
 	}
 }
-func TestThreadQueryIndexAgreesWithCanonicalReferenceScan(t *testing.T) {
+func TestThreadQueryAgreesWithCanonicalReferenceScan(t *testing.T) {
 	repo := NewMemoryRepo()
 	ctx := t.Context()
 	at := time.Now().UTC()

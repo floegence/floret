@@ -15,10 +15,10 @@ import (
 
 type queryPart struct{ field, text string }
 type queryRecord struct {
+	lazy                                    bool
 	key                                     string
 	row                                     threadquery.Record
 	firstSource, previousSource, lastSource string
-	appendTerms                             bool
 	parts                                   []queryPart
 	activities                              []*tools.ActivityPresentation
 }
@@ -416,14 +416,14 @@ func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous 
 		}
 	}
 	if previous == nil {
-		state, err := r.projectQueryThread(ctx, id)
+		state, err := r.projectQueryThreadMode(ctx, id, true)
 		if err != nil {
 			return nil, nil, err
 		}
 		return state, state.records, nil
 	}
 	state := cloneQueryThread(previous)
-	projector := &queryProjector{changed: map[string]*queryRecord{}, lookup: lookup}
+	projector := &queryProjector{metadataOnly: true, changed: map[string]*queryRecord{}, lookup: lookup}
 	for i := len(tail) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -438,10 +438,7 @@ func (r *MemoryRepo) extendQueryThread(ctx context.Context, id string, previous 
 			if !ok {
 				return nil, nil, ErrAuthorityCorrupt
 			}
-			source, sourceErr := r.completeEntryLocked(r.entries[id][ordinal])
-			if sourceErr != nil {
-				return nil, nil, sourceErr
-			}
+			source := r.entries[id][ordinal]
 			entry.Type = EntryUserMessage
 			entry.Message = source.Message
 			entry.ID = source.ID

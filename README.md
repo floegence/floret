@@ -419,7 +419,7 @@ The optional `runtime.ThreadToolResultReader.LookupToolResult` reads confirmed
 local tool arguments and output from the active journal path using exact thread,
 turn, run, and tool-call identity. Hosts authorize and interpret that private
 output; the query neither runs a tool nor changes history.
-The built-in backend resolves the exact indexed call/result source pair and
+The built-in backend resolves the exact call/result source-locator pair and
 validates current active-path membership before reading their bodies. It does
 not project or scan unrelated historical messages. Custom journal repositories
 without this internal capability retain the published complete-read adapter.
@@ -430,7 +430,7 @@ Hosts may pin a committed assistant answer with the optional ForkThreadInput.Sou
 The optional `runtime.ThreadQueryReader` implements `Query`, `Read`, and
 `Aggregate` using `threadquery` types. It searches canonical active-path threads,
 user/assistant messages, and persisted local/hosted tool facts through the
-canonical owner's transactional derived index. Hosts provide an exact readable ThreadID set
+canonical owner's transactional source-locator metadata. Hosts provide an exact readable ThreadID set
 and an authority key on **every** call; reference snapshots never grant access.
 Filters combine with AND (values within one field use OR), support literal
 Unicode substring/keyword/phrase search, and use UTC half-open time ranges.
@@ -1129,14 +1129,14 @@ storage phases without reading physical records:
 host, err := runtime.Open(ctx, runtime.Options{
     Storage: storage.SQLite("agent.db"),
     StartupProgress: runtime.StartupProgressFunc(func(phase runtime.StartupPhase) {
-        // Present migrating, verifying or indexing without exposing stored content.
+        // Present migrating or verifying without exposing stored content.
     }),
 })
 ```
 
 The callback is synchronous and must return promptly. Legacy stores report
-`migrating` followed by `verifying`. Missing derived indexes also report
-`indexing` before the Host is exposed; current indexes are reused. A returned `Host` is ready, and a failed migration remains atomic.
+`migrating` followed by `verifying`. Startup never constructs a full-text
+index. A returned `Host` is ready, and a failed migration remains atomic.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their
@@ -1150,20 +1150,17 @@ and pending responses for the affected scopes; repeated request attempts retain
 their original order. Turn settlement and shutdown flush only pending facts.
 Compaction changes the effective model context independently of storage history.
 
-SQLite physical format 4 maintains contentless atomic term postings with
-ordinary indexed rows. Its 3 -> 4 edge retires the FTS5 projection and rebuilds
-derived postings through the canonical owner in the same startup transaction.
-Canonical bytes are unchanged. Source metadata stores fixed first/previous/last
-entry boundaries instead of growing lists. Optional
-`storage/spi.IndexDocumentAppender` adds only new terms and replaces metadata
-atomically; it preserves existing index contracts. A merged assistant append
-reads at most two short source tails for cross-boundary Unicode grams.
+SQLite physical format 5 contains canonical records and metadata only. The
+4 -> 5 edge deletes the disposable search tables; all canonical bytes remain
+unchanged. Source metadata stores fixed first/previous/last entry boundaries
+without transcript copies, token terms or posting lists. Message appends update
+these locators without reading historical bodies.
 
-All physical edges 1 -> 2 -> 3 -> 4 remain automatic. Format 2 separates large
-record values from the primary-key index. Startup also migrates the prompt
-history and permanent session-tree lineage, updates logical storage version 9,
-and verifies the complete result in one transaction. Inspection reports required
-upgrades without writing the source.
+All physical edges 1 -> 2 -> 3 -> 4 -> 5 remain automatic. Startup also migrates
+prompt history and the permanent session-tree lineage, updates logical storage
+version 10, and verifies the complete result in one transaction. Released KV
+term documents are removed; current metadata uses its own namespace. Inspection
+reports required upgrades without writing the source.
 
 New SQLite stores use incremental auto-vacuum so deleted pages can be reclaimed
 without rebuilding the database. A host that owns an older SQLite file may call
@@ -1179,12 +1176,15 @@ open and `storage.BackupSQLite` while all writers are stopped. Inspection checks
 the supported migration path in memory without creating a runtime Host. A backup
 includes committed WAL records and never overwrites its destination.
 
-Inspection retains complete canonical and projection validation while omitting
-disposable text-search postings. `runtime.Open` verifies and reuses persistent derived postings before exposing
-the Host, rebuilding only missing or supported derived state. Canonical mutations
-and index updates share one transaction. SQLite uses the optional storage SPI
-index capability; other backends use the generic KV adapter. Search bodies stay
-canonical, and pagination snapshots stay bounded in memory.
+Inspection and startup retain complete canonical and metadata validation.
+There is no full-text index, background rebuild or optional physical search
+implementation. All backends use the canonical owner's metadata/source-locator
+records in the same transaction as canonical changes. Explicit text queries
+match authorized canonical sources on demand; their cost scales with the
+selected content. Metadata-only browsing hydrates only the requested page and
+keeps frozen source locators in bounded in-memory pagination snapshots. The
+published optional SPI index types remain deprecated for v7 source compatibility
+but are no longer called by Floret.
 
 Open with `runtime.Options{Storage: source, DeferExecution: true}` when product
 stores or authorization must be prepared first. Reads and pending-input import
@@ -1422,7 +1422,7 @@ only the latest nonempty message preview plus required failure/input fields;
 large transcript and ordinary activity bodies are not hydrated. The remaining
 metadata scan and interaction/lifecycle state are still proportional to history.
 Options.StartupWorkProgress reports real completed thread
-projections and known totals; StartupPhaseIndexing identifies initial index work.
+projections and known totals. StartupPhaseIndexing is deprecated and never emitted.
 
 ### Returned effect uncertainty
 

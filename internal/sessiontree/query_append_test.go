@@ -17,7 +17,7 @@ import (
 	"github.com/floegence/floret/v7/threadquery"
 )
 
-func TestMergedQueryAppendKeepsExactUnicodeTermsAcrossRestartAndRollback(t *testing.T) {
+func TestMergedQueryAppendKeepsExactUnicodeMatchesAcrossRestartAndRollback(t *testing.T) {
 	for _, sqlite := range []bool{false, true} {
 		t.Run(fmt.Sprint("sqlite=", sqlite), func(t *testing.T) {
 			var backend spi.Backend = newMigrationTestBackend()
@@ -77,26 +77,26 @@ func TestMergedQueryAppendKeepsExactUnicodeTermsAcrossRestartAndRollback(t *test
 	}
 }
 
-func TestMergedQueryAppendUsesOnlyBoundedSourceTail(t *testing.T) {
+func TestMergedQueryAppendReadsNoHistoricalBody(t *testing.T) {
 	repo := newMergedHistorySQLiteRepo(t, 1096)
 	memory := repo.domainMemory
 	if err := repo.backend.View(t.Context(), func(tx spi.ReadTx) error {
-		index := queryIndexReader(tx)
-		document, err := index.(spi.IndexDocumentReader).ReadIndexDocument("history", "history\x00messages\x000")
+		index := queryMetadataReader(tx)
+		document, err := index.readDocument("history", "history\x00messages\x000")
 		if err != nil {
 			return err
 		}
 		if len(document.Metadata) > 2048 {
 			t.Fatalf("unbounded metadata: %d", len(document.Metadata))
 		}
-		reader := &queryTermReadTx{ReadTx: tx}
+		reader := &queryBodyReadTx{ReadTx: tx}
 		memory.bodyTx, memory.bodyContext = reader, t.Context()
 		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 		record, err := memory.queryRecordByKey(index, "history", document.Key)
 		if err != nil {
 			return err
 		}
-		if record.firstSource != "0" || len(record.parts) != 1 || record.parts[0].text != "nt" || reader.reads > 2 {
+		if record.firstSource != "0" || len(record.parts) != 0 || reader.reads != 0 {
 			t.Fatalf("unbounded read: %+v reads=%d", record, reader.reads)
 		}
 		return nil
@@ -105,7 +105,7 @@ func TestMergedQueryAppendUsesOnlyBoundedSourceTail(t *testing.T) {
 	}
 	var before queryDocumentMetadata
 	if err := repo.backend.View(t.Context(), func(tx spi.ReadTx) error {
-		document, err := queryIndexReader(tx).(spi.IndexDocumentReader).ReadIndexDocument("history", "history\x00messages\x000")
+		document, err := queryMetadataReader(tx).readDocument("history", "history\x00messages\x000")
 		if err != nil {
 			return err
 		}
@@ -125,7 +125,7 @@ func TestMergedQueryAppendUsesOnlyBoundedSourceTail(t *testing.T) {
 	}
 	assertQueryProjectionMatches(t, repo, "history")
 	if err := repo.backend.View(t.Context(), func(tx spi.ReadTx) error {
-		document, err := queryIndexReader(tx).(spi.IndexDocumentReader).ReadIndexDocument("history", "history\x00messages\x000")
+		document, err := queryMetadataReader(tx).readDocument("history", "history\x00messages\x000")
 		if err != nil {
 			return err
 		}
@@ -145,4 +145,16 @@ func TestMergedQueryAppendUsesOnlyBoundedSourceTail(t *testing.T) {
 	if _, err := repo.Append(ctx, Entry{ThreadID: "history"}, AppendOptions{}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
+}
+
+type queryBodyReadTx struct {
+	spi.ReadTx
+	reads int
+}
+
+func (tx *queryBodyReadTx) Get(namespace string, key []byte) ([]byte, error) {
+	if namespace == canonicalBodyNamespace {
+		tx.reads++
+	}
+	return tx.ReadTx.Get(namespace, key)
 }

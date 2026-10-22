@@ -34,7 +34,7 @@ func (repo *BackendRepo) CanonicalToolExchange(ctx context.Context, threadID, tu
 		if tx == nil {
 			return ErrAuthorityCorrupt
 		}
-		document, exists, readErr := readQueryDocumentByKey(queryIndexReader(tx), threadID, key)
+		document, exists, readErr := readQueryDocumentByKey(queryMetadataReader(tx), threadID, key)
 		if readErr != nil {
 			return readErr
 		}

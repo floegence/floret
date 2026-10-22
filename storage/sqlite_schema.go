@@ -21,8 +21,8 @@ func inspectSQLitePhysicalSchema(ctx context.Context, query sqliteQueryer) (stri
 	if err := query.QueryRowContext(ctx, `SELECT value FROM floret_backend_metadata WHERE name='physical_schema'`).Scan(&version); err != nil {
 		return "", fmt.Errorf("%w: invalid backend metadata: %v", ErrUnsupportedSQLiteFormat, err)
 	}
-	if version != "1" && version != "2" && version != "3" && version != "4" {
-		if number, err := strconv.Atoi(version); err == nil && number > 4 {
+	if version != "1" && version != "2" && version != "3" && version != "4" && version != "5" {
+		if number, err := strconv.Atoi(version); err == nil && number > 5 {
 			return "", fmt.Errorf("%w: %w: version %q", ErrUnsupportedSQLiteFormat, ErrSQLiteTooNew, version)
 		}
 		return "", fmt.Errorf("%w: version %q", ErrUnsupportedSQLiteFormat, version)
@@ -88,7 +88,7 @@ func (tx *sqliteTx) PrepareFloretStorage(access storagebridge.StartupAccess) (bo
 		return false, spi.ErrInvalidArgument
 	}
 	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	if err != nil || version == "4" {
+	if err != nil || version == "5" {
 		return false, err
 	}
 	if access.OnMigration != nil {
@@ -120,16 +120,23 @@ func (tx *sqliteTx) PrepareFloretStorage(access storagebridge.StartupAccess) (bo
 			}
 		}
 	}
-	if version != "3" {
+	if version == "1" || version == "2" {
 		for _, statement := range []string{sqliteIndexDocuments, sqliteIndexThreads, sqliteIndexTermsV3, "UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'"} {
 			if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
 				return false, classifySQLiteError(tx.ctx, err)
 			}
 		}
 	}
-	// Postings are disposable. Canonical-owner startup rebuilds the empty index
-	// from exact source locators in this same transaction.
-	for _, statement := range []string{"DROP TABLE floret_index_terms", "DELETE FROM floret_index_documents", sqliteIndexPostings, sqliteIndexPostingDocuments, "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
+	// Preserve the released 3 -> 4 edge before retiring its derived state.
+	if version != "4" {
+		for _, statement := range []string{"DROP TABLE floret_index_terms", "DELETE FROM floret_index_documents", sqliteIndexPostings, sqliteIndexPostingDocuments, "UPDATE floret_backend_metadata SET value=CAST('4' AS BLOB) WHERE name='physical_schema'"} {
+			if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
+				return false, classifySQLiteError(tx.ctx, err)
+			}
+		}
+	}
+	// Format 5 removes only disposable search tables. Canonical bytes stay exact.
+	for _, statement := range []string{"DROP TABLE floret_index_postings", "DROP TABLE floret_index_documents", "UPDATE floret_backend_metadata SET value=CAST('5' AS BLOB) WHERE name='physical_schema'"} {
 		if _, err := tx.tx.ExecContext(tx.ctx, statement); err != nil {
 			return false, classifySQLiteError(tx.ctx, err)
 		}
@@ -145,5 +152,5 @@ func (tx *sqliteTx) FloretPhysicalMigrationRequired(storagebridge.StartupAccess)
 		return false, spi.ErrTransactionClosed
 	}
 	version, err := inspectSQLitePhysicalSchema(tx.ctx, tx.tx)
-	return version != "4", err
+	return version != "5", err
 }

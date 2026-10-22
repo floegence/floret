@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
@@ -171,4 +172,73 @@ func (tx startupFailingWriteTx) Put(namespace string, key, value []byte) error {
 		return tx.err
 	}
 	return tx.WriteTx.Put(namespace, key, value)
+}
+
+func TestLogicalV9UpgradeRetiresTermsInSameTransaction(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint("write_failure=", fail), func(t *testing.T) {
+			backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backend.Close()
+			old, _ := json.Marshal(logicalSchemaEnvelope{Version: legacyV9LogicalSchemaVersion, Fingerprint: legacyV9LogicalSchemaFingerprint})
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				if err := tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), old); err != nil {
+					return err
+				}
+				return tx.Put("floret.query.documents.v1", []byte("old-document"), []byte("old-terms"))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var source spi.Backend = backend
+			injected := errors.New("logical version commit failed")
+			if fail {
+				source = startupFailingBackend{Backend: backend, err: injected}
+			}
+			host, err := Open(t.Context(), Options{Storage: publicstorage.NewSource(startupBackendSource{backend: source}), DeferExecution: true})
+			if fail {
+				if !errors.Is(err, injected) {
+					t.Fatalf("failure=%v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer host.Shutdown(t.Context())
+			}
+			if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+				state, err := inspectLogicalSchemaTransaction(tx)
+				if err != nil {
+					return err
+				}
+				_, termsErr := tx.Get("floret.query.documents.v1", []byte("old-document"))
+				if fail {
+					if state != logicalSchemaV9 || termsErr != nil {
+						t.Fatalf("partial upgrade: %s %v", state, termsErr)
+					}
+				} else if state != logicalSchemaCurrent || !errors.Is(termsErr, spi.ErrNotFound) {
+					t.Fatalf("incomplete upgrade: %s %v", state, termsErr)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestLogicalV9RejectsFingerprintDrift(t *testing.T) {
+	backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.Memory()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	raw, _ := json.Marshal(logicalSchemaEnvelope{Version: legacyV9LogicalSchemaVersion, Fingerprint: "unknown"})
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return tx.Put(logicalSchemaNamespace, []byte(logicalSchemaKey), raw) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectLogicalSchema(t.Context(), backend); !errors.Is(err, ErrUnsupportedSchema) {
+		t.Fatalf("drift accepted: %v", err)
+	}
 }
