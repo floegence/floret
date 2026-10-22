@@ -786,6 +786,11 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return nil, err
 	}
+	turnSurfaceID := opts.TurnID
+	if turnSurfaceID == "" {
+		turnSurfaceID = opts.RunID
+	}
+	prompt = cache.NewExecutionStore(prompt, opts.PromptScopeID, turnSurfaceID)
 	return &Engine{
 		provider:  e.provider,
 		tools:     registry,
