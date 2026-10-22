@@ -36,10 +36,7 @@ func TestOpenReportsVerifyingForFreshAndCurrentStores(t *testing.T) {
 			if err := host.startup.wait(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			var want []StartupPhase
-			if name == "fresh" {
-				want = []StartupPhase{StartupPhaseMigrating, StartupPhaseVerifying}
-			}
+			want := []StartupPhase{StartupPhaseVerifying}
 			if !reflect.DeepEqual(phases, want) {
 				t.Fatalf("startup phases = %v, want %v", phases, want)
 			}
