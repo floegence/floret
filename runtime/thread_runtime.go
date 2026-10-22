@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/agentharness"
 	"github.com/floegence/floret/v7/internal/citation"
+	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/controlstate"
 	"github.com/floegence/floret/v7/internal/outputbody"
 	"github.com/floegence/floret/v7/internal/providerattempt"
@@ -4601,6 +4602,7 @@ func inputPresentationFromControlSignal(text string, payload map[string]any) *In
 	if payload == nil {
 		return presentation
 	}
+	payload, _ = control.NormalizeAskUserPayload(payload)
 	presentation.ReasonCode = optionalString(payload["reason_code"])
 	for _, field := range []struct {
 		name string

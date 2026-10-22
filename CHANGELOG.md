@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.78.2 - 2026-10-22
+
+- Limit model-facing `ask_user` response modes to `write` and `select_or_write`.
+  Normalize legacy `select` requests and saved pending interactions to
+  `select_or_write` with `choices_exhaustive=false`, preserving a writeable
+  answer without rewriting historical records. Keep ordinary tool
+  `Result.InputRequired` selection semantics unchanged.
+
 ## v7.78.1 - 2026-10-21
 
 - Settle ordinary turns from the existing ordered turn index instead of

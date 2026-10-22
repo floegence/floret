@@ -16,8 +16,8 @@ import (
 
 // Exercise the public view, workspace summary, subscription, and durable recovery
 // with provider tool arguments rather than hand-constructed presentation objects.
-func TestThreadServicePreservesAskUserPresentationAndAnswerValues(t *testing.T) {
-	const arguments = `{"reason_code":"missing_external_input","required_from_user":["route","note"],"evidence_refs":["inspect-1"],"questions":[{"id":"route","header":"Choose a route","question":"Which route should the deployment use?","response_mode":"select_or_write","is_secret":false,"choices_exhaustive":false,"write_label":"Another route","write_placeholder":"Describe your route","choices":[{"choice_id":"safe","label":"Staged rollout","description":"Deploy to a small group first.","kind":"select"},{"choice_id":"all","label":"Full rollout","kind":"select"}]},{"id":"note","header":"Deployment note","question":"What should the release note say?","response_mode":"write","is_secret":false}]}`
+func TestThreadServiceNormalizesLegacyAskUserPresentationAndAnswerValues(t *testing.T) {
+	const arguments = `{"reason_code":"missing_external_input","required_from_user":["route","note"],"evidence_refs":["inspect-1"],"questions":[{"id":"route","header":"Choose a route","question":"Which route should the deployment use?","response_mode":"select","is_secret":false,"choices_exhaustive":true,"write_placeholder":"Describe your route","choices":[{"choice_id":"safe","label":"Staged rollout","description":"Deploy to a small group first.","kind":"select"},{"choice_id":"all","label":"Full rollout","kind":"select"}]},{"id":"note","header":"Deployment note","question":"What should the release note say?","response_mode":"write","is_secret":false}]}`
 	gateway := florettest.NewScriptedGateway(
 		provider.Identity{Provider: "test", Model: "presentation", StateCompatibilityKey: "test:presentation:v1"},
 		provider.Capabilities{Reasoning: provider.ReasoningUnsupported},
@@ -108,8 +108,8 @@ func TestThreadServicePreservesAskUserPresentationAndAnswerValues(t *testing.T) 
 	if restored.Interactions[0].ID != waiting.Interactions[0].ID {
 		t.Fatal("restart changed interaction identity")
 	}
-	// Existing v7 clients submit option labels, not original choice identifiers.
-	answers := map[string]string{"route": "Staged rollout", "note": "Custom release note"}
+	// Writeable answers remain ordinary values in the existing response contract.
+	answers := map[string]string{"route": "Custom route", "note": "Custom release note"}
 	if _, err := service.Respond(t.Context(), RespondInput{ThreadID: created.ThreadID, InteractionID: restored.Interactions[0].ID, Answers: []InteractionAnswer{{Input: answers}}, RequestKey: "answer-presentation"}); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func assertRichInputPresentation(t *testing.T, input *InputPresentation) map[str
 		t.Fatalf("questions=%s", encoded)
 	}
 	q := wire.Questions[0]
-	if q["header"] != "Choose a route" || q["write_placeholder"] != "Describe your route" || q["choices_exhaustive"] != false {
+	if q["header"] != "Choose a route" || q["kind"] != "select_or_write" || q["write_placeholder"] != "Describe your route" || q["choices_exhaustive"] != false {
 		t.Fatalf("presentation fields lost through runtime: %s", encoded)
 	}
 	want := []any{map[string]any{"choice_id": "safe", "value": "Staged rollout", "label": "Staged rollout", "description": "Deploy to a small group first."}, map[string]any{"choice_id": "all", "value": "Full rollout", "label": "Full rollout"}}
@@ -160,6 +160,31 @@ func assertRichInputPresentation(t *testing.T, input *InputPresentation) map[str
 		t.Fatal("missing metadata must stay absent")
 	}
 	return q
+}
+
+func TestHistoricalAskUserSelectPresentationAcceptsWriteAnswer(t *testing.T) {
+	payload := map[string]any{"questions": []any{map[string]any{
+		"id": "route", "header": "Route", "question": "Which route?", "is_secret": false,
+		"response_mode": "select", "choices_exhaustive": true,
+		"choices": []any{map[string]any{"choice_id": "safe", "label": "Staged rollout", "kind": "select"}},
+	}}}
+	input := inputPresentationFromControlSignal("Which route?", payload)
+	historicalQuestion := payload["questions"].([]any)[0].(map[string]any)
+	if historicalQuestion["response_mode"] != "select" || historicalQuestion["choices_exhaustive"] != true {
+		t.Fatalf("historical payload was mutated: %#v", historicalQuestion)
+	}
+	if len(input.Questions) != 1 {
+		t.Fatalf("historical question missing: %#v", input)
+	}
+	question := input.Questions[0]
+	if question.Kind != "select_or_write" || question.ChoicesExhaustive == nil || *question.ChoicesExhaustive {
+		t.Fatalf("historical select did not expose a write path: %#v", question)
+	}
+	interaction := ThreadInteraction{Kind: ThreadInteractionInput, Input: input}
+	resolution, _, err := canonicalInteractionResolution(interaction, InteractionAnswer{Input: map[string]string{"route": "Custom route"}})
+	if err != nil || resolution.Input["route"] != "Custom route" {
+		t.Fatalf("historical write answer = %#v, err=%v", resolution, err)
+	}
 }
 
 func TestAskUserPresentationLeavesAbsentHistoricalMetadataUnset(t *testing.T) {

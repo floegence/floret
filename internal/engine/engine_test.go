@@ -2012,6 +2012,29 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	}
 }
 
+func TestAskUserLegacySelectIsNormalizedBeforeStrictValidation(t *testing.T) {
+	const args = `{"reason_code":"missing_external_input","required_from_user":["route"],"evidence_refs":[],"questions":[{"id":"route","header":"Route","question":"Which route?","response_mode":"select","is_secret":false,"choices_exhaustive":true,"choices":[{"choice_id":"safe","label":"Staged rollout","kind":"select"}]}]}`
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask-legacy", "ask_user", args), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.DefaultControlSpec()
+
+	got := e.Run(context.Background(), "deploy")
+
+	if got.Status != engine.Waiting || got.ControlSignal == nil {
+		t.Fatalf("legacy ask_user result = %#v, want waiting", got)
+	}
+	questions, ok := got.ControlSignal.Payload["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("normalized questions = %#v", got.ControlSignal.Payload["questions"])
+	}
+	question, ok := questions[0].(map[string]any)
+	if !ok || question["response_mode"] != "select_or_write" || question["choices_exhaustive"] != false {
+		t.Fatalf("legacy question was not normalized before projection: %#v", questions[0])
+	}
+}
+
 type controlPayloadOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`

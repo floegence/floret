@@ -3,7 +3,9 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/floegence/floret/v7/internal/control"
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/tools"
@@ -15,6 +17,11 @@ func validateModelToolArguments(definitions []tools.ToolDefinition, call provide
 	for _, definition := range definitions {
 		if definition.Name == call.Name {
 			_, err := tools.Validate(definition.InputSchema, []byte(call.Args))
+			if err != nil && control.IsControlTool(strings.TrimSpace(call.Name)) {
+				if normalized := control.NormalizeAskUserToolArgs(call.Args); normalized != call.Args {
+					_, err = tools.Validate(definition.InputSchema, []byte(normalized))
+				}
+			}
 			return err
 		}
 	}
