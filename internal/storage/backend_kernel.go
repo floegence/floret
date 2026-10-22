@@ -114,9 +114,6 @@ func NewFreshBackendKernelInTransaction(ctx context.Context, backend spi.Backend
 	if err != nil || promptRecords {
 		return nil, false, err
 	}
-	if progress != nil {
-		progress(StartupPhaseMigrating)
-	}
 	if err := preparePromptRecords(ctx, tx, true, progress); err != nil {
 		return nil, false, err
 	}

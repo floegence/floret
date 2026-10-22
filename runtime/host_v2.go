@@ -291,6 +291,9 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 				currentKernel = nil
 			}
 			if inspectErr == nil && currentKernel != nil {
+				if options.StartupProgress != nil {
+					options.StartupProgress.OnStartupPhase(StartupPhaseVerifying)
+				}
 				return commitLogicalSchemaTransaction(tx, logicalState)
 			}
 			return inspectErr
