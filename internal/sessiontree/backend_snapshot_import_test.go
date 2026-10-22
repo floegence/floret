@@ -175,11 +175,16 @@ func TestSnapshotImportRejectsAmbiguousEnvelopeWithoutMutation(t *testing.T) {
 type snapshotCheckpointFailureTx struct {
 	spi.WriteTx
 	mode   string
+	key    []byte
 	cancel context.CancelFunc
 }
 
 func (tx snapshotCheckpointFailureTx) Put(namespace string, key, value []byte) error {
-	if namespace == snapshotImportNamespace && bytes.Equal(key, snapshotImportCheckpointKey) {
+	checkpointKey := tx.key
+	if checkpointKey == nil {
+		checkpointKey = snapshotImportCheckpointKey
+	}
+	if namespace == snapshotImportNamespace && bytes.Equal(key, checkpointKey) {
 		switch tx.mode {
 		case "write":
 			return errors.New("checkpoint write failed")

@@ -144,7 +144,7 @@ func verifySnapshotSpanDigest(span snapshotSourceSpan, digest hash.Hash) error {
 
 // Re-read the full indexed source in bounded batches before making any locator
 // eligible for publication. This catches mixed snapshots across scan restarts.
-func verifySnapshotSourceBatch(ctx context.Context, tx spi.ReadTx, checkpoint *snapshotImportCheckpoint) error {
+func verifyJSONSourceBatch(ctx context.Context, tx spi.ReadTx, namespace string, key []byte, checkpoint *snapshotImportCheckpoint) error {
 	digest := sha256.New()
 	if checkpoint.VerifyOffset > 0 {
 		var err error
@@ -154,7 +154,7 @@ func verifySnapshotSourceBatch(ctx context.Context, tx spi.ReadTx, checkpoint *s
 		}
 	}
 	count := min(int64(backendThreadMigrationBatchBytes), checkpoint.SourceBytes-checkpoint.VerifyOffset)
-	reader, err := storagecodec.OpenRecordRange(ctx, tx, backendDomainNamespace, backendStateKey, checkpoint.VerifyOffset, count)
+	reader, err := storagecodec.OpenRecordRange(ctx, tx, namespace, key, checkpoint.VerifyOffset, count)
 	if err != nil {
 		return err
 	}
@@ -179,6 +179,26 @@ func verifySnapshotSourceBatch(ctx context.Context, tx spi.ReadTx, checkpoint *s
 			return ErrAuthorityCorrupt
 		}
 		checkpoint.Complete = true
+	}
+	return nil
+}
+
+func verifyIndexedJSONRecord(ctx context.Context, tx spi.ReadTx, namespace string, key []byte, checkpoint snapshotImportCheckpoint) error {
+	size, err := historicalRecordSize(tx, namespace, key)
+	if err != nil || size != checkpoint.SourceBytes {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	reader, err := storagecodec.OpenRecord(ctx, tx, namespace, key)
+	if err != nil {
+		return err
+	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, reader); err != nil {
+		return err
+	}
+	scanned, err := restoreSnapshotDigest(checkpoint.ScanDigest)
+	if err != nil || !bytes.Equal(digest.Sum(nil), scanned.Sum(nil)) {
+		return errors.Join(ErrAuthorityCorrupt, err)
 	}
 	return nil
 }
