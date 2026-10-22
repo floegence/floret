@@ -215,6 +215,19 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 					if err := verifyMigrationSourceRecord(ctx, tx, source, repo.domainFormat(), row); err != nil {
 						return err
 					}
+					if bytes.HasPrefix(row.Key, backendDomainKey(backendDomainRecordThread)) {
+						record, err := decodeBackendDomainRecord(source, row.Value)
+						if err != nil {
+							return err
+						}
+						var meta ThreadMeta
+						if err := decodeBackendDomainValue(source, record, &meta); err != nil {
+							return err
+						}
+						if meta.ParentThreadID == "" {
+							manifest.MigrationRoots++
+						}
+					}
 				}
 				if page.HasMore {
 					if len(page.Next) == 0 || bytes.Compare(page.Next, manifest.MigrationCursor) <= 0 {
@@ -222,7 +235,15 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 					}
 					manifest.MigrationCursor = bytes.Clone(page.Next)
 				} else {
-					manifest.MigrationPhase, manifest.MigrationCursor = "cleanup", nil
+					root, found, err := readBackendDomainRecord(tx, source, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0)
+					if err != nil || !found {
+						return errors.Join(ErrAuthorityCorrupt, err)
+					}
+					var roots backendDomainRootIndex
+					if err := decodeBackendDomainValue(source, root, &roots); err != nil || roots.ThreadIDs == nil || int64(len(roots.ThreadIDs)) != manifest.MigrationRoots {
+						return errors.Join(ErrAuthorityCorrupt, err)
+					}
+					manifest.MigrationPhase, manifest.MigrationCursor, manifest.MigrationRoots = "cleanup", nil, 0
 				}
 				migrated = true
 				return putBackendDomainRecordContext(ctx, tx, repo.domainFormat(), backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest)
