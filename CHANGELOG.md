@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v7.79.0 - 2026-10-22
 
 - Remove full-text token generation, SQLite postings, incremental term append,
   and optional physical search dispatch. Explicit authorized text queries match
