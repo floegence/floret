@@ -488,28 +488,45 @@ func threadQueryIndexMatches(tx spi.ReadTx, threadID string, state *queryThread)
 	if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Version != 3 || manifest.Leaf != state.leaf {
 		return false, nil
 	}
-	documents, err := queryMetadataReader(tx).listDocuments(queryMetadataSelection{ThreadIDs: []string{threadID}})
-	if err != nil {
-		return false, err
-	}
-	if len(documents) != len(state.records) {
-		return false, nil
-	}
-	expected := make(map[string][]byte, len(state.records))
-	for key, record := range state.records {
-		document, err := queryDocument(record)
+	prefix := []byte(threadID + "\x00")
+	request := spi.ScanRequest{Namespace: queryDocumentNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 128}
+	matched := 0
+	for {
+		page, err := tx.Scan(request)
 		if err != nil {
 			return false, err
 		}
-		expected[key] = document.Metadata
-	}
-	for _, document := range documents {
-		if document.ThreadID != threadID || !bytes.Equal(expected[document.Key], document.Metadata) {
-			return false, nil
+		previous := request.After
+		for _, row := range page.Records {
+			if !bytes.HasPrefix(row.Key, prefix) || bytes.Compare(row.Key, previous) <= 0 {
+				return false, spi.ErrIndexCorrupt
+			}
+			previous = row.Key
+			var document queryStoredDocument
+			if err := json.Unmarshal(row.Value, &document); err != nil {
+				return false, errors.Join(spi.ErrIndexCorrupt, err)
+			}
+			record, found := state.records[document.Key]
+			if !found || document.ThreadID != threadID || document.Key != string(row.Key) {
+				return false, nil
+			}
+			expected, err := queryDocument(record)
+			if err != nil {
+				return false, err
+			}
+			if document.Object != expected.Object || !bytes.Equal(document.Metadata, expected.Metadata) {
+				return false, nil
+			}
+			matched++
 		}
-		delete(expected, document.Key)
+		if !page.HasMore {
+			return matched == len(state.records), nil
+		}
+		if len(page.Records) == 0 || !bytes.Equal(page.Next, previous) {
+			return false, spi.ErrIndexCorrupt
+		}
+		request.After = bytes.Clone(page.Next)
 	}
-	return len(expected) == 0, nil
 }
 
 func ensureThreadQueryIndexReady(ctx context.Context, tx spi.ReadTx, scope threadquery.Scope, format backendDomainFormat) error {

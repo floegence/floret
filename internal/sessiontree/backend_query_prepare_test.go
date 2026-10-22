@@ -242,3 +242,77 @@ func TestQueryPreparationReclaimsMetadataInBoundedTransactions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type queryVerificationBoundBackend struct {
+	spi.Backend
+	afterPage func() error
+}
+
+type queryVerificationBoundTx struct {
+	spi.ReadTx
+	documents int
+}
+
+func (tx *queryVerificationBoundTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	page, err := tx.ReadTx.Scan(request)
+	if request.Namespace == queryDocumentNamespace {
+		tx.documents += len(page.Records)
+		if tx.documents > 128 {
+			return spi.ScanPage{}, errors.New("metadata verification held more than one page in a transaction")
+		}
+	}
+	return page, err
+}
+
+func (backend *queryVerificationBoundBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
+	var documents int
+	err := backend.Backend.View(ctx, func(tx spi.ReadTx) error {
+		bounded := &queryVerificationBoundTx{ReadTx: tx}
+		err := read(bounded)
+		documents = bounded.documents
+		return err
+	})
+	if err == nil && documents > 0 && backend.afterPage != nil {
+		hook := backend.afterPage
+		backend.afterPage = nil
+		err = hook()
+	}
+	return err
+}
+
+func TestQueryPreparationVerifiesMetadataBetweenTransactions(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "history"}); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 260 {
+		if _, err := memory.Append(t.Context(), Entry{ThreadID: "history", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained"}}, AppendOptions{ID: fmt.Sprint(index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	backend := &queryVerificationBoundBackend{Backend: base}
+	repo.backend = backend
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	backend.afterPage = func() error {
+		_, err := repo.Append(t.Context(), Entry{ThreadID: "history", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "concurrent tail"}}, AppendOptions{ID: "concurrent"})
+		return err
+	}
+	if err := repo.prepareQueryThread(t.Context(), "history"); !errors.Is(err, spi.ErrConflict) {
+		t.Fatalf("concurrent append error = %v, want conflict before publication", err)
+	}
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	scope := threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{"history"}}
+	repo.backend = base
+	page, err := repo.Query(t.Context(), scope, threadquery.QueryInput{Object: threadquery.Messages, Limit: 5})
+	if err != nil || page.Total != 261 {
+		t.Fatalf("prepared history total=%d, err=%v", page.Total, err)
+	}
+}

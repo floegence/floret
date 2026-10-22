@@ -231,8 +231,8 @@ func (host *Host) Readiness(ctx context.Context, threadID identity.ThreadID) (Th
 		return ThreadReadiness{}, err
 	}
 	readiness := ThreadReadiness{ThreadID: threadID, Storage: status}
-	host.threadPreparationMu.Lock()
-	preparation := host.threadPreparations[threadID]
+	host.threadPreparations.mu.Lock()
+	preparation := host.threadPreparations.threads[threadID]
 	preparing := false
 	if preparation != nil {
 		select {
@@ -242,7 +242,7 @@ func (host *Host) Readiness(ctx context.Context, threadID identity.ThreadID) (Th
 			preparing = true
 		}
 	}
-	host.threadPreparationMu.Unlock()
+	host.threadPreparations.mu.Unlock()
 	if preparing || err != nil {
 		return readiness, err
 	}
@@ -278,16 +278,14 @@ func (host *Host) PrepareThread(ctx context.Context, threadID identity.ThreadID)
 			return err
 		}
 	}
-	host.threadPreparationMu.Lock()
-	if host.threadPreparations == nil {
-		host.threadPreparations = make(map[identity.ThreadID]*threadPreparation)
-	}
-	preparation := host.threadPreparations[threadID]
+	host.threadPreparations.mu.Lock()
+
+	preparation := host.threadPreparations.threads[threadID]
 	if preparation != nil {
 		select {
 		case <-preparation.done:
 			// Each explicit retry gets a new attempt; other threads remain usable.
-			delete(host.threadPreparations, threadID)
+			delete(host.threadPreparations.threads, threadID)
 			preparation = nil
 		default:
 		}
@@ -295,11 +293,11 @@ func (host *Host) PrepareThread(ctx context.Context, threadID identity.ThreadID)
 	if preparation == nil {
 		workContext, finish, err := host.store.beginLifetimeOperationContext()
 		if err != nil {
-			host.threadPreparationMu.Unlock()
+			host.threadPreparations.mu.Unlock()
 			return err
 		}
 		preparation = &threadPreparation{done: make(chan struct{})}
-		host.threadPreparations[threadID] = preparation
+		host.threadPreparations.threads[threadID] = preparation
 		go func() {
 			defer finish()
 			var workErr error
@@ -307,17 +305,17 @@ func (host *Host) PrepareThread(ctx context.Context, threadID identity.ThreadID)
 				if recovered := recover(); recovered != nil {
 					workErr = fmt.Errorf("thread preparation panicked: %v", recovered)
 				}
-				host.threadPreparationMu.Lock()
+				host.threadPreparations.mu.Lock()
 				preparation.err = workErr
 				close(preparation.done)
 				if workErr == nil {
 					// Canonical readiness may change after deletion or a new leaf.
 					// Successful attempts never become a second readiness owner.
-					delete(host.threadPreparations, threadID)
+					delete(host.threadPreparations.threads, threadID)
 				} else {
 					host.trimThreadPreparationFailures()
 				}
-				host.threadPreparationMu.Unlock()
+				host.threadPreparations.mu.Unlock()
 			}()
 			workErr = host.prepareThread(workContext, threadID)
 			if workErr == nil && host.startup.failed() && host.startup.isUsable() {
@@ -325,13 +323,18 @@ func (host *Host) PrepareThread(ctx context.Context, threadID identity.ThreadID)
 			}
 		}()
 	}
-	host.threadPreparationMu.Unlock()
+	host.threadPreparations.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-preparation.done:
 		return preparation.err
 	}
+}
+
+type threadPreparationState struct {
+	mu      sync.Mutex
+	threads map[identity.ThreadID]*threadPreparation
 }
 
 type threadPreparation struct {
@@ -353,17 +356,17 @@ func preparationFinished(preparation *threadPreparation) bool {
 func (host *Host) trimThreadPreparationFailures() {
 	const retainedFailures = 256
 	completed := 0
-	for _, attempt := range host.threadPreparations {
+	for _, attempt := range host.threadPreparations.threads {
 		if preparationFinished(attempt) {
 			completed++
 		}
 	}
-	for id, attempt := range host.threadPreparations {
+	for id, attempt := range host.threadPreparations.threads {
 		if completed <= retainedFailures {
 			break
 		}
 		if preparationFinished(attempt) {
-			delete(host.threadPreparations, id)
+			delete(host.threadPreparations.threads, id)
 			completed--
 		}
 	}

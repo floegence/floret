@@ -218,9 +218,9 @@ func TestReadinessDoesNotPrepareTheRequestedThread(t *testing.T) {
 	if !errors.Is(err, ErrAuthorityCorrupt) || readiness.Ready {
 		t.Fatalf("corrupt canonical readiness = %#v, %v; want authority corruption", readiness, err)
 	}
-	host.threadPreparationMu.Lock()
-	preparation := host.threadPreparations[identity.ThreadID(threadID)]
-	host.threadPreparationMu.Unlock()
+	host.threadPreparations.mu.Lock()
+	preparation := host.threadPreparations.threads[identity.ThreadID(threadID)]
+	host.threadPreparations.mu.Unlock()
 	if preparation != nil {
 		t.Fatal("readiness started thread preparation")
 	}
@@ -441,9 +441,9 @@ func TestPrepareThreadCancellationLeavesHostPreparationRunning(t *testing.T) {
 	go func() { result <- host.PrepareThread(waitContext, "thread-startup-wait") }()
 	deadline := time.Now().Add(time.Second)
 	for {
-		host.threadPreparationMu.Lock()
-		preparation := host.threadPreparations["thread-startup-wait"]
-		host.threadPreparationMu.Unlock()
+		host.threadPreparations.mu.Lock()
+		preparation := host.threadPreparations.threads["thread-startup-wait"]
+		host.threadPreparations.mu.Unlock()
 		if preparation != nil {
 			break
 		}
@@ -463,9 +463,9 @@ func TestPrepareThreadCancellationLeavesHostPreparationRunning(t *testing.T) {
 		close(release)
 		t.Fatal("cancelling a wait did not return promptly")
 	}
-	host.threadPreparationMu.Lock()
-	preparation := host.threadPreparations["thread-startup-wait"]
-	host.threadPreparationMu.Unlock()
+	host.threadPreparations.mu.Lock()
+	preparation := host.threadPreparations.threads["thread-startup-wait"]
+	host.threadPreparations.mu.Unlock()
 	select {
 	case <-preparation.done:
 		close(release)

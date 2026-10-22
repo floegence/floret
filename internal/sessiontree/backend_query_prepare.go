@@ -86,17 +86,9 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 	if state == nil {
 		return ErrThreadNotFound
 	}
-	var complete bool
-	err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
-		if err := reader.verify(tx); err != nil {
-			return err
-		}
-		var err error
-		complete, err = threadQueryIndexMatches(tx, threadID, state)
-		return err
-	})
+	complete, err := threadQueryIndexMatches(reader, threadID, state)
 	if err != nil && !errors.Is(err, spi.ErrIndexCorrupt) {
-		return err
+		return reader.validationError(err)
 	}
 	if !complete {
 		// A missing manifest prevents every query from exposing partial metadata.
