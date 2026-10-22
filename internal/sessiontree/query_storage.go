@@ -105,16 +105,34 @@ func (index *queryMetadataStore) putDocument(document queryStoredDocument) error
 	return index.write.Put(queryDocumentNamespace, []byte(document.Key), raw)
 }
 func (index *queryMetadataStore) deleteThread(threadID string) error {
-	documents, err := index.listDocuments(queryMetadataSelection{ThreadIDs: []string{threadID}})
-	if err != nil {
-		return err
-	}
-	for _, document := range documents {
-		if err := index.write.Delete(queryDocumentNamespace, []byte(document.Key)); err != nil {
+	for {
+		more, err := index.deleteThreadPage(threadID)
+		if err != nil || !more {
 			return err
 		}
 	}
-	return nil
+}
+
+// Missing query manifests keep partially rebuilt metadata invisible. Deleting
+// one bounded page lets preparation release the backend between transactions.
+func (index *queryMetadataStore) deleteThreadPage(threadID string) (bool, error) {
+	prefix := []byte(threadID + "\x00")
+	page, err := index.read.Scan(spi.ScanRequest{Namespace: queryDocumentNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 128})
+	if err != nil {
+		return false, err
+	}
+	for _, record := range page.Records {
+		if !bytes.HasPrefix(record.Key, prefix) {
+			return false, ErrAuthorityCorrupt
+		}
+		if err := index.write.Delete(queryDocumentNamespace, record.Key); err != nil {
+			return false, err
+		}
+	}
+	if page.HasMore && len(page.Records) == 0 {
+		return false, ErrAuthorityCorrupt
+	}
+	return page.HasMore, nil
 }
 func (index *queryMetadataStore) listDocuments(query queryMetadataSelection) ([]queryStoredDocument, error) {
 	var result []queryStoredDocument

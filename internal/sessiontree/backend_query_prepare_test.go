@@ -161,3 +161,84 @@ func TestV32ReadinessSurvivesValidationCacheEvictionAndRestart(t *testing.T) {
 		t.Fatalf("missing index readiness = %v, %v", ready, err)
 	}
 }
+
+type queryDeleteCountingBackend struct {
+	spi.Backend
+	maxDeletes int
+	batches    int
+	failBatch  int
+}
+type queryDeleteCountingTx struct {
+	spi.WriteTx
+	deletes int
+}
+
+func (tx *queryDeleteCountingTx) Delete(namespace string, key []byte) error {
+	if namespace == queryDocumentNamespace {
+		tx.deletes++
+	}
+	return tx.WriteTx.Delete(namespace, key)
+}
+func (backend *queryDeleteCountingBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
+	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
+		counted := &queryDeleteCountingTx{WriteTx: tx}
+		if err := mutate(counted); err != nil {
+			return err
+		}
+		backend.maxDeletes = max(backend.maxDeletes, counted.deletes)
+		if counted.deletes > 0 {
+			backend.batches++
+			if backend.batches == backend.failBatch {
+				return errors.New("injected cleanup failure")
+			}
+		}
+		return nil
+	})
+}
+
+func TestQueryPreparationReclaimsMetadataInBoundedTransactions(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "history"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.Append(t.Context(), Entry{ThreadID: "history", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained"}}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	base, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
+		for i := range 300 {
+			// Interrupted derived metadata may be corrupt and must be rebuildable.
+			if err := tx.Put(queryDocumentNamespace, []byte(fmt.Sprintf("history\x00stale-%03d", i)), []byte("invalid derived record")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &queryDeleteCountingBackend{Backend: base, failBatch: 2}
+	repo.backend = backend
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err == nil {
+		t.Fatal("cleanup failure ignored")
+	}
+	if backend.maxDeletes > 128 || backend.batches != 2 {
+		t.Fatalf("cleanup batches=%d largest=%d", backend.batches, backend.maxDeletes)
+	}
+	scope := threadquery.Scope{Authority: "test", ThreadIDs: []identity.ThreadID{"history"}}
+	if _, err := repo.Query(t.Context(), scope, threadquery.QueryInput{Object: threadquery.Messages, Limit: 5}); !errors.Is(err, threadquery.ErrThreadQueryIndexNotReady) {
+		t.Fatalf("partial cleanup query=%v", err)
+	}
+	backend.failBatch = 0
+	if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
+		t.Fatal(err)
+	}
+	if backend.maxDeletes > 128 {
+		t.Fatalf("cleanup transaction deleted %d documents", backend.maxDeletes)
+	}
+	if _, err := repo.Query(t.Context(), scope, threadquery.QueryInput{Object: threadquery.Messages, Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+}

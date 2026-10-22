@@ -100,25 +100,30 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 	}
 	if !complete {
 		// A missing manifest prevents every query from exposing partial metadata.
-		err = func() error {
-			repo.mu.Lock()
-			defer repo.mu.Unlock()
-			err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
-				if err := reader.verify(tx); err != nil {
+		more := true
+		for more {
+			err = func() error {
+				repo.mu.Lock()
+				defer repo.mu.Unlock()
+				err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+					if err := reader.verify(tx); err != nil {
+						return err
+					}
+					if err := tx.Delete(queryManifestNamespace, []byte(threadID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
+						return err
+					}
+					var err error
+					more, err = queryMetadataWriter(tx).deleteThreadPage(threadID)
 					return err
+				})
+				if err == nil {
+					delete(repo.queryThreads, threadID)
 				}
-				if err := tx.Delete(queryManifestNamespace, []byte(threadID)); err != nil && !errors.Is(err, spi.ErrNotFound) {
-					return err
-				}
-				return queryMetadataWriter(tx).deleteThread(threadID)
-			})
-			if err == nil {
-				delete(repo.queryThreads, threadID)
+				return err
+			}()
+			if err != nil {
+				return err
 			}
-			return err
-		}()
-		if err != nil {
-			return err
 		}
 		keys := make([]string, 0, len(state.records))
 		for key := range state.records {
