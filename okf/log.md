@@ -2,6 +2,10 @@
 
 - 2026-10-22: Remove full-text indexing completely. Physical 5/logical 10 retire derived terms transactionally; metadata browsing reads only page bodies. See [canonical queries](api/thread-query.md) and [storage](api/storage.md).
 
+- 2026-10-22: Bound repeated request-history reads to execution-owned turn facts
+  and exact latest-request lookups. Preserve all drift and checkpoint semantics;
+  see [history performance](workflows/history-performance.md#provider-request-preparation).
+
 - 2026-10-21: Settle ordinary turns from ordered current-turn records and retain
   complete-path validation for Goal-guarded completion. Record exact-read
   regressions and remaining limits in

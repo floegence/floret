@@ -996,14 +996,13 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	if store == nil {
 		return nil
 	}
-	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	previous, found, err := LatestProviderRequest(ctx, store, promptScopeID)
 	if err != nil {
 		return err
 	}
-	if len(requests) == 0 {
+	if !found {
 		return nil
 	}
-	previous := requests[len(requests)-1]
 	if plan.RetrySourceEntryID != "" && plan.RetryRunID != "" && previous.RunID != plan.RetryRunID {
 		// Managed facts may be admitted after the retry checkpoint. They are
 		// typed context messages, never a replacement for its canonical source.
@@ -1046,15 +1045,11 @@ func ValidateCanonicalLineage(ctx context.Context, store Store, promptScopeID st
 	if HashStrings(messageHashes[:previous.CanonicalMessageCount]...) != previous.CanonicalHistoryPrefixHash {
 		return fmt.Errorf("%w: canonical history prefix changed", ErrContextPrefixDrift)
 	}
-	var previousRender *ProviderRequestRecord
-	for index := len(requests) - 1; index >= 0; index-- {
-		candidate := &requests[index]
-		if candidate.CompactionGeneration == plan.CompactionGeneration && candidate.RenderLineageKey == plan.RenderLineageKey {
-			previousRender = candidate
-			break
-		}
+	previousRender, found, err := latestRenderRequest(ctx, store, promptScopeID, previous, plan.CompactionGeneration, plan.RenderLineageKey)
+	if err != nil {
+		return err
 	}
-	if previousRender == nil {
+	if !found {
 		return nil
 	}
 	if previousRender.CanonicalEnvelopeHash == "" {
@@ -1098,25 +1093,15 @@ func InitialTurnSurface(ctx context.Context, store Store, promptScopeID, turnID 
 	if store == nil || strings.TrimSpace(turnID) == "" {
 		return TurnSurfaceSnapshot{}, false, nil
 	}
-	requests, err := store.ProviderRequests(ctx, promptScopeID)
-	if err != nil {
+	facts, err := readTurnRequestFacts(ctx, store, promptScopeID, turnID)
+	if err != nil || !facts.surfaceFound {
 		return TurnSurfaceSnapshot{}, false, err
 	}
-	for _, request := range requests {
-		surfaceID := strings.TrimSpace(request.TurnID)
-		if surfaceID == "" {
-			surfaceID = strings.TrimSpace(request.RunID)
-		}
-		if surfaceID != turnID {
-			continue
-		}
-		if strings.TrimSpace(request.TurnSurface.Hash) == "" {
-			return TurnSurfaceSnapshot{}, false, errors.New("turn provider checkpoint is missing its execution surface")
-		}
-		frozen, err := normalizeTurnSurface(request.TurnSurface)
-		return frozen, err == nil, err
+	if strings.TrimSpace(facts.surface.Hash) == "" {
+		return TurnSurfaceSnapshot{}, false, errors.New("turn provider checkpoint is missing its execution surface")
 	}
-	return TurnSurfaceSnapshot{}, false, nil
+	frozen, err := normalizeTurnSurface(facts.surface)
+	return frozen, err == nil, err
 }
 
 func normalizeTurnSurface(surface TurnSurfaceSnapshot) (TurnSurfaceSnapshot, error) {
@@ -1154,14 +1139,12 @@ func ValidateTurnModel(ctx context.Context, store Store, promptScopeID, turnID, 
 	if store == nil || strings.TrimSpace(turnID) == "" {
 		return nil
 	}
-	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	facts, err := readTurnRequestFacts(ctx, store, promptScopeID, turnID)
 	if err != nil {
 		return err
 	}
-	for _, request := range requests {
-		if request.TurnID == turnID && (request.Provider != providerName || request.Model != model) {
-			return ErrTurnModelDrift
-		}
+	if facts.modelFound && (facts.modelDrift || facts.provider != providerName || facts.model != model) {
+		return ErrTurnModelDrift
 	}
 	return nil
 }
@@ -1172,14 +1155,13 @@ func ProviderSurfaceChanges(ctx context.Context, store Store, promptScopeID, ren
 	if store == nil {
 		return false, false, nil
 	}
-	requests, err := store.ProviderRequests(ctx, promptScopeID)
+	previous, found, err := LatestProviderRequest(ctx, store, promptScopeID)
 	if err != nil {
 		return false, false, err
 	}
-	if len(requests) == 0 {
+	if !found {
 		return false, false, nil
 	}
-	previous := requests[len(requests)-1]
 	return previous.RenderLineageKey != renderLineageKey,
 		previous.Provider != surface.Provider || previous.Model != surface.Model || previous.TurnSurface.StateCompatibilityKey != surface.StateCompatibilityKey, nil
 }

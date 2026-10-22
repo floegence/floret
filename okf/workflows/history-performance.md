@@ -304,3 +304,47 @@ older writer that rejects its schema. The ordinary regression reopens the
 fixture, checks completed canonical boundaries and continues it through the
 public runtime. Generation and explicit complete validation are outside every
 measured interval. Fixtures alone do not certify production performance.
+
+
+## Provider request preparation
+
+The Engine runner owns one execution-scoped summary: the first turn surface,
+first exact TurnID provider/model, and whether any matching request disagreed.
+It reads canonical requests once and retains no historical request collection.
+Successful append/checkpoint operations update that summary; failed writes do
+not. Each retry/restart execution reloads canonical facts. PreparedStore forwards
+the same owner; dynamic tools still refresh at every existing boundary.
+
+Ordinary lineage and surface comparisons use the existing exact latest-request
+reader. Returning to an older render lineage still searches for its last matching
+generation and checks the full segment prefix. First-turn surface matching keeps
+its existing trimmed TurnID/RunID rules; model validation retains exact TurnID
+matching and rejects any earlier conflicting request.
+
+    GOWORK=off go test ./internal/provider/cache -run 'TestExecution|TestLineageFast'
+    GOWORK=off go test ./internal/engine -run '^TestExecutionReadsTurnHistoryOnceAcrossToolSteps$'
+    GOWORK=off GOMAXPROCS=2 go test ./internal/engine -run '^$' -bench '^BenchmarkSQLiteExecutionRequestHistory$' -benchtime=10x -count=3 -benchmem
+
+The real-Engine operation-count regression uses one or twelve tool calls and a
+dynamic surface. Full request reads fall from 10/65 to one per execution. The
+SQLite benchmark uses 100/1,000 historical requests, approximately 16.4 KiB system
+prompts, a short canonical conversation and deterministic provider output. It
+includes request preparation, successful SQLite request/response checkpoints,
+and completed Engine execution. Each measured iteration appends a request; it
+is not a fixed-history point-lookup benchmark.
+
+October 22, 2026 Apple M5 Pro / Go 1.27.3 diagnostic medians of three alternating
+10-iteration runs against da95596 (temporary source overlay, no module rewiring):
+
+| Historical requests | Before ms/execution | After ms/execution | Before bytes/execution | After bytes/execution |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 94.95 | 21.37 | 245,131,366 | 46,496,092 |
+| 1,000 | 778.78 | 150.89 | 2,305,077,316 | 389,844,408 |
+
+At 1,000 records the median time falls 80.6% and allocation falls 83.1%. Some
+samples overlap repository checks; timings are diagnostic, not product CPU
+acceptance. First-read restore, historical surface switches, segments, response
+history and canonical tokenization remain outside the bounded repeated path.
+No user output cadence, history, tool permission or UI behavior is reduced.
+Published Redeven adoption and production-renderer interaction measurements are
+separate qualification gates; this benchmark cannot establish total app CPU.

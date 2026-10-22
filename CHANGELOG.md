@@ -11,6 +11,12 @@
 - Deprecate the optional index SPI and startup indexing phase without removing
   published v7 symbols. Startup and canonical writes never construct text indexes.
 
+- Read current-turn provider configuration once per Engine execution and advance
+  its bounded facts only after successful request checkpoints. Use exact latest
+  request reads for ordinary lineage and surface comparisons, preserving older
+  matching render checks, model drift, retries, restarts and dynamic tools.
+  This request-read optimization adds no public API or durable schema.
+
 ## v7.78.2 - 2026-10-22
 
 - Limit model-facing `ask_user` response modes to `write` and `select_or_write`.
