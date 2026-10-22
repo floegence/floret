@@ -44,38 +44,65 @@ func DecodeSteeringResolution(entry Entry) (SteeringResolution, error) {
 // The immutable request retains the visible message identity and original input.
 func projectSteering(path []Entry) ([]Entry, error) {
 	out := append([]Entry(nil), path...)
-	requests := make(map[string]Entry)
-	resolved := make(map[string]bool)
+	projection := steeringProjection{}
 	for i, entry := range path {
-		switch entry.Type {
-		case EntrySteeringRequested:
-			if entry.ID == "" || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" || entry.RequestFingerprint == "" || entry.Message.Role != session.User || entry.Message.Kind != "" || strings.TrimSpace(entry.Message.Content) == "" && len(entry.Message.Attachments) == 0 && len(entry.Message.References) == 0 {
-				return nil, fmt.Errorf("%w: invalid steering request", ErrAuthorityCorrupt)
-			}
-			if _, exists := requests[entry.ID]; exists {
-				return nil, ErrAuthorityCorrupt
-			}
-			requests[entry.ID] = entry
-		case EntrySteeringApplied, EntrySteeringCancelled:
-			resolution, err := DecodeSteeringResolution(entry)
-			if err != nil {
-				return nil, err
-			}
-			if entry.Type == EntrySteeringApplied && resolution.Reason != "" || entry.Type == EntrySteeringCancelled && resolution.Reason != "stopped" && resolution.Reason != "effect_outcome_unknown" && resolution.Reason != "task_ended" && resolution.Reason != "fork" {
-				return nil, fmt.Errorf("%w: invalid steering cancellation reason", ErrAuthorityCorrupt)
-			}
-			request, exists := requests[resolution.SteeringID]
-			if !exists || resolved[request.ID] || request.TurnID != entry.TurnID || entry.RunID == "" {
-				return nil, fmt.Errorf("%w: invalid steering resolution authority", ErrAuthorityCorrupt)
-			}
-			resolved[request.ID] = true
-			if entry.Type == EntrySteeringApplied {
-				out[i].Type = EntryUserMessage
-				out[i].Message = session.CloneMessage(request.Message)
-			}
+		projected, err := projection.observe(entry)
+		if err != nil {
+			return nil, err
 		}
+		out[i] = projected
 	}
 	return out, nil
+}
+
+// Validation retains only request identities; model projection also retains the
+// request message needed at its application point.
+type steeringProjection struct {
+	metadataOnly bool
+	requests     map[string]Entry
+	resolved     map[string]bool
+}
+
+func (projection *steeringProjection) observe(entry Entry) (Entry, error) {
+	return projection.observeValidated(entry, strings.TrimSpace(entry.Message.Content) != "")
+}
+
+func (projection *steeringProjection) observeValidated(entry Entry, hasContent bool) (Entry, error) {
+	if projection.requests == nil {
+		projection.requests, projection.resolved = map[string]Entry{}, map[string]bool{}
+	}
+	switch entry.Type {
+	case EntrySteeringRequested:
+		if entry.ID == "" || entry.TurnID == "" || entry.RunID == "" || entry.RequestKey == "" || entry.RequestFingerprint == "" || entry.Message.Role != session.User || entry.Message.Kind != "" || !hasContent && len(entry.Message.Attachments) == 0 && len(entry.Message.References) == 0 {
+			return Entry{}, fmt.Errorf("%w: invalid steering request", ErrAuthorityCorrupt)
+		}
+		if _, exists := projection.requests[entry.ID]; exists {
+			return Entry{}, ErrAuthorityCorrupt
+		}
+		request := Entry{ID: entry.ID, TurnID: entry.TurnID}
+		if !projection.metadataOnly {
+			request.Message = entry.Message
+		}
+		projection.requests[entry.ID] = request
+	case EntrySteeringApplied, EntrySteeringCancelled:
+		resolution, err := DecodeSteeringResolution(entry)
+		if err != nil {
+			return Entry{}, err
+		}
+		if entry.Type == EntrySteeringApplied && resolution.Reason != "" || entry.Type == EntrySteeringCancelled && resolution.Reason != "stopped" && resolution.Reason != "effect_outcome_unknown" && resolution.Reason != "task_ended" && resolution.Reason != "fork" {
+			return Entry{}, fmt.Errorf("%w: invalid steering cancellation reason", ErrAuthorityCorrupt)
+		}
+		request, exists := projection.requests[resolution.SteeringID]
+		if !exists || projection.resolved[request.ID] || request.TurnID != entry.TurnID || entry.RunID == "" {
+			return Entry{}, fmt.Errorf("%w: invalid steering resolution authority", ErrAuthorityCorrupt)
+		}
+		projection.resolved[request.ID] = true
+		if entry.Type == EntrySteeringApplied {
+			entry.Type = EntryUserMessage
+			entry.Message = session.CloneMessage(request.Message)
+		}
+	}
+	return entry, nil
 }
 
 func validateSteeringRecords(memory *MemoryRepo) error {

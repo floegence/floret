@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 
@@ -64,9 +65,16 @@ func (backend *memoryBackend) Update(ctx context.Context, callback func(spi.Writ
 		return err
 	}
 	tx := &memoryTx{ctx: ctx, records: records, active: true}
+	var committed recordSet
 	if err := func() error {
 		defer tx.expire()
-		return callback(tx)
+		if err := callback(tx); err != nil {
+			return err
+		}
+		tx.mu.Lock()
+		defer tx.mu.Unlock()
+		committed = tx.records
+		return nil
 	}(); err != nil {
 		return err
 	}
@@ -84,7 +92,7 @@ func (backend *memoryBackend) Update(ctx context.Context, callback func(spi.Writ
 	if backend.version != version {
 		return spi.ErrConflict
 	}
-	backend.records = records
+	backend.records = committed
 	backend.version++
 	return nil
 }
@@ -120,16 +128,19 @@ func (backend *memoryBackend) snapshot() (recordSet, uint64, error) {
 	if backend.closed {
 		return nil, 0, spi.ErrClosed
 	}
-	return cloneRecordSet(backend.records), backend.version, nil
+	// Published maps and values are immutable. Writers clone a namespace
+	// before changing it; readers retain one stable snapshot without copying.
+	return backend.records, backend.version, nil
 }
 
 type memoryTx struct {
-	mu       sync.Mutex
-	ctx      context.Context
-	records  recordSet
-	active   bool
-	readOnly bool
-	dirty    bool
+	mu              sync.Mutex
+	ctx             context.Context
+	records         recordSet
+	active          bool
+	readOnly        bool
+	dirty           bool
+	ownedNamespaces map[string]bool
 }
 
 func (tx *memoryTx) Get(namespace string, key []byte) ([]byte, error) {
@@ -195,9 +206,7 @@ func (tx *memoryTx) Put(namespace string, key, value []byte) error {
 	if err := tx.validateWrite(namespace, key); err != nil {
 		return err
 	}
-	if tx.records[namespace] == nil {
-		tx.records[namespace] = make(map[string][]byte)
-	}
+	tx.ownNamespace(namespace)
 	tx.records[namespace][string(key)] = bytes.Clone(value)
 	tx.dirty = true
 	return nil
@@ -212,6 +221,7 @@ func (tx *memoryTx) Delete(namespace string, key []byte) error {
 	if _, ok := tx.records[namespace][string(key)]; !ok {
 		return spi.ErrNotFound
 	}
+	tx.ownNamespace(namespace)
 	delete(tx.records[namespace], string(key))
 	tx.dirty = true
 	return nil
@@ -267,13 +277,18 @@ func validateCallback(ctx context.Context, present bool) error {
 	return ctx.Err()
 }
 
-func cloneRecordSet(source recordSet) recordSet {
-	clone := make(recordSet, len(source))
-	for namespace, records := range source {
-		clone[namespace] = make(map[string][]byte, len(records))
-		for key, value := range records {
-			clone[namespace][key] = bytes.Clone(value)
-		}
+func (tx *memoryTx) ownNamespace(namespace string) {
+	if tx.ownedNamespaces == nil {
+		tx.records = maps.Clone(tx.records)
+		tx.ownedNamespaces = make(map[string]bool)
 	}
-	return clone
+	if tx.ownedNamespaces[namespace] {
+		return
+	}
+	records := maps.Clone(tx.records[namespace])
+	if records == nil {
+		records = make(map[string][]byte)
+	}
+	tx.records[namespace] = records
+	tx.ownedNamespaces[namespace] = true
 }

@@ -37,27 +37,8 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	if threadID == "" || turnID == "" || runID == "" || req.Summary.Type != EntryCompaction {
 		return ContextCompactionCommitResult{}, errors.New("compaction installation requires exact execution identity")
 	}
-	compact, err := DecodeThreadContextCompactionEntry(req.Lifecycle)
-	if err != nil {
+	if err := validateContextCompactionCommit(req); err != nil {
 		return ContextCompactionCommitResult{}, err
-	}
-	if compact.ThreadID != threadID || compact.TurnID != turnID || compact.RunID != runID || compact.Phase != "complete" || compact.OperationID != req.Summary.CompactionOperationID {
-		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction lifecycle identity conflicts", ErrAuthorityCorrupt)
-	}
-	status, err := DecodeThreadContextStatusEntry(req.Estimate)
-	if err != nil {
-		return ContextCompactionCommitResult{}, err
-	}
-	if status.ThreadID.String() != threadID || status.TurnID.String() != turnID || status.RunID.String() != runID || status.Phase != "projected_request" {
-		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction estimate identity conflicts", ErrAuthorityCorrupt)
-	}
-	if req.Finish != nil {
-		if err := ValidateFinishTurnRequest(*req.Finish); err != nil {
-			return ContextCompactionCommitResult{}, err
-		}
-		if req.Finish.ThreadID != threadID || req.Finish.TurnID != turnID || req.Finish.RunID != runID || req.Finish.Status != TurnCompleted || !req.Finish.ClearProviderState {
-			return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction completion identity conflicts", ErrAuthorityCorrupt)
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return ContextCompactionCommitResult{}, err
@@ -81,35 +62,8 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	if err != nil {
 		return ContextCompactionCommitResult{}, err
 	}
-	history, err := BuildContextChecked(path, ContextOptions{})
-	if err != nil {
+	if _, err := projectContextCompactionCommit(path, req); err != nil {
 		return ContextCompactionCommitResult{}, err
-	}
-	if req.History != nil && !reflect.DeepEqual(req.History, history) {
-		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction history changed", ErrStaleAuthority)
-	}
-	var previous Entry
-	for _, entry := range path {
-		if entry.Type == EntryCompaction {
-			previous = entry
-		}
-	}
-	if req.Summary.PreviousCompactionID != previous.CompactionID || req.Summary.CompactionGeneration != previous.CompactionGeneration+1 || req.Summary.CompactionID == "" || req.Summary.CompactionWindowID != req.Summary.CompactionID {
-		return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction generation conflicts with canonical path", ErrAuthorityCorrupt)
-	}
-	projected, err := projectCheckpoint(history, req.Summary, path)
-	if err != nil {
-		return ContextCompactionCommitResult{}, err
-	}
-	if req.ActiveMessages != nil {
-		expected := session.CloneMessages(req.ActiveMessages)
-		if len(expected) == 0 {
-			return ContextCompactionCommitResult{}, fmt.Errorf("%w: compaction replacement context is empty", ErrAuthorityCorrupt)
-		}
-		expected[0].EntryID, expected[0].ParentEntryID = projected[0].EntryID, projected[0].ParentEntryID
-		if !reflect.DeepEqual(expected, projected) {
-			return ContextCompactionCommitResult{}, fmt.Errorf("%w: generated compaction context differs from canonical projection", ErrAuthorityCorrupt)
-		}
 	}
 	checkpoint := r.checkpointJournalAppendLocked(threadID)
 	committed := false
@@ -150,4 +104,68 @@ func (r *MemoryRepo) CommitContextCompaction(ctx context.Context, req ContextCom
 	}
 	committed = true
 	return out, nil
+}
+
+func validateContextCompactionCommit(req ContextCompactionCommit) error {
+	threadID, turnID, runID := req.Summary.ThreadID, req.Summary.TurnID, req.Summary.RunID
+	if threadID == "" || turnID == "" || runID == "" || req.Summary.Type != EntryCompaction {
+		return errors.New("compaction installation requires exact execution identity")
+	}
+	compact, err := DecodeThreadContextCompactionEntry(req.Lifecycle)
+	if err != nil {
+		return err
+	}
+	if compact.ThreadID != threadID || compact.TurnID != turnID || compact.RunID != runID || compact.Phase != "complete" || compact.OperationID != req.Summary.CompactionOperationID {
+		return fmt.Errorf("%w: compaction lifecycle identity conflicts", ErrAuthorityCorrupt)
+	}
+	status, err := DecodeThreadContextStatusEntry(req.Estimate)
+	if err != nil {
+		return err
+	}
+	if status.ThreadID.String() != threadID || status.TurnID.String() != turnID || status.RunID.String() != runID || status.Phase != "projected_request" {
+		return fmt.Errorf("%w: compaction estimate identity conflicts", ErrAuthorityCorrupt)
+	}
+	if req.Finish != nil {
+		if err := ValidateFinishTurnRequest(*req.Finish); err != nil {
+			return err
+		}
+		if req.Finish.ThreadID != threadID || req.Finish.TurnID != turnID || req.Finish.RunID != runID || req.Finish.Status != TurnCompleted || !req.Finish.ClearProviderState {
+			return fmt.Errorf("%w: compaction completion identity conflicts", ErrAuthorityCorrupt)
+		}
+	}
+	return nil
+}
+
+func projectContextCompactionCommit(path []Entry, req ContextCompactionCommit) ([]session.Message, error) {
+	history, err := BuildContextChecked(path, ContextOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if req.History != nil && !reflect.DeepEqual(req.History, history) {
+		return nil, fmt.Errorf("%w: compaction history changed", ErrStaleAuthority)
+	}
+	var previous Entry
+	for _, entry := range path {
+		if entry.Type == EntryCompaction {
+			previous = entry
+		}
+	}
+	if req.Summary.PreviousCompactionID != previous.CompactionID || req.Summary.CompactionGeneration != previous.CompactionGeneration+1 || req.Summary.CompactionID == "" || req.Summary.CompactionWindowID != req.Summary.CompactionID {
+		return nil, fmt.Errorf("%w: compaction generation conflicts with canonical path", ErrAuthorityCorrupt)
+	}
+	projected, err := projectCheckpoint(history, req.Summary, path)
+	if err != nil {
+		return nil, err
+	}
+	if req.ActiveMessages != nil {
+		expected := session.CloneMessages(req.ActiveMessages)
+		if len(expected) == 0 {
+			return nil, fmt.Errorf("%w: compaction replacement context is empty", ErrAuthorityCorrupt)
+		}
+		expected[0].EntryID, expected[0].ParentEntryID = projected[0].EntryID, projected[0].ParentEntryID
+		if !reflect.DeepEqual(expected, projected) {
+			return nil, fmt.Errorf("%w: generated compaction context differs from canonical projection", ErrAuthorityCorrupt)
+		}
+	}
+	return projected, nil
 }

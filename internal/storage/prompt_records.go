@@ -318,7 +318,10 @@ func deletePromptScope(tx spi.WriteTx, scope string) error {
 			return err
 		}
 	}
-	return tx.Delete(promptRecordsNamespace, promptScopeKey(scope))
+	if err := tx.Delete(promptRecordsNamespace, promptScopeKey(scope)); err != nil && !errors.Is(err, spi.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 func decodePromptBatch[T any](batch promptBatch) ([]T, error) {

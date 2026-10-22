@@ -209,8 +209,13 @@ func (r *MemoryRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleReque
 	if err := ValidateSetThreadTitleRequest(req); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
+
+	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), setThreadTitleTransition(req))
+}
+
+func setThreadTitleTransition(req SetThreadTitleRequest) func(ThreadMeta) (ThreadMeta, bool, error) {
 	requestKey, requestFingerprint := strings.TrimSpace(req.RequestKey), strings.TrimSpace(req.RequestFingerprint)
-	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
+	return func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		title := strings.TrimSpace(req.Title)
 		if requestKey != "" && meta.TitleRequestKey == requestKey {
 			if meta.TitleRequestFingerprint != requestFingerprint {
@@ -234,15 +239,20 @@ func (r *MemoryRepo) SetThreadTitle(ctx context.Context, req SetThreadTitleReque
 		meta.TitleRequestKey = requestKey
 		meta.TitleRequestFingerprint = requestFingerprint
 		return meta, true, nil
-	})
+	}
 }
 
 func (r *MemoryRepo) BeginAutomaticThreadTitle(ctx context.Context, req BeginAutomaticThreadTitleRequest) (ThreadTitleMutationResult, error) {
 	if err := ValidateBeginAutomaticThreadTitleRequest(req); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
+
+	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), beginAutomaticThreadTitleTransition(req))
+}
+
+func beginAutomaticThreadTitleTransition(req BeginAutomaticThreadTitleRequest) func(ThreadMeta) (ThreadMeta, bool, error) {
 	token := strings.TrimSpace(req.Token)
-	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
+	return func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		switch meta.TitleStatus {
 		case ThreadTitleReady:
 			if meta.TitleSource == ThreadTitleSourceFallback {
@@ -270,16 +280,21 @@ func (r *MemoryRepo) BeginAutomaticThreadTitle(ctx context.Context, req BeginAut
 		meta.TitleRequestKey = ""
 		meta.TitleRequestFingerprint = ""
 		return meta, true, nil
-	})
+	}
 }
 
 func (r *MemoryRepo) CompleteAutomaticThreadTitle(ctx context.Context, req CompleteAutomaticThreadTitleRequest) (ThreadTitleMutationResult, error) {
 	if err := ValidateCompleteAutomaticThreadTitleRequest(req); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
+
+	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), completeAutomaticThreadTitleTransition(req))
+}
+
+func completeAutomaticThreadTitleTransition(req CompleteAutomaticThreadTitleRequest) func(ThreadMeta) (ThreadMeta, bool, error) {
 	token := strings.TrimSpace(req.Token)
 	title := strings.TrimSpace(req.Title)
-	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
+	return func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		if meta.TitleGeneration != req.Generation || meta.TitleToken != token {
 			return meta, false, ErrStaleAuthority
 		}
@@ -303,16 +318,21 @@ func (r *MemoryRepo) CompleteAutomaticThreadTitle(ctx context.Context, req Compl
 		default:
 			return meta, false, ErrAuthorityCorrupt
 		}
-	})
+	}
 }
 
 func (r *MemoryRepo) FailAutomaticThreadTitle(ctx context.Context, req FailAutomaticThreadTitleRequest) (ThreadTitleMutationResult, error) {
 	if err := ValidateFailAutomaticThreadTitleRequest(req); err != nil {
 		return ThreadTitleMutationResult{}, err
 	}
+
+	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), failAutomaticThreadTitleTransition(req))
+}
+
+func failAutomaticThreadTitleTransition(req FailAutomaticThreadTitleRequest) func(ThreadMeta) (ThreadMeta, bool, error) {
 	token := strings.TrimSpace(req.Token)
 	titleError := strings.TrimSpace(req.Error)
-	return r.mutateThreadTitle(ctx, strings.TrimSpace(req.ThreadID), func(meta ThreadMeta) (ThreadMeta, bool, error) {
+	return func(meta ThreadMeta) (ThreadMeta, bool, error) {
 		if meta.TitleGeneration != req.Generation || meta.TitleToken != token {
 			return meta, false, ErrStaleAuthority
 		}
@@ -334,7 +354,7 @@ func (r *MemoryRepo) FailAutomaticThreadTitle(ctx context.Context, req FailAutom
 		default:
 			return meta, false, ErrAuthorityCorrupt
 		}
-	})
+	}
 }
 
 func (r *MemoryRepo) PendingAutomaticThreadTitles(_ context.Context) ([]ThreadMeta, error) {

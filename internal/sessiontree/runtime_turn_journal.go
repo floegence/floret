@@ -207,6 +207,10 @@ func (r *MemoryRepo) ReadAcceptedTurn(_ context.Context, threadID, turnID, runID
 	if started.RunID != runID {
 		return AcceptTurnResult{}, true, ErrRequestConflict
 	}
+	started, err = r.completeEntryLocked(started)
+	if err != nil {
+		return AcceptTurnResult{}, true, err
+	}
 	base, err := r.runtimeAdmissionBaseLeafLocked(started, nil)
 	if err != nil {
 		return AcceptTurnResult{}, true, err
@@ -280,6 +284,11 @@ func (r *MemoryRepo) runtimeTurnTerminalOutcomeLocked(terminal Entry) (*TurnTerm
 func (r *MemoryRepo) runtimeAdmissionBaseLeafLocked(started Entry, pending *Entry) (string, error) {
 	if started.Type != EntryTurnMarker || started.TurnStatus != TurnStarted || started.ID != runtimeTurnStartedEntryID(started.TurnID) || started.RunID == "" {
 		return "", ErrAuthorityCorrupt
+	}
+	var err error
+	started, err = r.completeEntryLocked(started)
+	if err != nil {
+		return "", err
 	}
 	if err := ValidateEntryIntegrity(started); err != nil {
 		return "", err
@@ -1185,6 +1194,10 @@ func (r *MemoryRepo) FindTurnRequest(ctx context.Context, threadID, requestKey s
 		return Entry{}, true, ErrAuthorityCorrupt
 	}
 	entry, _, err := r.entryMetadataLocked(threadID, entry.ID)
+	if err != nil {
+		return Entry{}, true, err
+	}
+	entry, err = r.completeEntryLocked(entry)
 	if err != nil {
 		return Entry{}, true, err
 	}

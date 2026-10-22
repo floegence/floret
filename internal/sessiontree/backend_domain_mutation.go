@@ -72,6 +72,7 @@ type domainJournalIndexes struct {
 }
 
 type backendDomainMutation struct {
+	format         backendDomainFormat
 	queryThreads   map[string]*queryThread
 	memory         *MemoryRepo
 	threads        domainChanges[ThreadMeta]
@@ -432,17 +433,17 @@ func (mutation *backendDomainMutation) validateEntry(threadID string, entry Entr
 	return validateCurrentTurnKindRecords(validation)
 }
 
-func persistDomainChanges[V any](ctx context.Context, tx spi.WriteTx, before domainChanges[V], values map[string]V, kind string) error {
+func persistDomainChanges[V any](ctx context.Context, tx spi.WriteTx, before domainChanges[V], values map[string]V, kind string, format backendDomainFormat) error {
 	for key, previous := range before {
 		next, found := values[key]
 		if !found {
 			if previous.found {
-				if err := tx.Delete(backendDomainV31Namespace, backendDomainKey(kind, key)); err != nil {
+				if err := tx.Delete(format.namespace, backendDomainKey(kind, key)); err != nil {
 					return err
 				}
 			}
 		} else if !previous.found || !reflect.DeepEqual(previous.value, next) {
-			if err := putBackendDomainRecordContext(ctx, tx, backendDomainV31Format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
+			if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(kind, key), kind, key, "", 0, next); err != nil {
 				return err
 			}
 		}
@@ -452,8 +453,30 @@ func persistDomainChanges[V any](ctx context.Context, tx spi.WriteTx, before dom
 
 func (mutation *backendDomainMutation) persist(ctx context.Context, tx spi.WriteTx) error {
 	memory := mutation.memory
+	format := mutation.format
+	if format.version == 0 {
+		format = backendDomainV31Format
+	}
 	if mutation.sequence != memory.seq {
-		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV31Format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV31Version, Sequence: memory.seq}); err != nil {
+		manifest := backendDomainManifest{Version: format.version, Sequence: memory.seq}
+		if format.version >= backendDomainV32Version {
+			if raw, err := tx.Get(format.namespace, backendDomainKey(backendDomainRecordManifest)); err == nil {
+				record, decodeErr := decodeBackendDomainRecord(format, raw)
+				if decodeErr != nil {
+					return errors.Join(ErrAuthorityCorrupt, decodeErr)
+				}
+				var previous backendDomainManifest
+				if decodeErr = decodeBackendDomainValue(format, record, &previous); decodeErr != nil {
+					return errors.Join(ErrAuthorityCorrupt, decodeErr)
+				}
+				manifest.SourceVersion = previous.SourceVersion
+				manifest.MigrationPhase = previous.MigrationPhase
+				manifest.MigrationCursor = append([]byte(nil), previous.MigrationCursor...)
+			} else if !errors.Is(err, spi.ErrNotFound) {
+				return err
+			}
+		}
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 			return err
 		}
 	}
@@ -468,37 +491,105 @@ func (mutation *backendDomainMutation) persist(ctx context.Context, tx spi.Write
 		}
 	}
 	if rootIndexChanged {
-		if err := putBackendDomainRecordContext(ctx, tx, backendDomainV31Format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
-			return err
+		if format.version < backendDomainV32Version {
+			// Scoped mutations retain unaffected roots from canonical metadata.
+			// Their ordering must match the complete inventory, not insertion order.
+			roots := newMemoryRepo(memory.now)
+			record, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0)
+			if err != nil || !found {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			var previousRoots backendDomainRootIndex
+			if err := decodeBackendDomainValue(format, record, &previousRoots); err != nil || previousRoots.ThreadIDs == nil {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			for _, id := range previousRoots.ThreadIDs {
+				if _, changed := mutation.threads[id]; changed {
+					continue
+				}
+				stored, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0)
+				if err != nil || !found {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+				var meta ThreadMeta
+				if err := decodeBackendDomainValue(format, stored, &meta); err != nil || meta.ID != id || meta.ParentThreadID != "" {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+				roots.threads[id] = meta
+			}
+			for id := range mutation.threads {
+				if meta, found := memory.threads[id]; found && meta.ParentThreadID == "" {
+					roots.threads[id] = meta
+				}
+			}
+			rootIDs := backendDomainRootThreadIDs(roots)
+			if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: rootIDs}); err != nil {
+				return err
+			}
+		} else {
+			for threadID, previous := range mutation.threads {
+				next, found := memory.threads[threadID]
+				wasRoot := previous.found && previous.value.ParentThreadID == ""
+				isRoot := found && next.ParentThreadID == ""
+				if wasRoot == isRoot {
+					continue
+				}
+				key := backendDomainKey(backendDomainRecordRootThread, threadID)
+				if isRoot {
+					if err := putBackendDomainRecordContext(ctx, tx, format, key, backendDomainRecordRootThread, threadID, "", 0, backendDomainRootThread{ThreadID: threadID}); err != nil {
+						return err
+					}
+				} else if err := tx.Delete(format.namespace, key); err != nil {
+					return err
+				}
+			}
 		}
 	}
-	if err := persistDomainChanges(ctx, tx, mutation.threads, memory.threads, backendDomainRecordThread); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.threads, memory.threads, backendDomainRecordThread, format); err != nil {
 		return err
+	}
+	if format.version >= backendDomainV32Version {
+		for id, previous := range mutation.threads {
+			if _, found := memory.threads[id]; found && !previous.found {
+				if err := putJournalCount(tx, id, 0); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	for threadID, previous := range mutation.journals {
 		next := memory.entries[threadID]
 		for ordinal := len(previous.entries); ordinal < len(next); ordinal++ {
 			entry := next[ordinal]
-			if err := putBackendDomainRecordContext(ctx, tx, backendDomainV31Format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
+			if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainEntryKey(threadID, ordinal), backendDomainRecordEntry, entry.ID, threadID, ordinal, entry); err != nil {
 				return err
 			}
 		}
-		for ordinal := len(next); ordinal < len(previous.entries); ordinal++ {
-			if err := deleteCanonicalStoredEntry(ctx, tx, backendDomainV31Format, threadID, ordinal); err != nil {
+		for ordinal := len(previous.entries) - 1; ordinal >= len(next); ordinal-- {
+			if err := deleteCanonicalStoredEntry(ctx, tx, format, threadID, ordinal); err != nil {
 				return err
 			}
 		}
 	}
-	if err := persistDomainChanges(ctx, tx, mutation.todos, memory.todos, backendDomainRecordTodo); err != nil {
+	if format.version >= backendDomainV32Version {
+		for id := range mutation.threads {
+			if _, found := memory.threads[id]; !found {
+				if err := tx.Delete(backendEntryIndexNamespace, backendDomainKey("count", id)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := persistDomainChanges(ctx, tx, mutation.todos, memory.todos, backendDomainRecordTodo, format); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(ctx, tx, mutation.tombstones, memory.tombstones, backendDomainRecordTombstone); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.tombstones, memory.tombstones, backendDomainRecordTombstone, format); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(ctx, tx, mutation.providerStates, memory.providerStates, backendDomainRecordProviderState); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.providerStates, memory.providerStates, backendDomainRecordProviderState, format); err != nil {
 		return err
 	}
-	if err := persistDomainChanges(ctx, tx, mutation.artifacts, memory.artifacts, backendDomainRecordArtifact); err != nil {
+	if err := persistDomainChanges(ctx, tx, mutation.artifacts, memory.artifacts, backendDomainRecordArtifact, format); err != nil {
 		return err
 	}
 	return nil
@@ -535,4 +626,40 @@ func (mutation *backendDomainMutation) appendParentEvents() {
 			}
 		}
 	}
+}
+
+func (mutation *backendDomainMutation) observedParentEventThreads() []string {
+	if mutation == nil || mutation.memory == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var observed []string
+	appendObserved := func(threadID string) {
+		if threadID == "" {
+			return
+		}
+		if _, exists := seen[threadID]; exists {
+			return
+		}
+		seen[threadID] = struct{}{}
+		observed = append(observed, threadID)
+	}
+	for threadID, previous := range mutation.journals {
+		entries := mutation.memory.entries[threadID]
+		if len(entries) <= len(previous.entries) {
+			continue
+		}
+		for _, entry := range entries[len(previous.entries):] {
+			if entry.Type == EntryInteractionDone && mutation.memory.parentEvents {
+				if meta, found := mutation.memory.threads[threadID]; found {
+					appendObserved(meta.ParentThreadID)
+				}
+			}
+			if entry.Type == EntryParentEvent || entry.Type == EntryParentEventsAdmitted {
+				appendObserved(threadID)
+				break
+			}
+		}
+	}
+	return observed
 }

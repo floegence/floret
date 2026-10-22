@@ -120,7 +120,6 @@ func TestPhysicalSchemaRejectsFutureAndLayoutDrift(t *testing.T) {
 	for _, mutation := range []string{
 		`UPDATE floret_backend_metadata SET value=CAST('6' AS BLOB) WHERE name='physical_schema'`,
 		`UPDATE floret_backend_metadata SET value=CAST('3' AS BLOB) WHERE name='physical_schema'`,
-		`UPDATE floret_backend_metadata SET value=CAST('2' AS BLOB) WHERE name='physical_schema'`,
 		`ALTER TABLE floret_backend_records ADD COLUMN extra BLOB`,
 		`CREATE INDEX unsupported ON floret_backend_records(namespace)`,
 	} {
@@ -310,5 +309,35 @@ func TestPhysicalSearchRemovalIsAtomicAndPreservesCanonicalBytes(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestPhysicalV2AcceptsWithoutRowIDRecords(t *testing.T) {
+	path := t.TempDir() + "/v2-without-rowid.sqlite"
+	createPhysicalV1(t, path)
+	db, err := sql.Open(sqliteDriverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE floret_backend_metadata SET value=CAST('2' AS BLOB) WHERE name='physical_schema'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := (sqliteSource{path: path}).Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		_, err := storagebridge.PrepareStartup(tx, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if version, err := inspectSQLitePhysicalSchema(t.Context(), backend.(*sqliteBackend).db); err != nil || version != "5" {
+		t.Fatalf("version=%q err=%v", version, err)
 	}
 }

@@ -830,6 +830,10 @@ type Host struct
 method *Host.Activate func(ctx context.Context) error
 method *Host.Shutdown func(ctx context.Context) error
 method *Host.MediaInventory func(ctx context.Context) (github.com/floegence/floret/v7/runtime.MediaInventory, error)
+method *Host.ThreadMediaInventory func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.MediaInventory, error)
+method *Host.StorageMigrationStatus func(ctx context.Context) (github.com/floegence/floret/v7/runtime.StorageMigrationStatus, error)
+method *Host.Readiness func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadReadiness, error)
+method *Host.PrepareThread func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) error
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
@@ -1178,6 +1182,18 @@ field SteerQueuedInput.RequestKey github.com/floegence/floret/v7/runtime.Request
 type StorageInspection struct
 field StorageInspection.Exists bool tag="json:\"exists\""
 field StorageInspection.MigrationRequired bool tag="json:\"migration_required\""
+const StorageMigrationCancelled github.com/floegence/floret/v7/runtime.StorageMigrationState = "cancelled"
+const StorageMigrationFailed github.com/floegence/floret/v7/runtime.StorageMigrationState = "failed"
+const StorageMigrationPending github.com/floegence/floret/v7/runtime.StorageMigrationState = "pending"
+const StorageMigrationReady github.com/floegence/floret/v7/runtime.StorageMigrationState = "ready"
+const StorageMigrationRunning github.com/floegence/floret/v7/runtime.StorageMigrationState = "running"
+type StorageMigrationState string
+type StorageMigrationStatus struct
+field StorageMigrationStatus.State github.com/floegence/floret/v7/runtime.StorageMigrationState tag="json:\"state\""
+field StorageMigrationStatus.Phase github.com/floegence/floret/v7/runtime.StartupPhase tag="json:\"phase,omitempty\""
+field StorageMigrationStatus.Completed int64 tag="json:\"completed,omitempty\""
+field StorageMigrationStatus.Total int64 tag="json:\"total,omitempty\""
+field StorageMigrationStatus.Error string tag="json:\"error,omitempty\""
 type StorageResetPreflight struct
 field StorageResetPreflight.EnvironmentID string
 field StorageResetPreflight.OperationID string
@@ -1471,6 +1487,10 @@ const ThreadPhaseTurn github.com/floegence/floret/v7/runtime.ThreadPhase = "turn
 type ThreadQueryReader interface interface{Aggregate(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.AggregateInput) (github.com/floegence/floret/v7/threadquery.AggregatePage, error); Query(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.QueryInput) (github.com/floegence/floret/v7/threadquery.Page, error); Read(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/threadquery.ReadInput) (github.com/floegence/floret/v7/threadquery.ReadPage, error)}
 type ThreadQueueController interface interface{EditQueued(context.Context, github.com/floegence/floret/v7/runtime.EditQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error); SendQueuedNow(context.Context, github.com/floegence/floret/v7/runtime.PromoteQueuedInput) (github.com/floegence/floret/v7/runtime.ThreadView, error)}
 type ThreadQueueEditReader interface interface{LookupQueuedEdit(context.Context, github.com/floegence/floret/v7/runtime.LookupQueuedEditInput) (github.com/floegence/floret/v7/runtime.QueuedInputEdit, bool, error)}
+type ThreadReadiness struct
+field ThreadReadiness.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadReadiness.Ready bool tag="json:\"ready\""
+field ThreadReadiness.Storage github.com/floegence/floret/v7/runtime.StorageMigrationStatus tag="json:\"storage\""
 type ThreadRunPhase string
 const ThreadRunPhaseFinalizing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "finalizing"
 const ThreadRunPhasePreparing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "preparing"
@@ -1839,6 +1859,7 @@ var ErrCursorInvalid error
 var ErrInvalidQuery error
 var ErrRecordUnavailable error
 var ErrSnapshotLimit error
+var ErrThreadQueryIndexNotReady error
 type Filter struct
 field Filter.ThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_ids,omitempty\""
 field Filter.ParentThreadIDs []github.com/floegence/floret/v7/identity.ThreadID tag="json:\"parent_thread_ids,omitempty\""
@@ -1956,6 +1977,7 @@ type Source struct
 
 package github.com/floegence/floret/v7/storage/spi
 type Backend interface interface{Close() error; Update(context.Context, func(github.com/floegence/floret/v7/storage/spi.WriteTx) error) error; View(context.Context, func(github.com/floegence/floret/v7/storage/spi.ReadTx) error) error}
+type BoundedRecordReader interface interface{NamespaceHasRecords(namespace string) (bool, error); ReadRecordRange(namespace string, key []byte, offset int64, limit int) ([]byte, error); RecordSize(namespace string, key []byte) (int64, error)}
 var ErrClosed error
 var ErrConflict error
 var ErrIndexCorrupt error

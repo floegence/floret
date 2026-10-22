@@ -29,12 +29,19 @@ type backendDomainFormat struct {
 }
 
 type backendDomainManifest struct {
-	Version  int   `json:"version"`
-	Sequence int64 `json:"sequence"`
+	Version         int    `json:"version"`
+	Sequence        int64  `json:"sequence"`
+	SourceVersion   int    `json:"source_version,omitempty"`
+	MigrationPhase  string `json:"migration_phase,omitempty"`
+	MigrationCursor []byte `json:"migration_cursor,omitempty"`
 }
 
 type backendDomainRootIndex struct {
 	ThreadIDs []string `json:"thread_ids"`
+}
+
+type backendDomainRootThread struct {
+	ThreadID string `json:"thread_id"`
 }
 
 type backendDomainRecord struct {
@@ -171,10 +178,19 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 	bodyReferences := map[string]canonicalBodyRecord{}
 	var manifest *backendDomainManifest
 	var rootIndex *backendDomainRootIndex
+	rootThreads := map[string]struct{}{}
 	found, err := visitBackendDomain(ctx, tx, format, func(stored spi.Record) error {
 		record, decodeErr := decodeBackendDomainRecord(format, stored.Value)
 		if decodeErr != nil {
 			return errors.Join(ErrAuthorityCorrupt, decodeErr)
+		}
+		if record.Kind != backendDomainRecordEntry && (record.ThreadID != "" || record.Ordinal != 0) {
+			return ErrAuthorityCorrupt
+		}
+		if record.Kind == backendDomainRecordTodo || record.Kind == backendDomainRecordProviderState || record.Kind == backendDomainRecordArtifact {
+			if !bytes.Equal(stored.Key, backendDomainKey(record.Kind, record.ID)) {
+				return ErrAuthorityCorrupt
+			}
 		}
 		var wantKey []byte
 		switch record.Kind {
@@ -198,6 +214,19 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			}
 			rootIndex = &value
 			wantKey = backendDomainKey(record.Kind)
+		case backendDomainRecordRootThread:
+			value := backendDomainRootThread{}
+			if format.version < backendDomainV32Version || record.ID == "" || record.ThreadID != "" || record.Ordinal != 0 {
+				return errors.Join(ErrAuthorityCorrupt, errors.New("invalid per-thread root index record"))
+			}
+			if err := decodeBackendDomainValue(format, record, &value); err != nil || value.ThreadID != record.ID {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if _, duplicate := rootThreads[record.ID]; duplicate {
+				return errors.Join(ErrAuthorityCorrupt, errors.New("duplicate per-thread root index record"))
+			}
+			rootThreads[record.ID] = struct{}{}
+			wantKey = backendDomainKey(record.Kind, record.ID)
 		case backendDomainRecordThread:
 			value := ThreadMeta{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ID != record.ID {
@@ -212,10 +241,10 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			value := Entry{}
 			var entryErr error
 			if format.version >= backendDomainV30Version {
-				var stored canonicalStoredEntry
-				stored, entryErr = decodeCanonicalStoredEntry(format, record)
+				var canonical canonicalStoredEntry
+				canonical, entryErr = decodeCanonicalStoredEntry(format, record)
 				if entryErr == nil {
-					for _, ref := range stored.Fields {
+					for _, ref := range canonical.Fields {
 						body := bodyReferences[ref.SHA256]
 						if body.References > 0 && body.canonicalBodyRef != ref {
 							return ErrAuthorityCorrupt
@@ -223,10 +252,20 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 						body.canonicalBodyRef, body.References = ref, body.References+1
 						bodyReferences[ref.SHA256] = body
 					}
-					value, entryErr = materializeCanonicalStoredEntry(ctx, tx, stored)
-					if entryErr == nil && compact && len(stored.Fields) > 0 {
-						value = stored.Entry
-						value.bodyFields = stored.Fields
+					staged, err := stagedMigrationEntry(tx, format, record)
+					if err != nil {
+						return err
+					}
+					if staged {
+						if !bytes.Equal(stored.Key, backendDomainEntryKey(record.ThreadID, record.Ordinal)) {
+							return ErrAuthorityCorrupt
+						}
+						return nil
+					}
+					value, entryErr = materializeCanonicalStoredEntry(ctx, tx, canonical)
+					if entryErr == nil && compact && len(canonical.Fields) > 0 {
+						value = canonical.Entry
+						value.bodyFields = canonical.Fields
 					}
 				}
 			} else {
@@ -248,6 +287,9 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ThreadID != record.ID {
 				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s todo", format.label)))
 			}
+			if staged, err := stagedMigrationSideRecord(tx, format, value.ThreadID); staged || err != nil {
+				return err
+			}
 			if _, duplicate := memory.todos[record.ID]; duplicate {
 				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s todo", format.label))
 			}
@@ -268,6 +310,9 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || value.ThreadID != record.ID {
 				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s provider state", format.label)))
 			}
+			if staged, err := stagedMigrationSideRecord(tx, format, value.ThreadID); staged || err != nil {
+				return err
+			}
 			if _, duplicate := memory.providerStates[record.ID]; duplicate {
 				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s provider state", format.label))
 			}
@@ -277,6 +322,9 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 			value := artifact.Record{}
 			if err := decodeBackendDomainValue(format, record, &value); err != nil || record.ID == "" || artifactRecordKey(value.ThreadID, value.Ref.ID) != record.ID {
 				return errors.Join(ErrAuthorityCorrupt, errors.Join(err, fmt.Errorf("invalid session-tree %s artifact", format.label)))
+			}
+			if staged, err := stagedMigrationSideRecord(tx, format, value.ThreadID); staged || err != nil {
+				return err
 			}
 			if _, duplicate := memory.artifacts[record.ID]; duplicate {
 				return errors.Join(ErrAuthorityCorrupt, fmt.Errorf("duplicate session-tree %s artifact", format.label))
@@ -298,10 +346,13 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 		return nil, false, nil
 	}
 
-	if manifest == nil || rootIndex == nil {
+	if manifest == nil || format.version < backendDomainV32Version && rootIndex == nil || format.version >= backendDomainV32Version && rootIndex != nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s manifest or root index is missing", format.label))
 	}
 	if format.version >= backendDomainV30Version {
+		if err := includeMigrationBodyReferences(ctx, tx, format, bodyReferences); err != nil {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+		}
 		if err := verifyCanonicalBodyRecords(ctx, tx, bodyReferences); err != nil {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
@@ -326,8 +377,20 @@ func loadBackendDomain(ctx context.Context, tx spi.ReadTx, now func() time.Time,
 	if err := format.validate(memory); err != nil {
 		return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	if !slices.Equal(rootIndex.ThreadIDs, backendDomainRootThreadIDs(memory)) {
-		return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s root index does not match canonical threads", format.label))
+	wantRoots := backendDomainRootThreadIDs(memory)
+	if format.version < backendDomainV32Version {
+		if !slices.Equal(rootIndex.ThreadIDs, wantRoots) {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s root index does not match canonical threads", format.label))
+		}
+	} else {
+		if len(rootThreads) != len(wantRoots) {
+			return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s root index does not match canonical threads", format.label))
+		}
+		for _, id := range wantRoots {
+			if _, found := rootThreads[id]; !found {
+				return nil, false, errors.Join(ErrAuthorityCorrupt, fmt.Errorf("session-tree %s root index does not match canonical threads", format.label))
+			}
+		}
 	}
 	return memory, true, nil
 }
@@ -342,7 +405,11 @@ func validateBackendDomainMemory(memory *MemoryRepo, label string, validateConte
 	for threadID, meta := range memory.threads {
 		threadEntries := memory.entries[threadID]
 		if (meta.LeafID == "") != (len(threadEntries) == 0) {
-			return fmt.Errorf("thread %q leaf does not match its journal", threadID)
+			lastEntryID := ""
+			if len(threadEntries) > 0 {
+				lastEntryID = threadEntries[len(threadEntries)-1].ID
+			}
+			return fmt.Errorf("thread %q leaf %q does not match its %d journal entries (last %q)", threadID, meta.LeafID, len(threadEntries), lastEntryID)
 		}
 		if len(threadEntries) > 0 {
 			if _, found := findEntry(threadEntries, meta.LeafID); !found {
@@ -434,12 +501,25 @@ func saveCompleteBackendDomainContext(ctx context.Context, tx spi.WriteTx, memor
 	if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 		return err
 	}
-	if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
-		return err
+	if format.version < backendDomainV32Version {
+		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: backendDomainRootThreadIDs(memory)}); err != nil {
+			return err
+		}
+	} else {
+		for _, id := range backendDomainRootThreadIDs(memory) {
+			if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordRootThread, id), backendDomainRecordRootThread, id, "", 0, backendDomainRootThread{ThreadID: id}); err != nil {
+				return err
+			}
+		}
 	}
 	for id, value := range memory.threads {
 		if err := putBackendDomainRecordContext(ctx, tx, format, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0, value); err != nil {
 			return err
+		}
+		if format.version >= backendDomainV32Version {
+			if err := putJournalCount(tx, id, 0); err != nil {
+				return err
+			}
 		}
 	}
 	for threadID, threadEntries := range memory.entries {
@@ -483,7 +563,7 @@ func putBackendDomainRecordContext(ctx context.Context, tx spi.WriteTx, format b
 	if format.version >= backendDomainV30Version && kind == backendDomainRecordEntry {
 		entry, ok := value.(Entry)
 		if !ok {
-			return ErrAuthorityCorrupt
+			return fmt.Errorf("%w: entry record %q has unexpected value type %T", ErrAuthorityCorrupt, id, value)
 		}
 		return putCanonicalStoredEntry(ctx, tx, format, key, id, threadID, ordinal, entry)
 	}
@@ -517,14 +597,46 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 	}
 	if before.seq != after.seq {
 		manifest := backendDomainManifest{Version: format.version, Sequence: after.seq}
+		if format.version >= backendDomainV32Version {
+			previous, err := readV32Manifest(tx)
+			if err != nil {
+				return false, err
+			}
+			manifest.SourceVersion, manifest.MigrationPhase, manifest.MigrationCursor = previous.SourceVersion, previous.MigrationPhase, previous.MigrationCursor
+		}
 		if err := put(backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 			return false, err
 		}
 	}
 	beforeRoots, afterRoots := backendDomainRootThreadIDs(before), backendDomainRootThreadIDs(after)
-	if !slices.Equal(beforeRoots, afterRoots) {
-		if err := put(backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: afterRoots}); err != nil {
-			return false, err
+	if format.version < backendDomainV32Version {
+		if !slices.Equal(beforeRoots, afterRoots) {
+			if err := put(backendDomainKey(backendDomainRecordRootIndex), backendDomainRecordRootIndex, "", "", 0, backendDomainRootIndex{ThreadIDs: afterRoots}); err != nil {
+				return false, err
+			}
+		}
+	} else {
+		beforeSet := make(map[string]struct{}, len(beforeRoots))
+		afterSet := make(map[string]struct{}, len(afterRoots))
+		for _, id := range beforeRoots {
+			beforeSet[id] = struct{}{}
+		}
+		for _, id := range afterRoots {
+			afterSet[id] = struct{}{}
+		}
+		for id := range beforeSet {
+			if _, remains := afterSet[id]; !remains {
+				if err := remove(backendDomainKey(backendDomainRecordRootThread, id)); err != nil {
+					return false, err
+				}
+			}
+		}
+		for id := range afterSet {
+			if _, existed := beforeSet[id]; !existed {
+				if err := put(backendDomainKey(backendDomainRecordRootThread, id), backendDomainRecordRootThread, id, "", 0, backendDomainRootThread{ThreadID: id}); err != nil {
+					return false, err
+				}
+			}
 		}
 	}
 	if err := persistBackendDomainMapChanges(before.threads, after.threads,
@@ -533,6 +645,16 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 			return put(backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0, value)
 		}, remove); err != nil {
 		return false, err
+	}
+	if format.version >= backendDomainV32Version {
+		for id := range after.threads {
+			if _, existed := before.threads[id]; !existed {
+				if err := putJournalCount(tx, id, 0); err != nil {
+					return false, err
+				}
+				changed = true
+			}
+		}
 	}
 	threadIDs := make(map[string]struct{}, len(before.entries)+len(after.entries))
 	for id := range before.entries {
@@ -555,7 +677,7 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 				return false, err
 			}
 		}
-		for ordinal := len(next); ordinal < len(previous); ordinal++ {
+		for ordinal := len(previous) - 1; ordinal >= len(next); ordinal-- {
 			var deleteErr error
 			if format.version >= backendDomainV30Version {
 				changed = true
@@ -565,6 +687,16 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 			}
 			if err := deleteErr; err != nil {
 				return false, err
+			}
+		}
+	}
+	if format.version >= backendDomainV32Version {
+		for id := range before.threads {
+			if _, remains := after.threads[id]; !remains {
+				if err := tx.Delete(backendEntryIndexNamespace, backendDomainKey("count", id)); err != nil {
+					return false, err
+				}
+				changed = true
 			}
 		}
 	}

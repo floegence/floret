@@ -73,11 +73,15 @@ maintained in the same canonical transaction. Startup verifies their source
 correspondence. Full-text indexes and term postings are prohibited; frozen
 pagination snapshots never persist.
 
-`runtime.Open` performs migration, logical schema update, and final invariant
-verification in one backend transaction. Write failure, cancellation, panic,
-schema drift, corrupt state, and future versions roll back or fail closed with
-the prior canonical records intact. A current store opens without rewriting its
-canonical records. During v5 migration, the exact adoption repair accepts a
+`runtime.Open` returns a Host after bounded source preparation and logical
+schema inspection. Domain migration and final invariant verification run in a
+Host-owned worker. Migration writes and schema publication remain transactional;
+write failure, cancellation, panic, schema drift, corrupt state, and future
+versions roll back or fail closed with prior canonical records intact. Current
+released formats publish through one global transaction, so thread operations
+wait together while status reads remain available. A current store opens
+without rewriting its canonical records. During v5 migration, the exact
+adoption repair accepts a
 tool-result Raw value only when its stored hash is valid and replacing JSON's
 legacy `\\ufffd` escape produces the exact current projection. Floret validates
 the correspondingly repaired legacy root inventory before writing v6 atomically.
@@ -141,12 +145,11 @@ retained. Published optional SPI indexing types are deprecated for v7 source
 compatibility and are never invoked. Explicit authorized text queries match
 canonical sources on demand. Metadata browsing reads bodies only for its page.
 
-SQLite physical format 2 uses a rowid records table with the same unique
-`(namespace, key)` primary key; metadata retains its original layout. Format 1
-conversion copies opaque records with SQL, verifies their content, and commits
-with cache splitting, session-tree migration, and logical version update. No
-extra database or recovery log is introduced. Unknown, mixed, future, and
-drifted formats fail closed. Current startup does not rewrite history, and
+SQLite physical format 2 supports either a rowid or `WITHOUT ROWID` records
+table with the same unique `(namespace, key)` primary key; metadata retains its
+original layout. Format 1 advances its physical version marker without copying
+opaque records. No extra database or recovery log is introduced. Unknown,
+mixed, future, and drifted formats fail closed. Current startup does not rewrite history, and
 compaction continues to change only effective model context.
 
 ## SQLite space maintenance
@@ -414,3 +417,9 @@ and target invariants commit atomically; failed writes, cancellation, panic,
 corruption and future formats preserve the original bytes. Current restart does
 not rewrite canonical records. [Activity regression](../../internal/sessiontree/activity_body_test.go)
 checks exact canonical state, chunk hashes, sharing deletion and rollback.
+
+The optional storage/spi.BoundedRecordReader contract supplies exact record
+lengths and byte ranges to the historical snapshot importer. Built-in Memory
+and SQLite implement it. Third-party backends remain source-compatible through
+Get when they do not implement the capability. Once implemented, range-read
+errors fail closed instead of silently selecting an unbounded read.

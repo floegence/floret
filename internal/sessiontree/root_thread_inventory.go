@@ -41,11 +41,47 @@ func (repo *BackendRepo) ListRootThreadInventory(ctx context.Context, opts ListT
 	if repo == nil || ctx == nil {
 		return nil, errors.New("root thread inventory requires context and repository")
 	}
-	var items []RootThreadInventoryItem
-	err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
-		var err error
-		items, err = memory.rootThreadInventoryPageLocked(ctx, opts)
-		return err
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.ListRootThreadInventory(ctx, opts)
+	}
+	if repo.domainFormat().version < backendDomainV32Version {
+		var items []RootThreadInventoryItem
+		err := repo.ViewDomain(ctx, func(memory *MemoryRepo, _ spi.ReadTx) error {
+			var err error
+			items, err = memory.rootThreadInventoryPageLocked(ctx, opts)
+			return err
+		})
+		return items, err
+	}
+	opts.RootOnly = true
+	metas, err := repo.ListThreads(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	for _, meta := range metas {
+		if err := repo.prepareThreadIfNeeded(ctx, meta.ID); err != nil {
+			return nil, err
+		}
+	}
+	items := make([]RootThreadInventoryItem, 0, len(metas))
+	err = repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		for _, selected := range metas {
+			meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, selected.ID)
+			if err != nil {
+				return err
+			}
+			path, err := canonicalCompletePath(ctx, tx, meta.ID, meta.LeafID)
+			if err != nil {
+				return err
+			}
+			items = append(items, RootThreadInventoryItem{Meta: meta, Path: path})
+		}
+		return attachRootThreadInventoryProjectionFingerprints(items)
 	})
 	return items, err
 }

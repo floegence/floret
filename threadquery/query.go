@@ -9,10 +9,11 @@ import (
 )
 
 var (
-	ErrInvalidQuery      = errors.New("invalid thread query")
-	ErrCursorInvalid     = errors.New("thread query cursor is invalid; query again")
-	ErrSnapshotLimit     = errors.New("thread query snapshot limit exceeded; narrow the query")
-	ErrRecordUnavailable = errors.New("thread query record is unavailable; query again")
+	ErrInvalidQuery             = errors.New("invalid thread query")
+	ErrCursorInvalid            = errors.New("thread query cursor is invalid; query again")
+	ErrSnapshotLimit            = errors.New("thread query snapshot limit exceeded; narrow the query")
+	ErrRecordUnavailable        = errors.New("thread query record is unavailable; query again")
+	ErrThreadQueryIndexNotReady = errors.New("thread query index is not ready; prepare threads and retry")
 )
 
 // Scope must be reconstructed by the host on every call, including pagination.

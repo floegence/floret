@@ -62,6 +62,17 @@ func (l *CanonicalLifecycle) Observe(entry Entry, active bool) {
 }
 
 func (l CanonicalLifecycle) transactionCopy() CanonicalLifecycle {
+	if l.baseStarted != nil {
+		started, terminal := make(map[string]bool, len(l.started)), make(map[string]bool, len(l.terminal))
+		for id, value := range l.started {
+			started[id] = value
+		}
+		for id, value := range l.terminal {
+			terminal[id] = value
+		}
+		l.started, l.terminal = started, terminal
+		return l
+	}
 	l.baseStarted, l.baseTerminal = l.started, l.terminal
 	l.started, l.terminal = nil, nil
 	return l

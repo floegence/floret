@@ -28,6 +28,7 @@ const (
 const (
 	backendDomainRecordManifest         = "manifest"
 	backendDomainRecordRootIndex        = "root_index"
+	backendDomainRecordRootThread       = "root_thread"
 	backendDomainRecordThread           = "thread"
 	backendDomainRecordEntry            = "entry"
 	backendDomainRecordTodo             = "todo"

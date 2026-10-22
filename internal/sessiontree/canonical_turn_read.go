@@ -77,19 +77,23 @@ func (r *MemoryRepo) ReadCanonicalTurn(_ context.Context, threadID, turnID strin
 		}
 		return CanonicalTurnRead{}, ErrThreadNotFound
 	}
-	turn, err := r.readCanonicalTurnLocked(threadID, turnID, meta.LeafID)
+	return r.canonicalTurnReaderLocked().read(threadID, turnID, meta.LeafID)
+}
+
+func (r canonicalTurnReader) read(threadID, turnID, leafID string) (CanonicalTurnRead, error) {
+	turn, err := r.readCanonicalTurnLocked(threadID, turnID, leafID)
 	if err != nil {
 		return CanonicalTurnRead{}, err
 	}
-	latestTurnID, err := r.latestCanonicalTurnIDLocked(threadID, meta.LeafID)
+	latestTurnID, err := r.latestCanonicalTurnIDLocked(threadID, leafID)
 	if err != nil {
 		return CanonicalTurnRead{}, err
 	}
-	latestTurn, err := r.readCanonicalTurnLocked(threadID, latestTurnID, meta.LeafID)
+	latestTurn, err := r.readCanonicalTurnLocked(threadID, latestTurnID, leafID)
 	if err != nil {
 		return CanonicalTurnRead{}, err
 	}
-	_, through, err := r.canonicalTurnEntryLocked(threadID, meta.LeafID)
+	_, through, err := r.entry(threadID, leafID)
 	if err != nil {
 		return CanonicalTurnRead{}, err
 	}
@@ -102,27 +106,19 @@ func (r *MemoryRepo) ReadCanonicalTurn(_ context.Context, threadID, turnID strin
 	}, nil
 }
 
-func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (CanonicalTurn, error) {
-	ordinals := r.turnEntryOrdinals[threadID][turnID]
-	if len(ordinals) == 0 {
+func (r canonicalTurnReader) readCanonicalTurnLocked(threadID, turnID, leafID string) (CanonicalTurn, error) {
+	entries, err := r.turn(threadID, turnID)
+	if err != nil {
+		return CanonicalTurn{}, err
+	}
+	if len(entries) == 0 {
 		return CanonicalTurn{}, ErrCanonicalTurnNotFound
 	}
-	if r.turnEntryCounts[threadID][turnID] != len(ordinals) {
-		return CanonicalTurn{}, ErrAuthorityCorrupt
-	}
-	all := make([]CanonicalTurnPathEntry, 0, len(ordinals))
+	all := make([]CanonicalTurnPathEntry, 0, len(entries))
 	var started Entry
 	startedCount := 0
-	for _, ordinal := range ordinals {
-		if ordinal < 0 || ordinal >= len(r.entries[threadID]) {
-			return CanonicalTurn{}, ErrAuthorityCorrupt
-		}
-		entry, err := r.completeEntryLocked(r.entries[threadID][ordinal])
-		if err != nil {
-			return CanonicalTurn{}, err
-		}
-		depth, exists := r.entryDepths[threadID][entry.ID]
-		if !exists || entry.ThreadID != threadID || strings.TrimSpace(entry.TurnID) != turnID || entry.PathDepth != depth {
+	for _, entry := range entries {
+		if entry.ThreadID != threadID || strings.TrimSpace(entry.TurnID) != turnID || entry.PathDepth <= 0 {
 			return CanonicalTurn{}, ErrAuthorityCorrupt
 		}
 		if err := ValidateEntryIntegrity(entry); err != nil {
@@ -132,7 +128,7 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 			started = entry
 			startedCount++
 		}
-		all = append(all, CanonicalTurnPathEntry{Entry: cloneEntry(entry), Ordinal: depth})
+		all = append(all, CanonicalTurnPathEntry{Entry: cloneEntry(entry), Ordinal: entry.PathDepth})
 	}
 	if startedCount == 0 {
 		return CanonicalTurn{}, ErrAuthorityCorrupt
@@ -183,7 +179,7 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 	for index, item := range pathEntries {
 		linkEntries[index] = item.Entry
 	}
-	if err := r.validateCanonicalTurnLinksLocked(threadID, linkEntries); err != nil {
+	if err := r.links(threadID, linkEntries); err != nil {
 		return CanonicalTurn{}, err
 	}
 	if err := ValidateCanonicalTurnReadStructure(turn, threadID); err != nil {
@@ -203,22 +199,22 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 	return turn, nil
 }
 
-func (r *MemoryRepo) canonicalTurnActiveAncestorLocked(threadID, descendantID, sourceID string) (bool, error) {
-	active, err := r.retrySourceIsAncestorLocked(threadID, descendantID, sourceID)
+func (r canonicalTurnReader) canonicalTurnActiveAncestorLocked(threadID, descendantID, sourceID string) (bool, error) {
+	active, err := r.ancestor(threadID, descendantID, sourceID)
 	if errors.Is(err, ErrEntryNotFound) || errors.Is(err, ErrInvalidParent) {
 		return false, ErrAuthorityCorrupt
 	}
 	return active, err
 }
 
-func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (string, error) {
+func (r canonicalTurnReader) latestCanonicalTurnIDLocked(threadID, leafID string) (string, error) {
 	if leafID == "" {
 		return "", ErrAuthorityCorrupt
 	}
 	userTurns := make(map[string]struct{})
 	seenTurns := make(map[string]struct{})
 	for entryID := leafID; entryID != ""; {
-		entry, _, err := r.canonicalTurnEntryLocked(threadID, entryID)
+		entry, _, err := r.entry(threadID, entryID)
 		if err != nil {
 			return "", err
 		}
@@ -247,7 +243,7 @@ func (r *MemoryRepo) latestCanonicalTurnIDLocked(threadID, leafID string) (strin
 	return "", ErrAuthorityCorrupt
 }
 
-func (r *MemoryRepo) canonicalTurnRetryEligibilityLocked(threadID string, turn CanonicalTurn) (bool, error) {
+func (r canonicalTurnReader) canonicalTurnRetryEligibilityLocked(threadID string, turn CanonicalTurn) (bool, error) {
 	if turn.Entries[0].Entry.Metadata[TurnKindMetadataKey] == TurnKindGoalContinuation {
 		return true, nil
 	}

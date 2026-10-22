@@ -212,9 +212,11 @@ Rules:
   Future changes
   must append every contiguous `n -> n+1` edge; they must not reset the lineage,
   raise the minimum version, or remove an already released migration.
-- `runtime.Open` and `NewBackendRepo` must migrate Floret-owned domain state
-  automatically before making the Host available. Migration, version update,
-  and final current-schema verification must commit in one backend transaction.
+- `runtime.Open` and `NewBackendRepo` own Floret domain migration automatically.
+  `runtime.Open` may return a Host while migration and final verification run in
+  a Host-owned worker. No canonical operation may observe unpublished or
+  partially migrated state; readiness waits must honor caller cancellation, and
+  Host shutdown must wait for the active storage transaction to settle.
 - Fresh stores initialize directly at the current domain schema. Existing
   current stores open without rewriting canonical bytes. Supported older state
   migrates exactly once, and repeated startup is idempotent.
@@ -230,8 +232,9 @@ Rules:
 - Floret migrates only Floret-owned state through its own storage kernel. Hosts
   and downstream products must treat the backend records as opaque and must
   not reconstruct, patch, or migrate Floret domain records themselves.
-- SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 and logical storage 7 -> 8 -> 9 -> 10 migrate in the same
-  runtime startup transaction as the permanent session-tree lineage. Prompt
+- SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 use transactional metadata/layout
+  changes only and must not copy or clear canonical records. Logical storage 7 -> 8 -> 9 -> 10 -> 11 migrates through the
+  Host-owned startup transaction and permanent session-tree lineage. Prompt
   history uses append-ordered scope/category records; the global v1 snapshot
   reader belongs exclusively to migration. Do not reintroduce whole-cache
   snapshots, runtime dual reads, or checkpoint writes for unrelated scopes.

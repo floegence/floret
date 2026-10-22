@@ -11,6 +11,16 @@
   regressions and remaining limits in
   [history performance](workflows/history-performance.md#turn-terminal-settlement).
 
+- 2026-10-21: Add thread-scoped canonical media inventory so hosts can retain
+  media incrementally without a cross-thread descriptor snapshot. See
+  [runtime media inventory](api/runtime.md#thread-service).
+
+- 2026-10-21: Return the Host while storage migration and final verification
+  run in its owned worker; expose migration status and cancellable readiness
+  waits while preserving global publication for current released formats. See
+  [runtime startup](api/runtime.md#storage-startup) and
+  [storage](api/storage.md#domain-migration).
+
 - 2026-10-21: Add a canonical SQLite dense-tool fixture writer with exact item,
   journal and database hashes; verify restart and public continuation. See
   [history performance](workflows/history-performance.md#canonical-dense-tool-qualification-fixtures).

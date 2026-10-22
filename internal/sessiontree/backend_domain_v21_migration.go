@@ -19,14 +19,21 @@ func migrateBackendDomainV20ToV21(ctx context.Context, memory *MemoryRepo) error
 
 func validateEffectOutcomeRecords(memory *MemoryRepo) error {
 	for _, entries := range memory.entries {
-		for _, entry := range entries {
-			result := entry.Message.ToolResult
-			if result == nil || result.EffectOutcome == "" {
-				continue
-			}
-			if result.EffectOutcome != tools.EffectOutcomeUncertain || entry.Type != EntryToolResult || result.Status != "error" || result.InputRequired != nil || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" {
-				return fmt.Errorf("tool result %q has invalid effect outcome", entry.ID)
-			}
+		if err := validateEffectOutcomeEntries(entries); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEffectOutcomeEntries(entries []Entry) error {
+	for _, entry := range entries {
+		result := entry.Message.ToolResult
+		if result == nil || result.EffectOutcome == "" {
+			continue
+		}
+		if result.EffectOutcome != tools.EffectOutcomeUncertain || entry.Type != EntryToolResult || result.Status != "error" || result.InputRequired != nil || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" {
+			return fmt.Errorf("tool result %q has invalid effect outcome", entry.ID)
 		}
 	}
 	return nil

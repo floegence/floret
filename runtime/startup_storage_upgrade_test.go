@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/floegence/floret/v7/internal/storagecodec"
@@ -20,6 +21,9 @@ func storageUpgradeFixture(t *testing.T) string {
 	path := t.TempDir() + "/upgrade.sqlite"
 	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.startup.wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Shutdown(t.Context()); err != nil {
@@ -52,7 +56,7 @@ func storageUpgradeFixture(t *testing.T) string {
 	return path
 }
 
-func TestStartupUpgradeInspectionIsReadOnlyAndAllLayersCommitTogether(t *testing.T) {
+func TestStartupUpgradeInspectionIsReadOnlyAndBackgroundMigrationCompletes(t *testing.T) {
 	path := storageUpgradeFixture(t)
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -71,6 +75,9 @@ func TestStartupUpgradeInspectionIsReadOnlyAndAllLayersCommitTogether(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := host.startup.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(phases, []StartupPhase{StartupPhaseMigrating, StartupPhaseVerifying}) {
 		t.Fatalf("phases=%v", phases)
 	}
@@ -83,33 +90,48 @@ func TestStartupUpgradeInspectionIsReadOnlyAndAllLayersCommitTogether(t *testing
 	}
 }
 
-func TestStartupUpgradeCancellationAndPanicRollBackPhysicalAndLogical(t *testing.T) {
-	for _, mode := range []string{"cancel", "panic"} {
+func TestStartupUpgradeWaitCancellationAndWorkerFailurePreserveRecovery(t *testing.T) {
+	for _, mode := range []string{"cancel_wait", "cancel_worker", "panic"} {
 		t.Run(mode, func(t *testing.T) {
 			path := storageUpgradeFixture(t)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			func() {
-				defer func() {
-					if mode == "panic" && recover() == nil {
-						t.Fatal("missing panic")
-					}
-				}()
-				_, err := Open(ctx, Options{Storage: publicstorage.SQLite(path), StartupProgress: StartupProgressFunc(func(phase StartupPhase) {
+			options := Options{Storage: publicstorage.SQLite(path)}
+			if mode == "panic" {
+				options.StartupProgress = StartupProgressFunc(func(phase StartupPhase) {
 					if phase == StartupPhaseVerifying {
-						if mode == "panic" {
-							panic("injected")
-						}
-						cancel()
+						panic("injected")
 					}
-				})})
-				if mode == "cancel" && !errors.Is(err, context.Canceled) {
-					t.Fatalf("cancel error=%v", err)
-				}
-			}()
-			assertUpgradePhysicalVersion(t, path, "1")
-			host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true})
+				})
+			}
+			host, err := Open(t.Context(), options)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "cancel_wait" {
+				waitCtx, cancel := context.WithCancel(t.Context())
+				cancel()
+				if err := host.startup.wait(waitCtx); !errors.Is(err, context.Canceled) {
+					t.Fatalf("wait cancellation=%v", err)
+				}
+				if err := host.startup.wait(t.Context()); err != nil {
+					t.Fatalf("wait cancellation stopped migration: %v", err)
+				}
+			} else if mode == "cancel_worker" {
+				host.startupWorker.cancel()
+				if err := host.startup.wait(t.Context()); !errors.Is(err, context.Canceled) {
+					t.Fatalf("worker cancellation=%v", err)
+				}
+			} else if err := host.startup.wait(t.Context()); err == nil || !strings.Contains(err.Error(), "injected") {
+				t.Fatalf("panic status=%v", err)
+			}
+			if err := host.Shutdown(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			assertUpgradePhysicalVersion(t, path, "5")
+			host, err = Open(t.Context(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.startup.wait(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			if err := host.Shutdown(t.Context()); err != nil {
@@ -122,12 +144,15 @@ func TestStartupUpgradeCancellationAndPanicRollBackPhysicalAndLogical(t *testing
 func TestStartupUpgradeProcessExit(t *testing.T) {
 	if path := os.Getenv("FLORET_TEST_UPGRADE_PATH"); path != "" {
 		mode := os.Getenv("FLORET_TEST_UPGRADE_EXIT")
-		_, err := Open(context.Background(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true, StartupProgress: StartupProgressFunc(func(phase StartupPhase) {
+		host, err := Open(context.Background(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true, StartupProgress: StartupProgressFunc(func(phase StartupPhase) {
 			if phase == StartupPhaseVerifying && mode == "before" {
 				os.Exit(42)
 			}
 		})})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := host.startup.wait(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		os.Exit(43)
@@ -143,7 +168,7 @@ func TestStartupUpgradeProcessExit(t *testing.T) {
 				t.Fatalf("child=%v", err)
 			}
 			want := 42
-			version := "1"
+			version := "5"
 			if mode == "after" {
 				want = 43
 				version = "5"
@@ -154,6 +179,9 @@ func TestStartupUpgradeProcessExit(t *testing.T) {
 			assertUpgradePhysicalVersion(t, path, version)
 			host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path), DeferExecution: true})
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.startup.wait(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			if err := host.Shutdown(t.Context()); err != nil {

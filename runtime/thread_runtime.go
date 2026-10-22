@@ -1971,7 +1971,6 @@ func (service *threadRuntimeService) recoverHydratedThread(threadID identity.Thr
 		return
 	}
 	if service.failRecoveredUnknownEffectTurn(ctx, threadID, turnID, runID, entries) {
-		service.refreshCanonical(threadID, turnID)
 		return
 	}
 	actor := service.runtime(threadID)
@@ -2028,11 +2027,20 @@ func (service *threadRuntimeService) failRecoveredUnknownEffectTurn(ctx context.
 		service.host.store.reportBackgroundError(ErrUnsupportedStoreCapability)
 		return true
 	}
-	if _, err := repo.FailUnknownEffectTurn(ctx, sessiontree.FailUnknownEffectTurnRequest{
+	_, err := repo.FailUnknownEffectTurn(ctx, sessiontree.FailUnknownEffectTurnRequest{
 		ThreadID: threadID.String(), TurnID: turnID.String(), RunID: runID.String(), Now: time.Now().UTC(),
-	}); err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) {
+	})
+	if err != nil && !errors.Is(err, sessiontree.ErrStaleAuthority) {
 		service.host.store.reportBackgroundError(err)
+		return true
 	}
+	service.finishSend(service.runtime(threadID), turnID, runID, TurnResult{
+		Status: TurnStatusFailed,
+		Failure: &ThreadTurnFailure{
+			Code:    ThreadTurnFailureEffectOutcomeUnknown,
+			Message: sessiontree.EffectOutcomeUnknownFailureMessage,
+		},
+	}, ErrEffectOutcomeUnknown)
 	return true
 }
 

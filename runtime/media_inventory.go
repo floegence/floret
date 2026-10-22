@@ -49,6 +49,36 @@ func (host *Host) MediaInventory(ctx context.Context) (MediaInventory, error) {
 	if err != nil {
 		return MediaInventory{}, runtimeHostError(err)
 	}
+	return mediaInventoryFromEntries(ctx, entries)
+}
+
+// ThreadMediaInventory returns retained media facts for one canonical thread.
+// It is intended for bounded host maintenance that processes threads in pages.
+func (host *Host) ThreadMediaInventory(ctx context.Context, threadID identity.ThreadID) (MediaInventory, error) {
+	if ctx == nil {
+		return MediaInventory{}, errors.New("thread media inventory context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return MediaInventory{}, err
+	}
+	if _, err := identity.ParseThreadID(threadID.String()); err != nil {
+		return MediaInventory{}, err
+	}
+	if err := host.available(); err != nil {
+		return MediaInventory{}, err
+	}
+	reader, ok := host.store.repo.(sessiontree.CanonicalThreadMediaReader)
+	if !ok {
+		return MediaInventory{}, errors.New("canonical thread media inventory is unavailable")
+	}
+	entries, err := reader.CanonicalMediaEntriesForThread(ctx, threadID.String())
+	if err != nil {
+		return MediaInventory{}, runtimeHostError(err)
+	}
+	return mediaInventoryFromEntries(ctx, entries)
+}
+
+func mediaInventoryFromEntries(ctx context.Context, entries []sessiontree.Entry) (MediaInventory, error) {
 	result := MediaInventory{Idle: true}
 	type turn struct{ threadID, turnID string }
 	unfinished := make(map[turn]bool)

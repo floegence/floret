@@ -134,6 +134,11 @@ func (r *MemoryRepo) ListCanonicalTurns(_ context.Context, opts ListCanonicalTur
 		}
 		return CanonicalTurnsPage{}, ErrThreadNotFound
 	}
+	return r.canonicalTurnReaderLocked().list(meta, opts)
+}
+
+func (r canonicalTurnReader) list(meta ThreadMeta, opts ListCanonicalTurnsOptions) (CanonicalTurnsPage, error) {
+	threadID := meta.ID
 	if opts.SinceCursor != nil {
 		return r.listCanonicalTurnsSinceLocked(threadID, meta.LeafID, strings.TrimSpace(opts.SinceCursor.EntryID), opts.Limit)
 	}
@@ -141,7 +146,7 @@ func (r *MemoryRepo) ListCanonicalTurns(_ context.Context, opts ListCanonicalTur
 	startEntryID := meta.LeafID
 	if opts.BeforeCursor != nil {
 		limit = opts.Limit
-		cursorEntry, _, err := r.canonicalTurnEntryLocked(threadID, strings.TrimSpace(opts.BeforeCursor.EntryID))
+		cursorEntry, _, err := r.entry(threadID, strings.TrimSpace(opts.BeforeCursor.EntryID))
 		if err != nil {
 			if errors.Is(err, ErrEntryNotFound) {
 				return CanonicalTurnsPage{}, ErrStaleCanonicalTurnCursor
@@ -153,12 +158,12 @@ func (r *MemoryRepo) ListCanonicalTurns(_ context.Context, opts ListCanonicalTur
 	return r.listCanonicalTurnsBackwardLocked(threadID, startEntryID, limit)
 }
 
-func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID string, limit int) (CanonicalTurnsPage, error) {
+func (r canonicalTurnReader) listCanonicalTurnsBackwardLocked(threadID, startEntryID string, limit int) (CanonicalTurnsPage, error) {
 	page := CanonicalTurnsPage{SinceCursor: CanonicalTurnSinceCursor{EntryID: startEntryID}}
 	if startEntryID == "" {
 		return page, nil
 	}
-	_, startDepth, err := r.canonicalTurnEntryLocked(threadID, startEntryID)
+	_, startDepth, err := r.entry(threadID, startEntryID)
 	if err != nil {
 		return CanonicalTurnsPage{}, err
 	}
@@ -170,7 +175,7 @@ func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID str
 	seenTurns := make(map[string]struct{}, limit+1)
 	expectedDepth := startDepth
 	for entryID := startEntryID; entryID != ""; {
-		entry, depth, err := r.canonicalTurnEntryLocked(threadID, entryID)
+		entry, depth, err := r.entry(threadID, entryID)
 		if err != nil {
 			return CanonicalTurnsPage{}, err
 		}
@@ -230,9 +235,9 @@ func (r *MemoryRepo) listCanonicalTurnsBackwardLocked(threadID, startEntryID str
 	return r.withCanonicalPageRetryEligibilityLocked(threadID, built)
 }
 
-func (r *MemoryRepo) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchorEntryID string, limit int) (CanonicalTurnsPage, error) {
+func (r canonicalTurnReader) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchorEntryID string, limit int) (CanonicalTurnsPage, error) {
 	page := CanonicalTurnsPage{SinceCursor: CanonicalTurnSinceCursor{EntryID: anchorEntryID}}
-	anchor, anchorDepth, err := r.canonicalTurnEntryLocked(threadID, anchorEntryID)
+	anchor, anchorDepth, err := r.entry(threadID, anchorEntryID)
 	if err != nil {
 		if errors.Is(err, ErrEntryNotFound) {
 			return CanonicalTurnsPage{}, ErrStaleCanonicalTurnCursor
@@ -246,7 +251,7 @@ func (r *MemoryRepo) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchor
 	if leafEntryID == "" {
 		return CanonicalTurnsPage{}, ErrStaleCanonicalTurnCursor
 	}
-	_, leafDepth, err := r.canonicalTurnEntryLocked(threadID, leafEntryID)
+	_, leafDepth, err := r.entry(threadID, leafEntryID)
 	if err != nil {
 		return CanonicalTurnsPage{}, err
 	}
@@ -260,7 +265,7 @@ func (r *MemoryRepo) listCanonicalTurnsSinceLocked(threadID, leafEntryID, anchor
 		if entryID == "" {
 			return CanonicalTurnsPage{}, ErrStaleCanonicalTurnCursor
 		}
-		entry, depth, err := r.canonicalTurnEntryLocked(threadID, entryID)
+		entry, depth, err := r.entry(threadID, entryID)
 		if err != nil {
 			return CanonicalTurnsPage{}, err
 		}
@@ -374,7 +379,7 @@ func canonicalDeltaContinuesTurn(anchor Entry, delta []CanonicalTurnPathEntry) b
 	return false
 }
 
-func (r *MemoryRepo) canonicalTurnPrefixLocked(threadID string, anchor Entry, anchorDepth int64) ([]CanonicalTurnPathEntry, canonicalTurnCandidate, error) {
+func (r canonicalTurnReader) canonicalTurnPrefixLocked(threadID string, anchor Entry, anchorDepth int64) ([]CanonicalTurnPathEntry, canonicalTurnCandidate, error) {
 	turnID := strings.TrimSpace(anchor.TurnID)
 	if turnID == "" || anchorDepth <= 0 {
 		return nil, canonicalTurnCandidate{}, ErrAuthorityCorrupt
@@ -382,7 +387,7 @@ func (r *MemoryRepo) canonicalTurnPrefixLocked(threadID string, anchor Entry, an
 	prefixNewestFirst := make([]CanonicalTurnPathEntry, 0, 8)
 	expectedDepth := anchorDepth
 	for entryID := anchor.ID; entryID != ""; {
-		entry, depth, err := r.canonicalTurnEntryLocked(threadID, entryID)
+		entry, depth, err := r.entry(threadID, entryID)
 		if err != nil {
 			return nil, canonicalTurnCandidate{}, err
 		}
@@ -483,7 +488,7 @@ func buildCanonicalTurnsPage(threadID string, page CanonicalTurnsPage, selected 
 	return page, nil
 }
 
-func (r *MemoryRepo) withCanonicalPageRetryEligibilityLocked(threadID string, page CanonicalTurnsPage) (CanonicalTurnsPage, error) {
+func (r canonicalTurnReader) withCanonicalPageRetryEligibilityLocked(threadID string, page CanonicalTurnsPage) (CanonicalTurnsPage, error) {
 	if len(page.Turns) == 0 {
 		return page, nil
 	}
@@ -516,7 +521,7 @@ func (r *MemoryRepo) withCanonicalPageRetryEligibilityLocked(threadID string, pa
 	return page, nil
 }
 
-func (r *MemoryRepo) retrySourceHasRetryEligibleDurableInputLocked(threadID, retryTurnID, retryRunID, retryStartedEntryID string, source CanonicalTurnRetrySource) (bool, error) {
+func (r canonicalTurnReader) retrySourceHasRetryEligibleDurableInputLocked(threadID, retryTurnID, retryRunID, retryStartedEntryID string, source CanonicalTurnRetrySource) (bool, error) {
 	visited := make(map[string]struct{})
 	for {
 		turnID := strings.TrimSpace(source.TurnID)
@@ -529,41 +534,26 @@ func (r *MemoryRepo) retrySourceHasRetryEligibleDurableInputLocked(threadID, ret
 			return false, ErrAuthorityCorrupt
 		}
 		visited[key] = struct{}{}
-		retryStarted, _, err := r.canonicalTurnEntryLocked(threadID, retryStartedEntryID)
+		retryStarted, _, err := r.entry(threadID, retryStartedEntryID)
 		if err != nil {
 			return false, err
 		}
 		if err := ValidateRetryStartedEntry(retryStarted, threadID, retryTurnID, retryRunID, retryStartedEntryID, source); err != nil {
 			return false, err
 		}
-		ordinals := r.turnEntryOrdinals[threadID][turnID]
-		if len(ordinals) == 0 || r.turnEntryCounts[threadID][turnID] != len(ordinals) {
-			return false, ErrAuthorityCorrupt
+		canonical, err := r.turn(threadID, turnID)
+		if err != nil {
+			return false, err
 		}
-		entries := r.entries[threadID]
-		canonical := make([]Entry, 0, len(ordinals))
-		for _, ordinal := range ordinals {
-			if ordinal < 0 || ordinal >= len(entries) {
-				return false, ErrAuthorityCorrupt
-			}
-			entry, err := r.completeEntryLocked(entries[ordinal])
-			if err != nil {
-				return false, err
-			}
-			if entry.ThreadID != threadID || strings.TrimSpace(entry.TurnID) != turnID || entry.PathDepth != r.entryDepths[threadID][entry.ID] {
-				return false, ErrAuthorityCorrupt
-			}
-			if err := ValidateEntryIntegrity(entry); err != nil {
-				return false, err
-			}
-			canonical = append(canonical, cloneEntry(entry))
+		if len(canonical) == 0 {
+			return false, ErrAuthorityCorrupt
 		}
 		canonical = CanonicalTurnEntriesForRead(canonical)
 		eligible, next, startedEntryID, runID, err := ValidateCanonicalRetrySourceTurn(canonical, threadID, source)
 		if err != nil {
 			return false, err
 		}
-		ancestor, err := r.retrySourceIsAncestorLocked(threadID, retryStarted.ParentID, entryID)
+		ancestor, err := r.ancestor(threadID, retryStarted.ParentID, entryID)
 		if err != nil {
 			return false, err
 		}

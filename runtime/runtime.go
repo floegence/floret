@@ -1060,6 +1060,8 @@ func validateThreadTurnFailureForStatus(status TurnStatus, failure *ThreadTurnFa
 
 type runtimeStore struct {
 	self              *runtimeStore
+	kernel            *storage.BackendKernel
+	checkpointAllowed func() bool
 	repo              sessiontree.Repo
 	prompt            cache.Store
 	agentTodos        sessiontree.AgentTodoStateRepo
@@ -1112,29 +1114,14 @@ func newMemoryStore() *runtimeStore {
 	return store
 }
 
-func newBackendRuntimeStore(ctx context.Context, backend spi.Backend) (*runtimeStore, error) {
-	kernel, err := storage.NewBackendKernel(ctx, backend, time.Now)
-	if err != nil {
-		return nil, err
-	}
-	store := &runtimeStore{
-		repo: kernel, prompt: kernel,
-		agentTodos: kernel, rootAuthority: kernel,
-		deleteCleanup: func(context.Context, []string) error { return nil },
-	}
-	store.close = backend.Close
-	store.self = store
-	store.initLifetime()
-	return store, nil
-}
-
-func newBackendRuntimeStoreWithKernel(backend spi.Backend, kernel *storage.BackendKernel) (*runtimeStore, error) {
+func newBackendRuntimeStoreWithKernel(backend spi.Backend, kernel *storage.BackendKernel, startup *storageReadiness) (*runtimeStore, error) {
 	if backend == nil || kernel == nil {
 		return nil, errors.New("runtime store requires backend and kernel")
 	}
 	store := &runtimeStore{
-		repo: kernel, prompt: kernel,
-		agentTodos: kernel, rootAuthority: kernel,
+		kernel: kernel, repo: kernel, prompt: kernel,
+		checkpointAllowed: func() bool { return startup == nil || startup.snapshot().State == StorageMigrationReady },
+		agentTodos:        kernel, rootAuthority: kernel,
 		deleteCleanup: func(context.Context, []string) error { return nil },
 	}
 	store.close = backend.Close
@@ -1179,7 +1166,7 @@ func (s *runtimeStore) Close() error {
 	s.lifetimeMu.Unlock()
 
 	var checkpointErr error
-	if checkpoint, ok := s.repo.(interface{ Checkpoint(context.Context) error }); ok {
+	if checkpoint, ok := s.repo.(interface{ Checkpoint(context.Context) error }); ok && (s.checkpointAllowed == nil || s.checkpointAllowed()) {
 		checkpointErr = checkpoint.Checkpoint(context.Background())
 	}
 	var closeErr error

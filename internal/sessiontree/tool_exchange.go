@@ -21,14 +21,9 @@ func (repo *BackendRepo) CanonicalToolExchange(ctx context.Context, threadID, tu
 	if ctx == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(turnID) == "" || strings.TrimSpace(runID) == "" || strings.TrimSpace(toolCallID) == "" {
 		return Entry{}, Entry{}, false, spi.ErrInvalidArgument
 	}
-	err = repo.ViewDomain(ctx, func(memory *MemoryRepo, tx spi.ReadTx) error {
-		memory.mu.Lock()
-		defer memory.mu.Unlock()
+	read := func(tx spi.ReadTx, readActive func(string) (Entry, error), complete func(Entry) (Entry, error)) error {
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-		if _, exists := memory.threads[threadID]; !exists {
-			return ErrThreadNotFound
 		}
 		key := strings.Join([]string{threadID, "tool_calls", turnID, runID, toolCallID}, "\x00")
 		if tx == nil {
@@ -52,11 +47,11 @@ func (repo *BackendRepo) CanonicalToolExchange(ctx context.Context, threadID, tu
 		if row.Object != threadquery.ToolCalls || row.ThreadID.String() != threadID || row.TurnID.String() != turnID || row.RunID.String() != runID || row.ToolCallID != toolCallID || row.ToolKind != "local" || metadata.FirstSource == "" || metadata.LastSource == "" {
 			return ErrAuthorityCorrupt
 		}
-		first, readErr := memory.activeBodyEntryLocked(threadID, metadata.FirstSource)
+		first, readErr := readActive(metadata.FirstSource)
 		if readErr != nil {
 			return readErr
 		}
-		last, readErr := memory.activeBodyEntryLocked(threadID, metadata.LastSource)
+		last, readErr := readActive(metadata.LastSource)
 		if readErr != nil {
 			return readErr
 		}
@@ -75,17 +70,14 @@ func (repo *BackendRepo) CanonicalToolExchange(ctx context.Context, threadID, tu
 		if !valid(last) || last.Type != EntryToolResult || last.Message.ToolResult == nil || last.Message.ToolResult.Status != row.Status {
 			return ErrAuthorityCorrupt
 		}
-		memory.ensurePathIndexLocked(threadID)
-		index := memory.pathIndexes[threadID]
-		firstOrdinal, lastOrdinal := memory.entryOrdinals[threadID][first.ID], memory.entryOrdinals[threadID][last.ID]
-		if index[firstOrdinal].depth >= index[lastOrdinal].depth {
+		if first.PathDepth >= last.PathDepth {
 			return ErrAuthorityCorrupt
 		}
-		call, readErr = memory.completeEntryLocked(first)
+		call, readErr = complete(first)
 		if readErr != nil {
 			return readErr
 		}
-		result, readErr = memory.completeEntryLocked(last)
+		result, readErr = complete(last)
 		if readErr != nil {
 			return readErr
 		}
@@ -98,6 +90,16 @@ func (repo *BackendRepo) CanonicalToolExchange(ctx context.Context, threadID, tu
 		call, result = cloneEntry(call), cloneEntry(result)
 		found = true
 		return nil
+	}
+	err = repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
+		return read(tx, func(id string) (Entry, error) { return activeLocatedEntry(ctx, tx, meta, id) }, func(entry Entry) (Entry, error) { return completeLocatedEntry(ctx, tx, entry) })
+	}, func(memory *MemoryRepo) error {
+		memory.mu.Lock()
+		defer memory.mu.Unlock()
+		if _, exists := memory.threads[threadID]; !exists {
+			return ErrThreadNotFound
+		}
+		return read(memory.bodyTx, func(id string) (Entry, error) { return memory.activeBodyEntryLocked(threadID, id) }, memory.completeEntryLocked)
 	})
 	if err != nil {
 		return Entry{}, Entry{}, false, err
