@@ -1,6 +1,7 @@
 package control
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,6 +17,18 @@ func TestAskUserGuidanceDistinguishesExecutionFromDiscussion(t *testing.T) {
 		if !strings.Contains(definitions[0].Description, boundary) {
 			t.Fatalf("question guidance missing %q: %s", boundary, definitions[0].Description)
 		}
+	}
+}
+
+func TestAskUserSchemaOffersOnlyWriteAndSelectOrWrite(t *testing.T) {
+	definitions := ToolDefinitions()
+	properties := definitions[0].InputSchema["properties"].(map[string]any)
+	questions := properties["questions"].(map[string]any)
+	question := questions["items"].(map[string]any)
+	questionProperties := question["properties"].(map[string]any)
+	responseMode := questionProperties["response_mode"].(map[string]any)
+	if got, want := responseMode["enum"], []string{"write", "select_or_write"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("response_mode enum = %#v, want %#v", got, want)
 	}
 }
 
@@ -40,12 +53,39 @@ func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {
 }
 
 func TestProjectReturnsSignalsForValidControlToolArgs(t *testing.T) {
-	ask, ok, err := Project(provider.ToolCall{Name: AskUserTool, Args: `{"questions":[{"id":"file","header":"File","question":"Need file?","is_secret":false,"response_mode":"write"}],"reason_code":"missing_external_input","required_from_user":["file"],"evidence_refs":[]}`})
-	if err != nil || !ok || ask.Kind != SignalAskUser || ask.Prompt != "Need file?" {
-		t.Fatalf("ask signal = %#v ok=%v err=%v", ask, ok, err)
+	for _, mode := range []string{"write", "select_or_write"} {
+		t.Run(mode, func(t *testing.T) {
+			call := provider.ToolCall{Name: AskUserTool, Args: `{"questions":[{"id":"branch","header":"Branch","question":"Which branch?","is_secret":false,"response_mode":"` + mode + `"}],"reason_code":"missing_external_input","required_from_user":["branch"],"evidence_refs":["message:latest"]}`}
+			structuredAsk, ok, err := Project(call)
+			if err != nil || !ok || structuredAsk.Kind != SignalAskUser || structuredAsk.Prompt != "Which branch?" || structuredAsk.Payload["reason_code"] != "missing_external_input" {
+				t.Fatalf("structured ask signal = %#v ok=%v err=%v", structuredAsk, ok, err)
+			}
+		})
 	}
-	structuredAsk, ok, err := Project(provider.ToolCall{Name: AskUserTool, Args: `{"questions":[{"id":"branch","header":"Branch","question":"Which branch?","is_secret":false,"response_mode":"write"}],"reason_code":"missing_external_input","required_from_user":["branch"],"evidence_refs":["message:latest"]}`})
-	if err != nil || !ok || structuredAsk.Kind != SignalAskUser || structuredAsk.Prompt != "Which branch?" || structuredAsk.Payload["reason_code"] != "missing_external_input" {
-		t.Fatalf("structured ask signal = %#v ok=%v err=%v", structuredAsk, ok, err)
+}
+
+func TestProjectNormalizesLegacyAskUserSelectToWriteableChoices(t *testing.T) {
+	call := provider.ToolCall{Name: AskUserTool, Args: `{"questions":[{"id":"branch","header":"Branch","question":"Which branch?","is_secret":false,"response_mode":"select","choices_exhaustive":true,"choices":[{"choice_id":"safe","label":"Staged rollout","kind":"select"}]}],"reason_code":"missing_external_input","required_from_user":["branch"],"evidence_refs":[]}`}
+	signal, ok, err := Project(call)
+	if err != nil || !ok {
+		t.Fatalf("Project legacy select = %#v, %v, %v", signal, ok, err)
+	}
+	questions := signal.Payload["questions"].([]any)
+	question := questions[0].(map[string]any)
+	if question["response_mode"] != "select_or_write" || question["choices_exhaustive"] != false {
+		t.Fatalf("legacy question was not made writeable: %#v", question)
+	}
+}
+
+func TestNormalizeAskUserPayloadReturnsDetachedLegacyProjection(t *testing.T) {
+	question := map[string]any{"response_mode": "select", "choices_exhaustive": true}
+	payload := map[string]any{"questions": []any{question}}
+	normalized, changed := NormalizeAskUserPayload(payload)
+	if !changed || question["response_mode"] != "select" || question["choices_exhaustive"] != true {
+		t.Fatalf("normalization changed source payload: changed=%v source=%#v", changed, question)
+	}
+	normalizedQuestion := normalized["questions"].([]any)[0].(map[string]any)
+	if normalizedQuestion["response_mode"] != "select_or_write" || normalizedQuestion["choices_exhaustive"] != false {
+		t.Fatalf("normalized payload = %#v", normalizedQuestion)
 	}
 }

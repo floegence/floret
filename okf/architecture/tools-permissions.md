@@ -109,6 +109,14 @@ late interaction is ignored. Provider history pairs that failed call with one
 safe error result containing only the failed outcome, so later Turns remain
 valid without exposing arguments or validation details.
 
+The `ask_user` response modes offered to models are `write` and
+`select_or_write`. A legacy `select` value is normalized to `select_or_write`
+with `choices_exhaustive=false` before schema validation and when reading a
+saved pending interaction. This is an in-memory projection; history is not
+rewritten. The compatibility rule belongs only to `ask_user` and does not
+change `Result.InputRequired`, whose `InputQuestion` contract continues to
+support `write`, `select`, and `select_or_write`.
+
 An omitted (`nil`) local definition list derives provider definitions from the
 returned registry; an explicit empty list clears them. Hosted definitions use
 the same omitted-versus-explicit-empty contract against their configured
