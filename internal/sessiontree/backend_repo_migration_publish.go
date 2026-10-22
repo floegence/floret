@@ -43,9 +43,10 @@ type migrationMetadataRead struct {
 // and compared again inside the final publication transaction.
 type migrationCandidateReader struct {
 	migrationSourceReader
-	source   backendDomainFormat
-	target   backendDomainFormat
-	metadata map[string]migrationMetadataRead
+	sourceReader spi.ReadTx
+	source       backendDomainFormat
+	target       backendDomainFormat
+	metadata     map[string]migrationMetadataRead
 }
 
 func (reader *migrationCandidateReader) targetMetadata(key []byte) ([]byte, error) {
@@ -74,7 +75,7 @@ func (reader *migrationCandidateReader) Get(namespace string, key []byte) ([]byt
 	if bytes.HasPrefix(key, backendDomainKey(backendDomainRecordTombstone)) {
 		return nil, err
 	}
-	raw, err = reader.migrationSourceReader.Get(reader.source.namespace, key)
+	raw, err = reader.sourceReader.Get(reader.source.namespace, key)
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +119,13 @@ func (reader *migrationCandidateReader) validationError(err error) error {
 }
 
 func (repo *BackendRepo) publishSourceThread(ctx context.Context, threadID string) error {
-	source, target := *repo.migrationSource, repo.domainFormat()
+	source := *repo.migrationSource
 	reader := migrationSourceReader{ctx: ctx, backend: repo.backend}
+	return repo.publishSourceThreadFrom(ctx, threadID, source, reader)
+}
+
+func (repo *BackendRepo) publishSourceThreadFrom(ctx context.Context, threadID string, source backendDomainFormat, reader spi.ReadTx) error {
+	target := repo.domainFormat()
 	if record, found, err := readBackendDomainRecord(reader, source, backendDomainKey(backendDomainRecordTombstone, threadID), backendDomainRecordTombstone, threadID, "", 0); err != nil {
 		return err
 	} else if found {
@@ -127,7 +133,7 @@ func (repo *BackendRepo) publishSourceThread(ctx context.Context, threadID strin
 		defer repo.mu.Unlock()
 		return repo.backend.Update(ctx, func(tx spi.WriteTx) error { return copyMigrationTombstone(ctx, tx, source, target, record) })
 	}
-	candidateReader := &migrationCandidateReader{migrationSourceReader: reader, source: source, target: target, metadata: map[string]migrationMetadataRead{}}
+	candidateReader := &migrationCandidateReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, sourceReader: reader, source: source, target: target, metadata: map[string]migrationMetadataRead{}}
 	unpublished := map[string]ThreadMeta{}
 	seen, queue := map[string]bool{}, []string{threadID}
 	for len(queue) > 0 {
@@ -238,7 +244,7 @@ func (repo *BackendRepo) publishSourceThread(ctx context.Context, threadID strin
 		if err != nil {
 			return err
 		}
-		if manifest.SourceVersion != source.version {
+		if manifest.SourceVersion != repo.migrationSource.version {
 			return spi.ErrConflict
 		}
 		if err := candidateReader.verifyMetadata(tx); err != nil {
@@ -258,6 +264,16 @@ func (repo *BackendRepo) publishSourceThread(ctx context.Context, threadID strin
 			}
 			if err := tx.Delete(backendThreadMigrationNamespace, []byte(id)); err != nil {
 				return err
+			}
+		}
+		if historical, ok := reader.(historicalCandidateReader); ok && repo.parentEventsEnabled() {
+			for _, event := range historical.events {
+				if _, publishing := unpublished[event.SourceThreadID]; !publishing {
+					continue
+				}
+				if _, err := appendCanonicalParentEvent(ctx, tx, event); err != nil {
+					return err
+				}
 			}
 		}
 		manifest.Sequence = max(manifest.Sequence, sourceManifest.Sequence)

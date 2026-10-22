@@ -71,7 +71,15 @@ func validateMigrationBodyClaim(ctx context.Context, tx spi.ReadTx, row spi.Reco
 	if err != nil || !found || checkpoint.Complete || checkpoint.NextOrdinal != claim.Ordinal {
 		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	raw, err := tx.Get(source.namespace, backendDomainEntryKey(claim.ThreadID, claim.Ordinal))
+	var sourceReader spi.ReadTx = tx
+	if source.version < 27 {
+		candidate, err := historicalCandidate(ctx, tx, source, claim.ThreadID)
+		if err != nil {
+			return claim, migrationBodyProgress{}, err
+		}
+		source, sourceReader = candidate.source, candidate
+	}
+	raw, err := sourceReader.Get(source.namespace, backendDomainEntryKey(claim.ThreadID, claim.Ordinal))
 	if err != nil {
 		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
@@ -159,6 +167,48 @@ func verifyMigrationBodyClaims(ctx context.Context, tx spi.ReadTx) error {
 
 func migrationSourceFormat(version int) (backendDomainFormat, error) {
 	switch version {
+	case 6:
+		return backendDomainFormat{label: "v6", namespace: backendDomainV6Namespace, envelope: "sessiontree-v6-record", version: 6, scanLimit: backendThreadEntryPageSize, validate: validateBackendDomainV6Memory}, nil
+	case 7:
+		return backendDomainFormat{label: "v7", namespace: backendDomainV7Namespace, envelope: "sessiontree-v7-record", version: 7, scanLimit: backendThreadEntryPageSize, validate: validateBackendDomainV7Memory}, nil
+	case 8:
+		return backendDomainV8Format, nil
+	case 9:
+		return backendDomainV9Format, nil
+	case 10:
+		return backendDomainV10Format, nil
+	case 11:
+		return backendDomainV11Format, nil
+	case 12:
+		return backendDomainV12Format, nil
+	case 13:
+		return backendDomainV13Format, nil
+	case 14:
+		return backendDomainV14Format, nil
+	case 15:
+		return backendDomainV15Format, nil
+	case 16:
+		return backendDomainV16Format, nil
+	case 17:
+		return backendDomainV17Format, nil
+	case 18:
+		return backendDomainV18Format, nil
+	case 19:
+		return backendDomainV19Format, nil
+	case 20:
+		return backendDomainV20Format, nil
+	case 21:
+		return backendDomainV21Format, nil
+	case 22:
+		return backendDomainV22Format, nil
+	case 23:
+		return backendDomainV23Format, nil
+	case 24:
+		return backendDomainV24Format, nil
+	case 25:
+		return backendDomainV25Format, nil
+	case 26:
+		return backendDomainV26Format, nil
 	case backendDomainV27Version:
 		return backendDomainV27Format, nil
 	case backendDomainV28Version:

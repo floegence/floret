@@ -482,6 +482,15 @@ func (host *Host) initializeStorage() {
 		if logicalState != host.startupSchema {
 			return errors.New("logical storage schema changed during startup")
 		}
+		var prepared bool
+		candidate, prepared, err = internalstorage.NewPreparingBackendKernelInTransaction(sessiontree.WithParentEvents(ctx, host.enableParentEvents), backend, tx, time.Now, host.enableParentEvents, progress)
+		if err != nil {
+			return err
+		}
+		if prepared {
+			reportPhase(StartupPhaseVerifying)
+			return commitLogicalSchemaTransaction(tx, logicalState)
+		}
 		candidate, err = internalstorage.NewBackendKernelInTransaction(sessiontree.WithParentEvents(ctx, host.enableParentEvents), backend, tx, time.Now, logicalState != logicalSchemaCurrent, progress)
 		if err != nil {
 			return err

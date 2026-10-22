@@ -154,7 +154,7 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 		}
 	}()
 	migrated, finished := false, false
-	publishID, attemptedID := "", ""
+	publishID, attemptedID, historicalID := "", "", ""
 	prepareIndexes, currentIndexes := false, false
 	err = func() error {
 		repo.mu.Lock()
@@ -257,7 +257,7 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 					if err := tx.Delete(source.namespace, backendDomainKey(backendDomainRecordManifest)); err != nil {
 						return err
 					}
-					manifest.SourceVersion = 0
+					manifest.SourceVersion, manifest.MigrationTime = 0, 0
 					manifest.MigrationPhase = ""
 					manifest.MigrationCursor = nil
 					finished = true
@@ -291,6 +291,11 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 					continue
 				}
 				attemptedID = record.ID
+				if source.version < 27 {
+					historicalID = record.ID
+					migrated = true
+					return nil
+				}
 				staged, err := repo.stageSourceThread(ctx, tx, record.ID)
 				if err != nil {
 					return err
@@ -341,8 +346,17 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 		})
 		return true, err
 	}
+	if err == nil && historicalID != "" {
+		ready, prepareErr := repo.prepareHistoricalThreadBatch(ctx, historicalID)
+		err = prepareErr
+		if ready {
+			publishID = historicalID
+		}
+	}
 	if err == nil && publishID != "" {
-		err = repo.publishSourceThread(ctx, publishID)
+		if historicalID == "" {
+			err = repo.publishSourceThread(ctx, publishID)
+		}
 		if errors.Is(err, spi.ErrConflict) {
 			return true, nil
 		}
@@ -409,6 +423,9 @@ func (repo *BackendRepo) prepareThreadBatch(ctx context.Context, threadID string
 	}
 	defer release()
 	ctx = work
+	if repo.migrationSource != nil && repo.migrationSource.version < 27 {
+		return repo.prepareHistoricalThreadBatch(ctx, threadID)
+	}
 	var ready, staged bool
 	err = func() error {
 		repo.mu.Lock()

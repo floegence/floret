@@ -32,10 +32,13 @@ func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
 	}
 	switch manifest.SourceVersion {
 	case 0:
-		if manifest.MigrationPhase != "" || len(manifest.MigrationCursor) != 0 {
+		if manifest.MigrationPhase != "" || len(manifest.MigrationCursor) != 0 || manifest.MigrationTime != 0 {
 			return manifest, ErrAuthorityCorrupt
 		}
-	case backendDomainV27Version, backendDomainV28Version, backendDomainV29Version, backendDomainV30Version, backendDomainV31Version:
+	case 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31:
+		if manifest.SourceVersion < 27 && manifest.MigrationTime <= 0 || manifest.SourceVersion >= 27 && manifest.MigrationTime != 0 {
+			return manifest, ErrAuthorityCorrupt
+		}
 		switch manifest.MigrationPhase {
 		case "":
 			if len(manifest.MigrationCursor) != 0 {
@@ -119,7 +122,13 @@ func verifyMigrationSourceRecord(ctx context.Context, tx spi.ReadTx, source, tar
 	switch record.Kind {
 	case backendDomainRecordManifest:
 		var manifest backendDomainManifest
-		if err := decodeBackendDomainValue(source, record, &manifest); err != nil || manifest.Version != source.version || manifest.SourceVersion != 0 || record.ID != "" {
+		if source.version == 6 {
+			var legacy backendDomainV6Manifest
+			if err := decodeBackendDomainValue(source, record, &legacy); err != nil || legacy.Version != 6 || legacy.Sequence < 0 || legacy.EffectAttemptSequence < 0 {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			manifest.Version = legacy.Version
+		} else if err := decodeBackendDomainValue(source, record, &manifest); err != nil || manifest.Version != source.version || manifest.SourceVersion != 0 || record.ID != "" {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		wantKey = backendDomainKey(record.Kind)
@@ -145,14 +154,26 @@ func verifyMigrationSourceRecord(ctx context.Context, tx spi.ReadTx, source, tar
 		}
 		wantKey = backendDomainKey(record.Kind)
 	case backendDomainRecordEntry:
-		stored, err := migrationStoredEntry(source, record)
-		if err != nil {
-			return err
+		var stored canonicalStoredEntry
+		if source.version < 27 {
+			var entry Entry
+			if err := decodeBackendDomainValue(source, record, &entry); err != nil || entry.ID != record.ID || entry.ThreadID != record.ThreadID || record.Ordinal < 0 {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if err := ValidateEntryIntegrity(entry); err != nil {
+				return err
+			}
+		} else {
+			var err error
+			stored, err = migrationStoredEntry(source, record)
+			if err != nil {
+				return err
+			}
 		}
 		threadID, wantKey = record.ThreadID, backendDomainEntryKey(record.ThreadID, record.Ordinal)
 		if _, deleted, err := readBackendDomainRecord(tx, target, backendDomainKey(backendDomainRecordTombstone, threadID), backendDomainRecordTombstone, threadID, "", 0); err != nil {
 			return err
-		} else if !deleted {
+		} else if !deleted && source.version >= 27 {
 			published, found, err := readBackendDomainRecord(tx, target, wantKey, record.Kind, record.ID, record.ThreadID, record.Ordinal)
 			if err != nil || !found {
 				return errors.Join(ErrAuthorityCorrupt, err)
@@ -165,6 +186,24 @@ func verifyMigrationSourceRecord(ctx context.Context, tx spi.ReadTx, source, tar
 				return err
 			}
 		}
+	case backendDomainRecordEffectAttempt:
+		if source.version != 6 {
+			return ErrAuthorityCorrupt
+		}
+		var attempt legacyEffectAttemptV6
+		if err := decodeBackendDomainValue(source, record, &attempt); err != nil || attempt.EffectAttemptID != record.ID || record.ID == "" {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		threadID = attempt.Invocation.ThreadID
+	case backendDomainRecordEffectInvocation:
+		if source.version != 6 || record.ID == "" {
+			return ErrAuthorityCorrupt
+		}
+		var attemptID string
+		if err := decodeBackendDomainValue(source, record, &attemptID); err != nil || attemptID == "" {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		threadID = ""
 	case backendDomainRecordThread:
 		var meta ThreadMeta
 		if err := decodeBackendDomainValue(source, record, &meta); err != nil || meta.ID != record.ID || ValidateThreadMetaAuthority(meta) != nil {

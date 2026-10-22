@@ -47,6 +47,11 @@ func NewCurrentBackendKernelInTransaction(ctx context.Context, backend spi.Backe
 	if found, err := storagecodec.RecordExists(tx, backendDomainNamespace, promptStateKey); err != nil {
 		return nil, false, err
 	} else if found {
+		if current, err := storagecodec.NamespaceHasRecords(tx, promptRecordsNamespace); err != nil {
+			return nil, false, err
+		} else if !current {
+			return nil, false, nil
+		}
 		return nil, false, errors.Join(sessiontree.ErrAuthorityCorrupt, errors.New("mixed prompt storage formats"))
 	}
 	encoded, err := tx.Get(promptRecordsNamespace, promptSchemaKey)
@@ -69,6 +74,27 @@ func NewCurrentBackendKernelInTransaction(ctx context.Context, backend spi.Backe
 	}
 	if !current {
 		return nil, false, nil
+	}
+	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, true, nil
+}
+
+// Historical prompt conversion stays in its storage owner. Once that boundary
+// commits, segmented conversation sources prepare independently in the live
+// canonical repository rather than loading every historical journal.
+func NewPreparingBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, parentEvents bool, progress StartupProgress) (*BackendKernel, bool, error) {
+	current, err := sessiontree.IsCurrentBackendRepoInTransaction(ctx, tx)
+	if err != nil || !current {
+		return nil, false, err
+	}
+	if err := preparePromptRecords(ctx, tx, true, progress); err != nil {
+		return nil, false, err
+	}
+	if err := verifyPromptRecords(tx); err != nil {
+		return nil, false, err
+	}
+	repo, recognized, err := sessiontree.NewCurrentBackendRepoInTransaction(ctx, backend, tx, now, parentEvents)
+	if err != nil || !recognized {
+		return nil, false, err
 	}
 	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, true, nil
 }
