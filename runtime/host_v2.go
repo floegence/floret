@@ -141,8 +141,7 @@ type Host struct {
 	startupSchema       logicalSchemaState
 	startupStartMu      sync.Mutex
 	backgroundMigration bool
-	threadPreparationMu sync.Mutex
-	threadPreparations  map[identity.ThreadID]*threadPreparation
+	threadPreparations  *threadPreparationState
 }
 
 type storageStartupWorker struct {
@@ -329,7 +328,8 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	}
 	host := &Host{
 		enableParentEvents: options.EnableParentEvents, store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
-		startup: startup, startupWorker: &storageStartupWorker{ctx: startupContext, cancel: startupCancel, options: options}, startupSchema: logicalState,
+		threadPreparations: &threadPreparationState{threads: make(map[identity.ThreadID]*threadPreparation)},
+		startup:            startup, startupWorker: &storageStartupWorker{ctx: startupContext, cancel: startupCancel, options: options}, startupSchema: logicalState,
 	}
 	transferred = true
 	if currentKernel != nil {
