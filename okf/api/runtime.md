@@ -23,9 +23,11 @@ final current-state verification run in a Host-owned worker. Hosts can observe
 `Host.StorageMigrationStatus`, check `Host.Readiness` for a thread, or wait with
 `Host.PrepareThread`; cancelling a wait does not cancel the Host worker.
 Canonical operations wait for publication and cannot observe partial state.
-Current released formats publish through one global transaction, so thread
-operations wait together. Host shutdown joins the active storage transaction
-before closing the backend.
+Segmented v6–v31 sources publish complete validated thread dependency closures
+atomically, yielding between staging batches. New and published threads remain
+usable during background preparation. Monolithic v2–v5 sources still gate
+canonical operations on complete migration. Host shutdown joins the active
+storage transaction before closing the backend.
 
 ## Thread goals
 
@@ -55,7 +57,7 @@ for garbage collection. The v7.28 inventory contract does not change image-tool
 contracts, storage bytes, or the domain migration lineage.
 `Host.ThreadMediaInventory` returns the same facts for one thread, letting
 maintenance process one thread at a time without holding a global descriptor
-snapshot. This v7.79 addition does not change the global inventory contract.
+snapshot. This addition does not change the global inventory contract.
 
 `ThreadService` is the current host-facing lifecycle contract. Its commands
 include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
@@ -434,7 +436,7 @@ are disjoint. Length continuation alone does not supersede text. Trailing partia
 answers and unsegmented legacy text remain unclassified. Hosts may fold these
 confirmed intermediate items independently of terminal outcome; unknown prose
 must remain visible. These are read projections, with no journal rewrite or
-schema change (current domain schema 31).
+schema change (current domain schema 32).
 
 Optional journal metadata was introduced without rewriting existing stores in
 v7.29.0. The v7.29.1 migration advances the current domain schema to v14 and
@@ -557,15 +559,17 @@ facts are read as failures and receive a safe paired provider error result.
 
 The internal session-tree domain has a permanent contiguous migration lineage.
 `runtime.Open` returns after bounded source preparation and logical-schema
-inspection. Domain migration, logical schema publication and final invariant
-verification run in a Host-owned backend transaction. Unknown, future, corrupt,
-or drifted state fails closed without changing canonical records.
+inspection. A Host-owned worker validates source authority, stages bounded
+batches, and publishes each complete thread dependency closure transactionally.
+Unknown, future, corrupt, or drifted state fails closed without exposing partial
+canonical facts.
 `runtime.Options.StartupProgress` reports product-neutral phase changes from the
 startup worker and exposes no record content. Startup selects one exact source
 format, rejects mixed authority and performs persisted final verification after
 startup writes. Current-schema startup is byte-preserving and idempotent. Host
-status remains readable during migration; current released formats publish
-through one global transaction, so thread operations wait together. The v5 ->
+status remains readable during migration. Segmented v6–v31 sources publish
+threads independently; monolithic v2–v5 sources retain the complete startup
+gate. The v5 ->
 v6 edge first replays pending v5 recovery frames and accepts only the exact v5
 tool-result Raw repair produced before UTF-8 normalization was enforced. It then
 writes segmented v6 authority and removes the legacy checkpoint, full-path root

@@ -49,17 +49,7 @@ func decodeMemoryStateValue(decoder *json.Decoder) (memoryState, error) {
 	if tombstones != nil {
 		state.Tombstones = make(map[string]ThreadTombstone, len(tombstones))
 		for id, source := range tombstones {
-			current := source.current
-			if state.Version >= 2 && state.Version <= 4 {
-				legacy := source.legacy
-				current.ThreadID, current.RootThreadID = legacy.ThreadID, legacy.RootThreadID
-				current.ParentThreadID = legacy.ParentThreadID
-				current.ForkedFromThreadID, current.ForkedFromEntryID = legacy.ForkedFromThreadID, legacy.ForkedFromEntryID
-				current.LegacyCreateIntent = legacy.CreateIntentID
-				current.LegacyForkRequestID, current.LegacyForkNodeID = legacy.ForkOperationID, legacy.ForkOperationNodeID
-				current.DeletedAt = legacy.DeletedAt
-			}
-			state.Tombstones[id] = current
+			state.Tombstones[id] = snapshotTombstoneAtVersion(source, state.Version)
 		}
 	}
 	return state, nil

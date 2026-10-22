@@ -17,7 +17,16 @@ const recordReadBlockBytes = 64 << 10
 // The reader belongs to tx and must be consumed before that transaction ends.
 // Custom backends without range access retain their existing Get contract.
 func OpenRecord(ctx context.Context, tx spi.ReadTx, namespace string, key []byte) (io.Reader, error) {
+	return OpenRecordRange(ctx, tx, namespace, key, 0, -1)
+}
+
+// OpenRecordRange opens an immutable source span. A negative length reads to
+// the end; explicit spans must fit completely inside the source record.
+func OpenRecordRange(ctx context.Context, tx spi.ReadTx, namespace string, key []byte, offset, length int64) (io.Reader, error) {
 	if ctx == nil || tx == nil || namespace == "" || len(key) == 0 {
+		return nil, spi.ErrInvalidArgument
+	}
+	if offset < 0 || length < -1 {
 		return nil, spi.ErrInvalidArgument
 	}
 	if err := ctx.Err(); err != nil {
@@ -31,13 +40,26 @@ func OpenRecord(ctx context.Context, tx spi.ReadTx, namespace string, key []byte
 		if size < 0 {
 			return nil, errors.New("storage record has negative size")
 		}
-		return &recordStream{ctx: ctx, tx: bounded, namespace: namespace, key: bytes.Clone(key), size: size}, nil
+		if offset > size || length >= 0 && length > size-offset {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if length >= 0 {
+			size = offset + length
+		}
+		return &recordStream{ctx: ctx, tx: bounded, namespace: namespace, key: bytes.Clone(key), size: size, offset: offset}, nil
 	}
 	raw, err := tx.Get(namespace, key)
 	if err != nil {
 		return nil, err
 	}
-	return &contextReader{ctx: ctx, reader: bytes.NewReader(raw)}, nil
+	if offset > int64(len(raw)) || length >= 0 && length > int64(len(raw))-offset {
+		return nil, io.ErrUnexpectedEOF
+	}
+	end := int64(len(raw))
+	if length >= 0 {
+		end = offset + length
+	}
+	return &contextReader{ctx: ctx, reader: bytes.NewReader(raw[offset:end])}, nil
 }
 
 type contextReader struct {
