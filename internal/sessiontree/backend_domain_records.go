@@ -29,6 +29,7 @@ type backendDomainFormat struct {
 }
 
 type backendDomainManifest struct {
+	MigrationTime   int64  `json:"migration_time,omitempty"`
 	Version         int    `json:"version"`
 	Sequence        int64  `json:"sequence"`
 	SourceVersion   int    `json:"source_version,omitempty"`
@@ -602,7 +603,8 @@ func persistBackendDomainChangesContext(ctx context.Context, tx spi.WriteTx, bef
 			if err != nil {
 				return false, err
 			}
-			manifest.SourceVersion, manifest.MigrationPhase, manifest.MigrationCursor = previous.SourceVersion, previous.MigrationPhase, previous.MigrationCursor
+			manifest = previous
+			manifest.Sequence = after.seq
 		}
 		if err := put(backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest); err != nil {
 			return false, err

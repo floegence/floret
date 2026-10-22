@@ -469,9 +469,8 @@ func (mutation *backendDomainMutation) persist(ctx context.Context, tx spi.Write
 				if decodeErr = decodeBackendDomainValue(format, record, &previous); decodeErr != nil {
 					return errors.Join(ErrAuthorityCorrupt, decodeErr)
 				}
-				manifest.SourceVersion = previous.SourceVersion
-				manifest.MigrationPhase = previous.MigrationPhase
-				manifest.MigrationCursor = append([]byte(nil), previous.MigrationCursor...)
+				manifest = previous
+				manifest.Sequence = memory.seq
 			} else if !errors.Is(err, spi.ErrNotFound) {
 				return err
 			}

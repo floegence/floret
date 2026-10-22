@@ -58,7 +58,11 @@ func writeThreadMigrationCheckpoint(tx spi.WriteTx, checkpoint threadMigrationCh
 // dependency closure. Cycles through parent-event references are legal; full
 // source and target invariant validation still precedes atomic publication.
 func (repo *BackendRepo) stageSourceThread(ctx context.Context, tx spi.WriteTx, threadID string) (bool, error) {
-	source, target := *repo.migrationSource, repo.domainFormat()
+	return repo.stageSourceThreadFrom(ctx, tx, tx, *repo.migrationSource, threadID)
+}
+
+func (repo *BackendRepo) stageSourceThreadFrom(ctx context.Context, tx spi.WriteTx, reader spi.ReadTx, source backendDomainFormat, threadID string) (bool, error) {
+	target := repo.domainFormat()
 	queue, seen := []string{threadID}, map[string]bool{}
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -81,12 +85,12 @@ func (repo *BackendRepo) stageSourceThread(ctx context.Context, tx spi.WriteTx, 
 		if !seen[id] {
 			continue
 		}
-		record, found, err := readBackendDomainRecord(tx, source, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0)
+		record, found, err := readBackendDomainRecord(reader, source, backendDomainKey(backendDomainRecordThread, id), backendDomainRecordThread, id, "", 0)
 		if err != nil {
 			return false, err
 		}
 		if !found {
-			if tombstone, deleted, err := readBackendDomainRecord(tx, source, backendDomainKey(backendDomainRecordTombstone, id), backendDomainRecordTombstone, id, "", 0); err != nil {
+			if tombstone, deleted, err := readBackendDomainRecord(reader, source, backendDomainKey(backendDomainRecordTombstone, id), backendDomainRecordTombstone, id, "", 0); err != nil {
 				return false, err
 			} else if deleted {
 				if err := copyMigrationTombstone(ctx, tx, source, target, tombstone); err != nil {
@@ -119,7 +123,7 @@ func (repo *BackendRepo) stageSourceThread(ctx context.Context, tx spi.WriteTx, 
 		if checkpoint.NextOrdinal > 0 {
 			after = backendDomainEntryKey(id, checkpoint.NextOrdinal-1)
 		}
-		page, err := tx.Scan(spi.ScanRequest{Namespace: source.namespace, Start: prefix, End: backendKeyRangeEnd(prefix), After: after, Limit: backendThreadEntryPageSize})
+		page, err := reader.Scan(spi.ScanRequest{Namespace: source.namespace, Start: prefix, End: backendKeyRangeEnd(prefix), After: after, Limit: backendThreadEntryPageSize})
 		if err != nil {
 			return false, err
 		}
@@ -187,7 +191,7 @@ func (repo *BackendRepo) stageSourceThread(ctx context.Context, tx spi.WriteTx, 
 			if result := stored.Entry.Message.ToolResult; result != nil && result.FullOutput != nil {
 				artifactID := artifactRecordKey(id, result.FullOutput.ID)
 				key := backendDomainKey(backendDomainRecordArtifact, artifactID)
-				record, found, err := readBackendDomainRecord(tx, source, key, backendDomainRecordArtifact, artifactID, "", 0)
+				record, found, err := readBackendDomainRecord(reader, source, key, backendDomainRecordArtifact, artifactID, "", 0)
 				if err != nil || !found {
 					return false, errors.Join(ErrAuthorityCorrupt, err)
 				}
@@ -203,7 +207,7 @@ func (repo *BackendRepo) stageSourceThread(ctx context.Context, tx spi.WriteTx, 
 		if checkpoint.Complete {
 			for _, kind := range []string{backendDomainRecordTodo, backendDomainRecordProviderState} {
 				key := backendDomainKey(kind, id)
-				record, found, err := readBackendDomainRecord(tx, source, key, kind, id, "", 0)
+				record, found, err := readBackendDomainRecord(reader, source, key, kind, id, "", 0)
 				if err != nil {
 					return false, err
 				}

@@ -86,7 +86,7 @@ func (repo *BackendRepo) domainFormat() backendDomainFormat {
 // does not scan entries or validate the store-wide thread inventory.
 func IsCurrentBackendRepoInTransaction(ctx context.Context, tx spi.ReadTx) (bool, error) {
 	source, err := detectBackendDomainSource(ctx, tx)
-	return source >= backendDomainSourceV27 && source <= backendDomainSourceV32, err
+	return source != backendDomainSourceFresh && source != backendDomainSourceLegacy, err
 }
 
 func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx spi.ReadTx, now func() time.Time, parentEvents bool) (*BackendRepo, bool, error) {
@@ -94,7 +94,7 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 		return nil, false, errors.New("current backend repo requires context, backend, transaction, and clock")
 	}
 	source, err := detectBackendDomainSource(ctx, tx)
-	if err != nil || (source < backendDomainSourceV27 || source > backendDomainSourceV32) {
+	if err != nil || (source == backendDomainSourceFresh || source == backendDomainSourceLegacy) {
 		return nil, false, err
 	}
 	format := backendDomainV32Format
@@ -119,7 +119,7 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 		if !ok {
 			return nil, false, errors.New("starting thread migration requires a write transaction")
 		}
-		retained, err := migrationSourceFormat(backendDomainV27Version + int(source-backendDomainSourceV27))
+		retained, err := migrationSourceFormat(backendDomainSourceVersion(source))
 		if err != nil {
 			return nil, false, err
 		}
@@ -128,10 +128,20 @@ func NewCurrentBackendRepoInTransaction(ctx context.Context, backend spi.Backend
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
 		var manifest backendDomainManifest
-		if err := decodeBackendDomainValue(retained, record, &manifest); err != nil || manifest.Version != retained.version || manifest.Sequence < 0 || manifest.SourceVersion != 0 || manifest.MigrationPhase != "" || len(manifest.MigrationCursor) != 0 {
+		if retained.version == 6 {
+			var legacy backendDomainV6Manifest
+			if err := decodeBackendDomainValue(retained, record, &legacy); err != nil || legacy.Version != 6 || legacy.Sequence < 0 || legacy.EffectAttemptSequence < 0 {
+				return nil, false, errors.Join(ErrAuthorityCorrupt, err)
+			}
+			manifest.Version, manifest.Sequence = legacy.Version, legacy.Sequence
+		} else if err := decodeBackendDomainValue(retained, record, &manifest); err != nil || manifest.Version != retained.version || manifest.Sequence < 0 || manifest.SourceVersion != 0 || manifest.MigrationPhase != "" || len(manifest.MigrationCursor) != 0 {
 			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV32Version, Sequence: manifest.Sequence, SourceVersion: retained.version}); err != nil {
+		migrationTime := int64(0)
+		if retained.version < 27 {
+			migrationTime = now().UTC().UnixNano()
+		}
+		if err := putBackendDomainRecordContext(ctx, writable, format, backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, backendDomainManifest{Version: backendDomainV32Version, Sequence: manifest.Sequence, SourceVersion: retained.version, MigrationTime: migrationTime}); err != nil {
 			return nil, false, err
 		}
 		migrationSource = &retained
@@ -540,13 +550,13 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 		// A v31 source plus a v32 manifest carrying source_version=31 is the
 		// resumable per-thread migration state. The older namespace remains
 		// authoritative until each thread publishes successfully.
-		if len(present) == 2 && present[0] == backendDomainSourceV32 && (present[1] >= backendDomainSourceV27 && present[1] <= backendDomainSourceV31) {
+		if len(present) == 2 && present[0] == backendDomainSourceV32 && (present[1] != backendDomainSourceFresh && present[1] != backendDomainSourceLegacy) {
 			raw, readErr := tx.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordManifest))
 			if readErr == nil {
 				record, decodeErr := decodeBackendDomainRecord(backendDomainV32Format, raw)
 				if decodeErr == nil {
 					var manifest backendDomainManifest
-					if decodeErr = decodeBackendDomainValue(backendDomainV32Format, record, &manifest); decodeErr == nil && manifest.SourceVersion == backendDomainV27Version+int(present[1]-backendDomainSourceV27) {
+					if decodeErr = decodeBackendDomainValue(backendDomainV32Format, record, &manifest); decodeErr == nil && manifest.SourceVersion == backendDomainSourceVersion(present[1]) {
 						return backendDomainSourceV32, nil
 					}
 				}

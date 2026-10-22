@@ -157,3 +157,64 @@ func migrateHistoricalMemoryThroughV29(ctx context.Context, memory *MemoryRepo, 
 	}
 	return nil
 }
+
+func backendDomainSourceVersion(source backendDomainSource) int {
+	switch source {
+	case backendDomainSourceV6:
+		return 6
+	case backendDomainSourceV7:
+		return 7
+	case backendDomainSourceV8:
+		return 8
+	case backendDomainSourceV9:
+		return 9
+	case backendDomainSourceV10:
+		return 10
+	case backendDomainSourceV11:
+		return 11
+	case backendDomainSourceV12:
+		return 12
+	case backendDomainSourceV13:
+		return 13
+	case backendDomainSourceV14:
+		return 14
+	case backendDomainSourceV15:
+		return 15
+	case backendDomainSourceV16:
+		return 16
+	case backendDomainSourceV17:
+		return 17
+	case backendDomainSourceV18:
+		return 18
+	case backendDomainSourceV19:
+		return 19
+	case backendDomainSourceV20:
+		return 20
+	case backendDomainSourceV21:
+		return 21
+	case backendDomainSourceV22:
+		return 22
+	case backendDomainSourceV23:
+		return 23
+	case backendDomainSourceV24:
+		return 24
+	case backendDomainSourceV25:
+		return 25
+	case backendDomainSourceV26:
+		return 26
+	case backendDomainSourceV27:
+		return 27
+	case backendDomainSourceV28:
+		return 28
+	case backendDomainSourceV29:
+		return 29
+	case backendDomainSourceV30:
+		return 30
+	case backendDomainSourceV31:
+		return 31
+	case backendDomainSourceV32:
+		return 32
+	default:
+		return 0
+	}
+}
