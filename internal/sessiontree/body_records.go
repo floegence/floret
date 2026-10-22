@@ -131,6 +131,13 @@ func releaseCanonicalBody(ctx context.Context, tx spi.WriteTx, ref canonicalBody
 	if body.References > 0 {
 		return writeCanonicalBodyRecord(tx, body)
 	}
+	claimed, err := migrationBodyClaimed(tx, ref.SHA256)
+	if err != nil {
+		return err
+	}
+	if claimed {
+		return tx.Delete(canonicalBodyNamespace, canonicalBodyKey(ref.SHA256))
+	}
 	for ordinal := 0; ordinal < (ref.Bytes-1)/canonicalBodyBlockBytes+1; ordinal++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -388,11 +395,17 @@ func materializeCanonicalStoredEntry(ctx context.Context, tx spi.ReadTx, stored 
 }
 
 func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, key []byte, id, threadID string, ordinal int, entry Entry) error {
+	if id != entry.ID || threadID != entry.ThreadID || ordinal < 0 || !bytes.Equal(key, backendDomainEntryKey(threadID, ordinal)) {
+		return ErrAuthorityCorrupt
+	}
 	if err := ValidateEntryIntegrity(entry); err != nil {
 		return err
 	}
 	var previous *canonicalStoredEntry
 	if raw, err := tx.Get(format.namespace, key); err == nil {
+		if format.version >= backendDomainV32Version {
+			return errors.Join(ErrAuthorityCorrupt, errors.New("canonical session-tree entries are immutable"))
+		}
 		record, decodeErr := decodeBackendDomainRecord(format, raw)
 		if decodeErr == nil {
 			stored, err := decodeCanonicalStoredEntry(format, record)
@@ -433,7 +446,13 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backend
 	if err != nil {
 		return err
 	}
-	return tx.Put(format.namespace, key, encoded)
+	if err := tx.Put(format.namespace, key, encoded); err != nil {
+		return err
+	}
+	if format.version >= backendDomainV32Version {
+		return putEntryLocator(ctx, tx, threadID, ordinal, entry)
+	}
+	return nil
 }
 
 func deleteCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backendDomainFormat, threadID string, ordinal int) error {
@@ -452,6 +471,11 @@ func deleteCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format back
 	}
 	for _, ref := range stored.Fields {
 		if err := releaseCanonicalBody(ctx, tx, ref); err != nil {
+			return err
+		}
+	}
+	if format.version >= backendDomainV32Version {
+		if err := removeTailEntryLocators(ctx, tx, threadID, ordinal, stored.Entry); err != nil {
 			return err
 		}
 	}

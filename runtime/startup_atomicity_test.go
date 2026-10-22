@@ -6,8 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	publicstorage "github.com/floegence/floret/v7/storage"
@@ -31,8 +37,15 @@ func TestOpenRollsBackDomainWhenLogicalSchemaWriteFails(t *testing.T) {
 	}
 	injected := errors.New("logical schema write failed")
 	source := publicstorage.NewSource(startupBackendSource{backend: startupFailingBackend{Backend: underlying, err: injected}})
-	if _, err := Open(ctx, Options{Storage: source}); !errors.Is(err, injected) {
-		t.Fatalf("Open error=%v, want injected failure", err)
+	host, err := Open(ctx, Options{Storage: source})
+	if err != nil {
+		t.Fatalf("Open error=%v, want Host availability before background failure", err)
+	}
+	if err := host.startup.wait(ctx); !errors.Is(err, injected) {
+		t.Fatalf("background migration error=%v, want injected failure", err)
+	}
+	if err := host.Shutdown(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if err := underlying.View(ctx, func(tx spi.ReadTx) error {
 		if got, err := tx.Get(logicalSchemaNamespace, []byte(logicalSchemaKey)); err != nil || !bytes.Equal(got, previous) {
@@ -103,10 +116,17 @@ func TestOpenRollsBackDomainWhenStartupPanics(t *testing.T) {
 	}
 }
 
-func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
+func TestOpenDefersInventoryAuthorityCorruptionToInventoryRead(t *testing.T) {
 	path := t.TempDir() + "/floret.sqlite"
 	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.startup.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	threadID := "corrupt-inventory-thread"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: threadID, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Shutdown(t.Context()); err != nil {
@@ -117,7 +137,7 @@ func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
-		return tx.Delete("floret.domain.sessiontree.v16", storagecodec.Tuple(storagecodec.TupleString("root_index")))
+		return tx.Delete("floret.domain.sessiontree.v17", storagecodec.Tuple(storagecodec.TupleString("root_thread"), storagecodec.TupleString(threadID)))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +145,148 @@ func TestOpenMapsSessionTreeAuthorityCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)}); !errors.Is(err, ErrAuthorityCorrupt) {
-		t.Fatalf("Open error=%v, want ErrAuthorityCorrupt", err)
+	host, err = Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.startup.wait(t.Context()); err != nil {
+		t.Fatalf("Host startup should not scan unrelated canonical records: %v", err)
+	}
+	if err := host.PrepareThread(t.Context(), identity.ThreadID(threadID)); err != nil {
+		t.Fatalf("prepare independent thread: %v", err)
+	}
+	readiness, err := host.Readiness(t.Context(), identity.ThreadID(threadID))
+	if err != nil || !readiness.Ready {
+		t.Fatalf("unrelated thread readiness = %#v, %v", readiness, err)
+	}
+	threads, err := host.store.repo.(sessiontree.ThreadListRepo).ListThreads(t.Context(), sessiontree.ListThreadsOptions{})
+	if !errors.Is(err, sessiontree.ErrAuthorityCorrupt) || len(threads) != 0 {
+		t.Fatalf("corrupt current inventory = %+v, %v; want authority corruption", threads, err)
+	}
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadinessDoesNotPrepareTheRequestedThread(t *testing.T) {
+	path := t.TempDir() + "/floret.sqlite"
+	threadID := "thread-readiness"
+	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.startup.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: threadID, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{
+		ThreadID: threadID, Type: sessiontree.EntryUserMessage,
+		Message: session.Message{Role: session.User, Content: "ready"},
+	}, sessiontree.AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	readiness, err := host.Readiness(t.Context(), identity.ThreadID(threadID))
+	if err != nil || !readiness.Ready {
+		t.Fatalf("valid thread readiness = %#v, %v", readiness, err)
+	}
+	if err := host.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.SQLite(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		key := storagecodec.Tuple(storagecodec.TupleString("entry"), storagecodec.TupleString(threadID), storagecodec.TupleOrdinal(0))
+		return tx.Put("floret.domain.sessiontree.v17", key, []byte("corrupt thread entry"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	host, err = Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	readiness, err = host.Readiness(t.Context(), identity.ThreadID(threadID))
+	if !errors.Is(err, ErrAuthorityCorrupt) || readiness.Ready {
+		t.Fatalf("corrupt canonical readiness = %#v, %v; want authority corruption", readiness, err)
+	}
+	host.threadPreparationMu.Lock()
+	preparation := host.threadPreparations[identity.ThreadID(threadID)]
+	host.threadPreparationMu.Unlock()
+	if preparation != nil {
+		t.Fatal("readiness started thread preparation")
+	}
+	if err := host.PrepareThread(t.Context(), identity.ThreadID(threadID)); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("prepare corrupt thread = %v; want authority corruption", err)
+	}
+	readiness, err = host.Readiness(t.Context(), identity.ThreadID(threadID))
+	if !errors.Is(err, ErrAuthorityCorrupt) || readiness.Ready {
+		t.Fatalf("failed preparation readiness = %#v, %v", readiness, err)
+	}
+}
+
+func TestReadinessRechecksCanonicalThreadAfterDeletion(t *testing.T) {
+	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(t.TempDir() + "/floret.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	const threadID = "thread-prepared-then-deleted"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.PrepareThread(t.Context(), threadID); err != nil {
+		t.Fatal(err)
+	}
+	deleter := host.store.repo.(interface {
+		DeleteRootTree(context.Context, string) (sessiontree.DeleteRootTreeResult, error)
+	})
+	if _, err := deleter.DeleteRootTree(t.Context(), threadID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := host.Readiness(t.Context(), threadID)
+	if err != nil || status.Ready {
+		t.Fatalf("deleted thread readiness = %+v, %v", status, err)
+	}
+}
+
+func TestShutdownCancelsAndJoinsStorageStartup(t *testing.T) {
+	path := storageUpgradeFixture(t)
+	backend, err := storagebridge.Open(t.Context(), storagebridge.Source(publicstorage.SQLite(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := &startupBlockingInitializationBackend{
+		Backend: backend,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer close(blocking.release)
+	host, err := Open(t.Context(), Options{Storage: publicstorage.NewSource(startupBackendSource{backend: blocking})})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("startup worker did not enter its blocked backend operation")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := host.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown did not cancel and join startup: %v", err)
+	}
+	if status, err := host.StorageMigrationStatus(context.Background()); !errors.Is(err, ErrHostClosed) || status.State != "" {
+		t.Fatalf("status after shutdown = %#v, %v; want closed Host", status, err)
 	}
 }
 
@@ -142,6 +302,26 @@ type startupFailingBackend struct {
 }
 
 type startupPanickingBackend struct{ spi.Backend }
+
+type startupBlockingInitializationBackend struct {
+	spi.Backend
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (backend *startupBlockingInitializationBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
+	if backend.calls.Add(1) == 2 {
+		close(backend.entered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-backend.release:
+			return errors.New("test startup release")
+		}
+	}
+	return backend.Backend.Update(ctx, mutate)
+}
 
 func (backend startupPanickingBackend) Update(ctx context.Context, mutate func(spi.WriteTx) error) error {
 	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
@@ -197,15 +377,13 @@ func TestLogicalV9UpgradeRetiresTermsInSameTransaction(t *testing.T) {
 				source = startupFailingBackend{Backend: backend, err: injected}
 			}
 			host, err := Open(t.Context(), Options{Storage: publicstorage.NewSource(startupBackendSource{backend: source}), DeferExecution: true})
-			if fail {
-				if !errors.Is(err, injected) {
-					t.Fatalf("failure=%v", err)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer host.Shutdown(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer host.Shutdown(t.Context())
+			err = host.startup.wait(t.Context())
+			if fail && !errors.Is(err, injected) || !fail && err != nil {
+				t.Fatalf("startup=%v", err)
 			}
 			if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
 				state, err := inspectLogicalSchemaTransaction(tx)
@@ -240,5 +418,67 @@ func TestLogicalV9RejectsFingerprintDrift(t *testing.T) {
 	}
 	if _, err := inspectLogicalSchema(t.Context(), backend); !errors.Is(err, ErrUnsupportedSchema) {
 		t.Fatalf("drift accepted: %v", err)
+	}
+}
+
+func TestPrepareThreadCancellationLeavesHostPreparationRunning(t *testing.T) {
+	path := storageUpgradeFixture(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	host, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path), StartupProgress: StartupProgressFunc(func(phase StartupPhase) {
+		if phase == StartupPhaseMigrating {
+			once.Do(func() { close(entered); <-release })
+		}
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	<-entered
+	waitContext, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() { result <- host.PrepareThread(waitContext, "thread-startup-wait") }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		host.threadPreparationMu.Lock()
+		preparation := host.threadPreparations["thread-startup-wait"]
+		host.threadPreparationMu.Unlock()
+		if preparation != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			t.Fatal("thread preparation never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled wait = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("cancelling a wait did not return promptly")
+	}
+	host.threadPreparationMu.Lock()
+	preparation := host.threadPreparations["thread-startup-wait"]
+	host.threadPreparationMu.Unlock()
+	select {
+	case <-preparation.done:
+		close(release)
+		t.Fatal("caller cancellation stopped Host-owned preparation")
+	default:
+	}
+	close(release)
+	select {
+	case <-preparation.done:
+		if errors.Is(preparation.err, context.Canceled) {
+			t.Fatal("Host preparation inherited caller cancellation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Host preparation did not settle")
 	}
 }

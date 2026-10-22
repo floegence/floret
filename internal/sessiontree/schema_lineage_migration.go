@@ -129,34 +129,6 @@ func (tombstone *ThreadTombstone) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func decodeLegacyMemoryStateShapes(data []byte, state *memoryState) error {
-	if state == nil {
-		return errors.New("legacy session-tree state is required")
-	}
-	var source struct {
-		RootCreateIntents map[string]legacyRootCreateRecord `json:"root_create_intents"`
-		Tombstones        map[string]legacyV4Tombstone      `json:"tombstones"`
-	}
-	if err := json.Unmarshal(data, &source); err != nil {
-		return err
-	}
-	state.RootCreateIntents = source.RootCreateIntents
-	for threadID, legacy := range source.Tombstones {
-		current := state.Tombstones[threadID]
-		current.ThreadID = legacy.ThreadID
-		current.RootThreadID = legacy.RootThreadID
-		current.ParentThreadID = legacy.ParentThreadID
-		current.ForkedFromThreadID = legacy.ForkedFromThreadID
-		current.ForkedFromEntryID = legacy.ForkedFromEntryID
-		current.LegacyCreateIntent = legacy.CreateIntentID
-		current.LegacyForkRequestID = legacy.ForkOperationID
-		current.LegacyForkNodeID = legacy.ForkOperationNodeID
-		current.DeletedAt = legacy.DeletedAt
-		state.Tombstones[threadID] = current
-	}
-	return nil
-}
-
 // Version 3 repairs the exact v3.2.3 SubAgent admission gap. It validates the
 // published source authority before reconstructing the missing admission.
 func migrateMemoryStateV2ToV3(state *memoryState) error {

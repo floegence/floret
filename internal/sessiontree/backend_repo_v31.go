@@ -29,10 +29,14 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err != nil {
 		return nil, err
 	}
-	if source == backendDomainSourceV31 {
-		repo := &BackendRepo{backend: backend, now: now, startupProgress: progress}
+	if source == backendDomainSourceV31 || source == backendDomainSourceV32 {
+		format := backendDomainV31Format
+		if source == backendDomainSourceV32 {
+			format = backendDomainV32Format
+		}
+		repo := &BackendRepo{backend: backend, now: now, format: format, startupProgress: progress}
 		repo.reportStartupPhase(StartupPhaseVerifying)
-		memory, found, err := loadBackendDomain(ctx, tx, now, backendDomainV31Format)
+		memory, found, err := loadBackendDomain(ctx, tx, now, format)
 		if err != nil {
 			return nil, err
 		}
@@ -49,7 +53,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			if err := convergeUnknownEffectTurns(ctx, memory); err != nil {
 				return nil, err
 			}
-			changed, err := persistBackendDomainChangesContext(ctx, tx, before, memory, backendDomainV31Format)
+			changed, err := persistBackendDomainChangesContext(ctx, tx, before, memory, format)
 			if err != nil {
 				return nil, err
 			}
@@ -65,6 +69,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 			return nil, ErrAuthorityCorrupt
 		}
 		repo := &BackendRepo{backend: backend, now: now, startupProgress: progress, domainMemory: newMemoryRepo(now)}
+		repo.reportStartupPhase(StartupPhaseMigrating)
 		repo.domainMemory.parentEvents = parentEventsEnabled(ctx)
 		if err := saveCompleteBackendDomainContext(ctx, tx, repo.domainMemory, backendDomainV31Format); err != nil {
 			return nil, err
@@ -89,6 +94,7 @@ func NewBackendRepoInTransaction(ctx context.Context, backend spi.Backend, tx sp
 	if err := saveCompleteBackendDomainContext(ctx, tx, repo.domainMemory, backendDomainV31Format); err != nil {
 		return nil, err
 	}
+	repo.format = backendDomainV31Format
 	repo.requiresPersistedStartupVerification = true
 	return repo, nil
 }

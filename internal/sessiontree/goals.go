@@ -280,6 +280,11 @@ func goalFinishMetadata(path []Entry, req FinishTurnRequest) (map[string]string,
 		return nil, err
 	}
 	reviewEntry, review, valid := CurrentGoalReview(path, req.TurnID, req.RunID, state)
+	return finishGoalMetadata(state, reviewEntry, review, valid, req)
+}
+
+func finishGoalMetadata(state session.GoalState, reviewEntry Entry, review GoalReview, valid bool, req FinishTurnRequest) (map[string]string, error) {
+	metadata := cloneStringMap(req.Metadata)
 	if state.Status == "active" && (!valid || metadata[GoalReviewMetadataKey] != reviewEntry.ID) {
 		return nil, errors.New("goal changed before completion; continue to review the current goal")
 	}

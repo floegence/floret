@@ -56,15 +56,30 @@ func TestThreadMediaSurvivesModelRequestActivityAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	emptyThread, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "create-empty-media"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyInventory, err := host.ThreadMediaInventory(t.Context(), emptyThread.ThreadID)
+	if err != nil || !emptyInventory.Idle || len(emptyInventory.References) != 0 {
+		t.Fatalf("empty thread media inventory: %+v, %v", emptyInventory, err)
+	}
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "send-media", Input: UserInput{Text: "capture"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := gateway.WaitForRequests(t.Context(), 2); err != nil {
-		t.Fatal(err)
+	waitCtx, cancelWait := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelWait()
+	if err := gateway.WaitForRequests(waitCtx, 2); err != nil {
+		view, viewErr := service.View(t.Context(), created.ThreadID)
+		t.Fatalf("wait requests: %v; failure=%+v outcome=%+v viewErr=%v", err, view.Failure, view.LastOutcome, viewErr)
 	}
 	activeInventory, err := host.MediaInventory(t.Context())
 	if err != nil || activeInventory.Idle {
 		t.Fatalf("active media inventory must prevent collection: %+v, %v", activeInventory, err)
+	}
+	threadInventory, err := host.ThreadMediaInventory(t.Context(), created.ThreadID)
+	if err != nil || threadInventory.Idle || len(threadInventory.References) != 1 || threadInventory.References[0].Attachment.ResourceRef != ref {
+		t.Fatalf("thread-scoped active media inventory: %+v, %v", threadInventory, err)
 	}
 	queuedRef := "host-queued://" + strings.Repeat("b", 64)
 	queued, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, RequestKey: "queue-media", Input: UserInput{Text: "queued image", Attachments: []MessageAttachment{{ResourceRef: queuedRef, Name: "queued.png", MIMEType: "image/png", SizeBytes: 1}}}})

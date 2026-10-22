@@ -96,25 +96,21 @@ func DecodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, error) {
 }
 
 func decodeMemoryState(data []byte, now func() time.Time) (*MemoryRepo, bool, error) {
-	if now == nil {
-		return nil, false, errors.New("lease authority clock is required")
-	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var state memoryState
-	if err := decoder.Decode(&state); err != nil {
+	state, err := decodeMemoryStateValue(decoder)
+	if err != nil {
 		return nil, false, err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, false, errors.New("session-tree state contains trailing data")
-		}
-		return nil, false, err
+		return nil, false, errors.Join(errors.New("session-tree state contains trailing data"), err)
 	}
-	if state.Version >= 2 && state.Version <= 4 {
-		if err := decodeLegacyMemoryStateShapes(data, &state); err != nil {
-			return nil, false, errors.Join(ErrAuthorityCorrupt, err)
-		}
+	return migrateDecodedMemoryState(state, now)
+}
+
+func migrateDecodedMemoryState(state memoryState, now func() time.Time) (*MemoryRepo, bool, error) {
+	if now == nil {
+		return nil, false, errors.New("lease authority clock is required")
 	}
 	migrated := false
 	switch state.Version {

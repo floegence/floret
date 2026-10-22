@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 	"github.com/floegence/floret/v7/threadquery"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,17 @@ type querySnapshots struct {
 	snapshots     map[string]*querySnapshot
 	snapshotBytes int64
 	verified      int
+}
+
+func (snapshots *querySnapshots) invalidateThread(threadID string) {
+	if snapshots == nil {
+		return
+	}
+	for id, snapshot := range snapshots.snapshots {
+		if snapshot.authorized[threadID] {
+			snapshots.dropSnapshot(id)
+		}
+	}
 }
 
 func (r *MemoryRepo) prepareQuery(ctx context.Context) error {
@@ -159,14 +171,19 @@ func (r *MemoryRepo) materializeQueryDocument(document queryStoredDocument) (*qu
 	if metadata.Row.ThreadID.String() != document.ThreadID || string(metadata.Row.Object) != document.Object {
 		return nil, errors.New("derived query metadata mismatch")
 	}
-	sources, err := r.queryDocumentSources(document.ThreadID, metadata)
-	if err != nil {
-		return nil, err
-	}
 	record := &queryRecord{key: document.Key, row: metadata.Row, firstSource: metadata.FirstSource, previousSource: metadata.PreviousSource, lastSource: metadata.LastSource}
 	if record.row.Object == threadquery.Threads {
 		record.parts = []queryPart{{"title", record.row.Title}}
 		return record, nil
+	}
+	if r.queryThreadLoader != nil {
+		if err := r.queryThreadLoader(document.ThreadID); err != nil {
+			return nil, err
+		}
+	}
+	sources, err := r.queryDocumentSources(document.ThreadID, metadata)
+	if err != nil {
+		return nil, err
 	}
 	for sourceIndex, source := range sources {
 		ordinal, ok := r.entryOrdinals[document.ThreadID][source]
@@ -279,7 +296,12 @@ func (r *MemoryRepo) selectQueryRecords(ctx context.Context, authorized map[stri
 			}
 		}
 	}
+	return selectQueryCandidates(ctx, candidates, authorized, object, filter, r.querySnapshots, r.materializeQueryDocument)
+}
+
+func selectQueryCandidates(ctx context.Context, candidates []queryStoredDocument, authorized map[string]bool, object threadquery.Object, filter threadquery.Filter, snapshots *querySnapshots, materialize func(queryStoredDocument) (*queryRecord, error)) ([]*queryRecord, error) {
 	var result []*queryRecord
+	var retainedBytes int64
 	for _, document := range candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -300,12 +322,12 @@ func (r *MemoryRepo) selectQueryRecords(ctx context.Context, authorized map[stri
 		record := &queryRecord{key: document.Key, row: metadata.Row, firstSource: metadata.FirstSource, previousSource: metadata.PreviousSource, lastSource: metadata.LastSource, lazy: true}
 		if !emptyText(filter.Text) || !emptyText(filter.Arguments) || !emptyText(filter.Result) || !emptyText(filter.Title) {
 			var err error
-			record, err = r.materializeQueryDocument(document)
+			record, err = materialize(document)
 			if err != nil {
 				return nil, err
 			}
 		}
-		r.querySnapshots.verified++
+		snapshots.verified++
 		valid := true
 		for field, match := range map[string]threadquery.TextMatch{"text": filter.Text, "title": filter.Title, "arguments": filter.Arguments, "result": filter.Result} {
 			if !emptyText(match) && !queryTextMatches(record.text(field), match) {
@@ -314,6 +336,10 @@ func (r *MemoryRepo) selectQueryRecords(ctx context.Context, authorized map[stri
 			}
 		}
 		if valid {
+			retainedBytes += record.estimateBytes() + 256
+			if retainedBytes > querySnapshotMaxBytes {
+				return nil, threadquery.ErrSnapshotLimit
+			}
 			result = append(result, record)
 		}
 	}
@@ -431,6 +457,113 @@ func putQueryManifest(tx spi.WriteTx, id, leaf string) error {
 	}
 	return tx.Put(queryManifestNamespace, []byte(id), raw)
 }
+
+func threadQueryIndexMatches(tx spi.ReadTx, threadID string, state *queryThread) (bool, error) {
+	raw, err := tx.Get(queryManifestNamespace, []byte(threadID))
+	if errors.Is(err, spi.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var manifest queryManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Version != 3 || manifest.Leaf != state.leaf {
+		return false, nil
+	}
+	documents, err := queryMetadataReader(tx).listDocuments(queryMetadataSelection{ThreadIDs: []string{threadID}})
+	if err != nil {
+		return false, err
+	}
+	if len(documents) != len(state.records) {
+		return false, nil
+	}
+	expected := make(map[string][]byte, len(state.records))
+	for key, record := range state.records {
+		document, err := queryDocument(record)
+		if err != nil {
+			return false, err
+		}
+		expected[key] = document.Metadata
+	}
+	for _, document := range documents {
+		if document.ThreadID != threadID || !bytes.Equal(expected[document.Key], document.Metadata) {
+			return false, nil
+		}
+		delete(expected, document.Key)
+	}
+	return len(expected) == 0, nil
+}
+
+func ensureThreadQueryIndexReady(ctx context.Context, tx spi.ReadTx, scope threadquery.Scope, format backendDomainFormat) error {
+	seen := make(map[string]bool, len(scope.ThreadIDs))
+	for _, authorizedID := range scope.ThreadIDs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		threadID := authorizedID.String()
+		if threadID == "" || seen[threadID] {
+			continue
+		}
+		seen[threadID] = true
+		record, found, err := readBackendDomainRecord(tx, format, backendDomainKey(backendDomainRecordThread, threadID), backendDomainRecordThread, threadID, "", 0)
+		if err != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		if !found {
+			return threadquery.ErrThreadQueryIndexNotReady
+		}
+		var meta ThreadMeta
+		if err := decodeBackendDomainValue(format, record, &meta); err != nil || meta.ID != threadID || ValidateThreadMetaAuthority(meta) != nil {
+			return errors.Join(ErrAuthorityCorrupt, err)
+		}
+		raw, err := tx.Get(queryManifestNamespace, []byte(threadID))
+		if errors.Is(err, spi.ErrNotFound) {
+			return threadquery.ErrThreadQueryIndexNotReady
+		}
+		if err != nil {
+			return err
+		}
+		var manifest queryManifest
+		if json.Unmarshal(raw, &manifest) != nil || manifest.Version != 3 || manifest.Leaf != meta.LeafID {
+			return threadquery.ErrThreadQueryIndexNotReady
+		}
+	}
+	return nil
+}
+
+// PrepareQueryThread verifies or rebuilds one thread's derived search index.
+// The canonical journal remains authoritative throughout the transaction.
+func (repo *BackendRepo) PrepareQueryThread(ctx context.Context, threadID string) error {
+	if repo == nil || ctx == nil || strings.TrimSpace(threadID) == "" {
+		return errors.New("query thread preparation requires repository, context, and thread id")
+	}
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.PrepareQueryThread(ctx, threadID)
+	}
+	if err := repo.prepareThreadIfNeeded(ctx, threadID); err != nil {
+		return err
+	}
+	work, release, err := repo.migrationGate.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	for {
+		err := repo.prepareQueryThread(work, threadID)
+		if !errors.Is(err, spi.ErrConflict) {
+			return err
+		}
+		if err := work.Err(); err != nil {
+			return err
+		}
+	}
+}
+
 func (mutation *backendDomainMutation) persistQuery(ctx context.Context, tx spi.WriteTx, caches map[string]*queryThread) error {
 	mutation.queryThreads = map[string]*queryThread{}
 	ids := map[string]bool{}

@@ -27,17 +27,24 @@ func validateCurrentToolInputRecords(memory *MemoryRepo) error {
 
 func validateCompletedToolInputRecords(memory *MemoryRepo, allowError bool) error {
 	for _, entries := range memory.entries {
-		for _, entry := range entries {
-			result := entry.Message.ToolResult
-			if result == nil || result.InputRequired == nil {
-				continue
-			}
-			if entry.Type != EntryToolResult || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" || (result.Status != "success" && !(allowError && result.Status == "error")) {
-				return fmt.Errorf("tool input request %q has no completed tool result identity", entry.ID)
-			}
-			if err := result.InputRequired.Validate(); err != nil {
-				return fmt.Errorf("tool input request %q is invalid: %w", entry.ID, err)
-			}
+		if err := validateCompletedToolInputEntries(entries, allowError); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCompletedToolInputEntries(entries []Entry, allowError bool) error {
+	for _, entry := range entries {
+		result := entry.Message.ToolResult
+		if result == nil || result.InputRequired == nil {
+			continue
+		}
+		if entry.Type != EntryToolResult || entry.TurnID == "" || entry.RunID == "" || entry.Message.ToolCallID == "" || (result.Status != "success" && !(allowError && result.Status == "error")) {
+			return fmt.Errorf("tool input request %q has no completed tool result identity", entry.ID)
+		}
+		if err := result.InputRequired.Validate(); err != nil {
+			return fmt.Errorf("tool input request %q is invalid: %w", entry.ID, err)
 		}
 	}
 	return nil

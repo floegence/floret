@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Add optional bounded record reads for historical snapshot migration.
+
+- Add `Host.ThreadMediaInventory` so hosts can retain canonical media by thread
+  without collecting descriptors for every thread in one in-memory snapshot.
+
+- Return `runtime.Host` after bounded storage inspection and run domain
+  migration and final verification in a Host-owned worker. Add migration status,
+  thread readiness and cancellable preparation APIs; v27–v31 sources
+  publish each validated thread atomically with resumable body checkpoints.
+
+- Treat SQLite v1 records with `WITHOUT ROWID` as a supported physical layout
+  and remove the v1 full-table copy. Physical format upgrades preserve canonical
+  record bytes.
+
+
 ## v7.79.0 - 2026-10-22
 
 - Remove full-text token generation, SQLite postings, incremental term append,

@@ -42,11 +42,23 @@ func (r *MemoryRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, f
 	if err != nil {
 		return CanonicalBodyChunk{}, err
 	}
+	return readCanonicalEntryBody(ctx, entry, field, offset, limit, func(read func(spi.ReadTx) error) error {
+		if r.bodyTx != nil {
+			return read(r.bodyTx)
+		}
+		if r.bodyBackend != nil {
+			return r.bodyBackend.View(ctx, read)
+		}
+		return errors.New("canonical body storage is unavailable")
+	})
+}
+
+func readCanonicalEntryBody(ctx context.Context, entry Entry, field string, offset, limit int, view func(func(spi.ReadTx) error) error) (CanonicalBodyChunk, error) {
 	value, err := canonicalFieldValue(entry, field)
 	if err != nil {
 		return CanonicalBodyChunk{}, err
 	}
-	result := CanonicalBodyChunk{ThreadID: threadID, EntryID: entryID, Field: field, Offset: offset}
+	result := CanonicalBodyChunk{ThreadID: entry.ThreadID, EntryID: entry.ID, Field: field, Offset: offset}
 	ref, stored := entry.bodyFields[field]
 	if stored {
 		result.SHA256, result.Bytes = ref.SHA256, ref.Bytes
@@ -58,14 +70,7 @@ func (r *MemoryRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, f
 			result.Text, err = readCanonicalBodyText(ctx, tx, ref, offset, limit)
 			return err
 		}
-		var err error
-		if r.bodyTx != nil {
-			err = read(r.bodyTx)
-		} else if r.bodyBackend != nil {
-			err = r.bodyBackend.View(ctx, read)
-		} else {
-			err = errors.New("canonical body storage is unavailable")
-		}
+		err := view(read)
 		if err != nil {
 			return CanonicalBodyChunk{}, err
 		}

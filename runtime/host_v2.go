@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/floegence/floret/v7/internal/providertransport"
 	"github.com/floegence/floret/v7/internal/requestmeasure"
+	stdRuntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,22 +25,24 @@ import (
 )
 
 const (
-	logicalSchemaNamespace           = "floret.system"
-	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "10"
-	logicalSchemaFingerprint         = "sha256:fc7461f9beda89a3ee63809596469cfdf44365dabec30c52c4d8568261fd9ce7"
-	legacyV9LogicalSchemaVersion     = "9"
-	legacyV9LogicalSchemaFingerprint = "sha256:97a494530555ecf4e0a5309f418a4eef0cf45a89cc05fa5cb51009d388bc0794"
-	legacyV8LogicalSchemaVersion     = "8"
-	legacyV8LogicalSchemaFingerprint = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
-	legacyV7LogicalSchemaVersion     = "7"
-	legacyV7LogicalSchemaFingerprint = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
-	previousLogicalSchemaVersion     = "6"
-	previousLogicalSchemaFingerprint = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
-	legacyV5LogicalSchemaVersion     = "5"
-	legacyV5LogicalSchemaFingerprint = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
-	legacyLogicalSchemaVersion       = "3"
-	legacyLogicalSchemaFingerprint   = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
+	logicalSchemaNamespace            = "floret.system"
+	logicalSchemaKey                  = "logical-schema"
+	logicalSchemaVersion              = "11"
+	logicalSchemaFingerprint          = "sha256:8c7b5edf140b2950900551ebf83cc70475a970109feba1c9148a6384691cf75a"
+	legacyV10LogicalSchemaVersion     = "10"
+	legacyV10LogicalSchemaFingerprint = "sha256:fc7461f9beda89a3ee63809596469cfdf44365dabec30c52c4d8568261fd9ce7"
+	legacyV9LogicalSchemaVersion      = "9"
+	legacyV9LogicalSchemaFingerprint  = "sha256:97a494530555ecf4e0a5309f418a4eef0cf45a89cc05fa5cb51009d388bc0794"
+	legacyV8LogicalSchemaVersion      = "8"
+	legacyV8LogicalSchemaFingerprint  = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
+	legacyV7LogicalSchemaVersion      = "7"
+	legacyV7LogicalSchemaFingerprint  = "sha256:3d7951de5615bec14466950583faecbe375ff14c8cfd1b9c90dc8913c34bbc30"
+	previousLogicalSchemaVersion      = "6"
+	previousLogicalSchemaFingerprint  = "sha256:d0e7e9caae107d1c889163e6cb898b7fb5721fcafd32229733baa0cee5e502ee"
+	legacyV5LogicalSchemaVersion      = "5"
+	legacyV5LogicalSchemaFingerprint  = "sha256:55e73dedc2642ccb7f97d285c8720484b885f2050985092f62a8dd15e279385e"
+	legacyLogicalSchemaVersion        = "3"
+	legacyLogicalSchemaFingerprint    = "sha256:53e8fd256bfa05b6f31f73b8230455fd28d6bb4f3be1fce7d94a9af9b5838d28"
 )
 
 var (
@@ -125,14 +128,27 @@ type Host struct {
 	idSource           IDSource
 	idMu               sync.Mutex
 	// mutationMu protects inventory-wide and cross-thread mutations only.
-	mutationMu      sync.Mutex
-	threadRuntimeMu sync.Mutex
-	threadRuntime   *threadRuntimeService
-	closeMu         sync.Mutex
-	closing         bool
-	closed          bool
-	closeErr        error
-	closeDone       chan struct{}
+	mutationMu          sync.Mutex
+	threadRuntimeMu     sync.Mutex
+	threadRuntime       *threadRuntimeService
+	closeMu             sync.Mutex
+	closing             bool
+	closed              bool
+	closeErr            error
+	closeDone           chan struct{}
+	startup             *storageReadiness
+	startupWorker       *storageStartupWorker
+	startupSchema       logicalSchemaState
+	startupStartMu      sync.Mutex
+	backgroundMigration bool
+	threadPreparationMu sync.Mutex
+	threadPreparations  map[identity.ThreadID]*threadPreparation
+}
+
+type storageStartupWorker struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	options Options
 }
 
 type keyedMutex struct {
@@ -151,6 +167,7 @@ type serializedBackend struct {
 	gateOnce sync.Once
 	gate     chan struct{}
 	backend  spi.Backend
+	startup  *storageReadiness
 }
 
 func (backend *serializedBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
@@ -231,8 +248,9 @@ type logicalSchemaEnvelope struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// Open validates the exact v3 logical schema, initializes an empty Backend,
-// and transfers exclusive backend lifecycle ownership to a new Host.
+// Open validates the logical schema and transfers exclusive backend lifecycle
+// ownership to a new Host. Current stores use bounded format recognition and
+// validate each thread when it is first prepared.
 func Open(ctx context.Context, options Options) (*Host, error) {
 	if ctx == nil {
 		return nil, errors.New("runtime open context is required")
@@ -247,59 +265,62 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	if backend == nil {
 		return nil, errors.New("runtime storage source returned a nil backend")
 	}
-	coordinatedBackend := &serializedBackend{backend: backend}
+	startup := newStorageReadiness()
+	coordinatedBackend := &serializedBackend{backend: backend, startup: startup}
 	transferred := false
 	defer func() {
 		if !transferred {
 			_ = coordinatedBackend.Close()
 		}
 	}()
-	var kernel *internalstorage.BackendKernel
-	var startupProgress internalstorage.StartupProgress
-	if options.StartupProgress != nil {
-		var previousPhase internalstorage.StartupPhase
-		startupProgress = func(phase internalstorage.StartupPhase) {
-			if previousPhase == phase {
-				return
-			}
-			previousPhase = phase
-			options.StartupProgress.OnStartupPhase(StartupPhase(phase))
-		}
-	}
-	if options.StartupWorkProgress != nil {
-		ctx = sessiontree.WithStartupWork(ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
-			options.StartupWorkProgress.OnStartupWork(StartupWork{Phase: StartupPhase(phase), Completed: completed, Total: total})
-		})
-	}
-	err = coordinatedBackend.Update(ctx, func(tx spi.WriteTx) error {
-		if _, err := storagebridge.PrepareStartup(tx, func() {
-			if startupProgress != nil {
-				startupProgress(internalstorage.StartupPhaseMigrating)
-			}
-		}); err != nil {
+	var logicalState logicalSchemaState
+	var currentKernel *internalstorage.BackendKernel
+	var initializedFreshStore bool
+	err = backend.Update(ctx, func(tx spi.WriteTx) error {
+		if _, err := storagebridge.PrepareStartup(tx, nil); err != nil {
 			return err
 		}
-		logicalState, inspectErr := inspectLogicalSchemaTransaction(tx)
+		var inspectErr error
+		logicalState, inspectErr = inspectLogicalSchemaTransaction(tx)
 		if inspectErr != nil {
 			return inspectErr
 		}
-		kernel, inspectErr = internalstorage.NewBackendKernelInTransaction(sessiontree.WithParentEvents(ctx, options.EnableParentEvents), coordinatedBackend, tx, time.Now, logicalState != logicalSchemaCurrent, startupProgress)
-		if inspectErr != nil {
+		if logicalState == logicalSchemaCurrent || logicalState == logicalSchemaV10 || logicalState == logicalSchemaV9 {
+			var current bool
+			currentKernel, current, inspectErr = internalstorage.NewCurrentBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents)
+			if !current {
+				currentKernel = nil
+			}
+			if inspectErr == nil && currentKernel != nil {
+				return commitLogicalSchemaTransaction(tx, logicalState)
+			}
 			return inspectErr
 		}
-		if inspectErr = commitLogicalSchemaTransaction(tx, logicalState); inspectErr != nil {
-			return inspectErr
+		if logicalState == logicalSchemaMissing {
+			var progress internalstorage.StartupProgress
+			if options.StartupProgress != nil {
+				progress = func(phase internalstorage.StartupPhase) { options.StartupProgress.OnStartupPhase(StartupPhase(phase)) }
+			}
+			currentKernel, initializedFreshStore, inspectErr = internalstorage.NewFreshBackendKernelInTransaction(ctx, coordinatedBackend, tx, time.Now, options.EnableParentEvents, progress)
+			if inspectErr != nil || !initializedFreshStore {
+				return inspectErr
+			}
+			return commitLogicalSchemaTransaction(tx, logicalState)
 		}
-		if err := kernel.PrepareParentEventsInTransaction(ctx, tx, options.EnableParentEvents); err != nil {
-			return err
-		}
-		return kernel.VerifyCurrentStateInTransaction(ctx, tx)
+		return nil
 	})
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
-	store, err := newBackendRuntimeStoreWithKernel(coordinatedBackend, kernel)
+	startupContext, startupCancel := context.WithCancel(context.Background())
+	kernel, err := internalstorage.NewDeferredBackendKernel(coordinatedBackend, time.Now, startup.waitUsable)
 	if err != nil {
+		startupCancel()
+		return nil, err
+	}
+	store, err := newBackendRuntimeStoreWithKernel(coordinatedBackend, kernel, startup)
+	if err != nil {
+		startupCancel()
 		return nil, err
 	}
 	idSource := options.IDSource
@@ -308,12 +329,197 @@ func Open(ctx context.Context, options Options) (*Host, error) {
 	}
 	host := &Host{
 		enableParentEvents: options.EnableParentEvents, store: store, backend: coordinatedBackend, idSource: idSource, closeDone: make(chan struct{}), executionDeferred: options.DeferExecution,
-	}
-	if options.EnableParentEvents {
-		kernel.SetParentEventObserver(func(ids []string) { go host.observeParentEvents(ids) })
+		startup: startup, startupWorker: &storageStartupWorker{ctx: startupContext, cancel: startupCancel, options: options}, startupSchema: logicalState,
 	}
 	transferred = true
+	if currentKernel != nil {
+		if err := host.store.kernel.InstallBackendRepo(currentKernel.BackendRepo); err != nil {
+			_ = host.Shutdown(context.Background())
+			return nil, err
+		}
+		if host.enableParentEvents {
+			host.store.kernel.SetParentEventObserver(func(ids []string) { go host.observeParentEvents(ids) })
+		}
+		if !initializedFreshStore || currentKernel.BackendRepo.HasPendingMigration() {
+			host.startup.markUsable()
+			host.startBackgroundThreadMigration()
+		} else {
+			host.startup.markReady()
+		}
+	} else if err := host.startStartupInitialization(); err != nil {
+		_ = host.Shutdown(context.Background())
+		return nil, err
+	}
 	return host, nil
+}
+
+func (host *Host) startBackgroundThreadMigration() {
+	if host == nil || host.startupWorker == nil || host.startupWorker.ctx == nil {
+		return
+	}
+	host.startupStartMu.Lock()
+	defer host.startupStartMu.Unlock()
+	if host.backgroundMigration || !host.startup.isUsable() {
+		return
+	}
+	if host.startup.failed() {
+		host.startup.begin()
+	}
+	migrator, ok := host.store.repo.(interface {
+		MigrateNextThread(context.Context) (bool, error)
+	})
+	if !ok {
+		host.startup.markReady()
+		return
+	}
+	host.backgroundMigration = true
+	go func() {
+		var migrationErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				migrationErr = fmt.Errorf("thread migration panicked: %v", recovered)
+			}
+			host.startupStartMu.Lock()
+			host.backgroundMigration = false
+			// A failed status must never be visible while the finished worker
+			// still owns the start gate: an explicit retry may arrive immediately.
+			host.startup.finish(migrationErr)
+			host.startupStartMu.Unlock()
+		}()
+		failures := 0
+		for {
+			if err := host.startupWorker.ctx.Err(); err != nil {
+				// Shutdown cancels the worker before waiting for its readiness
+				// completion. Always close that lifecycle gate on cancellation so
+				// Host shutdown cannot wait forever for a cancelled migration.
+				migrationErr = err
+				return
+			}
+			migrated, err := migrator.MigrateNextThread(host.startupWorker.ctx)
+			if err != nil {
+				if !errors.Is(err, sessiontree.ErrAuthorityCorrupt) && !errors.Is(err, context.Canceled) && failures < 3 {
+					failures++
+					timer := time.NewTimer(time.Duration(failures) * 50 * time.Millisecond)
+					select {
+					case <-timer.C:
+					case <-host.startupWorker.ctx.Done():
+						timer.Stop()
+					}
+					continue
+				}
+				migrationErr = err
+				return
+			}
+			failures = 0
+			if !migrated {
+				return
+			}
+			stdRuntime.Gosched()
+		}
+	}()
+}
+
+func (host *Host) startStartupInitialization() error {
+	if host == nil || host.startup == nil {
+		return errors.New("runtime Host storage startup is unavailable")
+	}
+	host.startupStartMu.Lock()
+	defer host.startupStartMu.Unlock()
+	_, start := host.startup.begin()
+	if !start {
+		return nil
+	}
+	go host.initializeStorage()
+	return nil
+}
+
+func (host *Host) initializeStorage() {
+	var startupErr error
+	var handedOff bool
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			startupErr = fmt.Errorf("storage startup panicked: %v", recovered)
+		}
+		if !handedOff {
+			host.startup.finish(startupErr)
+		}
+	}()
+	var previousPhase StartupPhase
+	reportPhase := func(phase StartupPhase) {
+		if previousPhase == phase {
+			return
+		}
+		previousPhase = phase
+		host.startup.update(phase, 0, 0)
+		if host.startupWorker.options.StartupProgress != nil {
+			host.startupWorker.options.StartupProgress.OnStartupPhase(phase)
+		}
+	}
+	var progress internalstorage.StartupProgress
+	if host.startupWorker.options.StartupProgress != nil {
+		progress = func(phase internalstorage.StartupPhase) { reportPhase(StartupPhase(phase)) }
+	}
+	ctx := host.startupWorker.ctx
+	if host.startupWorker.options.StartupWorkProgress != nil {
+		ctx = sessiontree.WithStartupWork(ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
+			statusPhase := StartupPhase(phase)
+			host.startup.update(statusPhase, completed, total)
+			host.startupWorker.options.StartupWorkProgress.OnStartupWork(StartupWork{Phase: statusPhase, Completed: completed, Total: total})
+		})
+	}
+	if host.startupSchema != logicalSchemaCurrent {
+		reportPhase(StartupPhaseMigrating)
+	} else {
+		reportPhase(StartupPhaseVerifying)
+	}
+	var candidate *internalstorage.BackendKernel
+	backend := host.backend.(*serializedBackend)
+	startupErr = backend.backend.Update(ctx, func(tx spi.WriteTx) error {
+		logicalState, err := inspectLogicalSchemaTransaction(tx)
+		if err != nil {
+			return err
+		}
+		if logicalState != host.startupSchema {
+			return errors.New("logical storage schema changed during startup")
+		}
+		candidate, err = internalstorage.NewBackendKernelInTransaction(sessiontree.WithParentEvents(ctx, host.enableParentEvents), backend, tx, time.Now, logicalState != logicalSchemaCurrent, progress)
+		if err != nil {
+			return err
+		}
+		if err = commitLogicalSchemaTransaction(tx, logicalState); err != nil {
+			return err
+		}
+		if err = candidate.PrepareParentEventsInTransaction(ctx, tx, host.enableParentEvents); err != nil {
+			return err
+		}
+		reportPhase(StartupPhaseVerifying)
+		if err := candidate.VerifyCurrentStateInTransaction(ctx, tx); err != nil {
+			return err
+		}
+		// Historical transforms never become the live repository owner. Publish
+		// the same canonical backend owner used by current-store startup before
+		// allowing operations or background per-thread preparation to proceed.
+		var current bool
+		candidate, current, err = internalstorage.NewCurrentBackendKernelInTransaction(ctx, backend, tx, time.Now, host.enableParentEvents)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return errors.New("historical migration did not produce current canonical storage")
+		}
+		return nil
+	})
+	if startupErr == nil {
+		startupErr = host.store.kernel.InstallBackendRepo(candidate.BackendRepo)
+	}
+	if startupErr == nil && host.enableParentEvents {
+		host.store.kernel.SetParentEventObserver(func(ids []string) { go host.observeParentEvents(ids) })
+	}
+	if startupErr == nil {
+		host.startup.markUsable()
+		host.startBackgroundThreadMigration()
+		handedOff = true
+	}
 }
 
 func (host *Host) turnRunner(ctx context.Context, threadID identity.ThreadID, agent *Agent) (*turnRunnerHandle, error) {
@@ -405,6 +611,12 @@ func (host *Host) Shutdown(ctx context.Context) error {
 func (host *Host) finishShutdown() {
 	host.maintenanceMu.Lock()
 	defer host.maintenanceMu.Unlock()
+	if host.startupWorker != nil && host.startupWorker.cancel != nil {
+		host.startupWorker.cancel()
+	}
+	if host.startup != nil {
+		host.startup.waitAttempt()
+	}
 	host.mutationMu.Lock()
 	defer host.mutationMu.Unlock()
 	host.threadRuntimeMu.Lock()
@@ -532,6 +744,7 @@ type logicalSchemaState string
 const (
 	logicalSchemaMissing logicalSchemaState = "missing"
 	logicalSchemaCurrent logicalSchemaState = "current"
+	logicalSchemaV10     logicalSchemaState = "v10"
 	logicalSchemaV7      logicalSchemaState = "v7"
 	logicalSchemaV8      logicalSchemaState = "v8"
 	logicalSchemaV9      logicalSchemaState = "v9"
@@ -573,6 +786,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV10LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV10LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 10 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV10, nil
 	}
 	if envelope.Version == legacyV9LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV9LogicalSchemaFingerprint {

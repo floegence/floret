@@ -2,11 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -18,6 +20,98 @@ type BackendKernel struct {
 	promptMu      sync.Mutex
 	promptBackend spi.Backend
 	pending       map[string]promptBatch
+}
+
+// NewDeferredBackendKernel creates the stable runtime facade before domain
+// initialization. Repository methods call waitForReady until InstallBackendRepo
+// publishes a fully migrated and verified owner.
+func NewDeferredBackendKernel(backend spi.Backend, now func() time.Time, waitForReady func(context.Context) error) (*BackendKernel, error) {
+	if backend == nil || now == nil || waitForReady == nil {
+		return nil, errors.New("deferred backend kernel requires backend, clock, and readiness gate")
+	}
+	repo := sessiontree.NewDeferredBackendRepo(backend, now, waitForReady)
+	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, nil
+}
+
+// NewCurrentBackendKernelInTransaction installs a v31 thread-scoped owner when
+// bounded format checks confirm that both domain and prompt schemas are
+// current. It deliberately leaves per-thread validation to first use.
+func NewCurrentBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.ReadTx, now func() time.Time, parentEvents bool) (*BackendKernel, bool, error) {
+	if ctx == nil || backend == nil || tx == nil || now == nil {
+		return nil, false, errors.New("current backend kernel requires context, backend, transaction, and clock")
+	}
+	current, err := sessiontree.IsCurrentBackendRepoInTransaction(ctx, tx)
+	if err != nil || !current {
+		return nil, false, err
+	}
+	if found, err := storagecodec.RecordExists(tx, backendDomainNamespace, promptStateKey); err != nil {
+		return nil, false, err
+	} else if found {
+		return nil, false, errors.Join(sessiontree.ErrAuthorityCorrupt, errors.New("mixed prompt storage formats"))
+	}
+	encoded, err := tx.Get(promptRecordsNamespace, promptSchemaKey)
+	if errors.Is(err, spi.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var version int
+	if err := decodePromptValue(encoded, "prompt_schema", &version); err != nil {
+		return nil, false, errors.Join(sessiontree.ErrAuthorityCorrupt, err)
+	}
+	if version != 2 {
+		return nil, false, nil
+	}
+	repo, current, err := sessiontree.NewCurrentBackendRepoInTransaction(ctx, backend, tx, now, parentEvents)
+	if err != nil {
+		return nil, false, err
+	}
+	if !current {
+		return nil, false, nil
+	}
+	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, true, nil
+}
+
+func NewFreshBackendKernelInTransaction(ctx context.Context, backend spi.Backend, tx spi.WriteTx, now func() time.Time, parentEvents bool, progress StartupProgress) (*BackendKernel, bool, error) {
+	if ctx == nil || backend == nil || tx == nil || now == nil {
+		return nil, false, errors.New("fresh backend kernel requires context, backend, transaction, and clock")
+	}
+	fresh, err := sessiontree.IsFreshBackendRepoInTransaction(ctx, tx)
+	if err != nil || !fresh {
+		return nil, false, err
+	}
+	if found, err := storagecodec.RecordExists(tx, backendDomainNamespace, promptStateKey); err != nil || found {
+		return nil, false, err
+	}
+	promptRecords, err := storagecodec.NamespaceHasRecords(tx, promptRecordsNamespace)
+	if err != nil || promptRecords {
+		return nil, false, err
+	}
+	if progress != nil {
+		progress(StartupPhaseMigrating)
+	}
+	if err := preparePromptRecords(ctx, tx, true, progress); err != nil {
+		return nil, false, err
+	}
+	repo, err := sessiontree.NewFreshCurrentBackendRepoInTransaction(ctx, backend, tx, now, parentEvents)
+	if err != nil {
+		return nil, false, err
+	}
+	if progress != nil {
+		progress(StartupPhaseVerifying)
+	}
+	return &BackendKernel{BackendRepo: repo, promptBackend: backend, pending: make(map[string]promptBatch)}, true, nil
+}
+
+// InstallBackendRepo publishes the repository produced by one successful
+// startup transaction. The caller must keep runtime operations behind the
+// readiness gate until this method returns.
+func (kernel *BackendKernel) InstallBackendRepo(repo *sessiontree.BackendRepo) error {
+	if kernel == nil || repo == nil {
+		return errors.New("backend kernel installation requires a repository")
+	}
+	return kernel.BackendRepo.InstallDelegate(repo)
 }
 
 type StartupPhase = sessiontree.StartupPhase
@@ -71,11 +165,7 @@ func (kernel *BackendKernel) VerifyInspectionStateInTransaction(ctx context.Cont
 func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree.FinishTurnRequest) (result sessiontree.FinishTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		result, err = memory.FinishTurn(ctx, request)
-		if err != nil {
-			return err
-		}
+	result, err = kernel.BackendRepo.FinishTurnWithRecords(ctx, request, func(tx spi.WriteTx) error {
 		return kernel.flushPrompt(tx, request.ThreadID)
 	})
 	if err == nil {
@@ -87,11 +177,7 @@ func (kernel *BackendKernel) FinishTurn(ctx context.Context, request sessiontree
 func (kernel *BackendKernel) FailUnknownEffectTurn(ctx context.Context, request sessiontree.FailUnknownEffectTurnRequest) (result sessiontree.FailUnknownEffectTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		result, err = memory.FailUnknownEffectTurn(ctx, request)
-		if err != nil {
-			return err
-		}
+	result, err = kernel.BackendRepo.FailUnknownEffectTurnWithRecords(ctx, request, func(tx spi.WriteTx) error {
 		return kernel.flushPrompt(tx, request.ThreadID)
 	})
 	if err == nil {
@@ -103,11 +189,7 @@ func (kernel *BackendKernel) FailUnknownEffectTurn(ctx context.Context, request 
 func (kernel *BackendKernel) CancelTurn(ctx context.Context, request sessiontree.CancelTurnRequest) (result sessiontree.CancelTurnResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	err = kernel.CheckpointDomainUpdate(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		result, err = memory.CancelTurn(ctx, request)
-		if err != nil {
-			return err
-		}
+	result, err = kernel.BackendRepo.CancelTurnWithRecords(ctx, request, func(tx spi.WriteTx) error {
 		return kernel.flushPrompt(tx, request.ThreadID)
 	})
 	if err == nil {
@@ -303,12 +385,8 @@ func (kernel *BackendKernel) DeletePromptScopes(ctx context.Context, scopes ...s
 func (kernel *BackendKernel) DeleteRootTree(ctx context.Context, root string) (result sessiontree.DeleteRootTreeResult, err error) {
 	kernel.promptMu.Lock()
 	defer kernel.promptMu.Unlock()
-	err = kernel.UpdateDomain(ctx, func(memory *sessiontree.MemoryRepo, tx spi.WriteTx) error {
-		result, err = memory.DeleteRootTree(ctx, root)
-		if err != nil {
-			return err
-		}
-		for _, scope := range result.ThreadIDs {
+	result, err = kernel.BackendRepo.DeleteRootTreeInTransaction(ctx, root, "", "", func(tx spi.WriteTx, threadIDs []string) error {
+		for _, scope := range threadIDs {
 			if err := deletePromptScope(tx, scope); err != nil {
 				return err
 			}

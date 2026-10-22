@@ -459,7 +459,9 @@ of inferring absence from a current view. It grants no resource access. Hosts
 must hold their tool-media write gate before reading this snapshot and collect
 only when `Idle` is true, or before deferred execution is activated. Other
 not-yet-admitted uploads require their existing owner protection. Floret owns no
-media byte store.
+media byte store. `Host.ThreadMediaInventory(ctx, threadID)` returns the same
+retention facts for one thread so hosts can process large stores incrementally
+without retaining a cross-thread media snapshot in memory.
 
 The optional `runtime.ThreadQueueController` supports `EditQueued` with a text
 precondition and `SendQueuedNow` to stop gracefully and start one chosen queued
@@ -1122,8 +1124,8 @@ runtime.Open(ctx, runtime.Options{Storage: storage.Memory()})
 runtime.Open(ctx, runtime.Options{Storage: storage.SQLite("agent.db")})
 ```
 
-Hosts that present startup readiness may observe Floret's product-neutral
-storage phases without reading physical records:
+Hosts may observe Floret's product-neutral startup phases without reading
+physical records:
 
 ```go
 host, err := runtime.Open(ctx, runtime.Options{
@@ -1134,9 +1136,14 @@ host, err := runtime.Open(ctx, runtime.Options{
 })
 ```
 
-The callback is synchronous and must return promptly. Legacy stores report
-`migrating` followed by `verifying`. Startup never constructs a full-text
-index. A returned `Host` is ready, and a failed migration remains atomic.
+The callback runs synchronously on Floret's startup worker and must return
+promptly. `runtime.Open` returns the Host before domain migration and final
+verification finish. Use `Host.StorageMigrationStatus` to observe the worker,
+`Host.Readiness` to check a thread, and `Host.PrepareThread` for a cancellable
+wait. Current released formats publish through one global transaction, so
+thread operations wait together until verification succeeds; they cannot read
+partially migrated state. A failed migration leaves canonical records intact
+and is available through the status API.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their
@@ -1470,3 +1477,10 @@ return ActivityBodies locators and ThreadBodyActivityJSON chunks for complete
 reading. Partial JSON must never be rendered as a complete typed presentation.
 Goal's derived presentation, active tools and provider context retain their
 existing authority. This does not complete the extreme-history qualification.
+
+Custom storage transactions may implement storage/spi.BoundedRecordReader to
+provide RecordSize and ReadRecordRange for bounded historical snapshot reads.
+Built-in Memory and SQLite backends implement this optional capability. The
+migrator reads at most 64 KiB per range request, checks cancellation and exact
+lengths, and preserves Get compatibility for custom backends without it. A
+capability error is returned; it never triggers an unbounded fallback read.

@@ -15,6 +15,18 @@ timestamp: 2026-08-18T00:00:00Z
 the product boundary. The service owns one durable thread journal and one
 in-process actor for each active thread.
 
+## Storage startup
+
+`runtime.Open` returns a Host after bounded storage-source preparation and
+logical-schema inspection. Domain migration, derived-index preparation and
+final current-state verification run in a Host-owned worker. Hosts can observe
+`Host.StorageMigrationStatus`, check `Host.Readiness` for a thread, or wait with
+`Host.PrepareThread`; cancelling a wait does not cancel the Host worker.
+Canonical operations wait for publication and cannot observe partial state.
+Current released formats publish through one global transaction, so thread
+operations wait together. Host shutdown joins the active storage transaction
+before closing the backend.
+
 ## Thread goals
 
 Opt in with `runtime.WithAgentGoals()`. The optional
@@ -39,8 +51,11 @@ when `Idle` is true, or before deferred execution is activated. `Idle` remains
 false for unfinished executions, including waits and archived threads. Upload
 owners retain their existing protection before admission. Current `ThreadView`
 and root-list results are insufficient
-for garbage collection. This additive v7.28 API does not change image-tool
+for garbage collection. The v7.28 inventory contract does not change image-tool
 contracts, storage bytes, or the domain migration lineage.
+`Host.ThreadMediaInventory` returns the same facts for one thread, letting
+maintenance process one thread at a time without holding a global descriptor
+snapshot. This v7.79 addition does not change the global inventory contract.
 
 `ThreadService` is the current host-facing lifecycle contract. Its commands
 include `Create`, `Fork`, `Delete`, `SetTitle`, `Send`, `Respond`, `Cancel`,
@@ -540,22 +555,23 @@ facts are read as failures and receive a safe paired provider error result.
 
 ## Durable schema
 
-The internal session-tree domain has a permanent contiguous v2 -> v3 -> v4 ->
-v5 -> v6 -> v7 -> v8 -> v9 -> v10 -> v11 migration lineage. `runtime.Open` runs domain migration, logical schema
-update, and final invariant verification in one backend transaction. Unknown,
-future, corrupt, or drifted state fails closed without changing canonical
-records. `runtime.Options.StartupProgress` reports only the product-neutral
-`migrating` and `verifying` phases; it exposes no record counts or content.
-Startup selects one exact source format, rejects mixed authority, decodes an
-unchanged current-v11 store once, and performs a persisted final verification
-after every startup write. Current-schema startup is byte-preserving and
-idempotent. The v5 -> v6
-edge first replays pending v5 recovery frames and accepts only the exact v5
+The internal session-tree domain has a permanent contiguous migration lineage.
+`runtime.Open` returns after bounded source preparation and logical-schema
+inspection. Domain migration, logical schema publication and final invariant
+verification run in a Host-owned backend transaction. Unknown, future, corrupt,
+or drifted state fails closed without changing canonical records.
+`runtime.Options.StartupProgress` reports product-neutral phase changes from the
+startup worker and exposes no record content. Startup selects one exact source
+format, rejects mixed authority and performs persisted final verification after
+startup writes. Current-schema startup is byte-preserving and idempotent. Host
+status remains readable during migration; current released formats publish
+through one global transaction, so thread operations wait together. The v5 ->
+v6 edge first replays pending v5 recovery frames and accepts only the exact v5
 tool-result Raw repair produced before UTF-8 normalization was enforced. It then
 writes segmented v6 authority and removes the legacy checkpoint, full-path root
-inventory, and diff journal in the same transaction. The v6 -> v7 edge
-permanently fills exact run identity, removes retry authority, and terminates
-active unknown effects before the Host becomes available. The v7 -> v8 edge
+inventory, and diff journal in one transaction. The v6 -> v7 edge permanently
+fills exact run identity, removes retry authority, and terminates active unknown
+effects before migrated state is published. The v7 -> v8 edge
 classifies only the exact Engine continuation user message paired with its
 `context_continue` save point as a control signal, restoring one canonical user
 input per Turn. Every other mismatch

@@ -20,6 +20,16 @@ import (
 const querySnapshotMaxBytes int64 = 64 * 1024 * 1024
 const querySnapshotTTL = 5 * time.Minute
 
+// A query session owns only bounded pagination snapshots and explicit source readers.
+// The repository owner serializes access; it never holds a second transcript.
+type querySession struct {
+	now                func() time.Time
+	querySnapshots     *querySnapshots
+	selectRecords      func(context.Context, map[string]bool, threadquery.Object, threadquery.Filter) ([]*queryRecord, error)
+	readParts          func(*queryRecord) ([]queryPart, error)
+	queryRecordContent func(*queryRecord) (*queryRecord, error)
+}
+
 type queryContinuation struct {
 	kind, after   string
 	field, offset int
@@ -120,7 +130,7 @@ func (snapshot *querySnapshot) cursor(next queryContinuation) (string, error) {
 	return token, nil
 }
 
-func (r *MemoryRepo) querySnapshotForScope(scope threadquery.Scope, token string) (*querySnapshot, error) {
+func (r *querySession) querySnapshotForScope(scope threadquery.Scope, token string) (*querySnapshot, error) {
 	id, _, found := strings.Cut(token, ":")
 	if !found {
 		return nil, threadquery.ErrCursorInvalid
@@ -134,15 +144,9 @@ func (r *MemoryRepo) querySnapshotForScope(scope threadquery.Scope, token string
 		r.querySnapshots.dropSnapshot(id)
 		return nil, threadquery.ErrCursorInvalid
 	}
-	for threadID := range snapshot.authorized {
-		if _, ok := r.threads[threadID]; !ok {
-			r.querySnapshots.dropSnapshot(id)
-			return nil, threadquery.ErrCursorInvalid
-		}
-	}
 	return snapshot, nil
 }
-func (r *MemoryRepo) continuation(scope threadquery.Scope, token, digest, kind string) (*querySnapshot, queryContinuation, error) {
+func (r *querySession) continuation(scope threadquery.Scope, token, digest, kind string) (*querySnapshot, queryContinuation, error) {
 	snapshot, err := r.querySnapshotForScope(scope, token)
 	if err != nil {
 		return nil, queryContinuation{}, err
@@ -216,13 +220,20 @@ func (r *MemoryRepo) Query(ctx context.Context, scope threadquery.Scope, input t
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.prepareQuery(ctx); err != nil {
+		return threadquery.Page{}, err
+	}
+	return (&querySession{now: r.now, querySnapshots: r.querySnapshots, selectRecords: r.selectQueryRecords, queryRecordContent: r.queryRecordContent, readParts: r.queryReadParts}).Query(ctx, scope, input)
+}
+
+func (r *querySession) Query(ctx context.Context, scope threadquery.Scope, input threadquery.QueryInput) (threadquery.Page, error) {
+	if ctx == nil {
+		return threadquery.Page{}, threadquery.ErrInvalidQuery
+	}
 	if err := ctx.Err(); err != nil {
 		return threadquery.Page{}, err
 	}
 	if err := validateQuery(input.Object, input.Filter, &input.Sort, &input.Limit); err != nil {
-		return threadquery.Page{}, err
-	}
-	if err := r.prepareQuery(ctx); err != nil {
 		return threadquery.Page{}, err
 	}
 	authorized, err := r.querySnapshots.checkAuthority(scope)
@@ -242,7 +253,7 @@ func (r *MemoryRepo) Query(ctx context.Context, scope threadquery.Scope, input t
 		snapshot, cursor, err = r.continuation(scope, input.Cursor, digest, "query")
 		after = cursor.after
 	} else {
-		records, e := r.selectQueryRecords(ctx, authorized, input.Object, input.Filter)
+		records, e := r.selectRecords(ctx, authorized, input.Object, input.Filter)
 		if e != nil {
 			return threadquery.Page{}, e
 		}
@@ -297,10 +308,17 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	if err := r.prepareQuery(ctx); err != nil {
 		return threadquery.ReadPage{}, err
 	}
-	if err := r.prepareQuery(ctx); err != nil {
+	return (&querySession{now: r.now, querySnapshots: r.querySnapshots, selectRecords: r.selectQueryRecords, queryRecordContent: r.queryRecordContent, readParts: r.queryReadParts}).Read(ctx, scope, input)
+}
+
+func (r *querySession) Read(ctx context.Context, scope threadquery.Scope, input threadquery.ReadInput) (threadquery.ReadPage, error) {
+	if ctx == nil {
+		return threadquery.ReadPage{}, threadquery.ErrInvalidQuery
+	}
+	if err := ctx.Err(); err != nil {
 		return threadquery.ReadPage{}, err
 	}
 	if _, err := r.querySnapshots.checkAuthority(scope); err != nil {
@@ -330,7 +348,7 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 		return threadquery.ReadPage{}, err
 	}
 	result := threadquery.ReadPage{Record: queryRow(snapshot, record, threadquery.Filter{}), Chunks: []threadquery.Chunk{}, ExpiresAt: snapshot.expires}
-	parts, err := r.queryReadParts(record)
+	parts, err := r.readParts(record)
 	if err != nil {
 		return threadquery.ReadPage{}, err
 	}
@@ -392,14 +410,26 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 	return result, nil
 }
 func (r *MemoryRepo) queryReadParts(record *queryRecord) ([]queryPart, error) {
-	parts := record.parts
+	var source session.Message
 	if record.row.Object == threadquery.Messages {
+		if r.queryThreadLoader != nil {
+			if err := r.queryThreadLoader(record.row.ThreadID.String()); err != nil {
+				return nil, err
+			}
+		}
 		entryID := strings.TrimPrefix(record.key, record.row.ThreadID.String()+"\x00messages\x00")
 		ordinal, found := r.entryOrdinals[record.row.ThreadID.String()][entryID]
 		if !found {
 			return nil, threadquery.ErrRecordUnavailable
 		}
-		source := r.entries[record.row.ThreadID.String()][ordinal].Message
+		source = r.entries[record.row.ThreadID.String()][ordinal].Message
+	}
+	return queryReadParts(record, source)
+}
+
+func queryReadParts(record *queryRecord, source session.Message) ([]queryPart, error) {
+	parts := record.parts
+	if record.row.Object == threadquery.Messages {
 		parts = []queryPart{}
 		for _, part := range record.parts {
 			if part.field == "body" || part.field == "attachment" {
@@ -437,6 +467,16 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.prepareQuery(ctx); err != nil {
+		return threadquery.AggregatePage{}, err
+	}
+	return (&querySession{now: r.now, querySnapshots: r.querySnapshots, selectRecords: r.selectQueryRecords, queryRecordContent: r.queryRecordContent, readParts: r.queryReadParts}).Aggregate(ctx, scope, input)
+}
+
+func (r *querySession) Aggregate(ctx context.Context, scope threadquery.Scope, input threadquery.AggregateInput) (threadquery.AggregatePage, error) {
+	if ctx == nil {
+		return threadquery.AggregatePage{}, threadquery.ErrInvalidQuery
+	}
 	if err := ctx.Err(); err != nil {
 		return threadquery.AggregatePage{}, err
 	}
@@ -452,9 +492,6 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 	}
 	if input.Sort.Key != "key" && input.Sort.Key != "count" {
 		return threadquery.AggregatePage{}, threadquery.ErrInvalidQuery
-	}
-	if err := r.prepareQuery(ctx); err != nil {
-		return threadquery.AggregatePage{}, err
 	}
 	authorized, err := r.querySnapshots.checkAuthority(scope)
 	if err != nil {
@@ -474,7 +511,7 @@ func (r *MemoryRepo) Aggregate(ctx context.Context, scope threadquery.Scope, inp
 		snapshot, cursor, err = r.continuation(scope, input.Cursor, digest, "aggregate")
 		after = cursor.after
 	} else {
-		records, e := r.selectQueryRecords(ctx, authorized, input.Object, input.Filter)
+		records, e := r.selectRecords(ctx, authorized, input.Object, input.Filter)
 		if e != nil {
 			return threadquery.AggregatePage{}, e
 		}
@@ -544,27 +581,83 @@ func queryGroupKey(record *queryRecord, group string) string {
 	return ""
 }
 
-func (repo *BackendRepo) queryView(ctx context.Context, callback func(*MemoryRepo) error) error {
+func (repo *BackendRepo) queryView(ctx context.Context, scope threadquery.Scope, callback func(*querySession) error) error {
+	if repo == nil || ctx == nil {
+		return threadquery.ErrInvalidQuery
+	}
+	if _, err := ValidateQueryScope(scope); err != nil {
+		return err
+	}
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.queryView(ctx, scope, callback)
+	}
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
+		if err := ensureThreadQueryIndexReady(ctx, tx, scope, repo.domainFormat()); err != nil {
+			return err
+		}
+		if repo.domainFormat().version >= backendDomainV32Version {
+			return callback(repo.canonicalQuerySession(ctx, tx))
+		}
 		memory := repo.domainMemory
+		if memory == nil {
+			if !repo.threadScoped {
+				return ErrAuthorityCorrupt
+			}
+			memory = newMemoryRepo(repo.now)
+			memory.parentEvents = repo.parentEvents
+			memory.querySnapshots = repo.threadQuerySnapshots
+			if memory.querySnapshots == nil {
+				memory.querySnapshots = &querySnapshots{snapshots: map[string]*querySnapshot{}}
+			}
+			loaded := map[string]bool{}
+			memory.queryThreadLoader = func(threadID string) error {
+				if loaded[threadID] {
+					return nil
+				}
+				thread, err := loadBackendDomainThreadFormat(ctx, tx, repo.backend, repo.now, threadID, repo.parentEvents, repo.domainFormat())
+				if err != nil {
+					return err
+				}
+				if err := repo.verifyThreadView(ctx, tx, thread, threadID); err != nil {
+					return err
+				}
+				installBackendDomainThread(memory, thread, threadID)
+				loaded[threadID] = true
+				return nil
+			}
+		}
+		if err := memory.prepareQuery(ctx); err != nil {
+			return err
+		}
 		memory.queryReader = queryMetadataReader(tx)
 		memory.bodyTx, memory.bodyContext = tx, ctx
 		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 		defer func() { memory.queryReader = nil }()
-		return callback(memory)
+		defer func() {
+			memory.queryThreadLoader = nil
+			if repo.threadScoped {
+				repo.threadQuerySnapshots = memory.querySnapshots
+			}
+		}()
+		return callback(&querySession{now: memory.now, querySnapshots: memory.querySnapshots, selectRecords: memory.selectQueryRecords, queryRecordContent: memory.queryRecordContent, readParts: memory.queryReadParts})
 	})
 }
 func (repo *BackendRepo) Query(ctx context.Context, scope threadquery.Scope, input threadquery.QueryInput) (result threadquery.Page, err error) {
-	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Query(ctx, scope, input); return err })
+	err = repo.queryView(ctx, scope, func(session *querySession) error { result, err = session.Query(ctx, scope, input); return err })
 	return
 }
 func (repo *BackendRepo) Read(ctx context.Context, scope threadquery.Scope, input threadquery.ReadInput) (result threadquery.ReadPage, err error) {
-	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Read(ctx, scope, input); return err })
+	err = repo.queryView(ctx, scope, func(session *querySession) error { result, err = session.Read(ctx, scope, input); return err })
 	return
 }
 func (repo *BackendRepo) Aggregate(ctx context.Context, scope threadquery.Scope, input threadquery.AggregateInput) (result threadquery.AggregatePage, err error) {
-	err = repo.queryView(ctx, func(memory *MemoryRepo) error { result, err = memory.Aggregate(ctx, scope, input); return err })
+	err = repo.queryView(ctx, scope, func(session *querySession) error { result, err = session.Aggregate(ctx, scope, input); return err })
 	return
 }

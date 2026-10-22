@@ -143,6 +143,17 @@ func (r *MemoryRepo) automaticParentEventLocked(source Entry) (ParentEvent, bool
 			return ParentEvent{}, false
 		}
 	}
+	ready := false
+	if source.Type == EntryToolResult && source.Message.ToolResult != nil && source.Message.ToolResult.InputRequired != nil {
+		ready = ReadyToolInputResultIDs(r.entries[source.ThreadID])[source.ID]
+	}
+	return automaticParentEvent(child, source, ready)
+}
+
+func automaticParentEvent(child ThreadMeta, source Entry, toolInputReady bool) (ParentEvent, bool) {
+	if child.ParentThreadID == "" || source.Metadata["authority_kind"] == "branch_boundary" || source.TurnID == "" || source.RunID == "" {
+		return ParentEvent{}, false
+	}
 	event := ParentEvent{ParentThreadID: child.ParentThreadID, SourceThreadID: source.ThreadID, SourceTurnID: source.TurnID, SourceRunID: source.RunID, SourceEntryID: source.ID, ReceivedAt: source.CreatedAt}
 	identity := source.ID
 	switch {
@@ -181,7 +192,7 @@ func (r *MemoryRepo) automaticParentEventLocked(source Entry) (ParentEvent, bool
 	case source.Type == EntryToolCall && source.Message.Kind == session.MessageKindControlSignal && controlstate.Classify(source.Message.ControlSignal) == controlstate.WaitingInput:
 		event.Kind, event.InteractionID = "input_required", source.Message.ControlSignal.CallID
 		identity = event.InteractionID
-	case source.Type == EntryToolResult && ReadyToolInputResultIDs(r.entries[source.ThreadID])[source.ID]:
+	case source.Type == EntryToolResult && toolInputReady:
 		event.Kind, event.InteractionID = "input_required", ToolInputInteractionID(source.ID)
 		identity = event.InteractionID
 	default:
@@ -289,40 +300,13 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 	if err != nil {
 		return nil, err
 	}
-	var records []ParentEventRecord
-	positions := map[string]int{}
-	parentTurnID := ""
-	for ordinal, entry := range path {
-		switch entry.Type {
-		case EntryTurnMarker:
-			if entry.TurnStatus == TurnStarted && entry.Metadata[TurnKindMetadataKey] != TurnKindContextCompaction {
-				parentTurnID = entry.TurnID
-			}
-		case EntryParentEvent:
-			event, err := decodeParentEvent(entry)
-			if err != nil {
-				return nil, err
-			}
-			positions[event.ID] = len(records)
-			records = append(records, ParentEventRecord{ParentEvent: event, ParentTurnID: parentTurnID, CanonicalOrdinal: uint64(ordinal + 1)})
-		case EntryParentEventsAdmitted:
-			var admission ParentEventAdmission
-			if decodeBackendDomainValue(backendDomainFormat{label: "parent event"}, backendDomainRecord{Value: entry.Payload}, &admission) != nil {
-				return nil, ErrAuthorityCorrupt
-			}
-			first, f := positions[admission.FirstEventID]
-			last, l := positions[admission.LastEventID]
-			if !f || !l || first > last {
-				return nil, ErrAuthorityCorrupt
-			}
-			for i := first; i <= last; i++ {
-				if records[i].Admitted {
-					return nil, ErrAuthorityCorrupt
-				}
-				records[i].Admitted = true
-			}
+	projection := parentEventProjectionState{positions: map[string]int{}}
+	for _, entry := range path {
+		if err := projection.observe(entry); err != nil {
+			return nil, err
 		}
 	}
+	records := projection.records
 	for i := range records {
 		event := &records[i]
 		if event.InteractionID == "" {
@@ -349,6 +333,10 @@ func (r *MemoryRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (
 	if err != nil {
 		return ParentEventPage{}, err
 	}
+	return pageParentEvents(records, query)
+}
+
+func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (ParentEventPage, error) {
 	positions := map[string]int{}
 	for i, record := range records {
 		positions[record.ID] = i
@@ -535,21 +523,37 @@ func (r *MemoryRepo) BootstrapParentEvents(ctx context.Context) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if r.threads[id].ParentThreadID == "" {
+		for _, event := range r.pendingParentEventsLocked(id) {
+			r.appendParentEventLocked(event)
+		}
+	}
+	return nil
+}
+
+func (r *MemoryRepo) pendingParentEventsLocked(threadID string) []ParentEvent {
+	if !r.parentEvents || r.threads[threadID].ParentThreadID == "" {
+		return nil
+	}
+	pendingByTurn := make(map[string][]runtimePendingInteraction)
+	var result []ParentEvent
+	for _, entry := range r.entries[threadID] {
+		if entry.Type != EntryInteractionAsked && entry.Type != EntryToolCall && entry.Type != EntryToolResult {
 			continue
 		}
-		for _, entry := range append([]Entry(nil), r.entries[id]...) {
-			if entry.Type != EntryInteractionAsked && entry.Type != EntryToolCall && entry.Type != EntryToolResult {
-				continue
-			}
-			for _, pending := range runtimePendingInteractions(r.entries[id], entry.TurnID) {
-				if entry.ID == "interaction-requested:"+pending.ID || entry.Type == EntryToolCall && entry.Message.ControlSignal != nil && entry.Message.ControlSignal.CallID == pending.ID || entry.Type == EntryToolResult && ToolInputInteractionID(entry.ID) == pending.ID {
-					r.appendAutomaticParentEventLocked(entry)
+		pending, loaded := pendingByTurn[entry.TurnID]
+		if !loaded {
+			pending = runtimePendingInteractions(r.entries[threadID], entry.TurnID)
+			pendingByTurn[entry.TurnID] = pending
+		}
+		for _, interaction := range pending {
+			if entry.ID == "interaction-requested:"+interaction.ID || entry.Type == EntryToolCall && entry.Message.ControlSignal != nil && entry.Message.ControlSignal.CallID == interaction.ID || entry.Type == EntryToolResult && ToolInputInteractionID(entry.ID) == interaction.ID {
+				if event, ok := r.automaticParentEventLocked(entry); ok {
+					result = append(result, event)
 				}
 			}
 		}
 	}
-	return nil
+	return result
 }
 
 type parentEventsContextKey struct{}
@@ -656,7 +660,7 @@ func (repo *BackendRepo) PrepareParentEventsInTransaction(ctx context.Context, t
 	if err := next.BootstrapParentEvents(ctx); err != nil {
 		return err
 	}
-	if _, err := persistBackendDomainV20Changes(tx, before, next); err != nil {
+	if _, err := persistBackendDomainChangesContext(ctx, tx, before, next, repo.domainFormat()); err != nil {
 		return err
 	}
 	repo.domainMemory = next
