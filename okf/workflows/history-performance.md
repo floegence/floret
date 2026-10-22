@@ -261,6 +261,27 @@ one measured linear scan; short-run timings are diagnostic. Other lifecycle
 validation, request-key lookup, actor metadata residency and production Flower
 qualification remain separate outstanding work.
 
+## Turn terminal settlement
+
+    GOWORK=off go test ./internal/sessiontree -run 'TestFinishTurnWithoutGoalGuardDoesNotReadHistoricalBodies|TestGoalReviewInvalidationAndTerminalCommit|TestCancelTurn' -count=1
+
+Ordinary `FinishTurn`, cancellation and unknown-effect settlement now select
+their records through the existing ordered per-turn canonical index. Selection
+checks the started marker, expected record count, ordinal order, bounds, thread
+identity and turn identity before using the records. It does not copy the full
+journal or hydrate unrelated history. The canonical path remains fully read
+when a completed turn carries `goal_guard`, because Goal review validity depends
+on the complete path. Other canonical bodies are still validated on explicit
+complete reads and existing storage/startup boundaries.
+
+The regression installs a body reader that fails on historical access: an
+ordinary finish succeeds without reading it, while an explicit full-path read
+returns the original error. Existing Goal review, cancellation, interaction,
+effect and transaction tests protect terminal semantics. This removes one
+history-proportional completion path; it does not qualify actor residency,
+provider context construction, full projections or end-to-end Flower
+performance.
+
 ## Canonical dense-tool qualification fixtures
 
 The giant Unicode output race profile identified full-body path sanitization

@@ -99,19 +99,20 @@ func validateSteeringRecords(memory *MemoryRepo) error {
 }
 
 // Terminal settlement shares the enclosing canonical mutation transaction.
-func (r *MemoryRepo) cancelPendingSteeringLocked(meta *ThreadMeta, turnID, runID, reason string, now time.Time) {
+func (r *MemoryRepo) cancelPendingSteeringLocked(meta *ThreadMeta, turnEntries runtimeEntrySelection, turnID, runID, reason string, now time.Time) {
 	resolved := make(map[string]bool)
-	for _, entry := range r.entries[meta.ID] {
+	turnEntries.each(func(entry Entry) bool {
 		if entry.Type == EntrySteeringApplied || entry.Type == EntrySteeringCancelled {
 			resolution, err := DecodeSteeringResolution(entry)
 			if err == nil {
 				resolved[resolution.SteeringID] = true
 			}
 		}
-	}
-	for _, entry := range append([]Entry(nil), r.entries[meta.ID]...) {
+		return true
+	})
+	turnEntries.each(func(entry Entry) bool {
 		if entry.Type != EntrySteeringRequested || entry.TurnID != turnID || resolved[entry.ID] {
-			continue
+			return true
 		}
 		payload, _ := json.Marshal(SteeringResolution{SteeringID: entry.ID, Reason: reason})
 		fact := Entry{ID: "steer-resolved:" + entry.ID, ThreadID: meta.ID, ParentID: meta.LeafID, Type: EntrySteeringCancelled, TurnID: turnID, RunID: runID, Payload: payload, CreatedAt: now}
@@ -119,7 +120,8 @@ func (r *MemoryRepo) cancelPendingSteeringLocked(meta *ThreadMeta, turnID, runID
 		r.appendIndexedEntriesLocked(meta.ID, fact)
 		meta.LeafID, meta.UpdatedAt = fact.ID, now
 		r.setThreadLocked(meta.ID, *meta)
-	}
+		return true
+	})
 }
 
 // RetainAppliedSteering carries accepted task corrections into canonical retry

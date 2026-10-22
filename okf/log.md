@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-21: Settle ordinary turns from ordered current-turn records and retain
+  complete-path validation for Goal-guarded completion. Record exact-read
+  regressions and remaining limits in
+  [history performance](workflows/history-performance.md#turn-terminal-settlement).
+
 - 2026-10-21: Add a canonical SQLite dense-tool fixture writer with exact item,
   journal and database hashes; verify restart and public continuation. See
   [history performance](workflows/history-performance.md#canonical-dense-tool-qualification-fixtures).

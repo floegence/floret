@@ -388,25 +388,32 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 	if !ok {
 		return FinishTurnResult{}, ErrThreadNotFound
 	}
-	if req.Status != TurnWaiting && runtimeTurnHasPendingInteraction(r.entries[meta.ID], req.TurnID) {
+	turnEntries, err := r.runtimeTurnEntriesLocked(meta.ID, req.TurnID)
+	if err != nil {
+		return FinishTurnResult{}, err
+	}
+	if req.Status != TurnWaiting && runtimeTurnHasPendingInteractionIn(turnEntries, req.TurnID) {
 		return FinishTurnResult{}, ErrRequestConflict
 	}
 	if (req.Status == TurnCompleted || req.Status == TurnWaiting) && r.turnCancellationRequestedLocked(meta.ID, req.TurnID) {
 		return FinishTurnResult{}, context.Canceled
 	}
-	attempts := canonicalEffectAttemptsForTurn(r.entries[meta.ID], req.TurnID)
+	attempts := canonicalEffectAttemptsIn(turnEntries, req.TurnID)
 	for _, attempt := range attempts {
 		if attempt.State == EffectAttemptDispatching || attempt.State == EffectAttemptUnknown {
 			return FinishTurnResult{}, ErrEffectOutcomeUnknown
 		}
 	}
-	path, goalErr := r.canonicalPathLocked(context.Background(), req.ThreadID, meta.LeafID)
-	if goalErr != nil {
-		return FinishTurnResult{}, goalErr
-	}
-	req.Metadata, goalErr = goalFinishMetadata(path, req)
-	if goalErr != nil {
-		return FinishTurnResult{}, goalErr
+	req.Metadata = cloneStringMap(req.Metadata)
+	if req.Status == TurnCompleted && req.Metadata["goal_guard"] == "1" {
+		path, pathErr := r.canonicalPathLocked(context.Background(), req.ThreadID, meta.LeafID)
+		if pathErr != nil {
+			return FinishTurnResult{}, pathErr
+		}
+		req.Metadata, pathErr = goalFinishMetadata(path, req)
+		if pathErr != nil {
+			return FinishTurnResult{}, pathErr
+		}
 	}
 	now := canonicalTime(req.Now, r.now)
 	if req.Status == TurnFailed || req.Status == TurnAborted {
@@ -414,13 +421,13 @@ func (r *MemoryRepo) finishTurnLocked(req FinishTurnRequest) (FinishTurnResult, 
 		if req.Status == TurnAborted {
 			phase, status = "cancelled", "cancelled"
 		}
-		if err := r.settleRunningCompactionLocked(context.Background(), req.ThreadID, req.TurnID, req.RunID, phase, status, req.FailureMessage, now); err != nil {
+		if err := r.settleRunningCompactionLocked(context.Background(), turnEntries, req.ThreadID, req.TurnID, req.RunID, phase, status, req.FailureMessage, now); err != nil {
 			return FinishTurnResult{}, err
 		}
 		meta = r.threads[req.ThreadID]
 	}
 	if req.Status != TurnWaiting {
-		r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "task_ended", now)
+		r.cancelPendingSteeringLocked(&meta, turnEntries, req.TurnID, req.RunID, "task_ended", now)
 	}
 	result := FinishTurnResult{}
 	parentID := meta.LeafID
@@ -538,7 +545,11 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	if err := lifecycleRejectsWrite(meta); err != nil {
 		return FailUnknownEffectTurnResult{}, err
 	}
-	attempts := canonicalEffectAttemptsForTurn(r.entries[req.ThreadID], req.TurnID)
+	turnEntries, err := r.runtimeTurnEntriesLocked(req.ThreadID, req.TurnID)
+	if err != nil {
+		return FailUnknownEffectTurnResult{}, err
+	}
+	attempts := canonicalEffectAttemptsIn(turnEntries, req.TurnID)
 	hasUnknownOutcome := false
 	for _, attempt := range attempts {
 		switch attempt.State {
@@ -551,10 +562,10 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 	}
 
 	now := canonicalTime(req.Now, r.now)
-	r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "effect_outcome_unknown", now)
+	r.cancelPendingSteeringLocked(&meta, turnEntries, req.TurnID, req.RunID, "effect_outcome_unknown", now)
 	result := FailUnknownEffectTurnResult{}
 	resolutionPayload := json.RawMessage(`{"accepted":false,"outcome":"failed"}`)
-	for _, interaction := range runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID) {
+	for _, interaction := range runtimePendingInteractionsIn(turnEntries, req.TurnID) {
 		entryID := "interaction-resolved:" + interaction.ID
 		resolved, appendErr := r.appendLocked(ctx, Entry{
 			ID: entryID, ThreadID: req.ThreadID, TurnID: interaction.TurnID, RunID: interaction.RunID,
@@ -592,7 +603,7 @@ func (r *MemoryRepo) failUnknownEffectTurnLocked(ctx context.Context, req FailUn
 			unknownCalls[attempt.Invocation.ToolCallID] = true
 		}
 	}
-	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+	for _, call := range runtimePendingToolCallsIn(turnEntries, req.TurnID) {
 		call, err := r.completeEntryLocked(call)
 		if err != nil {
 			return FailUnknownEffectTurnResult{}, err
@@ -754,7 +765,11 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		return CancelTurnResult{}, unknownErr
 	}
 
-	pendingInteractions := runtimePendingInteractions(r.entries[req.ThreadID], req.TurnID)
+	turnEntries, err := r.runtimeTurnEntriesLocked(req.ThreadID, req.TurnID)
+	if err != nil {
+		return CancelTurnResult{}, err
+	}
+	pendingInteractions := runtimePendingInteractionsIn(turnEntries, req.TurnID)
 	for _, interaction := range pendingInteractions {
 		entryID := "interaction-resolved:" + interaction.ID
 		resolved, appendErr := r.appendLocked(ctx, Entry{
@@ -769,11 +784,11 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 	}
 
 	meta = r.threads[req.ThreadID]
-	unknownToolCalls, err := r.cancelTurnEffectsLocked(&meta, req, now)
+	unknownToolCalls, err := r.cancelTurnEffectsLocked(&meta, req, turnEntries, now)
 	if err != nil {
 		return CancelTurnResult{}, err
 	}
-	for _, call := range runtimePendingToolCalls(r.entries[req.ThreadID], req.TurnID) {
+	for _, call := range runtimePendingToolCallsIn(turnEntries, req.TurnID) {
 		call, err := r.completeEntryLocked(call)
 		if err != nil {
 			return CancelTurnResult{}, err
@@ -798,11 +813,11 @@ func (r *MemoryRepo) CancelTurn(ctx context.Context, req CancelTurnRequest) (Can
 		result.ToolResults = append(result.ToolResults, closed)
 	}
 
-	if err := r.settleRunningCompactionLocked(ctx, req.ThreadID, req.TurnID, req.RunID, "cancelled", "cancelled", "", now); err != nil {
+	if err := r.settleRunningCompactionLocked(ctx, turnEntries, req.ThreadID, req.TurnID, req.RunID, "cancelled", "cancelled", "", now); err != nil {
 		return CancelTurnResult{}, err
 	}
 	meta = r.threads[req.ThreadID]
-	r.cancelPendingSteeringLocked(&meta, req.TurnID, req.RunID, "stopped", now)
+	r.cancelPendingSteeringLocked(&meta, turnEntries, req.TurnID, req.RunID, "stopped", now)
 	terminal = Entry{
 		ID: req.TerminalEntryID, ThreadID: req.ThreadID, ParentID: meta.LeafID,
 		Type: EntryTurnMarker, TurnID: req.TurnID, RunID: req.RunID,
@@ -833,18 +848,70 @@ type runtimePendingInteraction struct {
 	RunID  string
 }
 
+type runtimeEntrySelection struct {
+	entries  []Entry
+	ordinals []int
+	all      bool
+}
+
+func allRuntimeEntries(entries []Entry) runtimeEntrySelection {
+	return runtimeEntrySelection{entries: entries, all: true}
+}
+
+func (selection runtimeEntrySelection) each(visit func(Entry) bool) bool {
+	if selection.all {
+		for _, entry := range selection.entries {
+			if !visit(entry) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, ordinal := range selection.ordinals {
+		if ordinal < 0 || ordinal >= len(selection.entries) || !visit(selection.entries[ordinal]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *MemoryRepo) runtimeTurnEntriesLocked(threadID, turnID string) (runtimeEntrySelection, error) {
+	entries := r.entries[threadID]
+	ordinals := r.turnEntryOrdinals[threadID][turnID]
+	if r.turnMarkers[threadID][turnID].started == 0 || r.turnEntryCounts[threadID][turnID] != len(ordinals) {
+		return runtimeEntrySelection{}, ErrAuthorityCorrupt
+	}
+	previous := -1
+	for _, ordinal := range ordinals {
+		if ordinal <= previous || ordinal < 0 || ordinal >= len(entries) {
+			return runtimeEntrySelection{}, ErrAuthorityCorrupt
+		}
+		entry := entries[ordinal]
+		if entry.ThreadID != threadID || entry.TurnID != turnID {
+			return runtimeEntrySelection{}, ErrAuthorityCorrupt
+		}
+		previous = ordinal
+	}
+	return runtimeEntrySelection{entries: entries, ordinals: ordinals}, nil
+}
+
 func runtimePendingInteractions(entries []Entry, turnID string) []runtimePendingInteraction {
+	return runtimePendingInteractionsIn(allRuntimeEntries(entries), turnID)
+}
+
+func runtimePendingInteractionsIn(entries runtimeEntrySelection, turnID string) []runtimePendingInteraction {
 	failedControls := make(map[string]runtimePendingInteraction)
-	for _, entry := range entries {
+	entries.each(func(entry Entry) bool {
 		if entry.TurnID != turnID || entry.Type != EntryToolCall || entry.Message.Kind != session.MessageKindControlSignal || controlstate.Classify(entry.Message.ControlSignal) != controlstate.Failed {
-			continue
+			return true
 		}
 		callID := strings.TrimSpace(entry.Message.ControlSignal.CallID)
 		if callID != "" {
 			failedControls[callID] = runtimePendingInteraction{ID: callID, TurnID: entry.TurnID, RunID: entry.RunID}
 		}
-	}
-	readyToolInputs := ReadyToolInputResultIDs(entries)
+		return true
+	})
+	readyToolInputs := readyToolInputResultIDs(entries)
 	pending := make(map[string]runtimePendingInteraction)
 	seen := make(map[string]bool)
 	order := make([]string, 0)
@@ -856,9 +923,9 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 		order = append(order, id)
 		pending[id] = runtimePendingInteraction{ID: id, TurnID: entry.TurnID, RunID: entry.RunID}
 	}
-	for _, entry := range entries {
+	entries.each(func(entry Entry) bool {
 		if entry.TurnID != turnID {
-			continue
+			return true
 		}
 		switch entry.Type {
 		case EntryToolCall:
@@ -867,20 +934,21 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 			}
 		case EntryToolResult:
 			if !readyToolInputs[entry.ID] {
-				continue
+				return true
 			}
 			id := ToolInputInteractionID(entry.ID)
 			add(id, entry)
 		case EntryInteractionAsked:
 			id := strings.TrimPrefix(entry.ID, "interaction-requested:")
 			if failed, ok := failedControls[id]; ok && failed.TurnID == entry.TurnID && failed.RunID == entry.RunID {
-				continue
+				return true
 			}
 			add(id, entry)
 		case EntryInteractionDone:
 			delete(pending, strings.TrimPrefix(entry.ID, "interaction-resolved:"))
 		}
-	}
+		return true
+	})
 	result := make([]runtimePendingInteraction, 0, len(pending))
 	for _, id := range order {
 		if interaction, ok := pending[id]; ok {
@@ -891,14 +959,18 @@ func runtimePendingInteractions(entries []Entry, turnID string) []runtimePending
 }
 
 func runtimePendingToolCalls(entries []Entry, turnID string) []Entry {
+	return runtimePendingToolCallsIn(allRuntimeEntries(entries), turnID)
+}
+
+func runtimePendingToolCallsIn(entries runtimeEntrySelection, turnID string) []Entry {
 	pending := make(map[string]Entry)
 	order := make([]string, 0)
-	for _, entry := range entries {
+	entries.each(func(entry Entry) bool {
 		if entry.TurnID != turnID || strings.TrimSpace(entry.Message.ToolCallID) == "" {
-			continue
+			return true
 		}
 		if entry.Type == EntryToolCall && controlstate.OwnsResult(entry.Message) {
-			continue
+			return true
 		}
 		callID := strings.TrimSpace(entry.Message.ToolCallID)
 		switch entry.Type {
@@ -910,7 +982,8 @@ func runtimePendingToolCalls(entries []Entry, turnID string) []Entry {
 		case EntryToolResult:
 			delete(pending, callID)
 		}
-	}
+		return true
+	})
 	result := make([]Entry, 0, len(pending))
 	for _, id := range order {
 		if call, ok := pending[id]; ok {
@@ -920,17 +993,23 @@ func runtimePendingToolCalls(entries []Entry, turnID string) []Entry {
 	return result
 }
 
-func (r *MemoryRepo) cancelTurnEffectsLocked(meta *ThreadMeta, req CancelTurnRequest, now time.Time) (map[string]bool, error) {
+func (r *MemoryRepo) cancelTurnEffectsLocked(meta *ThreadMeta, req CancelTurnRequest, turnEntries runtimeEntrySelection, now time.Time) (map[string]bool, error) {
 	latest := make(map[string]EffectAttempt)
-	for _, entry := range r.entries[req.ThreadID] {
+	var decodeErr error
+	turnEntries.each(func(entry Entry) bool {
 		if entry.TurnID != req.TurnID || entry.Type != EntryEffectAttempt {
-			continue
+			return true
 		}
 		attempt, err := decodeEffectAttempt(entry)
 		if err != nil {
-			return nil, err
+			decodeErr = err
+			return false
 		}
 		latest[attempt.EffectAttemptID] = attempt
+		return true
+	})
+	if decodeErr != nil {
+		return nil, decodeErr
 	}
 	unknownToolCalls := make(map[string]bool)
 	for _, attempt := range latest {
@@ -995,7 +1074,11 @@ func runtimeActiveTurn(entries []Entry) (string, bool) {
 }
 
 func runtimeTurnHasPendingInteraction(entries []Entry, turnID string) bool {
-	return len(runtimePendingInteractions(entries, turnID)) != 0
+	return runtimeTurnHasPendingInteractionIn(allRuntimeEntries(entries), turnID)
+}
+
+func runtimeTurnHasPendingInteractionIn(entries runtimeEntrySelection, turnID string) bool {
+	return len(runtimePendingInteractionsIn(entries, turnID)) != 0
 }
 
 func runtimeQueueContains(entries []Entry, queueID string) bool {
@@ -1063,13 +1146,18 @@ func (projection *ToolInputProjection) Observe(entry Entry) []string {
 
 // ReadyToolInputResultIDs is the explicit full-path adapter.
 func ReadyToolInputResultIDs(entries []Entry) map[string]bool {
+	return readyToolInputResultIDs(allRuntimeEntries(entries))
+}
+
+func readyToolInputResultIDs(entries runtimeEntrySelection) map[string]bool {
 	projection := ToolInputProjection{}
 	ready := make(map[string]bool)
-	for _, entry := range entries {
+	entries.each(func(entry Entry) bool {
 		for _, id := range projection.Observe(entry) {
 			ready[id] = true
 		}
-	}
+		return true
+	})
 	return ready
 }
 
@@ -1119,9 +1207,9 @@ func (r *MemoryRepo) settleContextOnlyProviderStateLocked(started Entry, threadI
 	}
 }
 
-func (r *MemoryRepo) settleRunningCompactionLocked(ctx context.Context, threadID, turnID, runID, phase, status, message string, now time.Time) error {
-	for i := len(r.entries[threadID]) - 1; i >= 0; i-- {
-		entry := r.entries[threadID][i]
+func (r *MemoryRepo) settleRunningCompactionLocked(ctx context.Context, turnEntries runtimeEntrySelection, threadID, turnID, runID, phase, status, message string, now time.Time) error {
+	for i := len(turnEntries.ordinals) - 1; i >= 0; i-- {
+		entry := turnEntries.entries[turnEntries.ordinals[i]]
 		if entry.TurnID != turnID || entry.RunID != runID || ThreadContextEntryKind(entry) != ThreadContextCompactionEntryKind {
 			continue
 		}

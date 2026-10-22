@@ -150,3 +150,36 @@ func TestFinishTurnChecksContextAdmissionBeforeMutation(t *testing.T) {
 		t.Fatal("failed prevalidation changed canonical state")
 	}
 }
+
+func TestFinishTurnWithoutGoalGuardDoesNotReadHistoricalBodies(t *testing.T) {
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AcceptTurn(t.Context(), AcceptTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", LogicalRequestID: "send", RequestFingerprint: "send-fp", InputRequestFingerprint: "input-fp", Input: session.Message{Role: session.User, Content: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Append(t.Context(), Entry{ID: "history", ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "historical body", ContentSourceID: "history-source"}}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	ordinal := repo.entryOrdinals["thread"]["history"]
+	compact := compactCanonicalEntry(repo.entries["thread"][ordinal])
+	repo.entries["thread"][ordinal] = compact
+	var bodyRef canonicalBodyRef
+	for _, ref := range compact.bodyFields {
+		bodyRef = ref
+		break
+	}
+	releaseCachedBody(bodyRef)
+	failure := errors.New("historical body read attempted")
+	repo.bodyBackend = failingBodyReadBackend{Backend: newMigrationTestBackend(), failure: failure}
+	repo.mu.Unlock()
+
+	if _, err := repo.FinishTurn(t.Context(), FinishTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", TerminalEntryID: "done", OutcomeFingerprint: "finish-fp", Status: TurnCompleted}); err != nil {
+		t.Fatalf("ordinary turn completion read the full historical path: %v", err)
+	}
+	if _, err := repo.Path(t.Context(), "thread", ""); !errors.Is(err, failure) {
+		t.Fatalf("explicit complete path did not preserve body-read errors: %v", err)
+	}
+}
