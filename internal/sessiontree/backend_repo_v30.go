@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -99,11 +100,15 @@ func migrateBackendDomainV29ToV30(ctx context.Context, memory *MemoryRepo) error
 // Body references are derived only from validated owning entries. Orphans,
 // extra blocks, missing blocks and incorrect sharing counts fail closed.
 func verifyCanonicalBodyRecords(ctx context.Context, tx spi.ReadTx, references map[string]canonicalBodyRecord) error {
+	if err := verifyMigrationBodyClaims(ctx, tx); err != nil {
+		return err
+	}
 	expected := 0
 	for _, body := range references {
 		expected += 1 + (body.Bytes-1)/canonicalBodyBlockBytes + 1
 	}
 	seen := 0
+	var stagedDigest, stagedValue string
 	var after []byte
 	for {
 		if err := ctx.Err(); err != nil {
@@ -124,7 +129,25 @@ func verifyCanonicalBodyRecords(ctx context.Context, tx spi.ReadTx, references m
 			}
 			body, ok := references[components.digest]
 			if !ok {
-				return ErrAuthorityCorrupt
+				if !components.block || !bytes.Equal(record.Key, canonicalBodyBlockKey(components.digest, components.ordinal)) {
+					return ErrAuthorityCorrupt
+				}
+				if stagedDigest != components.digest {
+					prefix := storagecodec.Tuple(storagecodec.TupleString(components.digest))
+					claims, err := tx.Scan(spi.ScanRequest{Namespace: migrationBodyNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 1})
+					if err != nil || len(claims.Records) != 1 {
+						return errors.Join(ErrAuthorityCorrupt, err)
+					}
+					claim, progress, err := validateMigrationBodyClaim(ctx, tx, claims.Records[0])
+					if err != nil {
+						return err
+					}
+					stagedDigest, stagedValue = claim.SHA256, progress.value
+				}
+				if err := verifyMigrationBodyBlock(record.Value, stagedValue, components.ordinal); err != nil {
+					return err
+				}
+				continue
 			}
 			if components.block {
 				if components.ordinal < 0 || components.ordinal >= (body.Bytes-1)/canonicalBodyBlockBytes+1 {

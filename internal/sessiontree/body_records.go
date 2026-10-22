@@ -131,7 +131,7 @@ func releaseCanonicalBody(ctx context.Context, tx spi.WriteTx, ref canonicalBody
 	if body.References > 0 {
 		return writeCanonicalBodyRecord(tx, body)
 	}
-	claimed, err := migrationBodyClaimed(tx, ref.SHA256)
+	claimed, err := migrationBodyClaimed(ctx, tx, ref.SHA256)
 	if err != nil {
 		return err
 	}

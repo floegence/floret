@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,18 @@ import (
 
 const migrationBodyNamespace = "floret.domain.sessiontree.migration.bodies.v32"
 
+type migrationBodyClaim struct {
+	canonicalBodyRef
+	ThreadID string
+	Ordinal  int
+	Field    string
+}
+
+type migrationBodyProgress struct {
+	value  string
+	blocks int
+}
+
 // A staging claim protects immutable blocks from foreground reclamation until
 // the owning entry and its reference count commit together. It is never a
 // readable body or execution authority.
@@ -20,10 +33,128 @@ func migrationBodyKey(ref canonicalBodyRef, threadID string, ordinal int, field 
 	return storagecodec.Tuple(storagecodec.TupleString(ref.SHA256), storagecodec.TupleString(threadID), storagecodec.TupleOrdinal(uint64(ordinal)), storagecodec.TupleString(field))
 }
 
-func migrationBodyClaimed(tx spi.ReadTx, digest string) (bool, error) {
+func migrationBodyClaimed(ctx context.Context, tx spi.ReadTx, digest string) (bool, error) {
 	prefix := storagecodec.Tuple(storagecodec.TupleString(digest))
 	page, err := tx.Scan(spi.ScanRequest{Namespace: migrationBodyNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 1})
-	return len(page.Records) != 0, err
+	if err != nil || len(page.Records) == 0 {
+		return false, err
+	}
+	_, _, err = validateMigrationBodyClaim(ctx, tx, page.Records[0])
+	return err == nil, err
+}
+
+// A claim derives its authority from the immutable source entry and the exact
+// unpublished checkpoint. Neither a digest prefix nor the claim alone may
+// preserve otherwise unowned canonical blocks.
+func validateMigrationBodyClaim(ctx context.Context, tx spi.ReadTx, row spi.Record) (migrationBodyClaim, migrationBodyProgress, error) {
+	var claim migrationBodyClaim
+	if err := ctx.Err(); err != nil {
+		return claim, migrationBodyProgress{}, err
+	}
+	if err := decodeCanonicalBodyJSON(row.Value, &claim); err != nil || !validCanonicalBodyRef(claim.canonicalBodyRef) || claim.ThreadID == "" || claim.Ordinal < 0 || !bytes.Equal(row.Key, migrationBodyKey(claim.canonicalBodyRef, claim.ThreadID, claim.Ordinal, claim.Field)) {
+		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	manifest, err := readV32Manifest(tx)
+	if err != nil || manifest.SourceVersion == 0 || manifest.MigrationPhase == "cleanup" {
+		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	source, err := migrationSourceFormat(manifest.SourceVersion)
+	if err != nil {
+		return claim, migrationBodyProgress{}, err
+	}
+	for _, kind := range []string{backendDomainRecordThread, backendDomainRecordTombstone} {
+		if _, found, err := readBackendDomainRecord(tx, backendDomainV32Format, backendDomainKey(kind, claim.ThreadID), kind, claim.ThreadID, "", 0); err != nil || found {
+			return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+		}
+	}
+	checkpoint, found, err := readThreadMigrationCheckpoint(tx, claim.ThreadID)
+	if err != nil || !found || checkpoint.Complete || checkpoint.NextOrdinal != claim.Ordinal {
+		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	raw, err := tx.Get(source.namespace, backendDomainEntryKey(claim.ThreadID, claim.Ordinal))
+	if err != nil {
+		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	record, err := decodeBackendDomainRecord(source, raw)
+	if err != nil || record.Kind != backendDomainRecordEntry || record.ThreadID != claim.ThreadID || record.Ordinal != claim.Ordinal {
+		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	original, err := migrationStoredEntry(source, record)
+	if err != nil {
+		return claim, migrationBodyProgress{}, err
+	}
+	expected, generated, err := expectedMigrationStoredEntry(original)
+	if err != nil {
+		return claim, migrationBodyProgress{}, err
+	}
+	fields := make([]string, 0, len(generated))
+	for field := range generated {
+		fields = append(fields, field)
+	}
+	slices.Sort(fields)
+	index := slices.Index(fields, claim.Field)
+	if index < 0 || index > checkpoint.BodyField || expected.Fields[claim.Field] != claim.canonicalBodyRef || checkpoint.BodyField >= len(fields) {
+		return claim, migrationBodyProgress{}, ErrAuthorityCorrupt
+	}
+	blocks := (claim.Bytes-1)/canonicalBodyBlockBytes + 1
+	if index == checkpoint.BodyField {
+		if checkpoint.BodySHA256 != claim.SHA256 || checkpoint.BodyBlocks <= 0 || checkpoint.BodyBlocks >= blocks {
+			return claim, migrationBodyProgress{}, ErrAuthorityCorrupt
+		}
+		blocks = checkpoint.BodyBlocks
+	}
+	return claim, migrationBodyProgress{value: generated[claim.Field], blocks: blocks}, nil
+}
+
+func verifyMigrationBodyBlock(raw []byte, value string, ordinal int) error {
+	start := ordinal * canonicalBodyBlockBytes
+	if ordinal < 0 || start < 0 || start >= len(value) {
+		return ErrAuthorityCorrupt
+	}
+	payload, err := storagecodec.DecodeEnvelope(raw, "sessiontree-v30-body-block")
+	if err != nil {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	var block []byte
+	if err := decodeCanonicalBodyJSON(payload, &block); err != nil || !bytes.Equal(block, []byte(value[start:min(len(value), start+canonicalBodyBlockBytes)])) {
+		return errors.Join(ErrAuthorityCorrupt, err)
+	}
+	return nil
+}
+
+func verifyMigrationBodyClaims(ctx context.Context, tx spi.ReadTx) error {
+	var after []byte
+	for {
+		page, err := tx.Scan(spi.ScanRequest{Namespace: migrationBodyNamespace, After: after, Limit: 128})
+		if err != nil {
+			return err
+		}
+		for _, row := range page.Records {
+			claim, progress, err := validateMigrationBodyClaim(ctx, tx, row)
+			if err != nil {
+				return err
+			}
+			for ordinal := 0; ordinal < progress.blocks; ordinal++ {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				raw, err := tx.Get(canonicalBodyNamespace, canonicalBodyBlockKey(claim.SHA256, ordinal))
+				if err != nil {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+				if err := verifyMigrationBodyBlock(raw, progress.value, ordinal); err != nil {
+					return err
+				}
+			}
+		}
+		if !page.HasMore {
+			return nil
+		}
+		if len(page.Next) == 0 || bytes.Compare(page.Next, after) <= 0 {
+			return ErrAuthorityCorrupt
+		}
+		after = bytes.Clone(page.Next)
+	}
 }
 
 func migrationSourceFormat(version int) (backendDomainFormat, error) {
@@ -126,9 +257,16 @@ func stageMigrationBodies(ctx context.Context, tx spi.WriteTx, checkpoint *threa
 		if checkpoint.BodySHA256 != "" && checkpoint.BodySHA256 != ref.SHA256 {
 			return candidate, false, ErrAuthorityCorrupt
 		}
-		claim, err := json.Marshal(ref)
+		claim, err := json.Marshal(migrationBodyClaim{canonicalBodyRef: ref, ThreadID: checkpoint.ThreadID, Ordinal: checkpoint.NextOrdinal, Field: field})
 		if err != nil {
 			return candidate, false, err
+		}
+		previous, err := tx.Get(migrationBodyNamespace, migrationBodyKey(ref, checkpoint.ThreadID, checkpoint.NextOrdinal, field))
+		if err != nil && !errors.Is(err, spi.ErrNotFound) {
+			return candidate, false, err
+		}
+		if err == nil && !bytes.Equal(previous, claim) || checkpoint.BodyBlocks > 0 && errors.Is(err, spi.ErrNotFound) {
+			return candidate, false, ErrAuthorityCorrupt
 		}
 		if err := tx.Put(migrationBodyNamespace, migrationBodyKey(ref, checkpoint.ThreadID, checkpoint.NextOrdinal, field), claim); err != nil {
 			return candidate, false, err
@@ -178,6 +316,16 @@ func stageMigrationBodies(ctx context.Context, tx spi.WriteTx, checkpoint *threa
 
 func retainMigrationFields(tx spi.WriteTx, checkpoint threadMigrationCheckpoint, source, candidate canonicalStoredEntry) error {
 	for field, ref := range candidate.Fields {
+		if _, retained := source.Fields[field]; !retained {
+			raw, err := tx.Get(migrationBodyNamespace, migrationBodyKey(ref, checkpoint.ThreadID, checkpoint.NextOrdinal, field))
+			if err != nil {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			var claim migrationBodyClaim
+			if err := decodeCanonicalBodyJSON(raw, &claim); err != nil || claim != (migrationBodyClaim{canonicalBodyRef: ref, ThreadID: checkpoint.ThreadID, Ordinal: checkpoint.NextOrdinal, Field: field}) {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+		}
 		if _, err := tx.Get(canonicalBodyNamespace, canonicalBodyKey(ref.SHA256)); err == nil {
 			body, err := readCanonicalBodyRecord(tx, ref)
 			if err != nil || body.References == int64(^uint64(0)>>1) {
