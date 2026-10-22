@@ -1638,7 +1638,7 @@ func (repo *BackendRepo) VerifyCurrentStateInTransaction(ctx context.Context, tx
 }
 
 // VerifyInspectionStateInTransaction retains canonical and projection checks
-// while omitting text postings that a read-only inspection cannot query.
+// without preparing or modifying derived source-locator metadata.
 func (repo *BackendRepo) VerifyInspectionStateInTransaction(ctx context.Context, tx spi.ReadTx) error {
 	if repo != nil && repo.domainMemory != nil {
 		repo.domainMemory.bodyTx, repo.domainMemory.bodyContext = tx, ctx

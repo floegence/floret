@@ -271,7 +271,11 @@ func (r *MemoryRepo) Query(ctx context.Context, scope threadquery.Scope, input t
 		if err := ctx.Err(); err != nil {
 			return threadquery.Page{}, err
 		}
-		row := queryRow(snapshot, snapshot.records[next], input.Filter)
+		record, err := r.queryRecordContent(snapshot.records[next])
+		if err != nil {
+			return threadquery.Page{}, err
+		}
+		row := queryRow(snapshot, record, input.Filter)
 		raw, _ := json.Marshal(row)
 		if used+len(raw) > 64*1024-1024 {
 			break
@@ -320,6 +324,10 @@ func (r *MemoryRepo) Read(ctx context.Context, scope threadquery.Scope, input th
 			return threadquery.ReadPage{}, err
 		}
 		field, offset = c.field, c.offset
+	}
+	record, err = r.queryRecordContent(record)
+	if err != nil {
+		return threadquery.ReadPage{}, err
 	}
 	result := threadquery.ReadPage{Record: queryRow(snapshot, record, threadquery.Filter{}), Chunks: []threadquery.Chunk{}, ExpiresAt: snapshot.expires}
 	parts, err := r.queryReadParts(record)
@@ -541,7 +549,7 @@ func (repo *BackendRepo) queryView(ctx context.Context, callback func(*MemoryRep
 	defer repo.mu.Unlock()
 	return repo.backend.View(ctx, func(tx spi.ReadTx) error {
 		memory := repo.domainMemory
-		memory.queryReader = queryIndexReader(tx)
+		memory.queryReader = queryMetadataReader(tx)
 		memory.bodyTx, memory.bodyContext = tx, ctx
 		defer func() { memory.bodyTx, memory.bodyContext = nil, nil }()
 		defer func() { memory.queryReader = nil }()

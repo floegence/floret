@@ -197,7 +197,7 @@ func BenchmarkQueryStartup(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				memory.querySnapshots = nil
-				if err := backend.View(ctx, func(tx spi.ReadTx) error {
+				if err := backend.Update(ctx, func(tx spi.WriteTx) error {
 					if inspection {
 						return repo.VerifyInspectionStateInTransaction(ctx, tx)
 					}

@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: Canonical thread queries
-description: Authorized indexed search, immutable pagination and bounded full reads.
+description: Authorized canonical reads, metadata browsing and bounded pagination without full-text indexing.
 tags: [api, threads, queries, references]
 ---
 
@@ -11,30 +11,27 @@ tags: [api, threads, queries, references]
 all previously required methods. `Query`, `Read`, and `Aggregate` use public
 [`threadquery`](../../threadquery/query.go) contracts. The canonical journal
 owner derives metadata and source locators through one canonical projector.
-SQLite maintains contentless indexed atomic-term postings and document metadata in the same
-transaction as canonical writes. Other physical backends use the optional
-transaction-local index SPI or Floret's opaque KV adapter. Native errors never
-switch to a second index or a full canonical scan.
+No backend builds or persists a full-text index. There are no n-grams, term
+inventories, inverted postings, optional search-backend selection or background
+rebuilds. One metadata-only KV path stores exact source locators and record
+attributes in the canonical transaction. Appending a message does not reread
+historical bodies for query metadata.
 
-Startup validates canonical state and source correspondence before reusing the
-index. Missing derived state initializes transactionally before Host exposure;
-ordinary reopen does not rebuild postings. Canonical damage and unknown formats
-fail closed. Physical formats 1 -> 2 -> 3 -> 4 and logical storage 7 -> 8 -> 9 retain
-every historical migration edge. Atomic ASCII encodings of Go
-Unicode-lowercased 1/2/3-rune grams preserve Chinese, code, punctuation, emoji
-and NUL candidate semantics; one exact matcher verifies candidates. No full
-search body or global positions are stored. Fixed canonical first/previous/last
-entry boundaries replace growing source lists. Derived manifest version 1 is
-read only to trigger a rebuild into version 2; no runtime dual read remains.
-Merged assistant appends read at most two short source tails and insert only
-new and cross-boundary terms through optional `IndexDocumentAppender`.
-The SQLite implementation uses indexed unique term/document rows rather than
-replacing an FTS document. Complete replacement, removal and path change retain
-their exact existing semantics. Native errors remain explicit. Custom released
-indexes without append capability retain their supported complete-replacement
-contract. This is a storage capability decision, not another lifecycle owner.
- Only bounded active projections and
-frozen pagination values remain in memory.
+Physical format 5 removes the released FTS/posting tables through the permanent
+1 -> 2 -> 3 -> 4 -> 5 migration lineage. Logical storage 9 -> 10 prevents an older
+runtime from reopening the new layout. Released KV term documents in v1 are
+removed, including orphan documents. Metadata namespace v2 and manifest version
+3 contain no terms or transcript snippets. Startup validates canonical state
+and metadata correspondence without building text indexes; damage and unknown
+formats still fail closed. All changes commit atomically.
+
+Explicit text filters read and match scoped canonical content on demand. This
+is a compatibility query API, not a requirement to expose its entire language
+as model-facing tools. Hosts should prefer finding a thread and reading its
+pages. Metadata-only browsing freezes source boundaries and hydrates only the
+requested page; frozen pagination stays bounded in memory. Deprecated public
+SPI index declarations remain for v7 source compatibility, with no runtime
+implementation or dispatch. Their removal belongs to the next major version.
 
 Hosts reconstruct `Scope` before every call. `Authority` identifies the user,
 runtime and namespace; `ThreadIDs` is the exact authorized set, including
@@ -72,7 +69,7 @@ optional thread/role/tool_name/status or UTC day/week/month grouping. Weeks star
 Monday. Groups sort by key or count, with stable key ties, and support paging.
 
 `Query` defaults to 50 rows, permits at most 200, and returns a bounded hit snippet
-and opaque `RecordRef`. The first call freezes the matching canonical facts;
+and opaque `RecordRef`. The first call freezes matching metadata and immutable source boundaries;
 continuations use the stable last record key and never project history again.
 `Read` takes a returned ref and returns explicit field-local UTF-8 byte-offset
 chunks (at most 16 KiB each) in responses at most 64 KiB. Continue until no cursor
@@ -100,6 +97,6 @@ old authority and preserves historical record bytes and fingerprints.
 User attachments and confirmed tool-result attachments contribute safe source
 labels to text search and chunked reads. Each label includes a stable descriptor
 locator, name, MIME and size, excluding ResourceRef. Name and MIME search use the
-canonical owner's persistent derived index; no durable media mapping is added. Locators
+canonical owner's persistent source-locator metadata; no durable media mapping is added. Locators
 are lookup keys, never access grants. Hosts must reauthorize the current thread
 and exact canonical descriptor before opening immutable bytes.

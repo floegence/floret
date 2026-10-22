@@ -68,10 +68,10 @@ The v14 -> v15 edge adds typed thread references and the optional referenced
 ThreadID. It validates exact v14 authority, preserves all canonical bytes,
 request fingerprints and execution identities, and installs v15 in the same
 startup transaction. v14 rejects new thread-reference shapes, including queued
-input; current v15 opens without rewriting records. The derived search index stores only canonical source locators, metadata and
-contentless postings, maintained in the same canonical transaction. Ordinary
-startup verifies source correspondence and reuses postings. Frozen pagination
-snapshots never persist.
+input; current v15 opens without rewriting records. Derived query metadata stores only canonical source locators and record attributes,
+maintained in the same canonical transaction. Startup verifies their source
+correspondence. Full-text indexes and term postings are prohibited; frozen
+pagination snapshots never persist.
 
 `runtime.Open` performs migration, logical schema update, and final invariant
 verification in one backend transaction. Write failure, cancellation, panic,
@@ -127,23 +127,19 @@ uncommitted facts; successful dispatch and turn boundaries clear those pending
 facts after commit. Shutdown flushes remaining additions. The legacy global
 snapshot decoder lives only in [startup migration](../../internal/storage/prompt_migration.go).
 
-SQLite physical format 4 uses unique indexed atomic term/document rows and
-fixed source-boundary metadata. The transactional 3 -> 4 migration removes only
-the derived FTS5 index, then the canonical owner rebuilds the projection before
-Host exposure. Failure, cancellation and panic roll back the physical change
-and derived rebuild together. Canonical opaque records remain byte-identical.
-Optional `storage/spi.IndexDocumentAppender` atomically inserts delta terms
-and replaces exact-scoped document metadata; missing identity returns
-`spi.ErrNotFound` and errors never switch implementations. Existing
-`IndexWriter.PutIndexDocument` remains complete replacement. The v7 public
-addition serves SQLite's merged-source update path and does not enlarge any
-required backend interface.
+SQLite physical format 5 removes all full-text storage. The transactional
+4 -> 5 edge drops search documents and postings while preserving opaque
+canonical records byte-for-byte. Earlier 2 -> 3 and 3 -> 4 edges remain solely
+as migration steps; no terms are constructed during them. The logical 9 -> 10
+upgrade, removal of legacy KV terms, metadata initialization and final canonical
+verification share the runtime startup transaction. Failure, cancellation and
+panic roll back all layers together.
 
-SQLite physical format 3 introduced persistent metadata and contentless FTS5
-postings. The contiguous 2 -> 3 edge joins logical storage 8 -> 9 in the runtime
-startup transaction, preserving domain schema 19. Optional transaction-local
-IndexReader and IndexWriter keep physical indexing separate from canonical
-query semantics; other backends use the KV adapter.
+The canonical owner uses one metadata-only KV implementation for every backend.
+No message-body duplication, token inventory or native search capability is
+retained. Published optional SPI indexing types are deprecated for v7 source
+compatibility and are never invoked. Explicit authorized text queries match
+canonical sources on demand. Metadata browsing reads bodies only for its page.
 
 SQLite physical format 2 uses a rowid records table with the same unique
 `(namespace, key)` primary key; metadata retains its original layout. Format 1
@@ -174,10 +170,9 @@ remain errors. No record is decoded, copied, or replaced by the host.
 logical and domain migration code in a transaction-local memory overlay. It
 creates no Host, never dispatches providers or tools, and reports whether a
 migration would be needed. Formal startup verifies again under its writable
-transaction. Both paths validate canonical state and the complete search
-projection; inspection omits text postings that would be discarded, while formal
-startup verifies and reuses the searchable index or builds missing derived
-state transactionally. Optional counted startup work reports real thread totals. Missing files are reported without
+transaction. Both paths validate canonical state and source-locator metadata;
+formal startup removes retired text indexes and prepares only missing metadata
+transactionally. Neither path builds a full-text index. Optional counted startup work reports real thread totals. Missing files are reported without
 creating them. `ErrStoreTooNew`
 retains `ErrUnsupportedSchema` classification for newer logical formats.
 Physical checks report `storage.ErrUnsupportedSQLiteFormat`,
@@ -336,22 +331,21 @@ the existing namespace, and rejects older writers. Invalid source, future schema
 write failure, cancellation and panic roll back the entire startup transaction.
 Current restart is byte-stable. See [Goal execution](../decisions/thread-goals.md).
 
-## Exact derived-document reads
+## Exact source-locator reads
 
-Optional `storage/spi.IndexDocumentReader` reads one exact key within one thread
-scope. Missing keys and scope mismatches return `ErrNotFound`; other failures
-remain explicit. SQLite and the canonical KV adapter implement it. Existing
-custom `IndexReader` implementations keep their published query contract; the
-owner selects the requested key from their scoped candidates when they do not
-implement the additional capability. No read error switches implementations.
+The canonical metadata store reads one exact key within one thread scope.
+Missing keys and scope mismatches return `ErrNotFound`; other failures remain
+explicit. All built-in and custom physical backends use the same opaque KV
+path. Deprecated optional index interfaces are not consulted.
 
 Query projection continuations retain source locators and lifecycle metadata,
-not complete historical projected bodies. Transactions materialize only changed
-records and install their continuation after commit. Path paging follows derived
-ancestor locators, never a complete Path followed by slicing. These indexes are
-rebuildable, memory-only metadata; domain schema and canonical bytes do not change.
-Canonical body residency and giant-message indexing still require bounded storage
-work; these improvements do not establish a global history memory bound.
+not historical bodies. Transactions update changed metadata and install the
+continuation only after commit. Metadata-only query snapshots freeze source
+boundaries and load bodies only for the selected page or explicit read. Path
+paging follows derived ancestor locators without materializing a complete path.
+Canonical integrity verification and explicit large-content reads still have
+costs proportional to their inputs; removal of text indexes is not a claim of
+constant-time startup or a universal history memory bound.
 
 ## Canonical body blocks
 

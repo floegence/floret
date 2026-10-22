@@ -6,7 +6,7 @@ import (
 	"github.com/floegence/floret/v7/threadquery"
 )
 
-// ThreadQueryReader is an optional canonical index capability. Hosts authorize
+// ThreadQueryReader is an optional canonical read capability. Hosts authorize
 // Scope before each query, page, read and aggregate. Tool arguments and confirmed
 // output are private host facts; do not add them to ordinary presentation DTOs.
 type ThreadQueryReader interface {
@@ -23,7 +23,7 @@ func (s *threadRuntimeService) queryRepo() (ThreadQueryReader, error) {
 	}
 	repo, ok := s.host.store.repo.(ThreadQueryReader)
 	if !ok {
-		return nil, errors.New("canonical thread index is unavailable for this repository")
+		return nil, errors.New("canonical thread queries are unavailable for this repository")
 	}
 	return repo, nil
 }

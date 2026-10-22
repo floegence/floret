@@ -91,19 +91,13 @@ history-scan trend, not a stable total speedup or production acceptance.
 
 ## Large-field initialization diagnostics
 
-    GOWORK=off go test ./internal/sessiontree -run TestQueryDocumentTermsMatch -bench BenchmarkQueryDocumentTermsLargeBody -benchtime=1x -benchmem
     GOWORK=off go test ./runtime -run TestCanonicalSharedContent -bench BenchmarkCanonicalSharedContentProjection -benchtime=1x -benchmem
 
-The first diagnostic indexes repeated mixed ASCII/CJK/emoji text in 16 KiB
-segments. A joined-string oracle checks identical sorted unigram, bigram and
-trigram terms, including separators, presentation JSON, NUL, case mapping and
-UTF-8 split across segments. Source bytes are visited once; only unique grams
-are encoded. Memory still depends on distinct grams, not a fixed constant for
-arbitrary content. On the same machine a single 40 MiB sample changed from
-4.29 s / 1,999,104,776 allocated bytes to 0.60 s / 3,816 bytes. This is an
-initialization subpath, not an incremental merged-source acceptance result.
+Full-text initialization has been removed. There is no term collector or index
+benchmark to optimize. Metadata preparation must not read historical body bytes;
+explicit text queries pay the cost of their requested canonical content.
 
-The second diagnostic projects 10,960 canonical segments with one shared source
+The diagnostic projects 10,960 canonical segments with one shared source
 into the explicitly requested complete view. One append buffer and a streaming
 character count preserve citation offsets without copying or recounting the
 growing prefix. A single sample changed from 3.97 s / 7,735,860,400 allocated
@@ -173,31 +167,24 @@ source reads; it is not a constant-time startup test. Every source is still
 validated. Metadata, migration inputs, complete checkpoint validation and the verified
 source cache have separate residency costs. Production heap/RSS and complete Flower qualification remain required.
 
-## Streaming query rebuild sources
+## Metadata-only query storage
 
-    GOWORK=off go test ./internal/sessiontree -run 'Test(CanonicalQueryTerms|QueryDocumentTerms)' -count=1
-    GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkCanonicalQueryTermsStorage -benchtime=1x -benchmem
+    GOWORK=off go test ./internal/sessiontree -run 'Test(QueryMetadataUpgrade|MetadataBrowse|MergedQuery|ThreadQueryUnicode)' -count=1
+    GOWORK=off go test ./storage -run 'Test(SQLiteHasNoFullTextIndex|PhysicalSearchRemoval)' -count=1
 
-Derived-index rebuilds visit canonical content, arguments, results and typed
-presentation in bounded source chunks. Complete and storage-backed paths share
-one separator/Unicode/ngram collector. SQLite differential fixtures compare
-all terms to an independent joined-string oracle, include split UTF-8, source
-segments, references and hosted tools, reject private-reasoning reads, and
-check that no complete source enters the body cache. Failure and cancellation
-return no partial term set. A single actual-SQLite diagnostic measured 1.7 ms /
-833,888 allocated bytes for one roughly 40 KiB source and 124.0 ms / 81,100,976
-allocated bytes for 100 segments. These totals include physical decoding and
-are not retained heap, RSS or fixed-change latency. Distinct term inventory and source metadata still
-grow with content; incremental SQLite merged-source updates now use fixed source boundaries and
-new-term insertion. This is not production-stack acceptance.
+These tests assert that startup removes released SQLite/KV text indexes
+atomically, metadata preparation reads no historical bodies, current reopen
+preserves canonical bytes, and metadata pages retain only frozen locators.
+Unicode matching remains an explicit on-demand query operation. No background
+indexing, complete-source token arrays or alternate search backend is allowed.
 
 ## Merged-source append diagnostic
 
     GOWORK=off go test ./internal/sessiontree -run 'TestMergedQuery' -count=1
     GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkSQLiteMergedHistoryAppend -benchtime=10x -benchmem
 
-A real SQLite write callback, including derived postings, rolls back after work
-to keep the same measured history. Initial single-sample results on Apple M5 Pro:
+A real SQLite write callback, including source-locator metadata, rolls back after work
+to keep the same measured history. The following measurements predate full-text removal and are retained as historical evidence, not current acceptance results. Initial single-sample results on Apple M5 Pro:
 
 | Segments | Before ms | Before allocated bytes | After ms | After allocated bytes |
 | ---: | ---: | ---: | ---: | ---: |

@@ -140,7 +140,7 @@ func assertQueryProjectionMatches(t *testing.T, repo *BackendRepo, id string) {
 		t.Fatal("continuation retained a historical body")
 	}
 	if err := repo.backend.View(t.Context(), func(tx spi.ReadTx) error {
-		documents, err := queryIndexReader(tx).QueryIndex(spi.IndexQuery{ThreadIDs: []string{id}})
+		documents, err := queryMetadataReader(tx).listDocuments(queryMetadataSelection{ThreadIDs: []string{id}})
 		if err != nil {
 			return err
 		}

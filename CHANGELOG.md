@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Remove full-text token generation, SQLite postings, incremental term append,
+  and optional physical search dispatch. Explicit authorized text queries match
+  canonical sources on demand; metadata browsing loads only the requested page.
+- Append SQLite physical 4 -> 5 and logical storage 9 -> 10. Delete only derived
+  search state, preserve canonical bytes and every historical migration edge,
+  and keep retirement, metadata preparation and verification atomic.
+- Deprecate the optional index SPI and startup indexing phase without removing
+  published v7 symbols. Startup and canonical writes never construct text indexes.
+
 ## v7.78.2 - 2026-10-22
 
 - Limit model-facing `ask_user` response modes to `write` and `select_or_write`.

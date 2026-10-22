@@ -26,8 +26,10 @@ import (
 const (
 	logicalSchemaNamespace           = "floret.system"
 	logicalSchemaKey                 = "logical-schema"
-	logicalSchemaVersion             = "9"
-	logicalSchemaFingerprint         = "sha256:97a494530555ecf4e0a5309f418a4eef0cf45a89cc05fa5cb51009d388bc0794"
+	logicalSchemaVersion             = "10"
+	logicalSchemaFingerprint         = "sha256:fc7461f9beda89a3ee63809596469cfdf44365dabec30c52c4d8568261fd9ce7"
+	legacyV9LogicalSchemaVersion     = "9"
+	legacyV9LogicalSchemaFingerprint = "sha256:97a494530555ecf4e0a5309f418a4eef0cf45a89cc05fa5cb51009d388bc0794"
 	legacyV8LogicalSchemaVersion     = "8"
 	legacyV8LogicalSchemaFingerprint = "sha256:292c0d3b42694e006e8667e16f43981f754577f67714e86c7a060fce4884b852"
 	legacyV7LogicalSchemaVersion     = "7"
@@ -92,7 +94,8 @@ type StartupPhase string
 const (
 	StartupPhaseMigrating StartupPhase = "migrating"
 	StartupPhaseVerifying StartupPhase = "verifying"
-	StartupPhaseIndexing  StartupPhase = "indexing"
+	// Deprecated: full-text indexing has been removed; Open never emits this phase.
+	StartupPhaseIndexing StartupPhase = "indexing"
 )
 
 // StartupProgress observes changes in the storage startup phase.
@@ -531,6 +534,7 @@ const (
 	logicalSchemaCurrent logicalSchemaState = "current"
 	logicalSchemaV7      logicalSchemaState = "v7"
 	logicalSchemaV8      logicalSchemaState = "v8"
+	logicalSchemaV9      logicalSchemaState = "v9"
 	logicalSchemaV6      logicalSchemaState = "v6"
 	logicalSchemaV5      logicalSchemaState = "v5"
 	logicalSchemaV3      logicalSchemaState = "v3"
@@ -569,6 +573,12 @@ func inspectLogicalSchemaTransaction(tx spi.ReadTx) (logicalSchemaState, error) 
 	}
 	if envelope.Version == "16" {
 		return "", &MigrationRequiredError{Version: envelope.Version}
+	}
+	if envelope.Version == legacyV9LogicalSchemaVersion {
+		if envelope.Fingerprint != legacyV9LogicalSchemaFingerprint {
+			return "", fmt.Errorf("%w: version 9 fingerprint mismatch", ErrUnsupportedSchema)
+		}
+		return logicalSchemaV9, nil
 	}
 	if envelope.Version == legacyV8LogicalSchemaVersion {
 		if envelope.Fingerprint != legacyV8LogicalSchemaFingerprint {
