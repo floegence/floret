@@ -110,6 +110,19 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 }
 
 func decodeBackendDomainValue(format backendDomainFormat, record backendDomainRecord, target any) error {
+	if manifest, ok := target.(*backendDomainManifest); ok && format.version < backendDomainV32Version {
+		// Historical manifests never carried resumable migration state. Decode
+		// their exact shape so even zero-valued newer fields are rejected.
+		var historical struct {
+			Version  int   `json:"version"`
+			Sequence int64 `json:"sequence"`
+		}
+		if err := decodeBackendDomainValue(format, record, &historical); err != nil {
+			return err
+		}
+		*manifest = backendDomainManifest{Version: historical.Version, Sequence: historical.Sequence}
+		return nil
+	}
 	decoder := json.NewDecoder(bytes.NewReader(record.Value))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
