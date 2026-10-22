@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound resident query continuations; reconstruct cold histories outside write
+  transactions and validate their snapshot before mutation. Traverse canonical
+  history in fixed windows without repeated per-entry ancestry searches.
+
 - Preserve the published comparability of `runtime.Host`; reject newer migration
   fields in historical manifests. Verify and reclaim query metadata in bounded
   transactions while detecting concurrent canonical changes before publication.

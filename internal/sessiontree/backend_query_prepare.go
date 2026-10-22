@@ -176,11 +176,8 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 	if err != nil {
 		return err
 	}
-	if repo.queryThreads == nil {
-		repo.queryThreads = map[string]*queryThread{}
-	}
 	compactQueryThread(state)
-	repo.queryThreads[threadID] = state
+	repo.rememberQueryThread(threadID, state)
 	if !complete && repo.threadQuerySnapshots != nil {
 		repo.threadQuerySnapshots.invalidateThread(threadID)
 	}

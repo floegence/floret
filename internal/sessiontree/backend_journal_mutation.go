@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/floegence/floret/v7/storage/spi"
@@ -49,33 +50,52 @@ func (repo *BackendRepo) canonicalJournalUpdateWithRecords(ctx context.Context, 
 	if err := repo.prepareThreadIfNeeded(ctx, threadID); err != nil {
 		return err
 	}
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
-	mutation := &canonicalJournalMutation{ctx: ctx, repo: repo, query: repo.queryThreads[threadID]}
-	err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
-		meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, threadID)
+	for {
+		continuation, err := repo.loadQueryContinuation(ctx, threadID)
+		if errors.Is(err, spi.ErrConflict) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
-		mutation.tx, mutation.meta = tx, meta
-		if err := mutate(mutation); err != nil {
-			return err
-		}
-		if err := mutation.publishParentEvents(); err != nil {
-			return err
-		}
-		if settle != nil {
-			if err := settle(tx); err != nil {
-				return err
+		retry, err := func() (bool, error) {
+			repo.mu.Lock()
+			defer repo.mu.Unlock()
+			mutation := &canonicalJournalMutation{ctx: ctx, repo: repo, query: continuation.state}
+			stale := false
+			err := repo.backend.Update(ctx, func(tx spi.WriteTx) error {
+				if err := continuation.verify(tx); err != nil {
+					stale = errors.Is(err, spi.ErrConflict)
+					return err
+				}
+				meta, err := readPublishedThreadMeta(tx, backendDomainV32Format, threadID)
+				if err != nil {
+					return err
+				}
+				mutation.tx, mutation.meta = tx, meta
+				if err := mutate(mutation); err != nil {
+					return err
+				}
+				if err := mutation.publishParentEvents(); err != nil {
+					return err
+				}
+				if settle != nil {
+					if err := settle(tx); err != nil {
+						return err
+					}
+				}
+				return ctx.Err()
+			})
+			if err != nil {
+				return stale, err
 			}
+			repo.installJournalMutation(mutation)
+			return false, nil
+		}()
+		if !retry {
+			return err
 		}
-		return ctx.Err()
-	})
-	if err != nil {
-		return err
 	}
-	repo.installJournalMutation(mutation)
-	return nil
 }
 
 func (repo *BackendRepo) installJournalMutation(mutation *canonicalJournalMutation) {

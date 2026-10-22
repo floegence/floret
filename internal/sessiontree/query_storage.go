@@ -452,10 +452,7 @@ func (repo *BackendRepo) prepareQueryStorage(ctx context.Context, tx spi.ReadTx,
 			}
 		}
 		compactQueryThread(state)
-		if repo.queryThreads == nil {
-			repo.queryThreads = map[string]*queryThread{}
-		}
-		repo.queryThreads[id] = state
+		repo.rememberQueryThread(id, state)
 		completed++
 		reportStartupWork(ctx, StartupPhaseVerifying, completed, total)
 	}
@@ -684,7 +681,7 @@ func (repo *BackendRepo) installQueryThreads(changed map[string]*queryThread) {
 		}
 		state.lifecycle.installTransaction()
 		compactQueryThread(state)
-		repo.queryThreads[id] = state
+		repo.rememberQueryThread(id, state)
 	}
 }
 

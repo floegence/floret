@@ -270,6 +270,9 @@ func (projector *queryProjector) observe(state *queryThread, threadID string, en
 			state.hostedPending[executionKey][key] = record
 		} else {
 			delete(state.hostedPending[executionKey], key)
+			if len(state.hostedPending[executionKey]) == 0 {
+				delete(state.hostedPending, executionKey)
+			}
 		}
 		projector.replace(state, record)
 	case EntryTurnMarker:

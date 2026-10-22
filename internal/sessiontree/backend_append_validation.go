@@ -55,20 +55,39 @@ func visitCanonicalPathMetadata(ctx context.Context, tx spi.ReadTx, threadID, le
 	if err != nil {
 		return err
 	}
-	for depth := int64(1); depth <= leaf.Depth; depth++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		node, err := entryAncestor(ctx, tx, threadID, leaf, depth)
+	// Find one window's newest entry, then walk its parent links once. Seeking
+	// every depth from the leaf repeats ancestry reads for the whole history.
+	const windowSize = 128
+	for first := int64(1); first <= leaf.Depth; first += windowSize {
+		last := min(first+windowSize-1, leaf.Depth)
+		node, err := entryAncestor(ctx, tx, threadID, leaf, last)
 		if err != nil {
 			return err
 		}
-		entry, err := readLocatedEntry(tx, backendDomainV32Format, threadID, node)
-		if err != nil {
-			return err
+		window := make([]Entry, int(last-first+1))
+		for i := len(window) - 1; i >= 0; i-- {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			window[i], err = readLocatedEntry(tx, backendDomainV32Format, threadID, node)
+			if err != nil {
+				return err
+			}
+			if i != 0 {
+				parent, err := readEntryLocator(tx, threadID, node.Parent)
+				if err != nil || parent.Depth+1 != node.Depth || parent.Ordinal >= node.Ordinal {
+					return errors.Join(ErrAuthorityCorrupt, err)
+				}
+				node = parent
+			}
 		}
-		if err := visit(entry); err != nil {
-			return err
+		for _, entry := range window {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
