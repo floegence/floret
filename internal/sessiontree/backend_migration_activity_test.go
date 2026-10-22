@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -210,11 +211,93 @@ func TestV30ThreadMigrationResumesAfterSharedBodyDeletion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		_, _, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV30Format)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.PrepareThread(t.Context(), "large"); err != nil {
 		t.Fatal(err)
 	}
 	actual, err := repo.Entry(t.Context(), "large", expected.ID)
 	if err != nil || !reflect.DeepEqual(actual.Message, expected.Message) {
 		t.Fatalf("shared body deletion changed migrated facts: %v", err)
+	}
+}
+
+func TestV30PartialBodyClaimsValidateExactSource(t *testing.T) {
+	for _, scenario := range []string{"valid", "missing claim", "wrong ordinal", "wrong field", "wrong key", "wrong size", "missing block", "corrupt block", "advanced checkpoint"} {
+		t.Run(scenario, func(t *testing.T) {
+			base, backend, repo, _ := openV30ActivityMigration(t)
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				_, err := repo.stageSourceThread(t.Context(), tx, "large")
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "valid" {
+				if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
+					page, err := tx.Scan(spi.ScanRequest{Namespace: migrationBodyNamespace, Limit: 1})
+					if err != nil || len(page.Records) != 1 {
+						return errors.Join(ErrAuthorityCorrupt, err)
+					}
+					row := page.Records[0]
+					var claim migrationBodyClaim
+					if err := json.Unmarshal(row.Value, &claim); err != nil {
+						return err
+					}
+					switch scenario {
+					case "missing claim":
+						return tx.Delete(migrationBodyNamespace, row.Key)
+					case "wrong ordinal":
+						claim.Ordinal++
+					case "wrong field":
+						claim.Field = "content"
+					case "wrong key":
+						return tx.Put(migrationBodyNamespace, append(row.Key, 0), row.Value)
+					case "wrong size":
+						claim.Bytes++
+					case "missing block":
+						return tx.Delete(canonicalBodyNamespace, canonicalBodyBlockKey(claim.SHA256, 0))
+					case "corrupt block":
+						return tx.Put(canonicalBodyNamespace, canonicalBodyBlockKey(claim.SHA256, 0), []byte("{}"))
+					case "advanced checkpoint":
+						checkpoint, _, err := readThreadMigrationCheckpoint(tx, "large")
+						if err != nil {
+							return err
+						}
+						checkpoint.NextOrdinal++
+						return writeThreadMigrationCheckpoint(tx, checkpoint)
+					}
+					raw, err := json.Marshal(claim)
+					if err != nil {
+						return err
+					}
+					return tx.Put(migrationBodyNamespace, row.Key, raw)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := cloneMigrationRecords(base.records)
+			err := base.View(t.Context(), func(tx spi.ReadTx) error {
+				_, _, err := loadBackendDomain(t.Context(), tx, time.Now, backendDomainV30Format)
+				return err
+			})
+			if scenario == "valid" && err != nil || scenario != "valid" && !errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("verification = %v", err)
+			}
+			if !reflect.DeepEqual(before, base.records) {
+				t.Fatal("verification mutated storage")
+			}
+			if scenario == "valid" {
+				if err := repo.PrepareThread(t.Context(), "large"); err != nil {
+					t.Fatal(err)
+				}
+				if len(base.records[migrationBodyNamespace]) != 0 {
+					t.Fatal("published entry retained staging claims")
+				}
+			}
+		})
 	}
 }
