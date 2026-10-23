@@ -116,17 +116,18 @@ func (b mediaMetadataBackend) View(ctx context.Context, read func(spi.ReadTx) er
 type mediaMetadataTx struct{ spi.ReadTx }
 
 func (tx mediaMetadataTx) Get(ns string, key []byte) ([]byte, error) {
-	if ns == canonicalBodyNamespace {
-		return nil, errors.New("retention read unrelated conversation body")
+	value, err := tx.ReadTx.Get(ns, key)
+	if ns == canonicalBodyNamespace && len(value) > canonicalBodyReadBytes {
+		return nil, errors.New("retention exceeded bounded body read")
 	}
-	return tx.ReadTx.Get(ns, key)
+	return value, err
 }
-func TestCanonicalMediaInventoryReadsOnlyRetentionMetadata(t *testing.T) {
+func TestCanonicalMediaInventoryStreamsIntegrityAndRetainsOnlyMedia(t *testing.T) {
 	memory := newMemoryRepo(time.Now)
 	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "media"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := memory.Append(t.Context(), Entry{ID: "message", ThreadID: "media", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "body must remain unread", Attachments: []session.MessageAttachment{{ResourceRef: "image://retained", Name: "image.png", MIMEType: "image/png", SizeBytes: 1}}}}, AppendOptions{}); err != nil {
+	if _, err := memory.Append(t.Context(), Entry{ID: "message", ThreadID: "media", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "body must not remain in memory", Attachments: []session.MessageAttachment{{ResourceRef: "image://retained", Name: "image.png", MIMEType: "image/png", SizeBytes: 1}}}}, AppendOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	backend, repo := openV31ReviewFixture(t, memory)
@@ -150,12 +151,40 @@ func TestCanonicalMediaInventoryReadsOnlyRetentionMetadata(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(entries) != 1 || len(entries[0].Message.Attachments) != 1 {
+		if len(entries) != 1 || len(entries[0].Message.Attachments) != 1 || entries[0].Message.Content != "" {
 			t.Fatalf("retention entries=%+v", entries)
 		}
 		if repo.threadMemory != nil {
 			t.Fatal("media inventory hydrated a journal")
 		}
+	}
+	// Losing the last reference must not turn a corrupt source into a safe
+	// empty inventory, even when its serialized envelope remains valid.
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		key := backendDomainEntryKey("media", 0)
+		raw, err := tx.Get(backendDomainV32Namespace, key)
+		if err != nil {
+			return err
+		}
+		record, err := decodeBackendDomainRecord(backendDomainV32Format, raw)
+		if err != nil {
+			return err
+		}
+		stored, err := decodeCanonicalStoredEntry(backendDomainV32Format, record)
+		if err != nil {
+			return err
+		}
+		stored.Entry.Message.Attachments = nil
+		raw, err = encodeBackendDomainRecord(backendDomainV32Format, record.Kind, record.ID, record.ThreadID, record.Ordinal, stored)
+		if err != nil {
+			return err
+		}
+		return tx.Put(backendDomainV32Namespace, key, raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := repo.CanonicalMediaEntries(t.Context()); !errors.Is(err, ErrAuthorityCorrupt) || len(entries) != 0 {
+		t.Fatalf("corrupt retention source: entries=%d err=%v", len(entries), err)
 	}
 }
 
