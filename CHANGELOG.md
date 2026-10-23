@@ -13,7 +13,8 @@
 - Decode resident canonical JSON directly with released v1 field semantics and
   strict unknown-field validation. Avoid nested payload and SQLite result copies,
   reuse Retry projection capacity and bounded hydration buffers, preallocate
-  known page and attribution sizes, and validate context measurements once.
+  known page and attribution sizes, avoid per-field maps and ordered-context
+  staging copies, and validate context measurements once.
   These allocation reductions do not turn cold display into an indexed read.
 
 - Initialize the canonical item projection with an absent Goal before the first

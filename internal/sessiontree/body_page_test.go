@@ -170,3 +170,19 @@ func TestCanonicalBodyPrefetchRetainsBudgetAndValidatesSources(t *testing.T) {
 		})
 	}
 }
+
+func TestCanonicalFieldAccessDetachesOnlyRequestedControl(t *testing.T) {
+	original := Entry{Message: session.Message{Content: "retained content", ControlSignal: &session.ControlSignalView{OutputText: "retained output"}}}
+	for _, field := range []string{"content", "control_output"} {
+		copied := original
+		if err := clearCanonicalField(&copied, field); err != nil {
+			t.Fatal(err)
+		}
+		if err := restoreCanonicalField(&copied, field, "replacement"); err != nil {
+			t.Fatal(err)
+		}
+		if original.Message.Content != "retained content" || original.Message.ControlSignal.OutputText != "retained output" {
+			t.Fatal("field access mutated canonical source")
+		}
+	}
+}

@@ -253,16 +253,28 @@ type canonicalStoredEntry struct {
 	Fields map[string]canonicalBodyRef
 }
 
-func canonicalEntryBodyFields(entry *Entry) map[string]*string {
-	fields := map[string]*string{"content": &entry.Message.Content, "reasoning": &entry.Message.Reasoning, "arguments": &entry.Message.ToolArgs, "summary": &entry.Summary, "error": &entry.Error}
-	if entry.Message.ControlSignal != nil {
-		// Entry copies share nested messages. Detach before callers clear or
-		// restore fields so reads cannot mutate canonical state or their inputs.
-		signal := *entry.Message.ControlSignal
-		entry.Message.ControlSignal = &signal
-		fields["control_output"] = &signal.OutputText
+// canonicalEntryBodyField detaches only a requested nested control. Ordinary
+// field access neither builds a map nor forces a complete Entry copy to escape.
+func canonicalEntryBodyField(entry *Entry, field string) *string {
+	switch field {
+	case "content":
+		return &entry.Message.Content
+	case "reasoning":
+		return &entry.Message.Reasoning
+	case "arguments":
+		return &entry.Message.ToolArgs
+	case "summary":
+		return &entry.Summary
+	case "error":
+		return &entry.Error
+	case "control_output":
+		if entry.Message.ControlSignal != nil {
+			signal := *entry.Message.ControlSignal
+			entry.Message.ControlSignal = &signal
+			return &signal.OutputText
+		}
 	}
-	return fields
+	return nil
 }
 
 // canonicalStoredFields uses one block store for plain text and typed activity.
@@ -270,8 +282,9 @@ func canonicalEntryBodyFields(entry *Entry) map[string]*string {
 // value before interpreting it. A partial JSON chunk is never a presentation.
 func canonicalStoredFields(entry Entry, includeActivity bool) (map[string]string, error) {
 	fields := map[string]string{}
-	for field, value := range canonicalEntryBodyFields(&entry) {
-		if *value != "" {
+	for _, field := range []string{"content", "reasoning", "arguments", "summary", "error", "control_output"} {
+		value := canonicalEntryBodyField(&entry, field)
+		if value != nil && *value != "" {
 			fields[field] = *value
 		}
 	}
@@ -295,7 +308,7 @@ func canonicalFieldValue(entry Entry, field string) (string, error) {
 		raw, err := json.Marshal(entry.Message.Activity)
 		return string(raw), err
 	}
-	value := canonicalEntryBodyFields(&entry)[field]
+	value := canonicalEntryBodyField(&entry, field)
 	if value == nil {
 		return "", spi.ErrInvalidArgument
 	}
@@ -307,7 +320,7 @@ func clearCanonicalField(entry *Entry, field string) error {
 		entry.Message.Activity = nil
 		return nil
 	}
-	value := canonicalEntryBodyFields(entry)[field]
+	value := canonicalEntryBodyField(entry, field)
 	if value == nil {
 		return ErrAuthorityCorrupt
 	}
@@ -330,7 +343,7 @@ func restoreCanonicalField(entry *Entry, field, text string) error {
 		entry.Message.Activity = &activity
 		return nil
 	}
-	value := canonicalEntryBodyFields(entry)[field]
+	value := canonicalEntryBodyField(entry, field)
 	if value == nil || *value != "" {
 		return ErrAuthorityCorrupt
 	}

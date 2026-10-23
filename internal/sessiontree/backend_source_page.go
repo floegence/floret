@@ -89,7 +89,7 @@ func (repo *BackendRepo) SourceBodyPage(ctx context.Context, options SourceBodyP
 			}
 			ref, stored := entry.bodyFields[field]
 			if !stored {
-				value := canonicalEntryBodyFields(&entry)[field]
+				value := canonicalEntryBodyField(&entry, field)
 				if value == nil {
 					return ErrAuthorityCorrupt
 				}

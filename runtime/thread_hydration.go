@@ -61,12 +61,11 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 				if !selectedIDs[entry.ID] {
 					continue
 				}
-				pendingContext[entry.ID] = entry
-				for nextContext < len(selected) {
-					next, found := pendingContext[selected[nextContext]]
-					if !found {
-						break
-					}
+				if nextContext >= len(selected) || entry.ID != selected[nextContext] {
+					pendingContext[entry.ID] = entry
+					continue
+				}
+				for next := entry; ; {
 					delete(pendingContext, next.ID)
 					nextContext++
 					if err := contextProjection.Append([]sessiontree.Entry{next}); err != nil {
@@ -74,6 +73,14 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 					}
 					if next.Message.ModelContextSnapshot != nil || next.ModelContextBaseline != nil {
 						contextSources = append(contextSources, sessiontree.Entry{ID: next.ID, PathDepth: next.PathDepth, TurnID: next.TurnID, RunID: next.RunID, CreatedAt: next.CreatedAt})
+					}
+					if nextContext == len(selected) {
+						break
+					}
+					var found bool
+					next, found = pendingContext[selected[nextContext]]
+					if !found {
+						break
 					}
 				}
 			}
