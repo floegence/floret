@@ -248,6 +248,29 @@ func TestSnapshotPreparationRejectsUnselectedLegacyAuthority(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreparationRejectsOrphanTerminalProof(t *testing.T) {
+	for version := 2; version <= 4; version++ {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(legacyEmptyMemoryState(t, version), &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields["turn_admissions"], _ = json.Marshal(map[string]legacyTurnAdmission{legacyTurnKey("orphan", "turn"): {ThreadID: "orphan", TurnID: "turn", LegacyTerminalProof: &legacyTerminalAdmissionProof{Source: "v3.2.3_subagent_input", SourceHash: "unproven"}}})
+			raw, _ := json.Marshal(fields)
+			if _, err := DecodeMemoryState(raw, time.Now); err == nil {
+				t.Fatal("released decoder accepted orphan proof")
+			}
+			backend, source := installSnapshotImportFixture(t, raw)
+			if err := PrepareHistoricalSnapshot(t.Context(), backend, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("orphan proof accepted: %v", err)
+			}
+			if !bytes.Equal(source, backend.records[backendDomainNamespace][string(backendStateKey)]) || len(backend.records[backendDomainV32Namespace]) != 0 {
+				t.Fatal("invalid source changed or published")
+			}
+		})
+	}
+}
+
 func TestSnapshotPreparationRejectsUnownedDirectoryRows(t *testing.T) {
 	backend, source := snapshotLineageFixture(t, 5)
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
