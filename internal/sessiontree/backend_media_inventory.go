@@ -9,9 +9,9 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-// Retention scans immutable metadata in bounded transactions. A final authority
-// check rejects concurrent changes before callers can delete any media. Neither
-// unrelated bodies nor a complete in-memory journal belongs to this read.
+// Retention streams integrity checks in bounded transactions. A final authority
+// check rejects concurrent changes before callers can delete any media. It
+// retains only media facts, never a complete in-memory journal or text body.
 func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID string) (entries []Entry, handled bool, resultErr error) {
 	if repo == nil || ctx == nil {
 		return nil, true, spi.ErrInvalidArgument
@@ -80,9 +80,13 @@ func (repo *BackendRepo) canonicalMediaEntries(ctx context.Context, threadID str
 		}
 		counts[id] = count
 		seen, err := visitCanonicalJournal(ctx, reader, id, func(entry Entry) error {
-			if err := ValidateEntryMessageAttachments(entry); err != nil {
+			// The checksum covers both retention metadata and body fields. Stream
+			// all fields so removing an attachment cannot authorize its deletion.
+			validated, _, err := validateCanonicalStoredIntegrity(ctx, reader, entry)
+			if err != nil {
 				return errors.Join(ErrAuthorityCorrupt, err)
 			}
+			entry = validated
 			if result := entry.Message.ToolResult; result != nil {
 				if err := session.ValidateStoredMessageAttachments(result.Attachments); err != nil {
 					return errors.Join(ErrAuthorityCorrupt, err)

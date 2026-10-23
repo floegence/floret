@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-- Keep canonical media-retention reads in bounded metadata transactions and
+## v7.80.2 - 2026-10-23
+
+- Keep canonical media-retention reads in bounded transactions and
   reject concurrent changes before returning an inventory. Do not hydrate
-  unrelated history bodies or block foreground reads for a complete sweep.
+  complete history bodies or block foreground reads for a complete sweep;
+  preserve streamed canonical checksum verification before media deletion.
 - Read contiguous canonical path windows with exact bounded ranges, preserving
   branch ancestry validation. Reuse SQLite read statements within a transaction
   and classify interrupted canonical reads as cancellation rather than corruption.

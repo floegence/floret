@@ -470,9 +470,10 @@ the final snapshot removal and source-version reset commit together.
 
 ## Bounded canonical maintenance reads
 
-Current-schema media retention scans immutable journal metadata in bounded
+Current-schema media retention scans immutable journals in bounded
 transactions, including archived threads, inactive paths, queued attachments,
-and turn markers. It does not materialize unrelated text or hold the repository
+and turn markers. It streams canonical body and entry checksum verification,
+retains only media facts, and does not hold the repository
 mutex for a whole-store scan. A final transaction verifies thread metadata,
 journal counts and root membership before accepting the inventory. Concurrent
 mutation returns a conflict; unpublished migration sources prevent global
