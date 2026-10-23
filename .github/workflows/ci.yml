@@ -96,6 +96,7 @@ jobs:
           cache: true
 
       - name: Exercise concurrent runtime and Store boundaries
+        shell: bash
         env:
           RACE_SUITE: ${{ matrix.suite }}
         run: |
