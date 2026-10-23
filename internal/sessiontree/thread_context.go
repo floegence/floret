@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/json/jsontext"
 	"errors"
@@ -322,10 +323,11 @@ func decodeStrictThreadContextJSON(raw string, target any, forbidden map[string]
 	if raw == "" {
 		return errors.New("thread context payload is required")
 	}
+	encoded := []byte(raw)
 	if len(forbidden) != 0 {
 		// Inspect exact top-level names without copying every nested value into
 		// RawMessage. V1 options retain duplicate-name and UTF-8 semantics.
-		decoder := jsontext.NewDecoder(strings.NewReader(raw), json.DefaultOptionsV1())
+		decoder := jsontext.NewDecoder(bytes.NewBuffer(encoded), json.DefaultOptionsV1())
 		token, err := decoder.ReadToken()
 		if err != nil {
 			return err
@@ -353,7 +355,7 @@ func decodeStrictThreadContextJSON(raw string, target any, forbidden map[string]
 			return errors.New("thread context payload has trailing data")
 		}
 	}
-	return storagecodec.DecodeJSON([]byte(raw), target)
+	return storagecodec.DecodeJSON(encoded, target)
 }
 
 func validateThreadContextStatusIdentity(status observation.ContextStatus) error {

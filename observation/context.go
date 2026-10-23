@@ -254,7 +254,7 @@ func (s ContextStatus) Validate() error {
 	}
 	if b.Details != nil {
 		totals := map[string]int64{"tool_definition": 0, "model_context": 0}
-		seen := map[[4]string]bool{}
+		seen := make(map[[4]string]bool, len(b.Details.Items))
 		for _, item := range b.Details.Items {
 			key := [4]string{item.Category, item.Key, item.Source, item.Namespace}
 			subtotal, ok := totals[item.Category]

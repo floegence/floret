@@ -65,7 +65,7 @@ func (b *ContextCharacterBreakdown) Validate() error {
 		seen[c.Category] = true
 		total += c.Characters
 		details := int64(0)
-		keys := map[[3]string]bool{}
+		keys := make(map[[3]string]bool, len(c.Details))
 		for _, d := range c.Details {
 			key := [3]string{d.Key, d.Source, d.Namespace}
 			if keys[key] || d.Characters < 0 || d.Characters > math.MaxInt64-details {

@@ -86,12 +86,19 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		control := controlResults[threadToolKey(identity.TurnID(entry.TurnID), identity.RunID(entry.RunID), entry.Message.ToolCallID)]
 		return coldProjectionFields(source, selectedIDs[entry.ID], control)
 	}
+	var entries []sessiontree.Entry
 	err = scanner.ScanPathProjection(ctx, threadID.String(), meta.LeafID, selectContext, fields, func(page sessiontree.PathProjectionPage) error {
-		entries := make([]sessiontree.Entry, len(page.Entries))
+		if cap(entries) < len(page.Entries) {
+			entries = make([]sessiontree.Entry, len(page.Entries))
+		} else {
+			entries = entries[:len(page.Entries)]
+		}
 		for i, source := range page.Entries {
 			entries[i] = source.Entry
 		}
-		return consume(entries)
+		err := consume(entries)
+		clear(entries)
+		return err
 	})
 	if err != nil {
 		return canonicalThreadView{}, runtimeHostError(err)

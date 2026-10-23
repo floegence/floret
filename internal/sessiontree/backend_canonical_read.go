@@ -425,6 +425,7 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 		if err != nil {
 			return err
 		}
+		result.Entries = make([]PathMetadata, 0, int(last-first+1))
 		bodies := newCanonicalBodyPageReader(ctx, tx)
 		_, err = visitCanonicalPage(ctx, tx, meta, node.ID, "", int(last-first+1), func(entry Entry) error {
 			var metadata PathMetadata
