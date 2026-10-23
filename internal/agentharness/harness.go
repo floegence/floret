@@ -987,15 +987,17 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 		}
 	}
 	if result.Status == engine.Completed && projection.acceptedFinal {
-		finalJournal, readErr := t.Journal(persistCtx)
+		canonical, ok := t.harness.options.Repo.(sessiontree.CanonicalTurnReadRepo)
+		if !ok {
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, errors.New("session tree repo does not support canonical turn reads"), "final_boundary_read_error", engine.FailureOriginStorage, &result)
+		}
+		finalTurn, readErr := canonical.ReadCanonicalTurn(persistCtx, t.id, turnID)
 		if readErr != nil {
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, readErr, "final_boundary_read_error", engine.FailureOriginStorage, &result)
 		}
 		segmented, complete := false, true
-		for _, entry := range finalJournal.Path {
-			if entry.TurnID != turnID {
-				continue
-			}
+		for _, item := range finalTurn.Turn.Entries {
+			entry := item.Entry
 			if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
 				segmented = entry.Metadata[sessiontree.ResponseSegmentsMetadataKey] == "1"
 			}

@@ -2,6 +2,9 @@
 
 ## v7.80.0 - 2026-10-22
 
+- Validate final-response boundaries from the current canonical turn, including
+  resumed runs, without rereading unrelated history during bounded finalization.
+
 - Validate every legacy admission collection before filtering thread closures,
   including malformed orphan records and orphan terminal proofs.
 
