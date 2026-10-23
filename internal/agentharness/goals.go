@@ -13,8 +13,8 @@ import (
 	"github.com/floegence/floret/v7/tools"
 )
 
-const goalInstructions = "\n# Goal\nMaintain one clear desired result for work requiring multiple stages and verification; usually skip greetings, direct answers and brief read-only checks. Continue an existing unfinished Goal. Preserve user intent; never shrink or delete unfinished requirements because work is difficult. Delete only cancelled, replaced or obsolete Goals with a reason. User deletion suppresses recreation for the same task; an answer, approval, retry, compaction or restart is not a new task. Goal updates apply at the next logical model request, including this Turn, not frozen transport retries. Before finishing an active Goal, compare results with user constraints, finish remaining work and run only missing checks. Plans and attempts do not prove completion. Use ask_user for a necessary user decision when available; otherwise report the blocker to the user or parent and retain the Goal. Once necessary work tools finish, submit a review with brief evidence before composing the final deliverable. After review, the final answer must contain the requested result and essential supporting sources; a Goal status confirmation alone is insufficient."
-const goalReviewPrompt = "Review the current Goal against user constraints and existing results. Finish necessary work or report a concrete blocker; use ask_user only for a necessary decision when available. Reuse evidence and run only missing checks. Record a current-version review before the final answer. Any answer drafted before this review is intermediate; preserve its useful substance and essential supporting sources in the final deliverable after review. Model deletion of an obsolete Goal requires a blocked review explaining why; deletion and unverified attempts are not completion."
+const goalInstructions = "\n# Goal\nMaintain one clear desired result for work requiring multiple stages and verification; usually skip greetings, direct answers and brief read-only checks. Continue an existing unfinished Goal. Preserve user intent; never shrink or delete unfinished requirements because work is difficult. Delete only cancelled, replaced or obsolete Goals with a reason. User deletion suppresses recreation for the same task; an answer, approval, retry, compaction or restart is not a new task. Goal updates apply at the next logical model request, including this Turn, not frozen transport retries. Before finishing an active Goal, compare results with user constraints, finish remaining work and run only missing checks. Plans and attempts do not prove completion. Use ask_user for a necessary user decision when available; otherwise report the blocker to the user or parent and retain the Goal. Submit a review with brief evidence, then the final answer."
+const goalReviewPrompt = "Review the current Goal against user constraints and existing results. Finish necessary work or report a concrete blocker; use ask_user only for a necessary decision when available. Reuse evidence and run only missing checks. Record a current-version review before the final answer. Model deletion of an obsolete Goal requires a blocked review explaining why; deletion and unverified attempts are not completion."
 
 type goalToolInput struct {
 	Operation       string `json:"operation"`
@@ -34,7 +34,7 @@ func goalTool(p *turnProjection) tools.Tool {
 		"outcome":  map[string]any{"type": "string", "enum": []string{"completed", "continue", "blocked"}},
 		"evidence": map[string]any{"type": "string"}, "new_task": map[string]any{"type": "boolean"},
 	}, "required": []string{"operation", "expected_version"}, "additionalProperties": false}
-	return tools.Define[goalToolInput](tools.Definition{Name: "goal", Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish, before composing the final deliverable.", InputSchema: schema, ReadOnly: true, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
+	return tools.Define[goalToolInput](tools.Definition{Name: "goal", Title: "Goal", Description: "Maintain the thread's desired result or review whether it is complete. Write clear, concise, understandable goal text. Preserve user intent. set cannot mark completion. delete requires a reason. review requires outcome and brief evidence. Use the latest version from runtime facts; after conflict read the returned state. Submit review separately after necessary work tools finish.", InputSchema: schema, ReadOnly: true, Activity: func(inv tools.Invocation[any]) (*tools.ActivityPresentation, error) {
 		path, err := p.goalPath(context.Background())
 		if err != nil {
 			return nil, err
@@ -66,7 +66,7 @@ func goalTool(p *turnProjection) tools.Tool {
 				return tools.Result{}, err
 			}
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
-			return tools.Result{Text: "Goal review recorded. Deliver the requested result and essential supporting sources in your final answer, or continue necessary work."}, nil
+			return tools.Result{Text: "Goal review recorded. Provide a final answer, or continue work if needed."}, nil
 		}
 		if in.Operation == "delete" && strings.TrimSpace(in.Reason) == "" {
 			return tools.Result{}, errors.New("goal deletion requires a reason")
