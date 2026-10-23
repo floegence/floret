@@ -329,6 +329,14 @@ and [window geometry selector](../../runtime/thread_item_window.go).
 
 # Shared cold preparation
 
+The storage owner performs one frozen metadata scan for context selection and
+reuses those validated immutable source locators while materializing body pages.
+Each page rechecks active ancestry and verifies requested bodies in its own
+transaction. A final fence rejects cancellation, deletion or branch movement
+during the last reducer callback. Metadata is temporary and history-sized; bodies
+remain page-local. This removes a duplicate scan, not the remaining cold-history
+complexity, and introduces no persisted presentation or lifecycle snapshot.
+
 Ordinary local tool activity bodies are omitted from cold source pages and
 reconstructed through their exact call/result locators when selected or requested
 by a complete adapter. Running calls retain those locators so a later result

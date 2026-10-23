@@ -14,56 +14,41 @@ import (
 // reads. Context bodies remain complete; compacted bodies are released.
 // This still traverses history and is not a bounded cold item index.
 func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context, threadID identity.ThreadID, meta sessiontree.ThreadMeta) (canonicalThreadView, error) {
-	reader, paged := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
-	metadataReader, metadataPaged := service.host.store.repo.(sessiontree.PathWindowReader)
-	projectionReader, selective := service.host.store.repo.(sessiontree.PathProjectionReader)
+	scanner, sharedScan := service.host.store.repo.(sessiontree.PathProjectionScanner)
 	_, body := service.host.store.repo.(sessiontree.CanonicalBodyReader)
 	_, sources := service.host.store.repo.(sessiontree.SourceBodyPageReader)
 	_, activities := service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader)
-	if !paged || !metadataPaged || !body || !sources || !activities {
+	if !sharedScan || !body || !sources || !activities {
+		// Custom JournalRepo implementations retain their complete adapter.
 		return service.loadCanonicalThreadView(ctx, threadID)
 	}
 	projection := newThreadCanonicalProjection()
 	projection.items.restoreActivity = func(item ThreadItem) (ThreadItem, error) {
 		return service.completeItemActivity(ctx, threadID.String(), item)
 	}
-	projection.items.deferActivity = selective
-	options := sessiontree.PathWindowOptions{ThreadID: threadID.String(), LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
-	selected, completeContext, err := service.coldContextSelection(ctx, metadataReader, threadID, meta)
-	if err != nil {
-		return canonicalThreadView{}, err
-	}
+	projection.items.deferActivity = true
+	var selected []string
+	var completeContext bool
+	var err error
 	var contextProjection sessiontree.ContextReducer
 	var contextSources []sessiontree.Entry
 	nextContext := 0
-	selectedIDs := make(map[string]bool, len(selected))
-	for _, id := range selected {
-		selectedIDs[id] = true
+	var selectedIDs map[string]bool
+	selectContext := func(metadata []sessiontree.PathMetadata) error {
+		selected, completeContext, err = coldContextSelection(metadata)
+		selectedIDs = make(map[string]bool, len(selected))
+		for _, id := range selected {
+			selectedIDs[id] = true
+		}
+		return err
 	}
 	// RetainAppliedSteering can place a request after an intervening model
 	// context. Preserve the selected order while reading canonical pages once.
 	pendingContext := make(map[string]sessiontree.Entry)
-	for {
-		var entries []sessiontree.Entry
-		var page sessiontree.PathMetadataWindow
-		if selective {
-			var projected sessiontree.PathProjectionPage
-			projected, err = projectionReader.PathProjectionWindow(ctx, options, coldProjectionFields)
-			page = projected.PathMetadataWindow
-			for _, source := range projected.Entries {
-				entries = append(entries, source.Entry)
-			}
-		} else {
-			var complete sessiontree.PathEntriesWindow
-			complete, err = reader.PathEntriesWindow(ctx, options)
-			page, entries = complete.PathMetadataWindow, complete.Entries
-		}
-		if err != nil {
-			return canonicalThreadView{}, runtimeHostError(err)
-		}
+	consume := func(entries []sessiontree.Entry) error {
 		projection.resetChanges()
 		if err := projection.append(entries); err != nil {
-			return canonicalThreadView{}, err
+			return err
 		}
 		if completeContext {
 			for _, entry := range entries {
@@ -79,7 +64,7 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 					delete(pendingContext, next.ID)
 					nextContext++
 					if err := contextProjection.Append([]sessiontree.Entry{next}); err != nil {
-						return canonicalThreadView{}, runtimeHostError(err)
+						return runtimeHostError(err)
 					}
 					if next.Message.ModelContextSnapshot != nil || next.ModelContextBaseline != nil {
 						contextSources = append(contextSources, sessiontree.Entry{ID: next.ID, PathDepth: next.PathDepth, TurnID: next.TurnID, RunID: next.RunID, CreatedAt: next.CreatedAt})
@@ -88,13 +73,17 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 			}
 		}
 		projection.items.releaseText()
-		if !page.HasAfter {
-			break
+		return nil
+	}
+	err = scanner.ScanPathProjection(ctx, threadID.String(), meta.LeafID, selectContext, coldProjectionFields, func(page sessiontree.PathProjectionPage) error {
+		entries := make([]sessiontree.Entry, len(page.Entries))
+		for i, source := range page.Entries {
+			entries[i] = source.Entry
 		}
-		if len(entries) == 0 {
-			return canonicalThreadView{}, ErrAuthorityCorrupt
-		}
-		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
+		return consume(entries)
+	})
+	if err != nil {
+		return canonicalThreadView{}, runtimeHostError(err)
 	}
 	projection.items.deferActivity = false
 	var model *ThreadModelContext
@@ -165,29 +154,10 @@ func (projection *threadCanonicalProjection) pendingSteering(turnID identity.Tur
 	return ids
 }
 
-// Select Retry identities with body-free metadata, then feed the already-read
-// complete timeline pages to the same context reducer. Neither Retry nor a late
-// context dependency causes a second complete historical body traversal.
-func (service *threadRuntimeService) coldContextSelection(ctx context.Context, reader sessiontree.PathWindowReader, threadID identity.ThreadID, meta sessiontree.ThreadMeta) ([]string, bool, error) {
-	options := sessiontree.PathWindowOptions{ThreadID: threadID.String(), LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
-	var metadata []sessiontree.PathMetadata
+func coldContextSelection(metadata []sessiontree.PathMetadata) ([]string, bool, error) {
 	required := false
-	for {
-		page, err := reader.PathMetadataWindow(ctx, options)
-		if err != nil {
-			return nil, false, runtimeHostError(err)
-		}
-		metadata = append(metadata, page.Entries...)
-		for _, entry := range page.Entries {
-			required = required || canonicalContextNeedsCompleteValidation(entry.Entry)
-		}
-		if !page.HasAfter {
-			break
-		}
-		if len(page.Entries) == 0 || page.LastEntryID == options.AnchorID {
-			return nil, false, ErrAuthorityCorrupt
-		}
-		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
+	for _, entry := range metadata {
+		required = required || canonicalContextNeedsCompleteValidation(entry.Entry)
 	}
 	if !required {
 		return nil, false, nil

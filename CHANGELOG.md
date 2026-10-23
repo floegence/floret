@@ -62,6 +62,10 @@
 - Defer ordinary local tool presentation bodies during cold actor preparation.
   Reconstruct exact call/result presentations only for selected windows and
   complete reads; retain hosted-tool, Goal, control and provider-context semantics.
+- Reuse one frozen, validated metadata traversal for cold context selection and
+  timeline body pages. Selected bodies retain per-page verification and active
+  ancestry fences; cancellation, deletion and branch changes cannot publish a
+  partial actor. Temporary metadata residency remains proportional to history.
 - Preserve bounded window baselines and observation versions. Cold initialization
   still traverses historical metadata and source pages; no constant-time cold
   window or subsecond first-screen guarantee is introduced.

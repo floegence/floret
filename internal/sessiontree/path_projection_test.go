@@ -31,13 +31,17 @@ func TestProjectionWindowReadsOnlySelectedCanonicalFields(t *testing.T) {
 	}
 	counted := &bodyReadCountingBackend{Backend: backend}
 	repo.backend = counted
-	input := PathWindowOptions{ThreadID: "projection", Direction: PathWindowBefore, Limit: 32}
 	fields := func(PathMetadata) []string { return []string{"content"} }
-	got, err := repo.PathProjectionWindow(t.Context(), input, fields)
+	read := func(ctx context.Context, reader PathProjectionScanner) (PathProjectionPage, error) {
+		var result PathProjectionPage
+		err := reader.ScanPathProjection(ctx, "projection", "", func([]PathMetadata) error { return nil }, fields, func(page PathProjectionPage) error { result = page; return nil })
+		return result, err
+	}
+	got, err := read(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := memory.PathProjectionWindow(t.Context(), input, fields)
+	want, err := read(t.Context(), memory)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("projection differs from memory: %v", err)
 	}
@@ -56,12 +60,12 @@ func TestProjectionWindowReadsOnlySelectedCanonicalFields(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.PathProjectionWindow(t.Context(), input, fields); !errors.Is(err, ErrAuthorityCorrupt) {
+	if _, err := read(t.Context(), repo); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatalf("corrupt selected source accepted: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := repo.PathProjectionWindow(ctx, input, fields); !errors.Is(err, context.Canceled) {
+	if _, err := read(ctx, repo); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
 }

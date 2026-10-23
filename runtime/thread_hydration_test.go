@@ -34,12 +34,8 @@ func (repo *pagedHydrationRepo) Entries(ctx context.Context, id string) ([]sessi
 	repo.inventories++
 	return repo.BackendKernel.Entries(ctx, id)
 }
-func (repo *pagedHydrationRepo) PathProjectionWindow(ctx context.Context, options sessiontree.PathWindowOptions, fields func(sessiontree.PathMetadata) []string) (sessiontree.PathProjectionPage, error) {
-	repo.pages++
-	if repo.pages == repo.failAt {
-		return sessiontree.PathProjectionPage{}, errors.New("injected page failure")
-	}
-	page, err := repo.BackendKernel.PathProjectionWindow(ctx, options, func(source sessiontree.PathMetadata) []string {
+func (repo *pagedHydrationRepo) ScanPathProjection(ctx context.Context, id, leaf string, prepare func([]sessiontree.PathMetadata) error, fields func(sessiontree.PathMetadata) []string, visit func(sessiontree.PathProjectionPage) error) error {
+	return repo.BackendKernel.ScanPathProjection(ctx, id, leaf, prepare, func(source sessiontree.PathMetadata) []string {
 		selected := fields(source)
 		for _, field := range selected {
 			if field == "activity_json" {
@@ -47,11 +43,16 @@ func (repo *pagedHydrationRepo) PathProjectionWindow(ctx context.Context, option
 			}
 		}
 		return selected
+	}, func(page sessiontree.PathProjectionPage) error {
+		repo.pages++
+		if repo.pages == repo.failAt {
+			return errors.New("injected page failure")
+		}
+		if repo.afterPage != nil {
+			repo.afterPage(repo.pages)
+		}
+		return visit(page)
 	})
-	if err == nil && repo.afterPage != nil {
-		repo.afterPage(repo.pages)
-	}
-	return page, err
 }
 
 func (repo *pagedHydrationRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, field string, offset, limit int) (sessiontree.CanonicalBodyChunk, error) {

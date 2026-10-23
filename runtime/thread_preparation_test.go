@@ -23,15 +23,15 @@ type blockedPreparationRepo struct {
 	pages   atomic.Int32
 }
 
-func (r *blockedPreparationRepo) PathProjectionWindow(ctx context.Context, input sessiontree.PathWindowOptions, fields func(sessiontree.PathMetadata) []string) (sessiontree.PathProjectionPage, error) {
+func (r *blockedPreparationRepo) ScanPathProjection(ctx context.Context, id, leaf string, prepare func([]sessiontree.PathMetadata) error, fields func(sessiontree.PathMetadata) []string, visit func(sessiontree.PathProjectionPage) error) error {
 	r.pages.Add(1)
 	r.once.Do(func() { close(r.entered) })
 	select {
 	case <-ctx.Done():
-		return sessiontree.PathProjectionPage{}, ctx.Err()
+		return ctx.Err()
 	case <-r.release:
 	}
-	return r.BackendKernel.PathProjectionWindow(ctx, input, fields)
+	return r.BackendKernel.ScanPathProjection(ctx, id, leaf, prepare, fields, visit)
 }
 func TestColdPreparationSurvivesWaiterCancellationAndSharesWork(t *testing.T) {
 	host, public := testThreadService(t, newBlockingThreadGateway())
@@ -150,11 +150,11 @@ type panicPreparationRepo struct {
 	fail atomic.Bool
 }
 
-func (r *panicPreparationRepo) PathProjectionWindow(ctx context.Context, input sessiontree.PathWindowOptions, fields func(sessiontree.PathMetadata) []string) (sessiontree.PathProjectionPage, error) {
+func (r *panicPreparationRepo) ScanPathProjection(ctx context.Context, id, leaf string, prepare func([]sessiontree.PathMetadata) error, fields func(sessiontree.PathMetadata) []string, visit func(sessiontree.PathProjectionPage) error) error {
 	if r.fail.Swap(false) {
 		panic("injected source failure")
 	}
-	return r.BackendKernel.PathProjectionWindow(ctx, input, fields)
+	return r.BackendKernel.ScanPathProjection(ctx, id, leaf, prepare, fields, visit)
 }
 func TestColdPreparationFailureCanRetryWithoutPublishingPartialView(t *testing.T) {
 	host, public := testThreadService(t, newBlockingThreadGateway())
