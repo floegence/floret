@@ -29,6 +29,12 @@ already available. CI runs these repository-wide tests, vet, focused race
 packages, public conformance helpers, examples, dependency-boundary checks, and
 the reachable vulnerability scan with `GOWORK=off`.
 
+CI gives the core packages, session-tree storage, runtime, and giant-body runtime
+qualification separate race jobs. The runtime jobs use complementary `-skip`
+and `-run` expressions for the exact giant-body test, preserving full coverage
+without making long storage and body qualifications share one 30-minute job.
+Each package retains the 25-minute test timeout; failures do not cancel other suites.
+
 # Published Release Adoption
 
 Repository CI proves that the source tree is internally consistent. After a tag

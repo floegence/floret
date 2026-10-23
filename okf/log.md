@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Split focused race qualification into independent CI suites while
+  preserving every package and test. See [quality gate](workflows/quality-gate.md).
+
 - 2026-10-22: Connect monolithic v2–v5 migration to bounded source scans,
   resumable identity directories and independent canonical publication. Document
   the initial admission wait, exact released repair semantics and source cleanup

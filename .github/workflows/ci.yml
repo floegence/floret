@@ -78,9 +78,13 @@ jobs:
           go run ./cmd/examples/quick-start
 
   race:
-    name: Focused race detection
+    name: Focused race detection (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, sessiontree, runtime, runtime-giant-body]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,14 +96,25 @@ jobs:
           cache: true
 
       - name: Exercise concurrent runtime and Store boundaries
-        run: >-
-          go test -race -p=1 -timeout=25m
-          ./internal/engine
-          ./internal/agentharness
-          ./internal/sessiontree
-          ./storage
-          ./runtime
-          ./tools
+        env:
+          RACE_SUITE: ${{ matrix.suite }}
+        run: |
+          giant_body='^TestThreadLiveBodySQLiteGiantOutputCommitCancelAndRestart$'
+          case "$RACE_SUITE" in
+            core)
+              go test -race -p=1 -timeout=25m ./internal/engine ./internal/agentharness ./storage ./tools
+              ;;
+            sessiontree)
+              go test -race -p=1 -timeout=25m ./internal/sessiontree
+              ;;
+            runtime)
+              go test -race -p=1 -timeout=25m ./runtime -skip "$giant_body"
+              ;;
+            runtime-giant-body)
+              go test -race -p=1 -timeout=25m ./runtime -run "$giant_body"
+              ;;
+            *) exit 1 ;;
+          esac
 
   vulnerability:
     name: Vulnerability scan
