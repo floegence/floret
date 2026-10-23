@@ -4,6 +4,9 @@
   disjoint jobs without extending timeouts or dropping tests. See
   [quality gate](workflows/quality-gate.md).
 
+- 2026-10-23: Document bounded media-retention reads, concurrent-change rejection,
+  and exact contiguous path windows in [storage](api/storage.md#bounded-canonical-maintenance-reads).
+
 - 2026-10-22: Align pending terminal-event waits with exact actor result readiness;
   retain passive receipt admission and subscription-owned waiting. See
   [runtime observation](api/runtime.md#bounded-thread-observation-and-failure-reasons).
