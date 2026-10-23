@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-23: Partition the ordinary runtime race suite into two complete,
+  disjoint jobs without extending timeouts or dropping tests. See
+  [quality gate](workflows/quality-gate.md).
+
 - 2026-10-22: Align pending terminal-event waits with exact actor result readiness;
   retain passive receipt admission and subscription-owned waiting. See
   [runtime observation](api/runtime.md#bounded-thread-observation-and-failure-reasons).

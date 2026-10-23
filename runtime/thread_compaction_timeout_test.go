@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
@@ -87,6 +88,20 @@ func TestIndependentCompactionTimeoutRecoveryAndRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := seedCompactionHistory(t, service, created.ThreadID)
+			waitTerminal := func(turnID identity.TurnID) ThreadView {
+				t.Helper()
+				waited, err := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{
+					ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute,
+				})
+				if err != nil || waited.Reason != ThreadWaitCompleted {
+					t.Fatalf("turn=%s completion=%+v err=%v", turnID, waited, err)
+				}
+				view, err := service.View(t.Context(), created.ThreadID)
+				if err != nil || view.TurnID != turnID || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+					t.Fatalf("turn=%s want=%s activity=%s outcome=%v err=%v", view.TurnID, turnID, view.Activity, view.LastOutcome, err)
+				}
+				return view
+			}
 			admission, err := service.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: created.ThreadID, RequestKey: "compact"})
 			if err != nil {
 				t.Fatal(err)
@@ -101,9 +116,7 @@ func TestIndependentCompactionTimeoutRecoveryAndRestart(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			terminal := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool {
-				return v.TurnID == admission.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
-			})
+			terminal := waitTerminal(admission.TurnID)
 			requests := gateway.Requests()
 			if len(requests) != 5 || requests[3].LogicalRequestID != requests[4].LogicalRequestID || requests[3].AttemptID == requests[4].AttemptID || !reflect.DeepEqual(requests[3].Messages, requests[4].Messages) {
 				t.Fatalf("summary did not recover one frozen request: %+v", requests)
@@ -155,12 +168,14 @@ func TestIndependentCompactionTimeoutRecoveryAndRestart(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(restored.Failure, terminal.Failure) {
 				t.Fatalf("restart=%+v err=%v", restored.Failure, err)
 			}
-			if _, err := service.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: created.ThreadID, RequestKey: "retry-compact"}); err != nil {
+			retried, err := service.(ThreadContextCompactor).CompactContext(t.Context(), CompactContextInput{ThreadID: created.ThreadID, RequestKey: "retry-compact"})
+			if err != nil {
 				t.Fatal(err)
 			}
-			after := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool {
-				return v.TurnID != terminal.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
-			})
+			after := waitTerminal(retried.TurnID)
+			if after.TurnID == terminal.TurnID {
+				t.Fatal("retry reused the failed compaction turn")
+			}
 			if *after.LastOutcome != TurnOutcomeCompleted || after.Failure != nil {
 				t.Fatalf("retry=%+v", after)
 			}

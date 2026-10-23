@@ -84,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [core, sessiontree, runtime, runtime-giant-body]
+        suite: [core, sessiontree, runtime-1, runtime-2, runtime-giant-body]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,8 +107,15 @@ jobs:
             sessiontree)
               go test -race -p=1 -timeout=25m ./internal/sessiontree
               ;;
-            runtime)
-              go test -race -p=1 -timeout=25m ./runtime -skip "$giant_body"
+            runtime-[12])
+              # Alternate sorted names so every test runs once within the existing timeout.
+              shard="${RACE_SUITE#runtime-}"
+              tests="$(go test -race -p=1 -timeout=25m ./runtime -list '^(Test|Example|Fuzz)' |
+                grep -E '^(Test|Example|Fuzz)' | grep -vE "$giant_body" | LC_ALL=C sort |
+                awk -v shard="$shard" 'NR % 2 == shard - 1')"
+              test -n "$tests"
+              pattern="$(printf '%s\n' "$tests" | paste -sd '|' -)"
+              go test -race -p=1 -timeout=25m ./runtime -run "^(${pattern})$"
               ;;
             runtime-giant-body)
               go test -race -p=1 -timeout=25m ./runtime -run "$giant_body"

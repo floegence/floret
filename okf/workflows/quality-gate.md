@@ -29,11 +29,12 @@ already available. CI runs these repository-wide tests, vet, focused race
 packages, public conformance helpers, examples, dependency-boundary checks, and
 the reachable vulnerability scan with `GOWORK=off`.
 
-CI gives the core packages, session-tree storage, runtime, and giant-body runtime
-qualification separate race jobs. The runtime jobs use complementary `-skip`
-and `-run` expressions for the exact giant-body test, preserving full coverage
-without making long storage and body qualifications share one 30-minute job.
-Each package retains the 25-minute test timeout; failures do not cancel other suites.
+CI gives the core packages, session-tree storage, and giant-body runtime
+qualification separate race jobs. The remaining runtime tests, examples, and
+fuzz seeds are listed, sorted, and assigned alternately to two disjoint jobs;
+new tests join this partition automatically. The exact giant-body test remains
+in its own job. Every test runs once, with a 25-minute test timeout and a
+30-minute job limit; failures do not cancel other suites.
 
 # Published Release Adoption
 
