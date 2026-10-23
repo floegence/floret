@@ -191,7 +191,10 @@ func TestThreadLiveBodySQLiteGiantOutputCommitCancelAndRestart(t *testing.T) {
 				}
 				select {
 				case <-settledCtx.Done():
-					t.Fatal("canonical installation did not settle")
+					host.store.lifetimeMu.Lock()
+					backgroundErr := host.store.backgroundErr
+					host.store.lifetimeMu.Unlock()
+					t.Fatalf("canonical installation did not settle: background error=%v", backgroundErr)
 				case <-time.After(10 * time.Millisecond):
 				}
 			}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
 // threadCancellationDiagnostic is intentionally internal. It records the
@@ -23,7 +24,6 @@ func (service *threadRuntimeService) recordCancellation(threadID identity.Thread
 	if service == nil {
 		return
 	}
-	entries, err := service.host.store.repo.Entries(context.Background(), threadID.String())
 	record := threadCancellationDiagnostic{
 		ThreadID: threadID,
 		TurnID:   turnID,
@@ -32,8 +32,9 @@ func (service *threadRuntimeService) recordCancellation(threadID identity.Thread
 		Reason:   reason,
 		At:       time.Now().UTC(),
 	}
-	if err == nil {
-		record.EntryCancelRequested = turnHasCancelRequest(entries, turnID)
+	if reader, ok := service.host.store.repo.(sessiontree.TurnCancellationReader); ok {
+		entry, err := reader.ReadTurnCancellation(context.Background(), threadID.String(), turnID.String())
+		record.EntryCancelRequested = err == nil && entry.ID != ""
 	}
 	service.cancellationMu.Lock()
 	service.cancellations = append(service.cancellations, record)
