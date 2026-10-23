@@ -1,8 +1,5 @@
 # Floret OKF Update Log
 
-- 2026-10-22: Clarify review-before-deliverable ordering and complete final answers
-  after Goal reflection. See [Goals](decisions/thread-goals.md#contract).
-
 - 2026-10-22: Align pending terminal-event waits with exact actor result readiness;
   retain passive receipt admission and subscription-owned waiting. See
   [runtime observation](api/runtime.md#bounded-thread-observation-and-failure-reasons).
