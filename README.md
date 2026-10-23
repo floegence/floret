@@ -956,8 +956,10 @@ one positive timeout. Results distinguish `missing`, `attention_required`,
 `completed` and `timed_out`, in that priority order. Timeout is a normal snapshot;
 caller cancellation, read failure and Host shutdown remain errors. Opt-in pending
 parent-event observation also returns canonical receipts with an `events` reason
-without resuming idle parents. Subscriptions
-wake a fresh authoritative read, including after deletion; they are not replay.
+without resuming idle parents. Terminal receipts wait for the matching active
+execution to install its complete terminal view before an event result returns.
+This uses the existing subscription and deadline without consuming receipts.
+Subscriptions wake a fresh authoritative read, including after deletion; they are not replay.
 A tool may return `tools.BoundedWait` only for a full normal timeout with
 unfinished, nonempty targets. The dispatcher measures that handler, excluding
 approval and batch delay. Engine's single batch guard permits repetition only

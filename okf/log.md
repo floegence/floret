@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Align pending terminal-event waits with exact actor result readiness;
+  retain passive receipt admission and subscription-owned waiting. See
+  [runtime observation](api/runtime.md#bounded-thread-observation-and-failure-reasons).
+
 - 2026-10-22: Resolve cancellation requests through canonical control locators
   during runtime settlement and diagnostics, preserving bounded deadlines and
   original request provenance. See [history performance](workflows/history-performance.md#turn-terminal-settlement).

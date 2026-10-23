@@ -97,9 +97,28 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 				}
 				return ThreadWaitResult{}, err
 			}
-			latest.ParentEvents = &page
 			if len(page.Events) > 0 {
-				latest.Reason = ThreadWaitEvents
+				// Receipts commit before finishSend installs the terminal view. Read
+				// summaries after the receipts, then wait on the existing actor
+				// subscription until that same execution's result is readable.
+				items, err = service.List(waitCtx, in.Scope)
+				if err != nil {
+					if ctx.Err() != nil {
+						return ThreadWaitResult{}, ctx.Err()
+					}
+					if errors.Is(err, context.DeadlineExceeded) && waitCtx.Err() != nil {
+						latest.Reason = ThreadWaitTimedOut
+						return latest, nil
+					}
+					return ThreadWaitResult{}, err
+				}
+				latest = selectWaitThreads(items, targets)
+				if latest.Reason != ThreadWaitMissing && latest.Reason != ThreadWaitAttentionRequired && parentEventsSettled(page, latest.Threads) {
+					latest.ParentEvents = &page
+					latest.Reason = ThreadWaitEvents
+				}
+			} else {
+				latest.ParentEvents = &page
 			}
 		}
 		if latest.Reason != "" {
@@ -131,6 +150,21 @@ func (service *threadRuntimeService) WaitThreads(ctx context.Context, in WaitThr
 		}
 	}
 }
+
+func parentEventsSettled(page ParentEventPage, threads []ThreadSummary) bool {
+	for _, event := range page.Events {
+		switch event.Kind {
+		case ParentEventCompleted, ParentEventFailed, ParentEventCancelled, ParentEventInterrupted, ParentEventTimedOut:
+			for _, thread := range threads {
+				if thread.ID == event.SourceThreadID && thread.TurnID == event.SourceTurnID && thread.RunID == event.SourceRunID && thread.Activity == ThreadActivityActive {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 func selectWaitThreads(items []ThreadSummary, targets []identity.ThreadID) ThreadWaitResult {
 	out := ThreadWaitResult{Threads: make([]ThreadSummary, 0, len(targets)), MissingThreadIDs: []identity.ThreadID{}}
 	byID := make(map[identity.ThreadID]ThreadSummary, len(items))

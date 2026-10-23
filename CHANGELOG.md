@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Return pending child terminal events from bounded waits only after the matching
+  actor installs its complete terminal view. Preserve passive event admission,
+  cancellation, attention priority and the original elapsed timeout.
+
 ## v7.80.1 - 2026-10-22
 
 - Read cancellation requests through canonical control locators so Stop,
@@ -48,7 +54,6 @@
 - Treat SQLite v1 records with `WITHOUT ROWID` as a supported physical layout
   and remove the v1 full-table copy. Physical format upgrades preserve canonical
   record bytes.
-
 
 ## v7.79.0 - 2026-10-22
 
