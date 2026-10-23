@@ -87,9 +87,18 @@ func TestToolHistoryAfterHostedReasoningSurvivesForkAndRestart(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				view := waitThreadView(t, service, threadID, func(v ThreadView) bool {
-					return v.TurnID == receipt.TurnID && v.Activity == ThreadActivityIdle && v.LastOutcome != nil
+				// This checks durable tool history, not SQLite latency under -race.
+				// Observe completion without repeatedly hydrating the full history.
+				waited, err := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{
+					ThreadIDs: []identity.ThreadID{threadID}, Timeout: time.Minute,
 				})
+				if err != nil || waited.Reason != ThreadWaitCompleted {
+					t.Fatalf("thread=%s key=%s completion=%+v err=%v", threadID, key, waited, err)
+				}
+				view, err := service.View(t.Context(), threadID)
+				if err != nil || view.TurnID != receipt.TurnID || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+					t.Fatalf("thread=%s key=%s turn=%s want=%s activity=%s outcome=%v err=%v", threadID, key, view.TurnID, receipt.TurnID, view.Activity, view.LastOutcome, err)
+				}
 				if *view.LastOutcome != TurnOutcomeCompleted {
 					t.Fatalf("thread=%s key=%s turn failed: %+v", threadID, key, view.Failure)
 				}
