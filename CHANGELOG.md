@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep canonical media-retention reads in bounded metadata transactions and
+  reject concurrent changes before returning an inventory. Do not hydrate
+  unrelated history bodies or block foreground reads for a complete sweep.
+- Read contiguous canonical path windows with exact bounded ranges, preserving
+  branch ancestry validation. Reuse SQLite read statements within a transaction
+  and classify interrupted canonical reads as cancellation rather than corruption.
+
 - Return pending child terminal events from bounded waits only after the matching
   actor installs its complete terminal view. Preserve passive event admission,
   cancellation, attention priority and the original elapsed timeout.

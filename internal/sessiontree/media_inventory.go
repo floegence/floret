@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // CanonicalMediaEntries returns every retained journal, including inactive
@@ -20,6 +22,9 @@ type CanonicalThreadMediaReader interface {
 }
 
 func (repo *BackendRepo) CanonicalMediaEntries(ctx context.Context) ([]Entry, error) {
+	if entries, handled, err := repo.canonicalMediaEntries(ctx, ""); handled {
+		return entries, err
+	}
 	var result []Entry
 	err := repo.view(ctx, func(memory *MemoryRepo) error {
 		var err error
@@ -30,6 +35,12 @@ func (repo *BackendRepo) CanonicalMediaEntries(ctx context.Context) ([]Entry, er
 }
 
 func (repo *BackendRepo) CanonicalMediaEntriesForThread(ctx context.Context, threadID string) ([]Entry, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, spi.ErrInvalidArgument
+	}
+	if entries, handled, err := repo.canonicalMediaEntries(ctx, threadID); handled {
+		return entries, err
+	}
 	var result []Entry
 	err := repo.viewThread(ctx, threadID, func(memory *MemoryRepo) error {
 		var err error

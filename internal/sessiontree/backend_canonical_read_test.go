@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 
 type boundedPageBackend struct {
 	spi.Backend
-	gets int
+	gets                     int
+	scans                    int
+	allowedStart, allowedEnd []byte
 }
 
 func (backend *boundedPageBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
@@ -26,8 +29,12 @@ type boundedPageTx struct {
 	backend *boundedPageBackend
 }
 
-func (tx boundedPageTx) Scan(spi.ScanRequest) (spi.ScanPage, error) {
-	return spi.ScanPage{}, errors.New("prepared page scanned historical records")
+func (tx boundedPageTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	if request.Namespace != backendDomainV32Namespace || request.Limit != 5 || len(request.After) != 0 || !bytes.Equal(request.Start, tx.backend.allowedStart) || !bytes.Equal(request.End, tx.backend.allowedEnd) {
+		return spi.ScanPage{}, errors.New("prepared page scanned outside its exact source interval")
+	}
+	tx.backend.scans++
+	return tx.ReadTx.Scan(request)
 }
 
 func (tx boundedPageTx) Get(namespace string, key []byte) ([]byte, error) {
@@ -61,7 +68,7 @@ func TestV32CanonicalPagesReadOnlyRequestedSourceRecords(t *testing.T) {
 			// mutation snapshot. Only canonical locators may serve this read.
 			repo.threadMemoryID, repo.threadMemory = "", nil
 			repo.verifiedThreadLeaves = nil
-			bounded := &boundedPageBackend{Backend: backend}
+			bounded := &boundedPageBackend{Backend: backend, allowedStart: backendDomainEntryKey("thread", count-5), allowedEnd: backendDomainEntryKey("thread", count)}
 			repo.backend = bounded
 			page, err := repo.PathMetadataPage(t.Context(), "thread", "", "", 5)
 			if err != nil || len(page.Entries) != 5 || page.NewestOrdinal != int64(count) {
@@ -71,12 +78,16 @@ func TestV32CanonicalPagesReadOnlyRequestedSourceRecords(t *testing.T) {
 			if err != nil || len(journal.Entries) != 5 || journal.Through != count {
 				t.Fatalf("journal page = %+v, %v", journal, err)
 			}
+			bounded.allowedStart, bounded.allowedEnd = backendDomainEntryKey("thread", 8), backendDomainEntryKey("thread", 13)
 			window, err := repo.PathMetadataWindow(t.Context(), PathWindowOptions{ThreadID: "thread", AnchorID: "entry-0010", Direction: PathWindowAround, Limit: 5})
 			if err != nil || len(window.Entries) != 5 || window.FirstEntryID != "entry-0008" || window.LastEntryID != "entry-0012" {
 				t.Fatalf("path window = %+v, %v", window, err)
 			}
-			// The three pages use exact record reads plus logarithmic ancestry
-			// skips for the old anchor; they must never scan the 1,024-entry journal.
+			// Exact interval scans and logarithmic ancestry remain bounded;
+			// no request may scan the complete 1,024-entry journal.
+			if bounded.scans != 2 {
+				t.Fatalf("bounded scans=%d", bounded.scans)
+			}
 			if bounded.gets > 160 {
 				t.Fatalf("bounded pages read %d records", bounded.gets)
 			}

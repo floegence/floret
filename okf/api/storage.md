@@ -467,3 +467,19 @@ changed directory records before deleting source bytes. Released recovery frame
 checksums, intermediate authority, UTF-8 repair and fallback-title repair retain
 their exact semantics. Locator and journal cleanup are separate bounded batches;
 the final snapshot removal and source-version reset commit together.
+
+## Bounded canonical maintenance reads
+
+Current-schema media retention scans immutable journal metadata in bounded
+transactions, including archived threads, inactive paths, queued attachments,
+and turn markers. It does not materialize unrelated text or hold the repository
+mutex for a whole-store scan. A final transaction verifies thread metadata,
+journal counts and root membership before accepting the inventory. Concurrent
+mutation returns a conflict; unpublished migration sources prevent global
+retention. Interrupted reads retain their context cancellation classification.
+
+Contiguous active-path windows read exactly the requested ordinal interval,
+verify keys, depths and parent links, and retain the locator walker for branched
+paths. This changes neither canonical bytes nor the permanent migration lineage.
+See [bounded media regressions](../../internal/sessiontree/media_inventory_bounded_test.go)
+and [path equivalence](../../internal/sessiontree/backend_linear_page_test.go).

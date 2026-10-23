@@ -48,10 +48,16 @@ func (repo *BackendRepo) Entry(ctx context.Context, threadID, entryID string) (E
 
 // Canonical pages resolve only their requested source records after the
 // thread's preparation gate. Locator reads never hydrate a complete journal.
-func (repo *BackendRepo) canonicalThreadView(ctx context.Context, threadID string, direct func(spi.ReadTx, ThreadMeta) error, memoryRead func(*MemoryRepo) error) error {
+func (repo *BackendRepo) canonicalThreadView(ctx context.Context, threadID string, direct func(spi.ReadTx, ThreadMeta) error, memoryRead func(*MemoryRepo) error) (resultErr error) {
 	if repo == nil || ctx == nil || strings.TrimSpace(threadID) == "" {
 		return spi.ErrInvalidArgument
 	}
+	defer func() {
+		// Interrupted I/O is not evidence that canonical authority is corrupt.
+		if err := ctx.Err(); err != nil {
+			resultErr = err
+		}
+	}()
 	if repo.waitForReady != nil {
 		if err := repo.waitForReady(ctx); err != nil {
 			return err
@@ -181,6 +187,9 @@ func visitCanonicalPage(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, lea
 		}
 	}
 	page.NewestOrdinal = node.Depth
+	if node.Depth == int64(node.Ordinal)+1 && limit <= 256 {
+		return visitLinearCanonicalPage(ctx, tx, meta, node, limit, visit)
+	}
 	for count := 0; count < limit; count++ {
 		if err := ctx.Err(); err != nil {
 			return PathPage{}, err

@@ -306,6 +306,7 @@ type sqliteTx struct {
 	tx              *sql.Tx
 	active          bool
 	readOnly        bool
+	getStatement    *sql.Stmt
 	putStatement    *sql.Stmt
 	deleteStatement *sql.Stmt
 }
@@ -316,10 +317,15 @@ func (tx *sqliteTx) Get(namespace string, key []byte) ([]byte, error) {
 	if err := tx.validate(namespace, key); err != nil {
 		return nil, err
 	}
+	if tx.getStatement == nil {
+		statement, err := tx.tx.PrepareContext(tx.ctx, `SELECT value FROM floret_backend_records WHERE namespace = ? AND key = ?`)
+		if err != nil {
+			return nil, classifySQLiteError(tx.ctx, err)
+		}
+		tx.getStatement = statement
+	}
 	var value []byte
-	err := tx.tx.QueryRowContext(tx.ctx, `
-		SELECT value FROM floret_backend_records WHERE namespace = ? AND key = ?
-	`, namespace, key).Scan(&value)
+	err := tx.getStatement.QueryRowContext(tx.ctx, namespace, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, spi.ErrNotFound
 	}
