@@ -88,9 +88,22 @@ func scanPathProjection(ctx context.Context, reader PathWindowReader, threadID, 
 }
 
 func (repo *BackendRepo) ScanPathProjection(ctx context.Context, threadID, leafID string, prepare func([]PathMetadata) error, fields func(PathMetadata) []string, visit func(PathProjectionPage) error) error {
-	if fields == nil {
+	if repo == nil || ctx == nil || fields == nil {
 		return spi.ErrInvalidArgument
 	}
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.ScanPathProjection(ctx, threadID, leafID, prepare, fields, visit)
+	}
+	release, err := repo.migrationGate.foregroundRead(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return scanPathProjection(ctx, repo, threadID, leafID, prepare, func(page PathMetadataWindow) (PathProjectionPage, error) {
 		var result PathProjectionPage
 		err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {

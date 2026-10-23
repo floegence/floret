@@ -13,6 +13,7 @@ type migrationGate struct {
 	changed           chan struct{}
 	active            bool
 	foregroundWaiters int
+	foregroundReaders int
 	backgroundCancel  context.CancelFunc
 }
 
@@ -36,7 +37,7 @@ func (gate *migrationGate) acquire(ctx context.Context, foreground bool) (contex
 			gate.mu.Unlock()
 			return nil, nil, err
 		}
-		if !gate.active && (foreground || gate.foregroundWaiters == 0) {
+		if !gate.active && (foreground || gate.foregroundWaiters == 0 && gate.foregroundReaders == 0) {
 			break
 		}
 		changed := gate.changed
@@ -62,6 +63,31 @@ func (gate *migrationGate) acquire(ctx context.Context, foreground bool) (contex
 		gate.active, gate.backgroundCancel = false, nil
 		gate.signal()
 		gate.mu.Unlock()
+	}, nil
+}
+
+// A multi-page foreground read yields no canonical authority and holds no
+// transaction or exclusive migration lock. It only pauses background work at
+// its next cancellation boundary, avoiding repeated restarts between pages.
+// Explicit preparation and deletion remain eligible while the read is active.
+func (gate *migrationGate) foregroundRead(ctx context.Context) (func(), error) {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if gate.changed == nil {
+		gate.changed = make(chan struct{})
+	}
+	gate.foregroundReaders++
+	if gate.backgroundCancel != nil {
+		gate.backgroundCancel()
+	}
+	return func() {
+		gate.mu.Lock()
+		defer gate.mu.Unlock()
+		gate.foregroundReaders--
+		gate.signal()
 	}, nil
 }
 

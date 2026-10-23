@@ -126,6 +126,32 @@ func TestProjectionScanRejectsInvalidationWithoutReturningSuccess(t *testing.T) 
 			if !errors.Is(err, want) {
 				t.Fatalf("mutation=%s got=%v want=%v", mutation, err, want)
 			}
+			ctx, stop := context.WithTimeout(t.Context(), time.Second)
+			defer stop()
+			_, release, err := repo.migrationGate.acquire(ctx, false)
+			if err != nil {
+				t.Fatalf("failed scan retained foreground priority: %v", err)
+			}
+			release()
 		})
 	}
+}
+
+func TestProjectionScanPanicReleasesForegroundPriority(t *testing.T) {
+	_, _, repo := linearPageFixture(t, false)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected injected callback panic")
+			}
+		}()
+		_ = repo.ScanPathProjection(t.Context(), "thread", "", func([]PathMetadata) error { panic("injected") }, func(PathMetadata) []string { return nil }, func(PathProjectionPage) error { return nil })
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, release, err := repo.migrationGate.acquire(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 }

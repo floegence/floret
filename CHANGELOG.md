@@ -72,6 +72,10 @@
 - Omit ordinary tool parameters and results from cold timeline reads when they
   are outside the exact checked-context selection. Preserve selected context,
   control-result equality validation, Goal inputs and tool presentation sources.
+- Pause background migration between transactions while a foreground cold
+  projection reads its pages. Reuse the existing migration scheduler; explicit
+  preparation and deletion remain eligible, and background work resumes after
+  the final reader settles, including failure, cancellation and panic.
 
 ## v7.80.2 - 2026-10-23
 

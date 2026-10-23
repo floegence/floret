@@ -351,6 +351,13 @@ active preparations; deletion and shutdown cancel and join both active and queue
 preparations. Failure publishes no partial view and a subsequent explicit read may
 retry. No worker runs a provider merely to render an idle historical conversation.
 
+The storage projection scan marks foreground read interest in the existing
+migration scheduler. It cancels a background attempt at its next transaction
+boundary and prevents immediate restart between read pages. It holds neither an
+exclusive migration lock nor a storage transaction; explicit preparation and
+deletion can still proceed. The final reader releases priority on every return
+or panic so background preparation resumes.
+
 Cold initialization first selects Retry identities using body-free metadata, then
 feeds the same complete source pages into the canonical timeline and checked
 context reducers. Compaction releases old context bodies. Exact managed-context

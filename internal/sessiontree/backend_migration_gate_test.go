@@ -85,3 +85,77 @@ func TestMigrationGateCancelledWaitReleasesForegroundPriority(t *testing.T) {
 	}
 	release()
 }
+
+func TestMigrationGateForegroundReadPausesBackgroundWithoutOwningMigration(t *testing.T) {
+	var gate migrationGate
+	background, releaseBackground, err := gate.acquire(t.Context(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseFirst, err := gate.foregroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseSecond, err := gate.foregroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(background.Err(), context.Canceled) {
+		t.Fatal("foreground read did not preempt active background work")
+	}
+	releaseBackground()
+
+	// Reads must not block the same thread's explicit migration or deletion.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, releaseForeground, err := gate.acquire(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseForeground()
+
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, release, err := gate.acquire(t.Context(), false)
+		if err == nil {
+			close(entered)
+			release()
+		}
+		done <- err
+	}()
+	releaseFirst()
+	select {
+	case <-entered:
+		t.Fatal("background resumed with another foreground reader active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseSecond()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background did not resume after all reads settled")
+	}
+	if err := t.Context().Err(); err != nil {
+		t.Fatal("foreground read canceled the Host")
+	}
+}
+
+func TestMigrationGateCancelledReadDoesNotBlockBackground(t *testing.T) {
+	var gate migrationGate
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := gate.foregroundRead(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, release, err := gate.acquire(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
