@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v7.80.0 - 2026-10-22
+
+- Validate every legacy admission collection before filtering thread closures,
+  including malformed orphan records and orphan terminal proofs.
 
 - Preserve released fallback-title repair, reject incomplete source identity
   directories before cleanup, and retain failed snapshots unchanged. Resume

@@ -223,6 +223,31 @@ func TestSnapshotPreparationRejectsEmptyLegacyShapeDrift(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreparationRejectsUnselectedLegacyAuthority(t *testing.T) {
+	for version := 2; version <= 4; version++ {
+		for _, field := range []string{"leases", "lease_generation", "subagent_inputs", "turn_admissions", "turn_finishes"} {
+			t.Run(fmt.Sprintf("v%d/%s", version, field), func(t *testing.T) {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(legacyEmptyMemoryState(t, version), &fields); err != nil {
+					t.Fatal(err)
+				}
+				fields[field] = json.RawMessage(`{"orphan":"invalid"}`)
+				raw, _ := json.Marshal(fields)
+				if _, err := DecodeMemoryState(raw, time.Now); err == nil {
+					t.Fatal("fixture is accepted by the released decoder")
+				}
+				backend, source := installSnapshotImportFixture(t, raw)
+				if err := PrepareHistoricalSnapshot(t.Context(), backend, time.Now); !errors.Is(err, ErrAuthorityCorrupt) {
+					t.Fatalf("invalid unselected authority accepted: %v", err)
+				}
+				if !bytes.Equal(source, backend.records[backendDomainNamespace][string(backendStateKey)]) || len(backend.records[backendDomainV32Namespace]) != 0 {
+					t.Fatal("invalid source changed or published")
+				}
+			})
+		}
+	}
+}
+
 func TestSnapshotPreparationRejectsUnownedDirectoryRows(t *testing.T) {
 	backend, source := snapshotLineageFixture(t, 5)
 	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
