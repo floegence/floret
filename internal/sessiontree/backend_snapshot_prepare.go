@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -353,8 +354,44 @@ func verifySnapshotSourceInventory(ctx context.Context, source *snapshotEffectiv
 		}
 	}
 	if version < 5 {
+		orphans := map[string]bool{}
+		// The released decoder types these raw collections before discarding
+		// obsolete lifecycle mirrors. Scope filtering must not hide malformed
+		// members, including records whose thread no longer exists.
+		for name, shape := range map[string]reflect.Type{
+			"leases":           reflect.TypeFor[map[string]legacyTurnLease](),
+			"lease_generation": reflect.TypeFor[map[string]int64](),
+			"subagent_inputs":  reflect.TypeFor[map[string][]SubAgentInputRecord](),
+			"turn_admissions":  reflect.TypeFor[map[string]legacyTurnAdmission](),
+			"turn_finishes":    reflect.TypeFor[map[string]legacyTurnFinish](),
+		} {
+			value, found, err := source.field(ctx, name)
+			if err != nil || !found {
+				return errors.Join(ErrAuthorityCorrupt, err)
+			}
+			if err := validateSnapshotTypedValue(ctx, source.tx, shape, value, snapshotSourceKey("payload", name)); err != nil {
+				return err
+			}
+			keys, err := source.members(ctx, name)
+			if err != nil {
+				return err
+			}
+			for _, key := range keys {
+				owner := key
+				if name == "turn_admissions" || name == "turn_finishes" {
+					owner, _, _ = strings.Cut(key, "\x00")
+				}
+				if _, found, err := source.member(ctx, "threads", owner); err != nil {
+					return err
+				} else if !found {
+					orphans[owner] = true
+				}
+			}
+		}
 		// Even an empty store must satisfy the released legacy shape checks.
-		state, err := loadEffectiveSnapshotScopedState(ctx, source, version, map[string]bool{})
+		// Include orphan mirrors so their exact admission proof checks cannot
+		// disappear when the live threads are prepared independently.
+		state, err := loadEffectiveSnapshotScopedState(ctx, source, version, orphans)
 		if err != nil {
 			return err
 		}

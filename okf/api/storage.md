@@ -62,12 +62,13 @@ and redacted observation values fail closed. Custom observation entries retain
 their original content and never advance execution identity. The migration
 preserves entry IDs, ordering, timestamps, Raw/RawHash, final-output
 references, provider state, and all earlier migration edges; it writes the v14
-records and removes v13 records in one transaction.
+records within atomic thread-closure publication. Source retirement waits
+for complete inventory verification.
 
 The v14 -> v15 edge adds typed thread references and the optional referenced
 ThreadID. It validates exact v14 authority, preserves all canonical bytes,
-request fingerprints and execution identities, and installs v15 in the same
-startup transaction. v14 rejects new thread-reference shapes, including queued
+request fingerprints and execution identities, and applies the transform inside
+the validated thread closure before atomic publication. v14 rejects new thread-reference shapes, including queued
 input; current v15 opens without rewriting records. Derived query metadata stores only canonical source locators and record attributes,
 maintained in the same canonical transaction. Startup verifies their source
 correspondence. Full-text indexes and term postings are prohibited; frozen
@@ -141,9 +142,11 @@ SQLite physical format 5 removes all full-text storage. The transactional
 4 -> 5 edge drops search documents and postings while preserving opaque
 canonical records byte-for-byte. Earlier 2 -> 3 and 3 -> 4 edges remain solely
 as migration steps; no terms are constructed during them. The logical 9 -> 10
-upgrade, removal of legacy KV terms, metadata initialization and final canonical
-verification share the runtime startup transaction. Failure, cancellation and
-panic roll back all layers together.
+upgrade and physical retirement commit during bounded owner setup. The Host
+worker removes legacy KV terms and prepares metadata in bounded transactions;
+canonical thread publication includes final invariant verification. Failure,
+cancellation and panic roll back the active transaction and retain resumable
+source authority until complete verification.
 
 The canonical owner uses one metadata-only KV implementation for every backend.
 No message-body duplication, token inventory or native search capability is
@@ -313,7 +316,7 @@ rewriting a reference. Missing or ambiguous authority fails without mutation.
 
 Only proven boundary references and their Raw/hash representations change. All
 other durable facts and unavailable historical decision evidence remain intact.
-Migration, schema update and current validation share one startup transaction;
+Migration and current validation precede atomic thread-closure publication;
 read-only inspection runs the same parser in its disposable overlay. Repeated
 current startup does not rewrite canonical bytes. Runtime accepts canonical
 references only and never guesses a replacement tool exchange.
@@ -337,7 +340,8 @@ admits a typed Goal continuation with durable requested intent and no user entry
 historical validators retain their released pure-compaction constraints. Migration
 preserves every canonical fact and earlier edge, changes the writer envelope in
 the existing namespace, and rejects older writers. Invalid source, future schema,
-write failure, cancellation and panic roll back the entire startup transaction.
+write failure, cancellation and panic roll back the active publication transaction
+and preserve retained source records for restart.
 Current restart is byte-stable. See [Goal execution](../decisions/thread-goals.md).
 
 ## Exact source-locator reads
