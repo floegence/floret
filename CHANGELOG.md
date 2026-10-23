@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Initialize the canonical item projection with an absent Goal before the first
+  entry, so empty-thread full and bounded views agree without invalid Goal state.
+
 - Reuse published thread readiness during current-store startup instead of
   revalidating every historical entry, compaction prefix and related thread.
   Preserve full migration and missing/stale metadata preparation, explicit
