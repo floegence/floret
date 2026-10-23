@@ -32,24 +32,25 @@ func TestThreadContextBudgetFailureSurvivesRestartAndAllowsRecovery(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "weather"}, RequestKey: "send-budget"}); err != nil {
-		t.Fatal(err)
-	}
-	waitTerminal := func() ThreadView {
+	waitTerminal := func(turnID identity.TurnID) ThreadView {
 		t.Helper()
 		waited, err := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{
 			ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute,
 		})
 		if err != nil || waited.Reason != ThreadWaitCompleted {
-			t.Fatalf("terminal wait=%+v err=%v", waited, err)
+			t.Fatalf("turn=%s completion=%+v err=%v", turnID, waited, err)
 		}
 		view, err := service.View(t.Context(), created.ThreadID)
-		if err != nil || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
-			t.Fatalf("terminal activity=%s outcome=%v err=%v", view.Activity, view.LastOutcome, err)
+		if err != nil || view.TurnID != turnID || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+			t.Fatalf("turn=%s want=%s activity=%s outcome=%v err=%v", view.TurnID, turnID, view.Activity, view.LastOutcome, err)
 		}
 		return view
 	}
-	failed := waitTerminal()
+	receipt, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "weather"}, RequestKey: "send-budget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := waitTerminal(receipt.TurnID)
 	if failed.Failure == nil || failed.Failure.Code != ThreadTurnFailureContextBudgetInvalid || !strings.Contains(failed.Failure.Message, "request_safe_limit=-205") {
 		t.Fatalf("failure=%#v", failed.Failure)
 	}
@@ -80,10 +81,11 @@ func TestThreadContextBudgetFailureSurvivesRestartAndAllowsRecovery(t *testing.T
 	if err != nil || restored.Failure == nil || *restored.Failure != *failed.Failure {
 		t.Fatalf("restored failure=%#v err=%v", restored.Failure, err)
 	}
-	if _, err := service.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: restored.TurnID, RequestKey: "retry-budget"}); err != nil {
+	retried, err := service.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: restored.TurnID, RequestKey: "retry-budget"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	recovered := waitTerminal()
+	recovered := waitTerminal(retried.TurnID)
 	if *recovered.LastOutcome != TurnOutcomeCompleted || recovered.Failure != nil || len(gateway.Requests()) != 1 {
 		t.Fatalf("recovered=%#v requests=%d", recovered, len(gateway.Requests()))
 	}
