@@ -69,6 +69,9 @@
 - Preserve bounded window baselines and observation versions. Cold initialization
   still traverses historical metadata and source pages; no constant-time cold
   window or subsecond first-screen guarantee is introduced.
+- Omit ordinary tool parameters and results from cold timeline reads when they
+  are outside the exact checked-context selection. Preserve selected context,
+  control-result equality validation, Goal inputs and tool presentation sources.
 
 ## v7.80.2 - 2026-10-23
 

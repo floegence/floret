@@ -365,6 +365,12 @@ still scales with history. A bounded cold-first-window redesign and its global
 context/interaction membership contract remain separate work; current warm-window
 bounds must not be cited as cold-start bounds.
 
+Ordinary local tool arguments and results outside the exact checked-context
+selection are not timeline text and need no cold body read. Their canonical
+call/result identities, status, attachments and presentation sources remain
+available. Selected context, Goal inputs and control-owned physical results
+retain complete bodies for their existing semantic validation.
+
 A canonical page shares fully validated duplicate body bytes within its one
 read transaction, retaining at most 1 MiB. Larger bodies are still read and
 validated completely without entering this page cache. Later transactions

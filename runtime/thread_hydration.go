@@ -34,11 +34,17 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	var contextSources []sessiontree.Entry
 	nextContext := 0
 	var selectedIDs map[string]bool
+	controlResults := make(map[string]bool)
 	selectContext := func(metadata []sessiontree.PathMetadata) error {
 		selected, completeContext, err = coldContextSelection(metadata)
 		selectedIDs = make(map[string]bool, len(selected))
 		for _, id := range selected {
 			selectedIDs[id] = true
+		}
+		for _, source := range metadata {
+			if signal := source.Entry.Message.ControlSignal; signal != nil {
+				controlResults[threadToolKey(identity.TurnID(source.Entry.TurnID), identity.RunID(source.Entry.RunID), signal.CallID)] = true
+			}
 		}
 		return err
 	}
@@ -75,7 +81,12 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		projection.items.releaseText()
 		return nil
 	}
-	err = scanner.ScanPathProjection(ctx, threadID.String(), meta.LeafID, selectContext, coldProjectionFields, func(page sessiontree.PathProjectionPage) error {
+	fields := func(source sessiontree.PathMetadata) []string {
+		entry := source.Entry
+		control := controlResults[threadToolKey(identity.TurnID(entry.TurnID), identity.RunID(entry.RunID), entry.Message.ToolCallID)]
+		return coldProjectionFields(source, selectedIDs[entry.ID], control)
+	}
+	err = scanner.ScanPathProjection(ctx, threadID.String(), meta.LeafID, selectContext, fields, func(page sessiontree.PathProjectionPage) error {
 		entries := make([]sessiontree.Entry, len(page.Entries))
 		for i, source := range page.Entries {
 			entries[i] = source.Entry
@@ -112,15 +123,22 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	return canonical, err
 }
 
-func coldProjectionFields(source sessiontree.PathMetadata) []string {
+func coldProjectionFields(source sessiontree.PathMetadata, contextSelected, controlResult bool) []string {
 	fields := make([]string, 0, len(source.Bodies))
 	localTool := source.Entry.Type == sessiontree.EntryToolCall || source.Entry.Type == sessiontree.EntryToolResult
 	for _, body := range source.Bodies {
 		// Only ordinary local activity has an exact call/result reconstruction.
 		// Hosted tools and Goal keep their existing complete semantic reducer.
-		if body.Field != "activity_json" || !localTool || source.Entry.Message.ToolName == "goal" {
-			fields = append(fields, body.Field)
+		if body.Field == "activity_json" && localTool && source.Entry.Message.ToolName != "goal" {
+			continue
 		}
+		// Local tool parameters and results have no timeline text. The checked
+		// context still receives every selected body; Goal and control-pair
+		// validation retain their semantic inputs even outside that selection.
+		if localTool && !contextSelected && !controlResult && source.Entry.Message.ToolName != "goal" && (body.Field == "arguments" || body.Field == "content") {
+			continue
+		}
+		fields = append(fields, body.Field)
 	}
 	return fields
 }

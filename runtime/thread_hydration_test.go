@@ -24,6 +24,7 @@ type pagedHydrationRepo struct {
 	failAt                        int
 	afterPage                     func(int)
 	activityFields, activityReads int
+	toolBodyFields                int
 }
 
 func (repo *pagedHydrationRepo) Path(ctx context.Context, id, leaf string) ([]sessiontree.Entry, error) {
@@ -40,6 +41,9 @@ func (repo *pagedHydrationRepo) ScanPathProjection(ctx context.Context, id, leaf
 		for _, field := range selected {
 			if field == "activity_json" {
 				repo.activityFields++
+			}
+			if (source.Entry.Type == sessiontree.EntryToolCall || source.Entry.Type == sessiontree.EntryToolResult) && (field == "arguments" || field == "content") {
+				repo.toolBodyFields++
 			}
 		}
 		return selected
@@ -89,7 +93,13 @@ func TestColdPagedHydrationMatchesExactFrozenCanonicalView(t *testing.T) {
 		if i > 0 {
 			kind, role = sessiontree.EntryToolResult, session.Tool
 		}
-		appendEntry(sessiontree.Entry{ID: fmt.Sprint("tool-", i), Type: kind, Message: session.Message{Role: role, ToolName: "read", ToolCallID: "tool", Activity: presentation}})
+		message := session.Message{Role: role, ToolName: "read", ToolCallID: "tool", Activity: presentation}
+		if i == 0 {
+			message.ToolArgs = "{}"
+		} else {
+			message.Content = strings.Repeat("large historical result 🌸", 100)
+		}
+		appendEntry(sessiontree.Entry{ID: fmt.Sprint("tool-", i), Type: kind, Message: message})
 	}
 	appendEntry(sessiontree.Entry{ID: "completed", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
 	meta, err := host.store.repo.Thread(t.Context(), id.String())
@@ -123,6 +133,9 @@ func TestColdPagedHydrationMatchesExactFrozenCanonicalView(t *testing.T) {
 	}
 	if repo.activityFields != 0 || repo.activityReads != 0 {
 		t.Fatalf("cold preparation read historical tool presentations: selected=%d reads=%d", repo.activityFields, repo.activityReads)
+	}
+	if repo.toolBodyFields != 0 {
+		t.Fatalf("timeline read irrelevant tool bodies: %d", repo.toolBodyFields)
 	}
 	complete, err := service.completeViewResult(t.Context(), got.ThreadView, nil)
 	if err != nil {
@@ -239,6 +252,29 @@ func TestColdHydrationPreservesContextDependencyValidation(t *testing.T) {
 	}
 }
 
+func TestColdProjectionFieldsKeepSemanticBodies(t *testing.T) {
+	for _, test := range []struct {
+		name, tool        string
+		selected, control bool
+		want              []string
+	}{
+		{"ordinary timeline", "read", false, false, []string{"reasoning", "control_output"}},
+		{"selected context", "read", true, false, []string{"content", "arguments", "reasoning", "control_output"}},
+		{"control validation", "read", false, true, []string{"content", "arguments", "reasoning", "control_output"}},
+		{"goal presentation", "goal", false, false, []string{"content", "arguments", "reasoning", "control_output", "activity_json"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := sessiontree.PathMetadata{Entry: sessiontree.Entry{Type: sessiontree.EntryToolResult, Message: session.Message{ToolName: test.tool}}}
+			for _, field := range []string{"content", "arguments", "reasoning", "control_output", "activity_json"} {
+				source.Bodies = append(source.Bodies, sessiontree.CanonicalField{Field: field})
+			}
+			if got := coldProjectionFields(source, test.selected, test.control); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("selected fields = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestColdPublicWindowUsesFrozenPagesWithoutCompleteInventory(t *testing.T) {
 	host, public := testThreadService(t, newBlockingThreadGateway())
 	service := public.(*threadRuntimeService)
@@ -295,6 +331,8 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	for i := range 520 {
 		add(sessiontree.Entry{ID: fmt.Sprint("answer-", i), TurnID: "first", RunID: "run", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "answer", Content: "historical body 🌸"}})
 	}
+	add(sessiontree.Entry{ID: "discarded-call", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "read", ToolCallID: "discarded", ToolArgs: "{}"}})
+	add(sessiontree.Entry{ID: "discarded-result", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "read", ToolCallID: "discarded", Content: strings.Repeat("discarded context body", 1000), ToolResult: &session.ToolResultView{Status: "success"}}})
 	add(sessiontree.Entry{ID: "steer", TurnID: "first", RunID: "run", Type: sessiontree.EntrySteeringRequested, RequestKey: "steer", RequestFingerprint: "steer", Message: session.Message{Role: session.User, Content: "retained correction"}})
 	add(sessiontree.Entry{ID: "managed", TurnID: "first", RunID: "run", Type: sessiontree.EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "workspace", Title: "Workspace", Text: "retained managed fact"}}}}})
 	payload, err := json.Marshal(sessiontree.SteeringResolution{SteeringID: "steer"})
@@ -304,6 +342,8 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	add(sessiontree.Entry{ID: "applied", TurnID: "first", RunID: "run", Type: sessiontree.EntrySteeringApplied, Payload: payload})
 	add(sessiontree.Entry{ID: "done", TurnID: "first", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
 	add(sessiontree.Entry{ID: "retry", TurnID: "second", RunID: "run2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{sessiontree.RetrySourceTurnIDMetadataKey: "first", sessiontree.RetrySourceEntryIDMetadataKey: "user"}})
+	add(sessiontree.Entry{ID: "retained-call", TurnID: "second", RunID: "run2", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "read", ToolCallID: "retained", ToolArgs: "{}"}})
+	add(sessiontree.Entry{ID: "retained-result", TurnID: "second", RunID: "run2", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "read", ToolCallID: "retained", Content: "retained context body", ToolResult: &session.ToolResultView{Status: "success"}}})
 	add(sessiontree.Entry{ID: "final", TurnID: "second", RunID: "run2", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "final", Content: "retained answer"}})
 	add(sessiontree.Entry{ID: "complete", TurnID: "second", RunID: "run2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
 	meta, err := host.store.repo.Thread(t.Context(), id.String())
@@ -331,5 +371,8 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	b, _ := json.Marshal(want.ThreadView)
 	if string(a) != string(b) || repo.paths != 0 || repo.pages != 3 {
 		t.Fatalf("Retry projection differs: paths=%d pages=%d", repo.paths, repo.pages)
+	}
+	if repo.toolBodyFields != 2 {
+		t.Fatalf("selected context must read both retained bodies and no discarded bodies: %d", repo.toolBodyFields)
 	}
 }
