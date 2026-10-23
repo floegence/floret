@@ -2,10 +2,15 @@
 
 ## Unreleased
 
+- Preserve released fallback-title repair, reject incomplete source identity
+  directories before cleanup, and retain failed snapshots unchanged. Resume
+  identity-directory batches after write failure, cancellation, panic or restart.
+
 - Add bounded immutable-source indexes for released snapshot recovery frames
   and root inventories. Match released checksum serialization, validate each
   intermediate authority state, and preserve atomic locator/checkpoint rollback.
-  These migration primitives do not yet replace the monolithic startup gate.
+  Connect these primitives to the production startup worker with resumable
+  identity-directory publication and bounded source cleanup.
 
 - Bound resident query continuations; reconstruct cold histories outside write
   transactions and validate their snapshot before mutation. Traverse canonical
@@ -17,7 +22,8 @@
 
 - Add optional bounded record reads and source-bound resumable indexing primitives
   for historical snapshot migration; retain exact released UTF-8 repairs.
-  Monolithic snapshot startup still uses the complete legacy migration boundary.
+  Monolithic v2–v5 stores reserve historical identities before admitting new
+  threads, then publish independently through the canonical owner.
 
 - Add `Host.ThreadMediaInventory` so hosts can retain canonical media by thread
   without collecting descriptors for every thread in one in-memory snapshot.

@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-22: Connect monolithic v2–v5 migration to bounded source scans,
+  resumable identity directories and independent canonical publication. Document
+  the initial admission wait, exact released repair semantics and source cleanup
+  checks in [storage](api/storage.md#resumable-canonical-preparation).
+
 - 2026-10-22: Add migration-only source locators for v5 recovery journals and
   historical root inventories. Preserve released patch ordering and intermediate
   validation, source fingerprints and checkpoint rollback; the monolithic

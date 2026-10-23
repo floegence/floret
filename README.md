@@ -1147,10 +1147,14 @@ batches; the complete validated thread publishes atomically. Foreground
 preparation takes priority over background history. Already published threads
 and new conversations remain usable if another historical thread fails.
 
-Monolithic v2–v5 snapshots still use the complete legacy migration boundary
-before canonical operations become available. The Host and migration status
-remain available during that work. No operation reads partially migrated state;
-failed preparation retains the source and can be retried explicitly.
+Monolithic v2–v5 snapshots first scan immutable source bytes in resumable,
+bounded batches and reserve historical identities, including deleted identities
+and origin request keys. The Host and migration status remain available; new
+thread admission waits cancellably for this initial identity scan. The same
+canonical owner then publishes historical threads independently. Source locators
+and the private identity directory contain no transcript copies and never serve
+runtime reads. Cleanup checks the complete source inventory before retiring
+records in bounded batches. Failed preparation retains its source for retry.
 
 Applications cannot use a Source as a lifecycle query path. Teams implementing
 a physical backend use the advanced `storage/spi` contracts and their

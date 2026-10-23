@@ -207,6 +207,9 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 				return putBackendDomainRecordContext(ctx, tx, repo.domainFormat(), backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest)
 			}
 			if manifest.MigrationPhase == "verify" {
+				if source.version < 6 {
+					return nil // Verify source history outside the write transaction.
+				}
 				page, err := tx.Scan(spi.ScanRequest{Namespace: source.namespace, After: manifest.MigrationCursor, Limit: backendThreadEntryPageSize})
 				if err != nil {
 					return err
@@ -248,7 +251,10 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 				migrated = true
 				return putBackendDomainRecordContext(ctx, tx, repo.domainFormat(), backendDomainKey(backendDomainRecordManifest), backendDomainRecordManifest, "", "", 0, manifest)
 			}
-			if manifest.MigrationPhase == "cleanup" {
+			if manifest.MigrationPhase == "cleanup" || manifest.MigrationPhase == "snapshot_cleanup" {
+				if manifest.MigrationPhase == "snapshot_cleanup" {
+					manifest.MigrationCursor = nil
+				}
 				page, err := tx.Scan(spi.ScanRequest{Namespace: source.namespace, After: manifest.MigrationCursor, Limit: backendThreadEntryPageSize})
 				if err != nil {
 					return err
@@ -275,6 +281,16 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 					manifest.MigrationCursor = append(manifest.MigrationCursor[:0], page.Next...)
 					migrated = true
 				} else {
+					if source.version < 6 {
+						more, err := cleanupSnapshotSourceBatch(ctx, tx)
+						if err != nil {
+							return err
+						}
+						if more {
+							migrated = true
+							return nil
+						}
+					}
 					if err := tx.Delete(source.namespace, backendDomainKey(backendDomainRecordManifest)); err != nil {
 						return err
 					}
@@ -346,6 +362,13 @@ func (repo *BackendRepo) MigrateNextThread(ctx context.Context) (progressed bool
 		}
 		return err
 	}()
+	if err == nil && !migrated && !finished && repo.migrationSource != nil && repo.migrationSource.version < 6 {
+		var manifest backendDomainManifest
+		err = repo.backend.View(ctx, func(tx spi.ReadTx) error { var e error; manifest, e = readV32Manifest(tx); return e })
+		if err == nil && manifest.MigrationPhase == "verify" {
+			return true, repo.verifySnapshotBeforeCleanup(ctx, manifest)
+		}
+	}
 	if currentIndexes {
 		return repo.prepareNextQueryThread(ctx)
 	}

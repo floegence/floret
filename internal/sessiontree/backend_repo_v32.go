@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -35,13 +36,18 @@ func readV32Manifest(tx spi.ReadTx) (backendDomainManifest, error) {
 		if manifest.MigrationPhase != "" || len(manifest.MigrationCursor) != 0 || manifest.MigrationTime != 0 {
 			return manifest, ErrAuthorityCorrupt
 		}
-	case 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31:
+	case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31:
 		if manifest.SourceVersion < 27 && manifest.MigrationTime <= 0 || manifest.SourceVersion >= 27 && manifest.MigrationTime != 0 {
 			return manifest, ErrAuthorityCorrupt
 		}
 		switch manifest.MigrationPhase {
 		case "":
 			if len(manifest.MigrationCursor) != 0 {
+				return manifest, ErrAuthorityCorrupt
+			}
+		case "snapshot_cleanup":
+			var sequence uint64
+			if manifest.SourceVersion >= 6 || json.Unmarshal(manifest.MigrationCursor, &sequence) != nil || sequence == 0 {
 				return manifest, ErrAuthorityCorrupt
 			}
 		case "publish", "index", "tombstones", "verify", "cleanup":

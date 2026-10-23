@@ -463,13 +463,13 @@ func (host *Host) initializeStorage() {
 		progress = func(phase internalstorage.StartupPhase) { reportPhase(StartupPhase(phase)) }
 	}
 	ctx := host.startupWorker.ctx
-	if host.startupWorker.options.StartupWorkProgress != nil {
-		ctx = sessiontree.WithStartupWork(ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
-			statusPhase := StartupPhase(phase)
-			host.startup.update(statusPhase, completed, total)
-			host.startupWorker.options.StartupWorkProgress.OnStartupWork(StartupWork{Phase: statusPhase, Completed: completed, Total: total})
-		})
-	}
+	ctx = sessiontree.WithStartupWork(ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
+		statusPhase := StartupPhase(phase)
+		host.startup.update(statusPhase, completed, total)
+		if observer := host.startupWorker.options.StartupWorkProgress; observer != nil {
+			observer.OnStartupWork(StartupWork{Phase: statusPhase, Completed: completed, Total: total})
+		}
+	})
 	if host.startupSchema != logicalSchemaCurrent {
 		reportPhase(StartupPhaseMigrating)
 	} else {
@@ -477,6 +477,10 @@ func (host *Host) initializeStorage() {
 	}
 	var candidate *internalstorage.BackendKernel
 	backend := host.backend.(*serializedBackend)
+	startupErr = sessiontree.PrepareHistoricalSnapshot(ctx, backend, time.Now)
+	if startupErr != nil {
+		return
+	}
 	startupErr = backend.backend.Update(ctx, func(tx spi.WriteTx) error {
 		logicalState, err := inspectLogicalSchemaTransaction(tx)
 		if err != nil {

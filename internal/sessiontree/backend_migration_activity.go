@@ -55,7 +55,7 @@ func validateMigrationBodyClaim(ctx context.Context, tx spi.ReadTx, row spi.Reco
 		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	manifest, err := readV32Manifest(tx)
-	if err != nil || manifest.SourceVersion == 0 || manifest.MigrationPhase == "cleanup" {
+	if err != nil || manifest.SourceVersion == 0 || (manifest.MigrationPhase == "cleanup" || manifest.MigrationPhase == "snapshot_cleanup") {
 		return claim, migrationBodyProgress{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
 	source, err := migrationSourceFormat(manifest.SourceVersion)
@@ -167,6 +167,8 @@ func verifyMigrationBodyClaims(ctx context.Context, tx spi.ReadTx) error {
 
 func migrationSourceFormat(version int) (backendDomainFormat, error) {
 	switch version {
+	case 2, 3, 4, 5:
+		return backendDomainFormat{label: "snapshot", namespace: snapshotAuthorityNamespace, envelope: "snapshot-authority-v32", version: version, scanLimit: backendThreadEntryPageSize, validate: validateBackendDomainV6Memory}, nil
 	case 6:
 		return backendDomainFormat{label: "v6", namespace: backendDomainV6Namespace, envelope: "sessiontree-v6-record", version: 6, scanLimit: backendThreadEntryPageSize, validate: validateBackendDomainV6Memory}, nil
 	case 7:
