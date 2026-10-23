@@ -56,6 +56,9 @@
 - Share paged historical bodies between timeline and checked context projection,
   including Retry selection. Validate successive same-path compaction checkpoints
   incrementally while preserving branch and Retry validation.
+- Reuse validated duplicate body bytes within one canonical page transaction,
+  with at most 1 MiB retained. Revalidate sources on later transactions and
+  reject actor requests cancelled while waiting for the mutation boundary.
 - Preserve bounded window baselines and observation versions. Cold initialization
   still traverses historical metadata and source pages; no constant-time cold
   window or subsecond first-screen guarantee is introduced.

@@ -349,7 +349,15 @@ still scales with history. A bounded cold-first-window redesign and its global
 context/interaction membership contract remain separate work; current warm-window
 bounds must not be cited as cold-start bounds.
 
+A canonical page shares fully validated duplicate body bytes within its one
+read transaction, retaining at most 1 MiB. Larger bodies are still read and
+validated completely without entering this page cache. Later transactions
+revalidate source records; the cache never survives a transaction or becomes
+canonical authority. Actor admission checks cancellation again after obtaining
+the mutex so expired waiters cannot install a stale reading interest.
+
 - [Preparation ownership and cancellation tests](../../runtime/thread_preparation_test.go)
 - [Paged Retry parity](../../runtime/thread_hydration_test.go)
 - [Independent context oracle](../../internal/sessiontree/context_reducer_test.go)
 - [Exact request lookup and rollback](../../internal/storage/prompt_context_request_test.go)
+- [Page body budget and transaction isolation](../../internal/sessiontree/body_page_test.go)

@@ -377,9 +377,15 @@ func decodeCanonicalStoredEntry(format backendDomainFormat, record backendDomain
 }
 
 func materializeCanonicalStoredEntry(ctx context.Context, tx spi.ReadTx, stored canonicalStoredEntry) (Entry, error) {
+	return materializeCanonicalEntry(stored, func(ref canonicalBodyRef) (string, error) {
+		return materializeCanonicalBody(ctx, tx, ref)
+	})
+}
+
+func materializeCanonicalEntry(stored canonicalStoredEntry, read func(canonicalBodyRef) (string, error)) (Entry, error) {
 	entry := stored.Entry
 	for field, ref := range stored.Fields {
-		text, err := materializeCanonicalBody(ctx, tx, ref)
+		text, err := read(ref)
 		if err != nil {
 			return Entry{}, err
 		}

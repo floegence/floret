@@ -180,3 +180,29 @@ func TestColdPreparationFailureCanRetryWithoutPublishingPartialView(t *testing.T
 		t.Fatal(err)
 	}
 }
+
+// Err is first checked before the actor lock. Cancel while that check returns,
+// so the request reaches the mutex with an already-expired waiting context.
+type cancelAtActorAdmissionContext struct {
+	context.Context
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (ctx *cancelAtActorAdmissionContext) Err() error {
+	err := ctx.Context.Err()
+	ctx.once.Do(ctx.cancel)
+	return err
+}
+
+func TestActorDoesNotApplyCancelledWaiterAfterLockAdmission(t *testing.T) {
+	base, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &cancelAtActorAdmissionContext{Context: base, cancel: cancel}
+	actor := &threadRuntimeState{}
+	called := false
+	err := actor.apply(ctx, func() error { called = true; return nil })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("cancelled actor waiter ran: called=%v err=%v", called, err)
+	}
+}

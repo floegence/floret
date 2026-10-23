@@ -409,11 +409,14 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 		if err != nil {
 			return err
 		}
+		bodies := newCanonicalBodyPageReader(ctx, tx)
 		_, err = visitCanonicalPage(ctx, tx, meta, node.ID, "", int(last-first+1), func(entry Entry) error {
 			var metadata PathMetadata
 			var err error
 			if complete {
-				metadata.Entry, err = completeLocatedEntry(ctx, tx, entry)
+				fields := entry.bodyFields
+				entry.bodyFields = nil
+				metadata.Entry, err = materializeCanonicalEntry(canonicalStoredEntry{Entry: entry, Fields: fields}, bodies.read)
 			} else {
 				metadata, err = canonicalPathMetadata(entry)
 			}

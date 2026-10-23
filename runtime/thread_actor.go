@@ -173,6 +173,12 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	// Waiting for another actor mutation can outlive the caller. Do not apply
+	// an expired read or command after acquiring the boundary. Shared cold
+	// preparation has its own Host-owned context and continues independently.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if runtime.closed {
 		return ErrHostClosed
 	}
