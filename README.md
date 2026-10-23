@@ -1093,11 +1093,14 @@ existing canonical owner. Completion still materializes full output once for
 the existing provider-context/transactional commit, so its peak is not bounded
 by the draft budget. Source-byte accounting is not a JS heap or process RSS claim.
 
-Current-schema startup validates complete immutable entries individually, then
-retains canonical body locators. Metadata-only ancestry and query correspondence
-use the same projection as complete reads, preserving exact source-range checks.
-Index rebuilds still read their canonical source documents; required startup
-validation remains proportional to stored data and cancellable. See
+Current-schema startup checks published thread metadata, journal count, leaf
+locator and query manifest before scheduling historical work. Prepared threads
+are not revalidated or rewritten on every restart. Missing or stale query
+metadata still requires complete canonical validation before rebuilding. Parent
+event recovery scans child metadata and validates its source closure before
+publishing a missing receipt. Migration and explicit inspection retain full
+validation; ordinary reads verify requested immutable sources. Readiness is not
+a full-store integrity audit. See
 [startup residency diagnostics](okf/workflows/history-performance.md#current-schema-startup-residency).
 
 This capability currently bounds delivered item detail, not all retained actor
@@ -1202,7 +1205,9 @@ open and `storage.BackupSQLite` while all writers are stopped. Inspection checks
 the supported migration path in memory without creating a runtime Host. A backup
 includes committed WAL records and never overwrites its destination.
 
-Inspection and startup retain complete canonical and metadata validation.
+Inspection and migration retain complete canonical and metadata validation.
+Normal current-store startup reuses durable readiness anchors; explicit
+`runtime.InspectSQLite` remains the full diagnostic boundary.
 There is no full-text index, background rebuild or optional physical search
 implementation. All backends use the canonical owner's metadata/source-locator
 records in the same transaction as canonical changes. Explicit text queries

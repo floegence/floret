@@ -9,7 +9,9 @@ import (
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-// Recover only still-unresolved interactions from a validated source snapshot.
+// Recover only still-unresolved interactions. Validate the source closure only
+// when recovery must publish a missing receipt; current-store readiness alone
+// is not evidence that every historical source has been checked this process.
 // Each receipt has its released deterministic identity; a retry or restart can
 // never append it twice. Publication checks mutable source authority again.
 func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canonicalSnapshotReader, threadID string) (bool, error) {
@@ -26,6 +28,9 @@ func (repo *BackendRepo) prepareParentEvents(ctx context.Context, reader *canoni
 	}
 	if len(pending) == 0 {
 		return false, nil
+	}
+	if _, err := validateCanonicalThreadClosure(ctx, reader, threadID); err != nil {
+		return false, reader.validationError(err)
 	}
 	changed := false
 	var observer func([]string)

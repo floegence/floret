@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -53,11 +55,15 @@ func canonicalPendingParentEvents(ctx context.Context, tx spi.ReadTx, meta Threa
 					continue
 				}
 			case EntryToolCall:
-				if entry.Message.ControlSignal != nil {
+				if entry.Message.Kind == session.MessageKindControlSignal && controlstate.Classify(entry.Message.ControlSignal) == controlstate.WaitingInput {
 					id = entry.Message.ControlSignal.CallID
 				}
 			case EntryToolResult:
-				id = ToolInputInteractionID(entry.ID)
+				// Ordinary results cannot create parent input events. Do not
+				// rescan their entire turns merely to discover an empty set.
+				if entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+					id = ToolInputInteractionID(entry.ID)
+				}
 			}
 			if id == "" {
 				continue

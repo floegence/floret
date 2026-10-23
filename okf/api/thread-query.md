@@ -29,9 +29,12 @@ Physical format 5 removes the released FTS/posting tables through the permanent
 1 -> 2 -> 3 -> 4 -> 5 migration lineage. Logical storage 9 -> 10 prevents an older
 runtime from reopening the new layout. Released KV term documents in v1 are
 removed, including orphan documents. Metadata namespace v2 and manifest version
-3 contain no terms or transcript snippets. Startup validates canonical state
-and metadata correspondence without building text indexes; damage and unknown
-formats still fail closed. All changes commit atomically.
+3 contain no terms or transcript snippets. Migration and missing/stale metadata
+preparation validate canonical state and metadata correspondence without building
+text indexes. Current-store startup reuses matching readiness anchors; it does
+not treat them as a complete integrity audit. Requested sources and explicit
+inspection retain validation. Unknown formats fail closed. All changes commit
+atomically.
 
 Explicit text filters read and match scoped canonical content on demand. This
 is a compatibility query API, not a requirement to expose its entire language

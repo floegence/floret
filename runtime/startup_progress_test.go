@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
@@ -148,6 +150,53 @@ func TestOpenCurrentStoreUsesBoundedFormatRecognition(t *testing.T) {
 	}
 	if got := counts.fullV9Scans(); got != 0 {
 		t.Fatalf("full v11 scans = %d, want 0", got)
+	}
+}
+
+func TestOpenCurrentStoreCompletesWithoutHistoricalBodyReads(t *testing.T) {
+	for _, count := range []int{8, 128} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			path := t.TempDir() + "/current.sqlite"
+			first, err := Open(t.Context(), Options{Storage: publicstorage.SQLite(path)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer first.Shutdown(context.Background())
+			if _, err := first.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: "history"}); err != nil {
+				t.Fatal(err)
+			}
+			for i := range count {
+				if _, err := first.store.repo.Append(t.Context(), sessiontree.Entry{ID: fmt.Sprint(i), ThreadID: "history", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: strings.Repeat("retained fact ", 4096)}}, sessiontree.AppendOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := first.Shutdown(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				counts := &startupScanCounts{}
+				source := publicstorage.NewSource(startupCountingSource{source: publicstorage.SQLite(path), counts: counts})
+				host, err := Open(t.Context(), Options{Storage: source, EnableParentEvents: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer host.Shutdown(context.Background())
+				// Include the entire background worker, not only the synchronous Open.
+				if err := host.startup.wait(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if got := counts.recordsRead(); got > 80 {
+					t.Fatalf("complete restart read %d records for %d messages", got, count)
+				}
+				if got := counts.valueBytesRead(); got > 32<<10 {
+					t.Fatalf("complete restart read %d bytes of historical bodies", got)
+				}
+				t.Logf("complete restart: %d records, %d bytes", counts.recordsRead(), counts.valueBytesRead())
+				if err := host.Shutdown(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

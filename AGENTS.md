@@ -231,6 +231,13 @@ Rules:
 - Fresh stores initialize directly at the current domain schema. Existing
   current stores open without rewriting canonical bytes. Supported older state
   migrates exactly once, and repeated startup is idempotent.
+- Normal current-store startup checks existing thread readiness anchors before
+  historical preparation. It must not revalidate complete prepared histories or
+  rewrite matching query manifests on each restart. Missing/stale metadata,
+  migration publication, explicit inspection, and requested source reads retain
+  their integrity checks. Parent-event recovery remains independent of query
+  readiness and validates source authority before publishing missing receipts.
+  A ready status is not a complete integrity-audit result.
 - Every migration must validate the exact source authority used to derive new
   state and validate the complete current invariant before publication. Unknown,
   ambiguous, drifted, corrupt, or future state fails closed without publishing
