@@ -31,6 +31,15 @@ func TestV32TailDeletionRestoresEveryLocator(t *testing.T) {
 			if err := deleteCanonicalStoredEntry(t.Context(), tx, backendDomainV32Format, "thread", ordinal); err != nil {
 				t.Fatalf("delete ordinal %d: %v", ordinal, err)
 			}
+			if coverage, err := sparseCoverage(tx, "thread"); err != nil || coverage != ordinal {
+				t.Fatalf("sparse coverage after deletion=%d want=%d err=%v", coverage, ordinal, err)
+			}
+			if ordinal == 0 {
+				page, err := tx.Scan(spi.ScanRequest{Namespace: sparseSourcesNamespace, Start: backendDomainKey("thread"), End: backendKeyRangeEnd(backendDomainKey("thread")), Limit: 128})
+				if err != nil || len(page.Records) != 0 {
+					t.Fatalf("deleted thread retained sparse sources: %v", err)
+				}
+			}
 			if err := verifyCanonicalThreadLocators(t.Context(), tx, "thread", ordinal); err != nil {
 				t.Fatalf("verify after deleting ordinal %d: %v", ordinal, err)
 			}

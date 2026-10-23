@@ -2227,8 +2227,11 @@ func BuildContext(path []Entry, opts ContextOptions) []session.Message {
 }
 
 func BuildContextChecked(path []Entry, opts ContextOptions) ([]session.Message, error) {
-	projection, err := BuildContextProjectionChecked(path, ContextProjectionOptions{})
-	return projection.Messages, err
+	contextPath, err := retryProjectedContextPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return buildContextMessages(contextPath)
 }
 
 func BuildContextProjection(path []Entry, opts ContextProjectionOptions) ContextProjection {
@@ -2291,50 +2294,31 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 }
 
 func buildContextMessages(path []Entry) ([]session.Message, error) {
-	var steeringErr error
-	path, steeringErr = projectSteering(path)
-	if steeringErr != nil {
-		return nil, steeringErr
-	}
-	redundant, err := RedundantControlResultIDs(path)
-	if err != nil {
+	var projection ContextReducer
+	if err := projection.Append(path); err != nil {
 		return nil, err
 	}
-	compactionIndex := -1
-	for i, entry := range path {
-		if entry.Type == EntryCompaction {
-			compactionIndex = i
-		}
-	}
-	var messages []session.Message
-	start := 0
-	if compactionIndex >= 0 {
-		prefix, err := buildContextMessages(path[:compactionIndex])
-		if err != nil {
-			return nil, err
-		}
-		messages, err = projectCheckpoint(prefix, path[compactionIndex], path[:compactionIndex])
-		if err != nil {
-			return nil, err
-		}
-		start = compactionIndex + 1
-	}
-	for _, entry := range path[start:] {
-		if redundant[entry.ID] {
-			continue
-		}
-		var err error
-		messages, err = appendProviderVisible(messages, entry)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return messages, nil
+	return projection.Messages(), nil
 }
 
 // projectCheckpoint resolves message identities, including derived messages,
 // rather than guessing from physical journal adjacency.
 func projectCheckpoint(history []session.Message, entry Entry, path []Entry) ([]session.Message, error) {
+	return projectCheckpointWithSource(history, entry, func(id string) (session.Message, bool, error) {
+		source, err := ProjectProviderEntries(path)
+		if err != nil {
+			return session.Message{}, false, err
+		}
+		for _, message := range source {
+			if message.EntryID == id && message.Role == session.User {
+				return message, true, nil
+			}
+		}
+		return session.Message{}, false, nil
+	})
+}
+
+func projectCheckpointWithSource(history []session.Message, entry Entry, userSource func(string) (session.Message, bool, error)) ([]session.Message, error) {
 	eligible := make([]session.Message, 0, len(history))
 	for _, message := range history {
 		if message.Kind != session.MessageKindCompactionSummary && message.Role != "" {
@@ -2400,16 +2384,13 @@ func projectCheckpoint(history []session.Message, entry Entry, path []Entry) ([]
 			}
 		}
 		if !found {
-			source, sourceErr := ProjectProviderEntries(path)
+			source, ok, sourceErr := userSource(id)
 			if sourceErr != nil {
 				return nil, sourceErr
 			}
-			for _, message := range source {
-				if message.EntryID == id && message.Role == session.User {
-					kept = append(kept, message)
-					found = true
-					break
-				}
+			if ok {
+				kept = append(kept, session.CloneMessage(source))
+				found = true
 			}
 		}
 		if !found {

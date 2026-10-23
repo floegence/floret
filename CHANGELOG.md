@@ -48,6 +48,17 @@
   Preserve full migration and missing/stale metadata preparation, explicit
   inspection, requested-source integrity checks and pending parent-event
   recovery. Prepared restarts no longer rewrite matching query manifests.
+- Share cold thread preparation across cancelled readers with two active workers
+  per Host; shutdown and deletion cancel and join the owned preparation.
+- Resolve managed-context request attribution by exact canonical source ordinal,
+  lazily backfill released ledgers from the newest requests, and index sparse
+  queue and parent-event sources transactionally without copying conversation state.
+- Share paged historical bodies between timeline and checked context projection,
+  including Retry selection. Validate successive same-path compaction checkpoints
+  incrementally while preserving branch and Retry validation.
+- Preserve bounded window baselines and observation versions. Cold initialization
+  still traverses historical metadata and source pages; no constant-time cold
+  window or subsecond first-screen guarantee is introduced.
 
 ## v7.80.2 - 2026-10-23
 

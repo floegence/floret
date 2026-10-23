@@ -48,6 +48,11 @@ func visitCanonicalTurnEntries(ctx context.Context, tx spi.ReadTx, threadID, tur
 }
 
 func visitCanonicalPathMetadata(ctx context.Context, tx spi.ReadTx, threadID, leafID string, visit func(Entry) error) error {
+	return visitCanonicalPathMetadataAfter(ctx, tx, threadID, leafID, 0, visit)
+}
+
+// afterDepth is an already validated ancestor in this frozen path.
+func visitCanonicalPathMetadataAfter(ctx context.Context, tx spi.ReadTx, threadID, leafID string, afterDepth int64, visit func(Entry) error) error {
 	if leafID == "" {
 		return nil
 	}
@@ -58,7 +63,7 @@ func visitCanonicalPathMetadata(ctx context.Context, tx spi.ReadTx, threadID, le
 	// Find one window's newest entry, then walk its parent links once. Seeking
 	// every depth from the leaf repeats ancestry reads for the whole history.
 	const windowSize = 128
-	for first := int64(1); first <= leaf.Depth; first += windowSize {
+	for first := afterDepth + 1; first <= leaf.Depth; first += windowSize {
 		last := min(first+windowSize-1, leaf.Depth)
 		node, err := entryAncestor(ctx, tx, threadID, leaf, last)
 		if err != nil {

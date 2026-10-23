@@ -26,6 +26,10 @@ func (s *MemoryStore) appendRequest(request ProviderRequestRecord) {
 	if s.latestRequests == nil {
 		s.latestRequests = map[string]int{}
 	}
+	if s.contextRequests == nil {
+		s.contextRequests = map[contextRequestIdentity]int{}
+	}
+	s.contextRequests[contextRequestIdentity{request.PromptScopeID, request.ThreadID, request.ModelContextEntryID}] = len(s.requests)
 	s.latestRequests[request.PromptScopeID] = len(s.requests)
 	s.requests = append(s.requests, cloneProviderRequestRecord(request))
 }

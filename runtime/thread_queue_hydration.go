@@ -53,7 +53,17 @@ func hydrateThreadQueues(ctx context.Context, repo sessiontree.JournalRepo, thre
 		}
 		return nil
 	}
-	if reader, ok := repo.(sessiontree.JournalMetadataReader); ok {
+	if reader, ok := repo.(sessiontree.QueueMetadataReader); ok {
+		entries, err := reader.QueueMetadata(ctx, threadID.String())
+		if err != nil {
+			return nil, nil, runtimeHostError(err)
+		}
+		for _, entry := range entries {
+			if err := observe(entry); err != nil {
+				return nil, nil, err
+			}
+		}
+	} else if reader, ok := repo.(sessiontree.JournalMetadataReader); ok {
 		options := sessiontree.JournalMetadataOptions{ThreadID: threadID.String(), Limit: 256}
 		for {
 			page, err := reader.JournalMetadata(ctx, options)

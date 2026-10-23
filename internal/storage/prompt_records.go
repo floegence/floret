@@ -138,6 +138,25 @@ func writePromptBatch(tx spi.WriteTx, batch promptBatch) error {
 		if err := putPromptValue(tx, promptRecordKey(record), "prompt_record", record); err != nil {
 			return err
 		}
+		if record.Category == promptRequest {
+			coverage, indexed, err := contextRequestCoverage(tx, record.ScopeID)
+			if err != nil {
+				return err
+			}
+			if indexed && coverage.Through >= record.Ordinal {
+				return sessiontree.ErrAuthorityCorrupt
+			}
+			if !indexed || coverage.Through+1 != record.Ordinal {
+				coverage = requestLocatorCoverage{First: record.Ordinal}
+			}
+			if err := putContextRequestLocator(tx, record); err != nil {
+				return err
+			}
+			coverage.Through = record.Ordinal
+			if err := writeContextRequestCoverage(tx, record.ScopeID, coverage); err != nil {
+				return err
+			}
+		}
 		counters[record.ScopeID] = counter
 	}
 	for scope, counter := range counters {
@@ -308,6 +327,9 @@ func (kernel *BackendKernel) pendingScopes() []string {
 }
 
 func deletePromptScope(tx spi.WriteTx, scope string) error {
+	if err := deleteContextRequestLocators(tx, scope); err != nil {
+		return err
+	}
 	prefix := storagecodec.Tuple(storagecodec.TupleString("record"), storagecodec.TupleString(scope))
 	var keys [][]byte
 	if err := scanPromptRecords(tx, prefix, prefixEnd(prefix), func(row spi.Record) error { keys = append(keys, row.Key); return nil }); err != nil {

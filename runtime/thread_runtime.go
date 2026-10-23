@@ -587,6 +587,8 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
+	preparationOnce     sync.Once
+	preparationSlots    chan struct{}
 	host                *Host
 	factory             AgentFactory
 	mu                  sync.Mutex
@@ -988,9 +990,10 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 }
 
 type threadRuntimeDrain struct {
-	actor         *threadRuntimeState
-	executionDone <-chan struct{}
-	effectsDone   <-chan struct{}
+	actor           *threadRuntimeState
+	executionDone   <-chan struct{}
+	effectsDone     <-chan struct{}
+	preparationDone <-chan struct{}
 }
 
 func (service *threadRuntimeService) subtreeThreadIDs(ctx context.Context, rootThreadID identity.ThreadID) ([]identity.ThreadID, error) {
@@ -1040,6 +1043,10 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 		actor.deleting = true
 		drains[index].executionDone = actor.state.executionDone
 		drains[index].effectsDone = actor.state.effectsDone
+		if actor.preparation != nil {
+			actor.preparation.cancel()
+			drains[index].preparationDone = actor.preparation.done
+		}
 	}
 	for _, drain := range drains {
 		if drain.actor.state.cancel != nil {
@@ -1055,7 +1062,7 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 
 func waitThreadRuntimeDrains(ctx context.Context, drains []threadRuntimeDrain) error {
 	for _, drain := range drains {
-		for _, done := range []<-chan struct{}{drain.executionDone, drain.effectsDone} {
+		for _, done := range []<-chan struct{}{drain.executionDone, drain.effectsDone, drain.preparationDone} {
 			if done == nil {
 				continue
 			}
@@ -1778,8 +1785,14 @@ func (service *threadRuntimeService) close() error {
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
 		runtime.stopUpdateTimer()
+		var preparationDone <-chan struct{}
+		if runtime.preparation != nil {
+			runtime.preparation.cancel()
+			preparationDone = runtime.preparation.done
+		}
 		drains = append(drains, threadRuntimeDrain{
-			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
+			preparationDone: preparationDone,
+			actor:           runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
 		})
 		turnID, runID, cancel := runtime.state.turnID, runtime.state.runID, runtime.state.cancel
 		if runtime.deleted || runtime.deleting || runtime.state.view.Activity != ThreadActivityActive {
@@ -1850,23 +1863,34 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 	}); err != nil || view.ViewVersion > 0 {
 		return view, err
 	}
+	if err := service.prepareThreadView(ctx, threadID, actor); err != nil {
+		return ThreadView{}, err
+	}
+	err := actor.apply(ctx, func() error {
+		service.flushUpdateLocked(actor)
+		view = threadResult(actor.state.view, mode)
+		return nil
+	})
+	return view, err
+}
+
+func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, threadID identity.ThreadID, actor *threadRuntimeState) error {
 	meta, err := service.host.store.repo.Thread(ctx, threadID.String())
 	if err != nil {
-		return ThreadView{}, runtimeHostError(err)
+		return runtimeHostError(err)
 	}
 	canonical, err := service.loadRetainedThreadView(ctx, threadID, meta)
 	if err != nil {
-		return ThreadView{}, err
+		return err
 	}
 	canonical.Queue, canonical.RestoredInputs, err = hydrateThreadQueues(ctx, service.host.store.repo, threadID)
 	if err != nil {
-		return ThreadView{}, err
+		return err
 	}
 	startHydration := false
 	err = actor.apply(ctx, func() error {
 		service.flushUpdateLocked(actor)
 		if actor.state.view.ViewVersion > 0 {
-			view = threadResult(actor.state.view, mode)
 			return nil
 		}
 		canonical.ViewVersion = 1
@@ -1892,13 +1916,12 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 			actor.state.hydrationStarted = true
 			startHydration = true
 		}
-		view = threadResult(canonical.ThreadView, mode)
 		return nil
 	})
 	if err == nil && startHydration {
 		go service.recoverHydratedThread(threadID)
 	}
-	return view, err
+	return err
 }
 
 func stableFingerprint(value any) (string, error) {

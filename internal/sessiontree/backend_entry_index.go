@@ -197,6 +197,9 @@ func putEntryLocator(ctx context.Context, tx spi.WriteTx, threadID string, ordin
 			return err
 		}
 	}
+	if err := appendSparseSource(tx, threadID, ordinal, entry); err != nil {
+		return err
+	}
 	return putJournalCount(tx, threadID, ordinal+1)
 }
 

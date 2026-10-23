@@ -208,3 +208,51 @@ func TestColdPublicWindowUsesFrozenPagesWithoutCompleteInventory(t *testing.T) {
 		t.Fatalf("pages=%d paths=%d inventory=%d", repo.pages, repo.paths, repo.inventories)
 	}
 }
+
+func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "cold-retry"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(entry sessiontree.Entry) {
+		t.Helper()
+		entry.ThreadID = id.String()
+		if _, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{ID: entry.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(sessiontree.Entry{ID: "started", TurnID: "first", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted})
+	add(sessiontree.Entry{ID: "user", TurnID: "first", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "durable input"}})
+	for i := range 520 {
+		add(sessiontree.Entry{ID: fmt.Sprint("answer-", i), TurnID: "first", RunID: "run", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "answer", Content: "historical body 🌸"}})
+	}
+	add(sessiontree.Entry{ID: "done", TurnID: "first", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
+	add(sessiontree.Entry{ID: "retry", TurnID: "second", RunID: "run2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{sessiontree.RetrySourceTurnIDMetadataKey: "first", sessiontree.RetrySourceEntryIDMetadataKey: "user"}})
+	add(sessiontree.Entry{ID: "final", TurnID: "second", RunID: "run2", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "final", Content: "retained answer"}})
+	add(sessiontree.Entry{ID: "complete", TurnID: "second", RunID: "run2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
+	meta, err := host.store.repo.Thread(t.Context(), id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := service.loadCanonicalThreadView(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &pagedHydrationRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel)}
+	host.store.repo = repo
+	got, err := service.loadRetainedThreadView(t.Context(), id, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := service.completeViewResult(t.Context(), got.ThreadView, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := json.Marshal(full)
+	b, _ := json.Marshal(want.ThreadView)
+	if string(a) != string(b) || repo.paths != 0 || repo.pages != 3 {
+		t.Fatalf("Retry projection differs: paths=%d pages=%d", repo.paths, repo.pages)
+	}
+}

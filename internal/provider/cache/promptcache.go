@@ -456,12 +456,13 @@ type Deleter interface {
 }
 
 type MemoryStore struct {
-	mu             sync.Mutex
-	segments       []Segment
-	toolsets       []ToolsetSnapshot
-	requests       []ProviderRequestRecord
-	latestRequests map[string]int
-	responses      []ProviderResponseRecord
+	mu              sync.Mutex
+	segments        []Segment
+	toolsets        []ToolsetSnapshot
+	requests        []ProviderRequestRecord
+	latestRequests  map[string]int
+	responses       []ProviderResponseRecord
+	contextRequests map[contextRequestIdentity]int
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -586,8 +587,10 @@ func (s *MemoryStore) DeletePromptScopes(_ context.Context, promptScopeIDs ...st
 		return ok
 	})
 	clear(s.latestRequests)
+	clear(s.contextRequests)
 	for index, request := range s.requests {
 		s.latestRequests[request.PromptScopeID] = index
+		s.contextRequests[contextRequestIdentity{request.PromptScopeID, request.ThreadID, request.ModelContextEntryID}] = index
 	}
 	s.responses = slices.DeleteFunc(s.responses, func(resp ProviderResponseRecord) bool {
 		_, ok := remove[resp.PromptScopeID]

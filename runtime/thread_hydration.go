@@ -8,15 +8,17 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
-// Cold initialization is cancellable between frozen canonical pages. Only the
-// existing reducers survive each page; accumulated source bodies do not. This
-// still visits historical metadata once and is not a bounded cold item index.
+// Cold initialization selects context identities from body-free metadata, then
+// shares complete source pages between the timeline and checked context reducers.
+// Compacted context bodies are released; timeline bodies do not accumulate.
+// This still traverses history and is not a bounded cold item index.
 func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context, threadID identity.ThreadID, meta sessiontree.ThreadMeta) (canonicalThreadView, error) {
 	reader, paged := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
+	metadataReader, metadataPaged := service.host.store.repo.(sessiontree.PathWindowReader)
 	_, body := service.host.store.repo.(sessiontree.CanonicalBodyReader)
 	_, sources := service.host.store.repo.(sessiontree.SourceBodyPageReader)
 	_, activities := service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader)
-	if !paged || !body || !sources || !activities {
+	if !paged || !metadataPaged || !body || !sources || !activities {
 		return service.loadCanonicalThreadView(ctx, threadID)
 	}
 	projection := newThreadCanonicalProjection()
@@ -24,7 +26,13 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		return service.completeItemActivity(ctx, threadID.String(), item)
 	}
 	options := sessiontree.PathWindowOptions{ThreadID: threadID.String(), LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
-	completeContext := false
+	selected, completeContext, err := service.coldContextSelection(ctx, metadataReader, threadID, meta)
+	if err != nil {
+		return canonicalThreadView{}, err
+	}
+	var contextProjection sessiontree.ContextReducer
+	var contextSources []sessiontree.Entry
+	nextContext := 0
 	for {
 		page, err := reader.PathEntriesWindow(ctx, options)
 		if err != nil {
@@ -34,8 +42,19 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		if err := projection.append(page.Entries); err != nil {
 			return canonicalThreadView{}, err
 		}
-		for _, entry := range page.Entries {
-			completeContext = completeContext || canonicalContextNeedsCompleteValidation(entry)
+		if completeContext {
+			for _, entry := range page.Entries {
+				if nextContext >= len(selected) || selected[nextContext] != entry.ID {
+					continue
+				}
+				nextContext++
+				if err := contextProjection.Append([]sessiontree.Entry{entry}); err != nil {
+					return canonicalThreadView{}, runtimeHostError(err)
+				}
+				if entry.Message.ModelContextSnapshot != nil || entry.ModelContextBaseline != nil {
+					contextSources = append(contextSources, sessiontree.Entry{ID: entry.ID, PathDepth: entry.PathDepth, TurnID: entry.TurnID, RunID: entry.RunID, CreatedAt: entry.CreatedAt})
+				}
+			}
 		}
 		projection.items.releaseText()
 		if !page.HasAfter {
@@ -46,15 +65,12 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		}
 		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
 	}
-	// Context-dependent paths retain the exact existing projection validation.
-	// Ordinary messages without these dependencies cannot alter managed facts.
 	var model *ThreadModelContext
 	if completeContext {
-		path, err := service.host.store.repo.Path(ctx, threadID.String(), projection.leafID)
-		if err != nil {
-			return canonicalThreadView{}, runtimeHostError(err)
+		if nextContext != len(selected) {
+			return canonicalThreadView{}, ErrAuthorityCorrupt
 		}
-		model, err = service.readModelContext(ctx, threadID, path)
+		model, err = service.modelContextFromHistory(ctx, threadID, contextSources, contextProjection.Messages())
 		if err != nil {
 			return canonicalThreadView{}, err
 		}
@@ -102,4 +118,35 @@ func (projection *threadCanonicalProjection) pendingSteering(turnID identity.Tur
 		ids = append(ids, projection.items.items[index].ID)
 	}
 	return ids
+}
+
+// Select Retry identities with body-free metadata, then feed the already-read
+// complete timeline pages to the same context reducer. Neither Retry nor a late
+// context dependency causes a second complete historical body traversal.
+func (service *threadRuntimeService) coldContextSelection(ctx context.Context, reader sessiontree.PathWindowReader, threadID identity.ThreadID, meta sessiontree.ThreadMeta) ([]string, bool, error) {
+	options := sessiontree.PathWindowOptions{ThreadID: threadID.String(), LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
+	var metadata []sessiontree.PathMetadata
+	required := false
+	for {
+		page, err := reader.PathMetadataWindow(ctx, options)
+		if err != nil {
+			return nil, false, runtimeHostError(err)
+		}
+		metadata = append(metadata, page.Entries...)
+		for _, entry := range page.Entries {
+			required = required || canonicalContextNeedsCompleteValidation(entry.Entry)
+		}
+		if !page.HasAfter {
+			break
+		}
+		if len(page.Entries) == 0 || page.LastEntryID == options.AnchorID {
+			return nil, false, ErrAuthorityCorrupt
+		}
+		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
+	}
+	if !required {
+		return nil, false, nil
+	}
+	ids, err := sessiontree.ContextEntrySelection(metadata)
+	return ids, true, runtimeHostError(err)
 }

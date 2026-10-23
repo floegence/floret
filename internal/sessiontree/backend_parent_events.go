@@ -58,7 +58,45 @@ func (projection *parentEventProjectionState) observe(entry Entry) error {
 
 func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta ThreadMeta) ([]ParentEventRecord, error) {
 	projection := parentEventProjectionState{positions: map[string]int{}}
-	if err := visitCanonicalPathMetadata(ctx, tx, meta.ID, meta.LeafID, projection.observe); err != nil {
+	visit := func(entry Entry) error {
+		projection.ordinal = uint64(entry.PathDepth - 1)
+		return projection.observe(entry)
+	}
+	through, err := sparseCoverage(tx, meta.ID)
+	if err != nil {
+		return nil, err
+	}
+	count, err := readJournalCount(tx, meta.ID)
+	if err != nil {
+		return nil, err
+	}
+	if through == count {
+		var leaf entryLocator
+		if meta.LeafID != "" {
+			leaf, err = readEntryLocator(tx, meta.ID, meta.LeafID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		err = visitSparseSources(ctx, tx, meta.ID, "parent", func(entry Entry) error {
+			if entry.PathDepth > leaf.Depth {
+				return nil
+			}
+			ancestor, err := entryAncestor(ctx, tx, meta.ID, leaf, entry.PathDepth)
+			if err != nil {
+				return err
+			}
+			if ancestor.ID != entry.ID {
+				return nil
+			}
+			return visit(entry)
+		})
+	} else {
+		// Canonical write validation may run before a released store's derived
+		// locators are prepared. It retains the exact original source traversal.
+		err = visitCanonicalPathMetadata(ctx, tx, meta.ID, meta.LeafID, visit)
+	}
+	if err != nil {
 		return nil, err
 	}
 	type sourceTurn struct{ threadID, turnID string }
@@ -96,6 +134,9 @@ func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta Thread
 }
 
 func (repo *BackendRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
+	if err := repo.prepareSparseSources(ctx, query.ThreadID); err != nil {
+		return ParentEventPage{}, err
+	}
 	var result ParentEventPage
 	err := repo.canonicalThreadView(ctx, query.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
 		records, err := canonicalParentEventRecords(ctx, tx, meta)

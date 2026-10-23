@@ -18,6 +18,7 @@ import (
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
+	preparation           *threadReadPreparation
 	canonical             *threadCanonicalProjection
 	observedItemIDs       map[string]bool
 	summaryIndexed        bool

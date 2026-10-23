@@ -97,6 +97,7 @@ func validateCanonicalThreadClosure(ctx context.Context, tx spi.ReadTx, threadID
 			queue = append(queue, meta.ParentThreadID)
 		}
 		steering := steeringProjection{metadataOnly: true}
+		checkpoints := canonicalCheckpointValidation{}
 		count, err := visitCanonicalJournal(ctx, tx, id, func(entry Entry) error {
 			if entry.Type == EntryParentEvent {
 				event, err := decodeParentEvent(entry)
@@ -109,7 +110,7 @@ func validateCanonicalThreadClosure(ctx context.Context, tx spi.ReadTx, threadID
 			if err != nil {
 				return err
 			}
-			if err := validateCanonicalHistoricalEntry(ctx, tx, meta, complete); err != nil {
+			if err := validateCanonicalHistoricalEntry(ctx, tx, meta, complete, &checkpoints); err != nil {
 				return fmt.Errorf("%w: thread %q entry %q: %w", ErrAuthorityCorrupt, id, entry.ID, err)
 			}
 			if _, err := steering.observeValidated(complete, content.nonSpace); err != nil {
@@ -152,7 +153,7 @@ func validateCanonicalThreadClosure(ctx context.Context, tx spi.ReadTx, threadID
 	return metas, nil
 }
 
-func validateCanonicalHistoricalEntry(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, entry Entry) error {
+func validateCanonicalHistoricalEntry(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, entry Entry, checkpoints *canonicalCheckpointValidation) error {
 	if presentationEntryRequiresRunIdentity(entry.Type) && strings.TrimSpace(entry.TurnID) != "" && strings.TrimSpace(entry.RunID) == "" {
 		return ErrAuthorityCorrupt
 	}
@@ -218,11 +219,7 @@ func validateCanonicalHistoricalEntry(ctx context.Context, tx spi.ReadTx, meta T
 			return ErrAuthorityCorrupt
 		}
 	case EntryCompaction:
-		path, err := canonicalCompletePath(ctx, tx, meta.ID, entry.ID)
-		if err != nil {
-			return err
-		}
-		if _, err := BuildContextChecked(path, ContextOptions{}); err != nil {
+		if err := checkpoints.validate(ctx, tx, meta.ID, entry); err != nil {
 			return err
 		}
 	}

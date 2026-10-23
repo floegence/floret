@@ -112,5 +112,8 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 	if err := tx.Delete(backendEntryIndexNamespace, entryLocatorKey(threadID, entry.ID)); err != nil {
 		return err
 	}
+	if err := removeSparseSource(tx, threadID, ordinal, entry); err != nil {
+		return err
+	}
 	return putJournalCount(tx, threadID, ordinal)
 }

@@ -325,3 +325,31 @@ and [spill failure and cleanup tests](../../internal/outputbody/body_test.go).
 See [window contract](../../runtime/thread_window_observation.go),
 [SQLite, restart, authorization and race regressions](../../runtime/thread_window_observation_test.go),
 and [window geometry selector](../../runtime/thread_item_window.go).
+
+
+# Shared cold preparation
+
+The existing thread actor owns one cold preparation. A caller's cancellation
+releases its wait without restarting the source work. The Host admits at most two
+active preparations; deletion and shutdown cancel and join both active and queued
+preparations. Failure publishes no partial view and a subsequent explicit read may
+retry. No worker runs a provider merely to render an idle historical conversation.
+
+Cold initialization first selects Retry identities using body-free metadata, then
+feeds the same complete source pages into the canonical timeline and checked
+context reducers. Compaction releases old context bodies. Exact managed-context
+request attribution reads a source ordinal; released stores backfill a proven
+suffix in transactions of at most sixteen requests. Queue and parent-event
+locators store immutable source IDs and journal coverage only. Their sources
+remain authoritative, including queue facts on inactive branches.
+
+These changes remove duplicate complete body and request-ledger reads. SetWindow
+still waits for complete retained actor preparation, and metadata/source traversal
+still scales with history. A bounded cold-first-window redesign and its global
+context/interaction membership contract remain separate work; current warm-window
+bounds must not be cited as cold-start bounds.
+
+- [Preparation ownership and cancellation tests](../../runtime/thread_preparation_test.go)
+- [Paged Retry parity](../../runtime/thread_hydration_test.go)
+- [Independent context oracle](../../internal/sessiontree/context_reducer_test.go)
+- [Exact request lookup and rollback](../../internal/storage/prompt_context_request_test.go)

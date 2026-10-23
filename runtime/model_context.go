@@ -6,6 +6,7 @@ import (
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/engine"
+	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
@@ -83,6 +84,10 @@ func (service *threadRuntimeService) readModelContext(ctx context.Context, threa
 	if err != nil {
 		return nil, err
 	}
+	return service.modelContextFromHistory(ctx, threadID, path, history)
+}
+
+func (service *threadRuntimeService) modelContextFromHistory(ctx context.Context, threadID identity.ThreadID, path []sessiontree.Entry, history []session.Message) (*ThreadModelContext, error) {
 	var current *session.ModelContextSnapshot
 	var out *ThreadModelContext
 	byID := make(map[string]sessiontree.Entry, len(path))
@@ -102,14 +107,11 @@ func (service *threadRuntimeService) readModelContext(ctx context.Context, threa
 	if out == nil {
 		return nil, nil
 	}
-	requests, err := service.host.store.prompt.ProviderRequests(ctx, threadID.String())
+	request, found, err := cache.LatestModelContextRequest(ctx, service.host.store.prompt, threadID.String(), threadID.String(), out.EntryID)
 	if err != nil {
 		return nil, err
 	}
-	for _, request := range requests {
-		if request.ModelContextEntryID != out.EntryID || request.ThreadID != threadID.String() {
-			continue
-		}
+	if found {
 		out.UsedByRequestID, out.UsedByTurnID, out.UsedByRunID = request.ID, identity.TurnID(request.TurnID), identity.RunID(request.RunID)
 		usedAt := request.CreatedAt
 		out.UsedAt = &usedAt
