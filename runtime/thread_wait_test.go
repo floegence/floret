@@ -5,12 +5,71 @@ import (
 	"errors"
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"testing"
 	"testing/synctest"
 	"time"
 )
+
+func TestWaitThreadsCompletionWaitsForTerminalSnapshot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		host, threads, _ := parentEventHost(t, true, storage.Memory())
+		service := threads.(*threadRuntimeService)
+		parent, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "parent"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := parentEventChild(t, host, parent.ThreadID, "child")
+		actor := service.runtime(child)
+		if err := actor.apply(t.Context(), func() error {
+			actor.state.hydrationStarted = true
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.View(t.Context(), child); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{
+			ID: "answer", ThreadID: child.String(), TurnID: "child-turn", RunID: "child-run",
+			Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "complete child report"},
+		}, sessiontree.AppendOptions{ID: "answer"}); err != nil {
+			t.Fatal(err)
+		}
+		// The receipt is committed before finishSend installs the complete view.
+		parentEventFinish(t, host, child, sessiontree.TurnCompleted)
+		type result struct {
+			value ThreadWaitResult
+			err   error
+		}
+		done := make(chan result, 1)
+		go func() {
+			v, err := service.WaitThreads(t.Context(), WaitThreadsInput{
+				Scope: ThreadScope{ParentID: &parent.ThreadID}, ThreadIDs: []identity.ThreadID{child},
+				PendingParentEvents: true, Timeout: time.Minute,
+			})
+			done <- result{v, err}
+		}()
+		synctest.Wait()
+		select {
+		case got := <-done:
+			t.Fatalf("completion returned before terminal result was readable: %+v, %v", got.value, got.err)
+		default:
+		}
+		service.finishSend(actor, "child-turn", "child-run", TurnResult{Status: TurnStatusCompleted}, nil)
+		got := <-done
+		if got.err != nil || got.value.Reason != ThreadWaitEvents || len(got.value.Threads) != 1 || got.value.Threads[0].Activity != ThreadActivityIdle {
+			t.Fatalf("settled wait = %+v, %v", got.value, got.err)
+		}
+		view, err := service.View(t.Context(), child)
+		if err != nil || !hasTerminalPresentation(view.Items, "child-turn") {
+			t.Fatalf("missing report: %v", err)
+		}
+	})
+}
 
 func TestSubscriptionRetainsCloseCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -51,6 +110,71 @@ func TestSelectWaitThreads(t *testing.T) {
 			if got.Reason != tc.reason {
 				t.Fatalf("result=%#v", got)
 			}
+		})
+	}
+}
+
+func TestParentEventsSettledUsesExactExecution(t *testing.T) {
+	for _, kind := range []ParentEventKind{ParentEventCompleted, ParentEventFailed, ParentEventCancelled, ParentEventInterrupted, ParentEventTimedOut, ParentEventReport, ParentEventInputRequired, ParentEventApprovalRequired} {
+		t.Run(string(kind), func(t *testing.T) {
+			page := ParentEventPage{Events: []ParentEvent{{Kind: kind, SourceThreadID: "child", SourceTurnID: "turn", SourceRunID: "run"}}}
+			thread := ThreadSummary{ID: "child", TurnID: "turn", RunID: "run", Activity: ThreadActivityActive}
+			terminal := kind != ParentEventReport && kind != ParentEventInputRequired && kind != ParentEventApprovalRequired
+			if parentEventsSettled(page, []ThreadSummary{thread}) == terminal {
+				t.Fatal("incorrect readiness for active execution")
+			}
+			thread.Activity = ThreadActivityIdle
+			if !parentEventsSettled(page, []ThreadSummary{thread}) {
+				t.Fatal("settled execution is blocked")
+			}
+			thread.Activity, thread.RunID = ThreadActivityActive, "next-run"
+			if !parentEventsSettled(page, []ThreadSummary{thread}) {
+				t.Fatal("historical event waited on a different execution")
+			}
+		})
+	}
+}
+
+func TestWaitThreadsUnsettledReceiptRespectsDeadlineAndCancellation(t *testing.T) {
+	for _, mode := range []string{"timeout", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				host, threads, _ := parentEventHost(t, true, storage.Memory())
+				service := threads.(*threadRuntimeService)
+				parent, err := service.Create(t.Context(), CreateThreadInput{RequestKey: "parent"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				child := parentEventChild(t, host, parent.ThreadID, "child")
+				actor := service.runtime(child)
+				if err := actor.apply(t.Context(), func() error { actor.state.hydrationStarted = true; return nil }); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.View(t.Context(), child); err != nil {
+					t.Fatal(err)
+				}
+				parentEventFinish(t, host, child, sessiontree.TurnCompleted)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() {
+					got, err := service.WaitThreads(ctx, WaitThreadsInput{Scope: ThreadScope{ParentID: &parent.ThreadID}, ThreadIDs: []identity.ThreadID{child}, PendingParentEvents: true, Timeout: time.Minute})
+					if mode == "timeout" && err == nil && (got.Reason != ThreadWaitTimedOut || got.ParentEvents != nil || got.Threads[0].Activity != ThreadActivityActive) {
+						err = errors.New("timeout certified an unsettled receipt")
+					}
+					done <- err
+				}()
+				synctest.Wait()
+				if mode == "cancel" {
+					cancel()
+				} else {
+					time.Sleep(time.Minute)
+				}
+				err = <-done
+				if mode == "cancel" && !errors.Is(err, context.Canceled) || mode == "timeout" && err != nil {
+					t.Fatalf("wait: %v", err)
+				}
+			})
 		})
 	}
 }

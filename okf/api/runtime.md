@@ -733,6 +733,12 @@ a single elapsed deadline returns the latest successful snapshot. Cancellation
 and Host closure remain distinct errors. Hosts map attention to completed-tool
 input requests and resume only after explicit user input.
 
+Pending terminal receipts become wait results only after their exact source
+ThreadID/TurnID/RunID has installed its terminal snapshot. Receipt commit alone
+does not certify result availability. The existing actor subscription supplies
+the wakeup; no polling, second lifecycle state, or durable read tracking is added.
+Historical receipts do not wait on a newer source execution.
+
 `ThreadTurnFailure.Reason` is derived from canonical code and exact Engine
 messages for both live and historical reads. It is not another persisted ledger
 or a migration. ThreadTurnFailureToolArgumentCorrectionExhausted identifies
