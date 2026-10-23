@@ -2,8 +2,10 @@ package sessiontree
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -321,14 +323,34 @@ func decodeStrictThreadContextJSON(raw string, target any, forbidden map[string]
 		return errors.New("thread context payload is required")
 	}
 	if len(forbidden) != 0 {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		// Inspect exact top-level names without copying every nested value into
+		// RawMessage. V1 options retain duplicate-name and UTF-8 semantics.
+		decoder := jsontext.NewDecoder(strings.NewReader(raw), json.DefaultOptionsV1())
+		token, err := decoder.ReadToken()
+		if err != nil {
 			return err
 		}
-		for field := range forbidden {
-			if _, found := fields[field]; found {
-				return fmt.Errorf("thread context payload duplicates %s", field)
+		if token.Kind() == '{' {
+			for decoder.PeekKind() != '}' {
+				name, err := decoder.ReadToken()
+				if err != nil {
+					return err
+				}
+				if _, found := forbidden[name.String()]; found {
+					return fmt.Errorf("thread context payload duplicates %s", name.String())
+				}
+				if err := decoder.SkipValue(); err != nil {
+					return err
+				}
 			}
+			if _, err := decoder.ReadToken(); err != nil {
+				return err
+			}
+		} else if token.Kind() != 'n' {
+			return errors.New("thread context payload must be an object")
+		}
+		if _, err := decoder.ReadToken(); !errors.Is(err, io.EOF) {
+			return errors.New("thread context payload has trailing data")
 		}
 	}
 	return storagecodec.DecodeJSON([]byte(raw), target)

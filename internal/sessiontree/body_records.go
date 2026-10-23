@@ -166,12 +166,8 @@ func readCanonicalBodyBytes(ctx context.Context, tx spi.ReadTx, ref canonicalBod
 		if err != nil {
 			return nil, errors.Join(ErrAuthorityCorrupt, err)
 		}
-		payload, err := storagecodec.DecodeEnvelope(raw, "sessiontree-v30-body-block")
-		if err != nil {
-			return nil, errors.Join(ErrAuthorityCorrupt, err)
-		}
 		var block []byte
-		err = decodeCanonicalBodyJSON(payload, &block)
+		err = storagecodec.DecodeEnvelopeInto(raw, "sessiontree-v30-body-block", &block)
 		want := min(canonicalBodyBlockBytes, ref.Bytes-ordinal*canonicalBodyBlockBytes)
 		if err != nil || len(block) != want {
 			return nil, errors.Join(ErrAuthorityCorrupt, err)

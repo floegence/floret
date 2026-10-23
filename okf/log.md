@@ -7,6 +7,10 @@
 - 2026-10-23: Persist Engine-owned output receipt intervals and expose optional
   item timestamps across live views, history, restart and Fork. See
   [output sources](decisions/output-sources.md#output-timing).
+- 2026-10-23: Batch exact SQLite body records within existing page budgets and
+  prioritize selected-thread preparation over sidebar scans on the prepared
+  repository. Preserve cancellation and source validation; see
+  [cold preparation](api/thread-updates.md#shared-cold-preparation).
 
 - 2026-10-23: Separate current-store readiness from full history inspection;
   reuse existing readiness anchors while retaining migration, repair, recovery

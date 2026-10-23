@@ -2,8 +2,11 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
+
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/v7/internal/storagecodec"
 	"strings"
 	"testing"
 	"time"
@@ -95,5 +98,75 @@ func TestCanonicalBodyPageBudgetAndCancellation(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCanonicalBodyPrefetchRetainsBudgetAndValidatesSources(t *testing.T) {
+	for _, mutation := range []string{"none", "missing", "digest", "metadata", "cancel"} {
+		t.Run(mutation, func(t *testing.T) {
+			backend := newMigrationTestBackend()
+			values := []string{strings.Repeat("a", canonicalBodyPageBytes/2), strings.Repeat("b", canonicalBodyPageBytes/2), strings.Repeat("c", canonicalBodyPageBytes+1)}
+			refs := make([]canonicalBodyRef, len(values))
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				for i, value := range values {
+					var err error
+					refs[i], err = retainCanonicalBody(t.Context(), tx, value)
+					if err != nil {
+						return err
+					}
+				}
+				switch mutation {
+				case "missing":
+					return tx.Delete(canonicalBodyNamespace, canonicalBodyBlockKey(refs[0].SHA256, 0))
+				case "digest":
+					payload, _ := json.Marshal([]byte(strings.Repeat("x", canonicalBodyBlockBytes)))
+					raw, _ := storagecodec.EncodeEnvelope("sessiontree-v30-body-block", payload)
+					return tx.Put(canonicalBodyNamespace, canonicalBodyBlockKey(refs[0].SHA256, 0), raw)
+				case "metadata":
+					return tx.Delete(canonicalBodyNamespace, canonicalBodyKey(refs[0].SHA256))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if mutation == "cancel" {
+					cancel()
+				}
+				reader := newCanonicalBodyPageReader(ctx, tx)
+				if err := reader.prefetch(append(refs, refs[0])); err != nil {
+					return err
+				}
+				if reader.bytes != canonicalBodyPageBytes || len(reader.bodies) != 2 {
+					t.Fatalf("prefetch retained %d bytes in %d bodies", reader.bytes, len(reader.bodies))
+				}
+				for i, ref := range refs {
+					value, err := reader.read(ref)
+					if err != nil {
+						return err
+					}
+					if value != values[i] {
+						t.Fatal("body changed")
+					}
+				}
+				return nil
+			})
+			switch mutation {
+			case "none":
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "cancel":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancel=%v", err)
+				}
+			default:
+				if !errors.Is(err, ErrAuthorityCorrupt) {
+					t.Fatalf("corrupt=%v", err)
+				}
+			}
+		})
 	}
 }

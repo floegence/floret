@@ -206,3 +206,43 @@ func TestActorDoesNotApplyCancelledWaiterAfterLockAdmission(t *testing.T) {
 		t.Fatalf("cancelled actor waiter ran: called=%v err=%v", called, err)
 	}
 }
+
+func TestColdSummaryJoinsExistingPreparationAndHonorsCancellation(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "summary-preparation"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "retained summary"}}, sessiontree.AppendOptions{ID: "summary-message"}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &blockedPreparationRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{})}
+	host.store.repo = repo
+	done := make(chan error, 1)
+	go func() { _, err := service.viewResult(t.Context(), id, threadAckResult); done <- err }()
+	select {
+	case <-repo.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("preparation did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+	_, err := service.Summary(ctx, id)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(repo.release)
+		<-done
+		t.Fatalf("summary did not join the owned preparation: %v", err)
+	}
+	close(repo.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	summary, err := service.Summary(t.Context(), id)
+	if err != nil || summary.LastItemPreview != "retained summary" {
+		t.Fatalf("summary=%+v err=%v", summary, err)
+	}
+	if repo.pages.Load() != 1 {
+		t.Fatalf("preparations=%d", repo.pages.Load())
+	}
+}

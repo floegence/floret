@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Coalesce canonical body metadata and blocks into bounded SQLite reads within
+  the existing page transaction and 1 MiB retention budget. Preserve exact
+  source validation, transaction ownership, and the host storage SPI.
+- Let sidebar summaries join selected-thread preparation and yield between
+  metadata pages to foreground reads on the prepared repository. Cancellation
+  releases only the waiting consumer; it does not restart shared preparation.
+
 - Decode resident canonical JSON directly with released v1 field semantics and
   strict unknown-field validation. Avoid nested payload and SQLite result copies,
   reuse Retry projection capacity, and validate context measurements once.

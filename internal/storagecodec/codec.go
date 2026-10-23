@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"math"
 )
@@ -87,6 +89,17 @@ type JSONValue[T any] struct {
 func (value *JSONValue[T]) UnmarshalJSON(raw []byte) error {
 	var next T
 	if err := DecodeJSON(raw, &next); err != nil {
+		return err
+	}
+	value.Value, value.Present = next, true
+	return nil
+}
+
+// UnmarshalJSONFrom shares the caller's decoder instead of parsing nested
+// payload bytes again. Reset before decoding to retain replacement semantics.
+func (value *JSONValue[T]) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
+	var next T
+	if err := jsonv2.UnmarshalDecode(decoder, &next, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true)); err != nil {
 		return err
 	}
 	value.Value, value.Present = next, true

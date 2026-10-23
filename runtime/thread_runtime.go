@@ -1257,6 +1257,7 @@ func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, me
 	}
 	var summary ThreadSummary
 	found := false
+	var pending *threadReadPreparation
 	err := actor.apply(ctx, func() error {
 		if actor.state.contextErr != nil {
 			return actor.state.contextErr
@@ -1264,6 +1265,31 @@ func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, me
 		if actor.state.view.ViewVersion > 0 {
 			summary = actor.threadSummary(meta)
 			found = true
+		} else {
+			pending = actor.preparation
+		}
+		return nil
+	})
+	if err != nil || found || pending == nil {
+		return summary, found, err
+	}
+	// A selected thread already owns a source scan. Sidebar summaries join it
+	// instead of decoding the same journal concurrently. The caller owns only
+	// its wait; cancellation never interrupts another reader's preparation.
+	select {
+	case <-ctx.Done():
+		return ThreadSummary{}, false, ctx.Err()
+	case <-pending.done:
+		if pending.err != nil {
+			return ThreadSummary{}, false, pending.err
+		}
+	}
+	err = actor.apply(ctx, func() error {
+		if actor.state.contextErr != nil {
+			return actor.state.contextErr
+		}
+		if actor.state.view.ViewVersion > 0 {
+			summary, found = actor.threadSummary(meta), true
 		}
 		return nil
 	})

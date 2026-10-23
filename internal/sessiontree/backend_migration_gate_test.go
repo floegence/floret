@@ -159,3 +159,49 @@ func TestMigrationGateCancelledReadDoesNotBlockBackground(t *testing.T) {
 	}
 	release()
 }
+
+func TestInventoryPagesYieldToForegroundAndHonorCancellation(t *testing.T) {
+	var gate migrationGate
+	release, err := gate.foregroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if err := gate.waitForForegroundReads(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("inventory did not yield: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- gate.waitForForegroundReads(t.Context()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("inventory passed active projection: %v", err)
+	default:
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inventory did not resume")
+	}
+}
+
+func TestDelegatedInventoryReadUsesPreparedRepositoryForegroundGate(t *testing.T) {
+	_, _, repo := linearPageFixture(t, false)
+	wrapper := &BackendRepo{}
+	wrapper.delegate.Store(repo)
+	release, err := repo.migrationGate.foregroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	_, err = wrapper.PathMetadataWindow(ctx, PathWindowOptions{ThreadID: "thread", Direction: PathWindowBefore, Limit: 1, YieldToForeground: true})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("delegated inventory bypassed foreground owner: %v", err)
+	}
+}

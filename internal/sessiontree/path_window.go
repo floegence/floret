@@ -21,6 +21,9 @@ type PathWindowOptions struct {
 	ThreadID, LeafID, AnchorID string
 	Direction                  PathWindowDirection
 	Limit                      int
+	// YieldToForeground lets inventory reads pause between pages while a
+	// selected conversation owns a multi-page projection read.
+	YieldToForeground bool
 }
 
 // PathMetadataWindow is chronological and contains no extracted body fields.

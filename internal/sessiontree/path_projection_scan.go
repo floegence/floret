@@ -131,7 +131,7 @@ func (repo *BackendRepo) ScanPathProjection(ctx context.Context, threadID, leafI
 			// immutable; only ancestry and requested body authority need new I/O.
 			bodies := newCanonicalBodyPageReader(ctx, tx)
 			var err error
-			result, err = materializeProjectionPage(page, fields, func(_ string, source CanonicalField) (string, error) {
+			result, err = materializeProjectionPage(page, fields, bodies.prefetch, func(_ string, source CanonicalField) (string, error) {
 				return bodies.read(canonicalBodyRef{SHA256: source.SHA256, Bytes: source.Bytes})
 			})
 			return err
@@ -157,7 +157,7 @@ func (repo *MemoryRepo) materializeProjectionPage(ctx context.Context, threadID 
 	if _, err := repo.PathMetadataWindow(ctx, PathWindowOptions{ThreadID: threadID, LeafID: page.LeafID, Direction: PathWindowBefore, Limit: 1}); err != nil {
 		return PathProjectionPage{}, err
 	}
-	result, err := materializeProjectionPage(page, fields, func(entryID string, source CanonicalField) (string, error) {
+	result, err := materializeProjectionPage(page, fields, nil, func(entryID string, source CanonicalField) (string, error) {
 		var value strings.Builder
 		for value.Len() < source.Bytes {
 			part, err := repo.ReadCanonicalBody(ctx, threadID, entryID, source.Field, value.Len(), canonicalBodyBlockBytes)
@@ -183,12 +183,35 @@ func (repo *MemoryRepo) materializeProjectionPage(ctx context.Context, threadID 
 	return result, nil
 }
 
-func materializeProjectionPage(page PathMetadataWindow, fields func(PathMetadata) []string, read func(string, CanonicalField) (string, error)) (PathProjectionPage, error) {
+func materializeProjectionPage(page PathMetadataWindow, fields func(PathMetadata) []string, prefetch func([]canonicalBodyRef) error, read func(string, CanonicalField) (string, error)) (PathProjectionPage, error) {
 	result := projectionPage(page)
+	selections := make([][]string, len(page.Entries))
+	var refs []canonicalBodyRef
+	for i, metadata := range page.Entries {
+		selections[i] = fields(PathMetadata{Entry: cloneEntry(metadata.Entry), Bodies: append([]CanonicalField(nil), metadata.Bodies...)})
+		for _, field := range selections[i] {
+			found := false
+			for _, source := range metadata.Bodies {
+				if source.Field == field {
+					refs = append(refs, canonicalBodyRef{SHA256: source.SHA256, Bytes: source.Bytes})
+					found = true
+					break
+				}
+			}
+			if !found {
+				return PathProjectionPage{}, spi.ErrInvalidArgument
+			}
+		}
+	}
+	if prefetch != nil {
+		if err := prefetch(refs); err != nil {
+			return PathProjectionPage{}, err
+		}
+	}
 	for i, metadata := range page.Entries {
 		result.Entries[i].Entry = cloneEntry(metadata.Entry)
 		result.Entries[i].Sources = append([]CanonicalField(nil), metadata.Bodies...)
-		selection := fields(PathMetadata{Entry: cloneEntry(metadata.Entry), Bodies: append([]CanonicalField(nil), metadata.Bodies...)})
+		selection := selections[i]
 		for _, field := range selection {
 			var source *CanonicalField
 			for j := range metadata.Bodies {

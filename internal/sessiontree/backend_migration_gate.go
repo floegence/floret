@@ -95,3 +95,21 @@ func (gate *migrationGate) signal() {
 	close(gate.changed)
 	gate.changed = make(chan struct{})
 }
+
+// Sidebar metadata pages yield between transactions while a selected thread
+// reads its projection. There is no held transaction, retry, or second owner.
+func (gate *migrationGate) waitForForegroundReads(ctx context.Context) error {
+	gate.mu.Lock()
+	for gate.foregroundReaders > 0 {
+		changed := gate.changed
+		gate.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+		gate.mu.Lock()
+	}
+	gate.mu.Unlock()
+	return ctx.Err()
+}

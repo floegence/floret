@@ -27,8 +27,13 @@ func (service *threadRuntimeService) coldThreadSummary(ctx context.Context, meta
 	if meta.LeafID == "" {
 		return projection.snapshot(meta)
 	}
-	options := sessiontree.PathWindowOptions{ThreadID: meta.ID, LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
+	options := sessiontree.PathWindowOptions{ThreadID: meta.ID, LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256, YieldToForeground: true}
 	for {
+		// A detail read may have started after this summary's first page. Join
+		// that existing owner instead of completing a redundant historical scan.
+		if summary, found, err := service.activeThreadSummary(ctx, meta); err != nil || found {
+			return summary, err
+		}
 		page, err := reader.PathMetadataWindow(ctx, options)
 		if err != nil {
 			return ThreadSummary{}, runtimeHostError(err)
@@ -63,6 +68,11 @@ func (service *threadRuntimeService) coldThreadSummary(ctx context.Context, meta
 	// Read only candidate previews from newest to oldest, through the same leaf.
 	options.AnchorID, options.Direction = "", sessiontree.PathWindowBefore
 	for {
+		// A detail read may have started after this summary's first page. Join
+		// that existing owner instead of completing a redundant historical scan.
+		if summary, found, err := service.activeThreadSummary(ctx, meta); err != nil || found {
+			return summary, err
+		}
 		page, err := reader.PathMetadataWindow(ctx, options)
 		if err != nil {
 			return ThreadSummary{}, runtimeHostError(err)
@@ -101,7 +111,7 @@ func (service *threadRuntimeService) coldThreadSummary(ctx context.Context, meta
 	}
 	// Revalidate the frozen leaf after body reads; a path change during the
 	// final metadata page must not escape as an accepted old-path summary.
-	if _, err := reader.PathMetadataWindow(ctx, sessiontree.PathWindowOptions{ThreadID: meta.ID, LeafID: meta.LeafID, Direction: sessiontree.PathWindowBefore, Limit: 1}); err != nil {
+	if _, err := reader.PathMetadataWindow(ctx, sessiontree.PathWindowOptions{ThreadID: meta.ID, LeafID: meta.LeafID, Direction: sessiontree.PathWindowBefore, Limit: 1, YieldToForeground: true}); err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
 	}
 	return projection.snapshot(meta)

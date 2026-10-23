@@ -338,6 +338,22 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 	if ctx == nil || options.Limit < 1 || options.Limit > 256 || options.Direction != PathWindowBefore && options.Direction != PathWindowAfter && options.Direction != PathWindowAround {
 		return PathMetadataWindow{}, spi.ErrInvalidArgument
 	}
+	if repo == nil {
+		return PathMetadataWindow{}, spi.ErrInvalidArgument
+	}
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return PathMetadataWindow{}, err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.canonicalPathWindow(ctx, options, complete)
+	}
+	if options.YieldToForeground {
+		if err := repo.migrationGate.waitForForegroundReads(ctx); err != nil {
+			return PathMetadataWindow{}, err
+		}
+	}
 	var result PathMetadataWindow
 	err := repo.canonicalThreadView(ctx, options.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
 		leafID := options.LeafID

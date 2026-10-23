@@ -350,6 +350,10 @@ releases its wait without restarting the source work. The Host admits at most tw
 active preparations; deletion and shutdown cancel and join both active and queued
 preparations. Failure publishes no partial view and a subsequent explicit read may
 retry. No worker runs a provider merely to render an idle historical conversation.
+Sidebar summaries join this preparation, including when it starts between two
+summary pages. Unrelated summary pages yield to foreground projection scans
+without holding a transaction. The prepared repository owns that scheduling
+boundary; a delegating migration wrapper cannot create a separate priority gate.
 
 The storage projection scan marks foreground read interest in the existing
 migration scheduler. It cancels a background attempt at its next transaction
@@ -384,6 +388,11 @@ validated completely without entering this page cache. Later transactions
 revalidate source records; the cache never survives a transaction or becomes
 canonical authority. Actor admission checks cancellation again after obtaining
 the mutex so expired waiters cannot install a stale reading interest.
+Within that same page budget, SQLite reads at most 256 exact metadata/block keys
+per batch, preserving caller order, missing-record errors and detached bytes.
+The normal extent and digest checks still validate every retained body. This is
+an internal physical optimization; other storage implementations retain Get
+semantics and the public storage SPI does not change.
 
 - [Preparation ownership and cancellation tests](../../runtime/thread_preparation_test.go)
 - [Paged Retry parity](../../runtime/thread_hydration_test.go)
