@@ -503,3 +503,22 @@ func BenchmarkThreadWindowNativeAppendFixedHistory(b *testing.B) {
 		})
 	}
 }
+
+func TestEmptyCanonicalProjectionStartsWithAbsentGoal(t *testing.T) {
+	projection := newThreadCanonicalProjection()
+	view, err := projection.retainedSnapshot("empty-thread", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Goal == nil || view.Goal.Status != "absent" || view.Goal.Version != 0 || view.Goal.Actor != "" || view.Goal.Text != "" {
+		t.Fatalf("empty canonical Goal = %#v", view.Goal)
+	}
+	// Public full and bounded reads share this reducer, including after reopen.
+	state, err := sessiontree.GoalFromPath(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *view.Goal != *publicThreadGoal(state) {
+		t.Fatal("empty chronological projections disagree")
+	}
+}
