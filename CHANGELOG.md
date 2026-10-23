@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Guide Goal review before composing the final deliverable and preserve the
+  requested result and supporting sources after a natural-stop review.
+
 - Return pending child terminal events from bounded waits only after the matching
   actor installs its complete terminal view. Preserve passive event admission,
   cancellation, attention priority and the original elapsed timeout.
