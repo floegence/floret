@@ -3304,15 +3304,16 @@ func (service *threadRuntimeService) settleCancellationResult(ctx context.Contex
 		// lock as cancellation. An answered interaction may have advanced it.
 		// Execution-context cancellation still supplies an exact run identity.
 		runID = actor.state.runID
-		entries, err := service.host.store.repo.Entries(ctx, threadID.String())
+		cancellations, ok := service.host.store.repo.(sessiontree.TurnCancellationReader)
+		if !ok {
+			return ErrUnsupportedStoreCapability
+		}
+		entry, err := cancellations.ReadTurnCancellation(ctx, threadID.String(), turnID.String())
 		if err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			if entry.Type == sessiontree.EntryCancelRequested && entry.TurnID == turnID.String() && entry.RunID == runID.String() {
-				request = cancellationRequest{EntryID: entry.ID, RequestKey: entry.RequestKey, RequestFingerprint: entry.RequestFingerprint}
-				break
-			}
+		if entry.ID != "" && entry.RunID == runID.String() {
+			request = cancellationRequest{EntryID: entry.ID, RequestKey: entry.RequestKey, RequestFingerprint: entry.RequestFingerprint}
 		}
 		terminalID := stableCancellationEntryID(threadID, turnID, runID)
 		metadata := map[string]string{

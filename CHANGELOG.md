@@ -1,5 +1,11 @@
 # Changelog
 
+## v7.80.1 - 2026-10-22
+
+- Read cancellation requests through canonical control locators so Stop,
+  shutdown and execution cancellation do not hydrate conversation bodies during
+  bounded settlement. Preserve the original request identity and provenance.
+
 ## v7.80.0 - 2026-10-22
 
 - Validate final-response boundaries from the current canonical turn, including

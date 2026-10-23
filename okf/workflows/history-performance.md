@@ -252,6 +252,13 @@ qualification remain separate outstanding work.
 
     GOWORK=off go test ./internal/sessiontree -run 'TestFinishTurnWithoutGoalGuardDoesNotReadHistoricalBodies|TestGoalReviewInvalidationAndTerminalCommit|TestCancelTurn' -count=1
 
+Runtime cancellation resolves the existing turn cancellation locator before
+settlement and diagnostics. It validates the canonical request and preserves its
+run identity, request key, fingerprint and provenance without reading message
+bodies. Regression coverage rejects whole-journal reads during Stop, shutdown
+and execution-context cancellation; storage coverage bounds control-record reads
+and rejects corrupt locators. The cancellation deadlines remain unchanged.
+
 Ordinary `FinishTurn`, cancellation and unknown-effect settlement now select
 their records through the existing ordered per-turn canonical index. Selection
 checks the started marker, expected record count, ordinal order, bounds, thread

@@ -10,10 +10,23 @@ import (
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/florettest"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	internalstorage "github.com/floegence/floret/v7/internal/storage"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 	"github.com/floegence/floret/v7/tools"
 )
+
+type cancellationJournalGuard struct {
+	*internalstorage.BackendKernel
+	deny atomic.Bool
+}
+
+func (repo *cancellationJournalGuard) Entries(ctx context.Context, threadID string) ([]sessiontree.Entry, error) {
+	if repo.deny.Load() {
+		return nil, errors.New("cancellation must not read the full journal")
+	}
+	return repo.BackendKernel.Entries(ctx, threadID)
+}
 
 func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
 	for _, boundary := range []string{"shutdown", "immediate_stop", "execution_context"} {
@@ -29,6 +42,8 @@ func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = host.Shutdown(context.Background()) })
+			guard := &cancellationJournalGuard{BackendKernel: host.store.kernel}
+			host.store.repo = guard
 			threadService, err := host.ThreadService(AgentFactoryFunc(func(context.Context, AgentRequest) (*Agent, error) { return agent, nil }))
 			if err != nil {
 				t.Fatal(err)
@@ -71,6 +86,13 @@ func TestCancellationSettlementReusesPendingGracefulRequest(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			guard.deny.Store(true)
+			view := service.currentView(actor)
+			service.recordCancellation(created.ThreadID, view.TurnID, view.RunID, "user_stop", "verify bounded diagnostic")
+			diagnostics := service.cancellationDiagnostics()
+			if !diagnostics[len(diagnostics)-1].EntryCancelRequested {
+				t.Error("cancellation diagnostic lost the durable request")
 			}
 			switch boundary {
 			case "immediate_stop":
