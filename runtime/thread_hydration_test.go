@@ -228,6 +228,13 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	for i := range 520 {
 		add(sessiontree.Entry{ID: fmt.Sprint("answer-", i), TurnID: "first", RunID: "run", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "answer", Content: "historical body 🌸"}})
 	}
+	add(sessiontree.Entry{ID: "steer", TurnID: "first", RunID: "run", Type: sessiontree.EntrySteeringRequested, RequestKey: "steer", RequestFingerprint: "steer", Message: session.Message{Role: session.User, Content: "retained correction"}})
+	add(sessiontree.Entry{ID: "managed", TurnID: "first", RunID: "run", Type: sessiontree.EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "workspace", Title: "Workspace", Text: "retained managed fact"}}}}})
+	payload, err := json.Marshal(sessiontree.SteeringResolution{SteeringID: "steer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add(sessiontree.Entry{ID: "applied", TurnID: "first", RunID: "run", Type: sessiontree.EntrySteeringApplied, Payload: payload})
 	add(sessiontree.Entry{ID: "done", TurnID: "first", RunID: "run", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
 	add(sessiontree.Entry{ID: "retry", TurnID: "second", RunID: "run2", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{sessiontree.RetrySourceTurnIDMetadataKey: "first", sessiontree.RetrySourceEntryIDMetadataKey: "user"}})
 	add(sessiontree.Entry{ID: "final", TurnID: "second", RunID: "run2", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, ContentSourceID: "final", Content: "retained answer"}})
@@ -245,6 +252,9 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	got, err := service.loadRetainedThreadView(t.Context(), id, meta)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got.Context == nil || got.Context.ModelContext == nil || got.Context.ModelContext.EntryID != "managed" || got.Context.ModelContext.Snapshot.Sections[0].Text != "retained managed fact" {
+		t.Fatal("Retry lost the managed context interleaved with accepted steering")
 	}
 	full, err := service.completeViewResult(t.Context(), got.ThreadView, nil)
 	if err != nil {

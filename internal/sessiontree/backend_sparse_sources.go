@@ -12,7 +12,7 @@ import (
 
 // Only immutable source identities are indexed. Reducers always read the
 // canonical records; no queue, parent-event, or thread lifecycle is duplicated.
-const sparseSourcesNamespace = "floret.sessiontree.sparse-sources.v1"
+const sparseSourcesNamespace = "floret.sessiontree.sparse-sources.v2"
 
 func sparseCoverageKey(thread string) []byte { return backendDomainKey(thread, "coverage") }
 func sparseSourceKey(thread, category string, ordinal int) []byte {
@@ -31,25 +31,46 @@ func sparseSourceCategory(entry Entry) string {
 	}
 	return ""
 }
+
+type sparseSourceCoverage struct {
+	Through int `json:"through"`
+	Queue   int `json:"queue"`
+	Parent  int `json:"parent"`
+}
+
+func (coverage *sparseSourceCoverage) add(entry Entry, delta int) {
+	switch sparseSourceCategory(entry) {
+	case "queue":
+		coverage.Queue += delta
+	case "parent":
+		coverage.Parent += delta
+	}
+}
+
 func sparseCoverage(tx spi.ReadTx, thread string) (int, error) {
+	coverage, err := readSparseCoverage(tx, thread)
+	return coverage.Through, err
+}
+
+func readSparseCoverage(tx spi.ReadTx, thread string) (sparseSourceCoverage, error) {
 	raw, err := tx.Get(sparseSourcesNamespace, sparseCoverageKey(thread))
 	if errors.Is(err, spi.ErrNotFound) {
-		return 0, nil
+		return sparseSourceCoverage{}, nil
 	}
 	if err != nil {
-		return 0, err
+		return sparseSourceCoverage{}, err
 	}
-	var count int
-	if err := decodeCanonicalBodyJSON(raw, &count); err != nil || count < 0 {
-		return 0, errors.Join(ErrAuthorityCorrupt, err)
+	var coverage sparseSourceCoverage
+	if err := decodeCanonicalBodyJSON(raw, &coverage); err != nil || coverage.Through < 0 || coverage.Queue < 0 || coverage.Parent < 0 || coverage.Queue > coverage.Through || coverage.Parent > coverage.Through-coverage.Queue {
+		return coverage, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	return count, nil
+	return coverage, nil
 }
-func writeSparseCoverage(tx spi.WriteTx, thread string, count int) error {
-	if count == 0 {
+func writeSparseCoverage(tx spi.WriteTx, thread string, coverage sparseSourceCoverage) error {
+	if coverage.Through == 0 {
 		return deleteCanonicalOptionalRecord(tx, sparseSourcesNamespace, sparseCoverageKey(thread))
 	}
-	raw, err := json.Marshal(count)
+	raw, err := json.Marshal(coverage)
 	if err != nil {
 		return err
 	}
@@ -63,27 +84,29 @@ func putSparseSource(tx spi.WriteTx, entry Entry, ordinal int) error {
 	return tx.Put(sparseSourcesNamespace, sparseSourceKey(entry.ThreadID, category, ordinal), []byte(entry.ID))
 }
 func appendSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry) error {
-	through, err := sparseCoverage(tx, thread)
+	coverage, err := readSparseCoverage(tx, thread)
 	if err != nil {
 		return err
 	}
-	if through > ordinal {
+	if coverage.Through > ordinal {
 		return ErrAuthorityCorrupt
 	}
-	if through != ordinal {
+	if coverage.Through != ordinal {
 		return nil
 	}
 	if err := putSparseSource(tx, entry, ordinal); err != nil {
 		return err
 	}
-	return writeSparseCoverage(tx, thread, ordinal+1)
+	coverage.Through = ordinal + 1
+	coverage.add(entry, 1)
+	return writeSparseCoverage(tx, thread, coverage)
 }
 func removeSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry) error {
-	through, err := sparseCoverage(tx, thread)
+	coverage, err := readSparseCoverage(tx, thread)
 	if err != nil {
 		return err
 	}
-	if through > ordinal+1 {
+	if coverage.Through > ordinal+1 {
 		return ErrAuthorityCorrupt
 	}
 	if category := sparseSourceCategory(entry); category != "" {
@@ -91,8 +114,10 @@ func removeSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry)
 			return err
 		}
 	}
-	if through == ordinal+1 {
-		return writeSparseCoverage(tx, thread, ordinal)
+	if coverage.Through == ordinal+1 {
+		coverage.Through = ordinal
+		coverage.add(entry, -1)
+		return writeSparseCoverage(tx, thread, coverage)
 	}
 	return nil
 }
@@ -116,14 +141,14 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 		if err != nil {
 			return err
 		}
-		through, err := sparseCoverage(tx, thread)
+		coverage, err := readSparseCoverage(tx, thread)
 		if err != nil {
 			return err
 		}
-		if through > count {
+		if coverage.Through > count {
 			return ErrAuthorityCorrupt
 		}
-		complete = through == count
+		complete = coverage.Through == count
 		return nil
 	}, func(*MemoryRepo) error { complete = true; return nil }); err != nil || complete {
 		return err
@@ -141,15 +166,15 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 				if err != nil {
 					return err
 				}
-				through, err := sparseCoverage(tx, thread)
+				coverage, err := readSparseCoverage(tx, thread)
 				if err != nil {
 					return err
 				}
-				if through > count {
+				if coverage.Through > count {
 					return ErrAuthorityCorrupt
 				}
-				end := min(count, through+128)
-				for ordinal := through; ordinal < end; ordinal++ {
+				end := min(count, coverage.Through+128)
+				for ordinal := coverage.Through; ordinal < end; ordinal++ {
 					if err := ctx.Err(); err != nil {
 						return err
 					}
@@ -160,12 +185,14 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 					if err := putSparseSource(tx, entry, ordinal); err != nil {
 						return err
 					}
+					coverage.add(entry, 1)
 				}
 				complete = end == count
-				if end == through {
+				if end == coverage.Through {
 					return nil
 				}
-				return writeSparseCoverage(tx, thread, end)
+				coverage.Through = end
+				return writeSparseCoverage(tx, thread, coverage)
 			})
 		}()
 		if err != nil || complete {
@@ -179,13 +206,20 @@ func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category str
 	if err != nil {
 		return err
 	}
-	through, err := sparseCoverage(tx, thread)
+	coverage, err := readSparseCoverage(tx, thread)
 	if err != nil {
 		return err
 	}
-	if through != count {
+	if coverage.Through != count {
 		return spi.ErrConflict
 	}
+	expected := coverage.Queue
+	if category == "parent" {
+		expected = coverage.Parent
+	} else if category != "queue" {
+		return ErrAuthorityCorrupt
+	}
+	seen := 0
 	prefix := backendDomainKey(thread, category)
 	var after []byte
 	for {
@@ -197,6 +231,10 @@ func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category str
 			return err
 		}
 		for _, row := range page.Records {
+			seen++
+			if seen > expected {
+				return ErrAuthorityCorrupt
+			}
 			locator, err := readEntryLocator(tx, thread, string(row.Value))
 			if err != nil || locator.Ordinal >= count || !bytes.Equal(row.Key, sparseSourceKey(thread, category, locator.Ordinal)) {
 				return errors.Join(ErrAuthorityCorrupt, err)
@@ -213,6 +251,9 @@ func visitSparseSources(ctx context.Context, tx spi.ReadTx, thread, category str
 			}
 		}
 		if !page.HasMore {
+			if seen != expected {
+				return ErrAuthorityCorrupt
+			}
 			return nil
 		}
 		if len(page.Next) == 0 || bytes.Compare(page.Next, after) <= 0 {

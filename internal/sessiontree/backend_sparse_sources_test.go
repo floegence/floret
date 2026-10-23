@@ -109,3 +109,95 @@ func TestSparseSourcesRetainBranchesAndStayBoundedAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSparseSourcesRejectMissingAndConflictingRows(t *testing.T) {
+	for _, corruption := range []string{"missing", "wrong-source", "wrong-count"} {
+		t.Run(corruption, func(t *testing.T) {
+			memory := newMemoryRepo(time.Now)
+			if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := memory.Append(t.Context(), Entry{ID: "queue", ThreadID: "thread", Type: EntryQueueAdded, Payload: []byte("{}")}, AppendOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			backend, repo := openV31ReviewFixture(t, memory)
+			if _, err := repo.QueueMetadata(t.Context(), "thread"); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				switch corruption {
+				case "missing":
+					return tx.Delete(sparseSourcesNamespace, sparseSourceKey("thread", "queue", 0))
+				case "wrong-source":
+					return tx.Put(sparseSourcesNamespace, sparseSourceKey("thread", "queue", 0), []byte("absent"))
+				default:
+					return writeSparseCoverage(tx, "thread", sparseSourceCoverage{Through: 1})
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := cloneMigrationRecords(backend.records)
+			if _, err := repo.QueueMetadata(t.Context(), "thread"); !errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("accepted %s: %v", corruption, err)
+			}
+			if !reflect.DeepEqual(before, backend.records) {
+				t.Fatal("corrupt read mutated sources")
+			}
+		})
+	}
+}
+
+func TestSparseSourcesPreparationRollsBackAndResumes(t *testing.T) {
+	memory := newMemoryRepo(time.Now)
+	if _, err := memory.CreateThread(t.Context(), ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 260 {
+		if _, err := memory.Append(t.Context(), Entry{ID: fmt.Sprint(i), ThreadID: "thread", Type: EntryQueueAdded, Payload: []byte("{}")}, AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend, repo := openV31ReviewFixture(t, memory)
+	if err := repo.PrepareThread(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		for {
+			page, err := tx.Scan(spi.ScanRequest{Namespace: sparseSourcesNamespace, Limit: 128})
+			if err != nil {
+				return err
+			}
+			for _, row := range page.Records {
+				if err := tx.Delete(sparseSourcesNamespace, row.Key); err != nil {
+					return err
+				}
+			}
+			if !page.HasMore {
+				return nil
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	failure := errors.New("injected preparation commit failure")
+	repo.backend = &domainCommitBoundaryBackend{Backend: backend, afterCallback: func() error { return failure }}
+	if _, err := repo.QueueMetadata(t.Context(), "thread"); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, backend.records) {
+		t.Fatal("failed preparation escaped transaction")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	repo.backend = &domainCommitBoundaryBackend{Backend: backend, afterCallback: func() error { cancel(); return ctx.Err() }}
+	if _, err := repo.QueueMetadata(ctx, "thread"); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, backend.records) {
+		t.Fatal("cancelled preparation escaped transaction")
+	}
+	repo.backend = backend
+	if got, err := repo.QueueMetadata(t.Context(), "thread"); err != nil || len(got) != 260 {
+		t.Fatalf("resume rows=%d err=%v", len(got), err)
+	}
+}

@@ -33,6 +33,13 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	var contextProjection sessiontree.ContextReducer
 	var contextSources []sessiontree.Entry
 	nextContext := 0
+	selectedIDs := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selectedIDs[id] = true
+	}
+	// RetainAppliedSteering can place a request after an intervening model
+	// context. Preserve the selected order while reading canonical pages once.
+	pendingContext := make(map[string]sessiontree.Entry)
 	for {
 		page, err := reader.PathEntriesWindow(ctx, options)
 		if err != nil {
@@ -44,15 +51,23 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		}
 		if completeContext {
 			for _, entry := range page.Entries {
-				if nextContext >= len(selected) || selected[nextContext] != entry.ID {
+				if !selectedIDs[entry.ID] {
 					continue
 				}
-				nextContext++
-				if err := contextProjection.Append([]sessiontree.Entry{entry}); err != nil {
-					return canonicalThreadView{}, runtimeHostError(err)
-				}
-				if entry.Message.ModelContextSnapshot != nil || entry.ModelContextBaseline != nil {
-					contextSources = append(contextSources, sessiontree.Entry{ID: entry.ID, PathDepth: entry.PathDepth, TurnID: entry.TurnID, RunID: entry.RunID, CreatedAt: entry.CreatedAt})
+				pendingContext[entry.ID] = entry
+				for nextContext < len(selected) {
+					next, found := pendingContext[selected[nextContext]]
+					if !found {
+						break
+					}
+					delete(pendingContext, next.ID)
+					nextContext++
+					if err := contextProjection.Append([]sessiontree.Entry{next}); err != nil {
+						return canonicalThreadView{}, runtimeHostError(err)
+					}
+					if next.Message.ModelContextSnapshot != nil || next.ModelContextBaseline != nil {
+						contextSources = append(contextSources, sessiontree.Entry{ID: next.ID, PathDepth: next.PathDepth, TurnID: next.TurnID, RunID: next.RunID, CreatedAt: next.CreatedAt})
+					}
 				}
 			}
 		}

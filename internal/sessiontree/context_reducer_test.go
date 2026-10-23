@@ -97,7 +97,8 @@ func TestContextEntrySelectionPreservesRetryAndAppliedSteering(t *testing.T) {
 		{ID: "user", Type: EntryUserMessage, TurnID: "first", RunID: "run", Message: session.Message{Role: session.User, Content: "original"}},
 		{ID: "answer", ParentID: "user", Type: EntryAssistantMessage, TurnID: "first", RunID: "run", Message: session.Message{Role: session.Assistant, Content: "superseded"}},
 		{ID: "steer", ParentID: "answer", Type: EntrySteeringRequested, TurnID: "first", RunID: "run", RequestKey: "steer", RequestFingerprint: "steer", Message: session.Message{Role: session.User, Content: "retained correction"}},
-		{ID: "apply", ParentID: "steer", Type: EntrySteeringApplied, TurnID: "first", RunID: "run", Payload: []byte("{\"steering_id\":\"steer\"}")},
+		{ID: "model", ParentID: "steer", Type: EntryModelContext, TurnID: "first", RunID: "run", Message: session.Message{Role: session.User, ModelContextSnapshot: &session.ModelContextSnapshot{}}},
+		{ID: "apply", ParentID: "model", Type: EntrySteeringApplied, TurnID: "first", RunID: "run", Payload: []byte("{\"steering_id\":\"steer\"}")},
 		{ID: "retry", ParentID: "apply", Type: EntryTurnMarker, TurnStatus: TurnStarted, TurnID: "second", RunID: "run2", Metadata: map[string]string{RetrySourceTurnIDMetadataKey: "first", RetrySourceEntryIDMetadataKey: "user"}},
 		{ID: "final", ParentID: "retry", Type: EntryAssistantMessage, TurnID: "second", RunID: "run2", Message: session.Message{Role: session.Assistant, Content: "corrected"}},
 	}
@@ -126,10 +127,10 @@ func TestContextEntrySelectionPreservesRetryAndAppliedSteering(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(want, reducer.Messages()) {
 		t.Fatalf("retry differs: %v", err)
 	}
-	if len(want) != 3 || want[1].Content != "retained correction" {
+	if len(want) != 4 || want[2].Content != "retained correction" {
 		t.Fatal("Retry lost accepted correction")
 	}
-	metadata[4].Entry.Metadata = map[string]string{RetrySourceTurnIDMetadataKey: "first", RetrySourceEntryIDMetadataKey: "absent"}
+	metadata[5].Entry.Metadata = map[string]string{RetrySourceTurnIDMetadataKey: "first", RetrySourceEntryIDMetadataKey: "absent"}
 	if _, err := ContextEntrySelection(metadata); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatal(err)
 	}

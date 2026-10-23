@@ -71,6 +71,18 @@ func TestContextRequestLookupIsBoundedAcrossRestartAndMissingMatches(t *testing.
 		t.Fatal(err)
 	}
 	check("wanted", "")
+	if err := kernel.AppendProviderRequest(t.Context(), cache.ProviderRequestRecord{ID: "recreated", PromptScopeID: "scope", ThreadID: "thread", ModelContextEntryID: "wanted"}); err != nil {
+		t.Fatal(err)
+	}
+	check("wanted", "recreated")
+	pending, err := makePromptRecord("scope", promptRequest, cache.ProviderRequestRecord{ID: "pending", PromptScopeID: "scope", ThreadID: "thread", ModelContextEntryID: "wanted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel.pending["scope"] = append(kernel.pending["scope"], pending)
+	check("wanted", "pending")
+	delete(kernel.pending, "scope")
+	check("wanted", "recreated")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := kernel.LatestModelContextRequest(ctx, "scope", "thread", "wanted"); !errors.Is(err, context.Canceled) {
