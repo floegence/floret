@@ -36,3 +36,19 @@ exposing invalid calls as actionable tools. See [storage](../api/storage.md#cano
 Focused regressions exercise every intermediate publication of repeated schema
 correction, native suffixes around hosted activity, identical text from distinct
 sources, replacement attempts, rollback, current startup and nested forks.
+
+## Output timing
+
+The additive public API decision exposes optional runtime.ThreadItem.OutputStartedAt
+and OutputEndedAt for host duration displays. The Engine owns both timestamps:
+first and last nonempty chunk receipt for each exact source, including native
+continuations and split UTF-8 input. Live observation carries those same facts;
+finalization does not count tool, delivery or commit delay after the last chunk.
+This span is not provider compute time. A single chunk has equal endpoints.
+
+Harness persists the pair as optional canonical entry metadata. Existing schema
+32 records remain unchanged; missing facts mean unmeasured. Invalid, incomplete
+or reversed pairs fail integrity validation. Views, bounded windows, history,
+restart and Fork project these facts without a host timing ledger. Cancellation
+retains the same timing with accepted partial output. Live items omit the end
+until sealed. Public API baseline and external adoption gates cover the addition.

@@ -2316,7 +2316,17 @@ func (p *turnProjection) responseEntries(output engine.ResponseOutput) ([]sessio
 	entries := make([]sessiontree.Entry, 0, len(output.Items))
 	for _, item := range output.Items {
 		if item.Hosted == nil {
-			entries = append(entries, sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, item.Message, time.Time{}))
+			entry := sessiontree.RunMessageEntry(p.thread.id, p.turnID, p.runID, item.Message, time.Time{})
+			if !item.StartedAt.IsZero() || !item.EndedAt.IsZero() {
+				entry.Metadata = map[string]string{
+					sessiontree.OutputStartedAtMetadataKey: item.StartedAt.Format(time.RFC3339Nano),
+					sessiontree.OutputEndedAtMetadataKey:   item.EndedAt.Format(time.RFC3339Nano),
+				}
+				if _, _, err := sessiontree.OutputTiming(entry); err != nil {
+					return nil, err
+				}
+			}
+			entries = append(entries, entry)
 			continue
 		}
 		ev := event.Sanitize(*item.Hosted)

@@ -325,6 +325,12 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
+	// OutputStartedAt and OutputEndedAt bound receipt of this text source's
+	// first and last chunks, not provider compute time. Nil means unmeasured.
+	// Live output has no end yet; a single-chunk source has an equal start/end.
+	OutputStartedAt  *time.Time `json:"output_started_at,omitempty"`
+	OutputEndedAt    *time.Time `json:"output_ended_at,omitempty"`
+	outputLastAt     time.Time
 	Goal             *ThreadGoalChange       `json:"goal,omitempty"`
 	Steering         *ThreadSteering         `json:"steering,omitempty"`
 	Sources          []publicprovider.Source `json:"sources,omitempty"`
@@ -4314,6 +4320,14 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 	out := make([]ThreadItem, len(items))
 	for index, item := range items {
 		out[index] = item
+		if item.OutputStartedAt != nil {
+			at := *item.OutputStartedAt
+			out[index].OutputStartedAt = &at
+		}
+		if item.OutputEndedAt != nil {
+			at := *item.OutputEndedAt
+			out[index].OutputEndedAt = &at
+		}
 		if item.Body != nil {
 			body := *item.Body
 			out[index].Body = &body

@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-23: Persist Engine-owned output receipt intervals and expose optional
+  item timestamps across live views, history, restart and Fork. See
+  [output sources](decisions/output-sources.md#output-timing).
+
 - 2026-10-23: Separate current-store readiness from full history inspection;
   reuse existing readiness anchors while retaining migration, repair, recovery
   and requested-source checks. Record deterministic access budgets in

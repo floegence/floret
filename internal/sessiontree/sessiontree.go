@@ -2943,6 +2943,9 @@ func validateEntryMessageAttachmentPlacement(entry Entry) error {
 }
 
 func ValidateEntryIntegrity(entry Entry) error {
+	if _, _, err := OutputTiming(entry); err != nil {
+		return err
+	}
 	if entry.Type == EntryCustom && entry.Metadata["kind"] == HostedToolEntryKind {
 		if _, err := HostedToolObservation(entry); err != nil {
 			return ErrAuthorityCorrupt

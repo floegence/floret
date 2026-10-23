@@ -2,14 +2,45 @@ package engine
 
 import (
 	"errors"
-	"github.com/floegence/floret/v7/internal/event"
-	"github.com/floegence/floret/v7/internal/provider"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/floegence/floret/v7/internal/event"
+	"github.com/floegence/floret/v7/internal/provider"
 )
+
+func TestResponseOutputTimingBelongsToEachSource(t *testing.T) {
+	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
+	clock := time.UnixMilli(1700000000000)
+	b.now = func() time.Time { return clock }
+	part := &provider.OutputPart{ItemID: "reason", OutputIndex: 0}
+	b.appendText(provider.Reasoning, "first", part)
+	clock = clock.Add(250 * time.Millisecond)
+	b.appendText(provider.Reasoning, " next", part)
+	clock = clock.Add(time.Second)
+	b.appendHosted(event.Event{Type: event.HostedToolCall, ToolID: "search"}, nil)
+	clock = clock.Add(5 * time.Second)
+	b.appendText(provider.Delta, "answer", nil)
+	clock = clock.Add(time.Minute)
+	output := b.finish(nil)
+	if got := output.Items[0]; got.StartedAt.UnixMilli() != 1700000000000 || got.EndedAt.Sub(got.StartedAt) != 250*time.Millisecond {
+		t.Fatalf("thinking timing includes tool or response wait: %+v", got)
+	}
+	if got := output.Items[2]; got.StartedAt.IsZero() || !got.EndedAt.Equal(got.StartedAt) {
+		t.Fatalf("single-chunk output needs a measured zero interval: %+v", got)
+	}
+	clock = clock.Add(time.Second)
+	b.appendText(provider.Reasoning, " suffix", part)
+	resumed := b.finish(nil).Items[0]
+	if !resumed.StartedAt.Equal(output.Items[0].StartedAt) || !resumed.EndedAt.Equal(clock) {
+		t.Fatal("native part continuation lost its source interval")
+	}
+}
 
 func TestResponseOutputPublishesCompleteRunesAcrossNativeParts(t *testing.T) {
 	for split := 1; split < len("中🌸"); split++ {
@@ -111,5 +142,41 @@ func TestResponseOutputSameTextHasDistinctSources(t *testing.T) {
 	}
 	if len(b.finish(nil).Items) != 3 {
 		t.Fatal("alternating channels collapsed")
+	}
+}
+
+func TestResponseOutputTimingIgnoresEmptyChunksAndClockRegression(t *testing.T) {
+	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
+	clock := time.Unix(1700000000, 0).UTC()
+	start := clock
+	b.now = func() time.Time { return clock }
+	b.appendText(provider.Reasoning, "first", nil)
+	clock = clock.Add(time.Second)
+	b.appendText(provider.Reasoning, "last", nil)
+	clock = start.Add(500 * time.Millisecond)
+	b.appendText(provider.Reasoning, "backward", nil)
+	clock = start.Add(time.Hour)
+	b.appendText(provider.Reasoning, "", nil)
+	got := b.finish(nil).Items[0]
+	if !got.StartedAt.Equal(start) || !got.EndedAt.Equal(start.Add(time.Second)) {
+		t.Fatalf("invalid interval: %+v", got)
+	}
+}
+
+func TestResponseOutputTimingStartsAtFirstPartialRune(t *testing.T) {
+	b := newResponseOutputBuilder("run", "attempt")
+	t.Cleanup(func() { _ = b.bodies.Close() })
+	clock := time.Unix(1700000000, 0).UTC()
+	start := clock
+	b.now = func() time.Time { return clock }
+	text := "中"
+	b.appendText(provider.Reasoning, text[:1], nil)
+	clock = clock.Add(time.Second)
+	b.appendText(provider.Reasoning, text[1:], nil)
+	clock = clock.Add(time.Hour)
+	got := b.finish(nil).Items[0]
+	if !got.StartedAt.Equal(start) || !got.EndedAt.Equal(start.Add(time.Second)) {
+		t.Fatal("partial rune receipt time lost")
 	}
 }
