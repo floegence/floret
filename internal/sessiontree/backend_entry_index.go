@@ -284,11 +284,15 @@ func readJournalCount(tx spi.ReadTx, threadID string) (int, error) {
 }
 
 func readLocatedEntry(tx spi.ReadTx, format backendDomainFormat, threadID string, locator entryLocator) (Entry, error) {
-	record, found, err := readBackendDomainRecord(tx, format, backendDomainEntryKey(threadID, locator.Ordinal), backendDomainRecordEntry, locator.ID, threadID, locator.Ordinal)
-	if err != nil || !found {
+
+	encoded, err := tx.Get(format.namespace, backendDomainEntryKey(threadID, locator.Ordinal))
+	if err != nil {
 		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	stored, err := decodeCanonicalStoredEntry(format, record)
+	record, stored, err := decodeCanonicalEntryRecord(format, encoded)
+	if err != nil || record.ID != locator.ID || record.ThreadID != threadID || record.Ordinal != locator.Ordinal {
+		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
+	}
 	if err != nil || stored.Entry.ParentID != locator.Parent || stored.Entry.PathDepth != locator.Depth {
 		return Entry{}, errors.Join(ErrAuthorityCorrupt, err)
 	}

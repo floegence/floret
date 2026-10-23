@@ -155,7 +155,15 @@ func (r *MemoryRepo) cancelPendingSteeringLocked(meta *ThreadMeta, turnEntries r
 // context, including accepted model facts, without replaying superseded execution. Pending and
 // cancelled requests are deliberately excluded.
 func RetainAppliedSteering(prefix, source []Entry, turnID string) []Entry {
-	out := append([]Entry(nil), prefix...)
+	retained := retainedAppliedSteering(prefix, source, turnID)
+	out := make([]Entry, 0, len(prefix)+len(retained))
+	out = append(out, prefix...)
+	return append(out, retained...)
+}
+
+// Collect before callers reuse their prefix buffer: source may share it.
+func retainedAppliedSteering(prefix, source []Entry, turnID string) []Entry {
+	var out []Entry
 	present := make(map[string]bool, len(prefix))
 	requests := make(map[string]Entry)
 	for _, entry := range prefix {

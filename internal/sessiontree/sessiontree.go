@@ -2284,7 +2284,9 @@ func retryProjectedContextPath(path []Entry) ([]Entry, error) {
 				if source.projectedLength <= 0 || source.projectedLength > len(projected) || projected[source.projectedLength-1].ID != retrySource.EntryID {
 					return nil, ErrAuthorityCorrupt
 				}
-				projected = RetainAppliedSteering(projected[:source.projectedLength], projected[source.projectedLength:], retrySource.TurnID)
+				retained := retainedAppliedSteering(projected[:source.projectedLength], projected[source.projectedLength:], retrySource.TurnID)
+				clear(projected[source.projectedLength:])
+				projected = append(projected[:source.projectedLength], retained...)
 			}
 		}
 		projected = append(projected, entry)

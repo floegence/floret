@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/floegence/floret/v7/internal/session"
 	"reflect"
+	"runtime"
 	"testing"
+	"unsafe"
 )
 
 // Frozen pre-optimization algorithm is independent of the incremental reducer.
@@ -133,5 +135,40 @@ func TestContextEntrySelectionPreservesRetryAndAppliedSteering(t *testing.T) {
 	metadata[5].Entry.Metadata = map[string]string{RetrySourceTurnIDMetadataKey: "first", RetrySourceEntryIDMetadataKey: "absent"}
 	if _, err := ContextEntrySelection(metadata); !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatal(err)
+	}
+}
+
+func TestRetryProjectionReusesHistoryCapacity(t *testing.T) {
+	path := make([]Entry, 0, 2500)
+	for i := range 2000 {
+		path = append(path, Entry{ID: fmt.Sprint("user-", i), Type: EntryUserMessage, TurnID: "original", RunID: "run", Message: session.Message{Role: session.User, Content: "keep"}})
+	}
+	for i := range 50 {
+		path = append(path, Entry{ID: fmt.Sprint("retry-", i), Type: EntryTurnMarker, TurnStatus: TurnStarted, TurnID: fmt.Sprint("turn-", i), RunID: fmt.Sprint("run-", i), Metadata: map[string]string{RetrySourceTurnIDMetadataKey: "original", RetrySourceEntryIDMetadataKey: "user-1999"}})
+		path = append(path, Entry{ID: fmt.Sprint("answer-", i), Type: EntryAssistantMessage, TurnID: fmt.Sprint("turn-", i), RunID: fmt.Sprint("run-", i), Message: session.Message{Role: session.Assistant, Content: "answer"}})
+	}
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got, err := retryProjectedContextPath(path)
+	runtime.ReadMemStats(&after)
+	if err != nil || len(got) != 2002 || got[len(got)-1].ID != "answer-49" {
+		t.Fatalf("result=%d err=%v", len(got), err)
+	}
+	if bytes := after.TotalAlloc - before.TotalAlloc; bytes > uint64(len(path))*uint64(unsafe.Sizeof(Entry{}))*5 {
+		t.Fatalf("retry repeatedly copied complete history: %d bytes", bytes)
+	}
+	if path[2000].ID != "retry-0" || path[2001].ID != "answer-0" {
+		t.Fatal("source path mutated")
+	}
+}
+
+func TestCurrentContextStatusRejectsEveryExplicitIdentity(t *testing.T) {
+	for _, key := range []string{"run_id", "thread_id", "turn_id"} {
+		for _, value := range []string{"null", "\"\"", "\"identity\""} {
+			if _, err := decodeThreadContextStatusPayload("{\""+key+"\":"+value+"}", false); err == nil {
+				t.Fatalf("accepted %s=%s", key, value)
+			}
+		}
 	}
 }

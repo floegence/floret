@@ -103,5 +103,6 @@ func (tx *sqliteTx) ReadRecordRange(namespace string, key []byte, offset int64, 
 	if err != nil {
 		return nil, classifySQLiteError(tx.ctx, err)
 	}
-	return bytes.Clone(value), nil
+	// database/sql owns the detachment from the driver.
+	return value, nil
 }

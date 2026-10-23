@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
@@ -70,15 +69,7 @@ func decodePromptValue(encoded []byte, kind string, value any) error {
 }
 
 func decodePromptJSON(payload []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("prompt value contains trailing data")
-	}
-	return nil
+	return storagecodec.DecodeJSON(payload, value)
 }
 
 func putPromptValue(tx spi.WriteTx, key []byte, kind string, value any) error {

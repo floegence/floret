@@ -27,13 +27,9 @@ func visitLinearCanonicalPage(ctx context.Context, tx spi.ReadTx, meta ThreadMet
 			return PathPage{}, err
 		}
 		ordinal := first + index
-		record, err := decodeBackendDomainRecord(backendDomainV32Format, row.Value)
+		record, stored, err := decodeCanonicalEntryRecord(backendDomainV32Format, row.Value)
 		if err != nil || record.ThreadID != meta.ID || record.Ordinal != ordinal || !bytes.Equal(row.Key, backendDomainEntryKey(meta.ID, ordinal)) {
 			return PathPage{}, errors.Join(ErrAuthorityCorrupt, err)
-		}
-		stored, err := decodeCanonicalStoredEntry(backendDomainV32Format, record)
-		if err != nil {
-			return PathPage{}, err
 		}
 		entry := stored.Entry
 		entry.bodyFields = stored.Fields

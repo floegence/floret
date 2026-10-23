@@ -332,7 +332,8 @@ func (tx *sqliteTx) Get(namespace string, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, classifySQLiteError(tx.ctx, err)
 	}
-	return bytes.Clone(value), nil
+	// database/sql Scan into []byte already returns caller-owned storage.
+	return value, nil
 }
 
 func (tx *sqliteTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
@@ -378,8 +379,7 @@ func (tx *sqliteTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
 			page.HasMore = true
 			break
 		}
-		record.Key = bytes.Clone(record.Key)
-		record.Value = bytes.Clone(record.Value)
+		// Scan into []byte detaches both columns from the driver and other rows.
 		page.Records = append(page.Records, record)
 	}
 	if err := rows.Err(); err != nil {

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -250,15 +249,7 @@ func materializeCanonicalBody(ctx context.Context, tx spi.ReadTx, ref canonicalB
 }
 
 func decodeCanonicalBodyJSON(raw []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return ErrAuthorityCorrupt
-	}
-	return nil
+	return storagecodec.DecodeJSON(raw, target)
 }
 
 type canonicalStoredEntry struct {
@@ -356,17 +347,28 @@ func decodeCanonicalStoredEntry(format backendDomainFormat, record backendDomain
 	if err := decodeBackendDomainValue(format, record, &stored); err != nil {
 		return stored, errors.Join(ErrAuthorityCorrupt, err)
 	}
+	return validateCanonicalStoredEntry(format, record, stored)
+}
+
+func validateCanonicalStoredEntry(format backendDomainFormat, record backendDomainRecord, stored canonicalStoredEntry) (canonicalStoredEntry, error) {
 	if record.Kind != backendDomainRecordEntry || record.ID == "" || record.ThreadID == "" || record.Ordinal < 0 || stored.Entry.ID != record.ID || stored.Entry.ThreadID != record.ThreadID || stored.Entry.Raw != "" {
 		return stored, ErrAuthorityCorrupt
 	}
-	fields := canonicalEntryBodyFields(&stored.Entry)
-	for _, value := range fields {
-		if *value != "" {
-			return stored, ErrAuthorityCorrupt
-		}
+	message := &stored.Entry.Message
+	if message.Content != "" || message.Reasoning != "" || message.ToolArgs != "" || stored.Entry.Summary != "" || stored.Entry.Error != "" || message.ControlSignal != nil && message.ControlSignal.OutputText != "" {
+		return stored, ErrAuthorityCorrupt
 	}
 	for field, ref := range stored.Fields {
-		if (fields[field] == nil && (field != "activity_json" || format.version < backendDomainV31Version)) || !validCanonicalBodyRef(ref) {
+		valid := false
+		switch field {
+		case "content", "reasoning", "arguments", "summary", "error":
+			valid = true
+		case "control_output":
+			valid = message.ControlSignal != nil
+		case "activity_json":
+			valid = format.version >= backendDomainV31Version
+		}
+		if !valid || !validCanonicalBodyRef(ref) {
 			return stored, ErrAuthorityCorrupt
 		}
 	}
@@ -564,4 +566,26 @@ func deleteCanonicalBodyRecords(ctx context.Context, tx spi.WriteTx) error {
 		}
 		after = bytes.Clone(page.Next)
 	}
+}
+
+// Read-only typed decoding preserves the canonical envelope and source checks
+// without copying the encoded entry through two nested RawMessage fields.
+func decodeCanonicalEntryRecord(format backendDomainFormat, encoded []byte) (backendDomainRecord, canonicalStoredEntry, error) {
+	var value struct {
+		Version  int
+		Kind     string
+		ID       string
+		ThreadID string `json:"thread_id,omitempty"`
+		Ordinal  int
+		Value    storagecodec.JSONValue[*canonicalStoredEntry]
+	}
+	if err := storagecodec.DecodeEnvelopeInto(encoded, format.envelope, &value); err != nil {
+		return backendDomainRecord{}, canonicalStoredEntry{}, err
+	}
+	record := backendDomainRecord{Version: value.Version, Kind: value.Kind, ID: value.ID, ThreadID: value.ThreadID, Ordinal: value.Ordinal}
+	if value.Version != format.version || value.Value.Value == nil {
+		return record, canonicalStoredEntry{}, ErrAuthorityCorrupt
+	}
+	stored, err := validateCanonicalStoredEntry(format, record, *value.Value.Value)
+	return record, stored, err
 }

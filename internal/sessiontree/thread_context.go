@@ -1,16 +1,15 @@
 package sessiontree
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
+	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/observation"
 )
 
@@ -149,8 +148,10 @@ func DecodeThreadContextStatusEntry(entry Entry) (observation.ContextStatus, err
 	status.ThreadID = identity.ThreadID(strings.TrimSpace(entry.ThreadID))
 	status.TurnID = identity.TurnID(strings.TrimSpace(entry.TurnID))
 	status.RunID = identity.RunID(strings.TrimSpace(entry.RunID))
-	if err := validateThreadContextStatusIdentity(status); err != nil {
-		return observation.ContextStatus{}, err
+	// The payload decoder already validates every measurement. Only the
+	// containing entry supplies execution identity.
+	if status.ThreadID == "" || status.TurnID == "" || status.RunID == "" {
+		return observation.ContextStatus{}, errors.New("thread context status requires run, thread, and turn identities")
 	}
 	return status, nil
 }
@@ -330,18 +331,7 @@ func decodeStrictThreadContextJSON(raw string, target any, forbidden map[string]
 			}
 		}
 	}
-	decoder := json.NewDecoder(bytes.NewBufferString(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("thread context payload contains trailing data")
-		}
-		return err
-	}
-	return nil
+	return storagecodec.DecodeJSON([]byte(raw), target)
 }
 
 func validateThreadContextStatusIdentity(status observation.ContextStatus) error {

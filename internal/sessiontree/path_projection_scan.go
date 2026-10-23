@@ -49,6 +49,9 @@ func scanPathProjection(ctx context.Context, reader PathWindowReader, threadID, 
 			return err
 		}
 		pages = append(pages, page)
+		if selected == nil {
+			selected = make([]PathMetadata, 0, page.ThroughOrdinal)
+		}
 		for _, source := range page.Entries {
 			// Selection cannot mutate the scan's validated immutable sources.
 			selected = append(selected, PathMetadata{Entry: cloneEntry(source.Entry), Bodies: append([]CanonicalField(nil), source.Bodies...)})

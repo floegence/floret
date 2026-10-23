@@ -2,43 +2,10 @@
 
 ## Unreleased
 
-## v7.83.0 - 2026-10-24
-
-- Add reviewed Moonshot Kimi K3.1 Pro and Highspeed models. Render K3-family
-  output budgets through capability-selected max_completion_tokens, preserve
-  reasoning and tool history, and reject unsupported reasoning controls.
-- Scope catalog refreshes by provider with exact source hashes and review dates;
-  preserve unrelated inventories, host model choices and conversation identities.
-
-## v7.82.2 - 2026-10-23
-
-- Preserve storage and contract failure classification when overflow recovery
-  fails, while retaining the original provider rejection as diagnostic evidence.
-
-## v7.82.1 - 2026-10-23
-
-- Summarize the final complete visual tool exchange when overflow leaves no
-  older cut point. Consume every image through ordered byte-bounded batches,
-  retain canonical facts and original media, and never replay tool actions.
-
-## v7.82.0 - 2026-10-23
-
-- Add explicit model-only image preparation and exact rendered request byte
-  limits. Preserve original image identity, dimensions and transparent pixels;
-  retain smaller source encodings and freeze prepared bytes for retries.
-- Recover preparation-time capacity errors through the existing compaction
-  boundary. Count encoded media in summary batches, preserve ordered coverage,
-  and stop when an indivisible image cannot fit.
-- Preserve the original provider cause through overflow recovery and exhausted
-  retries. Never split the last complete tool exchange after a checkpoint.
-  Existing canonical histories and domain schema remain unchanged.
-
-## v7.81.0 - 2026-10-23
-
-- Add optional canonical output start/end timestamps to runtime thread items.
-  Preserve thinking and assistant receipt intervals through completion,
-  cancellation, cold history, restart and Fork without inventing historical
-  timings or counting delivery delay after the final chunk.
+- Decode resident canonical JSON directly with released v1 field semantics and
+  strict unknown-field validation. Avoid nested payload and SQLite result copies,
+  reuse Retry projection capacity, and validate context measurements once.
+  These allocation reductions do not turn cold display into an indexed read.
 
 - Initialize the canonical item projection with an absent Goal before the first
   entry, so empty-thread full and bounded views agree without invalid Goal state.
@@ -76,6 +43,44 @@
   projection reads its pages. Reuse the existing migration scheduler; explicit
   preparation and deletion remain eligible, and background work resumes after
   the final reader settles, including failure, cancellation and panic.
+
+## v7.83.0 - 2026-10-24
+
+- Add reviewed Moonshot Kimi K3.1 Pro and Highspeed models. Render K3-family
+  output budgets through capability-selected max_completion_tokens, preserve
+  reasoning and tool history, and reject unsupported reasoning controls.
+- Scope catalog refreshes by provider with exact source hashes and review dates;
+  preserve unrelated inventories, host model choices and conversation identities.
+
+## v7.82.2 - 2026-10-23
+
+- Preserve storage and contract failure classification when overflow recovery
+  fails, while retaining the original provider rejection as diagnostic evidence.
+
+## v7.82.1 - 2026-10-23
+
+- Summarize the final complete visual tool exchange when overflow leaves no
+  older cut point. Consume every image through ordered byte-bounded batches,
+  retain canonical facts and original media, and never replay tool actions.
+
+## v7.82.0 - 2026-10-23
+
+- Add explicit model-only image preparation and exact rendered request byte
+  limits. Preserve original image identity, dimensions and transparent pixels;
+  retain smaller source encodings and freeze prepared bytes for retries.
+- Recover preparation-time capacity errors through the existing compaction
+  boundary. Count encoded media in summary batches, preserve ordered coverage,
+  and stop when an indivisible image cannot fit.
+- Preserve the original provider cause through overflow recovery and exhausted
+  retries. Never split the last complete tool exchange after a checkpoint.
+  Existing canonical histories and domain schema remain unchanged.
+
+## v7.81.0 - 2026-10-23
+
+- Add optional canonical output start/end timestamps to runtime thread items.
+  Preserve thinking and assistant receipt intervals through completion,
+  cancellation, cold history, restart and Fork without inventing historical
+  timings or counting delivery delay after the final chunk.
 
 ## v7.80.2 - 2026-10-23
 

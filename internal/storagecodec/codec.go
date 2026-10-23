@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"io"
 	"math"
 )
 
@@ -68,20 +67,45 @@ func EncodeEnvelope(kind string, payload []byte) ([]byte, error) {
 
 // DecodeEnvelope validates and returns one exact domain payload.
 func DecodeEnvelope(encoded []byte, kind string) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
 	var value envelope
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("storage envelope contains trailing data")
-		}
+	if err := DecodeJSON(encoded, &value); err != nil {
 		return nil, err
 	}
 	if value.Version != envelopeVersion || value.Kind != kind || len(value.Payload) == 0 {
 		return nil, errors.New("unsupported storage envelope")
 	}
-	return bytes.Clone(value.Payload), nil
+	return value.Payload, nil
+}
+
+// JSONValue preserves RawMessage's replace-on-duplicate semantics while decoding
+// a nested value directly into detached typed storage.
+type JSONValue[T any] struct {
+	Value   T
+	Present bool
+}
+
+func (value *JSONValue[T]) UnmarshalJSON(raw []byte) error {
+	var next T
+	if err := DecodeJSON(raw, &next); err != nil {
+		return err
+	}
+	value.Value, value.Present = next, true
+	return nil
+}
+
+// DecodeEnvelopeInto validates the same envelope while decoding a typed payload.
+func DecodeEnvelopeInto[T any](encoded []byte, kind string, target *T) error {
+	var value struct {
+		Version int          `json:"version"`
+		Kind    string       `json:"kind"`
+		Payload JSONValue[T] `json:"payload"`
+	}
+	if err := DecodeJSON(encoded, &value); err != nil {
+		return err
+	}
+	if value.Version != envelopeVersion || value.Kind != kind || !value.Payload.Present {
+		return errors.New("unsupported storage envelope")
+	}
+	*target = value.Payload.Value
+	return nil
 }

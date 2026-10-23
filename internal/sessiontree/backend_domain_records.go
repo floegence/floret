@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"slices"
 	"sort"
@@ -91,16 +90,8 @@ func decodeBackendDomainRecord(format backendDomainFormat, encoded []byte) (back
 	if err != nil {
 		return backendDomainRecord{}, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
 	var record backendDomainRecord
-	if err := decoder.Decode(&record); err != nil {
-		return backendDomainRecord{}, err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = fmt.Errorf("session-tree %s record contains trailing data", format.label)
-		}
+	if err := storagecodec.DecodeJSON(payload, &record); err != nil {
 		return backendDomainRecord{}, err
 	}
 	if record.Version != format.version || strings.TrimSpace(record.Kind) == "" || len(record.Value) == 0 {
@@ -123,18 +114,7 @@ func decodeBackendDomainValue(format backendDomainFormat, record backendDomainRe
 		*manifest = backendDomainManifest{Version: historical.Version, Sequence: historical.Sequence}
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(record.Value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = fmt.Errorf("session-tree %s value contains trailing data", format.label)
-		}
-		return err
-	}
-	return nil
+	return storagecodec.DecodeJSON(record.Value, target)
 }
 
 // visitBackendDomain releases each encoded page before reading the next one.
