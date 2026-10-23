@@ -25,6 +25,12 @@ a Goal; direct answers and brief read-only checks normally do not. An existing
 unfinished Goal remains in force across those checks. User and model mutations share the same journal
 writer and increment the same version.
 
+The model should finish necessary work tools, submit its review, then compose
+the final deliverable with the requested result and essential supporting sources.
+A premature answer before natural-stop reflection remains intermediate; review
+instructions ask the model to preserve its useful substance in the final answer.
+Goal status confirmation alone does not fulfill the user's deliverable.
+
 User deletion suppresses automatic recreation for the same task. An answer,
 approval, retry, restart or compaction is not a new task. The model can update
 user-created Goals while preserving unfinished requirements. Only a genuinely
