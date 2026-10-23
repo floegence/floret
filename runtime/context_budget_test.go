@@ -4,9 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/v7/config"
 	"github.com/floegence/floret/v7/florettest"
+	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
 )
@@ -33,7 +35,21 @@ func TestThreadContextBudgetFailureSurvivesRestartAndAllowsRecovery(t *testing.T
 	if _, err := service.Send(t.Context(), SendInput{ThreadID: created.ThreadID, Input: UserInput{Text: "weather"}, RequestKey: "send-budget"}); err != nil {
 		t.Fatal(err)
 	}
-	failed := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
+	waitTerminal := func() ThreadView {
+		t.Helper()
+		waited, err := service.(ThreadWaiter).WaitThreads(t.Context(), WaitThreadsInput{
+			ThreadIDs: []identity.ThreadID{created.ThreadID}, Timeout: time.Minute,
+		})
+		if err != nil || waited.Reason != ThreadWaitCompleted {
+			t.Fatalf("terminal wait=%+v err=%v", waited, err)
+		}
+		view, err := service.View(t.Context(), created.ThreadID)
+		if err != nil || view.Activity != ThreadActivityIdle || view.LastOutcome == nil {
+			t.Fatalf("terminal activity=%s outcome=%v err=%v", view.Activity, view.LastOutcome, err)
+		}
+		return view
+	}
+	failed := waitTerminal()
 	if failed.Failure == nil || failed.Failure.Code != ThreadTurnFailureContextBudgetInvalid || !strings.Contains(failed.Failure.Message, "request_safe_limit=-205") {
 		t.Fatalf("failure=%#v", failed.Failure)
 	}
@@ -67,10 +83,8 @@ func TestThreadContextBudgetFailureSurvivesRestartAndAllowsRecovery(t *testing.T
 	if _, err := service.Retry(t.Context(), RetryInput{ThreadID: created.ThreadID, SourceTurnID: restored.TurnID, RequestKey: "retry-budget"}); err != nil {
 		t.Fatal(err)
 	}
-	recovered := waitThreadView(t, service, created.ThreadID, func(v ThreadView) bool {
-		return v.Activity == ThreadActivityIdle && v.LastOutcome != nil && *v.LastOutcome == TurnOutcomeCompleted
-	})
-	if recovered.Failure != nil || len(gateway.Requests()) != 1 {
+	recovered := waitTerminal()
+	if *recovered.LastOutcome != TurnOutcomeCompleted || recovered.Failure != nil || len(gateway.Requests()) != 1 {
 		t.Fatalf("recovered=%#v requests=%d", recovered, len(gateway.Requests()))
 	}
 }
