@@ -86,6 +86,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		item.canonicalText = item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering || item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant
 		return appendThreadItem(items, item)
 	}
+	var outputStarted, outputEnded *time.Time
 	appendReasoning := func(entry sessiontree.Entry, turnID identity.TurnID, runID identity.RunID, createdAt time.Time) {
 		text, source := entry.Message.Reasoning, entry.Message.ReasoningSourceID
 		if text == "" {
@@ -100,9 +101,14 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 		reasoningIndex[source] = len(items)
 		projection.recordEntryItem(entry.ID, len(items))
-		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}})
+		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}, OutputStartedAt: outputStarted, OutputEndedAt: outputEnded})
 	}
 	for entryIndex, entry := range entries {
+		var timingErr error
+		outputStarted, outputEnded, timingErr = sessiontree.OutputTiming(entry)
+		if timingErr != nil {
+			return runtimeHostError(timingErr)
+		}
 		canonicalOrdinal = projection.ordinal + uint64(entryIndex+1)
 
 		redundantSource, err := projection.controls.Observe(entry)
@@ -277,7 +283,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				}
 				contentIndex[entry.Message.ContentSourceID] = len(items)
 				projection.recordEntryItem(entry.ID, len(items))
-				items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}})
+				items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}, OutputStartedAt: outputStarted, OutputEndedAt: outputEnded})
 			}
 		case sessiontree.EntryTurnMarker:
 			if entry.Metadata[sessiontree.GoalCompletedMetadataKey] != "" {

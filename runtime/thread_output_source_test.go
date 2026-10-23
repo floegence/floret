@@ -218,6 +218,9 @@ func TestStoppedProviderRetainsPartialOutputSourcesAndAllowsNextTurn(t *testing.
 			t.Fatalf("partial output lost: live=%+v restored=%+v", live.Items, view.Items)
 		}
 		for i := 1; i < len(live.Items); i++ {
+			if view.Items[i].OutputStartedAt == nil || view.Items[i].OutputEndedAt == nil || live.Items[i].OutputStartedAt == nil || !view.Items[i].OutputStartedAt.Equal(*live.Items[i].OutputStartedAt) || !view.Items[i].OutputEndedAt.Equal(*view.Items[i].OutputStartedAt) {
+				t.Fatalf("partial output lost source timing: %+v", view.Items[i])
+			}
 			if view.Items[i].ID != live.Items[i].ID || view.Items[i].Text != live.Items[i].Text || view.Items[i].CanonicalOrdinal == 0 {
 				t.Fatalf("partial source changed: live=%+v restored=%+v", live.Items, view.Items)
 			}

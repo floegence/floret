@@ -409,7 +409,18 @@ func threadToolActivityTerminal(status observation.ActivityStatus) bool {
 }
 
 func (runtime *threadRuntimeState) appendLiveOutput(kind ThreadItemKind, event Event) {
-	runtime.appendLiveTextSegment(kind, event.Stream.Text, event.Timestamp, event.outputSourceID, event.outputBody)
+	at := event.Timestamp
+	if !event.outputLastAt.IsZero() {
+		at = event.outputLastAt
+	}
+	runtime.appendLiveTextSegment(kind, event.Stream.Text, at, event.outputSourceID, event.outputBody)
+	if index := runtime.itemIndexByID(event.outputSourceID); index >= 0 && !event.outputStartedAt.IsZero() {
+		item := &runtime.state.view.Items[index]
+		if item.CanonicalOrdinal == 0 && item.Kind == kind && item.Live {
+			start := event.outputStartedAt
+			item.OutputStartedAt = &start
+		}
+	}
 }
 
 func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, text string, createdAt time.Time, source string, bodies ...outputbody.Reader) {
@@ -433,11 +444,22 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		runtime.state.attemptDraftIDs[source] = true
 	}
 	item := &runtime.state.view.Items[index]
-	if !item.Live {
-		runtime.markItem(source, ThreadItemReplaced)
-	}
 	if item.CanonicalOrdinal != 0 || item.contentSourceID != source || item.Kind != kind {
 		return
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	if item.OutputStartedAt == nil {
+		start := createdAt
+		item.OutputStartedAt = &start
+	}
+	if !createdAt.Before(item.outputLastAt) {
+		item.outputLastAt = createdAt
+	}
+	item.OutputEndedAt = nil
+	if !item.Live {
+		runtime.markItem(source, ThreadItemReplaced)
 	}
 	if runtime.observedItemIDs == nil {
 		runtime.observedItemIDs = map[string]bool{}
@@ -480,6 +502,9 @@ func (runtime *threadRuntimeState) finishLiveTextSegment() {
 			runtime.markItem(runtime.state.openTextSegmentID, ThreadItemReplaced)
 		}
 		runtime.state.view.Items[index].Live = false
+		if at := runtime.state.view.Items[index].outputLastAt; !at.IsZero() {
+			runtime.state.view.Items[index].OutputEndedAt = &at
+		}
 	}
 	runtime.state.openTextSegmentID = ""
 	runtime.state.openTextKind = ""

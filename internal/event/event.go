@@ -74,8 +74,10 @@ const (
 type Event struct {
 	Transport *observation.ProviderTransportProgress `json:"transport,omitempty"`
 	// OutputSourceID is assigned by the Engine before publishing any text.
-	OutputSourceID string   `json:"-"`
-	OutputOrder    []string `json:"-"`
+	OutputSourceID  string    `json:"-"`
+	OutputOrder     []string  `json:"-"`
+	OutputStartedAt time.Time `json:"-"`
+	OutputLastAt    time.Time `json:"-"`
 	// OutputBody is borrowed only through the internal OutputBodySink boundary.
 	OutputBody *outputbody.Body `json:"-"`
 

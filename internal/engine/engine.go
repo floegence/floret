@@ -4072,7 +4072,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				hasText = true
 				estimate.append("text", ev.Text)
 				if builder.delta != "" {
-					emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
+					emitAttemptEvent(event.Event{Type: event.ProviderDelta, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, OutputStartedAt: builder.output.Items[builder.open].StartedAt, OutputLastAt: builder.output.Items[builder.open].EndedAt, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
 				}
 			case provider.Reasoning:
 				if ev.Text == "" {
@@ -4084,7 +4084,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				}
 				estimate.append("reasoning", ev.Text)
 				if builder.delta != "" {
-					emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
+					emitAttemptEvent(event.Event{Type: event.ProviderReasoning, OutputSourceID: source, OutputOrder: order, OutputBody: builder.output.Items[builder.open].text, OutputStartedAt: builder.output.Items[builder.open].StartedAt, OutputLastAt: builder.output.Items[builder.open].EndedAt, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: builder.delta})
 				}
 			case provider.ToolCallStart:
 				previewFor(ev.ToolCallStream.ID, ev.ToolCallStream.Name)

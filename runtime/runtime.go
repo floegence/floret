@@ -722,6 +722,8 @@ type Event struct {
 	activityItems     []observation.ActivityItem
 	contextCommitted  bool
 	outputSourceID    string
+	outputStartedAt   time.Time
+	outputLastAt      time.Time
 	outputBody        outputbody.Reader
 	outputBodyErr     error
 	outputOrder       []string
@@ -2126,6 +2128,7 @@ func runtimeEvent(ev event.Event) Event {
 	return Event{
 		contextCommitted: runtimeContextCommitted(ev),
 		outputSourceID:   ev.OutputSourceID, outputOrder: ev.OutputOrder,
+		outputStartedAt: ev.OutputStartedAt, outputLastAt: ev.OutputLastAt,
 		ProviderLastProgressAt: lastProgressAt,
 		Type:                   ev.Type,
 		Transport:              cloneProviderTransportProgress(ev.Transport),

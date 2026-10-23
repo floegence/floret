@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v7.81.0 - 2026-10-23
+
+- Add optional canonical output start/end timestamps to runtime thread items.
+  Preserve thinking and assistant receipt intervals through completion,
+  cancellation, cold history, restart and Fork without inventing historical
+  timings or counting delivery delay after the final chunk.
+
 - Initialize the canonical item projection with an absent Goal before the first
   entry, so empty-thread full and bounded views agree without invalid Goal state.
 

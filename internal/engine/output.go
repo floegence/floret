@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/citation"
@@ -21,15 +22,18 @@ type ResponseOutput struct {
 }
 
 type ResponseOutputItem struct {
-	Message session.Message
-	Hosted  *event.Event
-	part    *provider.OutputPart
-	channel provider.EventType
-	text    *outputbody.Body
-	pending string
+	StartedAt time.Time
+	EndedAt   time.Time
+	Message   session.Message
+	Hosted    *event.Event
+	part      *provider.OutputPart
+	channel   provider.EventType
+	text      *outputbody.Body
+	pending   string
 }
 
 type responseOutputBuilder struct {
+	now        func() time.Time
 	output     ResponseOutput
 	runID      string
 	attemptID  string
@@ -47,7 +51,7 @@ type responseOutputPartKey struct {
 }
 
 func newResponseOutputBuilder(runID, attemptID string) *responseOutputBuilder {
-	return &responseOutputBuilder{runID: runID, attemptID: attemptID, open: -1, bodies: outputbody.NewOwner()}
+	return &responseOutputBuilder{runID: runID, attemptID: attemptID, open: -1, bodies: outputbody.NewOwner(), now: time.Now}
 }
 
 func (b *responseOutputBuilder) appendText(kind provider.EventType, text string, part *provider.OutputPart) (string, []string) {
@@ -84,6 +88,7 @@ func (b *responseOutputBuilder) appendText(kind provider.EventType, text string,
 	source := item.Message.ContentSourceID
 	// Providers may split a rune between events. Keep only its incomplete
 	// suffix here so every observed extent ends at a readable UTF-8 boundary.
+	received := text != ""
 	text = item.pending + text
 	end := len(text)
 	if end > 0 {
@@ -101,6 +106,15 @@ func (b *responseOutputBuilder) appendText(kind provider.EventType, text string,
 	}
 	item.pending = strings.Clone(text[end:])
 	b.delta = text[:end]
+	if received {
+		at := b.now().UTC()
+		if item.StartedAt.IsZero() {
+			item.StartedAt = at
+		}
+		if !at.Before(item.EndedAt) {
+			item.EndedAt = at
+		}
+	}
 	if kind == provider.Reasoning {
 		source = item.Message.ReasoningSourceID
 	}

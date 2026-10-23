@@ -125,6 +125,14 @@ in model history. Legacy shape interpretation runs only in the atomic startup
 migration; current restart does not rewrite records. Hosts render Floret order
 and IDs directly without content deduplication or client sorting.
 
+New assistant and thinking sources expose optional ThreadItem.OutputStartedAt
+and OutputEndedAt in views, windows and history. The Engine records the first
+and last nonempty output chunks; sealing does not extend the interval beyond
+the last chunk. This is received-output timing, not provider compute time. A live
+source has no end yet, a single chunk has equal endpoints, and historical
+unmeasured sources omit both. Canonical metadata preserves the interval across
+restart and Fork without rewriting older records or changing the schema.
+
 ## Thread goals
 
 Opt in with `runtime.WithAgentGoals()` to let the executing model maintain one
