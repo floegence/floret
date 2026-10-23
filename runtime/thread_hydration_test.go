@@ -333,6 +333,8 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	}
 	add(sessiontree.Entry{ID: "discarded-call", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "read", ToolCallID: "discarded", ToolArgs: "{}"}})
 	add(sessiontree.Entry{ID: "discarded-result", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "read", ToolCallID: "discarded", Content: strings.Repeat("discarded context body", 1000), ToolResult: &session.ToolResultView{Status: "success"}}})
+	add(sessiontree.Entry{ID: "continue-call", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, Kind: session.MessageKindControlSignal, ToolName: "continue", ToolCallID: "continue", ControlSignal: &session.ControlSignalView{Name: "continue", CallID: "continue", Disposition: "continue", OutputText: "saved continuation output"}}})
+	add(sessiontree.Entry{ID: "continue-result", TurnID: "first", RunID: "run", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "continue", ToolCallID: "continue", Content: "saved continuation output"}})
 	add(sessiontree.Entry{ID: "steer", TurnID: "first", RunID: "run", Type: sessiontree.EntrySteeringRequested, RequestKey: "steer", RequestFingerprint: "steer", Message: session.Message{Role: session.User, Content: "retained correction"}})
 	add(sessiontree.Entry{ID: "managed", TurnID: "first", RunID: "run", Type: sessiontree.EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "workspace", Title: "Workspace", Text: "retained managed fact"}}}}})
 	payload, err := json.Marshal(sessiontree.SteeringResolution{SteeringID: "steer"})
@@ -372,7 +374,7 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	if string(a) != string(b) || repo.paths != 0 || repo.pages != 3 {
 		t.Fatalf("Retry projection differs: paths=%d pages=%d", repo.paths, repo.pages)
 	}
-	if repo.toolBodyFields != 2 {
-		t.Fatalf("selected context must read both retained bodies and no discarded bodies: %d", repo.toolBodyFields)
+	if repo.toolBodyFields != 3 {
+		t.Fatalf("selected context must read both retained bodies and the control-owned result: %d", repo.toolBodyFields)
 	}
 }
