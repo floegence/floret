@@ -205,3 +205,27 @@ func TestDelegatedInventoryReadUsesPreparedRepositoryForegroundGate(t *testing.T
 		t.Fatalf("delegated inventory bypassed foreground owner: %v", err)
 	}
 }
+
+func TestSelectedReadPrioritySurvivesProjectionUntilBodyReadCompletes(t *testing.T) {
+	_, _, repo := linearPageFixture(t, false)
+	wrapper := &BackendRepo{}
+	wrapper.delegate.Store(repo)
+	release, err := wrapper.BeginForegroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionRelease, err := repo.migrationGate.foregroundRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionRelease()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if err := repo.migrationGate.waitForForegroundReads(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("inventory resumed before selected body reads: %v", err)
+	}
+	release()
+	if err := repo.migrationGate.waitForForegroundReads(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}

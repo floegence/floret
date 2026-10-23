@@ -8,6 +8,7 @@
 - Let sidebar summaries join selected-thread preparation and yield between
   metadata pages to foreground reads on the prepared repository. Cancellation
   releases only the waiting consumer; it does not restart shared preparation.
+  Retain foreground priority through selected body reads and window publication.
 
 - Decode resident canonical JSON directly with released v1 field semantics and
   strict unknown-field validation. Avoid nested payload and SQLite result copies,

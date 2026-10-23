@@ -3,7 +3,31 @@ package sessiontree
 import (
 	"context"
 	"sync"
+
+	"github.com/floegence/floret/v7/storage/spi"
 )
+
+// ForegroundReadOwner keeps background inventory outside a complete selected
+// read, including its post-projection body pages. It conveys no authority and
+// holds neither a transaction nor an exclusive lock.
+type ForegroundReadOwner interface {
+	BeginForegroundRead(context.Context) (func(), error)
+}
+
+func (repo *BackendRepo) BeginForegroundRead(ctx context.Context) (func(), error) {
+	if repo == nil || ctx == nil {
+		return nil, spi.ErrInvalidArgument
+	}
+	if repo.waitForReady != nil {
+		if err := repo.waitForReady(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if delegate := repo.delegate.Load(); delegate != nil {
+		return delegate.BeginForegroundRead(ctx)
+	}
+	return repo.migrationGate.foregroundRead(ctx)
+}
 
 // One in-process owner coordinates migration batches. A foreground request
 // cancels background validation at its next read boundary; staged source pages

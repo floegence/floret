@@ -360,7 +360,9 @@ migration scheduler. It cancels a background attempt at its next transaction
 boundary and prevents immediate restart between read pages. It holds neither an
 exclusive migration lock nor a storage transaction; explicit preparation and
 deletion can still proceed. The final reader releases priority on every return
-or panic so background preparation resumes.
+or panic so background preparation resumes. SetWindow retains the same priority
+through authorization, cold preparation and selected body reads; inventory cannot
+resume in the gap between projection completion and window publication.
 
 Cold initialization first selects Retry identities using body-free metadata, then
 feeds the same complete source pages into the canonical timeline and checked

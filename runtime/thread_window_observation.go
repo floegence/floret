@@ -88,6 +88,13 @@ func (subscription *ThreadUpdateSubscription) SetWindow(ctx context.Context, sco
 		return errors.New("bounded window subscription required")
 	}
 	service := subscription.service
+	if owner, ok := service.host.store.repo.(sessiontree.ForegroundReadOwner); ok {
+		release, err := owner.BeginForegroundRead(ctx)
+		if err != nil {
+			return runtimeHostError(err)
+		}
+		defer release()
+	}
 	if err := service.authorizeBodyRead(ctx, scope, input.ThreadID); err != nil {
 		return err
 	}
