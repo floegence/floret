@@ -320,7 +320,7 @@ func validateSnapshotSourceShape(ctx context.Context, tx spi.ReadTx) (int, error
 		if err != nil {
 			return 0, errors.Join(ErrAuthorityCorrupt, err)
 		}
-		if field.Type.Kind() == reflect.Map && span.Kind != '{' {
+		if field.Type.Kind() == reflect.Map && span.Kind != '{' && (!optional || span.Kind != 'l') {
 			return 0, ErrAuthorityCorrupt
 		}
 	}

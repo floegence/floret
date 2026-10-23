@@ -82,9 +82,10 @@ Segmented v6–v31 sources prepare thread dependency closures through the perman
 migration chain. Bounded staging yields between transactions; publication of a
 complete validated closure is atomic. Foreground requests preempt background
 preparation, and usable threads remain available after an unrelated failure.
-Source cleanup follows complete root inventory and record verification. The
-monolithic v2–v5 path still gates canonical operations on complete migration;
-status reads remain available. A current store opens without rewriting its
+Source cleanup follows complete root inventory and record verification. Monolithic v2–v5 sources first scan immutable bytes and reserve historical
+identities in bounded, resumable transactions. New-thread admission waits for
+that identity boundary; the Host and status remain available. Each historical
+thread then uses the same independent publication path. A current store opens without rewriting its
 canonical records. During v5 migration, the exact
 adoption repair accepts a
 tool-result Raw value only when its stored hash is valid and replacing JSON's
@@ -448,6 +449,17 @@ text terms, postings, or durable query snapshots are introduced.
 
 Logical storage 11 recognizes this resumable state. Host readiness is an
 in-process observation of the canonical owner, not another durable lifecycle.
-The monolithic v2–v5 path still completes its existing migration before canonical
-operations are released; source-span indexing remains migration implementation
-work and is not an alternate public read path.
+Monolithic v2–v5 sources use the production worker in
+[backend_snapshot_prepare.go](../../internal/sessiontree/backend_snapshot_prepare.go).
+Parser checkpoints and the metadata-only identity directory resume after restart.
+The directory reserves ThreadIDs and origin request keys, including tombstones;
+new-thread admission waits until it is complete. Only canonical publication makes
+historical journals readable. No source locator is a runtime read authority.
+
+Identity conversion reads root intents once per inventory, and directory writes
+are bounded by count and bytes. Completed pages are checked against immutable
+source metadata before resuming. Final verification rejects missing, extra or
+changed directory records before deleting source bytes. Released recovery frame
+checksums, intermediate authority, UTF-8 repair and fallback-title repair retain
+their exact semantics. Locator and journal cleanup are separate bounded batches;
+the final snapshot removal and source-version reset commit together.

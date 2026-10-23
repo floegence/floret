@@ -347,10 +347,19 @@ func historicalCandidate(ctx context.Context, reader spi.ReadTx, source backendD
 		return historicalCandidateReader{}, ErrAuthorityCorrupt
 	}
 	clock := func() time.Time { return time.Unix(0, manifest.MigrationTime).UTC() }
-	memory, err := loadHistoricalThreadClosure(ctx, reader, source, threadID, clock)
+	var memory *MemoryRepo
+	if source.version < 6 {
+		memory, err = loadSnapshotThreadClosure(ctx, reader, threadID, clock)
+	} else {
+		memory, err = loadHistoricalThreadClosure(ctx, reader, source, threadID, clock)
+	}
 	if err != nil {
 		return historicalCandidateReader{}, err
 	}
+	return historicalCandidateFromMemory(ctx, reader, source, memory)
+}
+
+func historicalCandidateFromMemory(ctx context.Context, reader spi.ReadTx, source backendDomainFormat, memory *MemoryRepo) (historicalCandidateReader, error) {
 	terminals := map[string]map[string]bool{}
 	for id, entries := range memory.entries {
 		terminals[id] = map[string]bool{}
@@ -362,7 +371,7 @@ func historicalCandidate(ctx context.Context, reader spi.ReadTx, source backendD
 	}
 	// Transform only immutable source journals. Parent receipts belong to the
 	// atomic publication transaction, since a parent may already be in use.
-	if err := migrateHistoricalMemoryThroughV29(WithParentEvents(ctx, false), memory, source.version); err != nil {
+	if err := migrateHistoricalMemoryThroughV29(WithParentEvents(ctx, false), memory, max(6, source.version)); err != nil {
 		return historicalCandidateReader{}, err
 	}
 	var events []ParentEvent
@@ -391,7 +400,38 @@ func historicalCandidate(ctx context.Context, reader spi.ReadTx, source backendD
 func (repo *BackendRepo) prepareHistoricalThreadBatch(ctx context.Context, threadID string) (bool, error) {
 	source := *repo.migrationSource
 	reader := migrationSourceReader{ctx: ctx, backend: repo.backend}
-	candidate, err := historicalCandidate(ctx, reader, source, threadID)
+	var candidate historicalCandidateReader
+	var err error
+	if source.version < 6 {
+		if repo.snapshotSource == nil {
+			checkpoint, found, readErr := readSnapshotImportCheckpoint(reader)
+			if readErr != nil || !found || !checkpoint.Complete || checkpoint.Version != source.version {
+				return false, errors.Join(ErrAuthorityCorrupt, readErr)
+			}
+			if err := verifyIndexedJSONRecord(ctx, reader, backendDomainNamespace, backendStateKey, checkpoint); err != nil {
+				return false, err
+			}
+			verified, err := newSnapshotEffectiveSource(ctx, reader, source.version)
+			if err != nil {
+				return false, err
+			}
+			verified.tx = nil // Never retain an expired caller context or transaction.
+			repo.snapshotSource = verified
+		}
+		manifest, readErr := readV32Manifest(reader)
+		if readErr != nil || manifest.SourceVersion != source.version || manifest.MigrationTime <= 0 {
+			return false, errors.Join(ErrAuthorityCorrupt, readErr)
+		}
+		verified := *repo.snapshotSource
+		verified.tx = reader
+		memory, readErr := loadSnapshotThreadClosureFrom(ctx, &verified, source.version, threadID, func() time.Time { return time.Unix(0, manifest.MigrationTime).UTC() })
+		if readErr != nil {
+			return false, readErr
+		}
+		candidate, err = historicalCandidateFromMemory(ctx, reader, source, memory)
+	} else {
+		candidate, err = historicalCandidate(ctx, reader, source, threadID)
+	}
 	if err != nil {
 		return false, err
 	}

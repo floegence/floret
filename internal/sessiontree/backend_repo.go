@@ -28,6 +28,7 @@ type BackendRepo struct {
 	// migrationSource identifies an older canonical format retained as the
 	// authoritative source while v32 records are published per thread.
 	migrationSource                      *backendDomainFormat
+	snapshotSource                       *snapshotEffectiveSource // guarded by migrationGate
 	waitForReady                         func(context.Context) error
 	delegate                             atomic.Pointer[BackendRepo]
 	mu                                   sync.Mutex
@@ -550,13 +551,13 @@ func detectBackendDomainSource(ctx context.Context, tx spi.ReadTx) (backendDomai
 		// A v31 source plus a v32 manifest carrying source_version=31 is the
 		// resumable per-thread migration state. The older namespace remains
 		// authoritative until each thread publishes successfully.
-		if len(present) == 2 && present[0] == backendDomainSourceV32 && (present[1] != backendDomainSourceFresh && present[1] != backendDomainSourceLegacy) {
+		if len(present) == 2 && present[0] == backendDomainSourceV32 && present[1] != backendDomainSourceFresh {
 			raw, readErr := tx.Get(backendDomainV32Namespace, backendDomainKey(backendDomainRecordManifest))
 			if readErr == nil {
 				record, decodeErr := decodeBackendDomainRecord(backendDomainV32Format, raw)
 				if decodeErr == nil {
 					var manifest backendDomainManifest
-					if decodeErr = decodeBackendDomainValue(backendDomainV32Format, record, &manifest); decodeErr == nil && manifest.SourceVersion == backendDomainSourceVersion(present[1]) {
+					if decodeErr = decodeBackendDomainValue(backendDomainV32Format, record, &manifest); decodeErr == nil && (manifest.SourceVersion == backendDomainSourceVersion(present[1]) || present[1] == backendDomainSourceLegacy && manifest.SourceVersion >= 2 && manifest.SourceVersion <= 5) {
 						return backendDomainSourceV32, nil
 					}
 				}

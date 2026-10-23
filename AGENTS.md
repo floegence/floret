@@ -218,16 +218,24 @@ Rules:
   a Host-owned worker. No canonical operation may observe unpublished or
   partially migrated state; readiness waits must honor caller cancellation, and
   Host shutdown must wait for the active storage transaction to settle.
-  Segmented sources publish each validated thread dependency closure atomically;
-  bounded staging commits never expose partial journals. Source records remain
-  authoritative until publication and are removed only after complete inventory
-  verification. Already published threads remain usable if another thread fails.
+  Each source publishes a validated thread dependency closure atomically; bounded
+  staging commits never expose partial journals. Monolithic v2-v5 sources require
+  a resumable source scan before their thread authorities can be located. This
+  scan belongs to the migration worker, never the synchronous Open path. Only
+  v2-v5 stores may defer new-thread admission until this identity scan completes;
+  v6+ stores and current stores must admit new threads immediately. Source
+  records remain authoritative until publication and are removed only after
+  complete inventory verification. Already published threads remain usable if
+  another thread fails. A failure in shared source authority must retain that
+  source and block every dependent publication without guessing or dropping data.
 - Fresh stores initialize directly at the current domain schema. Existing
   current stores open without rewriting canonical bytes. Supported older state
   migrates exactly once, and repeated startup is idempotent.
 - Every migration must validate the exact source authority used to derive new
-  state and validate the complete current invariant before commit. Unknown,
-  ambiguous, drifted, corrupt, or future state fails closed without mutation.
+  state and validate the complete current invariant before publication. Unknown,
+  ambiguous, drifted, corrupt, or future state fails closed without publishing
+  or deleting its source. Durable staging is private, restartable migration work;
+  its existence never authorizes runtime reads or execution.
 - Tests for each edge must cover fresh and current state, every supported
   source shape, preservation of durable records, restart idempotency, write
   failure, cancellation, panic rollback, schema drift, and future versions.
@@ -238,8 +246,10 @@ Rules:
   and downstream products must treat the backend records as opaque and must
   not reconstruct, patch, or migrate Floret domain records themselves.
 - SQLite physical formats 1 -> 2 -> 3 -> 4 -> 5 use transactional metadata/layout
-  changes only and must not copy or clear canonical records. Logical storage 7 -> 8 -> 9 -> 10 -> 11 migrates through the
-  Host-owned startup transaction and permanent session-tree lineage. Prompt
+  changes only and must not copy or clear canonical records. Logical storage
+  7 -> 8 -> 9 -> 10 -> 11 migrates through Host-owned transactions and the permanent
+  session-tree lineage. A logical format marker identifies the migration owner;
+  it does not assert that every historical thread is already prepared. Prompt
   history uses append-ordered scope/category records; the global v1 snapshot
   reader belongs exclusively to migration. Do not reintroduce whole-cache
   snapshots, runtime dual reads, or checkpoint writes for unrelated scopes.

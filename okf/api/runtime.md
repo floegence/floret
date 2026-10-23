@@ -25,8 +25,8 @@ final current-state verification run in a Host-owned worker. Hosts can observe
 Canonical operations wait for publication and cannot observe partial state.
 Segmented v6–v31 sources publish complete validated thread dependency closures
 atomically, yielding between staging batches. New and published threads remain
-usable during background preparation. Monolithic v2–v5 sources still gate
-canonical operations on complete migration. Host shutdown joins the active
+usable during background preparation. Monolithic v2–v5 sources gate canonical operations only until their resumable
+source scan reserves historical identities, then publish threads independently. Host shutdown joins the active
 storage transaction before closing the backend.
 
 ## Thread goals
@@ -568,12 +568,14 @@ startup worker and exposes no record content. Startup selects one exact source
 format, rejects mixed authority and performs persisted final verification after
 startup writes. Current-schema startup is byte-preserving and idempotent. Host
 status remains readable during migration. Segmented v6–v31 sources publish
-threads independently; monolithic v2–v5 sources retain the complete startup
-gate. The v5 ->
+threads independently. Monolithic v2–v5 sources initially wait for a resumable
+identity scan before admitting new threads; status reads remain available. The v5 ->
 v6 edge first replays pending v5 recovery frames and accepts only the exact v5
 tool-result Raw repair produced before UTF-8 normalization was enforced. It then
-writes segmented v6 authority and removes the legacy checkpoint, full-path root
-inventory, and diff journal in one transaction. The v6 -> v7 edge permanently
+applies the released v6 transform privately and publishes each validated closure
+through the current canonical owner. The legacy checkpoint, full-path root
+inventory and diff journal remain until full source verification, followed by
+bounded cleanup and an atomic final source-version reset. The v6 -> v7 edge permanently
 fills exact run identity, removes retry authority, and terminates active unknown
 effects before migrated state is published. The v7 -> v8 edge
 classifies only the exact Engine continuation user message paired with its

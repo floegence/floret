@@ -149,6 +149,47 @@ func migrateMemoryStateV4ToV5(state *memoryState) error {
 	if err := validateLegacySubAgentAdmissions(*state, legacy); err != nil {
 		return err
 	}
+	if err := migrateSnapshotOrigins(state); err != nil {
+		return err
+	}
+	// v4 persisted several materialized lifecycle authorities. Their durable
+	// facts already exist in the canonical journal; v5 deliberately drops the
+	// mirrors instead of migrating them into another ledger.
+	state.Leases = nil
+	state.LeaseGeneration = nil
+	state.AuthorityClaims = nil
+	state.TurnAdmissions = nil
+	state.TurnFinishes = nil
+	state.ApprovalQueues = nil
+	state.Approvals = nil
+	state.ApprovalByEffectAttempt = nil
+	state.ApprovalDecisions = nil
+	state.ThreadRevisions = nil
+	state.ThreadRevisionHistory = nil
+	state.RootCreateIntents = nil
+	state.SubAgentPublications = nil
+	state.SubAgentInputRequests = nil
+	state.SubAgentCloseOperations = nil
+	state.PendingToolCompletions = nil
+	state.SubAgentPendingToolCompletions = nil
+	state.CompactionOperations = nil
+	if state.EffectAttempts == nil {
+		state.EffectAttempts = make(map[string]legacyEffectAttemptV6)
+	}
+	if state.EffectAttemptByInvocation == nil {
+		state.EffectAttemptByInvocation = make(map[string]string)
+	}
+	for effectID, attempt := range state.EffectAttempts {
+		attempt.OwnerID = ""
+		attempt.Generation = 0
+		state.EffectAttempts[effectID] = attempt
+	}
+	state.Version = 5
+	return nil
+}
+
+// The identity transform is shared by full and bounded historical migration.
+func migrateSnapshotOrigins(state *memoryState) error {
 	for requestKey, intent := range state.RootCreateIntents {
 		requestKey = strings.TrimSpace(requestKey)
 		if requestKey == "" || strings.TrimSpace(intent.ThreadID) == "" || strings.TrimSpace(intent.CreateIntentID) == "" || strings.TrimSpace(intent.Fingerprint) == "" || strings.TrimSpace(intent.ContractVersion) == "" || intent.CreateIntentID != requestKey {
@@ -203,38 +244,5 @@ func migrateMemoryStateV4ToV5(state *memoryState) error {
 		tombstone.LegacyForkNodeID = ""
 		state.Tombstones[threadID] = tombstone
 	}
-	// v4 persisted several materialized lifecycle authorities. Their durable
-	// facts already exist in the canonical journal; v5 deliberately drops the
-	// mirrors instead of migrating them into another ledger.
-	state.Leases = nil
-	state.LeaseGeneration = nil
-	state.AuthorityClaims = nil
-	state.TurnAdmissions = nil
-	state.TurnFinishes = nil
-	state.ApprovalQueues = nil
-	state.Approvals = nil
-	state.ApprovalByEffectAttempt = nil
-	state.ApprovalDecisions = nil
-	state.ThreadRevisions = nil
-	state.ThreadRevisionHistory = nil
-	state.RootCreateIntents = nil
-	state.SubAgentPublications = nil
-	state.SubAgentInputRequests = nil
-	state.SubAgentCloseOperations = nil
-	state.PendingToolCompletions = nil
-	state.SubAgentPendingToolCompletions = nil
-	state.CompactionOperations = nil
-	if state.EffectAttempts == nil {
-		state.EffectAttempts = make(map[string]legacyEffectAttemptV6)
-	}
-	if state.EffectAttemptByInvocation == nil {
-		state.EffectAttemptByInvocation = make(map[string]string)
-	}
-	for effectID, attempt := range state.EffectAttempts {
-		attempt.OwnerID = ""
-		attempt.Generation = 0
-		state.EffectAttempts[effectID] = attempt
-	}
-	state.Version = 5
 	return nil
 }
