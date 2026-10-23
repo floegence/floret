@@ -20,6 +20,7 @@ import (
 
 type threadItemProjection struct {
 	metadataOnly        bool
+	deferActivity       bool
 	restoreActivity     func(ThreadItem) (ThreadItem, error)
 	changedItems        map[int]bool
 	changedInteractions map[int]bool
@@ -365,7 +366,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			}
 			toolKey := threadToolKey(turnID, runID, entry.Message.ToolCallID)
 			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
-				if items[previous].activityOmitted {
+				if items[previous].activityOmitted && !projection.deferActivity {
 					if projection.restoreActivity == nil {
 						return ErrAuthorityCorrupt
 					}
@@ -390,6 +391,10 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			toolIndex := toolItemIndex[toolKey]
 			if entry.Message.ToolName != "goal" {
 				items[toolIndex].activityEntryIDs = append(items[toolIndex].activityEntryIDs, entry.ID)
+				if projection.deferActivity {
+					items[toolIndex].Activity.Presentation = nil
+					items[toolIndex].activityOmitted = true
+				}
 			}
 			if approvalID := projection.approvalByTool[toolKey]; approvalID != "" {
 				if index, found := interactionIndex[approvalID]; found {

@@ -329,6 +329,14 @@ and [window geometry selector](../../runtime/thread_item_window.go).
 
 # Shared cold preparation
 
+Ordinary local tool activity bodies are omitted from cold source pages and
+reconstructed through their exact call/result locators when selected or requested
+by a complete adapter. Running calls retain those locators so a later result
+merges with the original presentation. Hosted tools, Goal presentation, pending
+controls and complete provider-context validation retain their existing reducers.
+Selective source pages remain explicitly partial metadata; they do not advertise
+complete canonical entries or become executable provider history.
+
 The existing thread actor owns one cold preparation. A caller's cancellation
 releases its wait without restarting the source work. The Host admits at most two
 active preparations; deletion and shutdown cancel and join both active and queued

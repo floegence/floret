@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -50,6 +51,82 @@ type PathEntriesWindow struct {
 }
 type PathEntriesWindowReader interface {
 	PathEntriesWindow(context.Context, PathWindowOptions) (PathEntriesWindow, error)
+}
+
+// PathProjectionReader completes only the body fields requested by an internal
+// reducer. Its result remains explicitly metadata, never a complete Entry page
+// or provider history. Identity and ancestry use the ordinary page boundary.
+type PathProjectionReader interface {
+	PathProjectionWindow(context.Context, PathWindowOptions, func(PathMetadata) []string) (PathProjectionPage, error)
+}
+
+type PathProjectionEntry struct {
+	Entry   Entry
+	Sources []CanonicalField
+}
+
+type PathProjectionPage struct {
+	PathMetadataWindow
+	Entries []PathProjectionEntry
+}
+
+func projectionPage(page PathMetadataWindow, err error) (PathProjectionPage, error) {
+	if err != nil {
+		return PathProjectionPage{}, err
+	}
+	entries := make([]PathProjectionEntry, len(page.Entries))
+	for i, source := range page.Entries {
+		entries[i] = PathProjectionEntry{Entry: source.Entry, Sources: source.Bodies}
+	}
+	page.Entries = nil
+	return PathProjectionPage{PathMetadataWindow: page, Entries: entries}, nil
+}
+
+func (r *MemoryRepo) PathProjectionWindow(ctx context.Context, options PathWindowOptions, fields func(PathMetadata) []string) (PathProjectionPage, error) {
+	return projectionPage(r.readPathProjection(ctx, options, fields))
+}
+
+func (r *MemoryRepo) readPathProjection(ctx context.Context, options PathWindowOptions, fields func(PathMetadata) []string) (PathMetadataWindow, error) {
+	if fields == nil {
+		return PathMetadataWindow{}, spi.ErrInvalidArgument
+	}
+	page, err := r.PathMetadataWindow(ctx, options)
+	if err != nil {
+		return PathMetadataWindow{}, err
+	}
+	for i, metadata := range page.Entries {
+		for _, field := range fields(metadata) {
+			found := false
+			for _, body := range metadata.Bodies {
+				found = found || body.Field == field
+			}
+			if !found {
+				return PathMetadataWindow{}, spi.ErrInvalidArgument
+			}
+			var value strings.Builder
+			for offset := 0; ; {
+				part, err := r.ReadCanonicalBody(ctx, options.ThreadID, metadata.Entry.ID, field, offset, canonicalBodyBlockBytes)
+				if err != nil {
+					return PathMetadataWindow{}, err
+				}
+				value.WriteString(part.Text)
+				offset += len(part.Text)
+				if offset == part.Bytes {
+					break
+				}
+				if part.Text == "" || offset > part.Bytes {
+					return PathMetadataWindow{}, ErrAuthorityCorrupt
+				}
+			}
+			if err := restoreCanonicalField(&page.Entries[i].Entry, field, value.String()); err != nil {
+				return PathMetadataWindow{}, err
+			}
+		}
+	}
+	if page.LeafID != "" {
+		_, err = r.PathMetadataWindow(ctx, PathWindowOptions{ThreadID: options.ThreadID, LeafID: page.LeafID, Direction: PathWindowBefore, Limit: 1})
+	}
+	return page, err
 }
 
 func (r *MemoryRepo) PathEntriesWindow(ctx context.Context, options PathWindowOptions) (PathEntriesWindow, error) {

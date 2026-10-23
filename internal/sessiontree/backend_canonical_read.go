@@ -335,6 +335,17 @@ func (repo *BackendRepo) PathEntriesWindow(ctx context.Context, options PathWind
 }
 
 func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWindowOptions, complete bool) (PathMetadataWindow, error) {
+	return repo.canonicalProjectionWindow(ctx, options, complete, nil)
+}
+
+func (repo *BackendRepo) PathProjectionWindow(ctx context.Context, options PathWindowOptions, fields func(PathMetadata) []string) (PathProjectionPage, error) {
+	if fields == nil {
+		return PathProjectionPage{}, spi.ErrInvalidArgument
+	}
+	return projectionPage(repo.canonicalProjectionWindow(ctx, options, false, fields))
+}
+
+func (repo *BackendRepo) canonicalProjectionWindow(ctx context.Context, options PathWindowOptions, complete bool, fields func(PathMetadata) []string) (PathMetadataWindow, error) {
 	if ctx == nil || options.Limit < 1 || options.Limit > 256 || options.Direction != PathWindowBefore && options.Direction != PathWindowAfter && options.Direction != PathWindowAround {
 		return PathMetadataWindow{}, spi.ErrInvalidArgument
 	}
@@ -419,6 +430,21 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 				metadata.Entry, err = materializeCanonicalEntry(canonicalStoredEntry{Entry: entry, Fields: fields}, bodies.read)
 			} else {
 				metadata, err = canonicalPathMetadata(entry)
+				if err == nil && fields != nil {
+					for _, field := range fields(metadata) {
+						ref, found := entry.bodyFields[field]
+						if !found {
+							return spi.ErrInvalidArgument
+						}
+						value, readErr := bodies.read(ref)
+						if readErr != nil {
+							return readErr
+						}
+						if err := restoreCanonicalField(&metadata.Entry, field, value); err != nil {
+							return err
+						}
+					}
+				}
 			}
 			if err == nil {
 				result.Entries = append(result.Entries, metadata)
@@ -434,7 +460,11 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 		return nil
 	}, func(memory *MemoryRepo) error {
 		var err error
-		result, err = memory.readPathWindow(ctx, options, complete)
+		if fields != nil {
+			result, err = memory.readPathProjection(ctx, options, fields)
+		} else {
+			result, err = memory.readPathWindow(ctx, options, complete)
+		}
 		return err
 	})
 	return result, err

@@ -13,15 +13,17 @@ import (
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/sessiontree"
 	internalstorage "github.com/floegence/floret/v7/internal/storage"
+	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 )
 
 type pagedHydrationRepo struct {
 	*internalstorage.BackendKernel
-	paths, inventories, pages int
-	failAt                    int
-	afterPage                 func(int)
+	paths, inventories, pages     int
+	failAt                        int
+	afterPage                     func(int)
+	activityFields, activityReads int
 }
 
 func (repo *pagedHydrationRepo) Path(ctx context.Context, id, leaf string) ([]sessiontree.Entry, error) {
@@ -32,16 +34,31 @@ func (repo *pagedHydrationRepo) Entries(ctx context.Context, id string) ([]sessi
 	repo.inventories++
 	return repo.BackendKernel.Entries(ctx, id)
 }
-func (repo *pagedHydrationRepo) PathEntriesWindow(ctx context.Context, options sessiontree.PathWindowOptions) (sessiontree.PathEntriesWindow, error) {
+func (repo *pagedHydrationRepo) PathProjectionWindow(ctx context.Context, options sessiontree.PathWindowOptions, fields func(sessiontree.PathMetadata) []string) (sessiontree.PathProjectionPage, error) {
 	repo.pages++
 	if repo.pages == repo.failAt {
-		return sessiontree.PathEntriesWindow{}, errors.New("injected page failure")
+		return sessiontree.PathProjectionPage{}, errors.New("injected page failure")
 	}
-	page, err := repo.BackendKernel.PathEntriesWindow(ctx, options)
+	page, err := repo.BackendKernel.PathProjectionWindow(ctx, options, func(source sessiontree.PathMetadata) []string {
+		selected := fields(source)
+		for _, field := range selected {
+			if field == "activity_json" {
+				repo.activityFields++
+			}
+		}
+		return selected
+	})
 	if err == nil && repo.afterPage != nil {
 		repo.afterPage(repo.pages)
 	}
 	return page, err
+}
+
+func (repo *pagedHydrationRepo) ReadCanonicalBody(ctx context.Context, threadID, entryID, field string, offset, limit int) (sessiontree.CanonicalBodyChunk, error) {
+	if field == "activity_json" {
+		repo.activityReads++
+	}
+	return repo.BackendKernel.ReadCanonicalBody(ctx, threadID, entryID, field, offset, limit)
 }
 
 func TestColdPagedHydrationMatchesExactFrozenCanonicalView(t *testing.T) {
@@ -103,6 +120,9 @@ func TestColdPagedHydrationMatchesExactFrozenCanonicalView(t *testing.T) {
 			t.Fatal("cold snapshot retained body")
 		}
 	}
+	if repo.activityFields != 0 || repo.activityReads != 0 {
+		t.Fatalf("cold preparation read historical tool presentations: selected=%d reads=%d", repo.activityFields, repo.activityReads)
+	}
 	complete, err := service.completeViewResult(t.Context(), got.ThreadView, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +166,52 @@ func TestColdPagedHydrationMatchesExactFrozenCanonicalView(t *testing.T) {
 	}
 	if failed, err := service.loadRetainedThreadView(t.Context(), id, meta); !errors.Is(err, sessiontree.ErrEntryNotFound) || failed.projection != nil {
 		t.Fatalf("changed active path escaped: %v", err)
+	}
+}
+
+func TestColdActivityLocatorSurvivesRunningToolCompletion(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "cold-running-tool"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	appendEntry := func(entry sessiontree.Entry) sessiontree.Entry {
+		t.Helper()
+		entry.ThreadID, entry.TurnID, entry.RunID = id.String(), "turn", "run"
+		saved, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{ID: entry.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved
+	}
+	appendEntry(sessiontree.Entry{ID: "started", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted})
+	appendEntry(sessiontree.Entry{ID: "call", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolCallID: "call", ToolName: "read", ToolArgs: "{}", Activity: &tools.ActivityPresentation{Label: "Read exact command", Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Command: "retained-command"}}}})
+	meta, err := host.store.repo.Thread(t.Context(), id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cold, err := service.loadRetainedThreadView(t.Context(), id, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cold.Items) != 1 || !cold.Items[0].activityOmitted || cold.Items[0].Activity.Status != observation.ActivityStatusRunning {
+		t.Fatal("cold running activity lost its canonical locator")
+	}
+	result := appendEntry(sessiontree.Entry{ID: "result", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolCallID: "call", ToolName: "read", Content: "completed", Activity: &tools.ActivityPresentation{Renderer: tools.ActivityRendererTerminal, Payload: tools.TerminalActivityPayload{Output: "retained-output"}}}})
+	cold.projection.resetChanges()
+	if err := cold.projection.append([]sessiontree.Entry{result}); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := cold.projection.items.snapshot()
+	full, err := service.loadCanonicalThreadView(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(items)
+	want, _ := json.Marshal(full.Items)
+	if string(got) != string(want) {
+		t.Fatal("completion after cold loading changed the canonical tool presentation")
 	}
 }
 

@@ -9,12 +9,14 @@ import (
 )
 
 // Cold initialization selects context identities from body-free metadata, then
-// shares complete source pages between the timeline and checked context reducers.
-// Compacted context bodies are released; timeline bodies do not accumulate.
+// shares selected source fields between the timeline and checked context reducers.
+// Ordinary tool activity bodies load only for selected windows or explicit full
+// reads. Context bodies remain complete; compacted bodies are released.
 // This still traverses history and is not a bounded cold item index.
 func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context, threadID identity.ThreadID, meta sessiontree.ThreadMeta) (canonicalThreadView, error) {
 	reader, paged := service.host.store.repo.(sessiontree.PathEntriesWindowReader)
 	metadataReader, metadataPaged := service.host.store.repo.(sessiontree.PathWindowReader)
+	projectionReader, selective := service.host.store.repo.(sessiontree.PathProjectionReader)
 	_, body := service.host.store.repo.(sessiontree.CanonicalBodyReader)
 	_, sources := service.host.store.repo.(sessiontree.SourceBodyPageReader)
 	_, activities := service.host.store.repo.(sessiontree.CanonicalBodyMetadataReader)
@@ -25,6 +27,7 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	projection.items.restoreActivity = func(item ThreadItem) (ThreadItem, error) {
 		return service.completeItemActivity(ctx, threadID.String(), item)
 	}
+	projection.items.deferActivity = selective
 	options := sessiontree.PathWindowOptions{ThreadID: threadID.String(), LeafID: meta.LeafID, Direction: sessiontree.PathWindowAfter, Limit: 256}
 	selected, completeContext, err := service.coldContextSelection(ctx, metadataReader, threadID, meta)
 	if err != nil {
@@ -41,16 +44,29 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	// context. Preserve the selected order while reading canonical pages once.
 	pendingContext := make(map[string]sessiontree.Entry)
 	for {
-		page, err := reader.PathEntriesWindow(ctx, options)
+		var entries []sessiontree.Entry
+		var page sessiontree.PathMetadataWindow
+		if selective {
+			var projected sessiontree.PathProjectionPage
+			projected, err = projectionReader.PathProjectionWindow(ctx, options, coldProjectionFields)
+			page = projected.PathMetadataWindow
+			for _, source := range projected.Entries {
+				entries = append(entries, source.Entry)
+			}
+		} else {
+			var complete sessiontree.PathEntriesWindow
+			complete, err = reader.PathEntriesWindow(ctx, options)
+			page, entries = complete.PathMetadataWindow, complete.Entries
+		}
 		if err != nil {
 			return canonicalThreadView{}, runtimeHostError(err)
 		}
 		projection.resetChanges()
-		if err := projection.append(page.Entries); err != nil {
+		if err := projection.append(entries); err != nil {
 			return canonicalThreadView{}, err
 		}
 		if completeContext {
-			for _, entry := range page.Entries {
+			for _, entry := range entries {
 				if !selectedIDs[entry.ID] {
 					continue
 				}
@@ -75,11 +91,12 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		if !page.HasAfter {
 			break
 		}
-		if len(page.Entries) == 0 {
+		if len(entries) == 0 {
 			return canonicalThreadView{}, ErrAuthorityCorrupt
 		}
 		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
 	}
+	projection.items.deferActivity = false
 	var model *ThreadModelContext
 	if completeContext {
 		if nextContext != len(selected) {
@@ -104,6 +121,19 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	}
 	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
 	return canonical, err
+}
+
+func coldProjectionFields(source sessiontree.PathMetadata) []string {
+	fields := make([]string, 0, len(source.Bodies))
+	localTool := source.Entry.Type == sessiontree.EntryToolCall || source.Entry.Type == sessiontree.EntryToolResult
+	for _, body := range source.Bodies {
+		// Only ordinary local activity has an exact call/result reconstruction.
+		// Hosted tools and Goal keep their existing complete semantic reducer.
+		if body.Field != "activity_json" || !localTool || source.Entry.Message.ToolName == "goal" {
+			fields = append(fields, body.Field)
+		}
+	}
+	return fields
 }
 
 func canonicalContextNeedsCompleteValidation(entry sessiontree.Entry) bool {

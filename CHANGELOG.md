@@ -59,6 +59,9 @@
 - Reuse validated duplicate body bytes within one canonical page transaction,
   with at most 1 MiB retained. Revalidate sources on later transactions and
   reject actor requests cancelled while waiting for the mutation boundary.
+- Defer ordinary local tool presentation bodies during cold actor preparation.
+  Reconstruct exact call/result presentations only for selected windows and
+  complete reads; retain hosted-tool, Goal, control and provider-context semantics.
 - Preserve bounded window baselines and observation versions. Cold initialization
   still traverses historical metadata and source pages; no constant-time cold
   window or subsecond first-screen guarantee is introduced.
