@@ -19,7 +19,10 @@ in-process actor for each active thread.
 
 `runtime.Open` returns a Host after bounded storage-source preparation and
 logical-schema inspection. Domain migration, derived-index preparation and
-final current-state verification run in a Host-owned worker. Hosts can observe
+migration verification run in a Host-owned worker. Current stores reuse durable
+thread readiness anchors and only rebuild missing/stale metadata; they do not
+audit complete prepared histories at every restart. Explicit `InspectSQLite`
+retains the full diagnostic check. Hosts can observe
 `Host.StorageMigrationStatus`, check `Host.Readiness` for a thread, or wait with
 `Host.PrepareThread`; cancelling a wait does not cancel the Host worker.
 Canonical operations wait for publication and cannot observe partial state.

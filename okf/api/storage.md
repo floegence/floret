@@ -70,8 +70,8 @@ ThreadID. It validates exact v14 authority, preserves all canonical bytes,
 request fingerprints and execution identities, and applies the transform inside
 the validated thread closure before atomic publication. v14 rejects new thread-reference shapes, including queued
 input; current v15 opens without rewriting records. Derived query metadata stores only canonical source locators and record attributes,
-maintained in the same canonical transaction. Startup verifies their source
-correspondence. Full-text indexes and term postings are prohibited; frozen
+maintained in the same canonical transaction. Migration and explicit preparation
+verify their source correspondence. Full-text indexes and term postings are prohibited; frozen
 pagination snapshots never persist.
 
 `runtime.Open` returns a Host after bounded source preparation and logical
@@ -118,8 +118,8 @@ They validate new canonical entries and their exact thread, turn, and artifact
 dependencies, rather than cloning or revalidating unrelated history. The repository
 lock isolates staging, the working maps are restored before the backend callback
 returns, and successful backend commit installs the staged values once. Failure,
-cancellation, and panic preserve both prior memory and durable records. Startup,
-migration, and explicit verification retain complete domain validation; schema 15
+cancellation, and panic preserve both prior memory and durable records. Migration
+and explicit verification retain complete domain validation; schema 15
 adds thread references while preserving existing canonical history bytes.
 
 Immediately before an ordinary provider dispatch, the backend kernel commits
@@ -181,10 +181,12 @@ remain errors. No record is decoded, copied, or replaced by the host.
 `runtime.InspectSQLite` opens an existing file read-only and evaluates the same
 logical and domain migration code in a transaction-local memory overlay. It
 creates no Host, never dispatches providers or tools, and reports whether a
-migration would be needed. Formal startup verifies again under its writable
-transaction. Both paths validate canonical state and source-locator metadata;
-formal startup removes retired text indexes and prepares only missing metadata
-transactionally. Neither path builds a full-text index. Optional counted startup work reports real thread totals. Missing files are reported without
+migration would be needed. Migration startup validates canonical state and
+source-locator metadata before publication. Current-store startup checks durable
+readiness anchors and prepares missing or stale metadata transactionally; it does
+not repeat the full inspection audit for already prepared histories. Neither
+path builds a full-text index. Optional counted startup work reports real thread
+totals. Missing files are reported without
 creating them. `ErrStoreTooNew`
 retains `ErrUnsupportedSchema` classification for newer logical formats.
 Physical checks report `storage.ErrUnsupportedSQLiteFormat`,
@@ -445,6 +447,15 @@ metadata in the committing transaction. Only then can runtime operations read
 the new journal. Cleanup validates every retained record and the complete root
 inventory before removing the source. New and already published threads do not
 wait for unrelated history or inherit an unrelated migration failure.
+
+Current-store background preparation checks the existing thread metadata,
+journal count, leaf locator and matching query manifest before doing historical
+work. Matching anchors establish readiness, not full historical integrity or a
+new verification cache entry. Missing/stale query metadata and retained failures
+still take the complete validated preparation path. Parent-event recovery
+remains independent: it scans child metadata and validates the source closure
+before appending missing receipts. No additional durable readiness ledger is
+needed. Requested immutable reads and explicit inspection keep their validation.
 
 Query preparation stores source metadata only. Both cleanup and verification
 release the backend between pages; a missing manifest hides partial metadata.

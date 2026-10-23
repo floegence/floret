@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+- 2026-10-23: Separate current-store readiness from full history inspection;
+  reuse existing readiness anchors while retaining migration, repair, recovery
+  and requested-source checks. Record deterministic access budgets in
+  [history performance](workflows/history-performance.md#current-schema-startup-residency).
+
 - 2026-10-23: Partition the ordinary runtime race suite into two complete,
   disjoint jobs without extending timeouts or dropping tests. See
   [quality gate](workflows/quality-gate.md).

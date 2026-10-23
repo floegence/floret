@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reuse published thread readiness during current-store startup instead of
+  revalidating every historical entry, compaction prefix and related thread.
+  Preserve full migration and missing/stale metadata preparation, explicit
+  inspection, requested-source integrity checks and pending parent-event
+  recovery. Prepared restarts no longer rewrite matching query manifests.
+
 ## v7.80.2 - 2026-10-23
 
 - Keep canonical media-retention reads in bounded transactions and

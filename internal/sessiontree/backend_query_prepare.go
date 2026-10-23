@@ -69,15 +69,15 @@ func (reader *canonicalSnapshotReader) validationError(err error) error {
 // document batch. The manifest appears only after every batch commits.
 func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string) error {
 	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
-	metas, err := validateCanonicalThreadClosure(ctx, reader, threadID)
-	if err != nil {
-		return reader.validationError(err)
-	}
 	if changed, err := repo.prepareParentEvents(ctx, reader, threadID); err != nil {
 		return err
 	} else if changed {
 		// Reload after our own canonical append before validating index sources.
 		return spi.ErrConflict
+	}
+	metas, err := validateCanonicalThreadClosure(ctx, reader, threadID)
+	if err != nil {
+		return reader.validationError(err)
 	}
 	state, err := projectCanonicalQuery(ctx, reader, metas[threadID])
 	if err != nil {
@@ -186,8 +186,10 @@ func (repo *BackendRepo) prepareQueryThread(ctx context.Context, threadID string
 }
 
 // Migration traversal checkpoints its cursor with the source manifest so a
-// restart after each batch still reaches cleanup. A current store only needs a
-// disposable verification cursor; incomplete per-thread metadata are rebuilt.
+// restart after each batch still reaches cleanup. Current-store startup checks
+// durable readiness anchors, not complete historical integrity. Missing query
+// metadata still takes the validated rebuild path; explicit preparation and
+// inspection retain full validation. The current-store cursor is disposable.
 func (repo *BackendRepo) prepareNextQueryThread(ctx context.Context) (bool, error) {
 	prefix := backendDomainKey(backendDomainRecordThread)
 	var row spi.Record
@@ -228,7 +230,27 @@ func (repo *BackendRepo) prepareNextQueryThread(ctx context.Context) (bool, erro
 	if err != nil || record.Kind != backendDomainRecordThread || record.ID == "" || !bytes.Equal(row.Key, backendDomainKey(backendDomainRecordThread, record.ID)) {
 		return false, errors.Join(ErrAuthorityCorrupt, err)
 	}
-	err = repo.prepareQueryThread(ctx, record.ID)
+	ready := false
+	if !checkpoint {
+		ready, err = repo.ThreadPrepared(ctx, record.ID)
+		if errors.Is(err, ErrAuthorityCorrupt) {
+			// A retained failure is retried through full preparation, never
+			// cleared merely because bounded readiness anchors look valid.
+			ready, err = false, nil
+		}
+	}
+	if err == nil && !ready {
+		err = repo.prepareQueryThread(ctx, record.ID)
+	} else if err == nil && repo.parentEventsEnabled() {
+		// Recovery is independent of index readiness: enabling parent events
+		// may need receipts even when both threads already have complete indexes.
+		reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: ctx, backend: repo.backend}, format: repo.domainFormat(), metadata: map[string]migrationMetadataRead{}}
+		var changed bool
+		changed, err = repo.prepareParentEvents(ctx, reader, record.ID)
+		if err == nil && changed {
+			return true, nil
+		}
+	}
 	if errors.Is(err, spi.ErrConflict) {
 		return true, nil
 	}

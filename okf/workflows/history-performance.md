@@ -148,10 +148,29 @@ actor metadata residency or complete production-stack latency.
 
 ## Current-schema startup residency
 
+    GOWORK=off go test ./internal/sessiontree -run 'TestCurrentStartup(Reuses|Repairs|Preserves|Recovers)' -count=1 -v
+    GOWORK=off go test ./runtime -run TestOpenCurrentStoreCompletesWithoutHistoricalBodyReads -count=1 -v
+
+Normal current-store startup now checks durable readiness anchors. In the
+compacted root plus child regression, 16 and 512 tail messages both require
+20 record gets, one child metadata row, no body reads and no writes. Before
+the change, those fixtures required 658/9,642 gets and 88/2,072 body reads.
+A complete SQLite Host restart, including its background worker, reads 16
+records (about 4.2 KiB) for both 8 and 128 roughly 52 KiB messages. These are
+source-access regression budgets, not a production wall-clock or RSS claim.
+
+Missing/stale indexes and migration still require complete validation. Parent
+event recovery still scans child metadata; publishing a missing receipt checks
+the complete source closure. Explicit inspection and selected-thread preparation
+remain proportional to the selected history, including compaction checks. No
+whole-store constant-time or bounded active-actor claim follows from this change.
+
+The following older benchmark exercises the complete inspection path:
+
     GOWORK=off go test ./internal/sessiontree -run 'Test(CurrentStartup|StartupMetadataQuery|Historical|CanonicalBodies|Inspection|PersistentQuery)' -count=1
     GOWORK=off go test ./internal/sessiontree -run '^$' -bench BenchmarkCurrentStartupCanonicalLoad -benchtime=1x -benchmem
 
-Current-schema startup verifies each complete immutable entry before retaining
+Full domain inspection verifies each complete immutable entry before retaining
 only canonical field locators. Metadata-only Goal and parent-event readers share
 the exact ancestry traversal with complete reads. Reasoning source comparisons
 use verified source hashes. Query correspondence shares the canonical projector
