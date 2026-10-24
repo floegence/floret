@@ -9,6 +9,9 @@ models.dev. Review the filtered upstream snapshot and generated diff together.
 The snapshot records the complete API response's SHA-256, so independent host
 repositories can use the same source baseline without a local module dependency.
 Use `--source /absolute/path/api.json` to import that exact downloaded response.
+Use `--providers moonshot` with `--source` or `--update` for a scoped refresh.
+Its raw source hash is recorded in `provider_sources`; unrelated provider data
+and review dates stay unchanged. The top-level hash identifies the base snapshot.
 Run without arguments to regenerate offline; `--check` verifies reproducibility.
 Python 3.9 or later and the standard library are sufficient.
 
@@ -56,3 +59,11 @@ name-based inference. DeepSeek flat prices are off-peak rates, not peak-hour
 billing estimates. The [official pricing page](https://api-docs.deepseek.com/quick_start/pricing)
 owns current aliases and pricing; output metadata uses the pinned 393,216-token
 value for the documented 384K ceiling.
+
+The 2026-10-24 Moonshot-only refresh adds `kimi-k3.1-pro` and
+`kimi-k3.1-pro-highspeed` from the exact source also reviewed by Redeven. The
+[official K3.1 guide](https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart)
+confirms K3-compatible reasoning, fixed sampling controls and
+`max_completion_tokens`. Runtime rendering follows the reviewed capability,
+not a single model-name exception. This refresh preserves all other inventories.
+Run `python3 scripts/model-catalog/test_generate.py` to verify scoped provenance.

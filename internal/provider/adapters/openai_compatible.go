@@ -355,7 +355,7 @@ func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte,
 	chatReq.Model = p.Model
 	chatReq.Stream = p.StreamResponses
 	chatReq.MaxTokens = maxTokens
-	if (p.CostModel.Provider == catalog.ProviderOpenAI && p.CostModel.Reasoning.Kind != "") || p.Model == "kimi-k3" {
+	if (p.CostModel.Provider == catalog.ProviderOpenAI && p.CostModel.Reasoning.Kind != "") || p.CostModel.Reasoning.WireShape == "kimi_reasoning_effort" {
 		chatReq.MaxTokens = 0
 		if maxTokens > 0 {
 			chatReq.ExtraFields = map[string]any{"max_completion_tokens": maxTokens}

@@ -14,7 +14,9 @@ func TestCurrentAgentCatalog(t *testing.T) {
 	}{
 		{ProviderOpenAI, "gpt-6-astra", true}, {ProviderOpenAI, "gpt-5.6-sol", true},
 		{ProviderAnthropic, "claude-fable-5-1", true}, {ProviderGoogle, "gemini-3.8-flash", true},
-		{ProviderMoonshot, "kimi-k3", true}, {ProviderChatGLM, "glm-5.3-flash", true},
+		{ProviderMoonshot, "kimi-k3", true},
+		{ProviderMoonshot, "kimi-k3.1-pro", true}, {ProviderMoonshot, "kimi-k3.1-pro-highspeed", true},
+		{ProviderChatGLM, "glm-5.3-flash", true},
 		{ProviderDeepSeek, "deepseek-flash", true}, {ProviderDeepSeek, "deepseek-v4-flash", true},
 		{ProviderDeepSeek, "deepseek-v4-flash-vision-exp", true}, {ProviderDeepSeek, "deepseek-v4-pro", false}, {ProviderQwen, "qwen3.8-max", true},
 		{ProviderXAI, "grok-4.6", true}, {ProviderGroq, "qwen/qwen3.8-27b", true},
@@ -52,6 +54,8 @@ func TestCurrentReasoningBoundaries(t *testing.T) {
 		{ProviderOpenAI, "gpt-6-astra", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
 		{ProviderGoogle, "gemini-3.8-flash", provider.ReasoningLevelLow, provider.ReasoningLevelMinimal},
 		{ProviderMoonshot, "kimi-k3", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
+		{ProviderMoonshot, "kimi-k3.1-pro", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
+		{ProviderMoonshot, "kimi-k3.1-pro-highspeed", provider.ReasoningLevelLow, provider.ReasoningLevelOff},
 		{ProviderChatGLM, "glm-5.3", provider.ReasoningLevelMax, provider.ReasoningLevelOff},
 	} {
 		model, ok := FindModel(tc.provider, tc.model)
@@ -61,6 +65,15 @@ func TestCurrentReasoningBoundaries(t *testing.T) {
 		}
 		if !model.Reasoning.SupportsLevel(tc.allowed) || model.Reasoning.SupportsLevel(tc.denied) {
 			t.Errorf("%s/%s: invalid reasoning capability: %+v", tc.provider, tc.model, model.Reasoning)
+		}
+	}
+}
+
+func TestMoonshotK31CatalogLimits(t *testing.T) {
+	for _, id := range []string{"kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"} {
+		model, ok := FindModel(ProviderMoonshot, id)
+		if !ok || model.ContextWindow != 1048576 || model.MaxTokens != 1048576 || model.Reasoning.DefaultLevel != provider.ReasoningLevelMax {
+			t.Fatalf("invalid reviewed model %s: %+v", id, model)
 		}
 	}
 }

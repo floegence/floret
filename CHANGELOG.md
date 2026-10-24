@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v7.83.0 - 2026-10-24
+
+- Add reviewed Moonshot Kimi K3.1 Pro and Highspeed models. Render K3-family
+  output budgets through capability-selected max_completion_tokens, preserve
+  reasoning and tool history, and reject unsupported reasoning controls.
+- Scope catalog refreshes by provider with exact source hashes and review dates;
+  preserve unrelated inventories, host model choices and conversation identities.
+
 ## v7.82.2 - 2026-10-23
 
 - Preserve storage and contract failure classification when overflow recovery
