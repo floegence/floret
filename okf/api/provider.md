@@ -423,6 +423,8 @@ rejection. Summary batching weights source media by base64 size, permits one
 atomic image for actual preparation to assess, halves failed batches, and stops
 if the cursor cannot shrink. No image is skipped or replayed as a tool action.
 The final complete call/result is never split to manufacture a cut point.
+On overflow, a final complete visual exchange can be summarized in full through
+ordered batches; protected supplemental anchors remain unmodified.
 
 Evidence: [image preparation](../../provider/image_preparation.go),
 [exact request limits](../../provider/request_bytes.go),
