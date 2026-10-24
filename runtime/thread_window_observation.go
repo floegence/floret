@@ -23,6 +23,9 @@ const (
 // subscription. Append preserves existing history anchors. A missing anchor
 // fails explicitly; callers can request the available tail with no AnchorID.
 type ThreadWindowInput struct {
+	// IncludeSummary adds a summary captured with this explicit baseline.
+	// Automatic replacements and live deltas do not repeat it.
+	IncludeSummary bool `json:"include_summary,omitempty"`
 	// AnchorOffset shifts a stable anchor by visible membership positions for
 	// an around read. Zero keeps the existing identity behavior. The first
 	// accepted baseline resolves this seek to an ordinary stable anchor; live
@@ -67,6 +70,9 @@ type ThreadItemBody struct {
 // contains all pending controls plus resolved controls in the accepted interval.
 type ThreadWindowSnapshot struct {
 	resolvedAnchor string
+	// Summary is present only when explicitly requested. Its activity state and
+	// preview are frozen at this ViewVersion; it requires no second host read.
+	Summary *ThreadSummary `json:"summary,omitempty"`
 	// RequestID correlates the explicit SetWindow that produced this baseline.
 	RequestID string `json:"request_id,omitempty"`
 	// ItemSelection declares a finite set; gaps between its items are intentional.

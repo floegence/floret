@@ -1572,6 +1572,12 @@ must preserve significant indentation and choose formatting themselves.
 
 Window consumers may opt into `ThreadWindowInput.ActivityFields` to receive typed activity summaries and exact immediate field shapes/counts without hidden presentation bodies. Field shapes distinguish absent details from unread content; acquire string sources at their exact path before reading. Read visible fields through `ThreadActivityStructureReader` and `ThreadActivityFieldReader`. The default window and complete View contracts retain their existing behavior.
 
+Explicit windows may set `ThreadWindowInput.IncludeSummary` to receive
+`ThreadWindowSnapshot.Summary` with the accepted baseline. Activity facts and
+preview share the window's actor snapshot. Hosts use that summary for its read
+watermark instead of a later independent `Summary` call. Automatic replacements
+omit it. Thread identity and title metadata are sampled before the baseline.
+
 An optional `ThreadWindowInput.RequestID` (valid UTF-8, at most 128 bytes) is
 echoed only by the explicit replacement baseline in `ThreadWindowSnapshot`.
 Use it to correlate a pending `SetWindow` while one consumer continues reading

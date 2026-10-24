@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"slices"
 	"unicode/utf8"
+
+	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
 // Prepared bodies are disposable request-local data. The actor still selects
@@ -55,6 +57,14 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 	}
 	if input.Direction != ThreadWindowBefore && input.Direction != ThreadWindowAfter && input.Direction != ThreadWindowAround {
 		return errors.New("invalid thread window direction")
+	}
+	var summaryMeta sessiontree.ThreadMeta
+	if input.IncludeSummary {
+		var err error
+		summaryMeta, err = actor.service.ensureThread(ctx, input.ThreadID)
+		if err != nil {
+			return err
+		}
 	}
 	cache := map[string]preparedWindowItem{}
 	var cold *threadSourceProjection
@@ -160,6 +170,19 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 				return nil
 			}
 			snapshot.ViewVersion = actor.state.view.ViewVersion
+			if input.IncludeSummary {
+				if !actor.hasCompleteSummaryPreview() {
+					return ErrAuthorityCorrupt
+				}
+				meta := summaryMeta
+				if actor.sourceWindow != nil {
+					// Metadata and preview share the accepted source snapshot. A
+					// separately sampled UpdatedAt could acknowledge unseen work.
+					meta = actor.sourceWindow.meta
+				}
+				summary := actor.threadSummary(meta)
+				snapshot.Summary = &summary
+			}
 			var err error
 			snapshot, err = boundWindowSnapshot(snapshot, input)
 			if err != nil {

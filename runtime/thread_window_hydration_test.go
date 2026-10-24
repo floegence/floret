@@ -58,7 +58,9 @@ func TestWindowHydrationDoesNotHoldExecutionActor(t *testing.T) {
 	}
 	defer sub.Close()
 	read := make(chan error, 1)
-	go func() { read <- sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: id}) }()
+	go func() {
+		read <- sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: id, IncludeSummary: true})
+	}()
 	select {
 	case <-repo.entered:
 	case <-time.After(time.Second):
@@ -94,6 +96,9 @@ func TestWindowHydrationDoesNotHoldExecutionActor(t *testing.T) {
 	}
 	if baseline.ViewVersion != actor.state.view.ViewVersion {
 		t.Fatal("baseline has stale version")
+	}
+	if summary := baseline.Window.Value.Summary; summary == nil || summary.LastItemPreview != "arrived during read" {
+		t.Fatalf("summary missed the accepted live update: %+v", summary)
 	}
 }
 

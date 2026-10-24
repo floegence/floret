@@ -13,6 +13,7 @@ import (
 // The membership reader supplies public item ordinals. Complete context, turn
 // facts and pending controls are still required before installing a baseline.
 type threadSourceProjection struct {
+	meta                sessiontree.ThreadMeta
 	resolvedAnchor      string
 	summary             *sessiontree.WindowSummary
 	companions          map[*windowInterestLifetime]frozenSourceWindow
@@ -282,5 +283,5 @@ func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, in
 			return canonicalThreadView{}, threadSourceProjection{}, err
 		}
 	}
-	return view, threadSourceProjection{resolvedAnchor: page.ResolvedAnchorID, summary: window.Summary, leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter, anchorUnavailable: page.AnchorUnavailable}, nil
+	return view, threadSourceProjection{meta: window.Meta, resolvedAnchor: page.ResolvedAnchorID, summary: window.Summary, leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter, anchorUnavailable: page.AnchorUnavailable}, nil
 }

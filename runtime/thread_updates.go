@@ -338,6 +338,18 @@ func cloneThreadUpdate(update ThreadUpdate) ThreadUpdate {
 		if component.Value != nil {
 			window := *component.Value
 			window.Items = cloneThreadItems(window.Items)
+			if window.Summary != nil {
+				summary := *window.Summary
+				summary.Failure = cloneThreadTurnFailure(summary.Failure)
+				summary.Cancellation = cloneThreadCancellation(summary.Cancellation)
+				summary.RunProgress = cloneThreadRunProgress(summary.RunProgress)
+				if summary.LastOutcome != nil {
+					outcome := *summary.LastOutcome
+					summary.LastOutcome = &outcome
+				}
+				summary.PendingInput = cloneInputPresentation(summary.PendingInput)
+				window.Summary = &summary
+			}
 			component.Value = &window
 		}
 		update.Window = &component

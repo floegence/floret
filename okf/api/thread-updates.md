@@ -699,3 +699,13 @@ The owner searches backward to the latest eligible nonempty message and adds
 only the source locator, without rewriting current membership or boundaries.
 A long historical tail can still require a metadata scan; this upgrade path
 is not a constant-time or subsecond historical first-open guarantee.
+
+## Explicit baseline summaries
+
+`ThreadWindowInput.IncludeSummary` requests a summary on that explicit
+`ThreadWindowSnapshot` only. Activity state, preview and the window version
+share actor ownership. Hosts use this summary as the baseline read watermark
+instead of preparing a one-item window and independently sampling `Summary`.
+Automatic replacements do not repeat it. Thread identity, title and creation
+metadata are obtained before freezing the actor snapshot; later title changes
+remain ordered by the existing title generation. No durable state is added.

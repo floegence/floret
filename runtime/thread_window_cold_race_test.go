@@ -123,7 +123,7 @@ func TestColdWindowAppendDuringSnapshotDoesNotFailOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sub.Close()
-	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, Limit: 2, ActivityFields: true}); err != nil {
+	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, Limit: 2, ActivityFields: true, IncludeSummary: true}); err != nil {
 		t.Fatalf("append broke cold open: %v", err)
 	}
 	update := nextUpdate(t, sub)
@@ -135,6 +135,14 @@ func TestColdWindowAppendDuringSnapshotDoesNotFailOpen(t *testing.T) {
 	}
 	if repo.reads > 2 {
 		t.Fatalf("cold open restarted %d times", repo.reads)
+	}
+	meta, err := host.store.repo.Thread(t.Context(), id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := update.Window.Value.Summary
+	if summary == nil || summary.LastItemPreview != "during" || !summary.UpdatedAt.Equal(meta.UpdatedAt) {
+		t.Fatalf("summary did not follow the accepted canonical snapshot: %+v, meta=%+v", summary, meta)
 	}
 }
 

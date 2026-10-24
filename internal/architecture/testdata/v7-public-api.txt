@@ -1855,6 +1855,7 @@ const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDire
 const ThreadWindowBefore github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "before"
 type ThreadWindowDirection string
 type ThreadWindowInput struct
+field ThreadWindowInput.IncludeSummary bool tag="json:\"include_summary,omitempty\""
 field ThreadWindowInput.AnchorOffset int tag="json:\"anchor_offset,omitempty\""
 field ThreadWindowInput.RequestID string tag="json:\"request_id,omitempty\""
 field ThreadWindowInput.ActivityFields bool tag="json:\"activity_fields,omitempty\""
@@ -1864,6 +1865,7 @@ field ThreadWindowInput.AnchorID string tag="json:\"anchor_id,omitempty\""
 field ThreadWindowInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction\""
 field ThreadWindowInput.Limit int tag="json:\"limit,omitempty\""
 type ThreadWindowSnapshot struct
+field ThreadWindowSnapshot.Summary *github.com/floegence/floret/v7/runtime.ThreadSummary tag="json:\"summary,omitempty\""
 field ThreadWindowSnapshot.RequestID string tag="json:\"request_id,omitempty\""
 field ThreadWindowSnapshot.ItemSelection bool tag="json:\"item_selection,omitempty\""
 field ThreadWindowSnapshot.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""

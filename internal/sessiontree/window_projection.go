@@ -19,6 +19,7 @@ type WindowProjectionReader interface {
 }
 
 type WindowProjection struct {
+	Meta              ThreadMeta
 	Summary           *WindowSummary
 	Companions        []WindowProjection
 	ActivitySummaries map[string]ItemActivitySummary
@@ -106,7 +107,7 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 }
 
 func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, options ItemMembershipWindowOptions, fields func(PathMetadata, bool) []string, parentEvents bool) (WindowProjection, error) {
-	var result WindowProjection
+	result := WindowProjection{Meta: meta}
 	tx = newProjectionSourceTx(tx)
 	var err error
 	result.Membership, err = readItemMembershipWindow(ctx, tx, meta, options)
@@ -419,7 +420,7 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 		model.Entries = append(model.Entries, Entry{ID: entry.ID, ThreadID: entry.ThreadID, TurnID: entry.TurnID, RunID: entry.RunID, CreatedAt: entry.CreatedAt, PathDepth: entry.PathDepth})
 		model.Messages = append(model.Messages, session.Message{EntryID: entry.ID, ModelContextSnapshot: snapshot})
 	}
-	result := WindowProjection{Membership: page, Facts: facts, Entries: sources, Context: contextSnapshot, ModelContext: model, Queue: queue, ParentEvents: parents}
+	result := WindowProjection{Meta: meta, Membership: page, Facts: facts, Entries: sources, Context: contextSnapshot, ModelContext: model, Queue: queue, ParentEvents: parents}
 	if options.Summary || slices.ContainsFunc(options.Companions, func(value ItemMembershipWindowOptions) bool { return value.Summary }) {
 		result.Summary = &WindowSummary{}
 		for i := len(entries) - 1; i >= 0; i-- {

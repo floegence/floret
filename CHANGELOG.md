@@ -4,6 +4,9 @@
 
 ## v7.84.0 - 2026-10-24
 
+- Add opt-in summaries on explicit window baselines. Freeze activity facts and
+  preview with the accepted view, avoiding a second host preparation/read cycle.
+
 - Expose optional source-bound whitespace extents on selected activity string
   locators. Compute exact decoded byte positions during canonical indexing and
   from frozen live sources, preserving original text, hashes and released reads.

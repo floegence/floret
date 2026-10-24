@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-24: Add explicit baseline summaries to avoid duplicated host reads
+  and preserve read watermark ownership; see [thread updates](api/thread-updates.md).
+
 - 2026-10-24: Document optional source-bound activity text extents, original
   source preservation and older-metadata absence in [thread updates](api/thread-updates.md).
 

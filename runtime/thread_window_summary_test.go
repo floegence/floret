@@ -15,6 +15,16 @@ import (
 
 type noSummaryHistoryScanRepo struct{ *internalstorage.BackendKernel }
 
+func TestWindowSummaryCloneDetachesOutcome(t *testing.T) {
+	outcome := TurnOutcome("completed")
+	original := ThreadUpdate{Window: &ThreadComponent[*ThreadWindowSnapshot]{Value: &ThreadWindowSnapshot{Summary: &ThreadSummary{LastOutcome: &outcome}}}}
+	cloned := cloneThreadUpdate(original)
+	*cloned.Window.Value.Summary.LastOutcome = TurnOutcome("failed")
+	if *original.Window.Value.Summary.LastOutcome != outcome || outcome != TurnOutcome("completed") {
+		t.Fatal("summary outcome aliases the original publication")
+	}
+}
+
 func (repo *noSummaryHistoryScanRepo) PathMetadataWindow(context.Context, sessiontree.PathWindowOptions) (sessiontree.PathMetadataWindow, error) {
 	return sessiontree.PathMetadataWindow{}, errors.New("summary rescanned historical metadata")
 }
@@ -45,7 +55,7 @@ func TestPreparedToolWindowSummaryDoesNotRescanHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sub.Close()
-	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, Limit: 1, ActivityFields: true}); err != nil {
+	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, Limit: 1, ActivityFields: true, IncludeSummary: true}); err != nil {
 		t.Fatal(err)
 	}
 	baseline := nextUpdate(t, sub)
@@ -55,9 +65,28 @@ func TestPreparedToolWindowSummaryDoesNotRescanHistory(t *testing.T) {
 	if baseline.Window == nil || len(baseline.Window.Value.Items) != 1 || baseline.Window.Value.Items[0].Kind != ThreadItemTool {
 		t.Fatal("expected tool-only window")
 	}
+	if baseline.Window.Value.Summary == nil || baseline.Window.Value.Summary.ID != id || baseline.Window.Value.Summary.LastItemPreview != "retained summary" {
+		t.Fatalf("baseline lost canonical preview: %+v", baseline.Window.Value.Summary)
+	}
+	copy := cloneThreadUpdate(baseline)
+	copy.Window.Value.Summary.LastItemPreview = "consumer edit"
+	if baseline.Window.Value.Summary.LastItemPreview != "retained summary" {
+		t.Fatal("consumer mutated a queued summary")
+	}
 	host.store.repo = &noSummaryHistoryScanRepo{host.store.repo.(*internalstorage.BackendKernel)}
 	summary, err := service.Summary(t.Context(), id)
 	if err != nil || summary.LastItemPreview != "retained summary" {
 		t.Fatalf("summary=%q err=%v", summary.LastItemPreview, err)
+	}
+	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, Limit: 1, ActivityFields: true}); err != nil {
+		t.Fatal(err)
+	}
+	for next := nextUpdate(t, sub); ; next = nextUpdate(t, sub) {
+		if next.Window != nil {
+			if next.Window.Value.Summary != nil {
+				t.Fatal("unrequested summary escaped")
+			}
+			break
+		}
 	}
 }
