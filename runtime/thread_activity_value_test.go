@@ -73,6 +73,9 @@ func TestActivityValueCanonicalRestartAndBudget(t *testing.T) {
 			t.Fatalf("selected text source: %+v %v", withSource, err)
 		}
 		field := withSource.TextFields[0]
+		if field.TextExtent == nil || field.TextExtent.StartBytes != 0 || field.TextExtent.EndBytes != len(row.Content) {
+			t.Fatalf("selected text extent: %+v", field.TextExtent)
+		}
 		part, err := public.(ThreadActivityFieldReader).ReadActivityField(t.Context(), scope, ThreadActivityFieldInput{ThreadID: thread, ItemID: input.ItemID, Path: field.SourcePath, EntryID: field.EntryID, SourceSHA256: field.SourceSHA256, SHA256: field.SHA256, OffsetBytes: field.SourceOffsetBytes})
 		if err != nil || field.Bytes != len(row.Content) || !strings.HasPrefix(row.Content, part.Text) {
 			t.Fatalf("selected text content: %+v %v", part, err)
@@ -151,6 +154,9 @@ func TestActivityValueLiveFieldsStayInOneSnapshot(t *testing.T) {
 			t.Fatal("selected metadata includes body")
 		}
 		field := selected.TextFields[0]
+		if field.TextExtent == nil || field.TextExtent.StartBytes != 0 || field.TextExtent.EndBytes != field.Bytes-1 {
+			t.Fatalf("live extent differs from frozen content: %+v", field.TextExtent)
+		}
 		part, err := service.ReadActivityField(t.Context(), threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{created.ThreadID}}, ThreadActivityFieldInput{ThreadID: created.ThreadID, ItemID: selected.ItemID, Path: field.Path, SourceID: field.SourceID, RunID: field.RunID})
 		if err != nil || part.Text != strings.Repeat(metadata.Title+"\n", 1000) {
 			t.Fatalf("mixed metadata and text: %v", err)

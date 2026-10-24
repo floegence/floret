@@ -129,7 +129,7 @@ func (service *threadRuntimeService) ReadActivityValue(ctx context.Context, scop
 		if err != nil {
 			return result, err
 		}
-		result.TextFields = append(result.TextFields, ThreadActivityField{Path: path, SourcePath: path, Kind: "string", Bytes: len(source), SourceID: id, RunID: resident.RunID})
+		result.TextFields = append(result.TextFields, ThreadActivityField{Path: path, SourcePath: path, Kind: "string", Bytes: len(source), SourceID: id, RunID: resident.RunID, TextExtent: activityTextExtent(source)})
 	}
 	return boundActivityValueSources(result)
 }

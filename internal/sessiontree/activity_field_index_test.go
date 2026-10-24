@@ -5,13 +5,71 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/floegence/floret/v7/internal/session"
-	"github.com/floegence/floret/v7/storage/spi"
-	"github.com/floegence/floret/v7/tools"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
+
+	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/storage/spi"
+	"github.com/floegence/floret/v7/tools"
 )
+
+func TestActivityFieldIndexDescribesWhitespaceWithoutChangingSources(t *testing.T) {
+	texts := []string{"", " \t\n", strings.Repeat("\n", 70000) + "    preserved indentation\n", strings.Repeat(" ", 40000) + "Title", "\u2003中🌸\u00a0", "a\n  b"}
+	for _, text := range texts {
+		raw, err := json.Marshal(map[string]any{"payload": map[string]any{"rows": []any{map[string]any{"content": text}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes, err := indexActivityJSON(t.Context(), string(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := nodes["/payload/rows/0/content"]
+		if node.TrimBytes != len(strings.TrimSpace(text)) || node.TrimOffset != len(text)-len(strings.TrimLeftFunc(text, unicode.IsSpace)) {
+			t.Fatalf("whitespace extents differ: bytes=%d offset=%d length=%d", len(text), node.TrimOffset, node.TrimBytes)
+		}
+		if node.Bytes != len(text) || node.SHA256 != stableHash(text) {
+			t.Fatal("raw source changed")
+		}
+		if node.TextExtentVersion != 1 {
+			t.Fatal("missing extent version")
+		}
+	}
+}
+
+func TestActivityFieldTextExtentRejectsInvalidMetadata(t *testing.T) {
+	raw := `" abc "`
+	nodes, err := indexActivityJSON(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := nodes[""]
+	node.Parts = nil
+	ref := canonicalBodyRef{Bytes: len(raw)}
+	if !validActivityFieldNode(ref, node) {
+		t.Fatal("valid extent rejected")
+	}
+	for _, mutate := range []func(*activityFieldNode){
+		func(n *activityFieldNode) { n.TextExtentVersion = 2 },
+		func(n *activityFieldNode) { n.TrimOffset = n.Bytes + 1 },
+		func(n *activityFieldNode) { n.TrimBytes = n.Bytes },
+		func(n *activityFieldNode) { n.TrimBytes = -1 },
+	} {
+		changed := node
+		mutate(&changed)
+		if validActivityFieldNode(ref, changed) {
+			t.Fatal("invalid extent accepted")
+		}
+	}
+	node.TextExtentVersion = 0
+	node.TrimOffset = 0
+	node.TrimBytes = 0
+	if !validActivityFieldNode(ref, node) {
+		t.Fatal("released metadata rejected")
+	}
+}
 
 func TestActivityFieldIndexPreservesEscapesAndBoundsDecodedRanges(t *testing.T) {
 	texts := []string{strings.Repeat("中文🌸\n\"\\\x00", 7000), "small", strings.Repeat("ending 🌸", 9000)}

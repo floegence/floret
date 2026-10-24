@@ -1563,6 +1563,13 @@ ThreadActivityValueReader selects a byte/node-bounded subtree and can return
 up to eight frozen direct string locators from the same snapshot. Every field
 read reauthorizes the caller; locators are never access grants.
 
+Selected string locators may include `TextExtent`, the byte interval between
+the first and last non-whitespace Unicode characters. Offsets are relative to
+the decoded field slice; the source, hash and full byte count remain unchanged.
+An empty interval represents whitespace-only text. Absence means the source
+predates this optional metadata, not that its text is empty. Display clients
+must preserve significant indentation and choose formatting themselves.
+
 Window consumers may opt into `ThreadWindowInput.ActivityFields` to receive typed activity summaries and exact immediate field shapes/counts without hidden presentation bodies. Field shapes distinguish absent details from unread content; acquire string sources at their exact path before reading. Read visible fields through `ThreadActivityStructureReader` and `ThreadActivityFieldReader`. The default window and complete View contracts retain their existing behavior.
 
 An optional `ThreadWindowInput.RequestID` (valid UTF-8, at most 128 bytes) is

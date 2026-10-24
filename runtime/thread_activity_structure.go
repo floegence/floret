@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/floegence/floret/v7/identity"
 	"github.com/floegence/floret/v7/internal/activityfields"
@@ -37,19 +39,30 @@ type ThreadActivityStructureInput struct {
 // collection children expose shape and lengths only; request the string path
 // itself to acquire a frozen SourceID without retaining hidden sibling text.
 type ThreadActivityField struct {
-	SourceID          string          `json:"source_id,omitempty"`
-	RunID             identity.RunID  `json:"run_id,omitempty"`
-	Path              string          `json:"path"`
-	Kind              string          `json:"kind"`
-	Bytes             int             `json:"bytes,omitempty"`
-	SourceOffsetBytes int             `json:"source_offset_bytes,omitempty"`
-	Count             int             `json:"count,omitempty"`
-	EntryID           string          `json:"entry_id,omitempty"`
-	SourcePath        string          `json:"source_path,omitempty"`
-	SourceSHA256      string          `json:"source_sha256,omitempty"`
-	SHA256            string          `json:"sha256,omitempty"`
-	Value             json.RawMessage `json:"value,omitempty"`
-	InlineText        string          `json:"inline_text,omitempty"`
+	TextExtent        *ThreadActivityTextExtent `json:"text_extent,omitempty"`
+	SourceID          string                    `json:"source_id,omitempty"`
+	RunID             identity.RunID            `json:"run_id,omitempty"`
+	Path              string                    `json:"path"`
+	Kind              string                    `json:"kind"`
+	Bytes             int                       `json:"bytes,omitempty"`
+	SourceOffsetBytes int                       `json:"source_offset_bytes,omitempty"`
+	Count             int                       `json:"count,omitempty"`
+	EntryID           string                    `json:"entry_id,omitempty"`
+	SourcePath        string                    `json:"source_path,omitempty"`
+	SourceSHA256      string                    `json:"source_sha256,omitempty"`
+	SHA256            string                    `json:"sha256,omitempty"`
+	Value             json.RawMessage           `json:"value,omitempty"`
+	InlineText        string                    `json:"inline_text,omitempty"`
+}
+
+// ThreadActivityTextExtent locates the non-whitespace interval within the
+// decoded UTF-8 field slice. StartBytes and EndBytes are relative to that slice
+// and use Unicode whitespace semantics. An empty interval means whitespace-only.
+// The original source remains exact. This optional metadata is absent for older
+// prepared sources; consumers must not interpret absence as an empty interval.
+type ThreadActivityTextExtent struct {
+	StartBytes int `json:"start_bytes"`
+	EndBytes   int `json:"end_bytes"`
 }
 type ThreadActivityStructurePage struct {
 	ThreadID identity.ThreadID     `json:"thread_id"`
@@ -269,6 +282,7 @@ func (service *threadRuntimeService) residentActivityStructure(ctx context.Conte
 				if err != nil {
 					return result, err
 				}
+				result.TextExtent = activityTextExtent(source)
 			}
 			return result, nil
 		}
@@ -313,7 +327,16 @@ func boundActivityStructurePage(result ThreadActivityStructurePage) (ThreadActiv
 }
 
 func publicActivityField(field sessiontree.ActivityFieldSource) ThreadActivityField {
-	return ThreadActivityField{Path: field.Path, Kind: field.Kind, Bytes: field.Bytes, SourceOffsetBytes: field.SourceOffset, Count: field.Count, EntryID: field.EntryID, SourcePath: field.SourcePath, SourceSHA256: field.SourceSHA256, SHA256: field.SHA256, Value: field.Value, InlineText: field.Text}
+	result := ThreadActivityField{Path: field.Path, Kind: field.Kind, Bytes: field.Bytes, SourceOffsetBytes: field.SourceOffset, Count: field.Count, EntryID: field.EntryID, SourcePath: field.SourcePath, SourceSHA256: field.SourceSHA256, SHA256: field.SHA256, Value: field.Value, InlineText: field.Text}
+	if field.TextExtent != nil {
+		result.TextExtent = &ThreadActivityTextExtent{StartBytes: field.TextExtent.Start, EndBytes: field.TextExtent.End}
+	}
+	return result
+}
+
+func activityTextExtent(source string) *ThreadActivityTextExtent {
+	start := len(source) - len(strings.TrimLeftFunc(source, unicode.IsSpace))
+	return &ThreadActivityTextExtent{StartBytes: start, EndBytes: start + len(strings.TrimSpace(source))}
 }
 func activityReadError(err error) error {
 	if errors.Is(err, spi.ErrInvalidArgument) {

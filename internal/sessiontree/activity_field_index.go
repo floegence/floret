@@ -25,6 +25,7 @@ type activityTextPart struct {
 	SHA256                      string
 }
 type activityFieldNode struct {
+	TextExtentVersion           int
 	ShapeOnly                   bool
 	Scalar                      json.RawMessage
 	Kind                        string
@@ -166,15 +167,6 @@ func (p *activityJSONIndexer) value(path string, depth int) error {
 		}
 	}
 	node.EncodedBytes = p.position - start
-	if node.Kind == "string" && (path == "/label" || path == "/description") {
-		var text string
-		if json.Unmarshal([]byte(p.source[start:p.position]), &text) != nil {
-			return ErrAuthorityCorrupt
-		}
-		trimmed := strings.TrimSpace(text)
-		node.TrimOffset = len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))
-		node.TrimBytes = len(trimmed)
-	}
 	node.PartCount = len(node.Parts)
 	if p.summary && activitySummaryPath(path) && !activityfields.SummaryText(path) {
 		node.ShapeOnly = true
@@ -198,6 +190,7 @@ func (p *activityJSONIndexer) stringNodeMode(details bool) (activityFieldNode, e
 	decoded := make([]byte, 0, canonicalBodyBlockBytes)
 	whole := sha256.New()
 	total := 0
+	firstNonSpace, lastNonSpace := -1, 0
 	flush := func() {
 		if len(decoded) == 0 {
 			return
@@ -268,6 +261,14 @@ func (p *activityJSONIndexer) stringNodeMode(details bool) (activityFieldNode, e
 			flush()
 			p.position = end
 		}
+		position := total + len(decoded)
+		r, _ := utf8.DecodeRuneInString(token)
+		if !unicode.IsSpace(r) {
+			if firstNonSpace < 0 {
+				firstNonSpace = position
+			}
+			lastNonSpace = position + len(token)
+		}
 		decoded = append(decoded, token...)
 	}
 	if p.position >= len(p.source) {
@@ -276,6 +277,11 @@ func (p *activityJSONIndexer) stringNodeMode(details bool) (activityFieldNode, e
 	flush()
 	p.position++
 	node.Bytes = total
+	node.TextExtentVersion = 1
+	node.TrimOffset = total
+	if firstNonSpace >= 0 {
+		node.TrimOffset, node.TrimBytes = firstNonSpace, lastNonSpace-firstNonSpace
+	}
 	if details {
 		node.SHA256 = hex.EncodeToString(whole.Sum(nil))
 	}

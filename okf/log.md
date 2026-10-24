@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-24: Document optional source-bound activity text extents, original
+  source preservation and older-metadata absence in [thread updates](api/thread-updates.md).
+
 - 2026-10-24: Qualify Moonshot Kimi K3.1 Pro/Highspeed, capability-selected
   output budgets and reasoning/tool replay before downstream release adoption.
   See [provider support](api/provider.md#moonshot-kimi-k31-catalog).

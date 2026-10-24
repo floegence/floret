@@ -4,6 +4,10 @@
 
 ## v7.84.0 - 2026-10-24
 
+- Expose optional source-bound whitespace extents on selected activity string
+  locators. Compute exact decoded byte positions during canonical indexing and
+  from frozen live sources, preserving original text, hashes and released reads.
+
 - Prepare a missing preview locator independently when window membership is
   already current. Preserve all prepared membership and boundary records, and
   publish only after verifying the unchanged source owner.

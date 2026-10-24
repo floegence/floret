@@ -9,6 +9,14 @@ timestamp: 2026-10-20T00:00:00Z
 
 # Summary
 
+Selected activity string sources may carry optional `TextExtent` metadata: the
+non-whitespace decoded UTF-8 interval, relative to the unchanged field slice.
+Canonical indexing computes it in the source transaction; resident acquisition
+uses the same frozen string as the source ID. Older prepared metadata omits it.
+Absence is unknown, not whitespace-only, and consumers retain raw source reads.
+This enables bounded display normalization where appropriate; it does not
+authorize trimming Markdown indentation or silently omitting visible text.
+
 Execution completion reads the appended canonical interval outside the actor
 mutex. The accepted view remains active and readable until installation; a
 changed reducer or starting leaf requires a fresh interval. The shared item,

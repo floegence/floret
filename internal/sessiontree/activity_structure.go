@@ -15,6 +15,7 @@ import (
 // ActivityStructure contains only source locations and merge discriminators.
 // String bodies are deliberately absent, including short fields.
 type ActivityFieldSource struct {
+	TextExtent   *ActivityTextExtent
 	Path         string
 	SourcePath   string
 	EntryID      string
@@ -26,6 +27,13 @@ type ActivityFieldSource struct {
 	Count        int
 	Value        json.RawMessage
 	Text         string
+}
+
+// ActivityTextExtent identifies the non-whitespace interval in decoded UTF-8.
+// It does not alter the original field or prescribe display normalization.
+type ActivityTextExtent struct {
+	Start int
+	End   int
 }
 type ActivityStructureInput struct {
 	Defaults      map[string]string
@@ -311,8 +319,12 @@ func describeActivityNode(ctx context.Context, tx spi.ReadTx, loc activitySource
 		return result, err
 	}
 	result.Kind, result.Bytes, result.SHA256, result.Count = node.Kind, node.Bytes, node.SHA256, node.Count
+	if node.Kind == "string" && node.TextExtentVersion == 1 {
+		result.TextExtent = &ActivityTextExtent{Start: node.TrimOffset, End: node.TrimOffset + node.TrimBytes}
+	}
 	if loc.trim {
 		result.SourceOffset, result.Bytes = node.TrimOffset, node.TrimBytes
+		result.TextExtent = &ActivityTextExtent{End: result.Bytes}
 	}
 	if loc.inline != "" && loc.entry == "" && node.Kind == "string" {
 		if json.Unmarshal([]byte(loc.inline[node.Offset:node.Offset+node.EncodedBytes]), &result.Text) != nil {

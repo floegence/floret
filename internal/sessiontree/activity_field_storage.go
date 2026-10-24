@@ -265,6 +265,9 @@ func readActivityTextPart(tx spi.ReadTx, ref canonicalBodyRef, node activityFiel
 	return part, nil
 }
 func validActivityFieldNode(ref canonicalBodyRef, node activityFieldNode) bool {
+	if node.TextExtentVersion < 0 || node.TextExtentVersion > 1 || node.TextExtentVersion != 0 && node.Kind != "string" {
+		return false
+	}
 	if node.Offset < 0 || node.EncodedBytes < 0 || node.Offset > ref.Bytes || node.EncodedBytes > ref.Bytes-node.Offset || node.Bytes < 0 || node.Count < 0 || node.PartCount < 0 || node.TrimOffset < 0 || node.TrimOffset > node.Bytes || node.TrimBytes < 0 || node.TrimBytes > node.Bytes-node.TrimOffset || len(node.Parts) != 0 {
 		return false
 	}

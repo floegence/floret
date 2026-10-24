@@ -1264,6 +1264,7 @@ field ThreadActivityBody.EntryID string tag="json:\"entry_id\""
 field ThreadActivityBody.Bytes int tag="json:\"bytes\""
 field ThreadActivityBody.SHA256 string tag="json:\"sha256\""
 type ThreadActivityField struct
+field ThreadActivityField.TextExtent *github.com/floegence/floret/v7/runtime.ThreadActivityTextExtent tag="json:\"text_extent,omitempty\""
 field ThreadActivityField.SourceID string tag="json:\"source_id,omitempty\""
 field ThreadActivityField.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
 field ThreadActivityField.Path string tag="json:\"path\""
@@ -1330,6 +1331,9 @@ field ThreadActivitySummary.Action string tag="json:\"action,omitempty\""
 field ThreadActivitySummary.HasError bool tag="json:\"has_error,omitempty\""
 field ThreadActivitySummary.UncertainEffect bool tag="json:\"uncertain_effect,omitempty\""
 field ThreadActivitySummary.Fields []github.com/floegence/floret/v7/runtime.ThreadActivityField tag="json:\"fields,omitempty\""
+type ThreadActivityTextExtent struct
+field ThreadActivityTextExtent.StartBytes int tag="json:\"start_bytes\""
+field ThreadActivityTextExtent.EndBytes int tag="json:\"end_bytes\""
 type ThreadActivityValue struct
 field ThreadActivityValue.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadActivityValue.ItemID string tag="json:\"item_id\""
