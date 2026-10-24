@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/session"
+	"github.com/floegence/floret/v7/internal/session/compaction"
 	"github.com/floegence/floret/v7/internal/session/contextpolicy"
 )
 
@@ -457,4 +458,38 @@ func TestPreparedOverflowCompactsBeforeDispatch(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	assertPreparedHandlesTerminated(t, p, []int{1})
+}
+
+type overflowCommitFailure struct {
+	engine.LocalCompactionManager
+	cause error
+}
+
+func (c overflowCommitFailure) CommitCompaction(context.Context, engine.CompactionCommitRequest) (compaction.Result, []session.Message, error) {
+	return compaction.Result{}, nil, c.cause
+}
+func TestOverflowRecoveryPreservesStorageFailureOrigin(t *testing.T) {
+	for _, duringPrepare := range []bool{false, true} {
+		t.Run(fmt.Sprint(duringPrepare), func(t *testing.T) {
+			providerCause := errors.New("request bytes rejected")
+			overflow := errors.Join(providerCause, provider.ErrContextOverflow)
+			behavior := preparedBehavior{streamErr: overflow}
+			if duringPrepare {
+				behavior = preparedBehavior{prepareErr: overflow, events: preparedDone("unused")}
+			}
+			p := newPreparedLifecycleProvider(behavior, preparedBehavior{events: preparedDone("unused")})
+			store := session.NewMemoryStore()
+			if err := store.AppendTranscript("run", session.Message{Role: session.User, Content: "older", EntryID: "u1"}, session.Message{Role: session.User, Content: "newer", EntryID: "u2"}); err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New("storage commit failed")
+			e := newTestEngine(p, &event.Recorder{})
+			e.Store = store
+			e.Compactor = overflowCommitFailure{LocalCompactionManager: engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}, cause: cause}
+			got := e.Run(t.Context(), "")
+			if got.FailureOrigin != engine.FailureOriginStorage || !errors.Is(got.Err, cause) || !errors.Is(got.Err, providerCause) {
+				t.Fatalf("origin=%s err=%v", got.FailureOrigin, got.Err)
+			}
+		})
+	}
 }

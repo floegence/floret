@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v7.82.2 - 2026-10-23
+
+- Preserve storage and contract failure classification when overflow recovery
+  fails, while retaining the original provider rejection as diagnostic evidence.
+
 ## v7.82.1 - 2026-10-23
 
 - Summarize the final complete visual tool exchange when overflow leaves no
