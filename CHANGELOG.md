@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v7.84.0 - 2026-10-24
+
 - Prepare a missing preview locator independently when window membership is
   already current. Preserve all prepared membership and boundary records, and
   publish only after verifying the unchanged source owner.
