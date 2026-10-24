@@ -36,11 +36,11 @@ func TestThreadWindowBaselinePrecedesContinuousDetailsAndRetainsFacts(t *testing
 	}
 	// Test the exact actor boundary without this lightweight fixture's absent
 	// canonical store; public SetWindow uses the same installation helper.
-	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", Direction: ThreadWindowBefore}); err != nil {
+	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", Direction: ThreadWindowBefore, RequestID: "read-1"}); err != nil {
 		t.Fatal(err)
 	}
 	baseline := nextUpdate(t, sub)
-	if baseline.Window == nil || len(baseline.Window.Value.Items) != 1 || baseline.Window.Value.Items[0].Text != "before baseline" {
+	if baseline.Window == nil || baseline.Window.Value.RequestID != "read-1" || len(baseline.Window.Value.Items) != 1 || baseline.Window.Value.Items[0].Text != "before baseline" {
 		t.Fatal("missing bounded baseline")
 	}
 	emitText(sink, "first", "中文🌸")
@@ -49,6 +49,11 @@ func TestThreadWindowBaselinePrecedesContinuousDetailsAndRetainsFacts(t *testing
 		t.Fatal("baseline/delta gap")
 	}
 	// A failed target does not consume or replace the accepted reading interest.
+	for _, request := range []string{strings.Repeat("x", 129), string([]byte{255})} {
+		if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", RequestID: request}); err == nil {
+			t.Fatal("invalid request correlation accepted")
+		}
+	}
 	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", AnchorID: "absent", Direction: ThreadWindowAround}); err == nil {
 		t.Fatal("missing anchor accepted")
 	}
@@ -385,7 +390,7 @@ func TestThreadWindowReorderReplacesGeometryAndReportsUnavailableAnchor(t *testi
 		emitText(sink, fmt.Sprint(i), "text")
 		nextUpdate(t, sub)
 	}
-	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", AnchorID: "2", Direction: ThreadWindowAround, Limit: 3}); err != nil {
+	if err := sub.setActorWindow(t.Context(), actor, ThreadWindowInput{ThreadID: "thread-live", AnchorID: "2", Direction: ThreadWindowAround, Limit: 3, RequestID: "reorder-read"}); err != nil {
 		t.Fatal(err)
 	}
 	baseline := nextUpdate(t, sub)
@@ -402,7 +407,7 @@ func TestThreadWindowReorderReplacesGeometryAndReportsUnavailableAnchor(t *testi
 		t.Fatal(err)
 	}
 	update := nextUpdate(t, sub)
-	if update.Window == nil || update.ItemOrder != nil || update.BaseVersion != baseline.ViewVersion || update.Window.Value.AnchorUnavailable {
+	if update.Window == nil || update.Window.Value.RequestID != "" || update.ItemOrder != nil || update.BaseVersion != baseline.ViewVersion || update.Window.Value.AnchorUnavailable {
 		t.Fatal("reorder did not replace bounded geometry")
 	}
 	anchor := sub.windows["thread-live"].anchor

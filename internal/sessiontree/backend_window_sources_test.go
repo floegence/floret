@@ -35,7 +35,7 @@ func TestWindowSourceAnchorsDoNotCopySourceHistory(t *testing.T) {
 }
 
 func TestWindowSourcesRejectForgedCompactionAnchors(t *testing.T) {
-	for _, change := range []string{"ordinal", "anchor", "missing"} {
+	for _, change := range []string{"ordinal", "anchor", "missing", "source", "kind", "turn", "run", "slot", "hidden"} {
 		t.Run(change, func(t *testing.T) {
 			backend, repo := projectionSourcesFixture(t, 3)
 			entry, err := NewThreadContextCompactionEntry(ThreadContextCompaction{ThreadID: "thread", TurnID: "turn", RunID: "run", RequestID: "request", OperationID: "compact", Phase: "start", Status: "running"})
@@ -60,6 +60,26 @@ func TestWindowSourcesRejectForgedCompactionAnchors(t *testing.T) {
 					stored.Anchors["compact"] = "unrelated-0"
 				case "missing":
 					delete(stored.CompactionOrdinals, "compact")
+				case "source", "kind", "turn", "run", "slot", "hidden":
+					ref := stored.CompactionSources["compact"]
+					if ref.Anchor == nil {
+						return errors.New("fixture requires anchor")
+					}
+					switch change {
+					case "source":
+						ref.Anchor.SourceID = "call"
+					case "kind":
+						ref.Anchor.Kind = "tool"
+					case "turn":
+						ref.Anchor.TurnID = "different"
+					case "run":
+						ref.Anchor.RunID = "different"
+					case "slot":
+						ref.Anchor.Slot++
+					case "hidden":
+						ref.Anchor.Hidden = true
+					}
+					stored.CompactionSources["compact"] = ref
 				}
 				return putItemJSON(tx, windowSourcesKey("thread"), stored)
 			}); err != nil {
@@ -68,6 +88,49 @@ func TestWindowSourcesRejectForgedCompactionAnchors(t *testing.T) {
 			if _, err := repo.ReadWindowSources(t.Context(), "thread", "", nil); !errors.Is(err, ErrAuthorityCorrupt) {
 				t.Fatalf("forged %s accepted: %v", change, err)
 			}
+		})
+	}
+}
+
+// A compaction boundary fixes an item's identity and position. Its activity
+// may subsequently settle or gain source-bound safety facts at the same slot.
+func TestWindowCompactionAnchorSurvivesActivityUpdatesAndRebuild(t *testing.T) {
+	for _, prepared := range []bool{false, true} {
+		t.Run(fmt.Sprint(prepared), func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 0)
+			appendEntry := func(entry Entry) {
+				t.Helper()
+				entry.ThreadID, entry.TurnID, entry.RunID = "thread", "turn", "run"
+				if _, err := repo.Append(t.Context(), entry, AppendOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			appendEntry(Entry{ID: "pending", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: "pending"}})
+			compact, err := NewThreadContextCompactionEntry(ThreadContextCompaction{ThreadID: "thread", TurnID: "turn", RunID: "run", RequestID: "request", OperationID: "compact", Phase: "start", Status: "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendEntry(compact)
+			if prepared {
+				if _, err := repo.ReadWindowSources(t.Context(), "thread", "", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			appendEntry(Entry{ID: "settled", Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "inspect", ToolCallID: "pending", Content: "failed", ToolResult: &session.ToolResultView{Status: "error"}}})
+			check := func() {
+				t.Helper()
+				got, err := repo.ReadWindowSources(t.Context(), "thread", "", nil)
+				if err != nil || got.Anchors["compact"] != "tool:turn:pending" {
+					t.Fatalf("stable compaction anchor rejected: %v %+v", err, got.Anchors)
+				}
+			}
+			check()
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			check()
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return deleteItemMembership(t.Context(), tx, "thread") }); err != nil {
+				t.Fatal(err)
+			}
+			check()
 		})
 	}
 }

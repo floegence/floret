@@ -12,7 +12,7 @@ import (
 )
 
 func TestWindowPreparationRejectsChangedOwnerBeforePublication(t *testing.T) {
-	for _, operation := range []string{"append", "move", "delete"} {
+	for _, operation := range []string{"move", "delete"} {
 		t.Run(operation, func(t *testing.T) {
 			backend, repo := projectionSourcesFixture(t, 40)
 			opts := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 10}
@@ -257,6 +257,167 @@ func TestSourcePreparationUsesBoundedPublicationForEveryReader(t *testing.T) {
 			}
 			if wrapped.maxWrites > 128 || wrapped.maxDeletes > 128 {
 				t.Fatalf("unbounded reader preparation: puts=%d deletes=%d", wrapped.maxWrites, wrapped.maxDeletes)
+			}
+		})
+	}
+}
+
+type appendDuringPreparationBackend struct {
+	spi.Backend
+	after   func() error
+	batches int
+}
+
+func (backend *appendDuringPreparationBackend) Update(ctx context.Context, fn func(spi.WriteTx) error) error {
+	wrote := false
+	err := backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
+		counted := &windowPreparationTx{WriteTx: tx}
+		err := fn(counted)
+		wrote = counted.writes > 0
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if wrote {
+		backend.batches++
+		if backend.after != nil {
+			return backend.after()
+		}
+	}
+	return nil
+}
+func TestWindowPreparationCatchesUpAppendWithoutRestart(t *testing.T) {
+	backend, repo := projectionSourcesFixture(t, 300)
+	opts := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 20}
+	fields := func(PathMetadata, bool) []string { return nil }
+	if _, err := repo.ReadWindowProjection(t.Context(), opts, fields); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return deleteItemMembership(t.Context(), tx, "thread") }); err != nil {
+		t.Fatal(err)
+	}
+	writer := reopenCurrentStartupRepo(t, backend, false)
+	wrapped := &appendDuringPreparationBackend{Backend: backend}
+	count := 0
+	wrapped.after = func() error {
+		if count >= 20 {
+			return nil
+		}
+		count++
+		_, err := writer.Append(t.Context(), Entry{ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "ongoing"}}, AppendOptions{})
+		return err
+	}
+	repo.backend = wrapped
+	err := repo.prepareWindowProjectionSnapshot(t.Context(), "thread")
+	repo.backend = backend
+	if err != nil {
+		t.Fatalf("normal append restarted complete preparation after %d appends: %v", count, err)
+	}
+	got, err := repo.ReadWindowProjection(t.Context(), opts, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := writer.Thread(t.Context(), "thread")
+	if err != nil || got.Membership.LeafID != meta.LeafID || got.Facts.LeafID != meta.LeafID {
+		t.Fatalf("missed tail: %v", err)
+	}
+}
+
+type catchupFailureBackend struct {
+	spi.Backend
+	fail func() error
+}
+type catchupFailureTx struct {
+	spi.WriteTx
+	catchup bool
+}
+
+func (tx *catchupFailureTx) Put(ns string, key, value []byte) error {
+	if ns == itemMembershipNamespace && bytes.Equal(key, itemIdentityKey("thread", "catchup-added")) {
+		tx.catchup = true
+	}
+	return tx.WriteTx.Put(ns, key, value)
+}
+func (backend *catchupFailureBackend) Update(ctx context.Context, fn func(spi.WriteTx) error) error {
+	return backend.Backend.Update(ctx, func(tx spi.WriteTx) error {
+		tracked := &catchupFailureTx{WriteTx: tx}
+		if err := fn(tracked); err != nil {
+			return err
+		}
+		if tracked.catchup {
+			return backend.fail()
+		}
+		return nil
+	})
+}
+func TestWindowPreparationCatchupRollbackAndPrivacy(t *testing.T) {
+	for _, mode := range []string{"failure", "cancel", "panic"} {
+		t.Run(mode, func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 150)
+			opts := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 20}
+			fields := func(PathMetadata, bool) []string { return nil }
+			if _, err := repo.ReadWindowProjection(t.Context(), opts, fields); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error { return deleteItemMembership(t.Context(), tx, "thread") }); err != nil {
+				t.Fatal(err)
+			}
+			writer := reopenCurrentStartupRepo(t, backend, false)
+			sentinel := errors.New("catchup failure")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			caught := false
+			checked := &catchupFailureBackend{Backend: backend}
+			checked.fail = func() error {
+				caught = true
+				_, present := backend.records[itemMembershipNamespace][string(itemManifestKey("thread"))]
+				if present {
+					t.Fatal("ready anchor escaped private preparation")
+				}
+				switch mode {
+				case "cancel":
+					cancel()
+					return ctx.Err()
+				case "panic":
+					panic(sentinel)
+				default:
+					return sentinel
+				}
+			}
+			wrapped := &appendDuringPreparationBackend{Backend: checked}
+			wrapped.after = func() error {
+				wrapped.after = nil
+				_, err := writer.Append(t.Context(), Entry{ThreadID: "thread", TurnID: "turn", RunID: "run", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "continue"}}, AppendOptions{ID: "catchup-added"})
+				return err
+			}
+			repo.backend = wrapped
+			func() {
+				defer func() {
+					if value := recover(); value != nil && value != sentinel {
+						panic(value)
+					}
+				}()
+				err := repo.prepareWindowProjectionSnapshot(ctx, "thread")
+				if mode != "panic" && !errors.Is(err, sentinel) && !errors.Is(err, context.Canceled) {
+					t.Fatalf("missing failure: %v", err)
+				}
+			}()
+			repo.backend = backend
+			if !caught {
+				t.Fatal("failure not injected into catchup")
+			}
+			if _, present := backend.records[itemMembershipNamespace][string(itemManifestKey("thread"))]; present {
+				t.Fatal("rolled-back anchor was published")
+			}
+			restarted := reopenCurrentStartupRepo(t, backend, false)
+			got, err := restarted.ReadWindowProjection(t.Context(), opts, fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := writer.Thread(t.Context(), "thread")
+			if err != nil || got.Membership.LeafID != meta.LeafID {
+				t.Fatal("lost canonical tail", err)
 			}
 		})
 	}

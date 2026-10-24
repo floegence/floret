@@ -156,7 +156,7 @@ func TestWindowProjectionFreezesQueueWithItemWindow(t *testing.T) {
 				wrapper.after = hook
 				return
 			}
-			entry, err := writer.Append(t.Context(), Entry{ID: fmt.Sprint("queued-", phase), ThreadID: "thread", Type: EntryQueueAdded, Payload: []byte(`{"id":"queued"}`)}, AppendOptions{})
+			entry, err := writer.Append(t.Context(), Entry{ID: fmt.Sprint("queued-", phase), ThreadID: "thread", Type: EntryQueueAdded, Payload: []byte(fmt.Sprintf("{\"id\":\"queued-%d\"}", phase))}, AppendOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -171,8 +171,8 @@ func TestWindowProjectionFreezesQueueWithItemWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 		want, found := queueCounts[got.Membership.LeafID]
-		if !found || len(got.Queue) != want {
-			t.Fatalf("phase %d mixed snapshots: queue=%d want=%d leaf=%s", phase, len(got.Queue), want, got.Membership.LeafID)
+		if !found || len(got.QueueSources.Pending) != want {
+			t.Fatalf("phase %d mixed snapshots: queue=%d want=%d leaf=%s", phase, len(got.QueueSources.Pending), want, got.Membership.LeafID)
 		}
 	}
 }

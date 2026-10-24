@@ -381,6 +381,7 @@ func (actor *threadRuntimeState) installCanonicalChangesMode(projection *threadC
 				item.Activity, item.Live = previous.Activity, previous.Live
 				item.activityOmitted = previous.activityOmitted
 				item.activityEntryIDs = previous.activityEntryIDs
+				item.activitySummary = previous.activitySummary
 				preservedObservation = true
 			}
 			if !preservedObservation {

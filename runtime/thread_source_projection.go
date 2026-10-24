@@ -13,6 +13,11 @@ import (
 // The membership reader supplies public item ordinals. Complete context, turn
 // facts and pending controls are still required before installing a baseline.
 type threadSourceProjection struct {
+	resolvedAnchor      string
+	summary             *sessiontree.WindowSummary
+	companions          map[*windowInterestLifetime]frozenSourceWindow
+	anchorUnavailable   bool
+	input               ThreadWindowInput
 	leaf                string
 	items               []ThreadItem
 	interactions        []ThreadInteraction
@@ -45,6 +50,9 @@ func (service *threadRuntimeService) projectThreadSources(ctx context.Context, t
 			return threadSourceProjection{}, ErrAuthorityCorrupt
 		}
 		depth = source.Entry.PathDepth
+		if source.GoalBefore != nil {
+			projection.goal.State = *source.GoalBefore
+		}
 		projection.ordinal = uint64(depth - 1)
 		if err := projection.append([]sessiontree.Entry{source.Entry}, nil); err != nil {
 			return threadSourceProjection{}, err
@@ -112,6 +120,22 @@ func (service *threadRuntimeService) projectThreadMembershipWindow(ctx context.C
 // loadSourceWindow assembles complete non-item facts and the requested item
 // interval. It remains explicitly distinct from an execution/full-view reducer.
 func (service *threadRuntimeService) loadSourceWindow(ctx context.Context, input ThreadWindowInput) (canonicalThreadView, threadSourceProjection, error) {
+	return service.loadSourceWindowAt(ctx, input, "")
+}
+
+type sourceWindowRequest struct {
+	input    ThreadWindowInput
+	lifetime *windowInterestLifetime
+}
+type frozenSourceWindow struct {
+	view canonicalThreadView
+	page threadSourceProjection
+}
+
+func (service *threadRuntimeService) loadSourceWindowAt(ctx context.Context, input ThreadWindowInput, leaf string, omitMissing ...bool) (canonicalThreadView, threadSourceProjection, error) {
+	return service.loadSourceWindowWithInterests(ctx, input, leaf, len(omitMissing) > 0 && omitMissing[0], nil)
+}
+func (service *threadRuntimeService) loadSourceWindowWithInterests(ctx context.Context, input ThreadWindowInput, leaf string, omitMissing bool, interests []sourceWindowRequest) (canonicalThreadView, threadSourceProjection, error) {
 	repo := service.host.store.repo
 	reader, ok := repo.(sessiontree.WindowProjectionReader)
 	if !ok {
@@ -121,12 +145,41 @@ func (service *threadRuntimeService) loadSourceWindow(ctx context.Context, input
 	if limit == 0 {
 		limit = threadDisplayPageItems
 	}
-	window, err := reader.ReadWindowProjection(ctx, sessiontree.ItemMembershipWindowOptions{ThreadID: input.ThreadID.String(), AnchorID: input.AnchorID, Direction: sessiontree.PathWindowDirection(input.Direction), Limit: limit}, func(source sessiontree.PathMetadata, control bool) []string {
+	options := sessiontree.ItemMembershipWindowOptions{Summary: true, OmitMissing: omitMissing, ItemIDs: input.ItemIDs, ThreadID: input.ThreadID.String(), ActivityFields: input.ActivityFields, LeafID: leaf, AnchorID: input.AnchorID, AnchorOffset: input.AnchorOffset, Direction: sessiontree.PathWindowDirection(input.Direction), Limit: limit}
+	for _, interest := range interests {
+		value := normalizeWindowInput(interest.input)
+		options.Companions = append(options.Companions, sessiontree.ItemMembershipWindowOptions{Summary: true, OmitMissing: true, MissingAnchorTail: true, ItemIDs: value.ItemIDs, ThreadID: value.ThreadID.String(), ActivityFields: value.ActivityFields, AnchorID: value.AnchorID, AnchorOffset: value.AnchorOffset, Direction: sessiontree.PathWindowDirection(value.Direction), Limit: value.Limit})
+	}
+	window, err := reader.ReadWindowProjection(ctx, options, func(source sessiontree.PathMetadata, control bool) []string {
 		return coldProjectionFields(source, false, control)
 	})
+	if errors.Is(err, sessiontree.ErrEntryNotFound) {
+		return canonicalThreadView{}, threadSourceProjection{}, threadquery.ErrRecordUnavailable
+	}
 	if err != nil {
 		return canonicalThreadView{}, threadSourceProjection{}, runtimeHostError(err)
 	}
+	view, page, err := service.projectSourceWindow(ctx, input, window)
+	if err != nil {
+		return canonicalThreadView{}, threadSourceProjection{}, err
+	}
+	if len(window.Companions) != len(interests) {
+		return canonicalThreadView{}, threadSourceProjection{}, ErrAuthorityCorrupt
+	}
+	page.companions = make(map[*windowInterestLifetime]frozenSourceWindow, len(interests))
+	for i, interest := range interests {
+		value, selected, err := service.projectSourceWindow(ctx, interest.input, window.Companions[i])
+		if err != nil {
+			return canonicalThreadView{}, threadSourceProjection{}, err
+		}
+		value.ThreadView = ThreadView{ThreadID: value.ThreadID, Items: value.Items, Turns: value.Turns, Interactions: value.Interactions}
+		selected.input = normalizeWindowInput(interest.input)
+		page.companions[interest.lifetime] = frozenSourceWindow{view: value, page: selected}
+	}
+	return view, page, nil
+}
+
+func (service *threadRuntimeService) projectSourceWindow(ctx context.Context, input ThreadWindowInput, window sessiontree.WindowProjection) (canonicalThreadView, threadSourceProjection, error) {
 	page, facts, sources := window.Membership, window.Facts, window.Entries
 	selected := map[string]bool{}
 	for _, member := range page.Members {
@@ -136,6 +189,9 @@ func (service *threadRuntimeService) loadSourceWindow(ctx context.Context, input
 	projection.items.deferActivity = true
 	for _, source := range sources {
 		entry := source.Entry
+		if source.GoalBefore != nil {
+			projection.items.goal.State = *source.GoalBefore
+		}
 		projection.items.ordinal = uint64(entry.PathDepth - 1)
 		if err := projection.items.append([]sessiontree.Entry{entry}, nil); err != nil {
 			return canonicalThreadView{}, threadSourceProjection{}, err
@@ -156,9 +212,19 @@ func (service *threadRuntimeService) loadSourceWindow(ctx context.Context, input
 			return canonicalThreadView{}, threadSourceProjection{}, ErrAuthorityCorrupt
 		}
 		item.Ordinal = page.Ordinals[i]
+		if item.textOmitted {
+			item.textLeafID = page.LeafID
+		}
+		if summary, ok := window.ActivitySummaries[item.ID]; ok {
+			value := publicActivitySummary(summary)
+			item.activitySummary = &value
+		}
 		selectedItems = append(selectedItems, item)
 	}
 	view := canonicalThreadView{ThreadView: ThreadView{ThreadID: input.ThreadID, Items: selectedItems, Interactions: cloneThreadInteractions(interactions), Goal: publicThreadGoal(projection.items.goal.State)}}
+	if facts.Goal != nil {
+		view.Goal = publicThreadGoal(*facts.Goal)
+	}
 	view.TurnID, view.RunID, view.Activity, view.LastOutcome, view.Failure = projection.turns.lifecycle.snapshot()
 	if latest := projection.turns.lifecycle.turns[view.TurnID.String()]; latest != nil {
 		view.TurnKind = latest.kind
@@ -195,19 +261,26 @@ func (service *threadRuntimeService) loadSourceWindow(ctx context.Context, input
 		parents := publicParentEventPage(input.ThreadID, *window.ParentEvents, false)
 		view.ParentEvents = &parents
 	}
-	queueSources := make(map[string]sessiontree.Entry, len(window.Queue))
-	for _, entry := range window.Queue {
-		queueSources[entry.ID] = entry
-	}
-	view.Queue, view.RestoredInputs, err = projectThreadQueues(ctx, window.Queue, func(id string) (sessiontree.Entry, error) {
-		entry, found := queueSources[id]
-		if !found {
-			return sessiontree.Entry{}, ErrAuthorityCorrupt
+	if window.QueueSources != nil {
+		view.Queue, view.RestoredInputs, err = projectCurrentThreadQueues(*window.QueueSources)
+		if err != nil {
+			return canonicalThreadView{}, threadSourceProjection{}, err
 		}
-		return entry, nil
-	})
-	if err != nil {
-		return canonicalThreadView{}, threadSourceProjection{}, err
+	} else {
+		queueSources := make(map[string]sessiontree.Entry, len(window.Queue))
+		for _, entry := range window.Queue {
+			queueSources[entry.ID] = entry
+		}
+		view.Queue, view.RestoredInputs, err = projectThreadQueues(ctx, window.Queue, func(id string) (sessiontree.Entry, error) {
+			entry, found := queueSources[id]
+			if !found {
+				return sessiontree.Entry{}, ErrAuthorityCorrupt
+			}
+			return entry, nil
+		})
+		if err != nil {
+			return canonicalThreadView{}, threadSourceProjection{}, err
+		}
 	}
-	return view, threadSourceProjection{leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter}, nil
+	return view, threadSourceProjection{resolvedAnchor: page.ResolvedAnchorID, summary: window.Summary, leaf: page.LeafID, items: selectedItems, interactions: interactions, sources: len(sources), hasBefore: page.HasBefore, hasAfter: page.HasAfter, anchorUnavailable: page.AnchorUnavailable}, nil
 }

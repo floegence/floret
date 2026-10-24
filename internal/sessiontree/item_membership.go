@@ -18,6 +18,12 @@ type ItemMember struct {
 	CanonicalOrdinal   uint64
 	Slot               int
 	Hidden             bool
+	ToolName           string
+	RangeFacts         ItemRangeFacts
+	ActivityPending    bool
+	ActivityStatus     string
+	ActivitySource     contextSourceRef
+	InteractionSource  contextSourceRef
 }
 
 type ItemContribution struct {
@@ -56,6 +62,7 @@ type ItemMembership struct {
 	interactions       map[string]itemMemberKey
 	failed             map[string]itemMemberKey
 	pending            map[string]int
+	approvals          map[itemMemberKey]contextSourceRef
 	ordinal            uint64
 }
 
@@ -67,6 +74,7 @@ func (p *ItemMembership) initialize() {
 	p.tools, p.hosted = map[itemMemberKey]int{}, map[itemMemberKey]int{}
 	p.interactions, p.failed = map[string]itemMemberKey{}, map[string]itemMemberKey{}
 	p.pending = map[string]int{}
+	p.approvals = map[itemMemberKey]contextSourceRef{}
 	p.PendingSources = map[string]string{}
 }
 
@@ -114,7 +122,7 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 	}
 	key := itemMemberKey{entry.TurnID, entry.RunID, entry.Message.ToolCallID}
 	reasoning := func() {
-		if entry.Message.Reasoning == "" && entry.bodyFields["reasoning"].Bytes == 0 {
+		if entry.Message.Reasoning == "" && entry.bodyFields["reasoning"].Bytes == 0 && entry.ProjectedText["reasoning"].Bytes == 0 {
 			return
 		}
 		source := entry.Message.ReasoningSourceID
@@ -142,7 +150,7 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			break
 		}
 		reasoning()
-		if entry.Message.Content == "" && entry.bodyFields["content"].Bytes == 0 {
+		if entry.Message.Content == "" && entry.bodyFields["content"].Bytes == 0 && entry.ProjectedText["content"].Bytes == 0 {
 			break
 		}
 		source := entry.Message.ContentSourceID
@@ -184,6 +192,21 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			step.Main = add("tool:"+entry.TurnID+":"+strings.TrimSpace(entry.Message.ToolCallID), "tool", false)
 			p.tools[key] = step.Main.Member.Slot
 		}
+		if step.Main != nil {
+			member := &p.Members[step.Main.Member.Slot]
+			member.ActivityStatus = CanonicalToolStatus(entry)
+			member.ToolName = entry.Message.ToolName
+			if source, ok := p.approvals[key]; ok {
+				member.RangeFacts |= ItemRangeApproval
+				member.InteractionSource = source
+			}
+			member.RangeFacts &^= ItemRangeInput
+			if entry.Message.ToolName == "ask_user" || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+				member.RangeFacts |= ItemRangeInput
+			}
+			member.ActivitySource = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+			step.Main.Member = *member
+		}
 		if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 			ready := false
 			for _, id := range step.ReadyInputs {
@@ -215,9 +238,10 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			break
 		}
 		var interaction struct {
-			ID, Kind string
-			TurnID   string `json:"turn_id"`
-			RunID    string `json:"run_id"`
+			ID, Kind   string
+			ToolCallID string `json:"tool_call_id"`
+			TurnID     string `json:"turn_id"`
+			RunID      string `json:"run_id"`
 		}
 		if err := json.Unmarshal(entry.Payload, &interaction); err != nil {
 			return step, errors.Join(errItemMembershipSource, ErrAuthorityCorrupt, err)
@@ -234,6 +258,16 @@ func (p *ItemMembership) Observe(entry Entry, ordinal uint64) (ItemMembershipSte
 			break
 		}
 		p.interactions[interaction.ID] = identity
+		if interaction.Kind == "approval" && interaction.ToolCallID != "" {
+			tool := itemMemberKey{entry.TurnID, entry.RunID, interaction.ToolCallID}
+			source := contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+			p.approvals[tool] = source
+			if slot, ok := p.tools[tool]; ok {
+				p.Members[slot].RangeFacts |= ItemRangeApproval
+				p.Members[slot].InteractionSource = source
+				step.Main = previous(slot)
+			}
+		}
 		pending(interaction.ID, entry.ID)
 		if interaction.Kind != "approval" {
 			step.Main = add("interaction:"+interaction.ID, "interaction", false)

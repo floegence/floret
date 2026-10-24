@@ -20,7 +20,7 @@ func (service *threadRuntimeService) prepareThreadView(ctx context.Context, id i
 	return service.prepareThreadRead(ctx, id, actor, false)
 }
 
-func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id identity.ThreadID, actor *threadRuntimeState, window bool) error {
+func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id identity.ThreadID, actor *threadRuntimeState, window bool, requested ...ThreadWindowInput) error {
 	var pending *threadReadPreparation
 	err := actor.apply(ctx, func() error {
 		if err := service.host.available(); err != nil {
@@ -35,8 +35,26 @@ func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id i
 				return err
 			}
 		}
-		if actor.state.view.ViewVersion > 0 && (window || actor.sourceWindow == nil) {
-			return nil
+		if actor.state.view.ViewVersion > 0 {
+			if actor.sourceWindow == nil {
+				return nil
+			}
+			if window {
+				meta, err := service.ensureThread(ctx, id)
+				if err != nil {
+					return err
+				}
+				if meta.LeafID == actor.sourceWindow.leaf {
+					if len(requested) == 0 || sameWindowInterval(normalizeWindowInput(requested[0]), actor.sourceWindow.input) {
+						return nil
+					}
+					for _, frozen := range actor.sourceWindow.companions {
+						if sameWindowInterval(normalizeWindowInput(requested[0]), frozen.page.input) {
+							return nil
+						}
+					}
+				}
+			}
 		}
 		pending = actor.preparation
 		if pending != nil {
@@ -67,7 +85,11 @@ func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id i
 					return
 				}
 				if window {
-					preparation.err = service.hydrateThreadWindow(work, id, actor)
+					input := ThreadWindowInput{ThreadID: id, Limit: threadDisplayPageItems}
+					if len(requested) > 0 {
+						input = requested[0]
+					}
+					preparation.err = service.hydrateThreadWindow(work, input, actor)
 				} else {
 					preparation.err = service.hydrateThreadView(work, id, actor)
 				}

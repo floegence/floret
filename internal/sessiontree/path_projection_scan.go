@@ -4,14 +4,16 @@ import (
 	"context"
 	"strings"
 
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // PathProjectionEntry is explicitly partial; it never substitutes for complete
 // canonical Entries or provider history. Sources retain exact body locators.
 type PathProjectionEntry struct {
-	Entry   Entry
-	Sources []CanonicalField
+	GoalBefore *session.GoalState
+	Entry      Entry
+	Sources    []CanonicalField
 }
 
 type PathProjectionPage struct {

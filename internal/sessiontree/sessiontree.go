@@ -417,6 +417,8 @@ func ThreadAuthorityTreeIDs(threads []ThreadMeta, rootThreadID string) ([]string
 }
 
 type Entry struct {
+	// ProjectedText is transient read metadata, never canonical history.
+	ProjectedText           map[string]CanonicalTextFacts `json:"-"`
 	bodyFields              map[string]canonicalBodyRef
 	contextStatusMetadata   *contextStatusMetadata
 	ID                      string                        `json:"id"`
@@ -2910,6 +2912,9 @@ func ValidateEntryMessageAttachments(entry Entry) error {
 }
 
 func ValidateNewEntryMessageAttachments(entry Entry) error {
+	if len(entry.ProjectedText) != 0 {
+		return errors.New("projected text metadata cannot be appended as canonical history")
+	}
 	if err := validateEntryMessageAttachmentPlacement(entry); err != nil {
 		return err
 	}

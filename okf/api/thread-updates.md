@@ -384,8 +384,11 @@ The same actor promotes to a complete reducer for execution and explicit full
 reads. It constructs and catches up a private candidate before replacing accepted
 state. Failure preserves the window and version. Active recovery failures also
 close affected observers explicitly and reach the Host error channel. An all-tool
-suffix cannot certify an absent sidebar preview; the canonical summary reader
-retains earlier message semantics.
+suffix carries the latest nonempty canonical user/assistant source preview at
+the same leaf, so a subsequent Summary does not rescan history. Canonical writes
+maintain only its source identity, hash and depth in the existing transaction.
+Preview text is read on demand through existing bounded text facts; source-only
+consumers do not request it. Custom repositories retain their complete reader.
 
 Historical sources without these indexes still need validated preparation.
 All readers share that owner, with private short writes and atomic publication
@@ -418,3 +421,273 @@ semantics and the public storage SPI does not change.
 - [Independent context oracle](../../internal/sessiontree/context_reducer_test.go)
 - [Exact request lookup and rollback](../../internal/storage/prompt_context_request_test.go)
 - [Page body budget and transaction isolation](../../internal/sessiontree/body_page_test.go)
+
+## Current Queue Sources
+
+Persistent window and complete hydration resolve pending queue additions and
+restored-input source pairs from one rebuildable journal-membership index.
+Canonical append maintains it in the same transaction. Consumed queue history
+is not replayed on every open. Reordering retains the original admitted addition;
+restore references the latest addition, including repeated historical restore
+markers. Queue membership spans the journal and is independent of active-path
+switches. Missing released metadata is prepared by the canonical storage owner;
+publication verifies the source snapshot and cancellation leaves no ready anchor.
+The index contains identities and counts only, not queued message text.
+
+## Decoded Activity Fields
+
+API decision: add optional ThreadActivityFieldReader without expanding
+ThreadService or changing complete Activity JSON semantics. The identified
+consumer is Flower's visible-field loader. A request uses an authorized source
+entry and JSON pointer, decoded UTF-8 offset, bounded limit, and source/field
+hash fences. Arbitrary JSON queries or executable paths are not accepted.
+
+Canonical append indexes string escape boundaries and typed object/array source
+locations in the same transaction. Metadata contains no field text. Each read
+validates active ancestry, the source body identity, and decoded block hashes.
+An ordinary append does not invalidate an immutable source. Missing legacy
+metadata is prepared by the storage owner outside a writer transaction and
+published after source verification. Per-field reads alone do not certify the
+product's merged/default presentation, disclosure, live, or grouping behavior.
+
+## Effective activity field reads
+
+API decision: optional ThreadActivityStructureReader resolves an authorized
+canonical item into its effective typed ActivityPresentation structure. Paths
+use JSON pointer syntax, arrays page by child ordinal, and the source digest
+pins ordered call/result inputs. ThreadActivityFieldReader returns decoded
+UTF-8 ranges from the exact immutable string source. Per-call limits are 64
+children and 64 KiB encoded structure, or 16 KiB decoded text and 64 KiB encoded
+field data. Prepared structure reads do not materialize string bodies. Legacy
+sources have an explicit owner-controlled preparation cost.
+
+Complete typed merge and source-only structure use the same pure
+internal/activitymerge field selector. This is a deliberate narrow dependency
+from tools on tool-domain value semantics; the selector must not import runtime,
+storage, observation, or host packages. The architecture gate enforces that
+separation. Runtime alone synthesizes historical default presentations, and the
+host does not reconstruct defaults or replay activity sources.
+
+This capability is additive and keeps existing complete activity and window
+contracts unchanged. Resident field handoff has focused regression coverage; continuous product
+scrolling and end-to-end one-second opening still require product qualification.
+
+
+### Resident activity field sources
+
+The optional activity structure reader exposes the effective canonical activity
+without joining all historical bodies. For an actor-resident activity, collection
+pages expose only immediate field shape and lengths. Reading an individual string
+path acquires a frozen, opaque source identity for that field. Subsequent field
+reads authorize the thread and current item/run association again. The existing
+actor owns a bounded ephemeral cache (256 selected strings, 8 MiB resident and 256 MiB temporary spill per thread),
+without retaining sibling bodies. Eviction and restart require reacquiring the
+selected field; neither changes execution. An accepted string remains immutable
+through append, replacement and canonical completion, so chunks cannot mix old
+and new content. Resident structure versions describe the requested immediate
+shape, independent of unrelated token growth. These APIs do not certify product
+latency or complete the continuous-scroll host integration.
+
+
+### Preparing a growing history
+
+Missing window metadata is prepared at a validated ancestor outside a writer
+transaction. Staging keeps every requested readiness anchor private. Ordinary
+append preserves that ancestor, so preparation catches up only the new entries
+through the existing append reducers, one entry per transaction, then publishes
+matching anchors atomically. It does not rescan the prepared prefix for each new
+entry. Branch changes or deleted owners reject publication. Interrupted staging
+has no readable readiness anchor and is rebuilt by the same canonical owner.
+This removes append-triggered restarts, not the one-time historical scan cost.
+
+### Explicit field-only activity windows
+
+The optional ActivityFields on ThreadWindowInput requests an activity summary
+instead of presentation bodies. The default remains the published complete/
+preview behavior. The same option is retained by the subscription during item
+replacement and bounded-window replacement. ThreadItem.ActivitySummary contains
+label, description, renderer, action, error presence and effect uncertainty.
+Its Fields contains exact root and immediate payload shapes, collection counts,
+scalar metadata and canonical source identity selected in the same transaction.
+These descriptors never contain collection members or hidden text. A string
+shape is not an acquired body source: resolve its exact path with
+ActivityStructure before ReadActivityField. Historical shape-only metadata does
+not certify full detail readiness, and cannot be used to bypass preparation.
+Activity identity, status, severity, attention and approval remain in the
+existing activity and interaction facts. The summary is not a product grouping
+decision. Hosts fetch actual visible fields through ActivityStructure and
+ReadActivityField.
+
+Canonical summary discriminators come from transactionally maintained activity
+field metadata. Reading them never materializes hidden rows or error text;
+visible labels and descriptions are separately bounded. Resident summaries
+inspect typed fields without serializing the full presentation. A running
+tool's resident presentation takes precedence over its older canonical call.
+Requested resident strings remain readable across canonical completion while
+the same authorized item/run exists.
+
+This additive contract supports downstream field renderers. It does not by
+itself implement continuous browsing, canonical group boundaries or the product
+click-to-interactive performance gate.
+
+### Window reads and concurrent execution
+
+The first window prepares its exact requested interval, instead of preparing
+150 items before applying a smaller limit. The exact latest
+canonical preview source accompanies the interval independently of its selected
+items. Missing summary source metadata joins the canonical preparation owner;
+that initial preparation still counts toward first-open latency. Full-view consumers still promote the same actor.
+
+SetWindow reserves request ownership before cold preparation. It captures
+requested item sources under the actor, reads omitted bodies outside the actor,
+and then validates selected identities before atomically enqueueing the current
+baseline and installing its interest. Replacement, clearing and closing cancel
+in-flight reading without cancelling execution. An append-only live source can
+reuse an accepted prefix and advertise the current unread extent instead of
+restarting on every output append. Failed reads retain the prior interest.
+ActivityFields publication captures bounded immutable sources and hydrates them
+in Next outside actor, service and subscription locks. The existing queue owns
+ordering and charges queued plus in-flight data; caller cancellation retains the
+undelivered mutation. Replacing or clearing an interest cancels its body read and
+removes obsolete detail without dropping versioned semantic facts. Live source
+previews are captured at append time so source completion cannot invalidate a
+queued first preview. Legacy complete-presentation subscriptions retain their
+published materialization behavior and still require separate qualification.
+
+Canonical window summaries are read in the same storage snapshot as membership
+and tool sources. A concurrent result cannot combine a new summary with an old
+status. Resident completed presentations retain their small summary before body
+eviction; publication never reconstructs hidden payloads to recover it.
+
+For ActivityFields windows, the existing canonical source index also retains
+first call, first dispatch and newest result references for ordinary invocations.
+It updates these references in the same append transaction and verifies source
+hashes and current ancestry on read. Replaced ordinary results need not be
+replayed. Control, interaction, ambiguous-run and richer observation groups keep
+their original complete reducer dependencies; this is not a claim that every
+window dependency is bounded. Default full-presentation consumers retain the
+complete source list needed for typed merge behavior.
+
+
+### Finite item selection decision
+
+ThreadWindowInput.ItemIDs is an additive, opt-in finite selection for hosts whose
+visible content is sparse. Its consumer is the continuous reader, which must
+observe visible prose on both sides of a folded sequence without subscribing to
+its hidden members. Select one to 150 unique, nonempty item identities. Do not
+combine it with AnchorID, Direction or Limit. Floret resolves canonical ordering,
+rejects unavailable identities, and keeps the prior interest when selection fails.
+
+The same subscription and ViewVersion own baseline and later mutations. Pending
+controls remain visible outside the selection; resolved controls remain scoped
+to selected items. ItemSelection explicitly marks gaps as intentional. HasBefore
+and HasAfter refer to the outermost selected items, not completeness between them.
+Selection does not implicitly follow the tail. A path replacement retains only
+still-valid selected identities and publishes the replacement on the same queue.
+
+Default interval selection, complete activity presentation, public View and
+execution preparation retain their existing behavior. This contract does not
+supply product grouping rules or summaries for hidden intervals. Hosts must not
+claim exact folded counts or live range coverage from sparse endpoints alone.
+
+
+## Canonical range read decision
+
+Decoded activity field reads accept optional AlignStart: the canonical owner
+may move a split-rune start backward by at most three UTF-8 bytes, reports the
+actual start, and retains all source/extent and response bounds. Strict reads
+remain the default. This additive decision supports finite reverse-scrolling
+caches without retaining unbounded preceding chunk maps. Canonical, in-memory
+resident and spilled resident paths share these semantics; source-version mixing
+is still forbidden.
+
+The optional public `ThreadItemRangeReader` resolves one maximal same-turn/run
+range around an authorized canonical item. Callers specify allowed item kinds and
+excluded fixed domain facts; Floret does not accept UI predicates or persist
+product groups. The membership owner maintains kind/status counts and safety
+facts in the canonical append transaction. Prepared persistent reads use the
+existing membership range tree without reading member arrays or hidden bodies.
+
+The result is bound to its canonical `LeafID`. It excludes resident drafts and
+has no independently advancing revision. A host must not attach an actor
+`ViewVersion` sampled by another read, infer a live subscription, or assume
+these facts alone implement its complete presentation rules. Hosted/unknown
+activity remains explicitly unknown. Existing `ThreadService` contracts and
+complete views are unchanged. Missing historical indexes require canonical
+owner preparation; this API makes no first-open latency guarantee.
+
+The focused public regression verifies fresh authorization, invalid selections,
+late tool-result count updates at the original position, restart, cancellation,
+and that reads never execute an agent. Product grouping parity, live range
+observation, and end-to-end performance are separate acceptance requirements.
+
+### Explicit baseline correlation
+
+Public API decision: ThreadWindowInput.RequestID and ThreadWindowSnapshot.RequestID
+add opt-in request correlation to the existing ordered observation channel.
+A host can keep consuming the accepted interest while SetWindow hydrates its
+replacement, then recognize that baseline before forwarding its successors.
+Tokens are valid UTF-8 up to 128 bytes. Floret echoes them without assigning
+semantic identity or monotonicity; the actor version owns baseline/delta order.
+Automatic replacements omit the token. Tokens are not persisted, indexed,
+replayed or accepted as authorization. Existing callers omit them unchanged.
+
+### Atomic selected activity values
+
+ThreadActivityValueReader.ReadActivityValue returns one requested subtree from
+one canonical read transaction or one immutable resident presentation. The
+caller supplies byte (at most 256 KiB) and node (at most 256) budgets. Optional
+Fields selects unique direct children of an object before traversal. Missing
+children remain absent. Every request authorizes the thread afresh; field paths,
+summary versions and response identities never grant access.
+
+When Fields is explicit, TextFields may select up to eight other direct string
+children. The response returns their frozen field locators beside Value from
+the same canonical transaction or resident presentation. Missing children remain
+absent; duplicate, overlapping and non-string selections are invalid. Locator
+metadata has a separate 64 KiB encoded bound. Subsequent authorized field-range
+reads retain this snapshot even while the activity changes. This supports rich
+display rows whose legal code would exceed an atomic JSON budget after escaping,
+without reading sibling rows or mixing newer metadata with older text.
+
+The metadata pass bounds traversal and decoded string bytes before string reads;
+the encoded JSON limit is checked before returning. Escaping can make encoded
+output larger than the decoded budget, so an oversized result fails without
+returning a partial value. Strings larger than one value budget use the existing
+frozen field-range API. Collections use structure pages and selected members;
+selecting a collection never bypasses either budget.
+
+ThreadActivitySummary.Version is an opaque activity-local refresh hint. A live
+replacement changes it independently of unrelated thread growth. Canonical
+versions bind the selected latest source. Versions may change across live to
+canonical handoff without changing visible content. They are not query cursors.
+Values carries explicitly selected product-neutral string attributes of at most
+2 KiB each and resource/chip collections of at most 16 KiB each, read from canonical
+source offsets. Hidden commands, row bodies and tool errors remain field sources.
+An absent value does not mean an absent canonical field: Fields retains its
+exact kind and extent for separately authorized reads. Copies own their values.
+
+These additions preserve default window behavior and execution context. They do
+not certify host renderer coverage or the product one-second acceptance gate.
+
+### Source-relative around seeks
+
+AnchorOffset is an additive ThreadWindowInput field for an around request with
+AnchorID. It counts public visible item positions relative to that stable item,
+not journal depth, elapsed time, or byte offset. The canonical membership rank
+index resolves the destination without scanning hidden intervening history.
+Zero preserves existing behavior. Missing/out-of-range destinations fail and
+leave the previous observer interest intact; every request reauthorizes scope.
+
+The accepted baseline binds its actual item identities as a finite selection.
+Later appends or reservation reveals cannot repeatedly move that selection by
+reapplying the numeric offset. Product hosts may use this capability to refill
+an evicted reading interval after a scrollbar jump; geometry and scroll policy
+remain host concerns. The bounded seek is not evidence of one-second product
+opening or complete cross-window grouping.
+
+A window record missing only its preview locator is prepared independently.
+The owner searches backward to the latest eligible nonempty message and adds
+only the source locator, without rewriting current membership or boundaries.
+A long historical tail can still require a metadata scan; this upgrade path
+is not a constant-time or subsecond historical first-open guarantee.

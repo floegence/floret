@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
+
+	"github.com/floegence/floret/v7/internal/activitymerge"
 
 	"github.com/floegence/floret/v7/identity"
 )
@@ -741,309 +744,41 @@ func ActivityDurationMS(in *ActivityPresentation) int64 {
 }
 
 func mergeActivityPayload(left, right ActivityPayload) ActivityPayload {
-	if left == nil {
+	if left == nil || reflect.TypeOf(left) != reflect.TypeOf(right) {
 		return cloneActivityPayload(right)
 	}
-	switch r := right.(type) {
-	case StructuredActivityPayload:
-		l, ok := left.(StructuredActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Goal != nil {
-			value := *r.Goal
-			l.Goal = &value
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.Operation != "" {
-			l.Operation = r.Operation
-		}
-		if r.DisplayName != "" {
-			l.DisplayName = r.DisplayName
-		}
-		if r.Summary != "" {
-			l.Summary = r.Summary
-		}
-		if r.DurationMS != 0 {
-			l.DurationMS = r.DurationMS
-		}
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		if len(r.Inputs) > 0 {
-			l.Inputs = cloneStructuredActivityRows(r.Inputs)
-		}
-		if r.RowsProvided || len(r.Rows) > 0 {
-			l.Rows = cloneStructuredActivityRows(r.Rows)
-		}
-		l.RowsProvided = l.RowsProvided || r.RowsProvided
-		return l
-	case TerminalActivityPayload:
-		l, ok := left.(TerminalActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Command != "" {
-			l.Command = r.Command
-		}
-		if r.Operation != "" {
-			l.Operation = r.Operation
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.ProcessID != "" {
-			l.ProcessID = r.ProcessID
-		}
-		if r.InputBytes != 0 {
-			l.InputBytes = r.InputBytes
-		}
-		if r.LatestOutput != "" {
-			l.LatestOutput = r.LatestOutput
-		}
-		if r.Output != "" {
-			l.Output = r.Output
-		}
-		if r.Stdout != "" {
-			l.Stdout = r.Stdout
-		}
-		if r.Stderr != "" {
-			l.Stderr = r.Stderr
-		}
-		if r.ExitCode != nil {
-			value := *r.ExitCode
-			l.ExitCode = &value
-		}
-		if r.DurationMS != 0 {
-			l.DurationMS = r.DurationMS
-		}
-		if r.Operation == "read" || r.FirstSeq != 0 || r.LastSeq != 0 || r.LatestSeq != 0 {
-			l.FirstSeq = r.FirstSeq
-			l.LastSeq = r.LastSeq
-			l.LatestSeq = r.LatestSeq
-			l.HasMore = r.HasMore
-		}
-		if r.TotalBytes != 0 {
-			l.TotalBytes = r.TotalBytes
-		}
-		if r.ExecutionLocation != "" {
-			l.ExecutionLocation = r.ExecutionLocation
-		}
-		l.Truncated = l.Truncated || r.Truncated
-		if r.PendingResult != "" {
-			l.PendingResult = r.PendingResult
-		}
-		l.Terminated = l.Terminated || r.Terminated
-		l.TimedOut = l.TimedOut || r.TimedOut
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	case FileActivityPayload:
-		l, ok := left.(FileActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Path != "" {
-			l.Path = r.Path
-		}
-		if r.Operation != "" {
-			l.Operation = r.Operation
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.Summary != "" {
-			l.Summary = r.Summary
-		}
-		if r.SizeBytes != 0 {
-			l.SizeBytes = r.SizeBytes
-		}
-		if r.DisplayName != "" {
-			l.DisplayName = r.DisplayName
-		}
-		if r.Content != "" {
-			l.Content = r.Content
-		}
-		if r.LineOffset != 0 {
-			l.LineOffset = r.LineOffset
-		}
-		if r.LineCount != 0 {
-			l.LineCount = r.LineCount
-		}
-		if r.TotalLines != 0 {
-			l.TotalLines = r.TotalLines
-		}
-		if r.ChangeType != "" {
-			l.ChangeType = r.ChangeType
-			l.Additions = r.Additions
-			l.Deletions = r.Deletions
-			l.UnifiedDiff = r.UnifiedDiff
-			l.DiffUnavailableReason = r.DiffUnavailableReason
-		}
-		l.Truncated = l.Truncated || r.Truncated
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	case PatchActivityPayload:
-		l, ok := left.(PatchActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Path != "" {
-			l.Path = r.Path
-		}
-		if r.Diff != "" {
-			l.Diff = r.Diff
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.Summary != "" {
-			l.Summary = r.Summary
-		}
-		if r.FilesChanged != 0 {
-			l.FilesChanged = r.FilesChanged
-		}
-		if r.Hunks != 0 {
-			l.Hunks = r.Hunks
-		}
-		if r.Additions != 0 {
-			l.Additions = r.Additions
-		}
-		if r.Deletions != 0 {
-			l.Deletions = r.Deletions
-		}
-		if r.InputFormat != "" {
-			l.InputFormat = r.InputFormat
-		}
-		if r.NormalizedFormat != "" {
-			l.NormalizedFormat = r.NormalizedFormat
-		}
-		if r.Mutations != nil {
-			mutations := cloneFileMutations(*r.Mutations)
-			l.Mutations = &mutations
-		}
-		l.Truncated = l.Truncated || r.Truncated
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	case WebFetchActivityPayload:
-		l, ok := left.(WebFetchActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.URL != "" {
-			l.URL = r.URL
-		}
-		if r.FinalURL != "" {
-			l.FinalURL = r.FinalURL
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.StatusCode != 0 {
-			l.StatusCode = r.StatusCode
-		}
-		if r.ContentType != "" {
-			l.ContentType = r.ContentType
-		}
-		if r.Format != "" {
-			l.Format = r.Format
-		}
-		if r.ContentPreview != "" {
-			l.ContentPreview = r.ContentPreview
-		}
-		l.PreviewTruncated = l.PreviewTruncated || r.PreviewTruncated
-		if r.SiteIcon != nil {
-			l.SiteIcon = cloneWebFetchActivityIcon(r.SiteIcon)
-		}
-		if r.BytesRead != 0 {
-			l.BytesRead = r.BytesRead
-		}
-		l.Truncated = l.Truncated || r.Truncated
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	case WebSearchActivityPayload:
-		l, ok := left.(WebSearchActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Operation != "" {
-			l.Operation = r.Operation
-		}
-		if r.URL != "" {
-			l.URL = r.URL
-		}
-		if r.Pattern != "" {
-			l.Pattern = r.Pattern
-		}
-		if r.Query != "" {
-			l.Query = r.Query
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if r.ResultsProvided || len(r.Results) > 0 {
-			l.Results = append([]WebSearchActivityResult(nil), r.Results...)
-			l.ResultsProvided = true
-		}
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	case QuestionActivityPayload:
-		l, ok := left.(QuestionActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.PromptID != "" {
-			l.PromptID = r.PromptID
-		}
-		if len(r.Questions) > 0 {
-			l.Questions = cloneQuestionActivityQuestions(r.Questions)
-		}
-		if len(r.Answers) > 0 {
-			l.Answers = cloneQuestionActivityAnswers(r.Answers)
-		}
-		return l
-	case SubAgentOperationActivityPayload:
-		l, ok := left.(SubAgentOperationActivityPayload)
-		if !ok {
-			return cloneActivityPayload(r)
-		}
-		if r.Action != "" {
-			l.Action = r.Action
-		}
-		if r.Status != "" {
-			l.Status = r.Status
-		}
-		if len(r.Targets) > 0 {
-			l.Targets = append([]SubAgentOperationTarget(nil), r.Targets...)
-		}
-		if r.RequestedCount != 0 {
-			l.RequestedCount = r.RequestedCount
-		}
-		if r.CompletedCount != 0 {
-			l.CompletedCount = r.CompletedCount
-		}
-		if r.MissingCount != 0 {
-			l.MissingCount = r.MissingCount
-		}
-		l.TimedOut = l.TimedOut || r.TimedOut
-		if r.Error != nil {
-			l.Error = cloneActivityError(r.Error)
-		}
-		return l
-	default:
+	r := reflect.ValueOf(right)
+	facts := make(map[string]activitymerge.Fact, r.NumField())
+	for i := 0; i < r.NumField(); i++ {
+		field := r.Field(i)
+		key := strings.Split(r.Type().Field(i).Tag.Get("json"), ",")[0]
+		nonzero := !field.IsZero()
+		if field.Kind() == reflect.Slice {
+			nonzero = field.Len() > 0
+		}
+		fact := activitymerge.Fact{NonZero: nonzero}
+		if key == "operation" && field.Kind() == reflect.String {
+			fact.Value = field.String()
+		}
+		facts[key] = fact
+	}
+	selection := activitymerge.Select(string(right.activityRenderer()), facts)
+	if selection.Replace {
 		return cloneActivityPayload(right)
 	}
+	out := reflect.New(r.Type()).Elem()
+	out.Set(reflect.ValueOf(cloneActivityPayload(left)))
+	detached := reflect.ValueOf(cloneActivityPayload(right))
+	for i := 0; i < r.NumField(); i++ {
+		key := strings.Split(r.Type().Field(i).Tag.Get("json"), ",")[0]
+		if selection.Fields[key] {
+			out.Field(i).Set(detached.Field(i))
+		}
+		if key == "results_provided" && selection.ResultsProvided {
+			out.Field(i).SetBool(true)
+		}
+	}
+	return out.Interface().(ActivityPayload)
 }
 
 func activityPayloadRenderer(payload ActivityPayload) (ActivityRenderer, error) {

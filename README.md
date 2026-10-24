@@ -21,6 +21,11 @@ existing overflow classification. `provider.DeepSeekOptions.MaxRequestBytes`
 applies the same optional limit before preparation and dispatch. Canonical assets
 and historical records remain unchanged; transport retries reuse frozen bytes.
 
+Activity window consumers may opt into source-backed summaries, bounded field
+ranges, and atomic selected values through the optional runtime reader
+interfaces. See [thread updates](okf/api/thread-updates.md) for authorization,
+budgets, live replacement and historical preparation contracts.
+
 ## Request output budgets
 
 Set ContextPolicy.ModelMaxOutputTokens to the model output capability to enable
@@ -1146,6 +1151,33 @@ automatic compression. Hosts should offer budget/model changes before explicit
 retry; the same failure survives restart. These messages contain numeric budget
 diagnostics, never prompt bodies or credentials.
 
+### Decoded Activity Field Reads
+
+The optional runtime.ThreadActivityFieldReader reads a single string identified
+by its JSON pointer in an authorized canonical ActivityPresentation source.
+Offsets and extents use decoded UTF-8 bytes. Each call revalidates thread scope,
+active-path membership and optional source/field hashes, and returns at most
+16 KiB. ActivityStructure resolves sources from the logical item; source
+identities never grant access. Resident string paths return an opaque SourceID
+and RunID for frozen field reads. Collection pages retain no sibling strings.
+The actor retains at most 256 selected fields, 8 MiB of resident strings and
+256 MiB of temporary spill data per thread; reacquire
+the selected field after eviction or restart. Live append and canonical
+completion do not change bytes behind an accepted source identity.
+
+ThreadActivityFieldInput.AlignStart optionally rounds a decoded offset inside
+a UTF-8 rune backward by at most three bytes. The returned OffsetBytes is the
+actual start and the same response limits apply. This permits reverse range
+reads after earlier UI chunks have been evicted; omitted/false keeps strict
+offset validation. Consumers must join ranges using returned offsets, not the
+requested offsets, and must never combine distinct source identities.
+
+Floret records JSON offsets and independently verifiable decoded boundaries in
+the canonical write transaction. Prepared reads do not parse preceding text or
+sibling fields. Released sources missing that rebuildable metadata require one
+owner-controlled preparation; this is not a first-upgrade latency guarantee.
+The existing complete ThreadBodyActivityJSON contract remains unchanged.
+
 ## Storage
 
 For ordinary hosts, `storage.Source` is an opaque value consumed exclusively by
@@ -1494,7 +1526,9 @@ Optional ThreadSummaryReader reads canonical summaries without full history or
 thread actor creation. Built-in cold reads stream frozen metadata pages and read
 only the latest nonempty message preview plus required failure/input fields;
 large transcript and ordinary activity bodies are not hydrated. The remaining
-metadata scan and interaction/lifecycle state are still proportional to history.
+metadata scan and interaction/lifecycle state are still proportional to history
+for unprepared paths. Prepared bounded-window actors retain a canonical summary
+source and do not rescan historical metadata for the preview.
 Options.StartupWorkProgress reports real completed thread
 projections and known totals. StartupPhaseIndexing is deprecated and never emitted.
 
@@ -1515,6 +1549,54 @@ Schema 20 -> 21 preserves historical
 facts and requires current writers.
 
 Search and DeepSeek Fetch clients may use `ResolveAPIKey` to resolve live credentials immediately before dispatch. The callback must enforce current host authorization; its errors remain explicit and do not switch services. Credentials are never part of a tool definition or checkpoint.
+
+### Selected windows and deferred activity details
+
+The optional runtime ThreadActivityStructureReader resolves a canonical tool
+item into paged effective activity fields, preserving call/result merge and
+historical defaults. It returns source references for strings rather than
+hidden input/output contents. ThreadActivityFieldReader reads decoded UTF-8
+ranges with fresh authorization, source identity checks, and a 64 KiB encoded
+response bound. Historical sources missing field metadata are prepared by the
+canonical storage owner before these bounded reads become available.
+ThreadActivityValueReader selects a byte/node-bounded subtree and can return
+up to eight frozen direct string locators from the same snapshot. Every field
+read reauthorizes the caller; locators are never access grants.
+
+Window consumers may opt into `ThreadWindowInput.ActivityFields` to receive typed activity summaries and exact immediate field shapes/counts without hidden presentation bodies. Field shapes distinguish absent details from unread content; acquire string sources at their exact path before reading. Read visible fields through `ThreadActivityStructureReader` and `ThreadActivityFieldReader`. The default window and complete View contracts retain their existing behavior.
+
+An optional `ThreadWindowInput.RequestID` (valid UTF-8, at most 128 bytes) is
+echoed only by the explicit replacement baseline in `ThreadWindowSnapshot`.
+Use it to correlate a pending `SetWindow` while one consumer continues reading
+the same ordered `Next` channel. Automatic replacements omit the token. It is
+ephemeral correlation, never authorization, execution identity or a version.
+
+
+Window consumers can set ThreadWindowInput.ItemIDs to one to 150 unique item
+identities instead of an interval. Omit AnchorID, Direction and Limit in that
+mode. The baseline sets ItemSelection and orders items canonically; gaps are
+intentional and are not a complete-history claim. The same observation interest
+publishes selected changes and all pending controls. Failed selections preserve
+the prior interest, and explicit selections do not implicitly follow the tail.
+
+
+The optional runtime `ThreadItemRangeReader` reads source-bound counts and fixed
+safety facts for a maximal canonical same-turn/run range. It returns a frozen
+`LeafID`, never an actor version or live subscription. It does not materialize
+hidden member bodies or define product grouping policy. Hosts must supply fresh
+read authorization and account for resident drafts separately; unprepared
+historical metadata still requires owner-controlled preparation.
+
+Prepared bounded windows retain the latest canonical summary source alongside
+membership. Sidebar Summary after a historical or tool-only window reads no
+historical metadata scan. Only source positions are durable; preview text is
+read from canonical bodies on demand. Missing historical metadata still needs
+canonical preparation and is not a subsecond first-upgrade guarantee.
+
+ThreadWindowInput.AnchorOffset optionally seeks visible membership positions
+relative to AnchorID for an around read. It cannot be combined with ItemIDs. The accepted baseline binds stable
+item identities; subsequent live changes do not repeat the offset. This keeps
+large reading-gap seeks bounded without changing canonical execution context.
 
 ## Segmented canonical bodies
 

@@ -30,6 +30,7 @@ func retainCanonicalItem(item ThreadItem, leafID string) ThreadItem {
 	// must not clone this growing private list on every accepted segment.
 	item.sourceEntryIDs = nil
 	item.Text, item.textOmitted, item.textLeafID = "", true, leafID
+	item.livePreview = ""
 	return item
 }
 
@@ -244,6 +245,10 @@ func retainCanonicalActivity(item ThreadItem) ThreadItem {
 		return item
 	}
 	activity := *item.Activity
+	if activity.Presentation != nil {
+		summary := residentItemActivitySummary(item)
+		item.activitySummary = &summary
+	}
 	activity.Presentation = nil
 	item.Activity, item.activityOmitted = &activity, true
 	return item
@@ -291,17 +296,14 @@ func (service *threadRuntimeService) completeItemActivity(ctx context.Context, t
 			if index == len(item.activityEntryIDs)-1 {
 				status = item.Activity.Status
 			}
-			label := strings.TrimSpace(item.Activity.ToolName)
-			if label == "" {
-				label = "Tool activity"
-			}
-			next = &tools.ActivityPresentation{Label: label, Renderer: tools.ActivityRendererStructured, Payload: tools.StructuredActivityPayload{Status: string(status), Operation: "tool", DisplayName: label, Summary: "Historical tool activity"}}
+			next = historicalActivityPresentation(item.Activity.ToolName, status)
 		}
 		presentation = tools.MergeActivityPresentations(presentation, next)
 	}
 	activity := *item.Activity
 	activity.Presentation = presentation
 	item.Activity, item.activityOmitted = &activity, false
+	item.activitySummary = nil
 	return item, nil
 }
 

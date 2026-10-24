@@ -31,9 +31,11 @@ const (
 )
 
 type threadItemWindowInput struct {
-	anchor    string
-	direction threadWindowDirection
-	limit     int
+	activityFields bool
+	anchor         string
+	anchorOffset   int
+	direction      threadWindowDirection
+	limit          int
 }
 
 type threadItemWindow struct {
@@ -52,6 +54,30 @@ func (actor *threadRuntimeState) itemWindow(input threadItemWindowInput) (thread
 }
 
 func (actor *threadRuntimeState) itemWindowContext(ctx context.Context, input threadItemWindowInput) (threadItemWindow, error) {
+	page, err := actor.selectItemWindow(input)
+	if err != nil {
+		return threadItemWindow{}, err
+	}
+	first, last := page.first, page.last
+	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, last-first)-(utf8.UTFMax-1))
+	items, err := actor.cloneWindowItemsMode(ctx, actor.state.view.Items[first:last], previewLimit, input.activityFields)
+	if err != nil {
+		return threadItemWindow{}, err
+	}
+	for index, item := range items {
+		detached, err := actor.windowItemMode(ctx, item, previewLimit, input.activityFields)
+		if err != nil {
+			return threadItemWindow{}, err
+		}
+		items[index] = detached
+	}
+	page.items = items
+	return page, nil
+}
+
+// selectItemWindow only resolves resident identities under the actor boundary.
+// Hydration is deliberately separate so canonical I/O can run outside it.
+func (actor *threadRuntimeState) selectItemWindow(input threadItemWindowInput) (threadItemWindow, error) {
 	if input.limit < 1 || input.limit > threadDisplayPageItems {
 		return threadItemWindow{}, errors.New("invalid thread window limit")
 	}
@@ -62,6 +88,15 @@ func (actor *threadRuntimeState) itemWindowContext(ctx context.Context, input th
 		if anchor < 0 {
 			return threadItemWindow{}, errThreadWindowAnchorUnavailable
 		}
+	}
+	if input.anchorOffset != 0 {
+		if input.anchor == "" || input.direction != threadWindowAround {
+			return threadItemWindow{}, errors.New("invalid relative window anchor")
+		}
+		if input.anchorOffset < -anchor || input.anchorOffset >= count-anchor {
+			return threadItemWindow{}, errThreadWindowAnchorUnavailable
+		}
+		anchor += input.anchorOffset
 	}
 	var first, last int
 	switch input.direction {
@@ -84,16 +119,7 @@ func (actor *threadRuntimeState) itemWindowContext(ctx context.Context, input th
 	default:
 		return threadItemWindow{}, errors.New("invalid thread window direction")
 	}
-	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, last-first)-(utf8.UTFMax-1))
-	items := cloneWindowItemsLimit(actor.state.view.Items[first:last], previewLimit)
-	for index, item := range items {
-		detached, err := actor.windowItem(ctx, item, previewLimit)
-		if err != nil {
-			return threadItemWindow{}, err
-		}
-		items[index] = detached
-	}
-	return threadItemWindow{first: first, last: last, hasBefore: first > 0, hasAfter: last < count, items: items}, nil
+	return threadItemWindow{first: first, last: last, hasBefore: first > 0, hasAfter: last < count}, nil
 }
 
 // boundedThreadText returns an exact UTF-8 prefix and detaches it from a giant

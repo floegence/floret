@@ -53,3 +53,21 @@ func TestCanonicalSharedContentPreservesCitationOffsetsAndSources(t *testing.T) 
 		offset += utf8.RuneCountInString(texts[i])
 	}
 }
+
+func TestThreadContentFactsMatchEveryFragmentBoundary(t *testing.T) {
+	text := " a中文🌸é\r\ne\u0301 "
+	for first := 1; first < len(text); first++ {
+		for second := first; second < len(text); second++ {
+			var complete, metadata threadContentBuffer
+			for _, part := range []string{text[:first], text[first:second], text[second:]} {
+				complete.append(part)
+				var fragment threadContentBuffer
+				fragment.append(part)
+				metadata.appendFacts(sessiontree.CanonicalTextFacts{Bytes: len(part), Runes: fragment.runes, NonSpace: fragment.nonSpace, Head: []byte(part[:min(3, len(part))]), Incomplete: []byte(fragment.incomplete)})
+				if metadata.bytes != complete.bytes || metadata.runes != complete.runes || metadata.incomplete != complete.incomplete || metadata.nonSpace != complete.nonSpace {
+					t.Fatalf("split %d/%d: metadata=%+v complete=%+v", first, second, metadata, complete)
+				}
+			}
+		}
+	}
+}

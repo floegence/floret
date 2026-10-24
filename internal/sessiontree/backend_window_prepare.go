@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 
 	"github.com/floegence/floret/v7/internal/storagebridge"
@@ -45,6 +46,12 @@ func missingWindowPreparation(tx spi.ReadTx, meta ThreadMeta, wanted windowPrepa
 			return needs, err
 		}
 		*field.missing = errors.Is(err, spi.ErrNotFound) || field.leaf.ID != meta.LeafID
+	}
+	if wanted.window {
+		if window.SummaryVersion < 0 || window.SummaryVersion > 1 {
+			return needs, ErrAuthorityCorrupt
+		}
+		needs.window = needs.window || window.SummaryVersion == 0
 	}
 	return needs, nil
 }
@@ -113,8 +120,9 @@ func (tx *windowPreparationRecords) Delete(string, []byte) error { return spi.Er
 
 // The migration gate serializes preparation, but holds no repository lock or
 // storage transaction during the scan. Immutable sources are read once. Every
-// short staging transaction verifies the frozen owner, and the four readiness
-// anchors appear together only after the complete write set has committed.
+// short staging transaction verifies the frozen ancestor. Appended entries are
+// caught up through existing reducers; requested readiness anchors publish only
+// after private metadata reaches the current tail. Branch changes still fail.
 func (repo *BackendRepo) prepareWindowProjectionSnapshot(ctx context.Context, thread string) error {
 	return repo.prepareWindowReadSnapshot(ctx, thread, windowPreparationNeeds{true, true, true, true})
 }
@@ -128,6 +136,27 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 	needs, err := missingWindowPreparation(reader, meta, wanted)
 	if err != nil || needs == (windowPreparationNeeds{}) {
 		return err
+	}
+	if needs.window {
+		var stored storedWindowSources
+		if err := readItemJSON(reader, windowSourcesKey(thread), &stored); err != nil && !errors.Is(err, spi.ErrNotFound) {
+			return err
+		} else if err == nil && stored.Leaf.ID == meta.LeafID && stored.SummaryVersion == 0 {
+			if err := repo.prepareWindowSummarySource(ctx, reader, meta, stored); err != nil {
+				return err
+			}
+			if needs == (windowPreparationNeeds{window: true}) {
+				return nil
+			}
+			// Other independently missing projections keep their existing owner
+			// and start from the newly published canonical snapshot.
+			return repo.prepareWindowReadSnapshot(ctx, thread, wanted)
+		}
+	}
+	// Window compaction anchors depend on membership at the same prefix.
+	// Rebuild them together so catch-up uses one private set of anchors.
+	if needs.window {
+		needs.membership = true
 	}
 	var entries []Entry
 	var metadata []PathMetadata
@@ -169,7 +198,7 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 		if err != nil {
 			return reader.validationError(err)
 		}
-		window, turns, membership, err := projectWindowSources(ctx, entries)
+		window, turns, membership, err := projectWindowSources(ctx, reader, entries)
 		if err != nil {
 			return reader.validationError(err)
 		}
@@ -202,7 +231,7 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 	var anchors, prefixes [][]byte
 	if needs.membership {
 		anchors = append(anchors, itemManifestKey(thread))
-		for _, kind := range []string{"slot", "rank", "identity", "source"} {
+		for _, kind := range []string{"slot", "rank", "identity", "source", "range", "activity-source", "tool-call"} {
 			prefixes = append(prefixes, backendDomainKey(thread, kind))
 		}
 	}
@@ -238,7 +267,7 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 		repo.mu.Lock()
 		defer repo.mu.Unlock()
 		return repo.backend.Update(ctx, func(tx spi.WriteTx) error {
-			if err := reader.verify(tx); err != nil {
+			if _, err := verifyWindowPreparationOwner(ctx, tx, meta); err != nil {
 				return err
 			}
 			return write(tx)
@@ -305,12 +334,160 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 		}
 		first = last
 	}
-	return update(func(tx spi.WriteTx) error {
-		for _, record := range final {
-			if err := tx.Put(itemMembershipNamespace, record.Key, record.Value); err != nil {
+	// Publish only once the same private projection catches the current tail.
+	// Each transaction consumes one appended entry through the ordinary append
+	// reducers. Unrelated appends never restart the already prepared prefix.
+	private := map[string][]byte{}
+	for _, record := range final {
+		private[string(record.Key)] = record.Value
+	}
+	through := meta.LeafID
+	for {
+		published := false
+		next := through
+		var accepted map[string][]byte
+		err := update(func(tx spi.WriteTx) error {
+			current, err := verifyWindowPreparationOwner(ctx, tx, meta)
+			if err != nil {
 				return err
 			}
+			staged := &privateWindowPreparationTx{WriteTx: tx, anchors: map[string][]byte{}}
+			for key, value := range private {
+				staged.anchors[key] = bytes.Clone(value)
+			}
+			if through != current.LeafID {
+				depth := int64(0)
+				if through != "" {
+					prior, err := activeLocatedEntry(ctx, tx, current, through)
+					if err != nil {
+						return errors.Join(spi.ErrConflict, err)
+					}
+					depth = prior.PathDepth
+				}
+				leaf, err := readEntryLocator(tx, thread, current.LeafID)
+				if err != nil {
+					return err
+				}
+				node, err := entryAncestor(ctx, tx, thread, leaf, depth+1)
+				if err != nil {
+					return err
+				}
+				entry, err := readLocatedEntry(tx, backendDomainV32Format, thread, node)
+				if err != nil {
+					return err
+				}
+				if entry.ParentID != through {
+					return ErrAuthorityCorrupt
+				}
+				dependency := &canonicalMembershipAppend{}
+				if needs.model {
+					if err := appendModelContextSources(ctx, staged, entry, dependency); err != nil {
+						return err
+					}
+				}
+				if needs.context {
+					if err := appendCanonicalContextProjection(ctx, staged, entry); err != nil {
+						return err
+					}
+				}
+				if needs.window {
+					if err := appendWindowSources(ctx, staged, entry, dependency); err != nil {
+						return err
+					}
+				}
+				if needs.membership {
+					if err := appendCanonicalItemMembership(ctx, staged, entry, dependency); err != nil {
+						return err
+					}
+				}
+				next = entry.ID
+			}
+			if next == current.LeafID {
+				missing, err := missingWindowPreparation(staged, current, needs)
+				if err != nil {
+					return err
+				}
+				if missing != (windowPreparationNeeds{}) {
+					return ErrAuthorityCorrupt
+				}
+				for _, key := range anchors {
+					value, ok := staged.anchors[string(key)]
+					if !ok || value == nil {
+						return ErrAuthorityCorrupt
+					}
+					if err := tx.Put(itemMembershipNamespace, key, value); err != nil {
+						return err
+					}
+				}
+				published = true
+			}
+			accepted = staged.anchors
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-		return nil
-	})
+		private, through = accepted, next
+		if published {
+			return nil
+		}
+	}
+
+}
+
+// Private readiness anchors never escape a catch-up transaction before every
+// dependent projection reaches its canonical tail. Other metadata is staged
+// in place and cannot be read without those anchors. Clone anchors per batch
+// so write failure, cancellation or panic cannot advance private progress.
+type privateWindowPreparationTx struct {
+	spi.WriteTx
+	anchors map[string][]byte
+}
+
+func (tx *privateWindowPreparationTx) Get(namespace string, key []byte) ([]byte, error) {
+	if namespace == itemMembershipNamespace {
+		if value, ok := tx.anchors[string(key)]; ok {
+			if value == nil {
+				return nil, spi.ErrNotFound
+			}
+			return bytes.Clone(value), nil
+		}
+	}
+	return tx.WriteTx.Get(namespace, key)
+}
+func (tx *privateWindowPreparationTx) Put(namespace string, key, value []byte) error {
+	if namespace == itemMembershipNamespace {
+		if _, ok := tx.anchors[string(key)]; ok {
+			tx.anchors[string(key)] = bytes.Clone(value)
+			return nil
+		}
+	}
+	return tx.WriteTx.Put(namespace, key, value)
+}
+func (tx *privateWindowPreparationTx) Delete(namespace string, key []byte) error {
+	if namespace == itemMembershipNamespace {
+		if _, ok := tx.anchors[string(key)]; ok {
+			tx.anchors[string(key)] = nil
+			return nil
+		}
+	}
+	return tx.WriteTx.Delete(namespace, key)
+}
+func verifyWindowPreparationOwner(ctx context.Context, tx spi.ReadTx, frozen ThreadMeta) (ThreadMeta, error) {
+	current, err := readPublishedThreadMeta(tx, backendDomainV32Format, frozen.ID)
+	if err != nil {
+		return ThreadMeta{}, errors.Join(spi.ErrConflict, err)
+	}
+	owner := current
+	owner.LeafID = frozen.LeafID
+	owner.UpdatedAt = frozen.UpdatedAt
+	if !reflect.DeepEqual(owner, frozen) {
+		return ThreadMeta{}, spi.ErrConflict
+	}
+	if frozen.LeafID != "" {
+		if _, err := activeLocatedEntry(ctx, tx, current, frozen.LeafID); err != nil {
+			return ThreadMeta{}, errors.Join(spi.ErrConflict, err)
+		}
+	}
+	return current, nil
 }

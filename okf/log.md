@@ -4,6 +4,10 @@
   output budgets and reasoning/tool replay before downstream release adoption.
   See [provider support](api/provider.md#moonshot-kimi-k31-catalog).
 
+- Qualify bounded actor-resident activity field sources and private incremental
+  catch-up for growing history preparation; document remaining product gates in
+  [thread updates](api/thread-updates.md).
+
 - 2026-10-23: Document source-backed window initialization, shared private index
   preparation and atomic promotion to the existing complete actor. Preserve
   explicit first-upgrade and product acceptance limits in
@@ -1804,3 +1808,18 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Document optional facts-only observation through the existing actor publisher for host resource cleanup without presentation hydration.
 
 - 2026-10-23: Document model-only image preparation, independent wire-byte limits, and complete-exchange overflow recovery.
+
+- 2026-10-24: Document canonical current queue source membership and its bounded read contract.
+
+- Document exact-size cold window preparation, detached body hydration, frozen
+  prefix progress and effective ordinary invocation sources, including remaining
+  live-publication and rich-source bounds requiring qualification.
+
+- 2026-10-24: Document bounded explicit-window request correlation on the existing observation channel without new storage or version ownership.
+
+- 2026-10-24: Document atomic selected activity values, bounded display attributes,
+  and activity-local refresh identity. Product performance qualification remains
+  separate from runtime contract validation.
+
+- Preserve prepared membership when only a window preview locator is missing;
+  verify atomic failure rollback and eligibility without claiming first-open latency.

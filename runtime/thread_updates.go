@@ -105,6 +105,8 @@ type ThreadUpdate struct {
 
 type ThreadUpdateSubscription struct {
 	mu          sync.Mutex
+	nextGate    chan struct{}
+	inflight    *queuedThreadUpdate
 	updates     chan queuedThreadUpdate
 	wake        chan struct{}
 	queuedBytes int
@@ -116,11 +118,24 @@ type ThreadUpdateSubscription struct {
 	factsOnly   bool
 	authorized  map[string]bool
 	windows     map[string]threadWindowInterest
+	windowReads map[string]*windowReadRequest
 }
 
 func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadUpdate, error) {
 	if subscription == nil || ctx == nil {
 		return ThreadUpdate{}, errors.New("thread update subscription and context are required")
+	}
+	subscription.mu.Lock()
+	if subscription.nextGate == nil {
+		subscription.nextGate = make(chan struct{}, 1)
+	}
+	gate := subscription.nextGate
+	subscription.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return ThreadUpdate{}, ctx.Err()
 	}
 	for {
 		// Queue reads, clears and writes share one lock. Waiting never owns it;
@@ -131,15 +146,45 @@ func (subscription *ThreadUpdateSubscription) Next(ctx context.Context) (ThreadU
 			subscription.mu.Unlock()
 			return ThreadUpdate{}, err
 		}
-		select {
-		case queued := <-subscription.updates:
-			subscription.queuedBytes -= queued.bytes
-			if len(subscription.updates) > 0 {
-				subscription.signalLocked()
+		if subscription.inflight == nil {
+			select {
+			case queued := <-subscription.updates:
+				subscription.inflight = &queued
+			default:
 			}
+		}
+		if queued := subscription.inflight; queued != nil {
+			update, hydration := cloneThreadUpdate(queued.update), queued.hydration
 			subscription.mu.Unlock()
-			return cloneThreadUpdate(queued.update), nil
-		default:
+			var err error
+			if hydration != nil {
+				update, err = hydration.read(ctx, update)
+			}
+			subscription.mu.Lock()
+			if subscription.closed {
+				err := subscription.closeErr
+				subscription.mu.Unlock()
+				return ThreadUpdate{}, err
+			}
+			if ctx.Err() != nil {
+				subscription.mu.Unlock()
+				return ThreadUpdate{}, ctx.Err()
+			}
+			if hydration != nil && hydration.interest.ctx.Err() != nil {
+				// The reading surface changed. Keep semantic/version continuity,
+				// but never resurrect its obsolete detail or report cancellation.
+				update, err = withoutWindowDetail(queued.update), nil
+			}
+			if err != nil {
+				subscription.finishLocked(errors.Join(ErrThreadUpdateInvalidated, err))
+				subscription.mu.Unlock()
+				return ThreadUpdate{}, errors.Join(ErrThreadUpdateInvalidated, err)
+			}
+
+			subscription.queuedBytes -= queued.bytes
+			subscription.inflight = nil
+			subscription.mu.Unlock()
+			return update, nil
 		}
 		if subscription.wake == nil {
 			subscription.wake = make(chan struct{}, 1)
@@ -184,16 +229,28 @@ func (subscription *ThreadUpdateSubscription) closeWithError(err error) {
 	}
 }
 
-// queuedThreadUpdate shares one immutable batch across subscribers. The byte
-// count is computed once per publication and includes its complete JSON shape.
+// queuedThreadUpdate owns an immutable batch. Field-mode hydration reserves
+// bounded source bytes in addition to the encoded metadata; in-flight work
+// remains charged until the consumer accepts it.
 type queuedThreadUpdate struct {
-	update ThreadUpdate
-	bytes  int
+	update    ThreadUpdate
+	bytes     int
+	hydration *windowPublication
 }
 
 func (subscription *ThreadUpdateSubscription) finishLocked(err error) {
 	subscription.closed = true
+	for _, interest := range subscription.windows {
+		if interest.lifetime != nil {
+			interest.lifetime.cancel()
+		}
+	}
+	subscription.inflight = nil
 	subscription.windows = nil
+	for _, read := range subscription.windowReads {
+		read.cancel(err)
+	}
+	subscription.windowReads = nil
 	subscription.authorized = nil
 	subscription.closeErr = err
 	close(subscription.done)
@@ -663,14 +720,28 @@ func (service *threadRuntimeService) deliverUpdateLocked(actor *threadRuntimeSta
 			continue
 		}
 		if !subscription.closed && subscription.windowed {
+			var source *sourceWindowPublication
+			if interest, reading := subscription.windows[update.ThreadID.String()]; reading && actor.sourceWindow != nil && update.ItemOrder != nil {
+				if frozen, ok := actor.sourceWindow.companions[interest.lifetime]; ok {
+					source = &sourceWindowPublication{input: interest.sourceInput, frozen: frozen}
+				}
+			}
 			projected, deliver := subscription.projectWindowUpdate(actor, update)
 			if deliver {
-				raw, err := json.Marshal(projected)
-				if err != nil {
-					subscription.finishLocked(ErrThreadUpdateInvalidated)
-				} else {
-					subscription.enqueueLocked(cloneThreadUpdate(projected), len(raw))
+				if source != nil {
+					interest := subscription.windows[update.ThreadID.String()]
+					interest.items = make(map[string]bool, len(source.frozen.view.Items))
+					for _, item := range source.frozen.view.Items {
+						interest.items[item.ID] = true
+					}
+					interest.bodies = windowBodyLocators(source.frozen.view.Items)
+					interest.anchor = ""
+					if len(source.frozen.view.Items) > 0 {
+						interest.anchor = source.frozen.view.Items[0].ID
+					}
+					subscription.windows[update.ThreadID.String()] = interest
 				}
+				subscription.enqueueWindowLocked(actor, projected, source)
 			}
 			if subscription.closed {
 				delete(service.updateSubscribers, subscription)
@@ -766,12 +837,21 @@ func (actor *threadRuntimeState) stopUpdateTimer() {
 }
 
 func (subscription *ThreadUpdateSubscription) enqueueLocked(update ThreadUpdate, bytes int) bool {
+	return subscription.enqueuePreparedLocked(queuedThreadUpdate{update: update, bytes: bytes})
+}
+
+func (subscription *ThreadUpdateSubscription) enqueuePreparedLocked(queued queuedThreadUpdate) bool {
+	bytes := queued.bytes
 	if bytes > threadUpdateQueueBytes-subscription.queuedBytes {
 		subscription.finishLocked(ErrThreadUpdateOverflow)
 		return false
 	}
+	if subscription.inflight != nil && len(subscription.updates)+1 >= cap(subscription.updates) {
+		subscription.finishLocked(ErrThreadUpdateOverflow)
+		return false
+	}
 	select {
-	case subscription.updates <- queuedThreadUpdate{update: update, bytes: bytes}:
+	case subscription.updates <- queued:
 		subscription.queuedBytes += bytes
 		subscription.signalLocked()
 		return true

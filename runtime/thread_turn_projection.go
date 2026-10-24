@@ -77,7 +77,7 @@ func (projection *threadTurnProjection) observe(entry sessiontree.Entry, itemFor
 			run = &threadTurnRunFacts{seen: map[string]bool{}}
 			facts.runs[entry.RunID] = run
 		}
-		if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" && strings.TrimSpace(entry.Message.Content) != "" {
+		if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Kind != "control_signal" && (strings.TrimSpace(entry.Message.Content) != "" || entry.ProjectedText["content"].NonSpace) {
 			item, found := itemForEntry(entry.ID)
 			if !found || item.TurnID != facts.turn.TurnID || item.RunID.String() != entry.RunID || item.Kind != ThreadItemAssistant {
 				run.err = fmt.Errorf("%w: intermediate response is outside its canonical turn", ErrAuthorityCorrupt)

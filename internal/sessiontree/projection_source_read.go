@@ -61,8 +61,10 @@ func (repo *BackendRepo) withProjectionSources(ctx context.Context, thread, leaf
 		}
 		frozen := meta
 		frozen.LeafID = selected
-		sources, err := projectionSourceClosure(ctx, seeds, func(id string) (Entry, error) { return activeLocatedEntry(ctx, tx, frozen, id) }, func(group projectionSourceGroup, visit func(Entry) error) error {
+		sources, err := projectionSourceClosureMode(ctx, seeds, func(id string) (Entry, error) { return activeLocatedEntry(ctx, tx, frozen, id) }, func(group projectionSourceGroup, visit func(Entry) error) error {
 			return visitProjectionSources(ctx, tx, meta, node, group, visit)
+		}, false, func(entry Entry, visit func(Entry) error) error {
+			return goalProjectionDependencies(ctx, tx, meta, node, entry, visit)
 		})
 		if err != nil {
 			return err
@@ -82,7 +84,10 @@ func (repo *BackendRepo) ReadProjectionSources(ctx context.Context, thread, leaf
 		result, err = materializeProjectionPage(PathMetadataWindow{LeafID: set.LeafID, Entries: set.Sources}, projectionBodyFields(set.Sources, fields), bodies.prefetch, func(_ string, field CanonicalField) (string, error) {
 			return bodies.read(canonicalBodyRef{SHA256: field.SHA256, Bytes: field.Bytes})
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return attachGoalProjectionBefore(ctx, tx, thread, result.Entries)
 	}, func(memory *MemoryRepo) error {
 		var err error
 		result, err = memory.ReadProjectionSources(ctx, thread, leaf, seeds, fields)
@@ -168,7 +173,7 @@ func projectionSourceClosure(ctx context.Context, seeds []string, read func(stri
 	return projectionSourceClosureMode(ctx, seeds, read, groupSources, false)
 }
 
-func projectionSourceClosureMode(ctx context.Context, seeds []string, read func(string) (Entry, error), groupSources func(projectionSourceGroup, func(Entry) error) error, membershipOnly bool) ([]PathMetadata, error) {
+func projectionSourceClosureMode(ctx context.Context, seeds []string, read func(string) (Entry, error), groupSources func(projectionSourceGroup, func(Entry) error) error, membershipOnly bool, dependencies ...func(Entry, func(Entry) error) error) ([]PathMetadata, error) {
 	entries := make(map[string]Entry)
 	var pending []Entry
 	add := func(entry Entry) error {
@@ -213,6 +218,14 @@ func projectionSourceClosureMode(ctx context.Context, seeds []string, read func(
 		groups, err := projectionSourceGroups(entry)
 		if err != nil {
 			return nil, err
+		}
+		if len(dependencies) > 0 && !membershipOnly {
+			if err := dependencies[0](entry, add); err != nil {
+				return nil, err
+			}
+			groups = slices.DeleteFunc(groups, func(group projectionSourceGroup) bool {
+				return group.Kind == "goal" || group.Kind == "goal_version" || group.Kind == "goal_mutation" || group.Kind == "goal_review"
+			})
 		}
 		// Boundaries are dependencies, not every source in an arbitrarily long turn.
 		if entry.TurnID != "" && !membershipOnly {

@@ -23,6 +23,22 @@ const (
 // subscription. Append preserves existing history anchors. A missing anchor
 // fails explicitly; callers can request the available tail with no AnchorID.
 type ThreadWindowInput struct {
+	// AnchorOffset shifts a stable anchor by visible membership positions for
+	// an around read. Zero keeps the existing identity behavior. The first
+	// accepted baseline resolves this seek to an ordinary stable anchor; live
+	// growth never re-applies its offset. It is not a journal byte/depth offset.
+	AnchorOffset int `json:"anchor_offset,omitempty"`
+	// RequestID is an optional opaque, request-local correlation token (up to
+	// 128 bytes). Only this SetWindow baseline echoes it; automatic replacements
+	// do not. It is never persisted, an identity, authorization or a version.
+	RequestID string `json:"request_id,omitempty"`
+	// ActivityFields omits hidden presentation bodies in favor of typed summary
+	// facts. Details are resolved with ActivityStructure and ReadActivityField.
+	// False retains the published complete/preview window behavior.
+	ActivityFields bool `json:"activity_fields,omitempty"`
+	// ItemIDs selects at most 150 exact visible identities instead of an interval.
+	// It is mutually exclusive with AnchorID, Direction and Limit; order is canonical.
+	ItemIDs   []string              `json:"item_ids,omitempty"`
 	ThreadID  identity.ThreadID     `json:"thread_id"`
 	AnchorID  string                `json:"anchor_id,omitempty"`
 	Direction ThreadWindowDirection `json:"direction"`
@@ -50,6 +66,11 @@ type ThreadItemBody struct {
 // Window replacement also replaces Turns with selected membership. Interactions
 // contains all pending controls plus resolved controls in the accepted interval.
 type ThreadWindowSnapshot struct {
+	resolvedAnchor string
+	// RequestID correlates the explicit SetWindow that produced this baseline.
+	RequestID string `json:"request_id,omitempty"`
+	// ItemSelection declares a finite set; gaps between its items are intentional.
+	ItemSelection     bool              `json:"item_selection,omitempty"`
 	ThreadID          identity.ThreadID `json:"thread_id"`
 	ViewVersion       uint64            `json:"view_version"`
 	LeafID            string            `json:"leaf_id,omitempty"`
@@ -80,102 +101,54 @@ func (service *threadRuntimeService) SubscribeWindowUpdates(ctx context.Context,
 	return service.subscribeUpdates(ctx, authorized)
 }
 
-// SetWindow atomically flushes earlier growth, queues the baseline, and installs
-// the reading interest under the existing actor lock. Failed reads retain the
-// prior accepted interest. The caller must consume the same Next channel.
+// SetWindow hydrates requested sources outside the execution actor, then atomically
+// flushes earlier growth, queues the current baseline and installs its interest.
+// Failed reads retain the prior accepted interest. Consume the same Next channel.
 func (subscription *ThreadUpdateSubscription) SetWindow(ctx context.Context, scope threadquery.Scope, input ThreadWindowInput) error {
 	if subscription == nil || subscription.service == nil || !subscription.windowed || subscription.factsOnly {
 		return errors.New("bounded window subscription required")
 	}
-	service := subscription.service
-	if owner, ok := service.host.store.repo.(sessiontree.ForegroundReadOwner); ok {
-		release, err := owner.BeginForegroundRead(ctx)
-		if err != nil {
-			return runtimeHostError(err)
-		}
-		defer release()
-	}
-	if err := service.authorizeBodyRead(ctx, scope, input.ThreadID); err != nil {
+	if err := validateWindowSelection(input); err != nil {
 		return err
 	}
-	subscription.mu.Lock()
-	allowed := subscription.authorized[input.ThreadID.String()]
-	closed := subscription.closed
-	subscription.mu.Unlock()
-	if closed {
-		return ErrThreadUpdateInvalidated
-	}
-	if !allowed {
-		return threadquery.ErrRecordUnavailable
-	}
-	if _, err := service.ensureThread(ctx, input.ThreadID); err != nil {
-		return err
-	}
-	if err := service.prepareThreadRead(ctx, input.ThreadID, service.runtime(input.ThreadID), true); err != nil {
-		return err
-	}
-	return subscription.setActorWindow(ctx, service.runtime(input.ThreadID), input)
-}
-
-func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context, actor *threadRuntimeState, input ThreadWindowInput) error {
-	service := subscription.service
-	limit := input.Limit
-	if limit == 0 {
-		limit = threadDisplayPageItems
-	}
-	if input.Direction == "" {
-		input.Direction = ThreadWindowBefore
-	}
-	return actor.apply(ctx, func() error {
-		if actor.state.contextErr != nil {
-			return actor.state.contextErr
+	return subscription.withWindowRead(ctx, input.ThreadID.String(), func(ctx context.Context, token *windowReadRequest) error {
+		service := subscription.service
+		if owner, ok := service.host.store.repo.(sessiontree.ForegroundReadOwner); ok {
+			release, err := owner.BeginForegroundRead(ctx)
+			if err != nil {
+				return runtimeHostError(err)
+			}
+			defer release()
 		}
-		var snapshot ThreadWindowSnapshot
-		var turns []ThreadTurn
-		var interactions []ThreadInteraction
-		var err error
-		if actor.sourceWindow != nil {
-			snapshot, turns, interactions, err = actor.sourceWindowSnapshot(ctx, input)
-		} else {
-			snapshot, err = actor.windowSnapshotContext(ctx, input)
-		}
-		if err != nil {
-			return err
-		}
-		service.flushUpdateLocked(actor)
-		baseline := actor.windowBaseline()
-		baseline.Items = nil
-		baseline.Window = &ThreadComponent[*ThreadWindowSnapshot]{Value: &snapshot}
-		selected := make(map[string]bool, len(snapshot.Items))
-		for _, item := range snapshot.Items {
-			selected[item.ID] = true
-		}
-		if actor.sourceWindow == nil {
-			turns, interactions = actor.windowTurns(selected), actor.windowInteractions(selected)
-		}
-		baseline.Turns = &ThreadComponent[[]ThreadTurn]{Value: turns}
-		baseline.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: interactions}
-		raw, err := json.Marshal(baseline)
-		if err != nil {
+		if err := service.authorizeBodyRead(ctx, scope, input.ThreadID); err != nil {
 			return err
 		}
 		subscription.mu.Lock()
-		defer subscription.mu.Unlock()
-		if subscription.closed {
-			return subscription.closeErr
+		allowed := subscription.authorized[input.ThreadID.String()]
+		closed := subscription.closed
+		subscription.mu.Unlock()
+		if closed {
+			return ErrThreadUpdateInvalidated
 		}
-		if !subscription.enqueueLocked(cloneThreadUpdate(baseline), len(raw)) {
-			return ErrThreadUpdateOverflow
+		if !allowed {
+			return threadquery.ErrRecordUnavailable
 		}
-		ids := make(map[string]bool, len(snapshot.Items))
-		for _, item := range snapshot.Items {
-			ids[item.ID] = true
+		if _, err := service.ensureThread(ctx, input.ThreadID); err != nil {
+			return err
 		}
-		if subscription.windows == nil {
-			subscription.windows = map[string]threadWindowInterest{}
+		if err := service.prepareThreadRead(ctx, input.ThreadID, service.runtime(input.ThreadID), true, input); err != nil {
+			return err
 		}
-		subscription.windows[input.ThreadID.String()] = threadWindowInterest{items: ids, bodies: windowBodyLocators(snapshot.Items), tail: input.AnchorID == "" && input.Direction == ThreadWindowBefore, version: snapshot.ViewVersion, anchor: snapshot.FirstItemID, limit: limit}
-		return nil
+		return subscription.prepareActorWindow(ctx, service.runtime(input.ThreadID), normalizeWindowInput(input), token)
+	})
+}
+
+func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context, actor *threadRuntimeState, input ThreadWindowInput) error {
+	if err := validateWindowSelection(input); err != nil {
+		return err
+	}
+	return subscription.withWindowRead(ctx, input.ThreadID.String(), func(ctx context.Context, token *windowReadRequest) error {
+		return subscription.prepareActorWindow(ctx, actor, normalizeWindowInput(input), token)
 	})
 }
 
@@ -187,7 +160,14 @@ func (subscription *ThreadUpdateSubscription) ClearWindow(threadID identity.Thre
 	}
 	subscription.mu.Lock()
 	defer subscription.mu.Unlock()
+	if interest := subscription.windows[threadID.String()]; interest.lifetime != nil {
+		interest.lifetime.cancel()
+	}
 	delete(subscription.windows, threadID.String())
+	if read := subscription.windowReads[threadID.String()]; read != nil {
+		read.cancel(ErrThreadUpdateInvalidated)
+	}
+	delete(subscription.windowReads, threadID.String())
 	// A queued event may contain detail for the cleared window. Continuity is
 	// retained by replacing only its detail fields, never semantic facts.
 	count := len(subscription.updates)
@@ -197,6 +177,7 @@ func (subscription *ThreadUpdateSubscription) ClearWindow(threadID identity.Thre
 			queued.update.Items = nil
 			queued.update.Window = nil
 			queued.update.Turns = nil
+			queued.hydration = nil
 			raw, _ := json.Marshal(queued.update)
 			subscription.queuedBytes -= queued.bytes - len(raw)
 			queued.bytes = len(raw)
@@ -206,12 +187,16 @@ func (subscription *ThreadUpdateSubscription) ClearWindow(threadID identity.Thre
 }
 
 type threadWindowInterest struct {
-	items   map[string]bool
-	bodies  map[string]ThreadItemBody
-	tail    bool
-	version uint64
-	anchor  string
-	limit   int
+	sourceInput    ThreadWindowInput
+	selection      []string
+	lifetime       *windowInterestLifetime
+	activityFields bool
+	items          map[string]bool
+	bodies         map[string]ThreadItemBody
+	tail           bool
+	version        uint64
+	anchor         string
+	limit          int
 }
 
 func setWindowBounds(snapshot *ThreadWindowSnapshot) {
@@ -291,7 +276,11 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 			continue
 		}
 		if change.Item != nil {
-			item, err := actor.windowItem(context.Background(), *change.Item, threadDisplayTextBytes)
+			item := actor.freezeWindowItem(*change.Item, threadDisplayTextBytes, interest.activityFields)
+			var err error
+			if !interest.activityFields {
+				item, err = actor.windowItemMode(context.Background(), item, threadDisplayTextBytes, false)
+			}
 			if err != nil {
 				subscription.finishLocked(ErrThreadUpdateInvalidated)
 				return ThreadUpdate{}, false
@@ -314,7 +303,11 @@ func (subscription *ThreadUpdateSubscription) projectWindowUpdate(actor *threadR
 				} else {
 					current.Text = current.Text[:through]
 				}
-				item, err := actor.windowItem(context.Background(), current, threadDisplayTextBytes)
+				item := actor.freezeWindowItem(current, threadDisplayTextBytes, interest.activityFields)
+				var err error
+				if !interest.activityFields {
+					item, err = actor.windowItemMode(context.Background(), item, threadDisplayTextBytes, false)
+				}
 				if err != nil {
 					subscription.finishLocked(ErrThreadUpdateInvalidated)
 					return ThreadUpdate{}, false
@@ -377,22 +370,29 @@ func (actor *threadRuntimeState) windowSnapshot(input ThreadWindowInput) (Thread
 }
 
 func (actor *threadRuntimeState) windowSnapshotContext(ctx context.Context, input ThreadWindowInput) (ThreadWindowSnapshot, error) {
-	limit := input.Limit
-	if limit == 0 {
-		limit = threadDisplayPageItems
-	}
-	direction := input.Direction
-	if direction == "" {
-		direction = ThreadWindowBefore
-	}
-	page, err := actor.itemWindowContext(ctx, threadItemWindowInput{anchor: input.AnchorID, direction: threadWindowDirection(direction), limit: limit})
+	input = normalizeWindowInput(input)
+	selected, before, after, err := actor.selectWindowItems(input)
 	if err != nil {
 		return ThreadWindowSnapshot{}, err
 	}
-	snapshot := ThreadWindowSnapshot{ThreadID: actor.state.view.ThreadID, ViewVersion: actor.state.view.ViewVersion, HasBefore: page.hasBefore, HasAfter: page.hasAfter, Items: page.items}
+	previewLimit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(selected))-3)
+	items, err := actor.cloneWindowItemsMode(ctx, selected, previewLimit, input.ActivityFields)
+	if err != nil {
+		return ThreadWindowSnapshot{}, err
+	}
+	if !input.ActivityFields {
+		for i, item := range items {
+			items[i], err = actor.windowItemMode(ctx, item, previewLimit, false)
+			if err != nil {
+				return ThreadWindowSnapshot{}, err
+			}
+		}
+	}
+	snapshot := ThreadWindowSnapshot{ThreadID: actor.state.view.ThreadID, ViewVersion: actor.state.view.ViewVersion, HasBefore: before, HasAfter: after, Items: items, ItemSelection: input.ItemIDs != nil}
 	if actor.canonical != nil {
 		snapshot.LeafID = actor.canonical.leafID
 	}
+	snapshot.resolvedAnchor = actor.resolvedWindowAnchor(input)
 	return boundWindowSnapshot(snapshot, input)
 }
 
@@ -420,18 +420,25 @@ func boundWindowSnapshot(snapshot ThreadWindowSnapshot, input ThreadWindowInput)
 		if changed {
 			continue
 		}
-		if len(snapshot.Items) <= 1 {
+		if snapshot.ItemSelection || len(snapshot.Items) <= 1 {
 			return ThreadWindowSnapshot{}, errors.New("thread window metadata exceeds display budget")
 		}
 		// Keep an around target even when its neighbors have large metadata.
 		removeFirst := direction == ThreadWindowBefore
 		if direction == ThreadWindowAround {
-			anchor := 0
+			anchor := -1
+			target := snapshot.resolvedAnchor
+			if target == "" && input.AnchorOffset == 0 {
+				target = input.AnchorID
+			}
 			for i, item := range snapshot.Items {
-				if item.ID == input.AnchorID {
+				if item.ID == target {
 					anchor = i
 					break
 				}
+			}
+			if anchor < 0 {
+				return ThreadWindowSnapshot{}, errThreadWindowAnchorUnavailable
 			}
 			removeFirst = anchor >= len(snapshot.Items)/2
 		}
@@ -446,13 +453,40 @@ func boundWindowSnapshot(snapshot ThreadWindowSnapshot, input ThreadWindowInput)
 }
 
 func (subscription *ThreadUpdateSubscription) replaceWindow(actor *threadRuntimeState, update ThreadUpdate, interest threadWindowInterest) (ThreadUpdate, bool) {
-	input := ThreadWindowInput{ThreadID: update.ThreadID, AnchorID: interest.anchor, Direction: ThreadWindowAround, Limit: interest.limit}
+	input := interest.sourceInput
+	input.RequestID = ""
 	if interest.tail {
 		input.AnchorID, input.Direction = "", ThreadWindowBefore
 	}
-	snapshot, err := actor.windowSnapshot(input)
+	if interest.selection != nil {
+		input = ThreadWindowInput{ThreadID: update.ThreadID, ActivityFields: interest.activityFields, ItemIDs: []string{}}
+		for _, id := range interest.selection {
+			if actor.itemIndexByID(id) >= 0 {
+				input.ItemIDs = append(input.ItemIDs, id)
+			}
+		}
+	}
+	if actor.sourceWindow != nil {
+		// A sparse actor does not own the other observers' selected items. Each
+		// queued baseline reads its bounded interval at this exact accepted leaf.
+		base := update.BaseVersion
+		update = actor.windowBaseline()
+		update.BaseVersion = base
+		interest.version = update.ViewVersion
+		subscription.windows[update.ThreadID.String()] = interest
+		return update, true
+	}
+	var snapshot ThreadWindowSnapshot
+	var err error
+	if !interest.tail && interest.selection == nil && actor.itemIndexByID(interest.anchor) < 0 {
+		err = errThreadWindowAnchorUnavailable
+	} else if input.ItemIDs != nil && len(input.ItemIDs) == 0 {
+		snapshot = ThreadWindowSnapshot{ThreadID: update.ThreadID, ViewVersion: actor.state.view.ViewVersion, ItemSelection: true, Items: []ThreadItem{}}
+	} else {
+		snapshot, err = actor.publicationWindowSnapshot(input)
+	}
 	if errors.Is(err, errThreadWindowAnchorUnavailable) {
-		snapshot, err = actor.windowSnapshot(ThreadWindowInput{ThreadID: update.ThreadID, Limit: interest.limit})
+		snapshot, err = actor.publicationWindowSnapshot(ThreadWindowInput{ThreadID: update.ThreadID, Limit: interest.limit, ActivityFields: interest.activityFields})
 		snapshot.AnchorUnavailable = true
 	}
 	if err != nil {

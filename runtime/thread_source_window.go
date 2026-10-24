@@ -12,16 +12,40 @@ import (
 // The actor may own complete current facts with a bounded item interval. It
 // never exposes that interval as View or execution state. Explicit full reads
 // hydrate the existing actor at the same leaf/version; there is no second actor.
-func (service *threadRuntimeService) hydrateThreadWindow(ctx context.Context, id identity.ThreadID, actor *threadRuntimeState) error {
+func (service *threadRuntimeService) hydrateThreadWindow(ctx context.Context, input ThreadWindowInput, actor *threadRuntimeState) error {
+	id := input.ThreadID
 	if _, ok := service.host.store.repo.(sessiontree.WindowProjectionReader); !ok {
 		return service.hydrateThreadView(ctx, id, actor)
 	}
-	canonical, page, err := service.loadSourceWindow(ctx, ThreadWindowInput{ThreadID: id, Limit: threadDisplayPageItems})
+	var accepted *threadSourceProjection
+	if err := actor.apply(ctx, func() error {
+		accepted = actor.sourceWindow
+		return nil
+	}); err != nil {
+		return err
+	}
+	interests := service.sourceWindowInterests(id)
+	canonical, page, err := service.loadSourceWindowWithInterests(ctx, input, "", false, interests)
 	if err != nil {
 		return err
 	}
+
+	// Catch the first append without restarting preparation indefinitely. Execution
+	// publishes through this actor; additional append-only growth does not make a
+	// validated frozen baseline corrupt. Every later explicit read checks its
+	// canonical tip again, including read-only hosts with no live observations.
+	meta, err := service.ensureThread(ctx, id)
+	if err != nil {
+		return err
+	}
+	if meta.LeafID != page.leaf {
+		canonical, page, err = service.loadSourceWindowWithInterests(ctx, input, "", false, interests)
+		if err != nil {
+			return err
+		}
+	}
 	err = actor.apply(ctx, func() error {
-		if actor.state.view.ViewVersion > 0 {
+		if actor.state.view.ViewVersion > 0 && (actor.sourceWindow == nil || actor.sourceWindow != accepted) {
 			return nil
 		}
 		meta, err := service.ensureThread(ctx, id)
@@ -29,15 +53,34 @@ func (service *threadRuntimeService) hydrateThreadWindow(ctx context.Context, id
 			return err
 		}
 		if meta.LeafID != page.leaf {
-			return errCanonicalRefreshDiscarded
+			// Validate ancestry, not equality with an independently sampled tip.
+			// A branch replacement still rejects every source in the old path.
+			reader, ok := service.host.store.repo.(sessiontree.PathWindowReader)
+			if !ok || page.leaf == "" {
+				return errCanonicalRefreshDiscarded
+			}
+			if _, err := reader.PathMetadataWindow(ctx, sessiontree.PathWindowOptions{ThreadID: id.String(), LeafID: page.leaf, Direction: sessiontree.PathWindowBefore, Limit: 1}); err != nil {
+				return runtimeHostError(err)
+			}
 		}
-		canonical.ViewVersion = 1
+		service.flushUpdateLocked(actor)
+		changed := accepted == nil || accepted.leaf != page.leaf
+		canonical.ViewVersion = actor.state.view.ViewVersion
+		if changed {
+			canonical.ViewVersion++
+		}
 		actor.state.view = canonical.ThreadView
 		actor.state.turnID, actor.state.runID = canonical.TurnID, canonical.RunID
+		page.input = normalizeWindowInput(input)
 		actor.sourceWindow = &page
 		actor.interactionIndex = nil
 		actor.invalidateItemIndex()
-		actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
+		if changed {
+			actor.markComponents(threadContextChanged | threadGoalChanged | threadParentEventsChanged | threadQueueChanged | threadInteractionsChanged | threadRestoredInputsChanged)
+		}
+		// Every interest has its own bounded interval. Publication schedules its
+		// frozen source read outside the actor instead of slicing this interval.
+		actor.mutations.order = changed && accepted != nil
 		return nil
 	})
 	if err == nil && canonical.Activity == ThreadActivityActive && service.host.requireExecution() == nil {
@@ -71,53 +114,21 @@ func (service *threadRuntimeService) prepareActiveThreadWindow(id identity.Threa
 	}
 }
 
-func (actor *threadRuntimeState) sourceWindowSnapshot(ctx context.Context, input ThreadWindowInput) (ThreadWindowSnapshot, []ThreadTurn, []ThreadInteraction, error) {
-	var canonical canonicalThreadView
-	page := *actor.sourceWindow
-	if input.AnchorID == "" && (input.Direction == "" || input.Direction == ThreadWindowBefore) && (input.Limit == 0 || input.Limit == threadDisplayPageItems) {
-		canonical.ThreadView = actor.state.view
-	} else {
-		var err error
-		canonical, page, err = actor.service.loadSourceWindow(ctx, input)
-		if err != nil {
-			return ThreadWindowSnapshot{}, nil, nil, err
+// Collect only accepted finite interests. Canonical membership and source facts
+// for these readers are frozen in the same transaction as the next actor view.
+func (service *threadRuntimeService) sourceWindowInterests(id identity.ThreadID) []sourceWindowRequest {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	var result []sourceWindowRequest
+	for sub := range service.updateSubscribers {
+		sub.mu.Lock()
+		interest, ok := sub.windows[id.String()]
+		if ok && !sub.closed && interest.lifetime != nil {
+			input := interest.sourceInput
+			input.RequestID = ""
+			result = append(result, sourceWindowRequest{input: input, lifetime: interest.lifetime})
 		}
-		if page.leaf != actor.sourceWindow.leaf {
-			return ThreadWindowSnapshot{}, nil, nil, errCanonicalRefreshDiscarded
-		}
+		sub.mu.Unlock()
 	}
-	limit := min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(canonical.Items))-3)
-	items := cloneWindowItemsLimit(canonical.Items, limit)
-	for i, item := range items {
-		var err error
-		items[i], err = actor.windowItem(ctx, item, limit)
-		if err != nil {
-			return ThreadWindowSnapshot{}, nil, nil, err
-		}
-	}
-	snapshot := ThreadWindowSnapshot{ThreadID: input.ThreadID, ViewVersion: actor.state.view.ViewVersion, LeafID: page.leaf, Items: items, HasBefore: page.hasBefore, HasAfter: page.hasAfter}
-	snapshot, err := boundWindowSnapshot(snapshot, input)
-	if err != nil {
-		return ThreadWindowSnapshot{}, nil, nil, err
-	}
-	selected := map[string]bool{}
-	interactionIDs := map[string]bool{}
-	for _, item := range snapshot.Items {
-		selected[item.ID] = true
-		if item.Interaction != nil {
-			interactionIDs[item.Interaction.ID] = true
-		}
-	}
-	turns := cloneThreadTurns(canonical.Turns)
-	for i := range turns {
-		turns[i].IntermediateItemIDs = selectedThreadIDs(turns[i].IntermediateItemIDs, selected)
-		turns[i].FinalItemIDs = selectedThreadIDs(turns[i].FinalItemIDs, selected)
-	}
-	interactions := []ThreadInteraction{}
-	for _, interaction := range canonical.Interactions {
-		if !interaction.Resolved || interactionIDs[interaction.ID] {
-			interactions = append(interactions, cloneThreadInteraction(interaction))
-		}
-	}
-	return snapshot, turns, interactions, nil
+	return result
 }

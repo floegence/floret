@@ -1,0 +1,396 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"slices"
+	"unicode/utf8"
+)
+
+// Prepared bodies are disposable request-local data. The actor still selects
+// identities, owns versions and installs baseline plus interest atomically.
+// A changing resident draft is taken at commit, never waited on or re-read.
+type preparedWindowItem struct{ source, value ThreadItem }
+type windowReadRequest struct{ cancel context.CancelCauseFunc }
+
+func (subscription *ThreadUpdateSubscription) withWindowRead(ctx context.Context, thread string, read func(context.Context, *windowReadRequest) error) error {
+	if ctx == nil {
+		return errors.New("thread window context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	token := &windowReadRequest{cancel: cancel}
+	subscription.mu.Lock()
+	if subscription.closed {
+		err := subscription.closeErr
+		subscription.mu.Unlock()
+		return err
+	}
+	if subscription.windowReads == nil {
+		subscription.windowReads = make(map[string]*windowReadRequest)
+	}
+	if prior := subscription.windowReads[thread]; prior != nil {
+		prior.cancel(ErrThreadUpdateInvalidated)
+	}
+	subscription.windowReads[thread] = token
+	subscription.mu.Unlock()
+	defer func() {
+		subscription.mu.Lock()
+		if subscription.windowReads[thread] == token {
+			delete(subscription.windowReads, thread)
+		}
+		subscription.mu.Unlock()
+	}()
+	return read(ctx, token)
+}
+
+func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Context, actor *threadRuntimeState, input ThreadWindowInput, token *windowReadRequest) error {
+	if input.Limit < 1 || input.Limit > threadDisplayPageItems {
+		return errors.New("invalid thread window limit")
+	}
+	if input.Direction != ThreadWindowBefore && input.Direction != ThreadWindowAfter && input.Direction != ThreadWindowAround {
+		return errors.New("invalid thread window direction")
+	}
+	cache := map[string]preparedWindowItem{}
+	var cold *threadSourceProjection
+	var coldView *canonicalThreadView
+	var coldBefore, coldAfter bool
+	var coldAnchor string
+	for {
+		var missing []ThreadItem
+		var loadCold bool
+		var done bool
+		var pending <-chan struct{}
+		limit := 0
+		err := actor.apply(ctx, func() error {
+			if actor.state.contextErr != nil {
+				return actor.state.contextErr
+			}
+			subscription.mu.Lock()
+			current := !subscription.closed && subscription.windowReads[input.ThreadID.String()] == token
+			subscription.mu.Unlock()
+			if !current {
+				return ErrThreadUpdateInvalidated
+			}
+			// A source refresh freezes all accepted readers before publication. A
+			// concurrently opened reader joins that publication before installing
+			// another interest, so no reader is absent from its frozen sources.
+			if preparation := actor.preparation; preparation != nil {
+				select {
+				case <-preparation.done:
+				default:
+					pending = preparation.done
+					return nil
+				}
+			}
+			var items []ThreadItem
+			var snapshot ThreadWindowSnapshot
+			var turns []ThreadTurn
+			var interactions []ThreadInteraction
+			if actor.sourceWindow != nil {
+				if cold != actor.sourceWindow {
+					cold, coldView, cache = actor.sourceWindow, nil, map[string]preparedWindowItem{}
+					coldBefore, coldAfter = cold.hasBefore, cold.hasAfter
+					coldAnchor = cold.resolvedAnchor
+				}
+				if coldView == nil {
+					if sameWindowInterval(input, cold.input) {
+						value := canonicalThreadView{ThreadView: actor.state.view}
+						value.Items = cloneThreadItems(value.Items)
+						value.Turns = cloneThreadTurns(value.Turns)
+						value.Interactions = cloneThreadInteractions(value.Interactions)
+						coldView = &value
+					} else {
+						for _, frozen := range cold.companions {
+							if sameWindowInterval(input, frozen.page.input) {
+								value := frozen.view
+								coldView = &value
+								coldBefore, coldAfter = frozen.page.hasBefore, frozen.page.hasAfter
+								coldAnchor = frozen.page.resolvedAnchor
+								break
+							}
+						}
+						if coldView == nil {
+							loadCold = true
+							return nil
+						}
+					}
+				}
+				items = coldView.Items
+				snapshot = ThreadWindowSnapshot{resolvedAnchor: coldAnchor, ThreadID: input.ThreadID, LeafID: cold.leaf, HasBefore: coldBefore, HasAfter: coldAfter}
+				turns, interactions = coldView.Turns, coldView.Interactions
+			} else {
+				selected, before, after, err := actor.selectWindowItems(input)
+				if err != nil {
+					return err
+				}
+				items = selected
+				snapshot = ThreadWindowSnapshot{resolvedAnchor: actor.resolvedWindowAnchor(input), ThreadID: input.ThreadID, HasBefore: before, HasAfter: after}
+				if actor.canonical != nil {
+					snapshot.LeafID = actor.canonical.leafID
+				}
+			}
+			snapshot.RequestID = input.RequestID
+			snapshot.ItemSelection = input.ItemIDs != nil
+			limit = min(threadDisplayTextBytes, threadDisplayPreviewBytes/max(1, len(items))-(utf8.UTFMax-1))
+			snapshot.Items = make([]ThreadItem, len(items))
+			nextCache := make(map[string]preparedWindowItem, len(items))
+			for i, item := range items {
+				detached := actor.freezeWindowItem(item, limit, input.ActivityFields)
+				if detached.textOmitted || detached.activityOmitted && detached.ActivitySummary == nil {
+					prepared, ok := cache[item.ID]
+					value, reusable := prepared.reuse(detached)
+					if !ok || !reusable {
+						missing = append(missing, detached)
+						continue
+					}
+					snapshot.Items[i] = value
+					nextCache[item.ID] = prepared
+				} else {
+					snapshot.Items[i] = detached
+				}
+			}
+			cache = nextCache
+			if len(missing) > 0 {
+				return nil
+			}
+			snapshot.ViewVersion = actor.state.view.ViewVersion
+			var err error
+			snapshot, err = boundWindowSnapshot(snapshot, input)
+			if err != nil {
+				return err
+			}
+			selected := make(map[string]bool, len(snapshot.Items))
+			for _, item := range snapshot.Items {
+				selected[item.ID] = true
+			}
+			if actor.sourceWindow == nil {
+				turns, interactions = actor.windowTurns(selected), actor.windowInteractions(selected)
+			} else {
+				turns = cloneThreadTurns(turns)
+				for i := range turns {
+					turns[i].IntermediateItemIDs = selectedThreadIDs(turns[i].IntermediateItemIDs, selected)
+					turns[i].FinalItemIDs = selectedThreadIDs(turns[i].FinalItemIDs, selected)
+				}
+				interactions = selectedWindowInteractions(snapshot.Items, interactions)
+			}
+			actor.service.flushUpdateLocked(actor)
+			baseline := actor.windowBaseline()
+			baseline.Items = nil
+			baseline.Window = &ThreadComponent[*ThreadWindowSnapshot]{Value: &snapshot}
+			baseline.Turns = &ThreadComponent[[]ThreadTurn]{Value: turns}
+			baseline.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: interactions}
+			raw, err := json.Marshal(baseline)
+			if err != nil {
+				return err
+			}
+			subscription.mu.Lock()
+			defer subscription.mu.Unlock()
+			if subscription.closed {
+				return subscription.closeErr
+			}
+			if subscription.windowReads[input.ThreadID.String()] != token {
+				return ErrThreadUpdateInvalidated
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if !subscription.enqueueLocked(cloneThreadUpdate(baseline), len(raw)) {
+				return ErrThreadUpdateOverflow
+			}
+			if subscription.windows == nil {
+				subscription.windows = map[string]threadWindowInterest{}
+			}
+			if previous := subscription.windows[input.ThreadID.String()]; previous.lifetime != nil {
+				previous.lifetime.cancel()
+			}
+			retainedInput := normalizeWindowInput(input)
+			if input.AnchorOffset != 0 {
+				retainedInput.AnchorID, retainedInput.AnchorOffset, retainedInput.Direction = "", 0, ""
+				retainedInput.ItemIDs = make([]string, len(snapshot.Items))
+				for i, item := range snapshot.Items {
+					retainedInput.ItemIDs[i] = item.ID
+				}
+				retainedInput.Limit = 0
+			}
+			subscription.windows[input.ThreadID.String()] = threadWindowInterest{sourceInput: normalizeWindowInput(retainedInput), selection: slices.Clone(retainedInput.ItemIDs), lifetime: newWindowInterestLifetime(), items: selected, bodies: windowBodyLocators(snapshot.Items), tail: input.ItemIDs == nil && input.AnchorID == "" && input.Direction == ThreadWindowBefore, version: snapshot.ViewVersion, anchor: snapshot.FirstItemID, limit: input.Limit, activityFields: input.ActivityFields}
+			done = true
+			return nil
+		})
+		if err != nil || done {
+			return err
+		}
+		if pending != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-pending:
+			}
+			continue
+		}
+		if loadCold {
+			// Select the new interval and existing interests together at a current
+			// snapshot. Never read a newer body under a previously accepted version.
+			if err := actor.service.prepareThreadRead(ctx, input.ThreadID, actor, true, input); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, item := range missing {
+			value, err := actor.windowItemMode(ctx, item, limit, input.ActivityFields)
+			if err != nil {
+				return err
+			}
+			cache[item.ID] = preparedWindowItem{source: item, value: value}
+		}
+	}
+}
+
+func (actor *threadRuntimeState) freezeWindowItem(item ThreadItem, limit int, fields bool) ThreadItem {
+	if fields && item.Activity != nil && item.activityOmitted && item.activitySummary != nil {
+		item = activitySummaryWindowItem(item, *item.activitySummary, limit)
+	}
+	if fields && item.Activity != nil && !item.activityOmitted && item.Activity.Presentation != nil {
+		item = activitySummaryWindowItem(item, residentItemActivitySummary(item), limit)
+	}
+	if fields && item.liveBody != nil && item.livePreview != "" {
+		item = boundedWindowItem(item, limit)
+		item.Text, _ = boundedThreadText(item.livePreview, limit)
+		item.textOmitted, item.liveBody = false, nil
+		item.livePreview = ""
+		if item.Body != nil {
+			body := *item.Body
+			body.PreviewBytes = len(item.Text)
+			item.Body = &body
+		}
+	}
+	return cloneWindowItemsLimit([]ThreadItem{item}, limit)[0]
+}
+
+func selectedWindowInteractions(items []ThreadItem, interactions []ThreadInteraction) []ThreadInteraction {
+	ids := map[string]bool{}
+	for _, item := range items {
+		if item.Interaction != nil {
+			ids[item.Interaction.ID] = true
+		}
+	}
+	out := []ThreadInteraction{}
+	for _, interaction := range interactions {
+		if !interaction.Resolved || ids[interaction.ID] {
+			out = append(out, cloneThreadInteraction(interaction))
+		}
+	}
+	return out
+}
+
+func normalizeWindowInput(input ThreadWindowInput) ThreadWindowInput {
+	if input.ItemIDs != nil {
+		input.ItemIDs = slices.Clone(input.ItemIDs)
+		input.Limit = len(input.ItemIDs)
+	} else if input.Limit == 0 {
+		input.Limit = threadDisplayPageItems
+	}
+	if input.Direction == "" {
+		input.Direction = ThreadWindowBefore
+	}
+	return input
+}
+func sameWindowInterval(a, b ThreadWindowInput) bool {
+	a, b = normalizeWindowInput(a), normalizeWindowInput(b)
+	return slices.Equal(a.ItemIDs, b.ItemIDs) && (a.ItemIDs == nil) == (b.ItemIDs == nil) && a.ActivityFields == b.ActivityFields && a.AnchorID == b.AnchorID && a.AnchorOffset == b.AnchorOffset && a.Direction == b.Direction && a.Limit == b.Limit
+}
+
+// A live body is append-only. A bounded prefix already read from this exact
+// source remains valid as its extent grows; the baseline advertises unread
+// suffix bytes without chasing them. Other source changes require a new read.
+func (prepared preparedWindowItem) reuse(current ThreadItem) (ThreadItem, bool) {
+	if reflect.DeepEqual(prepared.source, current) {
+		return prepared.value, true
+	}
+	source := prepared.source
+	if source.liveBody == nil || current.liveBody != source.liveBody || current.textBytes < source.textBytes || current.Body == nil || source.Body == nil {
+		return ThreadItem{}, false
+	}
+	normalized := current
+	normalized.textBytes = source.textBytes
+	normalized.textSummary, normalized.textSummaryTail = source.textSummary, source.textSummaryTail
+	normalized.textNonSpace = source.textNonSpace
+	body := *current.Body
+	body.Bytes = source.Body.Bytes
+	normalized.Body = &body
+	if !reflect.DeepEqual(source, normalized) {
+		return ThreadItem{}, false
+	}
+	value := current
+	value.Text = prepared.value.Text
+	value.textOmitted, value.liveBody = false, nil
+	body = *current.Body
+	body.PreviewBytes = len(value.Text)
+	value.Body = &body
+	return value, true
+}
+
+func validateWindowSelection(input ThreadWindowInput) error {
+	if input.AnchorOffset != 0 && (input.AnchorID == "" || input.ItemIDs != nil || input.Direction != ThreadWindowAround) {
+		return errors.New("relative window anchor requires an around identity")
+	}
+	if len(input.RequestID) > 128 || !utf8.ValidString(input.RequestID) {
+		return errors.New("invalid thread window request correlation")
+	}
+	if input.ItemIDs == nil {
+		return nil
+	}
+	if len(input.ItemIDs) < 1 || len(input.ItemIDs) > threadDisplayPageItems || input.AnchorID != "" || input.Direction != "" || input.Limit != 0 {
+		return errors.New("invalid explicit thread item selection")
+	}
+	seen := map[string]bool{}
+	for _, id := range input.ItemIDs {
+		if id == "" || seen[id] {
+			return errors.New("invalid explicit thread item identity")
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+func (actor *threadRuntimeState) selectWindowItems(input ThreadWindowInput) ([]ThreadItem, bool, bool, error) {
+	if input.ItemIDs == nil {
+		page, err := actor.selectItemWindow(threadItemWindowInput{anchor: input.AnchorID, anchorOffset: input.AnchorOffset, direction: threadWindowDirection(input.Direction), limit: input.Limit})
+		if err != nil {
+			return nil, false, false, err
+		}
+		return actor.state.view.Items[page.first:page.last], page.hasBefore, page.hasAfter, nil
+	}
+	positions := make([]int, 0, len(input.ItemIDs))
+	for _, id := range input.ItemIDs {
+		i := actor.itemIndexByID(id)
+		if i < 0 {
+			return nil, false, false, errThreadWindowAnchorUnavailable
+		}
+		positions = append(positions, i)
+	}
+	slices.Sort(positions)
+	items := make([]ThreadItem, len(positions))
+	for i, index := range positions {
+		items[i] = actor.state.view.Items[index]
+	}
+	return items, positions[0] > 0, positions[len(positions)-1] < len(actor.state.view.Items)-1, nil
+}
+
+// Resolve once from the same resident membership used to select the page. A
+// wire-budget reduction must preserve the actual target, including edge seeks.
+func (actor *threadRuntimeState) resolvedWindowAnchor(input ThreadWindowInput) string {
+	if input.Direction != ThreadWindowAround || input.AnchorID == "" {
+		return ""
+	}
+	anchor := actor.itemIndexByID(input.AnchorID)
+	if anchor < 0 || input.AnchorOffset < -anchor || input.AnchorOffset >= len(actor.state.view.Items)-anchor {
+		return ""
+	}
+	return actor.state.view.Items[anchor+input.AnchorOffset].ID
+}

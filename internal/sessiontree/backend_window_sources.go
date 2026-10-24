@@ -18,12 +18,16 @@ type WindowSourceReader interface {
 	ReadWindowSources(context.Context, string, string, []string) (WindowSources, error)
 }
 type WindowSources struct {
+	SummarySource      contextSourceRef
+	Goal               *session.GoalState
 	LeafID             string
 	Sources            []string
 	Anchors            map[string]string
 	CompactionOrdinals map[string]uint64
 }
 type storedWindowSources struct {
+	SummaryVersion     int                               `json:"summary_version"`
+	SummarySource      contextSourceRef                  `json:"summary_source,omitempty"`
 	Leaf               contextSourceRef                  `json:"leaf"`
 	Latest             string                            `json:"latest,omitempty"`
 	Pending            map[string]string                 `json:"pending,omitempty"`
@@ -48,7 +52,9 @@ func windowTurnSourcesKey(thread, turn string) []byte {
 
 func windowTurnSource(entry Entry) bool {
 	switch entry.Type {
-	case EntryTurnMarker, EntryCancelRequested, EntryRunFailure, EntryInteractionAsked, EntryInteractionDone:
+	case EntryTurnMarker:
+		return !windowNeutralSavepoint(entry)
+	case EntryCancelRequested, EntryRunFailure, EntryInteractionAsked, EntryInteractionDone:
 		return true
 	case EntryToolCall:
 		return controlstate.Classify(entry.Message.ControlSignal) == controlstate.WaitingInput
@@ -56,6 +62,30 @@ func windowTurnSource(entry Entry) bool {
 		return entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil
 	}
 	return entry.Metadata["failure_reason"] != "" || entry.Metadata[TurnFailureCodeMetadataKey] != ""
+}
+
+// Ordinary tool-batch savepoints add no presentation fact. The window already
+// retains its latest marker and each turn's exact run-identity source. Keep
+// unknown metadata conservatively: failures, final boundaries, Goal changes and
+// context continuation must still reach their canonical reducers. This changes
+// only display dependencies, never the journal or execution/retry history.
+func windowNeutralSavepoint(entry Entry) bool {
+	if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnSavePoint {
+		return false
+	}
+	switch entry.Metadata["reason"] {
+	case "", "tool_result_batch", "interrupted_tool_result_batch":
+	default:
+		return false
+	}
+	for key := range entry.Metadata {
+		switch key {
+		case "reason", "run_id", OccurrenceTimeMetadataKey:
+		default:
+			return false
+		}
+	}
+	return true
 }
 func windowResponseBoundary(entry Entry) bool {
 	return entry.Type == EntryToolCall && entry.Message.Kind != "control_signal" && entry.Message.Kind != session.MessageKindToolValidationError || entry.Type == EntryCustom && entry.Metadata["kind"] == HostedToolEntryKind || entry.Type == EntryTurnMarker && entry.TurnStatus == TurnSavePoint && entry.Metadata["reason"] == "context_continue"
@@ -88,8 +118,14 @@ func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, updat
 		}
 		return err
 	}
-	if stored.Leaf.ID != entry.ParentID {
+	if stored.SummaryVersion < 0 || stored.SummaryVersion > 1 {
+		return ErrAuthorityCorrupt
+	}
+	if stored.Leaf.ID != entry.ParentID || stored.SummaryVersion == 0 {
 		return deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, windowSourcesKey(entry.ThreadID))
+	}
+	if err := observeWindowSummary(ctx, tx, &stored, entry); err != nil {
+		return err
 	}
 	var turn storedWindowTurnSources
 	if entry.TurnID != "" {
@@ -156,8 +192,8 @@ func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, updat
 	}
 	return putItemJSON(tx, windowSourcesKey(entry.ThreadID), stored)
 }
-func projectWindowSources(ctx context.Context, entries []Entry) (storedWindowSources, map[string]*storedWindowTurnSources, ItemMembership, error) {
-	stored := storedWindowSources{Anchors: map[string]string{}, CompactionOrdinals: map[string]uint64{}, CompactionSources: map[string]windowCompactionSource{}}
+func projectWindowSources(ctx context.Context, tx spi.ReadTx, entries []Entry) (storedWindowSources, map[string]*storedWindowTurnSources, ItemMembership, error) {
+	stored := storedWindowSources{SummaryVersion: 1, Anchors: map[string]string{}, CompactionOrdinals: map[string]uint64{}, CompactionSources: map[string]windowCompactionSource{}}
 	turns := map[string]*storedWindowTurnSources{}
 	var membership ItemMembership
 	for _, entry := range entries {
@@ -170,6 +206,9 @@ func projectWindowSources(ctx context.Context, entries []Entry) (storedWindowSou
 			turns[entry.TurnID] = turn
 		}
 		observeWindowSources(&stored, turn, entry)
+		if err := observeWindowSummary(ctx, tx, &stored, entry); err != nil {
+			return storedWindowSources{}, nil, ItemMembership{}, err
+		}
 		if _, err := membership.Observe(entry, uint64(entry.PathDepth)); err != nil {
 			return storedWindowSources{}, nil, ItemMembership{}, err
 		}
@@ -233,13 +272,13 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 	if err := readItemJSON(tx, windowSourcesKey(meta.ID), &stored); err != nil {
 		return WindowSources{}, err
 	}
-	if stored.Leaf.ID != meta.LeafID {
+	if stored.Leaf.ID != meta.LeafID || stored.SummaryVersion != 1 {
 		return WindowSources{}, ErrAuthorityCorrupt
 	}
 	if err := validateWindowCompactionSources(ctx, tx, meta, stored); err != nil {
 		return WindowSources{}, err
 	}
-	result := WindowSources{LeafID: meta.LeafID, Anchors: stored.Anchors, CompactionOrdinals: stored.CompactionOrdinals}
+	result := WindowSources{SummarySource: stored.SummarySource, LeafID: meta.LeafID, Anchors: stored.Anchors, CompactionOrdinals: stored.CompactionOrdinals}
 	seen := map[string]bool{}
 	add := func(id string) error {
 		if id == "" || seen[id] {
@@ -282,9 +321,15 @@ func readWindowSources(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, leaf
 	addGroup := func(group projectionSourceGroup) error {
 		return visitProjectionSources(ctx, tx, meta, node, group, func(entry Entry) error { return add(entry.ID) })
 	}
-	if err := addGroup(projectionSourceGroup{Kind: "goal", ID: "history"}); err != nil {
+	refs, err := readGoalSourceContext(tx, meta.ID, meta.LeafID)
+	if err != nil {
 		return WindowSources{}, err
 	}
+	goal, err := goalSourceState(ctx, tx, meta.ID, node, refs)
+	if err != nil {
+		return WindowSources{}, err
+	}
+	result.Goal = &goal
 	for _, id := range stored.Pending {
 		if err := add(id); err != nil {
 			return WindowSources{}, err
@@ -349,7 +394,7 @@ func validateWindowCompactionSources(ctx context.Context, tx spi.ReadTx, meta Th
 			continue
 		}
 		member, err := readItemSlot(tx, meta.ID, ref.Anchor.Slot)
-		if err != nil || member.ItemMember != *ref.Anchor || member.ID != anchor || member.Hidden || member.CanonicalOrdinal >= uint64(entry.PathDepth) {
+		if err != nil || !sameCompactionAnchor(member.ItemMember, *ref.Anchor) || member.ID != anchor || member.Hidden || member.CanonicalOrdinal >= uint64(entry.PathDepth) {
 			return errors.Join(ErrAuthorityCorrupt, err)
 		}
 		source, err := activeLocatedEntry(ctx, tx, meta, member.SourceID)
@@ -358,4 +403,14 @@ func validateWindowCompactionSources(ctx context.Context, tx spi.ReadTx, meta Th
 		}
 	}
 	return nil
+}
+
+// A compaction anchor binds immutable membership, not the activity status,
+// latest result, approval source, or safety facts that can change at that slot.
+// Those facts are validated by their own source readers when requested.
+func sameCompactionAnchor(current, anchor ItemMember) bool {
+	return current.ID == anchor.ID && current.Kind == anchor.Kind &&
+		current.SourceID == anchor.SourceID && current.TurnID == anchor.TurnID &&
+		current.RunID == anchor.RunID && current.CanonicalOrdinal == anchor.CanonicalOrdinal &&
+		current.Slot == anchor.Slot && current.Hidden == anchor.Hidden && current.ToolName == anchor.ToolName
 }

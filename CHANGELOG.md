@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+- Prepare a missing preview locator independently when window membership is
+  already current. Preserve all prepared membership and boundary records, and
+  publish only after verifying the unchanged source owner.
+
+- Add source-relative around-window seeks over visible membership ranks. Bind
+  accepted results to stable item identities for observation, preserve failed
+  interests, and avoid reading intervening hidden history.
+
+- Retain the latest canonical preview source with transactional window metadata.
+  Read its bounded text at the accepted leaf so tool-only and historical windows
+  avoid a subsequent full summary scan; metadata-only readers retain zero body
+  reads. Validate source authority, rollback and restart without storing previews.
+
+- Allow atomic selected activity values to include up to eight frozen string
+  locators from the same snapshot. Bound locator metadata independently and
+  leave deferred canonical string bodies unread until explicitly requested.
+
+- Add optional authorized atomic activity value reads with explicit byte/node
+  budgets and direct-child selection. Canonical transactions and immutable live
+  snapshots prevent mixing fields across concurrent replacements.
+- Expose activity-local summary versions and bounded typed display attributes.
+  Keep hidden payloads out of windows; live replacement clears stale retained
+  summaries and unrelated thread growth does not invalidate activity details.
+
+- Retain exact immediate activity field shapes and counts in summary windows.
+  Historical summary readiness does not expose incomplete text locators, and
+  public summary copies cannot mutate source-bound descriptor values.
+
+- Preserve independent sparse reading interests and legacy activity display on
+  canonical refresh. Retain valid selected identities after branch replacement,
+  and preserve the requested anchor when the same actor prepares execution.
+- Add opt-in UTF-8 start alignment to decoded activity field reads. Random
+  reverse ranges need no retained prefix; strict offset behavior is unchanged.
+
+- Correlate explicit window baselines on the existing observation channel with
+  an optional bounded request token. Keep automatic replacements untagged and
+  failed reads on the previous accepted interest; persist no additional state.
+
+- Add optional authorized canonical item-range queries with source-bound counts
+  and explicit safety facts; keep live drafts and product grouping outside this
+  frozen read contract.
+- Keep compaction anchors bound to immutable item identity when later tool
+  results and approval facts update the same member. Preserve source, ordering,
+  visibility, turn/run, and canonical-hash validation.
+
+- Add opt-in finite window item selection with canonical ordering, explicit gap
+  semantics, one existing observation interest and independently reachable pending
+  controls. Preserve legacy omitted-body hydration for window replacements.
+
+- Prepare the requested cold window directly and hydrate omitted source bodies
+  outside the execution actor. Cancel superseded reads, preserve baseline/delta
+  ordering and reuse frozen live prefixes while their source grows.
+- Limit ordinary field-window invocation sources to effective canonical
+  references, preserving complete control and interaction dependencies.
+
+- Add opt-in activity field windows with bounded visible summaries and typed safety facts; preserve existing default window behavior.
+
+- Preserve private window preparation across ordinary appends, catch up only
+  new canonical sources, and publish matching readiness anchors atomically.
+  Branch replacement and deletion still reject stale preparation.
+
+- Read actor-resident activity fields through bounded frozen string sources. Keep
+  detail reads independent of unrelated live growth and preserve source identity
+  across replacement and completion; reauthorize every field read.
+
+- Add optional effective activity structure paging with source references and bounded decoded field reads; share typed merge decisions and canonical historical defaults.
+
+- Add optional decoded Activity field ranges with fresh authorization and
+  immutable source/hash fences. Maintain escape-safe field locators in canonical
+  write transactions, avoiding sibling payload reads for prepared sources.
+
+- Resolve current queued inputs and restore sources without replaying consumed
+  queue history. Maintain source membership atomically with canonical writes and
+  preserve ordering, duplicate-add semantics, inactive branches and restart.
+
 - Initialize window observers from transactionally maintained item membership
   and exact canonical dependencies, preserving late tool results, waiting
   controls, Retry, Fork, Goal, context and continuous actor versions. Complete

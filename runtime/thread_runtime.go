@@ -325,6 +325,9 @@ const (
 
 // ThreadItem is a directly renderable current-view item.
 type ThreadItem struct {
+	// ActivitySummary is present only when ActivityFields was requested.
+	// It carries display identity and safety facts, never hidden tool bodies.
+	ActivitySummary *ThreadActivitySummary `json:"activity_summary,omitempty"`
 	// OutputStartedAt and OutputEndedAt bound receipt of this text source's
 	// first and last chunks, not provider compute time. Nil means unmeasured.
 	// Live output has no end yet; a single-chunk source has an equal start/end.
@@ -338,7 +341,10 @@ type ThreadItem struct {
 	sourceEntryIDs   []string
 	activityEntryIDs []string
 	activityOmitted  bool
+	activitySummary  *ThreadActivitySummary
+	activityRevision uint64
 	textOmitted      bool
+	livePreview      string
 	liveBody         outputbody.Reader
 	textBytes        int
 	controlTextBytes int
@@ -966,6 +972,11 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 		drain.actor.deleted = committed
 		drain.actor.deleting = false
 		drain.actor.mu.Unlock()
+		if committed {
+			if err := drain.actor.activityFields.close(); err != nil {
+				service.host.store.reportBackgroundError(err)
+			}
+		}
 	}
 	service.runtimesMu.Lock()
 	for _, drain := range drains {
@@ -1859,6 +1870,7 @@ func (service *threadRuntimeService) close() error {
 		runtime.stopUpdateTimer()
 		runtime.closed = true
 		runtime.mu.Unlock()
+		closeErr = errors.Join(closeErr, runtime.activityFields.close())
 	}
 	return closeErr
 }
@@ -1966,6 +1978,7 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 		actor.state.view = canonical.ThreadView
 		actor.interactionIndex = nil
 		actor.canonical = canonical.projection
+		actor.mutations.order = actor.sourceWindow != nil
 		actor.sourceWindow = nil
 		actor.canonical.items.releaseText()
 		actor.retainItems()
@@ -4434,6 +4447,18 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 			at := *item.OutputEndedAt
 			out[index].OutputEndedAt = &at
 		}
+		if item.ActivitySummary != nil {
+			summary := *item.ActivitySummary
+			summary.Fields = cloneActivitySummaryFields(summary.Fields)
+			summary.Values = cloneActivitySummaryValues(summary.Values)
+			out[index].ActivitySummary = &summary
+		}
+		if item.activitySummary != nil {
+			summary := *item.activitySummary
+			summary.Fields = cloneActivitySummaryFields(summary.Fields)
+			summary.Values = cloneActivitySummaryValues(summary.Values)
+			out[index].activitySummary = &summary
+		}
 		if item.Body != nil {
 			body := *item.Body
 			out[index].Body = &body
@@ -4665,38 +4690,14 @@ func canonicalToolDispatchIndex(items []ThreadItem, byInvocation map[string]int,
 }
 
 func activityItemFromCanonicalEntry(entry sessiontree.Entry, occurredAt time.Time) observation.ActivityItem {
-	status := observation.ActivityStatusRunning
+	status := observation.ActivityStatus(sessiontree.CanonicalToolStatus(entry))
 	endedAt := int64(0)
 	if entry.Type == sessiontree.EntryToolResult {
-		status = observation.ActivityStatusSuccess
 		endedAt = occurredAt.UnixMilli()
-		if entry.Message.ToolResult != nil {
-			switch strings.ToLower(strings.TrimSpace(entry.Message.ToolResult.Status)) {
-			case "error":
-				status = observation.ActivityStatusError
-			case "declined":
-				status = observation.ActivityStatusDeclined
-			case "canceled", "cancelled":
-				status = observation.ActivityStatusCanceled
-			}
-		}
 	}
 	presentation := tools.CloneActivityPresentation(entry.Message.Activity)
 	if presentation == nil {
-		label := strings.TrimSpace(entry.Message.ToolName)
-		if label == "" {
-			label = "Tool activity"
-		}
-		presentation = &tools.ActivityPresentation{
-			Label:    label,
-			Renderer: tools.ActivityRendererStructured,
-			Payload: tools.StructuredActivityPayload{
-				Status:      string(status),
-				Operation:   "tool",
-				DisplayName: label,
-				Summary:     "Historical tool activity",
-			},
-		}
+		presentation = historicalActivityPresentation(entry.Message.ToolName, status)
 	}
 	return observation.ActivityItem{ItemID: entry.ID, ToolID: entry.Message.ToolCallID, ToolName: entry.Message.ToolName, Kind: observation.ActivityKindTool, Status: status, Presentation: presentation, EndedAtUnixMS: endedAt}
 }
@@ -4905,4 +4906,8 @@ func (sink threadRuntimeEventSink) commitProviderOutput(ctx context.Context, com
 		return err
 	}
 	return nil
+}
+
+func historicalActivityPresentation(toolName string, status observation.ActivityStatus) *tools.ActivityPresentation {
+	return sessiontree.HistoricalActivityPresentation(toolName, string(status))
 }

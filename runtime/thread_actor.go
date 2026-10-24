@@ -18,6 +18,7 @@ import (
 // threadRuntimeState is the only in-memory lifecycle owner for one thread.
 // Provider and tool I/O must never run while its mutex is held.
 type threadRuntimeState struct {
+	activityFields        residentActivityFields
 	preparation           *threadReadPreparation
 	canonical             *threadCanonicalProjection
 	sourceWindow          *threadSourceProjection
@@ -209,6 +210,14 @@ func (runtime *threadRuntimeState) apply(ctx context.Context, mutate func() erro
 			}
 		}
 	}
+	// Publication has detached any selected preview. Keep only the currently
+	// growing source's prefix; completed/off-screen sources remain at their
+	// output owner instead of accumulating one preview per historical item.
+	for _, change := range runtime.mutations.items {
+		if index := runtime.itemIndexByID(change.ItemID); index >= 0 && change.ItemID != runtime.state.openTextSegmentID {
+			runtime.state.view.Items[index].livePreview = ""
+		}
+	}
 	runtime.mutations = threadMutations{}
 	return err
 }
@@ -378,6 +387,8 @@ func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID
 				continue
 			}
 			item.Activity, item.Live = &activity, live
+			item.activityRevision++
+			item.activitySummary = nil
 			item.activityOmitted = false
 			// An observation is not a canonical source body. Terminal installation
 			// restores the journal association from the same reducer.
@@ -393,7 +404,7 @@ func (runtime *threadRuntimeState) applyActivityItems(threadID identity.ThreadID
 				createdAt = time.Now().UTC()
 			}
 			runtime.state.view.Items = appendThreadItem(runtime.state.view.Items, ThreadItem{
-				ID: id, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Live: live, Activity: &activity, CreatedAt: createdAt,
+				ID: id, TurnID: turnID, RunID: runID, Kind: ThreadItemTool, Live: live, Activity: &activity, CreatedAt: createdAt, activityRevision: 1,
 			})
 		}
 		if index < 0 {
@@ -481,6 +492,10 @@ func (runtime *threadRuntimeState) appendLiveTextSegment(kind ThreadItemKind, te
 		}
 		runtime.markAppend(source, offset, text)
 		item.liveBody = bodies[0]
+		if len(item.livePreview) == offset && offset < threadDisplayTextBytes {
+			prefix, _ := boundedThreadText(text, threadDisplayTextBytes-len(item.livePreview))
+			item.livePreview += prefix
+		}
 		item.textBytes = offset + len(text)
 		item.textSummary, item.textSummaryTail = canonicalTextSummary(item.textSummary, text, item.textSummaryTail)
 		item.textNonSpace = item.textNonSpace || strings.TrimSpace(text) != ""

@@ -11,6 +11,13 @@ import (
 // Queue and restore state share one frozen journal inventory. Historical
 // message bodies never enter this reducer, including on inactive branches.
 func hydrateThreadQueues(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]QueuedInput, []RestoredInput, error) {
+	if reader, ok := repo.(sessiontree.CurrentQueueSourceReader); ok {
+		sources, err := reader.CurrentQueueSources(ctx, threadID.String())
+		if err != nil {
+			return nil, nil, runtimeHostError(err)
+		}
+		return projectCurrentThreadQueues(sources)
+	}
 	var entries []sessiontree.Entry
 	if reader, ok := repo.(sessiontree.QueueMetadataReader); ok {
 		entries, err := reader.QueueMetadata(ctx, threadID.String())
@@ -104,6 +111,26 @@ func projectThreadQueues(ctx context.Context, entries []sessiontree.Entry, read 
 		if err := observe(entry); err != nil {
 			return nil, nil, err
 		}
+	}
+	return queue, restored, nil
+}
+
+func projectCurrentThreadQueues(sources sessiontree.QueueSourceSnapshot) ([]QueuedInput, []RestoredInput, error) {
+	queue, err := appendCanonicalQueue([]QueuedInput{}, sources.Pending)
+	if err != nil {
+		return nil, nil, err
+	}
+	var restored []RestoredInput
+	for _, source := range sources.Restored {
+		var queued QueuedInput
+		if json.Unmarshal(source.Added.Payload, &queued) != nil {
+			return nil, nil, ErrAuthorityCorrupt
+		}
+		var id string
+		if json.Unmarshal(source.Removed.Payload, &id) != nil {
+			return nil, nil, ErrAuthorityCorrupt
+		}
+		restored = append(restored, RestoredInput{ID: id, Input: queued.Input})
 	}
 	return queue, restored, nil
 }

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -43,5 +44,29 @@ func (buffer *threadContentBuffer) append(text string) {
 	}
 	if !utf8.FullRuneInString(full[start:]) {
 		buffer.incomplete = strings.Clone(full[start:])
+	}
+}
+
+// Source metadata replaces body decoding only for the read-only window reducer.
+func (buffer *threadContentBuffer) appendFacts(facts sessiontree.CanonicalTextFacts) {
+	previous := buffer.incomplete
+	buffer.runes += facts.Runes
+	if previous != "" {
+		head := string(facts.Head)
+		buffer.runes += utf8.RuneCountInString(previous+head) - utf8.RuneCountInString(previous) - utf8.RuneCountInString(head)
+	}
+	buffer.bytes += facts.Bytes
+	buffer.nonSpace = buffer.nonSpace || facts.NonSpace
+	buffer.incomplete = string(facts.Incomplete)
+	if facts.Bytes < utf8.UTFMax && previous != "" {
+		combined := previous + string(facts.Head)
+		start := len(combined) - 1
+		for start > 0 && len(combined)-start < utf8.UTFMax && !utf8.RuneStart(combined[start]) {
+			start--
+		}
+		buffer.incomplete = ""
+		if !utf8.FullRuneInString(combined[start:]) {
+			buffer.incomplete = strings.Clone(combined[start:])
+		}
 	}
 }

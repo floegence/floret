@@ -89,12 +89,12 @@ func summaryItemText(item ThreadItem) string {
 	return strings.TrimRightFunc(item.textSummary, unicode.IsSpace)
 }
 
-// A suffix containing only tools cannot prove that the complete history has
-// no preview. Let the canonical summary reader locate the earlier message;
-// opening a display window must never clear an existing sidebar summary.
+// A suffix containing only tools cannot prove that history has no preview.
+// Source windows carry the exact latest canonical preview alongside their
+// selected interval; custom repositories retain the complete-history reader.
 func (actor *threadRuntimeState) hasCompleteSummaryPreview() bool {
 	actor.refreshSummaryPositions()
-	return actor.sourceWindow == nil || !actor.sourceWindow.hasBefore || actor.summaryPreviewIndex >= 0
+	return actor.sourceWindow == nil || actor.sourceWindow.summary != nil || !actor.sourceWindow.hasAfter && (!actor.sourceWindow.hasBefore || actor.summaryPreviewIndex >= 0)
 }
 
 func (actor *threadRuntimeState) threadSummary(meta sessiontree.ThreadMeta) ThreadSummary {
@@ -123,6 +123,10 @@ func (actor *threadRuntimeState) threadSummary(meta sessiontree.ThreadMeta) Thre
 	}
 	if last >= 0 {
 		summary.PendingInput = cloneInputPresentation(actor.state.view.Interactions[last].Input)
+	}
+	if actor.sourceWindow != nil && actor.sourceWindow.summary != nil && (actor.sourceWindow.hasAfter || actor.summaryPreviewIndex < 0) {
+		summary.LastItemPreview = actor.sourceWindow.summary.Text
+		summary.LastItemAt = actor.sourceWindow.summary.CreatedAt
 	}
 	return summary
 }

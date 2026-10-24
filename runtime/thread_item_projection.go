@@ -71,6 +71,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 	}()
 	var canonicalOrdinal uint64
+	var projectedEntry sessiontree.Entry
 	var membership sessiontree.ItemMembershipStep
 	var contributions []sessiontree.ItemMember
 	var membershipErr error
@@ -93,6 +94,19 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 		item.CanonicalOrdinal = canonicalOrdinal
 		item.canonicalText = item.Kind == ThreadItemUser || item.Kind == ThreadItemSteering || item.Kind == ThreadItemThinking || item.Kind == ThreadItemAssistant
+		field := "content"
+		if item.Kind == ThreadItemThinking {
+			field = "reasoning"
+		}
+		if facts, ok := projectedEntry.ProjectedText[field]; ok && item.canonicalText {
+			item.Text, item.textOmitted, item.textBytes, item.textNonSpace = "", true, facts.Bytes, facts.NonSpace
+			item.textSummary, item.textSummaryTail = facts.Summary, facts.SummaryHasTail
+			if item.Kind == ThreadItemAssistant {
+				buffer := &threadContentBuffer{}
+				buffer.appendFacts(facts)
+				contentBuffers[len(items)] = buffer
+			}
+		}
 		return appendThreadItem(items, item)
 	}
 	var outputStarted, outputEnded *time.Time
@@ -112,6 +126,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}, OutputStartedAt: outputStarted, OutputEndedAt: outputEnded})
 	}
 	for entryIndex, entry := range entries {
+		projectedEntry = entry
 		if membershipErr != nil {
 			return membershipErr
 		}
@@ -290,8 +305,19 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 							}
 							previous.Sources = append(previous.Sources, publicprovider.Source(source))
 						}
-						buffer.append(entry.Message.Content)
-						previous.Text = buffer.text.String()
+						if facts, ok := entry.ProjectedText["content"]; ok {
+							buffer.appendFacts(facts)
+							part, tail := facts.Prefix, facts.PrefixHasTail
+							if previous.textSummary == "" {
+								part, tail = facts.Summary, facts.SummaryHasTail
+							}
+							previous.textSummary, previous.textSummaryTail = canonicalTextSummary(previous.textSummary, part, previous.textSummaryTail)
+							previous.textSummaryTail = previous.textSummaryTail || tail
+							previous.Text, previous.textOmitted, previous.textBytes, previous.textNonSpace = "", true, buffer.bytes, buffer.nonSpace
+						} else {
+							buffer.append(entry.Message.Content)
+							previous.Text = buffer.text.String()
+						}
 						if projection.metadataOnly {
 							previous.textOmitted, previous.textBytes, previous.textNonSpace = true, buffer.bytes, buffer.nonSpace
 						}

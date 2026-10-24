@@ -145,6 +145,12 @@ func releaseCanonicalBody(ctx context.Context, tx spi.WriteTx, ref canonicalBody
 			return err
 		}
 	}
+	if err := deleteActivityFieldIndex(ctx, tx, ref.SHA256); err != nil {
+		return err
+	}
+	if err := deleteCanonicalOptionalRecord(tx, bodyTextFactsNamespace, canonicalBodyKey(ref.SHA256)); err != nil {
+		return err
+	}
 	releaseCachedBody(ref)
 	return tx.Delete(canonicalBodyNamespace, canonicalBodyKey(ref.SHA256))
 }
@@ -447,6 +453,16 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backend
 		if err != nil {
 			return err
 		}
+		if field == "content" || field == "reasoning" {
+			if err := writeBodyTextFacts(tx, ref, value); err != nil {
+				return err
+			}
+		}
+		if field == "activity_json" {
+			if err := writeActivityFieldIndex(ctx, tx, ref, value); err != nil {
+				return err
+			}
+		}
 		stored.Fields[field] = ref
 		if err := clearCanonicalField(&stored.Entry, field); err != nil {
 			return err
@@ -553,17 +569,26 @@ func decodeCanonicalBodyKey(key []byte) (canonicalBodyKeyParts, error) {
 // The migration rewrites validated entries in the same transaction. Release the
 // old block inventory first so sharing counts are rebuilt exactly once.
 func deleteCanonicalBodyRecords(ctx context.Context, tx spi.WriteTx) error {
+	for _, namespace := range []string{canonicalBodyNamespace, bodyTextFactsNamespace, activityFieldsNamespace} {
+		if err := deleteCanonicalBodyNamespace(ctx, tx, namespace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteCanonicalBodyNamespace(ctx context.Context, tx spi.WriteTx, namespace string) error {
 	var after []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		page, err := tx.Scan(spi.ScanRequest{Namespace: canonicalBodyNamespace, After: after, Limit: 256})
+		page, err := tx.Scan(spi.ScanRequest{Namespace: namespace, After: after, Limit: 256})
 		if err != nil {
 			return err
 		}
 		for _, record := range page.Records {
-			if err := tx.Delete(canonicalBodyNamespace, record.Key); err != nil {
+			if err := tx.Delete(namespace, record.Key); err != nil {
 				return err
 			}
 		}

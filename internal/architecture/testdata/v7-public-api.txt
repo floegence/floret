@@ -1263,7 +1263,90 @@ type ThreadActivityBody struct
 field ThreadActivityBody.EntryID string tag="json:\"entry_id\""
 field ThreadActivityBody.Bytes int tag="json:\"bytes\""
 field ThreadActivityBody.SHA256 string tag="json:\"sha256\""
+type ThreadActivityField struct
+field ThreadActivityField.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadActivityField.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadActivityField.Path string tag="json:\"path\""
+field ThreadActivityField.Kind string tag="json:\"kind\""
+field ThreadActivityField.Bytes int tag="json:\"bytes,omitempty\""
+field ThreadActivityField.SourceOffsetBytes int tag="json:\"source_offset_bytes,omitempty\""
+field ThreadActivityField.Count int tag="json:\"count,omitempty\""
+field ThreadActivityField.EntryID string tag="json:\"entry_id,omitempty\""
+field ThreadActivityField.SourcePath string tag="json:\"source_path,omitempty\""
+field ThreadActivityField.SourceSHA256 string tag="json:\"source_sha256,omitempty\""
+field ThreadActivityField.SHA256 string tag="json:\"sha256,omitempty\""
+field ThreadActivityField.Value encoding/json.RawMessage tag="json:\"value,omitempty\""
+field ThreadActivityField.InlineText string tag="json:\"inline_text,omitempty\""
+type ThreadActivityFieldChunk struct
+field ThreadActivityFieldChunk.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadActivityFieldChunk.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadActivityFieldChunk.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityFieldChunk.EntryID string tag="json:\"entry_id\""
+field ThreadActivityFieldChunk.Path string tag="json:\"path\""
+field ThreadActivityFieldChunk.SourceSHA256 string tag="json:\"source_sha256\""
+field ThreadActivityFieldChunk.SHA256 string tag="json:\"sha256\""
+field ThreadActivityFieldChunk.Bytes int tag="json:\"bytes\""
+field ThreadActivityFieldChunk.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadActivityFieldChunk.Text string tag="json:\"text\""
+type ThreadActivityFieldInput struct
+field ThreadActivityFieldInput.AlignStart bool tag="json:\"align_start,omitempty\""
+field ThreadActivityFieldInput.SourceID string tag="json:\"source_id,omitempty\""
+field ThreadActivityFieldInput.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id,omitempty\""
+field ThreadActivityFieldInput.ItemID string tag="json:\"item_id\""
+field ThreadActivityFieldInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityFieldInput.EntryID string tag="json:\"entry_id\""
+field ThreadActivityFieldInput.Path string tag="json:\"path\""
+field ThreadActivityFieldInput.SourceSHA256 string tag="json:\"source_sha256\""
+field ThreadActivityFieldInput.SHA256 string tag="json:\"sha256\""
+field ThreadActivityFieldInput.OffsetBytes int tag="json:\"offset_bytes\""
+field ThreadActivityFieldInput.LimitBytes int tag="json:\"limit_bytes\""
+type ThreadActivityFieldReader interface interface{ReadActivityField(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadActivityFieldInput) (github.com/floegence/floret/v7/runtime.ThreadActivityFieldChunk, error)}
 const ThreadActivityIdle github.com/floegence/floret/v7/runtime.ThreadActivity = "idle"
+type ThreadActivityStructureInput struct
+field ThreadActivityStructureInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityStructureInput.ItemID string tag="json:\"item_id\""
+field ThreadActivityStructureInput.Path string tag="json:\"path\""
+field ThreadActivityStructureInput.Version string tag="json:\"version\""
+field ThreadActivityStructureInput.Offset int tag="json:\"offset\""
+field ThreadActivityStructureInput.Limit int tag="json:\"limit\""
+type ThreadActivityStructurePage struct
+field ThreadActivityStructurePage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityStructurePage.ItemID string tag="json:\"item_id\""
+field ThreadActivityStructurePage.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadActivityStructurePage.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadActivityStructurePage.Version string tag="json:\"version\""
+field ThreadActivityStructurePage.Field github.com/floegence/floret/v7/runtime.ThreadActivityField tag="json:\"field\""
+field ThreadActivityStructurePage.Children []github.com/floegence/floret/v7/runtime.ThreadActivityField tag="json:\"children\""
+field ThreadActivityStructurePage.Next int tag="json:\"next\""
+field ThreadActivityStructurePage.HasMore bool tag="json:\"has_more\""
+type ThreadActivityStructureReader interface interface{ActivityStructure(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadActivityStructureInput) (github.com/floegence/floret/v7/runtime.ThreadActivityStructurePage, error)}
+type ThreadActivitySummary struct
+field ThreadActivitySummary.Values map[string]encoding/json.RawMessage tag="json:\"values,omitempty\""
+field ThreadActivitySummary.Version string tag="json:\"version,omitempty\""
+field ThreadActivitySummary.Label string tag="json:\"label,omitempty\""
+field ThreadActivitySummary.Description string tag="json:\"description,omitempty\""
+field ThreadActivitySummary.Renderer github.com/floegence/floret/v7/tools.ActivityRenderer tag="json:\"renderer,omitempty\""
+field ThreadActivitySummary.Action string tag="json:\"action,omitempty\""
+field ThreadActivitySummary.HasError bool tag="json:\"has_error,omitempty\""
+field ThreadActivitySummary.UncertainEffect bool tag="json:\"uncertain_effect,omitempty\""
+field ThreadActivitySummary.Fields []github.com/floegence/floret/v7/runtime.ThreadActivityField tag="json:\"fields,omitempty\""
+type ThreadActivityValue struct
+field ThreadActivityValue.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityValue.ItemID string tag="json:\"item_id\""
+field ThreadActivityValue.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadActivityValue.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadActivityValue.Path string tag="json:\"path\""
+field ThreadActivityValue.Value encoding/json.RawMessage tag="json:\"value\""
+field ThreadActivityValue.TextFields []github.com/floegence/floret/v7/runtime.ThreadActivityField tag="json:\"text_fields,omitempty\""
+type ThreadActivityValueInput struct
+field ThreadActivityValueInput.Fields []string tag="json:\"fields,omitempty\""
+field ThreadActivityValueInput.TextFields []string tag="json:\"text_fields,omitempty\""
+field ThreadActivityValueInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadActivityValueInput.ItemID string tag="json:\"item_id\""
+field ThreadActivityValueInput.Path string tag="json:\"path\""
+field ThreadActivityValueInput.MaximumBytes int tag="json:\"maximum_bytes\""
+field ThreadActivityValueInput.MaximumNodes int tag="json:\"maximum_nodes\""
+type ThreadActivityValueReader interface interface{ReadActivityValue(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadActivityValueInput) (github.com/floegence/floret/v7/runtime.ThreadActivityValue, error)}
 const ThreadBodyActivityJSON github.com/floegence/floret/v7/runtime.ThreadBodyField = "activity_json"
 const ThreadBodyArguments github.com/floegence/floret/v7/runtime.ThreadBodyField = "arguments"
 type ThreadBodyChunk struct
@@ -1410,6 +1493,7 @@ const ThreadInteractionApproval github.com/floegence/floret/v7/runtime.ThreadInt
 const ThreadInteractionInput github.com/floegence/floret/v7/runtime.ThreadInteractionKind = "input"
 type ThreadInteractionKind string
 type ThreadItem struct
+field ThreadItem.ActivitySummary *github.com/floegence/floret/v7/runtime.ThreadActivitySummary tag="json:\"activity_summary,omitempty\""
 field ThreadItem.OutputStartedAt *time.Time tag="json:\"output_started_at,omitempty\""
 field ThreadItem.OutputEndedAt *time.Time tag="json:\"output_ended_at,omitempty\""
 field ThreadItem.Goal *github.com/floegence/floret/v7/runtime.ThreadGoalChange tag="json:\"goal,omitempty\""
@@ -1431,6 +1515,15 @@ field ThreadItem.Context []github.com/floegence/floret/v7/runtime.MessageContext
 field ThreadItem.Activity *github.com/floegence/floret/v7/observation.ActivityItem tag="json:\"activity,omitempty\""
 field ThreadItem.ActivityBodies []github.com/floegence/floret/v7/runtime.ThreadActivityBody tag="json:\"activity_bodies,omitempty\""
 field ThreadItem.Interaction *github.com/floegence/floret/v7/runtime.ThreadInteraction tag="json:\"interaction,omitempty\""
+type ThreadItemActivityCounts struct
+field ThreadItemActivityCounts.Pending int tag="json:\"pending\""
+field ThreadItemActivityCounts.Running int tag="json:\"running\""
+field ThreadItemActivityCounts.Waiting int tag="json:\"waiting\""
+field ThreadItemActivityCounts.Success int tag="json:\"success\""
+field ThreadItemActivityCounts.Error int tag="json:\"error\""
+field ThreadItemActivityCounts.Declined int tag="json:\"declined\""
+field ThreadItemActivityCounts.Canceled int tag="json:\"canceled\""
+field ThreadItemActivityCounts.Unknown int tag="json:\"unknown\""
 const ThreadItemAdded github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "add"
 const ThreadItemAppended github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "append"
 const ThreadItemAssistant github.com/floegence/floret/v7/runtime.ThreadItemKind = "assistant"
@@ -1456,6 +1549,43 @@ type ThreadItemChangeKind string
 const ThreadItemGoal github.com/floegence/floret/v7/runtime.ThreadItemKind = "goal"
 const ThreadItemInteraction github.com/floegence/floret/v7/runtime.ThreadItemKind = "interaction"
 type ThreadItemKind string
+type ThreadItemKindCounts struct
+field ThreadItemKindCounts.User int tag="json:\"user\""
+field ThreadItemKindCounts.Assistant int tag="json:\"assistant\""
+field ThreadItemKindCounts.Thinking int tag="json:\"thinking\""
+field ThreadItemKindCounts.Tool int tag="json:\"tool\""
+field ThreadItemKindCounts.Interaction int tag="json:\"interaction\""
+field ThreadItemKindCounts.Goal int tag="json:\"goal\""
+field ThreadItemKindCounts.Steering int tag="json:\"steering\""
+type ThreadItemRange struct
+field ThreadItemRange.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemRange.TurnID github.com/floegence/floret/v7/identity.TurnID tag="json:\"turn_id\""
+field ThreadItemRange.RunID github.com/floegence/floret/v7/identity.RunID tag="json:\"run_id\""
+field ThreadItemRange.LeafID string tag="json:\"leaf_id\""
+field ThreadItemRange.FirstItemID string tag="json:\"first_item_id\""
+field ThreadItemRange.LastItemID string tag="json:\"last_item_id\""
+field ThreadItemRange.FirstOrdinal uint64 tag="json:\"first_ordinal\""
+field ThreadItemRange.LastOrdinal uint64 tag="json:\"last_ordinal\""
+field ThreadItemRange.Counts github.com/floegence/floret/v7/runtime.ThreadItemKindCounts tag="json:\"counts\""
+field ThreadItemRange.Activity github.com/floegence/floret/v7/runtime.ThreadItemActivityCounts tag="json:\"activity\""
+field ThreadItemRange.Facts github.com/floegence/floret/v7/runtime.ThreadItemRangeFact tag="json:\"facts\""
+field ThreadItemRange.HasBefore bool tag="json:\"has_before\""
+field ThreadItemRange.HasAfter bool tag="json:\"has_after\""
+const ThreadItemRangeApproval github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 64
+const ThreadItemRangeCanceled github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 32
+const ThreadItemRangeDeclined github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 16
+const ThreadItemRangeErrorPayload github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 2
+const ThreadItemRangeErrorWithoutFailure github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 4
+type ThreadItemRangeFact uint32
+type ThreadItemRangeInput struct
+field ThreadItemRangeInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
+field ThreadItemRangeInput.AnchorID string tag="json:\"anchor_id\""
+field ThreadItemRangeInput.Kinds []github.com/floegence/floret/v7/runtime.ThreadItemKind tag="json:\"kinds\""
+field ThreadItemRangeInput.Exclude github.com/floegence/floret/v7/runtime.ThreadItemRangeFact tag="json:\"exclude,omitempty\""
+const ThreadItemRangeInputRequired github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 128
+type ThreadItemRangeReader interface interface{ItemRange(context.Context, github.com/floegence/floret/v7/threadquery.Scope, github.com/floegence/floret/v7/runtime.ThreadItemRangeInput) (github.com/floegence/floret/v7/runtime.ThreadItemRange, error)}
+const ThreadItemRangeUncertainEffect github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 1
+const ThreadItemRangeUnknownActivity github.com/floegence/floret/v7/runtime.ThreadItemRangeFact = 8
 const ThreadItemRemoved github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "remove"
 const ThreadItemReplaced github.com/floegence/floret/v7/runtime.ThreadItemChangeKind = "replace"
 const ThreadItemSteering github.com/floegence/floret/v7/runtime.ThreadItemKind = "steering"
@@ -1721,11 +1851,17 @@ const ThreadWindowAround github.com/floegence/floret/v7/runtime.ThreadWindowDire
 const ThreadWindowBefore github.com/floegence/floret/v7/runtime.ThreadWindowDirection = "before"
 type ThreadWindowDirection string
 type ThreadWindowInput struct
+field ThreadWindowInput.AnchorOffset int tag="json:\"anchor_offset,omitempty\""
+field ThreadWindowInput.RequestID string tag="json:\"request_id,omitempty\""
+field ThreadWindowInput.ActivityFields bool tag="json:\"activity_fields,omitempty\""
+field ThreadWindowInput.ItemIDs []string tag="json:\"item_ids,omitempty\""
 field ThreadWindowInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadWindowInput.AnchorID string tag="json:\"anchor_id,omitempty\""
 field ThreadWindowInput.Direction github.com/floegence/floret/v7/runtime.ThreadWindowDirection tag="json:\"direction\""
 field ThreadWindowInput.Limit int tag="json:\"limit,omitempty\""
 type ThreadWindowSnapshot struct
+field ThreadWindowSnapshot.RequestID string tag="json:\"request_id,omitempty\""
+field ThreadWindowSnapshot.ItemSelection bool tag="json:\"item_selection,omitempty\""
 field ThreadWindowSnapshot.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadWindowSnapshot.ViewVersion uint64 tag="json:\"view_version\""
 field ThreadWindowSnapshot.LeafID string tag="json:\"leaf_id,omitempty\""

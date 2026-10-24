@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -82,15 +83,30 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 			add("invocation", entry.TurnID, "", id)
 		}
 	case EntryTurnMarker, EntryCancelRequested, EntryRunFailure:
-		add("turn_boundary", entry.TurnID, "", entry.TurnID)
+		if !windowNeutralSavepoint(entry) {
+			add("turn_boundary", entry.TurnID, "", entry.TurnID)
+		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
 			add("input_batch", entry.TurnID, entry.RunID, entry.RunID)
 		}
 		if entry.Metadata[GoalCompletedMetadataKey] != "" {
 			add("goal", "", "", "history")
 		}
-	case EntryGoal, EntryGoalReview:
+	case EntryGoal:
 		add("goal", "", "", "history")
+		var change GoalChange
+		if json.Unmarshal(entry.Payload, &change) != nil {
+			return nil, ErrAuthorityCorrupt
+		}
+		add("goal_version", "", "", fmt.Sprint(change.State.Version))
+		add("goal_mutation", entry.TurnID, entry.RunID, entry.RequestKey)
+	case EntryGoalReview:
+		add("goal", "", "", "history")
+		var review GoalReview
+		if json.Unmarshal(entry.Payload, &review) != nil {
+			return nil, ErrAuthorityCorrupt
+		}
+		add("goal_review", entry.TurnID, entry.RunID, goalReviewSourceIdentity(review.Version, review.Outcome, review.Evidence))
 	case EntryUserMessage:
 		if entry.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission {
 			add("goal", "", "", "history")

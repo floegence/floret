@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
+	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
-// v2 replaces the unreleased duplicated window histories with source seeds.
+// v7 binds summary shape readiness to source-bound activity ranges.
 // Rebuild old derived metadata without rewriting any canonical record.
-const itemMembershipNamespace = "floret.sessiontree.item-membership.v2"
+const itemMembershipNamespace = "floret.sessiontree.item-membership.v8"
 
 type itemMembershipManifest struct {
 	Leaf    string `json:"leaf"`
@@ -37,6 +40,15 @@ func itemRankKey(thread string, slot int) []byte {
 }
 func itemIdentityKey(thread, id string) []byte { return backendDomainKey(thread, "identity", id) }
 func itemSourceKey(thread, id string) []byte   { return backendDomainKey(thread, "source", id) }
+func itemToolCallKey(entry Entry) []byte {
+	return backendDomainKey(entry.ThreadID, "tool-call", entry.TurnID, entry.RunID, entry.Message.ToolCallID)
+}
+func storeItemToolCall(tx spi.WriteTx, entry Entry) error {
+	if entry.Type != EntryToolCall {
+		return nil
+	}
+	return putItemJSON(tx, itemToolCallKey(entry), contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth})
+}
 
 func readItemJSON(tx spi.ReadTx, key []byte, value any) error {
 	raw, err := tx.Get(itemMembershipNamespace, key)
@@ -146,6 +158,13 @@ func selectItemRank(tx spi.ReadTx, thread string, count, rank int) (int, error) 
 }
 
 func putNewItemMember(tx spi.WriteTx, thread string, m *itemMembershipManifest, member storedItemMember) error {
+	if err := putItemMember(tx, thread, m, member); err != nil {
+		return err
+	}
+	member.Slot = m.Slots - 1
+	return updateItemRange(tx, thread, m.Slots, member.ItemMember)
+}
+func putItemMember(tx spi.WriteTx, thread string, m *itemMembershipManifest, member storedItemMember) error {
 	member.Slot = m.Slots
 	if err := putItemJSON(tx, itemSlotKey(thread, member.Slot), member); err != nil {
 		return err
@@ -238,6 +257,7 @@ func itemMembershipClosure(ctx context.Context, tx spi.ReadTx, thread string, en
 // metadata. The cache is scoped to this storage transaction and this entry.
 type canonicalMembershipAppend struct {
 	loaded     bool
+	partial    bool
 	entries    []Entry
 	projection ItemMembership
 	step       ItemMembershipStep
@@ -249,6 +269,10 @@ func (append *canonicalMembershipAppend) load(ctx context.Context, tx spi.ReadTx
 		return append.err
 	}
 	append.loaded = true
+	if handled, err := append.loadOrdinaryResult(ctx, tx, entry); handled || err != nil {
+		append.err = err
+		return err
+	}
 	append.entries, append.err = itemMembershipClosure(ctx, tx, entry.ThreadID, entry)
 	if append.err != nil {
 		return append.err
@@ -266,6 +290,76 @@ func (append *canonicalMembershipAppend) load(ctx context.Context, tx spi.ReadTx
 	return nil
 }
 
+// A normal result changes one existing tool item. Its membership depends on
+// that item's original source, not every prior replacement result. Input
+// batches and control ownership continue through their complete reducers.
+func (append *canonicalMembershipAppend) loadOrdinaryResult(ctx context.Context, tx spi.ReadTx, entry Entry) (bool, error) {
+	if entry.Type != EntryToolResult || entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindToolValidationError || entry.Message.ControlSignal != nil || entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
+		return false, nil
+	}
+	m, found, err := readItemManifest(tx, entry.ThreadID)
+	if err != nil || !found || m.Leaf != entry.ParentID {
+		return false, err
+	}
+	var slot int
+	id := "tool:" + entry.TurnID + ":" + strings.TrimSpace(entry.Message.ToolCallID)
+	if err := readItemJSON(tx, itemIdentityKey(entry.ThreadID, id), &slot); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	member, err := readItemSlot(tx, entry.ThreadID, slot)
+	if err != nil || member.ID != id || member.Kind != "tool" || slot < 0 || slot >= m.Slots {
+		return false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if member.RunID != entry.RunID || member.TurnID != entry.TurnID {
+		return false, nil
+	}
+	tx = newProjectionSourceTx(tx)
+	meta := ThreadMeta{ID: entry.ThreadID, LeafID: entry.ID}
+	var call contextSourceRef
+	if err := readItemJSON(tx, itemToolCallKey(entry), &call); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	owner, err := activeLocatedEntry(ctx, tx, meta, call.ID)
+	if err != nil || owner.RawHash != call.Hash || owner.PathDepth != call.Depth || owner.Type != EntryToolCall || owner.TurnID != entry.TurnID || owner.RunID != entry.RunID || owner.Message.ToolCallID != entry.Message.ToolCallID {
+		return false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if owner.Message.ControlSignal != nil || owner.Message.Kind == "control_signal" || owner.Message.Kind == session.MessageKindToolValidationError {
+		return false, nil
+	}
+	source, err := activeLocatedEntry(ctx, tx, meta, member.SourceID)
+	if err != nil || source.RawHash != member.RawHash || uint64(source.PathDepth) != member.CanonicalOrdinal || source.TurnID != member.TurnID || source.RunID != member.RunID || source.Message.ToolCallID != entry.Message.ToolCallID {
+		return false, errors.Join(ErrAuthorityCorrupt, err)
+	}
+	if source.Type != EntryToolCall && source.Type != EntryToolResult || source.Message.Kind == "control_signal" || source.Message.ControlSignal != nil {
+		return false, nil
+	}
+	current, err := activeLocatedEntry(ctx, tx, meta, entry.ID)
+	if err != nil {
+		return false, err
+	}
+	append.entries = []Entry{owner, current}
+	append.partial = true
+	append.projection.initialize()
+	// Observe still owns every membership decision; only its necessary prior
+	// identity is seeded from the same-transaction canonical membership.
+	prior := member.ItemMember
+	prior.Slot = 0
+	append.projection.Members = []ItemMember{prior}
+	append.projection.tools[itemMemberKey{member.TurnID, member.RunID, entry.Message.ToolCallID}] = 0
+	if member.InteractionSource.ID != "" {
+		append.projection.approvals[itemMemberKey{member.TurnID, member.RunID, entry.Message.ToolCallID}] = member.InteractionSource
+	}
+	append.projection.ordinal = uint64(current.PathDepth - 1)
+	append.step, err = append.projection.Observe(current, uint64(current.PathDepth))
+	return true, err
+}
+
 func appendCanonicalItemMembership(ctx context.Context, tx spi.WriteTx, entry Entry, update *canonicalMembershipAppend) error {
 	m, found, err := readItemManifest(tx, entry.ThreadID)
 	if err != nil || !found {
@@ -274,15 +368,46 @@ func appendCanonicalItemMembership(ctx context.Context, tx spi.WriteTx, entry En
 	if m.Leaf != entry.ParentID {
 		return deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, itemManifestKey(entry.ThreadID))
 	}
+	if err := storeItemToolCall(tx, entry); err != nil {
+		return err
+	}
 	if projectionCandidate(entry) || entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
 		if err := update.load(ctx, tx, entry); err != nil {
 			return fmt.Errorf("membership dependency closure: %w", err)
+		}
+		activityPending := false
+		if step := update.step; step.Main != nil && !step.Skip {
+			if !step.Main.New && step.Main.Member.Kind == "tool" {
+				var slot int
+				if err := readItemJSON(tx, itemIdentityKey(entry.ThreadID, step.Main.Member.ID), &slot); err != nil {
+					return err
+				}
+				prior, err := readItemSlot(tx, entry.ThreadID, slot)
+				if err != nil {
+					return err
+				}
+				activityPending = prior.ActivityPending
+			}
+			if !activityPending {
+				if err := appendActivitySources(ctx, tx, step.Main.Member, entry, step.Main.New); err != nil {
+					return err
+				}
+			}
 		}
 		projection := &update.projection
 		var newSlots []int
 		bySource := map[string][]int{}
 		sourceIndex := map[string]int{}
 		for _, member := range projection.Members {
+			if member.Kind == "tool" && (member.SourceID == entry.ID || update.step.Main != nil && update.step.Main.Member.ID == member.ID) {
+				member.ActivityPending = activityPending
+				if !activityPending {
+					member.RangeFacts, err = itemRangeActivityFacts(tx, entry.ThreadID, member)
+					if err != nil {
+						return err
+					}
+				}
+			}
 			if member.SourceID == entry.ID {
 				newSlots = append(newSlots, m.Slots)
 				if err := putNewItemMember(tx, entry.ThreadID, &m, storedItemMember{ItemMember: member, RawHash: entry.RawHash}); err != nil {
@@ -297,14 +422,34 @@ func appendCanonicalItemMembership(ctx context.Context, tx spi.WriteTx, entry En
 				}
 				bySource[member.SourceID] = slots
 			}
-			i := sourceIndex[member.SourceID]
-			sourceIndex[member.SourceID] = i + 1
-			if i >= len(slots) {
-				return fmt.Errorf("membership source %q position %d exceeds %d: %w", member.SourceID, i, len(slots), ErrAuthorityCorrupt)
+			var slot int
+			if update.partial {
+				if err := readItemJSON(tx, itemIdentityKey(entry.ThreadID, member.ID), &slot); err != nil || !slices.Contains(slots, slot) {
+					return fmt.Errorf("membership source %q lost item %q: %w", member.SourceID, member.ID, errors.Join(ErrAuthorityCorrupt, err))
+				}
+			} else {
+				i := sourceIndex[member.SourceID]
+				sourceIndex[member.SourceID] = i + 1
+				if i >= len(slots) {
+					return fmt.Errorf("membership source %q lost position %d: %w", member.SourceID, i, ErrAuthorityCorrupt)
+				}
+				slot = slots[i]
 			}
-			stored, err := readItemSlot(tx, entry.ThreadID, slots[i])
+			stored, err := readItemSlot(tx, entry.ThreadID, slot)
 			if err != nil || stored.ID != member.ID || stored.Kind != member.Kind || stored.SourceID != member.SourceID || stored.CanonicalOrdinal != member.CanonicalOrdinal {
 				return fmt.Errorf("membership source %q differs from stored item: %w", member.SourceID, errors.Join(ErrAuthorityCorrupt, err))
+			}
+			// A late result changes metadata at the original slot. Ordinary
+			// result updates touch only this slot and its logarithmic ancestry.
+			if step := update.step; step.Main != nil && step.Main.Member.ID == member.ID && !step.Skip && (stored.ActivityStatus != member.ActivityStatus || stored.ActivitySource != member.ActivitySource || stored.RangeFacts != member.RangeFacts || stored.ToolName != member.ToolName || stored.InteractionSource != member.InteractionSource) {
+				stored.ActivityStatus, stored.ActivitySource, stored.RangeFacts, stored.ToolName, stored.InteractionSource = member.ActivityStatus, member.ActivitySource, member.RangeFacts, member.ToolName, member.InteractionSource
+				stored.ActivityPending = member.ActivityPending
+				if err := putItemJSON(tx, itemSlotKey(entry.ThreadID, slot), stored); err != nil {
+					return err
+				}
+				if err := updateItemRange(tx, entry.ThreadID, m.Slots, stored.ItemMember); err != nil {
+					return err
+				}
 			}
 			if !stored.Hidden && member.Hidden {
 				return ErrAuthorityCorrupt
@@ -318,6 +463,9 @@ func appendCanonicalItemMembership(ctx context.Context, tx spi.WriteTx, entry En
 					return err
 				}
 				m.Visible++
+				if err := updateItemRange(tx, entry.ThreadID, m.Slots, stored.ItemMember); err != nil {
+					return err
+				}
 			}
 		}
 		if len(newSlots) > 0 {
@@ -380,7 +528,7 @@ func deleteItemMembershipRecords(ctx context.Context, tx spi.WriteTx, thread str
 	if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, itemManifestKey(thread)); err != nil {
 		return err
 	}
-	for _, kind := range []string{"slot", "rank", "identity", "source"} {
+	for _, kind := range []string{"slot", "rank", "identity", "source", "range", "activity-source", "tool-call"} {
 		prefix := backendDomainKey(thread, kind)
 		for {
 			page, err := tx.Scan(spi.ScanRequest{Namespace: itemMembershipNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 128})
@@ -404,20 +552,39 @@ func deleteItemMembershipRecords(ctx context.Context, tx spi.WriteTx, thread str
 }
 
 func storeItemMembership(ctx context.Context, tx spi.WriteTx, meta ThreadMeta, entries []Entry, projection ItemMembership) error {
+	pending, err := storeActivitySources(ctx, tx, entries)
+	if err != nil {
+		return err
+	}
 	hashes := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		hashes[entry.ID] = entry.RawHash
+		if err := storeItemToolCall(tx, entry); err != nil {
+			return err
+		}
 	}
 	m := itemMembershipManifest{Leaf: meta.LeafID, Hash: hashes[meta.LeafID]}
 	bySource := map[string][]int{}
-	for _, member := range projection.Members {
+	for i, member := range projection.Members {
+		var err error
+		member.ActivityPending = pending[member.SourceID]
+		if !member.ActivityPending {
+			member.RangeFacts, err = itemRangeActivityFacts(tx, meta.ID, member)
+			if err != nil {
+				return err
+			}
+		}
+		projection.Members[i] = member
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		bySource[member.SourceID] = append(bySource[member.SourceID], m.Slots)
-		if err := putNewItemMember(tx, meta.ID, &m, storedItemMember{ItemMember: member, RawHash: hashes[member.SourceID]}); err != nil {
+		if err := putItemMember(tx, meta.ID, &m, storedItemMember{ItemMember: member, RawHash: hashes[member.SourceID]}); err != nil {
 			return err
 		}
+	}
+	if err := storeItemRanges(ctx, tx, meta.ID, projection.Members); err != nil {
+		return err
 	}
 	for id, slots := range bySource {
 		if err := putItemJSON(tx, itemSourceKey(meta.ID, id), slots); err != nil {

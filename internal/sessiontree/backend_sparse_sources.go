@@ -13,7 +13,7 @@ import (
 
 // Only immutable source identities are indexed. Reducers always read the
 // canonical records; no queue, parent-event, or thread lifecycle is duplicated.
-const sparseSourcesNamespace = "floret.sessiontree.sparse-sources.v2"
+const sparseSourcesNamespace = "floret.sessiontree.sparse-sources.v3"
 
 func sparseCoverageKey(thread string) []byte { return backendDomainKey(thread, "coverage") }
 func sparseSourceKey(thread, category string, ordinal int) []byte {
@@ -95,6 +95,9 @@ func appendSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry)
 	if coverage.Through != ordinal {
 		return nil
 	}
+	if err := appendCurrentQueueSources(tx, entry, coverage); err != nil {
+		return err
+	}
 	if err := putSparseSource(tx, entry, ordinal); err != nil {
 		return err
 	}
@@ -103,6 +106,9 @@ func appendSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry)
 	return writeSparseCoverage(tx, thread, coverage)
 }
 func removeSparseSource(tx spi.WriteTx, thread string, ordinal int, entry Entry) error {
+	if err := deleteCanonicalOptionalRecord(tx, sparseSourcesNamespace, currentQueueKey(thread)); err != nil {
+		return err
+	}
 	coverage, err := readSparseCoverage(tx, thread)
 	if err != nil {
 		return err
@@ -199,6 +205,9 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 					entry := stored.Entry
 					entry.bodyFields = stored.Fields
 					if err := putSparseSource(tx, entry, ordinal); err != nil {
+						return err
+					}
+					if err := appendCurrentQueueSources(tx, entry, coverage); err != nil {
 						return err
 					}
 					coverage.add(entry, 1)

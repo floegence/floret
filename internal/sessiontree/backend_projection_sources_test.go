@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -264,4 +265,91 @@ func TestProjectionSourcesPreparationRollsBackAndResumes(t *testing.T) {
 	if !reflect.DeepEqual(prepared, backend.records) {
 		t.Fatal("idempotent preparation rewrote metadata")
 	}
+}
+
+type projectionPreparationBatchTx struct {
+	spi.WriteTx
+	goalReads, individualGoalWrites, batches int
+}
+
+func (tx *projectionPreparationBatchTx) Get(namespace string, key []byte) ([]byte, error) {
+	if namespace == projectionSourcesNamespace && bytes.HasPrefix(key, backendDomainKey("thread", "goal-source")) {
+		tx.goalReads++
+	}
+	return tx.WriteTx.Get(namespace, key)
+}
+func (tx *projectionPreparationBatchTx) Put(namespace string, key, value []byte) error {
+	if namespace == projectionSourcesNamespace && bytes.HasPrefix(key, backendDomainKey("thread", "goal-source")) {
+		tx.individualGoalWrites++
+	}
+	return tx.WriteTx.Put(namespace, key, value)
+}
+func (tx *projectionPreparationBatchTx) WriteFloretRecords(namespace string, records []spi.Record) error {
+	tx.batches++
+	for _, record := range records {
+		if err := tx.WriteTx.Put(namespace, record.Key, record.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestProjectionPreparationCoalescesGoalSourcesWithinCanonicalBatch(t *testing.T) {
+	backend, repo := projectionSourcesFixture(t, 260)
+	var entries []Entry
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		for ordinal := 1; ordinal < 129; ordinal++ {
+			raw, err := tx.Get(backendDomainV32Namespace, backendDomainEntryKey("thread", ordinal))
+			if err != nil {
+				return err
+			}
+			_, stored, err := decodeCanonicalEntryRecord(backendDomainV32Format, raw)
+			if err != nil {
+				return err
+			}
+			stored.Entry.bodyFields = stored.Fields
+			entries = append(entries, stored.Entry)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		// Rebuild the same canonical batch in a private transaction. Retain the
+		// predecessor's Goal references while deleting only this batch's groups.
+		groups := map[projectionSourceGroup]bool{}
+		for _, entry := range entries {
+			values, err := projectionSourceGroups(entry)
+			if err != nil {
+				return err
+			}
+			for _, group := range values {
+				groups[group] = true
+			}
+			if err := tx.Delete(projectionSourcesNamespace, goalSourceKey("thread", entry.ID)); err != nil {
+				return err
+			}
+		}
+		for group := range groups {
+			if err := tx.Delete(projectionSourcesNamespace, projectionGroupKey("thread", group)); err != nil {
+				return err
+			}
+		}
+		counted := &projectionPreparationBatchTx{WriteTx: tx}
+		if err := putProjectionSourceBatch(t.Context(), counted, "thread", entries, 1); err != nil {
+			return err
+		}
+		if counted.goalReads > 1 || counted.individualGoalWrites != 0 {
+			t.Fatalf("per-entry Goal roundtrips remain: reads=%d writes=%d batches=%d", counted.goalReads, counted.individualGoalWrites, counted.batches)
+		}
+		for _, entry := range entries {
+			if _, err := readGoalSourceContext(tx, "thread", entry.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo
 }
