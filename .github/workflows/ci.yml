@@ -86,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [core, sessiontree, runtime-1, runtime-2, runtime-giant-body]
+        suite: [core, sessiontree-1, sessiontree-2, sessiontree-ranges, runtime-1, runtime-2, runtime-giant-body]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,12 +103,24 @@ jobs:
           RACE_SUITE: ${{ matrix.suite }}
         run: |
           giant_body='^TestThreadLiveBodySQLiteGiantOutputCommitCancelAndRestart$'
+          large_range='^TestItemRangeCompleteQueryReadBudget$'
           case "$RACE_SUITE" in
             core)
               go test -race -p=1 -timeout=25m ./internal/engine ./internal/agentharness ./storage ./tools
               ;;
-            sessiontree)
-              go test -race -p=1 -timeout=25m ./internal/sessiontree
+            sessiontree-[12])
+              shard="${RACE_SUITE#sessiontree-}"
+              tests="$(go test -race -p=1 ./internal/sessiontree -list '^(Test|Example|Fuzz)' |
+                grep -E '^(Test|Example|Fuzz)' | grep -vE "$large_range" | LC_ALL=C sort |
+                awk -v shard="$shard" 'NR % 2 == shard - 1')"
+              test -n "$tests"
+              pattern="$(printf '%s\n' "$tests" | paste -sd '|' -)"
+              go test -race -p=1 -timeout=25m ./internal/sessiontree -run "^(${pattern})$"
+              ;;
+            sessiontree-ranges)
+              # Keep every 1k/10k/100k SQLite source-budget assertion under race
+              # detection; fixture creation must not consume other tests' budget.
+              go test -race -p=1 -timeout=25m ./internal/sessiontree -run "$large_range"
               ;;
             runtime-[12])
               # Alternate sorted names so every test runs once within the existing timeout.
