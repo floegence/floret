@@ -430,3 +430,21 @@ Evidence: [image preparation](../../provider/image_preparation.go),
 [exact request limits](../../provider/request_bytes.go),
 [summary coverage](../../internal/engine/compaction/media_budget_test.go), and
 [minimal exchange regression](../../internal/session/compaction/minimal_exchange_test.go).
+
+## Moonshot Kimi K3.1 catalog
+
+The 2026-10-24 review adds `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` through
+`NewOpenAICompatible` with the explicit `moonshot` provider identity. The reviewed
+K3 reasoning wire shape selects `max_completion_tokens`; Off, medium and manual
+thinking budgets are rejected. Hosts supply low/high/max capability declarations,
+with max as the default. Canonical reasoning and complete tool exchanges replay
+through the existing public message boundary. The catalog records text/image
+modalities and 1,048,576-token context/output ceilings; descriptor-only public
+adapters do not resolve images themselves. Hosted search is not added.
+
+Provider-scoped snapshot provenance leaves unrelated inventories and review dates
+unchanged. Upstream transport and catalog qualification precede downstream adoption
+of the published module; host credentials, subscriptions and model choices remain
+host-owned. See [catalog maintenance](../../scripts/model-catalog/README.md),
+[public gateway regression](../../provider/moonshot_test.go) and
+[the official guide](https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart).

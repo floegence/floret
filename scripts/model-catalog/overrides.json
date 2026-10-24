@@ -39,7 +39,9 @@
     "moonshot": [
       "https://platform.kimi.com/docs/models",
       "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
-      "https://platform.kimi.com/docs/guide/use-reasoning-effort"
+      "https://platform.kimi.com/docs/guide/use-reasoning-effort",
+      "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+      "https://platform.kimi.com/docs/api/models-overview"
     ],
     "chatglm": [
       "https://docs.z.ai/guides/overview/migrate-to-glm-new",
@@ -227,11 +229,26 @@
         "default_level": "high",
         "source_checked_at": "2026-10-19"
       }
+    },
+    "moonshot/kimi-k3.1-pro": {
+      "reasoning": {
+        "disable_supported": false,
+        "default_level": "max"
+      }
+    },
+    "moonshot/kimi-k3.1-pro-highspeed": {
+      "reasoning": {
+        "disable_supported": false,
+        "default_level": "max"
+      }
     }
   },
   "exclusion_notes": {
     "openai/gpt-daybreak-blue-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
     "openai/gpt-daybreak-red-latest": "Separate Daybreak approval and provisioning required; not part of the public default catalog.",
     "openai/gpt-6.1-sol": "Tool calling requires Responses; Floret built-in OpenAI transport uses Chat Completions. Hosts with a qualified Responses gateway may expose this model in their own catalog."
+  },
+  "provider_checked_at": {
+    "moonshot": "2026-10-24"
   }
 }

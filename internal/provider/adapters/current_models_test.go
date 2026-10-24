@@ -19,6 +19,8 @@ func TestGeneratedModelReasoningRequests(t *testing.T) {
 		{catalog.ProviderOpenAI, "gpt-5.6-sol", provider.ReasoningLevelOff, "none"},
 		{catalog.ProviderGoogle, "gemini-3.8-flash", provider.ReasoningLevelLow, "low"},
 		{catalog.ProviderMoonshot, "kimi-k3", provider.ReasoningLevelMax, "max"},
+		{catalog.ProviderMoonshot, "kimi-k3.1-pro", provider.ReasoningLevelHigh, "high"},
+		{catalog.ProviderMoonshot, "kimi-k3.1-pro-highspeed", provider.ReasoningLevelLow, "low"},
 		{catalog.ProviderChatGLM, "glm-5.3", provider.ReasoningLevelHigh, "high"},
 		{catalog.ProviderQwen, "qwen3.8-max", provider.ReasoningLevelXHigh, "xhigh"},
 		{catalog.ProviderXAI, "grok-4.6", provider.ReasoningLevelHigh, "high"},
@@ -41,7 +43,7 @@ func TestGeneratedModelReasoningRequests(t *testing.T) {
 			if body["reasoning_effort"] != tc.effort {
 				t.Fatalf("request = %s", raw)
 			}
-			if tc.model == "kimi-k3" || tc.provider == catalog.ProviderOpenAI {
+			if tc.provider == catalog.ProviderMoonshot || tc.provider == catalog.ProviderOpenAI {
 				if body["max_completion_tokens"] != float64(2048) || body["max_tokens"] != nil {
 					t.Fatalf("request output limit = %s", raw)
 				}
@@ -95,5 +97,49 @@ func TestHaikuAdaptiveAndDisabledRequests(t *testing.T) {
 	}
 	if err := p.applyAnthropicReasoning(&anthropicRequest{}, provider.Request{Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelMedium, BudgetTokens: 1024}}, 8192); err == nil {
 		t.Fatal("adaptive Haiku accepted a manual thinking budget")
+	}
+}
+
+func TestMoonshotK3RejectsUnsupportedReasoningControls(t *testing.T) {
+	for _, id := range []string{"kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"} {
+		model, ok := catalog.FindModel(catalog.ProviderMoonshot, id)
+		if !ok {
+			t.Fatalf("missing model %s", id)
+		}
+		adapter := OpenAICompatibleProvider{Model: id, CostModel: model}
+		for _, selection := range []provider.ReasoningSelection{
+			{Level: provider.ReasoningLevelOff},
+			{Level: provider.ReasoningLevelMedium},
+			{BudgetTokens: 4096},
+		} {
+			if _, err := adapter.chatRequestBody(provider.Request{
+				Messages: []session.Message{{Role: session.User, Content: "hello"}}, Reasoning: selection,
+			}); err == nil {
+				t.Fatalf("%s accepted unsupported reasoning %+v", id, selection)
+			}
+		}
+		for _, limit := range []int64{0, 4096} {
+			raw, err := adapter.chatRequestBody(provider.Request{
+				Messages: []session.Message{{Role: session.User, Content: "hello"}}, MaxOutputTokens: limit,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"max_tokens", "thinking", "temperature", "top_p", "reasoning_effort"} {
+				if _, ok := body[field]; ok {
+					t.Fatalf("%s default request contains %s: %s", id, field, raw)
+				}
+			}
+			if limit == 0 && body["max_completion_tokens"] != nil {
+				t.Fatalf("unexpected default ceiling: %s", raw)
+			}
+			if limit > 0 && body["max_completion_tokens"] != float64(limit) {
+				t.Fatalf("lost ceiling: %s", raw)
+			}
+		}
 	}
 }

@@ -1374,6 +1374,22 @@ Images use separate dimension/model budgets, while opaque files remain conservat
 rendering. These offline predictions never replace native measurements. See
 [provenance, coverage, and limitations](scripts/openai-tokenizer/README.md).
 
+## Moonshot Kimi K3.1
+
+The reviewed Moonshot catalog includes Kimi K3.1 Pro and Highspeed, using wire
+IDs `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed`. The existing
+`provider.NewOpenAICompatible` gateway with `Provider: "moonshot"` sends Chat
+Completions to the host-selected Moonshot API root. Hosts declare the public
+reasoning capability: `low`, `high`, `max`, default `max`, without Off support.
+The adapter uses `max_completion_tokens`, omits fixed sampling controls, and
+replays canonical assistant reasoning and tool exchanges. Catalog context and
+output ceilings are both 1,048,576 tokens; hosts choose a feasible request budget.
+Catalog image metadata does not expand the descriptor-only public adapter's
+attachment contract. Kimi Code subscription credentials and routing remain host
+concerns; this catalog update does not add a subscription transport or native
+Moonshot search. See the [official K3.1 guide](https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart)
+and [catalog maintenance](scripts/model-catalog/README.md).
+
 ## Model metadata
 
 Ollama hosts can use `provider.ParseOllamaReasoningCapability` with `/api/show`

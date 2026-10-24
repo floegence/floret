@@ -22,6 +22,10 @@ provider-specific request rendering behavior.
 4. Keep capability selection derived from provider profiles and explicit support
    metadata.
 5. Preserve fake-provider paths for deterministic tests.
+6. Qualify and publish the upstream catalog/transport before downstream hosts
+   expose the new model through a released dependency. Use the same reviewed
+   snapshot and official corrections across repositories; host credentials,
+   subscription UI and enabled model selections remain host-owned.
 
 # Reasoning Capabilities
 
