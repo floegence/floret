@@ -183,52 +183,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		if protectedAnchor == 0 {
 			return Preparation{}, ErrNoCutPoint
 		}
-		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
-		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
-		recordCompactionBudgetDetails(details, req.Policy)
-		recordProjectedToolDetails(details, history, nil)
-		result := Result{
-			CompactionID:            req.CompactionID,
-			OperationID:             strings.TrimSpace(req.OperationID),
-			RequestID:               strings.TrimSpace(req.RequestID),
-			Source:                  strings.TrimSpace(req.Source),
-			PreviousCompactionID:    req.PreviousCompactionID,
-			KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
-			CompactedThroughEntryID: lastEntryID(history),
-			ModelContextBaseline:    snapshotAtCut(previousBaseline, history),
-			GoalContextBaseline:     session.CurrentGoalContext(req.History),
-			SummarySchemaVersion:    SummarySchemaVersion,
-			Trigger:                 req.Trigger,
-			Reason:                  req.Reason,
-			Phase:                   req.Phase,
-			TokensBefore:            usageBefore.InputTokens,
-			UsageBefore:             usageBefore,
-			Details:                 details,
-			CreatedAt:               req.Now,
-		}
-		if result.CompactionID == "" {
-			result.CompactionID = stableCompactionID(req, history, nil)
-		}
-		if err := normalizeResultWindow(&result, req); err != nil {
-			return Preparation{}, err
-		}
-		projectedHead, _, _ := session.ProjectProviderHistory(history, "")
-		prep := Preparation{Request: req, CompactedHead: projectedHead, Result: result}
-		summary, generationDetails, err := generateSummary(ctx, generator, providerSummaryPreparation(prep))
-		if err != nil {
-			return Preparation{}, err
-		}
-		prep.Result.Summary, err = finalizeSummary(&prep.Result, summary, req.Policy)
-		if err != nil {
-			return Preparation{}, err
-		}
-		recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
-		prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
-		usageAfter := contextpolicy.EstimateMessageContext("", prep.ActiveMessages, req.Policy)
-		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
-		prep.Result.UsageAfter = usageAfter
-		recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
-		return prep, nil
+		return prepareEntireHistory(ctx, req, history, previousBaseline, usageBefore, generator)
 	}
 	if len(history) < 2 {
 		return Preparation{}, ErrNoCutPoint
@@ -256,6 +211,11 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	// A repaired zero boundary means the latest complete exchange spans
 	// the whole history. Never split its call from the retained result.
+	if start <= 0 && req.Trigger == TriggerOverflow && protectedAnchor < 0 && completeVisualExchange(history) {
+		// Every image is consumed by the byte-bounded summary generator. The
+		// complete call/result stays canonical; no tool action is repeated.
+		return prepareEntireHistory(ctx, req, history, previousBaseline, usageBefore, generator)
+	}
 	if start <= 0 || start >= len(history) {
 		return Preparation{}, ErrNoCutPoint
 	}
@@ -1081,4 +1041,76 @@ func snapshotAtCut(baseline *session.ModelContextSnapshot, head []session.Messag
 		}
 	}
 	return current
+}
+
+func completeVisualExchange(history []session.Message) bool {
+	if len(history) < 2 || history[0].Role != session.Assistant || history[0].ToolCallID == "" || history[len(history)-1].Role != session.Tool {
+		return false
+	}
+	projected, _, err := session.ProjectProviderHistory(history, "")
+	if err != nil || session.ValidateToolHistory(projected) != nil {
+		return false
+	}
+	for _, m := range projected {
+		for _, a := range m.Attachments {
+			if strings.HasPrefix(a.MIMEType, "image/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func prepareEntireHistory(ctx context.Context, req Request, history []session.Message, previousBaseline *session.ModelContextSnapshot, usageBefore contextpolicy.Usage, generator SummaryGenerator) (Preparation, error) {
+	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
+	details := mergeDetails(req.Details, map[string]string{"history_messages": fmt.Sprint(len(history)), "compacted_messages": fmt.Sprint(len(history)), "retained_tail_messages": "0"})
+	if len(history) == 1 {
+		details["single_message_compaction"] = "true"
+	} else {
+		details["retained_tail_strategy"] = "summarize_complete_visual_exchange"
+	}
+	recordCompactionBudgetDetails(details, req.Policy)
+	recordProjectedToolDetails(details, history, nil)
+	result := Result{
+		CompactionID:            req.CompactionID,
+		OperationID:             strings.TrimSpace(req.OperationID),
+		RequestID:               strings.TrimSpace(req.RequestID),
+		Source:                  strings.TrimSpace(req.Source),
+		PreviousCompactionID:    req.PreviousCompactionID,
+		KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
+		CompactedThroughEntryID: lastEntryID(history),
+		ModelContextBaseline:    snapshotAtCut(previousBaseline, history),
+		GoalContextBaseline:     session.CurrentGoalContext(req.History),
+		SummarySchemaVersion:    SummarySchemaVersion,
+		Trigger:                 req.Trigger,
+		Reason:                  req.Reason,
+		Phase:                   req.Phase,
+		TokensBefore:            usageBefore.InputTokens,
+		UsageBefore:             usageBefore,
+		Details:                 details,
+		CreatedAt:               req.Now,
+	}
+	if result.CompactionID == "" {
+		result.CompactionID = stableCompactionID(req, history, nil)
+	}
+	if err := normalizeResultWindow(&result, req); err != nil {
+		return Preparation{}, err
+	}
+	projectedHead, _, _ := session.ProjectProviderHistory(history, "")
+	prep := Preparation{Request: req, CompactedHead: projectedHead, Result: result}
+	summary, generationDetails, err := generateSummary(ctx, generator, providerSummaryPreparation(prep))
+	if err != nil {
+		return Preparation{}, err
+	}
+	prep.Result.Summary, err = finalizeSummary(&prep.Result, summary, req.Policy)
+	if err != nil {
+		return Preparation{}, err
+	}
+	recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
+	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
+	usageAfter := contextpolicy.EstimateMessageContext("", prep.ActiveMessages, req.Policy)
+	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
+	prep.Result.UsageAfter = usageAfter
+	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
+	return prep, nil
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v7.82.1 - 2026-10-23
+
+- Summarize the final complete visual tool exchange when overflow leaves no
+  older cut point. Consume every image through ordered byte-bounded batches,
+  retain canonical facts and original media, and never replay tool actions.
+
 ## v7.82.0 - 2026-10-23
 
 - Add explicit model-only image preparation and exact rendered request byte
