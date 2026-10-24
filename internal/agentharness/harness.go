@@ -854,10 +854,10 @@ func (t *Thread) runAccepted(ctx context.Context, input string, opts RunOptions,
 	projection := &turnProjection{
 		thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream, stateCompatibilityKey: stateCompatibilityKey,
 		threadUsageTotals: cloneThreadTokenUsageTotals(canonicalContext.UsageTotals),
-		contextUsage:      contextUsageProjection{model: canonicalContext.Model, policy: canonicalContext.Policy, usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
+		contextUsage:      contextUsageProjection{Model: canonicalContext.Model, Policy: canonicalContext.Policy, Usage: event.CloneThreadContextUsage(canonicalContext.ContextUsage)},
 	}
 	if !opts.SkipContextPolicyEvent || canonicalContext.Model.Provider == "" && canonicalContext.Model.Model == "" {
-		projection.contextUsage.applyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ModelMaxOutputTokens: engineOptions.ContextPolicy.ModelMaxOutputTokens, ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
+		projection.contextUsage.ApplyPolicy(ThreadContextModel{Provider: engineOptions.ProviderName, Model: engineOptions.Model}, ThreadContextPolicy{ModelMaxOutputTokens: engineOptions.ContextPolicy.ModelMaxOutputTokens, ContextWindowTokens: engineOptions.ContextPolicy.ContextWindowTokens, MaxOutputTokens: engineOptions.ContextPolicy.MaxOutputTokens, ReservedOutputTokens: engineOptions.ContextPolicy.ReservedOutputTokens})
 	}
 	engineOptions.CommitProviderContext = projection.commitProviderContext
 	engineOptions.CommitMessages = projection.commitMessages
@@ -2082,10 +2082,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 		}
 		if committed {
 			p.mu.Lock()
-			p.contextUsage.applyStatus(status)
-			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+			p.contextUsage.ApplyStatus(status)
+			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.Usage)
 			if status.Phase == observation.ContextPhaseProviderUsage {
-				p.threadUsageTotals.add(status.Usage)
+				p.threadUsageTotals.Add(status.Usage)
 				totals := p.threadUsageTotals
 				ev.ThreadUsageTotals = &event.ThreadUsageTotals{InputTokens: totals.InputTokens, OutputTokens: totals.OutputTokens, CacheReadTokens: totals.CacheReadTokens, CacheWriteTokens: totals.CacheWriteTokens}
 			}
@@ -2108,7 +2108,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 		}
 		if ok {
 			p.mu.Lock()
-			p.contextUsage.applyCompaction(compact)
+			p.contextUsage.ApplyCompaction(compact)
 			if compact.Phase == string(observation.CompactionPhaseComplete) {
 				snapshot, readErr := p.thread.harness.ReadThreadContext(context.WithoutCancel(p.ctx), p.thread.id)
 				if readErr != nil {
@@ -2116,16 +2116,16 @@ func (p *turnProjection) Emit(ev event.Event) {
 					p.mu.Unlock()
 					return
 				}
-				p.contextUsage.usage = event.CloneThreadContextUsage(snapshot.ContextUsage)
+				p.contextUsage.Usage = event.CloneThreadContextUsage(snapshot.ContextUsage)
 			}
-			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+			ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.Usage)
 			p.lastCompaction = ev
 			p.mu.Unlock()
 		}
 	}
 	if ev.Type == event.StepStart {
 		p.mu.Lock()
-		ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.usage)
+		ev.ContextUsage = event.CloneThreadContextUsage(p.contextUsage.Usage)
 		p.mu.Unlock()
 	}
 

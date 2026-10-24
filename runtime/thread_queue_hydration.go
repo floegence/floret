@@ -11,6 +11,50 @@ import (
 // Queue and restore state share one frozen journal inventory. Historical
 // message bodies never enter this reducer, including on inactive branches.
 func hydrateThreadQueues(ctx context.Context, repo sessiontree.JournalRepo, threadID identity.ThreadID) ([]QueuedInput, []RestoredInput, error) {
+	var entries []sessiontree.Entry
+	if reader, ok := repo.(sessiontree.QueueMetadataReader); ok {
+		entries, err := reader.QueueMetadata(ctx, threadID.String())
+		if err != nil {
+			return nil, nil, runtimeHostError(err)
+		}
+		return projectThreadQueues(ctx, entries, func(id string) (sessiontree.Entry, error) {
+			return repo.Entry(ctx, threadID.String(), id)
+		})
+	} else if reader, ok := repo.(sessiontree.JournalMetadataReader); ok {
+		options := sessiontree.JournalMetadataOptions{ThreadID: threadID.String(), Limit: 256}
+		for {
+			page, err := reader.JournalMetadata(ctx, options)
+			if err != nil {
+				return nil, nil, runtimeHostError(err)
+			}
+			for _, metadata := range page.Entries {
+				switch metadata.Entry.Type {
+				case sessiontree.EntryQueueAdded, sessiontree.EntryQueueDeleted, sessiontree.EntryQueuePromoted, sessiontree.EntryQueueReordered:
+					entries = append(entries, metadata.Entry)
+				}
+			}
+			if !page.HasMore {
+				break
+			}
+			if page.After <= options.After {
+				return nil, nil, ErrAuthorityCorrupt
+			}
+			options.After, options.Through = page.After, page.Through
+		}
+	} else {
+		// Existing custom JournalRepo implementations retain their exact adapter.
+		var err error
+		entries, err = repo.Entries(ctx, threadID.String())
+		if err != nil {
+			return nil, nil, runtimeHostError(err)
+		}
+	}
+	return projectThreadQueues(ctx, entries, func(id string) (sessiontree.Entry, error) {
+		return repo.Entry(ctx, threadID.String(), id)
+	})
+}
+
+func projectThreadQueues(ctx context.Context, entries []sessiontree.Entry, read func(string) (sessiontree.Entry, error)) ([]QueuedInput, []RestoredInput, error) {
 	queue := make([]QueuedInput, 0)
 	// Keep only immutable record identities for consumed inputs. An explicit
 	// restore marker still resolves the latest addition, including older stores
@@ -40,7 +84,7 @@ func hydrateThreadQueues(ctx context.Context, repo sessiontree.JournalRepo, thre
 				if !found {
 					return ErrAuthorityCorrupt
 				}
-				source, err := repo.Entry(ctx, threadID.String(), entryID)
+				source, err := read(entryID)
 				if err != nil {
 					return runtimeHostError(err)
 				}
@@ -53,49 +97,12 @@ func hydrateThreadQueues(ctx context.Context, repo sessiontree.JournalRepo, thre
 		}
 		return nil
 	}
-	if reader, ok := repo.(sessiontree.QueueMetadataReader); ok {
-		entries, err := reader.QueueMetadata(ctx, threadID.String())
-		if err != nil {
-			return nil, nil, runtimeHostError(err)
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
 		}
-		for _, entry := range entries {
-			if err := observe(entry); err != nil {
-				return nil, nil, err
-			}
-		}
-	} else if reader, ok := repo.(sessiontree.JournalMetadataReader); ok {
-		options := sessiontree.JournalMetadataOptions{ThreadID: threadID.String(), Limit: 256}
-		for {
-			page, err := reader.JournalMetadata(ctx, options)
-			if err != nil {
-				return nil, nil, runtimeHostError(err)
-			}
-			for _, metadata := range page.Entries {
-				if err := observe(metadata.Entry); err != nil {
-					return nil, nil, err
-				}
-			}
-			if !page.HasMore {
-				break
-			}
-			if page.After <= options.After {
-				return nil, nil, ErrAuthorityCorrupt
-			}
-			options.After, options.Through = page.After, page.Through
-		}
-	} else {
-		// Existing custom JournalRepo implementations retain their exact adapter.
-		entries, err := repo.Entries(ctx, threadID.String())
-		if err != nil {
-			return nil, nil, runtimeHostError(err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, nil, err
-			}
-			if err := observe(entry); err != nil {
-				return nil, nil, err
-			}
+		if err := observe(entry); err != nil {
+			return nil, nil, err
 		}
 	}
 	return queue, restored, nil

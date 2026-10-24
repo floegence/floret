@@ -159,6 +159,16 @@ func DecodeThreadContextStatusEntry(entry Entry) (observation.ContextStatus, err
 	return status, nil
 }
 
+// ProjectionThreadContextStatus returns only the fields needed by the shared
+// reducer for superseded measurements. Complete APIs always use the canonical
+// decoder above, which never accepts a metadata-only source.
+func ProjectionThreadContextStatus(entry Entry) (observation.ContextStatus, error) {
+	if entry.contextStatusMetadata != nil {
+		return entry.contextStatusMetadata.status(entry)
+	}
+	return DecodeThreadContextStatusEntry(entry)
+}
+
 func DecodeThreadContextCompactionEntry(entry Entry) (ThreadContextCompaction, error) {
 	if err := validateThreadContextEntryShape(entry, ThreadContextCompactionEntryKind); err != nil {
 		return ThreadContextCompaction{}, err

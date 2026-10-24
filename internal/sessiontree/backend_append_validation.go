@@ -70,6 +70,25 @@ func visitCanonicalPathMetadataAfter(ctx context.Context, tx spi.ReadTx, threadI
 			return err
 		}
 		window := make([]Entry, int(last-first+1))
+		if node.Depth == int64(node.Ordinal)+1 {
+			index := len(window) - 1
+			if _, err := visitLinearCanonicalPage(ctx, tx, ThreadMeta{ID: threadID}, node, len(window), func(entry Entry) error {
+				window[index] = entry
+				index--
+				return nil
+			}); err != nil {
+				return err
+			}
+			for _, entry := range window {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := visit(entry); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		for i := len(window) - 1; i >= 0; i-- {
 			if err := ctx.Err(); err != nil {
 				return err

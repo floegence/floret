@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Initialize window observers from transactionally maintained item membership
+  and exact canonical dependencies, preserving late tool results, waiting
+  controls, Retry, Fork, Goal, context and continuous actor versions. Complete
+  readers promote the same actor only after reconstruction and catch-up succeed.
+- Share private, bounded source preparation across narrow and complete window
+  readers. Keep selected-source validation and published repository options on
+  the same owner. Missing historical metadata still needs a full source scan;
+  no subsecond first-upgrade or complete product acceptance is claimed.
+- Reuse append-ordered source groups instead of rewriting complete Goal and turn
+  source lists. Validate compaction source identity and item anchors, retain
+  sidebar previews before an all-tool window, and deliver active recovery
+  failures to affected observers and the Host error channel.
+
 - Coalesce canonical body metadata and blocks into bounded SQLite reads within
   the existing page transaction and 1 MiB retention budget. Preserve exact
   source validation, transaction ownership, and the host storage SPI.
@@ -43,9 +56,9 @@
   timeline body pages. Selected bodies retain per-page verification and active
   ancestry fences; cancellation, deletion and branch changes cannot publish a
   partial actor. Temporary metadata residency remains proportional to history.
-- Preserve bounded window baselines and observation versions. Cold initialization
-  still traverses historical metadata and source pages; no constant-time cold
-  window or subsecond first-screen guarantee is introduced.
+- Preserve bounded window baselines and observation versions. Missing-index
+  preparation and explicit full initialization still traverse historical sources;
+  no subsecond first-upgrade or complete product guarantee is introduced.
 - Omit ordinary tool parameters and results from cold timeline reads when they
   are outside the exact checked-context selection. Preserve selected context,
   control-result equality validation, Goal inputs and tool presentation sources.

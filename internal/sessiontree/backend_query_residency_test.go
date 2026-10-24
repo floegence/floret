@@ -80,6 +80,13 @@ func (tx *coldQueryReadTx) Get(namespace string, key []byte) ([]byte, error) {
 	return tx.ReadTx.Get(namespace, key)
 }
 
+func (tx *coldQueryReadTx) Scan(request spi.ScanRequest) (spi.ScanPage, error) {
+	if request.Namespace == backendDomainV32Namespace && bytes.HasPrefix(request.Start, backendDomainKey(backendDomainRecordEntry)) {
+		tx.history = true
+	}
+	return tx.ReadTx.Scan(request)
+}
+
 func (backend *coldQueryReadBackend) View(ctx context.Context, read func(spi.ReadTx) error) error {
 	history := false
 	err := backend.Backend.View(ctx, func(tx spi.ReadTx) error {

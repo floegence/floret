@@ -1120,13 +1120,23 @@ validation; ordinary reads verify requested immutable sources. Readiness is not
 a full-store integrity audit. See
 [startup residency diagnostics](okf/workflows/history-performance.md#current-schema-startup-residency).
 
-This capability currently bounds delivered item detail, not all retained actor
-history or every control component. Initial actor hydration still constructs the
-complete canonical projection; queue, context and restored-input components
-retain their complete semantics and may exceed the observation queue budget.
-Oversized observation fails explicitly. Storage-backed bounded actor residency,
-streamed canonical installation and complete production-chain qualification remain required
-before claiming extreme-history performance acceptance.
+Built-in stores initialize window observers from exact item membership and its
+canonical dependency closure. Append maintains source positions, public ranks,
+context references and numeric aggregates in the canonical write transaction.
+Reads validate the selected sources at one leaf, including late tool results,
+pending controls, Retry sources and compaction anchors. These disposable indexes
+contain no transcript or independent lifecycle. Explicit full reads and execution
+promote the same actor only after complete reconstruction succeeds; failures keep
+the accepted window and its version.
+
+Released stores missing these indexes still require validated historical
+preparation before their first window. Preparation uses short private batches and
+publishes readiness anchors after the frozen source is verified. It does not make
+the first upgrade read constant-time. Queue, context, Goal and restored-input
+components retain complete semantics and may exceed the observation queue budget.
+Oversized observation fails explicitly. Full execution residency, missing-index
+preparation and complete production-chain qualification remain requirements before
+claiming extreme-history or subsecond opening acceptance.
 
 Context failures carry distinct `ThreadTurnFailure` codes: `context_budget_invalid`
 when output headroom leaves no input capacity, `context_fixed_overhead` when
@@ -1519,8 +1529,9 @@ Missing, orphaned or corrupt blocks fail without mutation; cancellation, panic
 and write failure roll back the entire migration. Current restart is byte-stable.
 
 Historical journals retain immutable body locators, and detached complete reads
-use a shared 128 MiB verified source cache. Runtime actor presentation and the
-presentation-window API still require separate bounded implementation. See the explicit qualification limits in
+use a shared 128 MiB verified source cache. Prepared presentation windows resolve
+source membership without rebuilding the complete actor. First-upgrade index
+preparation and execution/full-view residency remain history-sized. See the qualification limits in
 [history performance](okf/workflows/history-performance.md).
 
 The contiguous domain 30 -> 31 migration moves typed tool ActivityPresentation

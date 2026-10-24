@@ -68,10 +68,11 @@ func TestRetryFailedTurnRetainsConfirmedToolResultAcrossRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		host, svc = open()
-		restored, err := svc.View(t.Context(), created.ThreadID)
-		if err != nil || restored.Failure == nil || restored.Failure.Code != ThreadTurnFailureProvider || restored.Cancellation != nil {
-			t.Fatalf("restored failure=%+v cancellation=%+v err=%v", restored.Failure, restored.Cancellation, err)
+		subscription, baseline := coldWindowBaseline(t, svc, created.ThreadID)
+		if baseline.Facts.Failure == nil || baseline.Facts.Failure.Code != ThreadTurnFailureProvider || baseline.Facts.Cancellation != nil {
+			t.Fatalf("restored failure=%+v cancellation=%+v", baseline.Facts.Failure, baseline.Facts.Cancellation)
 		}
+		defer subscription.Close()
 		if len(svc.(*threadRuntimeService).cancellationDiagnostics()) != 0 {
 			t.Fatal("provider failure recorded as cancellation")
 		}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/floegence/floret/v7/internal/provider/cache"
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -67,17 +68,23 @@ func readRequestOrdinal(tx spi.ReadTx, scope string, ordinal uint64) (cache.Prov
 	if err != nil {
 		return cache.ProviderRequestRecord{}, errors.Join(sessiontree.ErrAuthorityCorrupt, err)
 	}
-	var record promptRecord
-	if err := decodePromptValue(raw, "prompt_record", &record); err != nil {
+	return decodeRequestOrdinal(raw, scope, ordinal)
+}
+
+func decodeRequestOrdinal(raw []byte, scope string, ordinal uint64) (cache.ProviderRequestRecord, error) {
+	var record struct {
+		ScopeID  string                                              `json:"scope_id"`
+		Category int                                                 `json:"category"`
+		Ordinal  uint64                                              `json:"ordinal"`
+		Value    storagecodec.JSONValue[cache.ProviderRequestRecord] `json:"value"`
+	}
+	if err := storagecodec.DecodeEnvelopeInto(raw, "prompt_record", &record); err != nil {
 		return cache.ProviderRequestRecord{}, err
 	}
-	if record.ScopeID != scope || record.Category != promptRequest || record.Ordinal != ordinal {
+	if record.ScopeID != scope || record.Category != promptRequest || record.Ordinal != ordinal || !record.Value.Present {
 		return cache.ProviderRequestRecord{}, sessiontree.ErrAuthorityCorrupt
 	}
-	var result cache.ProviderRequestRecord
-	if err := decodePromptJSON(record.Value, &result); err != nil {
-		return result, err
-	}
+	result := record.Value.Value
 	if result.PromptScopeID != scope {
 		return result, sessiontree.ErrAuthorityCorrupt
 	}
@@ -199,11 +206,22 @@ func (kernel *BackendKernel) prepareContextRequestPage(ctx context.Context, scop
 		if end > 16 {
 			start = end - 16
 		}
+		keys := make([][]byte, 0, end-start)
+		for ordinal := start; ordinal < end; ordinal++ {
+			keys = append(keys, promptRecordKey(promptRecord{ScopeID: scope, Category: promptRequest, Ordinal: ordinal}))
+		}
+		if len(keys) == 0 {
+			return nil
+		}
+		records, err := storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: promptRecordsNamespace, Keys: keys})
+		if err != nil {
+			return errors.Join(sessiontree.ErrAuthorityCorrupt, err)
+		}
 		for ordinal := end - 1; ordinal >= start; ordinal-- {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			request, err := readRequestOrdinal(tx, scope, ordinal)
+			request, err := decodeRequestOrdinal(records[ordinal-start], scope, ordinal)
 			if err != nil {
 				return err
 			}

@@ -418,6 +418,7 @@ func ThreadAuthorityTreeIDs(threads []ThreadMeta, rootThreadID string) ([]string
 
 type Entry struct {
 	bodyFields              map[string]canonicalBodyRef
+	contextStatusMetadata   *contextStatusMetadata
 	ID                      string                        `json:"id"`
 	ThreadID                string                        `json:"thread_id"`
 	ParentID                string                        `json:"parent_id,omitempty"`

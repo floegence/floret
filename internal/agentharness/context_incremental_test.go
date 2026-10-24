@@ -75,7 +75,7 @@ func TestIncrementalContextMatchesCanonicalPrefixes(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256(encoded)); got != historicalSHA256 {
 		t.Fatalf("historical context digest: %s", got)
 	}
-	if len(projection.running) != 0 {
+	if projection.RunningCompactions() != 0 {
 		t.Fatal("settled compaction retained as running")
 	}
 }

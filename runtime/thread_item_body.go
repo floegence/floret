@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/floegence/floret/v7/identity"
+	"github.com/floegence/floret/v7/internal/sessiontree"
 	"github.com/floegence/floret/v7/threadquery"
 )
 
@@ -32,17 +33,32 @@ func (service *threadRuntimeService) ItemBody(ctx context.Context, scope threadq
 	if input.ItemID == "" {
 		return ThreadItemBody{}, threadquery.ErrInvalidQuery
 	}
-	if _, err := service.viewResult(ctx, input.ThreadID, threadAckResult); err != nil {
+	if _, err := service.ensureThread(ctx, input.ThreadID); err != nil {
+		return ThreadItemBody{}, err
+	}
+	if err := service.prepareThreadRead(ctx, input.ThreadID, service.runtime(input.ThreadID), true); err != nil {
 		return ThreadItemBody{}, err
 	}
 	actor := service.runtime(input.ThreadID)
 	var body ThreadItemBody
 	err := actor.apply(ctx, func() error {
-		index := actor.itemIndexByID(input.ItemID)
-		if index < 0 {
-			return threadquery.ErrRecordUnavailable
+		var item ThreadItem
+		if actor.sourceWindow != nil {
+			window, err := service.projectThreadMembershipWindow(ctx, sessiontree.ItemMembershipWindowOptions{ThreadID: input.ThreadID.String(), LeafID: actor.sourceWindow.leaf, AnchorID: input.ItemID, Direction: sessiontree.PathWindowAround, Limit: 1})
+			if err != nil {
+				return err
+			}
+			if len(window.items) != 1 || window.items[0].ID != input.ItemID {
+				return threadquery.ErrRecordUnavailable
+			}
+			item = window.items[0]
+		} else {
+			index := actor.itemIndexByID(input.ItemID)
+			if index < 0 {
+				return threadquery.ErrRecordUnavailable
+			}
+			item = actor.state.view.Items[index]
 		}
-		item := actor.state.view.Items[index]
 		switch item.Kind {
 		case ThreadItemAssistant, ThreadItemThinking, ThreadItemUser:
 		default:

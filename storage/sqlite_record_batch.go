@@ -60,3 +60,26 @@ func (tx *sqliteTx) ReadFloretRecords(request storagebridge.RecordBatch) ([][]by
 	}
 	return result, nil
 }
+
+// Coalesce a bounded write set without committing or changing the durability
+// of the surrounding transaction. Duplicate keys retain ordered Put semantics.
+func (tx *sqliteTx) WriteFloretRecords(namespace string, records []spi.Record) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if err := tx.usable(); err != nil {
+		return err
+	}
+	if namespace == "" || len(records) == 0 || len(records) > storagebridge.MaxRecordBatch {
+		return spi.ErrInvalidArgument
+	}
+	arguments := make([]any, 0, len(records)*3)
+	for _, record := range records {
+		if err := tx.validateWrite(namespace, record.Key); err != nil {
+			return err
+		}
+		arguments = append(arguments, namespace, bytes.Clone(record.Key), bytes.Clone(record.Value))
+	}
+	query := "INSERT INTO floret_backend_records(namespace, key, value) VALUES " + strings.TrimSuffix(strings.Repeat("(?,?,?),", len(records)), ",") + " ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value"
+	_, err := tx.tx.ExecContext(tx.ctx, query, arguments...)
+	return classifySQLiteError(tx.ctx, err)
+}

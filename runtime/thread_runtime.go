@@ -1263,6 +1263,9 @@ func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, me
 			return actor.state.contextErr
 		}
 		if actor.state.view.ViewVersion > 0 {
+			if !actor.hasCompleteSummaryPreview() {
+				return nil
+			}
 			summary = actor.threadSummary(meta)
 			found = true
 		} else {
@@ -1288,7 +1291,7 @@ func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, me
 		if actor.state.contextErr != nil {
 			return actor.state.contextErr
 		}
-		if actor.state.view.ViewVersion > 0 {
+		if actor.state.view.ViewVersion > 0 && actor.hasCompleteSummaryPreview() {
 			summary, found = actor.threadSummary(meta), true
 		}
 		return nil
@@ -1882,7 +1885,7 @@ func (service *threadRuntimeService) viewResult(ctx context.Context, threadID id
 			}
 		}
 		service.flushUpdateLocked(actor)
-		if actor.state.view.ViewVersion > 0 {
+		if actor.state.view.ViewVersion > 0 && actor.sourceWindow == nil {
 			view = threadResult(actor.state.view, mode)
 		}
 		return nil
@@ -1905,21 +1908,57 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 	if err != nil {
 		return runtimeHostError(err)
 	}
-	canonical, err := service.loadRetainedThreadView(ctx, threadID, meta)
-	if err != nil {
+	var acceptedLeaf string
+	if err := actor.apply(ctx, func() error {
+		if actor.sourceWindow != nil {
+			acceptedLeaf = actor.sourceWindow.leaf
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	canonical.Queue, canonical.RestoredInputs, err = hydrateThreadQueues(ctx, service.host.store.repo, threadID)
+	if acceptedLeaf != "" {
+		meta.LeafID = acceptedLeaf
+	}
+	canonical, err := service.loadRetainedThreadView(ctx, threadID, meta)
 	if err != nil {
 		return err
 	}
 	startHydration := false
 	err = actor.apply(ctx, func() error {
 		service.flushUpdateLocked(actor)
-		if actor.state.view.ViewVersion > 0 {
+		if actor.state.view.ViewVersion > 0 && actor.sourceWindow == nil {
 			return nil
 		}
-		canonical.ViewVersion = 1
+		version := actor.state.view.ViewVersion
+		if actor.sourceWindow != nil && actor.sourceWindow.leaf != canonical.projection.leafID {
+			return errCanonicalRefreshDiscarded
+		}
+		if acceptedLeaf != "" {
+			current, err := service.host.store.repo.Thread(ctx, threadID.String())
+			if err != nil {
+				return runtimeHostError(err)
+			}
+			if current.LeafID != acceptedLeaf {
+				canonical, err = service.advanceRetainedThreadView(ctx, threadID, canonical)
+				if err != nil {
+					return err
+				}
+				version++
+			}
+		}
+		canonical.Queue, canonical.RestoredInputs, err = hydrateThreadQueues(ctx, service.host.store.repo, threadID)
+		if err != nil {
+			return err
+		}
+		meta.LeafID = canonical.projection.leafID
+		requestKeys := hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Reads and reducer validation must finish before replacing the accepted
+		// window. A failed promotion remains retryable without invalidating it.
+		canonical.ViewVersion = max(1, version)
 		canonical.ThreadID = threadID
 		if canonical.Activity == ThreadActivityActive && !threadRuntimeViewNeedsAttention(canonical.ThreadView) {
 			canonical.RunProgress = &ThreadRunProgress{Phase: ThreadRunPhasePreparing}
@@ -1927,6 +1966,7 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 		actor.state.view = canonical.ThreadView
 		actor.interactionIndex = nil
 		actor.canonical = canonical.projection
+		actor.sourceWindow = nil
 		actor.canonical.items.releaseText()
 		actor.retainItems()
 		actor.invalidateItemIndex()
@@ -1936,7 +1976,7 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 		}
 		actor.state.turnID = canonical.TurnID
 		actor.state.runID = canonical.RunID
-		actor.state.requestKeys = hydrateThreadRequestKeys(ctx, service.host.store.repo, meta)
+		actor.state.requestKeys = requestKeys
 		actor.state.steering = actor.canonical.pendingSteering(canonical.TurnID)
 		if canonical.Activity == ThreadActivityActive && !actor.state.hydrationStarted && service.host.requireExecution() == nil {
 			actor.state.hydrationStarted = true
@@ -3131,14 +3171,31 @@ func (service *threadRuntimeService) refreshCanonical(threadID identity.ThreadID
 // have not yet reached the canonical journal.
 func (actor *threadRuntimeState) installCanonicalView(canonical canonicalThreadView) error {
 	terminal := actor.state.view.Activity == ThreadActivityIdle && actor.state.view.LastOutcome != nil
+	current := actor.state.view.Items
+	if actor.sourceWindow != nil {
+		// A bounded interval contains no live drafts. Validate its stable
+		// members against the full canonical ordinal positions before promotion.
+		for _, item := range current {
+			index := int(item.Ordinal) - 1
+			if index < 0 || index >= len(canonical.Items) {
+				return errCanonicalRefreshDiscarded
+			}
+			source := canonical.Items[index]
+			if source.ID != item.ID || source.Kind != item.Kind || source.TurnID != item.TurnID || source.RunID != item.RunID || source.CanonicalOrdinal != item.CanonicalOrdinal {
+				return errCanonicalRefreshDiscarded
+			}
+		}
+		current = nil
+	}
+	reconciled, ok := reconcileCanonicalThreadItems(current, canonical.Items, terminal, actor.state.attemptDraftIDs)
+	if !ok {
+		return fmt.Errorf("%w: item identity or canonical order conflict", errCanonicalRefreshDiscarded)
+	}
+	actor.sourceWindow = nil
 	if terminal && canonical.Activity == ThreadActivityIdle && canonical.LastOutcome != nil && actor.state.turnID == canonical.TurnID && actor.state.runID == canonical.RunID {
 		actor.state.view.LastOutcome = canonical.LastOutcome
 		actor.state.view.Failure = cloneThreadTurnFailure(canonical.Failure)
 		actor.state.view.Cancellation = canonical.Cancellation
-	}
-	reconciled, ok := reconcileCanonicalThreadItems(actor.state.view.Items, canonical.Items, terminal, actor.state.attemptDraftIDs)
-	if !ok {
-		return fmt.Errorf("%w: item identity or canonical order conflict", errCanonicalRefreshDiscarded)
 	}
 	actor.state.view.ViewVersion++
 	actor.replaceItems(reconciled)

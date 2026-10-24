@@ -37,3 +37,28 @@ func ReadRecords(tx spi.ReadTx, request RecordBatch) ([][]byte, error) {
 	}
 	return result, nil
 }
+
+// WriteRecords changes only the physical dispatch granularity. The caller's
+// transaction still owns atomicity, cancellation and publication. Validate the
+// complete batch before writing so the fallback and SQLite reject it alike.
+func WriteRecords(tx spi.WriteTx, namespace string, records []spi.Record) error {
+	if namespace == "" || len(records) == 0 || len(records) > MaxRecordBatch {
+		return spi.ErrInvalidArgument
+	}
+	for _, record := range records {
+		if len(record.Key) == 0 {
+			return spi.ErrInvalidArgument
+		}
+	}
+	if writer, ok := tx.(interface {
+		WriteFloretRecords(string, []spi.Record) error
+	}); ok {
+		return writer.WriteFloretRecords(namespace, records)
+	}
+	for _, record := range records {
+		if err := tx.Put(namespace, record.Key, record.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}

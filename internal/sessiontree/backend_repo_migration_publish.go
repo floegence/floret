@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/storage/spi"
 )
 
@@ -48,6 +49,14 @@ func (reader migrationSourceReader) Scan(request spi.ScanRequest) (page spi.Scan
 		return err
 	})
 	return page, err
+}
+
+func (reader migrationSourceReader) ReadFloretRecords(request storagebridge.RecordBatch) (values [][]byte, err error) {
+	err = reader.backend.View(reader.ctx, func(tx spi.ReadTx) error {
+		values, err = storagebridge.ReadRecords(tx, request)
+		return err
+	})
+	return values, err
 }
 
 func (reader migrationSourceReader) RecordSize(namespace string, key []byte) (size int64, err error) {

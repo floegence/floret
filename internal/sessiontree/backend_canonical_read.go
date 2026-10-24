@@ -335,6 +335,10 @@ func (repo *BackendRepo) PathEntriesWindow(ctx context.Context, options PathWind
 }
 
 func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWindowOptions, complete bool) (PathMetadataWindow, error) {
+	return repo.canonicalPathWindowMode(ctx, options, complete, false)
+}
+
+func (repo *BackendRepo) canonicalPathWindowMode(ctx context.Context, options PathWindowOptions, complete, contextMetadata bool) (PathMetadataWindow, error) {
 	if ctx == nil || options.Limit < 1 || options.Limit > 256 || options.Direction != PathWindowBefore && options.Direction != PathWindowAfter && options.Direction != PathWindowAround {
 		return PathMetadataWindow{}, spi.ErrInvalidArgument
 	}
@@ -347,7 +351,7 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 		}
 	}
 	if delegate := repo.delegate.Load(); delegate != nil {
-		return delegate.canonicalPathWindow(ctx, options, complete)
+		return delegate.canonicalPathWindowMode(ctx, options, complete, contextMetadata)
 	}
 	if options.YieldToForeground {
 		if err := repo.migrationGate.waitForForegroundReads(ctx); err != nil {
@@ -427,7 +431,13 @@ func (repo *BackendRepo) canonicalPathWindow(ctx context.Context, options PathWi
 		}
 		result.Entries = make([]PathMetadata, 0, int(last-first+1))
 		bodies := newCanonicalBodyPageReader(ctx, tx)
-		_, err = visitCanonicalPage(ctx, tx, meta, node.ID, "", int(last-first+1), func(entry Entry) error {
+		visitPage := func(visit func(Entry) error) (PathPage, error) {
+			if contextMetadata {
+				return visitContextMetadataPage(ctx, tx, meta, node, int(last-first+1), visit)
+			}
+			return visitCanonicalPage(ctx, tx, meta, node.ID, "", int(last-first+1), visit)
+		}
+		_, err = visitPage(func(entry Entry) error {
 			var metadata PathMetadata
 			var err error
 			if complete {

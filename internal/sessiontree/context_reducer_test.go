@@ -172,3 +172,45 @@ func TestCurrentContextStatusRejectsEveryExplicitIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestModelContextReducerMatchesCompleteCheckpointFacts(t *testing.T) {
+	model := &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "workspace", Title: "Workspace", Text: "preserved 🌸"}}}
+	path := []Entry{
+		{ID: "managed", Type: EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: model}},
+		{ID: "user", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "retain this source"}},
+		{ID: "call", Type: EntryToolCall, Message: session.Message{Role: session.Assistant, ToolCallID: "read", ToolName: "read", ToolArgs: `{"path":"source"}`}},
+		{ID: "result", Type: EntryToolResult, Message: session.Message{Role: session.Tool, ToolCallID: "read", ToolName: "read", Content: "large historical result"}},
+		{ID: "compact", Type: EntryCompaction, Summary: "complete summary", CompactedThroughEntryID: "result", ModelContextBaseline: model, KeptUserEntryIDs: []string{"user"}},
+		{ID: "clear", Type: EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: &session.ModelContextSnapshot{Sections: []session.ModelContextSection{}}}},
+	}
+	for _, corrupt := range []bool{false, true} {
+		source := append([]Entry(nil), path...)
+		if corrupt {
+			source[4].FirstKeptEntryID = "absent"
+		}
+		var complete ContextReducer
+		wantErr := complete.Append(source)
+		var partial ModelContextReducer
+		for i := range source {
+			if source[i].Type == EntryToolCall || source[i].Type == EntryToolResult {
+				source[i].Message.Content, source[i].Message.ToolArgs = "", ""
+			}
+		}
+		gotErr := partial.Append(source)
+		if (gotErr == nil) != (wantErr == nil) || corrupt && !errors.Is(gotErr, ErrAuthorityCorrupt) {
+			t.Fatalf("corrupt=%v got=%v want=%v", corrupt, gotErr, wantErr)
+		}
+		if corrupt {
+			continue
+		}
+		var want []session.Message
+		for _, message := range complete.Messages() {
+			if message.ModelContextSnapshot != nil {
+				want = append(want, session.Message{EntryID: message.EntryID, ModelContextSnapshot: message.ModelContextSnapshot})
+			}
+		}
+		if !reflect.DeepEqual(partial.ModelContexts(), want) {
+			t.Fatal("managed fact projection differs from complete history")
+		}
+	}
+}

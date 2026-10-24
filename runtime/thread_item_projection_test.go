@@ -30,7 +30,7 @@ func incrementalProjectionFixture(t testing.TB) []sessiontree.Entry {
 		{ID: "goal", Type: sessiontree.EntryGoal, Payload: encode(sessiontree.GoalChange{State: session.GoalState{Version: 1, Text: "Verify canonical facts", Status: "active", Actor: "user"}, Operation: "set"})},
 		{ID: "text-a", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "中文🌸", ContentSourceID: "answer", Reasoning: "reason", ReasoningSourceID: "thinking"}},
 		{ID: "text-b", Type: sessiontree.EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "\r\né", ContentSourceID: "answer", Reasoning: "reason", ReasoningSourceID: "thinking"}},
-		{ID: "steer:first", Type: sessiontree.EntrySteeringRequested, Message: session.Message{Role: session.User, Content: "Verify twice"}},
+		{ID: "steer:first", Type: sessiontree.EntrySteeringRequested, RequestKey: "steer:first", RequestFingerprint: "steer:first", Message: session.Message{Role: session.User, Content: "Verify twice"}},
 		{ID: "approval", Type: sessiontree.EntryInteractionAsked, Payload: encode(ThreadInteraction{ID: "approval", TurnID: "turn", RunID: "run", Kind: ThreadInteractionApproval, ToolCallID: "work"})},
 		{ID: "interaction-resolved:approval", Type: sessiontree.EntryInteractionDone, Payload: encode(InteractionResolution{Accepted: true, Approved: func() *bool { v := true; return &v }()})},
 		{ID: "work-call", Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "inspect", ToolCallID: "work"}},

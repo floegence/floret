@@ -9,9 +9,10 @@ import (
 )
 
 // Cold initialization selects context identities from body-free metadata, then
-// shares selected source fields between the timeline and checked context reducers.
+// shares selected source fields between the timeline and managed-fact reducers.
 // Ordinary tool activity bodies load only for selected windows or explicit full
-// reads. Context bodies remain complete; compacted bodies are released.
+// reads. Managed facts use the canonical context rules without loading ordinary
+// tool arguments and result text; executable context still reads complete bodies.
 // This still traverses history and is not a bounded cold item index.
 func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context, threadID identity.ThreadID, meta sessiontree.ThreadMeta) (canonicalThreadView, error) {
 	scanner, sharedScan := service.host.store.repo.(sessiontree.PathProjectionScanner)
@@ -30,7 +31,7 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 	var selected []string
 	var completeContext bool
 	var err error
-	var contextProjection sessiontree.ContextReducer
+	var contextProjection sessiontree.ModelContextReducer
 	var contextSources []sessiontree.Entry
 	nextContext := 0
 	var selectedIDs map[string]bool
@@ -116,7 +117,7 @@ func (service *threadRuntimeService) loadRetainedThreadView(ctx context.Context,
 		if nextContext != len(selected) {
 			return canonicalThreadView{}, ErrAuthorityCorrupt
 		}
-		model, err = service.modelContextFromHistory(ctx, threadID, contextSources, contextProjection.Messages())
+		model, err = service.modelContextFromHistory(ctx, threadID, contextSources, contextProjection.ModelContexts())
 		if err != nil {
 			return canonicalThreadView{}, err
 		}
@@ -146,10 +147,10 @@ func coldProjectionFields(source sessiontree.PathMetadata, contextSelected, cont
 		if body.Field == "activity_json" && localTool && source.Entry.Message.ToolName != "goal" {
 			continue
 		}
-		// Local tool parameters and results have no timeline text. The checked
-		// context still receives every selected body; Goal and control-pair
-		// validation retain their semantic inputs even outside that selection.
-		if localTool && !contextSelected && !controlResult && source.Entry.Message.ToolName != "goal" && (body.Field == "arguments" || body.Field == "content") {
+		// Ordinary local tool bodies affect neither presentation nor managed
+		// facts. Goal and control-pair validation retain their semantic inputs,
+		// including controls outside the selected retry path.
+		if localTool && !controlResult && source.Entry.Message.ControlSignal == nil && source.Entry.Message.ToolName != "goal" && (body.Field == "arguments" || body.Field == "content") {
 			continue
 		}
 		fields = append(fields, body.Field)
@@ -196,4 +197,50 @@ func coldContextSelection(metadata []sessiontree.PathMetadata) ([]string, bool, 
 	}
 	ids, err := sessiontree.ContextEntrySelection(metadata)
 	return ids, true, runtimeHostError(err)
+}
+
+// The candidate projection is private until promotion succeeds. Reading or
+// reducing a concurrent tail must never mutate the actor's accepted window.
+func (service *threadRuntimeService) advanceRetainedThreadView(ctx context.Context, threadID identity.ThreadID, canonical canonicalThreadView) (canonicalThreadView, error) {
+	projection := canonical.projection
+	tail, err := service.readCanonicalTail(ctx, threadID.String(), projection.leafID)
+	if err != nil {
+		return canonicalThreadView{}, err
+	}
+	projection.resetChanges()
+	if err := projection.append(tail.entries); err != nil {
+		return canonicalThreadView{}, err
+	}
+	var model *ThreadModelContext
+	if canonical.Context != nil {
+		model = canonical.Context.ModelContext
+	}
+	if projection.modelChanged {
+		path, err := service.host.store.repo.Path(ctx, threadID.String(), projection.leafID)
+		if err != nil {
+			return canonicalThreadView{}, runtimeHostError(err)
+		}
+		model, err = service.readModelContext(ctx, threadID, path)
+		if err != nil {
+			return canonicalThreadView{}, err
+		}
+	}
+	model, _, err = service.resolveCanonicalModel(ctx, threadID.String(), model, projection.modelChanged)
+	if err != nil {
+		return canonicalThreadView{}, err
+	}
+	canonical, err = projection.retainedSnapshot(threadID, model)
+	if err != nil {
+		return canonicalThreadView{}, err
+	}
+	for index, item := range canonical.Items {
+		canonical.Items[index] = retainCanonicalItem(item, projection.leafID)
+	}
+	canonical.TurnID, canonical.RunID, canonical.Activity, canonical.LastOutcome, canonical.Failure = projection.turns.lifecycle.snapshot()
+	if facts := projection.turns.lifecycle.turns[canonical.TurnID.String()]; facts != nil {
+		canonical.TurnKind = facts.kind
+		canonical.Cancellation = cloneThreadCancellation(facts.cancellation)
+	}
+	canonical.ParentEvents, err = service.parentEventView(ctx, threadID)
+	return canonical, err
 }

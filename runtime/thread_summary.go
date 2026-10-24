@@ -89,6 +89,14 @@ func summaryItemText(item ThreadItem) string {
 	return strings.TrimRightFunc(item.textSummary, unicode.IsSpace)
 }
 
+// A suffix containing only tools cannot prove that the complete history has
+// no preview. Let the canonical summary reader locate the earlier message;
+// opening a display window must never clear an existing sidebar summary.
+func (actor *threadRuntimeState) hasCompleteSummaryPreview() bool {
+	actor.refreshSummaryPositions()
+	return actor.sourceWindow == nil || !actor.sourceWindow.hasBefore || actor.summaryPreviewIndex >= 0
+}
+
 func (actor *threadRuntimeState) threadSummary(meta sessiontree.ThreadMeta) ThreadSummary {
 	actor.refreshSummaryPositions()
 	view := actor.state.view

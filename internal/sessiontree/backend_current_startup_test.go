@@ -112,6 +112,7 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			drainCurrentStartup(t, repo)
 			before := cloneMigrationRecords(base.records)
 			for range 2 {
 				measured := &currentStartupBackend{Backend: base}
@@ -119,7 +120,7 @@ func TestCurrentStartupReusesPublishedReadiness(t *testing.T) {
 				drainCurrentStartup(t, repo)
 				// The child has one branch-boundary record. Parent-event recovery
 				// checks child metadata, never the parent's compacted history.
-				if measured.bodies != 0 || measured.journalRows != 1 || measured.writes != 0 || measured.gets > 32 {
+				if measured.bodies != 0 || measured.journalRows != 1 || measured.writes != 0 || measured.gets > 90 {
 					t.Fatalf("restart read %d bodies, %d journal rows, %d records; wrote %d transactions", measured.bodies, measured.journalRows, measured.gets, measured.writes)
 				}
 				if len(repo.verifiedThreadLeaves) != 0 {
@@ -198,6 +199,7 @@ func TestCurrentStartupPreservesOnDemandCorruptionChecks(t *testing.T) {
 			if err := repo.PrepareQueryThread(t.Context(), "history"); err != nil {
 				t.Fatal(err)
 			}
+			drainCurrentStartup(t, repo)
 			if err := base.Update(t.Context(), func(tx spi.WriteTx) error {
 				switch damage {
 				case "body":

@@ -234,3 +234,34 @@ func TestThreadUpdatesOversizedBatchDoesNotBlockCanonicalProgress(t *testing.T) 
 		t.Fatal("resubscription did not recover")
 	}
 }
+
+func TestCanonicalItemReplacementPreservesUnchangedOrder(t *testing.T) {
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{Items: []ThreadItem{{ID: "first", Ordinal: 1}, {ID: "second", Ordinal: 2}}}}}
+	actor.replaceItems([]ThreadItem{{ID: "first", Ordinal: 1}, {ID: "second", Ordinal: 2}, {ID: "new", Ordinal: 3}})
+	if actor.mutations.order {
+		t.Fatal("tail growth replaced accepted ordering")
+	}
+	actor.mutations = threadMutations{}
+	actor.replaceItems([]ThreadItem{{ID: "second", Ordinal: 1}, {ID: "first", Ordinal: 2}, {ID: "new", Ordinal: 3}})
+	if !actor.mutations.order {
+		t.Fatal("canonical reorder omitted explicit order")
+	}
+}
+
+func TestFirstAttemptWithoutDraftsDoesNotReplaceWindow(t *testing.T) {
+	actor := &threadRuntimeState{state: threadRuntimeData{view: ThreadView{Items: []ThreadItem{{ID: "retained", Ordinal: 1, CanonicalOrdinal: 2}}}}}
+	actor.discardAttemptDraft()
+	if actor.mutations.order || len(actor.mutations.items) != 0 {
+		t.Fatal("empty attempt reordered canonical history")
+	}
+	actor.state.attemptDraftIDs = map[string]bool{"a": true, "b": true}
+	actor.state.view.Items = append(actor.state.view.Items, ThreadItem{ID: "a", Ordinal: 2}, ThreadItem{ID: "b", Ordinal: 3})
+	actor.orderAttemptOutput([]string{"a", "b"})
+	if actor.mutations.order {
+		t.Fatal("unchanged output order replaced accepted window")
+	}
+	actor.orderAttemptOutput([]string{"b", "a"})
+	if !actor.mutations.order {
+		t.Fatal("actual draft reorder was not published")
+	}
+}

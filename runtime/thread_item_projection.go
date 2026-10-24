@@ -31,17 +31,13 @@ type threadItemProjection struct {
 	interactionIndex    map[string]int
 	itemIndex           map[string]int
 	toolItemIndex       map[string]int
-	failedControls      map[string]threadControlIdentity
-	reasoningIndex      map[string]int
-	contentIndex        map[string]int
 	contentBuffers      map[int]*threadContentBuffer
 	goalArguments       map[string]string
 	ordinal             uint64
-	controls            sessiontree.ControlResultProjection
+	membership          sessiontree.ItemMembership
 	goal                sessiontree.GoalProjection
 	goalActivity        goalactivity.Projector
 	steering            threadSteeringProjection
-	toolInputs          sessiontree.ToolInputProjection
 	steeringItems       map[string]int
 	approvalByTool      map[string]string
 	runningHosted       map[string]map[int]bool
@@ -58,13 +54,12 @@ type threadPendingInputItem struct {
 }
 
 func newThreadItemProjection() *threadItemProjection {
-	return &threadItemProjection{goal: sessiontree.GoalProjection{State: session.GoalState{Status: "absent"}}, changedItems: map[int]bool{}, changedInteractions: map[int]bool{}, entryItemIndex: map[string]int{}, items: []ThreadItem{}, interactions: []ThreadInteraction{}, interactionIndex: map[string]int{}, itemIndex: map[string]int{}, toolItemIndex: map[string]int{}, failedControls: map[string]threadControlIdentity{}, reasoningIndex: map[string]int{}, contentIndex: map[string]int{}, contentBuffers: map[int]*threadContentBuffer{}, goalArguments: map[string]string{}, steeringItems: map[string]int{}, approvalByTool: map[string]string{}, runningHosted: map[string]map[int]bool{}, pendingInputs: map[string]threadPendingInputItem{}, hiddenItems: map[int]bool{}, hiddenInteractions: map[int]bool{}}
+	return &threadItemProjection{goal: sessiontree.GoalProjection{State: session.GoalState{Status: "absent"}}, changedItems: map[int]bool{}, changedInteractions: map[int]bool{}, entryItemIndex: map[string]int{}, items: []ThreadItem{}, interactions: []ThreadInteraction{}, interactionIndex: map[string]int{}, itemIndex: map[string]int{}, toolItemIndex: map[string]int{}, contentBuffers: map[int]*threadContentBuffer{}, goalArguments: map[string]string{}, steeringItems: map[string]int{}, approvalByTool: map[string]string{}, runningHosted: map[string]map[int]bool{}, pendingInputs: map[string]threadPendingInputItem{}, hiddenItems: map[int]bool{}, hiddenInteractions: map[int]bool{}}
 }
 func (projection *threadItemProjection) append(entries []sessiontree.Entry, anchors map[string]string) error {
 	items, interactions := projection.items, projection.interactions
 	initialItems, initialInteractions := len(items), len(interactions)
 	interactionIndex, itemIndex, toolItemIndex := projection.interactionIndex, projection.itemIndex, projection.toolItemIndex
-	failedControls, reasoningIndex, contentIndex := projection.failedControls, projection.reasoningIndex, projection.contentIndex
 	contentBuffers, goalArguments := projection.contentBuffers, projection.goalArguments
 	defer func() {
 		projection.items, projection.interactions = items, interactions
@@ -76,7 +71,20 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 	}()
 	var canonicalOrdinal uint64
+	var membership sessiontree.ItemMembershipStep
+	var contributions []sessiontree.ItemMember
+	var membershipErr error
 	appendItem := func(items []ThreadItem, item ThreadItem) []ThreadItem {
+		if len(contributions) == 0 {
+			membershipErr = fmt.Errorf("%w: item %q has no source membership", ErrAuthorityCorrupt, item.ID)
+		} else {
+			member := contributions[0]
+			contributions = contributions[1:]
+			if member.Slot != len(items) || !member.Hidden && member.ID != item.ID {
+				membershipErr = fmt.Errorf("%w: item %q at %d differs from membership %q at %d", ErrAuthorityCorrupt, item.ID, len(items), member.ID, member.Slot)
+			}
+			item.Kind = ThreadItemKind(member.Kind)
+		}
 		if item.ID != "" {
 			if projection.presentationIndex == nil {
 				projection.presentationIndex = map[string]int{}
@@ -90,21 +98,26 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 	var outputStarted, outputEnded *time.Time
 	appendReasoning := func(entry sessiontree.Entry, turnID identity.TurnID, runID identity.RunID, createdAt time.Time) {
 		text, source := entry.Message.Reasoning, entry.Message.ReasoningSourceID
-		if text == "" {
+		if membership.Reasoning == nil {
 			return
 		}
-		if index, found := reasoningIndex[source]; found {
+		if index := membership.Reasoning.Member.Slot; !membership.Reasoning.New {
 			if !projection.metadataOnly {
 				items[index].sourceEntryIDs = append(items[index].sourceEntryIDs, entry.ID)
 			}
 			projection.recordEntryItem(entry.ID, index)
 			return
 		}
-		reasoningIndex[source] = len(items)
 		projection.recordEntryItem(entry.ID, len(items))
 		items = appendItem(items, ThreadItem{ID: source, contentSourceID: source, TurnID: turnID, RunID: runID, Kind: ThreadItemThinking, Text: text, CreatedAt: createdAt, sourceEntryIDs: []string{entry.ID}, OutputStartedAt: outputStarted, OutputEndedAt: outputEnded})
 	}
 	for entryIndex, entry := range entries {
+		if membershipErr != nil {
+			return membershipErr
+		}
+		if len(contributions) != 0 {
+			return fmt.Errorf("%w: source membership was not consumed before %q", ErrAuthorityCorrupt, entry.ID)
+		}
 		var timingErr error
 		outputStarted, outputEnded, timingErr = sessiontree.OutputTiming(entry)
 		if timingErr != nil {
@@ -112,9 +125,15 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 		}
 		canonicalOrdinal = projection.ordinal + uint64(entryIndex+1)
 
-		redundantSource, err := projection.controls.Observe(entry)
+		var err error
+		membership, err = projection.membership.Observe(entry, canonicalOrdinal)
 		if err != nil {
 			return runtimeHostError(err)
+		}
+		for _, contribution := range []*sessiontree.ItemContribution{membership.Reasoning, membership.Content, membership.Main, membership.Input} {
+			if contribution != nil && contribution.New {
+				contributions = append(contributions, contribution.Member)
+			}
 		}
 		if err := projection.goal.Observe(entry); err != nil {
 			return runtimeHostError(err)
@@ -131,7 +150,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				projection.changedItems[index] = true
 			}
 		}
-		readyInputs := projection.toolInputs.Observe(entry)
+		readyInputs := membership.ReadyInputs
 		readyToolInputs := map[string]bool{}
 		for _, id := range readyInputs {
 			readyToolInputs[id] = true
@@ -188,7 +207,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				anchors[compact.OperationID] = anchor
 			}
 		}
-		if redundantSource != "" {
+		if membership.Skip {
 			continue
 		}
 		if entry.Type == sessiontree.EntryCustom && entry.Metadata["kind"] == sessiontree.HostedToolEntryKind {
@@ -199,7 +218,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			turnID, runID := observed.TurnID, observed.RunID
 			activity := observation.BuildActivityTimeline(observation.ActivityRunMeta{}, []observation.Event{observed}, occurredAt.UnixMilli()).Items[0]
 			toolKey := "hosted:" + threadToolKey(turnID, runID, observed.ToolID)
-			if previous, found := toolItemIndex[toolKey]; found {
+			if previous := membership.Main.Member.Slot; !membership.Main.New {
 				activity.StartedAtUnixMS = items[previous].Activity.StartedAtUnixMS
 				activity.Presentation = tools.MergeActivityPresentations(items[previous].Activity.Presentation, activity.Presentation)
 				items[previous].Activity = &activity
@@ -228,7 +247,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			}
 			items = appendItem(items, item)
 		case sessiontree.EntryUserMessage, sessiontree.EntrySteeringRequested:
-			if entry.Message.Kind == "control_signal" || entry.Message.Kind == session.MessageKindGoalReview {
+			if membership.Main == nil {
 				continue
 			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
@@ -249,10 +268,10 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			}
 			if entry.Message.Kind != "control_signal" {
 				appendReasoning(entry, turnID, runID, occurredAt)
-				if entry.Message.Content == "" {
+				if membership.Content == nil {
 					continue
 				}
-				if index, found := contentIndex[entry.Message.ContentSourceID]; found {
+				if index := membership.Content.Member.Slot; !membership.Content.New {
 					projection.changedItems[index] = true
 					projection.recordEntryItem(entry.ID, index)
 					previous := &items[index]
@@ -282,7 +301,6 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 						continue
 					}
 				}
-				contentIndex[entry.Message.ContentSourceID] = len(items)
 				projection.recordEntryItem(entry.ID, len(items))
 				items = appendItem(items, ThreadItem{ID: entry.Message.ContentSourceID, contentSourceID: entry.Message.ContentSourceID, TurnID: turnID, RunID: runID, Kind: ThreadItemAssistant, Text: entry.Message.Content, Sources: runtimeSourceRefs(entry.Message.Sources), CreatedAt: occurredAt, sourceEntryIDs: []string{entry.ID}, OutputStartedAt: outputStarted, OutputEndedAt: outputEnded})
 			}
@@ -325,7 +343,6 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					return inputErr
 				}
 				if classification == controlstate.Failed {
-					failedControls[signal.CallID] = threadControlIdentity{turnID: entry.TurnID, runID: entry.RunID}
 					continue
 				}
 				if classification == controlstate.WaitingInput {
@@ -365,7 +382,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				}
 			}
 			toolKey := threadToolKey(turnID, runID, entry.Message.ToolCallID)
-			if previous, found := toolItemIndex[toolKey]; found && entry.Type == sessiontree.EntryToolResult {
+			if previous := membership.Main.Member.Slot; !membership.Main.New {
 				if items[previous].activityOmitted && !projection.deferActivity {
 					if projection.restoreActivity == nil {
 						return ErrAuthorityCorrupt
@@ -405,7 +422,7 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 					itemIndex[approvalID] = toolIndex
 				}
 			}
-			if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil && !readyToolInputs[entry.ID] {
+			if membership.Input != nil && membership.Input.Member.Hidden {
 				// Retain only the input request, never the result body or raw record.
 				pending := entry
 				pending.Raw, pending.Summary, pending.Error, pending.Payload = "", "", "", nil
@@ -428,10 +445,6 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				return decodeErr
 			}
 		case sessiontree.EntryInteractionAsked:
-			interactionID := strings.TrimPrefix(entry.ID, "interaction-requested:")
-			if failed, ok := failedControls[interactionID]; ok && failed.turnID == entry.TurnID && failed.runID == entry.RunID {
-				continue
-			}
 			turnID, runID, identityErr := threadRuntimeEntryIdentity(entry)
 			if identityErr != nil {
 				return identityErr
@@ -446,14 +459,6 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 			interaction.RunID = runID
 			if interaction.ID == "" {
 				return ErrAuthorityCorrupt
-			}
-			if previous, ok := interactionIndex[interaction.ID]; ok {
-				current := interactions[previous]
-				if current.TurnID != interaction.TurnID || current.RunID != interaction.RunID || current.Kind != interaction.Kind {
-					return ErrAuthorityCorrupt
-				}
-				// A repeated request cannot replace the committed control or reopen its answer.
-				continue
 			}
 			interactionIndex[interaction.ID] = len(interactions)
 			interactions = append(interactions, interaction)
@@ -503,6 +508,12 @@ func (projection *threadItemProjection) append(entries []sessiontree.Entry, anch
 				projection.changedItems[index] = true
 			}
 		}
+	}
+	if membershipErr != nil {
+		return membershipErr
+	}
+	if len(contributions) != 0 {
+		return fmt.Errorf("%w: final source membership was not consumed", ErrAuthorityCorrupt)
 	}
 	projection.ordinal += uint64(len(entries))
 	return nil
@@ -596,11 +607,5 @@ func (projection *threadItemProjection) itemForEntry(id string) (ThreadItem, boo
 	return item, true
 }
 func (projection *threadItemProjection) visibleOrdinal(index int) uint64 {
-	ordinal := index + 1
-	for hidden := range projection.hiddenItems {
-		if hidden <= index {
-			ordinal--
-		}
-	}
-	return uint64(ordinal)
+	return projection.membership.Ordinal(index)
 }

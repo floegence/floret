@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -200,7 +201,37 @@ func putEntryLocator(ctx context.Context, tx spi.WriteTx, threadID string, ordin
 	if err := appendSparseSource(tx, threadID, ordinal, entry); err != nil {
 		return err
 	}
-	return putJournalCount(tx, threadID, ordinal+1)
+	if err := appendContextSourceMetadata(tx, entry, ordinal); err != nil {
+		return err
+	}
+	if err := appendProjectionSources(tx, entry, ordinal); err != nil {
+		return err
+	}
+	if err := putJournalCount(tx, threadID, ordinal+1); err != nil {
+		return err
+	}
+	membership := &canonicalMembershipAppend{}
+	if err := appendModelContextSources(ctx, tx, entry, membership); err != nil {
+		return err
+	}
+	if err := appendCanonicalContextProjection(ctx, tx, entry); err != nil {
+		return fmt.Errorf("context projection for source %q: %w", entry.ID, err)
+	}
+	if err := appendWindowSources(ctx, tx, entry, membership); err != nil {
+		if !errors.Is(err, errItemMembershipSource) {
+			return fmt.Errorf("window sources for %q: %w", entry.ID, err)
+		}
+		if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, windowSourcesKey(threadID)); err != nil {
+			return err
+		}
+	}
+	if err := appendCanonicalItemMembership(ctx, tx, entry, membership); err != nil {
+		if errors.Is(err, errItemMembershipSource) {
+			return deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, itemManifestKey(threadID))
+		}
+		return fmt.Errorf("item membership for source %q: %w", entry.ID, err)
+	}
+	return nil
 }
 
 // These are source locators only. Execution authority remains in the immutable

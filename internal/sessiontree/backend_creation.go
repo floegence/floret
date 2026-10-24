@@ -173,6 +173,18 @@ func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadM
 	if err := putJournalCount(tx, meta.ID, 0); err != nil {
 		return nil, err
 	}
+	if err := putItemJSON(tx, itemManifestKey(meta.ID), itemMembershipManifest{}); err != nil {
+		return nil, err
+	}
+	if err := putItemJSON(tx, contextProjectionKey(meta.ID), storedContextProjection{}); err != nil {
+		return nil, err
+	}
+	if err := putItemJSON(tx, modelContextSourcesKey(meta.ID), storedModelContextSources{}); err != nil {
+		return nil, err
+	}
+	if err := putItemJSON(tx, windowSourcesKey(meta.ID), storedWindowSources{}); err != nil {
+		return nil, err
+	}
 	state := newQueryThread()
 	projector := &queryProjector{}
 	projector.finish(state, meta.ID, meta)

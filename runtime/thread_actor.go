@@ -20,6 +20,7 @@ import (
 type threadRuntimeState struct {
 	preparation           *threadReadPreparation
 	canonical             *threadCanonicalProjection
+	sourceWindow          *threadSourceProjection
 	observedItemIDs       map[string]bool
 	summaryIndexed        bool
 	summaryPreviewIndex   int
@@ -82,6 +83,7 @@ func (runtime *threadRuntimeState) releaseDeletedState() {
 	runtime.stopUpdateTimer()
 	runtime.state = threadRuntimeData{}
 	runtime.canonical = nil
+	runtime.sourceWindow = nil
 	runtime.observedItemIDs = nil
 	runtime.summaryIndexed = false
 	runtime.summaryPreviewIndex = 0
@@ -565,7 +567,7 @@ func liveEventAttemptIdentity(event Event) (identity.LogicalRequestID, string, i
 }
 
 func (runtime *threadRuntimeState) discardAttemptDraft() {
-	runtime.mutations.order = true
+	reordered := false
 	runtime.mutations.boundary = true
 	runtime.outputOrder = nil
 	runtime.state.openTextSegmentID = ""
@@ -576,11 +578,13 @@ func (runtime *threadRuntimeState) discardAttemptDraft() {
 			runtime.markItem(item.ID, ThreadItemRemoved)
 			continue
 		}
+		reordered = reordered || item.Ordinal != uint64(len(items)+1)
 		item.Ordinal = uint64(len(items) + 1)
 		items = append(items, item)
 	}
 	clear(runtime.state.view.Items[len(items):])
 	runtime.state.view.Items = items
+	runtime.mutations.order = runtime.mutations.order || reordered
 	runtime.invalidateItemIndex()
 	runtime.textBuffer.Reset()
 	runtime.textBufferID = ""
@@ -624,12 +628,14 @@ func (runtime *threadRuntimeState) orderAttemptOutput(order []string) {
 		return ranks[item.ID]
 	}
 	sort.SliceStable(drafts, func(i, j int) bool { return rank(drafts[i]) < rank(drafts[j]) })
+	reordered := false
 	for i, position := range positions {
+		reordered = reordered || runtime.state.view.Items[position].ID != drafts[i].ID
 		drafts[i].Ordinal = uint64(position + 1)
 		runtime.state.view.Items[position] = drafts[i]
 	}
 	runtime.invalidateItemIndex()
-	runtime.mutations.order = true
+	runtime.mutations.order = runtime.mutations.order || reordered
 }
 
 // itemIndexByID extends the index for appended rows. Reordering and removals

@@ -440,10 +440,13 @@ func (actor *threadRuntimeState) replaceItems(items []ThreadItem) {
 			old[item.ID] = i
 		}
 	}
+	reordered, previous := false, -1
 	for _, item := range items {
 		kind := ThreadItemAdded
-		if _, ok := old[item.ID]; ok {
+		if position, ok := old[item.ID]; ok {
 			kind = ThreadItemReplaced
+			reordered = reordered || position < previous || actor.state.view.Items[position].Ordinal != item.Ordinal
+			previous = position
 		}
 		actor.markItem(item.ID, kind)
 	}
@@ -451,7 +454,7 @@ func (actor *threadRuntimeState) replaceItems(items []ThreadItem) {
 	actor.invalidateItemIndex()
 	actor.textBuffer.Reset()
 	actor.textBufferID = ""
-	actor.mutations.order = true
+	actor.mutations.order = actor.mutations.order || reordered
 	actor.mutations.boundary = true
 }
 func (actor *threadRuntimeState) refreshAttention() {

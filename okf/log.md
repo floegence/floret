@@ -4,6 +4,11 @@
   output budgets and reasoning/tool replay before downstream release adoption.
   See [provider support](api/provider.md#moonshot-kimi-k31-catalog).
 
+- 2026-10-23: Document source-backed window initialization, shared private index
+  preparation and atomic promotion to the existing complete actor. Preserve
+  explicit first-upgrade and product acceptance limits in
+  [thread updates](api/thread-updates.md#shared-cold-preparation).
+
 - 2026-10-23: Persist Engine-owned output receipt intervals and expose optional
   item timestamps across live views, history, restart and Fork. See
   [output sources](decisions/output-sources.md#output-timing).

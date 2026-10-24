@@ -29,6 +29,9 @@ func (repo *BackendRepo) MoveLeaf(ctx context.Context, threadID, entryID string)
 		}
 		var err error
 		mutation.query, err = rebuildCanonicalQuery(ctx, mutation.tx, mutation.meta)
-		return err
+		if err != nil {
+			return err
+		}
+		return rebuildItemMembership(ctx, mutation.tx, mutation.meta)
 	}, func(memory *MemoryRepo) error { return memory.MoveLeaf(ctx, threadID, entryID) })
 }

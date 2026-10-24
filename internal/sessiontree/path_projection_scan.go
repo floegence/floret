@@ -36,26 +36,18 @@ type PathProjectionScanner interface {
 	ScanPathProjection(context.Context, string, string, func([]PathMetadata) error, func(PathMetadata) []string, func(PathProjectionPage) error) error
 }
 
-func scanPathProjection(ctx context.Context, reader PathWindowReader, threadID, leafID string, prepare func([]PathMetadata) error, materialize func(PathMetadataWindow) (PathProjectionPage, error), visit func(PathProjectionPage) error) error {
+func scanPathProjection(ctx context.Context, reader PathWindowReader, threadID, leafID string, restore func([]PathMetadataWindow) error, prepare func([]PathMetadata) error, materialize func(PathMetadataWindow) (PathProjectionPage, error), visit func(PathProjectionPage) error) error {
 	if ctx == nil || strings.TrimSpace(threadID) == "" || prepare == nil || visit == nil {
 		return spi.ErrInvalidArgument
 	}
 	options := PathWindowOptions{ThreadID: threadID, LeafID: leafID, Direction: PathWindowAfter, Limit: 256}
 	var pages []PathMetadataWindow
-	var selected []PathMetadata
 	for {
 		page, err := reader.PathMetadataWindow(ctx, options)
 		if err != nil {
 			return err
 		}
 		pages = append(pages, page)
-		if selected == nil {
-			selected = make([]PathMetadata, 0, page.ThroughOrdinal)
-		}
-		for _, source := range page.Entries {
-			// Selection cannot mutate the scan's validated immutable sources.
-			selected = append(selected, PathMetadata{Entry: cloneEntry(source.Entry), Bodies: append([]CanonicalField(nil), source.Bodies...)})
-		}
 		if !page.HasAfter {
 			break
 		}
@@ -63,6 +55,18 @@ func scanPathProjection(ctx context.Context, reader PathWindowReader, threadID, 
 			return ErrAuthorityCorrupt
 		}
 		options.LeafID, options.AnchorID = page.LeafID, page.LastEntryID
+	}
+	if restore != nil {
+		if err := restore(pages); err != nil {
+			return err
+		}
+	}
+	selected := make([]PathMetadata, 0, pages[0].ThroughOrdinal)
+	for _, page := range pages {
+		for _, source := range page.Entries {
+			// Selection cannot mutate the scan's validated immutable sources.
+			selected = append(selected, PathMetadata{Entry: cloneEntry(source.Entry), Bodies: append([]CanonicalField(nil), source.Bodies...)})
+		}
 	}
 	if err := prepare(selected); err != nil {
 		return err
@@ -107,7 +111,12 @@ func (repo *BackendRepo) ScanPathProjection(ctx context.Context, threadID, leafI
 		return err
 	}
 	defer release()
-	return scanPathProjection(ctx, repo, threadID, leafID, prepare, func(page PathMetadataWindow) (PathProjectionPage, error) {
+	if err := repo.prepareContextSourceMetadata(ctx, threadID); err != nil {
+		return err
+	}
+	return scanPathProjection(ctx, contextProjectionWindowReader{repo}, threadID, leafID, func(pages []PathMetadataWindow) error {
+		return repo.restoreSelectedContextStatuses(ctx, threadID, pages)
+	}, prepare, func(page PathMetadataWindow) (PathProjectionPage, error) {
 		var result PathProjectionPage
 		err := repo.canonicalThreadView(ctx, threadID, func(tx spi.ReadTx, meta ThreadMeta) error {
 			if page.LeafID != "" {
@@ -148,7 +157,7 @@ func (repo *MemoryRepo) ScanPathProjection(ctx context.Context, threadID, leafID
 	if fields == nil {
 		return spi.ErrInvalidArgument
 	}
-	return scanPathProjection(ctx, repo, threadID, leafID, prepare, func(page PathMetadataWindow) (PathProjectionPage, error) {
+	return scanPathProjection(ctx, repo, threadID, leafID, nil, prepare, func(page PathMetadataWindow) (PathProjectionPage, error) {
 		return repo.materializeProjectionPage(ctx, threadID, page, fields)
 	}, visit)
 }

@@ -139,6 +139,9 @@ func visitCanonicalTombstones(ctx context.Context, tx spi.ReadTx, visit func(Thr
 }
 
 func deleteCanonicalThreadRecords(ctx context.Context, tx spi.WriteTx, meta ThreadMeta) error {
+	if err := deleteItemMembership(ctx, tx, meta.ID); err != nil {
+		return err
+	}
 	count, err := readJournalCount(tx, meta.ID)
 	if err != nil {
 		return err

@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/v7/observation"
 	"github.com/floegence/floret/v7/provider"
 	"github.com/floegence/floret/v7/storage"
+	"github.com/floegence/floret/v7/threadquery"
 	"github.com/floegence/floret/v7/tools"
 )
 
@@ -3696,6 +3697,17 @@ func TestThreadServiceRestartHydratesAcceptedTurnAndDurableQueue(t *testing.T) {
 		preHydrationSummaries[0].TurnID != turnID || preHydrationSummaries[0].QueueCount != 1 ||
 		preHydrationSummaries[0].LastItemPreview != "resume me" || preHydrationSummaries[0].LastItemAt.IsZero() {
 		t.Fatalf("pre-hydration summary=%#v", preHydrationSummaries)
+	}
+	windowScope := threadquery.Scope{Authority: "recovery-test", ThreadIDs: []identity.ThreadID{created.ThreadID}}
+	sub, err := secondService.(*threadRuntimeService).SubscribeWindowUpdates(t.Context(), windowScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	if err := sub.SetWindow(t.Context(), windowScope, ThreadWindowInput{ThreadID: created.ThreadID}); err != nil {
+		t.Fatal(err)
+	}
+	for update := nextUpdate(t, sub); update.Window == nil; update = nextUpdate(t, sub) {
 	}
 	hydrated, err := secondService.View(t.Context(), created.ThreadID)
 	if err != nil || hydrated.Activity != ThreadActivityActive || len(hydrated.Queue) != 1 {

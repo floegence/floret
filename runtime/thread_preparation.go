@@ -17,12 +17,25 @@ type threadReadPreparation struct {
 }
 
 func (service *threadRuntimeService) prepareThreadView(ctx context.Context, id identity.ThreadID, actor *threadRuntimeState) error {
+	return service.prepareThreadRead(ctx, id, actor, false)
+}
+
+func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id identity.ThreadID, actor *threadRuntimeState, window bool) error {
 	var pending *threadReadPreparation
 	err := actor.apply(ctx, func() error {
 		if err := service.host.available(); err != nil {
 			return err
 		}
-		if actor.state.view.ViewVersion > 0 {
+		if actor.state.contextErr != nil {
+			canonical, err := service.loadCanonicalThreadView(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := actor.installCanonicalView(canonical); err != nil {
+				return err
+			}
+		}
+		if actor.state.view.ViewVersion > 0 && (window || actor.sourceWindow == nil) {
 			return nil
 		}
 		pending = actor.preparation
@@ -53,7 +66,11 @@ func (service *threadRuntimeService) prepareThreadView(ctx context.Context, id i
 					preparation.err = work.Err()
 					return
 				}
-				preparation.err = service.hydrateThreadView(work, id, actor)
+				if window {
+					preparation.err = service.hydrateThreadWindow(work, id, actor)
+				} else {
+					preparation.err = service.hydrateThreadView(work, id, actor)
+				}
 			}(pending)
 		}
 		return nil
@@ -65,6 +82,14 @@ func (service *threadRuntimeService) prepareThreadView(ctx context.Context, id i
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-pending.done:
-		return pending.err
+		if pending.err != nil {
+			return pending.err
+		}
+		// A complete reader may have joined an already running bounded read.
+		// Its explicit request still requires the complete execution reducer.
+		if !window {
+			return service.prepareThreadRead(ctx, id, actor, false)
+		}
+		return nil
 	}
 }

@@ -68,3 +68,71 @@ func TestSQLiteRecordBatchPreservesTransactionAndOwnership(t *testing.T) {
 		t.Fatalf("cancelled=%v", err)
 	}
 }
+
+func TestSQLiteWriteBatchPreservesTransactionAndOwnership(t *testing.T) {
+	backend, err := (sqliteSource{path: t.TempDir() + "/write-batch.sqlite"}).Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	records := []spi.Record{{Key: []byte("a"), Value: []byte("first")}, {Key: []byte("b"), Value: []byte("second")}, {Key: []byte("a"), Value: []byte("last")}, {Key: []byte("empty"), Value: []byte{}}}
+	var saved spi.WriteTx
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		saved = tx
+		if err := storagebridge.WriteRecords(tx, "records", records); err != nil {
+			return err
+		}
+		records[2].Value[0] = 'X'
+		for key, want := range map[string]string{"a": "last", "b": "second", "empty": ""} {
+			got, err := tx.Get("records", []byte(key))
+			if err != nil || string(got) != want {
+				t.Fatalf("%s=%q err=%v", key, got, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storagebridge.WriteRecords(saved, "records", records); !errors.Is(err, spi.ErrTransactionClosed) {
+		t.Fatalf("closed=%v", err)
+	}
+	failure := errors.New("rollback write set")
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		if err := storagebridge.WriteRecords(tx, "records", records); err != nil {
+			return err
+		}
+		return failure
+	}); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	if err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		got, err := tx.Get("records", []byte("a"))
+		if err != nil || string(got) != "last" {
+			t.Fatalf("rollback changed stored value: %q %v", got, err)
+		}
+		if err := storagebridge.WriteRecords(tx.(*sqliteTx), "records", records); !errors.Is(err, spi.ErrInvalidArgument) {
+			t.Fatalf("read-only write=%v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		for _, bad := range [][]spi.Record{nil, {{Key: []byte("new"), Value: []byte("must not write")}, {}}, make([]spi.Record, 257)} {
+			if err := storagebridge.WriteRecords(tx, "records", bad); !errors.Is(err, spi.ErrInvalidArgument) {
+				t.Fatalf("invalid=%v", err)
+			}
+		}
+		if _, err := tx.Get("records", []byte("new")); !errors.Is(err, spi.ErrNotFound) {
+			t.Fatalf("invalid batch partially wrote: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	err = backend.Update(ctx, func(tx spi.WriteTx) error { cancel(); return storagebridge.WriteRecords(tx, "records", records) })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled=%v", err)
+	}
+}

@@ -252,6 +252,50 @@ func TestColdHydrationPreservesContextDependencyValidation(t *testing.T) {
 	}
 }
 
+func TestColdManagedContextDoesNotReadOrdinaryHistoricalToolBodies(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "cold-managed-tools"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(entry sessiontree.Entry) {
+		t.Helper()
+		entry.ThreadID, entry.TurnID, entry.RunID = id.String(), "turn", "run"
+		if _, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{ID: entry.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(sessiontree.Entry{ID: "start", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted})
+	add(sessiontree.Entry{ID: "managed", Type: sessiontree.EntryModelContext, Message: session.Message{Role: session.User, Kind: session.MessageKindModelContext, ModelContextSnapshot: &session.ModelContextSnapshot{Sections: []session.ModelContextSection{{Key: "workspace", Title: "Workspace", Text: "retained fact"}}}}})
+	for i := range 32 {
+		call := fmt.Sprint("tool-", i)
+		add(sessiontree.Entry{ID: call, Type: sessiontree.EntryToolCall, Message: session.Message{Role: session.Assistant, ToolName: "read", ToolCallID: call, ToolArgs: `{"path":"source"}`}})
+		add(sessiontree.Entry{ID: call + "-result", Type: sessiontree.EntryToolResult, Message: session.Message{Role: session.Tool, ToolName: "read", ToolCallID: call, Content: strings.Repeat("historical result 🌸", 4096)}})
+	}
+	add(sessiontree.Entry{ID: "done", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted})
+	meta, err := host.store.repo.Thread(t.Context(), id.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := service.loadCanonicalThreadView(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &pagedHydrationRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel)}
+	host.store.repo = repo
+	got, err := service.loadRetainedThreadView(t.Context(), id, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Context, want.Context) {
+		t.Fatal("managed context differs from complete canonical projection")
+	}
+	if repo.toolBodyFields != 0 {
+		t.Fatalf("cold managed context read %d ordinary historical tool bodies", repo.toolBodyFields)
+	}
+}
+
 func TestColdProjectionFieldsKeepSemanticBodies(t *testing.T) {
 	for _, test := range []struct {
 		name, tool        string
@@ -259,7 +303,7 @@ func TestColdProjectionFieldsKeepSemanticBodies(t *testing.T) {
 		want              []string
 	}{
 		{"ordinary timeline", "read", false, false, []string{"reasoning", "control_output"}},
-		{"selected context", "read", true, false, []string{"content", "arguments", "reasoning", "control_output"}},
+		{"selected context", "read", true, false, []string{"reasoning", "control_output"}},
 		{"control validation", "read", false, true, []string{"content", "arguments", "reasoning", "control_output"}},
 		{"goal presentation", "goal", false, false, []string{"content", "arguments", "reasoning", "control_output", "activity_json"}},
 	} {
@@ -275,7 +319,7 @@ func TestColdProjectionFieldsKeepSemanticBodies(t *testing.T) {
 	}
 }
 
-func TestColdPublicWindowUsesFrozenPagesWithoutCompleteInventory(t *testing.T) {
+func TestColdPublicWindowUsesSourcesWithoutHistoricalTraversal(t *testing.T) {
 	host, public := testThreadService(t, newBlockingThreadGateway())
 	service := public.(*threadRuntimeService)
 	const id identity.ThreadID = "cold-public-window"
@@ -307,8 +351,27 @@ func TestColdPublicWindowUsesFrozenPagesWithoutCompleteInventory(t *testing.T) {
 	if len(window.Items) != 10 || window.FirstItemID != "590" || window.LastItemID != "599" || window.Items[9].Text != "599 中文🌸" {
 		t.Fatalf("public window differs: %+v", window)
 	}
-	if repo.pages != 3 || repo.paths != 0 || repo.inventories != 0 {
+	if repo.pages != 0 || repo.paths != 0 || repo.inventories != 0 {
 		t.Fatalf("pages=%d paths=%d inventory=%d", repo.pages, repo.paths, repo.inventories)
+	}
+	version := update.ViewVersion
+	actor := service.runtime(id)
+	if actor.sourceWindow == nil || actor.canonical != nil {
+		t.Fatal("bounded read claimed a complete reducer")
+	}
+	if err := sub.SetWindow(t.Context(), scope, ThreadWindowInput{ThreadID: id, AnchorID: window.FirstItemID, Direction: ThreadWindowBefore, Limit: 10}); err != nil {
+		t.Fatal(err)
+	}
+	page := nextUpdate(t, sub)
+	if page.ViewVersion != version || page.Window.Value.FirstItemID != "580" || page.Window.Value.LastItemID != "589" {
+		t.Fatalf("page=%+v", page)
+	}
+	view, err := service.View(t.Context(), id)
+	if err != nil || len(view.Items) != 600 || view.ViewVersion != version || actor.sourceWindow != nil || actor.canonical == nil {
+		t.Fatalf("complete hydration: items=%d version=%d err=%v", len(view.Items), view.ViewVersion, err)
+	}
+	if len(sub.updates) != 0 {
+		t.Fatal("complete hydration republished an unrelated baseline")
 	}
 }
 
@@ -374,7 +437,7 @@ func TestColdPagedRetrySharesBodyTraversalWithContextValidation(t *testing.T) {
 	if string(a) != string(b) || repo.paths != 0 || repo.pages != 3 {
 		t.Fatalf("Retry projection differs: paths=%d pages=%d", repo.paths, repo.pages)
 	}
-	if repo.toolBodyFields != 3 {
-		t.Fatalf("selected context must read both retained bodies and the control-owned result: %d", repo.toolBodyFields)
+	if repo.toolBodyFields != 1 {
+		t.Fatalf("managed facts must read only the control-owned result body: %d", repo.toolBodyFields)
 	}
 }

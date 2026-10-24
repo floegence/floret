@@ -14,6 +14,18 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, itemManifestKey(threadID)); err != nil {
+		return err
+	}
+	if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, contextProjectionKey(threadID)); err != nil {
+		return err
+	}
+	if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, modelContextSourcesKey(threadID)); err != nil {
+		return err
+	}
+	if err := deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, windowSourcesKey(threadID)); err != nil {
+		return err
+	}
 	count, err := readJournalCount(tx, threadID)
 	if err != nil || count != ordinal+1 {
 		return errors.Join(ErrAuthorityCorrupt, err)
@@ -113,6 +125,12 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 		return err
 	}
 	if err := removeSparseSource(tx, threadID, ordinal, entry); err != nil {
+		return err
+	}
+	if err := removeContextSourceMetadata(tx, entry, ordinal); err != nil {
+		return err
+	}
+	if err := removeProjectionSources(tx, entry, ordinal); err != nil {
 		return err
 	}
 	return putJournalCount(tx, threadID, ordinal)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/floegence/floret/v7/internal/storagebridge"
 	"github.com/floegence/floret/v7/internal/storagecodec"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -174,23 +175,35 @@ func (repo *BackendRepo) prepareSparseSources(ctx context.Context, thread string
 					return ErrAuthorityCorrupt
 				}
 				end := min(count, coverage.Through+128)
+				if end == coverage.Through {
+					complete = true
+					return nil
+				}
+				keys := make([][]byte, 0, end-coverage.Through)
 				for ordinal := coverage.Through; ordinal < end; ordinal++ {
+					keys = append(keys, backendDomainEntryKey(thread, ordinal))
+				}
+				records, err := storagebridge.ReadRecords(tx, storagebridge.RecordBatch{Namespace: backendDomainV32Namespace, Keys: keys})
+				if err != nil {
+					return err
+				}
+				for i, raw := range records {
 					if err := ctx.Err(); err != nil {
 						return err
 					}
-					entry, err := readCanonicalEntryOrdinal(tx, thread, ordinal)
-					if err != nil {
-						return err
+					ordinal := coverage.Through + i
+					record, stored, err := decodeCanonicalEntryRecord(backendDomainV32Format, raw)
+					if err != nil || record.ThreadID != thread || record.Ordinal != ordinal {
+						return errors.Join(ErrAuthorityCorrupt, err)
 					}
+					entry := stored.Entry
+					entry.bodyFields = stored.Fields
 					if err := putSparseSource(tx, entry, ordinal); err != nil {
 						return err
 					}
 					coverage.add(entry, 1)
 				}
 				complete = end == count
-				if end == coverage.Through {
-					return nil
-				}
 				coverage.Through = end
 				return writeSparseCoverage(tx, thread, coverage)
 			})

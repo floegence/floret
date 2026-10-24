@@ -372,11 +372,28 @@ suffix in transactions of at most sixteen requests. Queue and parent-event
 locators store immutable source IDs and journal coverage only. Their sources
 remain authoritative, including queue facts on inactive branches.
 
-These changes remove duplicate complete body and request-ledger reads. SetWindow
-still waits for complete retained actor preparation, and metadata/source traversal
-still scales with history. A bounded cold-first-window redesign and its global
-context/interaction membership contract remain separate work; current warm-window
-bounds must not be cited as cold-start bounds.
+Prepared built-in stores now initialize SetWindow from exact item membership and
+the selected canonical dependency closure at one leaf. Public ranks include
+late-visible input reservations. Source groups retain exact ordinal, hash,
+category and ancestry; turn boundaries and Retry references remain dependencies
+outside the displayed interval. Context references, numeric usage totals, managed
+facts, queues and parent events preserve their complete semantics. No transcript
+or independently advancing lifecycle is persisted.
+
+The same actor promotes to a complete reducer for execution and explicit full
+reads. It constructs and catches up a private candidate before replacing accepted
+state. Failure preserves the window and version. Active recovery failures also
+close affected observers explicitly and reach the Host error channel. An all-tool
+suffix cannot certify an absent sidebar preview; the canonical summary reader
+retains earlier message semantics.
+
+Historical sources without these indexes still need validated preparation.
+All readers share that owner, with private short writes and atomic publication
+of readiness anchors. Cancellation, owner changes and failed commits cannot
+publish a partial window. Missing-index preparation remains history-sized, as
+do complete execution reducers and potentially cross-window semantic components.
+Prepared cold-process measurements are not first-upgrade or complete product
+acceptance.
 
 Ordinary local tool arguments and results outside the exact checked-context
 selection are not timeline text and need no cold body read. Their canonical

@@ -108,7 +108,10 @@ func (subscription *ThreadUpdateSubscription) SetWindow(ctx context.Context, sco
 	if !allowed {
 		return threadquery.ErrRecordUnavailable
 	}
-	if _, err := service.viewResult(ctx, input.ThreadID, threadAckResult); err != nil {
+	if _, err := service.ensureThread(ctx, input.ThreadID); err != nil {
+		return err
+	}
+	if err := service.prepareThreadRead(ctx, input.ThreadID, service.runtime(input.ThreadID), true); err != nil {
 		return err
 	}
 	return subscription.setActorWindow(ctx, service.runtime(input.ThreadID), input)
@@ -127,7 +130,15 @@ func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context
 		if actor.state.contextErr != nil {
 			return actor.state.contextErr
 		}
-		snapshot, err := actor.windowSnapshotContext(ctx, input)
+		var snapshot ThreadWindowSnapshot
+		var turns []ThreadTurn
+		var interactions []ThreadInteraction
+		var err error
+		if actor.sourceWindow != nil {
+			snapshot, turns, interactions, err = actor.sourceWindowSnapshot(ctx, input)
+		} else {
+			snapshot, err = actor.windowSnapshotContext(ctx, input)
+		}
 		if err != nil {
 			return err
 		}
@@ -139,8 +150,11 @@ func (subscription *ThreadUpdateSubscription) setActorWindow(ctx context.Context
 		for _, item := range snapshot.Items {
 			selected[item.ID] = true
 		}
-		baseline.Turns = &ThreadComponent[[]ThreadTurn]{Value: actor.windowTurns(selected)}
-		baseline.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: actor.windowInteractions(selected)}
+		if actor.sourceWindow == nil {
+			turns, interactions = actor.windowTurns(selected), actor.windowInteractions(selected)
+		}
+		baseline.Turns = &ThreadComponent[[]ThreadTurn]{Value: turns}
+		baseline.Interactions = &ThreadComponent[[]ThreadInteraction]{Value: interactions}
 		raw, err := json.Marshal(baseline)
 		if err != nil {
 			return err
@@ -378,6 +392,14 @@ func (actor *threadRuntimeState) windowSnapshotContext(ctx context.Context, inpu
 	snapshot := ThreadWindowSnapshot{ThreadID: actor.state.view.ThreadID, ViewVersion: actor.state.view.ViewVersion, HasBefore: page.hasBefore, HasAfter: page.hasAfter, Items: page.items}
 	if actor.canonical != nil {
 		snapshot.LeafID = actor.canonical.leafID
+	}
+	return boundWindowSnapshot(snapshot, input)
+}
+
+func boundWindowSnapshot(snapshot ThreadWindowSnapshot, input ThreadWindowInput) (ThreadWindowSnapshot, error) {
+	direction := input.Direction
+	if direction == "" {
+		direction = ThreadWindowBefore
 	}
 	for {
 		setWindowBounds(&snapshot)

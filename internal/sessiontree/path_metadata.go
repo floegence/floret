@@ -61,6 +61,9 @@ func (r *MemoryRepo) PathMetadataPage(ctx context.Context, threadID, leafID, bef
 // canonicalPathMetadata is the sole body-free entry detachment path.
 func canonicalPathMetadata(entry Entry) (PathMetadata, error) {
 	fields := maps.Clone(entry.bodyFields)
+	if entry.contextStatusMetadata != nil {
+		fields = map[string]canonicalBodyRef{}
+	}
 	if fields == nil {
 		if err := ValidateEntryIntegrity(entry); err != nil {
 			return PathMetadata{}, err
