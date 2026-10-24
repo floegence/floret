@@ -2870,7 +2870,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 			pressure := tracker.Overflow(opts.ContextPolicy)
 			next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, nil, metrics, failures)
 			if compactErr != nil {
-				return provider.Request{}, history, false, errors.Join(err, compactErr)
+				return provider.Request{}, history, false, overflowRecoveryError(err, compactErr)
 			}
 			return replacement, next, true, nil
 		}
@@ -2991,6 +2991,16 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	return req, nil
 }
 
+// Preserve the recovery failure's classification while retaining the rejected
+// provider request as evidence. An unsafe cut or capacity limit remains a
+// provider failure; storage and contract failures must not be hidden by it.
+func overflowRecoveryError(providerErr, compactionErr error) error {
+	if !errors.Is(compactionErr, compaction.ErrNoCutPoint) && !errors.Is(compactionErr, provider.ErrContextOverflow) {
+		compactionErr = withFailureOrigin(compactionErr, FailureOriginContract)
+	}
+	return errors.Join(compactionErr, providerErr)
+}
+
 func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, step int, req provider.Request, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, StepOutput, int64, bool, error) {
 	req, stepOutput, latency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, req, metrics)
 	if err == nil || !overflow {
@@ -2999,7 +3009,7 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	pressure := tracker.Overflow(opts.ContextPolicy)
 	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 	if compactErr != nil {
-		return req, history, StepOutput{}, latency, false, errors.Join(err, compactErr)
+		return req, history, StepOutput{}, latency, false, overflowRecoveryError(err, compactErr)
 	}
 	history = next
 	retryReq, stepOutput, retryLatency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, retryReq, metrics)
