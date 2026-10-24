@@ -20,6 +20,7 @@ import (
 type threadRuntimeState struct {
 	activityFields        residentActivityFields
 	preparation           *threadReadPreparation
+	windowPreparation     *threadReadPreparation
 	canonical             *threadCanonicalProjection
 	sourceWindow          *threadSourceProjection
 	observedItemIDs       map[string]bool

@@ -36,6 +36,13 @@ type WindowProjection struct {
 func (repo *BackendRepo) ReadWindowProjection(ctx context.Context, options ItemMembershipWindowOptions, fields func(PathMetadata, bool) []string) (WindowProjection, error) {
 	for {
 		result, err := repo.readWindowProjection(ctx, options, fields)
+		var parentSources *parentInteractionPreparationRequired
+		if errors.As(err, &parentSources) {
+			if err := repo.prepareProjectionSources(ctx, parentSources.thread); err != nil {
+				return WindowProjection{}, err
+			}
+			continue
+		}
 		var summaries *activitySummaryWindowPreparationRequired
 		if errors.As(err, &summaries) {
 			for _, source := range summaries.sources {
@@ -271,11 +278,7 @@ func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, o
 	result.QueueSources = &queue
 
 	if parentEvents {
-		records, err := canonicalParentEventRecords(ctx, tx, meta)
-		if err != nil {
-			return WindowProjection{}, err
-		}
-		page, err := pageParentEvents(records, ParentEventQuery{ThreadID: meta.ID, Limit: 100})
+		page, err := readCanonicalParentEventPage(ctx, tx, meta, ParentEventQuery{ThreadID: meta.ID, Limit: 100})
 		if err != nil {
 			return WindowProjection{}, err
 		}

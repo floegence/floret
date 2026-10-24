@@ -593,20 +593,21 @@ type ThreadService interface {
 var _ ThreadContextReader = (*threadRuntimeService)(nil)
 
 type threadRuntimeService struct {
-	preparationOnce     sync.Once
-	preparationSlots    chan struct{}
-	host                *Host
-	factory             AgentFactory
-	mu                  sync.Mutex
-	subscribers         map[*WorkspaceSubscription]struct{}
-	updateSubscribers   map[*ThreadUpdateSubscription]struct{}
-	subscriptionsClosed bool
-	published           map[string]uint64
-	cancellationMu      sync.Mutex
-	cancellations       []threadCancellationDiagnostic
-	runtimesMu          sync.Mutex
-	runtimes            map[string]*threadRuntimeState
-	closed              bool
+	preparationOnce        sync.Once
+	preparationSlots       chan struct{}
+	windowPreparationSlots chan struct{}
+	host                   *Host
+	factory                AgentFactory
+	mu                     sync.Mutex
+	subscribers            map[*WorkspaceSubscription]struct{}
+	updateSubscribers      map[*ThreadUpdateSubscription]struct{}
+	subscriptionsClosed    bool
+	published              map[string]uint64
+	cancellationMu         sync.Mutex
+	cancellations          []threadCancellationDiagnostic
+	runtimesMu             sync.Mutex
+	runtimes               map[string]*threadRuntimeState
+	closed                 bool
 }
 
 type threadRuntimeRequest struct {
@@ -1001,10 +1002,11 @@ func (service *threadRuntimeService) Delete(ctx context.Context, in DeleteThread
 }
 
 type threadRuntimeDrain struct {
-	actor           *threadRuntimeState
-	executionDone   <-chan struct{}
-	effectsDone     <-chan struct{}
-	preparationDone <-chan struct{}
+	actor                 *threadRuntimeState
+	executionDone         <-chan struct{}
+	effectsDone           <-chan struct{}
+	preparationDone       <-chan struct{}
+	windowPreparationDone <-chan struct{}
 }
 
 func (service *threadRuntimeService) subtreeThreadIDs(ctx context.Context, rootThreadID identity.ThreadID) ([]identity.ThreadID, error) {
@@ -1058,6 +1060,10 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 			actor.preparation.cancel()
 			drains[index].preparationDone = actor.preparation.done
 		}
+		if actor.windowPreparation != nil {
+			actor.windowPreparation.cancel()
+			drains[index].windowPreparationDone = actor.windowPreparation.done
+		}
 	}
 	for _, drain := range drains {
 		if drain.actor.state.cancel != nil {
@@ -1073,7 +1079,7 @@ func (service *threadRuntimeService) fenceThreadRuntimes(threadIDs []identity.Th
 
 func waitThreadRuntimeDrains(ctx context.Context, drains []threadRuntimeDrain) error {
 	for _, drain := range drains {
-		for _, done := range []<-chan struct{}{drain.executionDone, drain.effectsDone, drain.preparationDone} {
+		for _, done := range []<-chan struct{}{drain.executionDone, drain.effectsDone, drain.preparationDone, drain.windowPreparationDone} {
 			if done == nil {
 				continue
 			}
@@ -1281,6 +1287,9 @@ func (service *threadRuntimeService) activeThreadSummary(ctx context.Context, me
 			found = true
 		} else {
 			pending = actor.preparation
+			if actor.windowPreparation != nil {
+				pending = actor.windowPreparation
+			}
 		}
 		return nil
 	})
@@ -1825,14 +1834,18 @@ func (service *threadRuntimeService) close() error {
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
 		runtime.stopUpdateTimer()
-		var preparationDone <-chan struct{}
+		var preparationDone, windowPreparationDone <-chan struct{}
 		if runtime.preparation != nil {
 			runtime.preparation.cancel()
 			preparationDone = runtime.preparation.done
 		}
+		if runtime.windowPreparation != nil {
+			runtime.windowPreparation.cancel()
+			windowPreparationDone = runtime.windowPreparation.done
+		}
 		drains = append(drains, threadRuntimeDrain{
-			preparationDone: preparationDone,
-			actor:           runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
+			preparationDone: preparationDone, windowPreparationDone: windowPreparationDone,
+			actor: runtime, executionDone: runtime.state.executionDone, effectsDone: runtime.state.effectsDone,
 		})
 		turnID, runID, cancel := runtime.state.turnID, runtime.state.runID, runtime.state.cancel
 		if runtime.deleted || runtime.deleting || runtime.state.view.Activity != ThreadActivityActive {
@@ -1943,20 +1956,19 @@ func (service *threadRuntimeService) hydrateThreadView(ctx context.Context, thre
 			return nil
 		}
 		version := actor.state.view.ViewVersion
-		if actor.sourceWindow != nil && actor.sourceWindow.leaf != canonical.projection.leafID {
-			return errCanonicalRefreshDiscarded
-		}
-		if acceptedLeaf != "" {
+		if actor.sourceWindow != nil {
 			current, err := service.host.store.repo.Thread(ctx, threadID.String())
 			if err != nil {
 				return runtimeHostError(err)
 			}
-			if current.LeafID != acceptedLeaf {
+			if current.LeafID != canonical.projection.leafID {
 				canonical, err = service.advanceRetainedThreadView(ctx, threadID, canonical)
 				if err != nil {
 					return err
 				}
-				version++
+				if actor.sourceWindow == nil || actor.sourceWindow.leaf != canonical.projection.leafID {
+					version++
+				}
 			}
 		}
 		canonical.Queue, canonical.RestoredInputs, err = hydrateThreadQueues(ctx, service.host.store.repo, threadID)

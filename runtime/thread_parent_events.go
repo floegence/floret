@@ -77,30 +77,39 @@ type ParentEvent struct {
 // ParentEventPage identifies the queried canonical thread path. Inherited events
 // retain their original ParentThreadID, which may differ from ThreadID.
 type ParentEventPage struct {
-	ThreadID         identity.ThreadID `json:"thread_id"`
-	Events           []ParentEvent     `json:"events"`
-	FirstEventID     string            `json:"first_event_id,omitempty"`
-	LastEventID      string            `json:"last_event_id,omitempty"`
-	NextAfterEventID string            `json:"next_after_event_id,omitempty"`
+	ThreadID              identity.ThreadID `json:"thread_id"`
+	Events                []ParentEvent     `json:"events"`
+	FirstEventID          string            `json:"first_event_id,omitempty"`
+	LastEventID           string            `json:"last_event_id,omitempty"`
+	NextAfterEventID      string            `json:"next_after_event_id,omitempty"`
+	PreviousBeforeEventID string            `json:"previous_before_event_id,omitempty"`
 }
 
 type ListParentEventsInput struct {
 	ThreadID        identity.ThreadID
 	SourceThreadIDs []identity.ThreadID
 	AfterEventID    string
-	Limit           int
-	PendingOnly     bool
+	// BeforeEventID selects earlier receipts, returned in canonical order.
+	BeforeEventID string
+	// Latest selects the latest bounded page, excluding AfterEventID.
+	Latest      bool
+	Limit       int
+	PendingOnly bool
 }
 
 // ReadParentEventsInput selects one event or a closed immutable event interval.
-// Continue with the returned fixed boundaries and explicit NextAfterEventID.
+// Continue with the returned fixed boundaries and explicit NextAfterEventID or
+// PreviousBeforeEventID. Latest/BeforeEventID return chronological earlier pages;
+// omitted options retain the original forward contract.
 type ReadParentEventsInput struct {
-	ThreadID     identity.ThreadID
-	EventID      string
-	FirstEventID string
-	LastEventID  string
-	AfterEventID string
-	Limit        int
+	ThreadID      identity.ThreadID
+	EventID       string
+	FirstEventID  string
+	LastEventID   string
+	AfterEventID  string
+	BeforeEventID string
+	Latest        bool
+	Limit         int
 }
 
 var _ ThreadParentEventService = (*threadRuntimeService)(nil)
@@ -146,7 +155,7 @@ func (service *threadRuntimeService) ListParentEvents(ctx context.Context, in Li
 	for i, id := range in.SourceThreadIDs {
 		sources[i] = id.String()
 	}
-	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: in.ThreadID.String(), SourceThreadIDs: sources, AfterEventID: in.AfterEventID, Limit: in.Limit, PendingOnly: in.PendingOnly})
+	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: in.ThreadID.String(), SourceThreadIDs: sources, AfterEventID: in.AfterEventID, BeforeEventID: in.BeforeEventID, Latest: in.Latest, Limit: in.Limit, PendingOnly: in.PendingOnly})
 	if err != nil {
 		return ParentEventPage{}, runtimeHostError(err)
 	}
@@ -167,7 +176,7 @@ func (service *threadRuntimeService) ReadParentEvents(ctx context.Context, in Re
 	if _, err := service.ensureThread(ctx, in.ThreadID); err != nil {
 		return ParentEventPage{}, err
 	}
-	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: in.ThreadID.String(), EventID: in.EventID, FirstEventID: in.FirstEventID, LastEventID: in.LastEventID, AfterEventID: in.AfterEventID, Limit: in.Limit})
+	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: in.ThreadID.String(), EventID: in.EventID, FirstEventID: in.FirstEventID, LastEventID: in.LastEventID, AfterEventID: in.AfterEventID, BeforeEventID: in.BeforeEventID, Latest: in.Latest, Limit: in.Limit})
 	if err != nil {
 		return ParentEventPage{}, runtimeHostError(err)
 	}
@@ -175,7 +184,7 @@ func (service *threadRuntimeService) ReadParentEvents(ctx context.Context, in Re
 }
 
 func publicParentEventPage(threadID identity.ThreadID, page sessiontree.ParentEventPage, full bool) ParentEventPage {
-	result := ParentEventPage{ThreadID: threadID, Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID}
+	result := ParentEventPage{ThreadID: threadID, Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID, PreviousBeforeEventID: page.PreviousBeforeEventID}
 	for _, event := range page.Events {
 		message := ""
 		if full {

@@ -80,7 +80,7 @@ func TestSparseSourcesRetainBranchesAndStayBoundedAfterRestart(t *testing.T) {
 	}
 	counted.gets, counted.scans = 0, 0
 	events, err := repo.ParentEvents(t.Context(), ParentEventQuery{ThreadID: "thread", Limit: 10})
-	if err != nil || len(events.Events) != 0 || counted.gets > 40 || counted.scans != 1 {
+	if err != nil || len(events.Events) != 0 || counted.gets > 40 || counted.scans != 0 {
 		t.Fatalf("parents=%+v err=%v gets=%d scans=%d", events, err, counted.gets, counted.scans)
 	}
 	// Simulate a released writer with no derived locator namespace.

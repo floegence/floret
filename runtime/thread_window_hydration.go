@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/floret/v7/internal/sessiontree"
+	"github.com/floegence/floret/v7/storage/spi"
 )
 
 // Prepared bodies are disposable request-local data. The actor still selects
@@ -90,7 +91,10 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			// A source refresh freezes all accepted readers before publication. A
 			// concurrently opened reader joins that publication before installing
 			// another interest, so no reader is absent from its frozen sources.
-			if preparation := actor.preparation; preparation != nil {
+			// Complete execution recovery promotes the same actor atomically and
+			// does not freeze display interests. Its slow or failed read must not
+			// delay an already accepted source window.
+			if preparation := actor.windowPreparation; preparation != nil {
 				select {
 				case <-preparation.done:
 				default:
@@ -257,11 +261,24 @@ func (subscription *ThreadUpdateSubscription) prepareActorWindow(ctx context.Con
 			continue
 		}
 		if loadCold {
-			// Select the new interval and existing interests together at a current
-			// snapshot. Never read a newer body under a previously accepted version.
-			if err := actor.service.prepareThreadRead(ctx, input.ThreadID, actor, true, input); err != nil {
+			// Read another interval at the already accepted leaf without replacing
+			// actor facts. The next actor turn discards it if publication advanced.
+			// A slow complete recovery must not serialize ordinary browsing.
+			value, page, err := actor.service.loadSourceWindowAt(ctx, input, cold.leaf)
+			if errors.Is(err, spi.ErrConflict) {
+				// Membership changed after the accepted leaf was sampled. Refresh
+				// facts and every accepted interest through the existing owner;
+				// never attach a newer interval to an older actor version.
+				if err := actor.service.prepareThreadRead(ctx, input.ThreadID, actor, true, input); err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
 				return err
 			}
+			coldView = &value
+			coldBefore, coldAfter, coldAnchor = page.hasBefore, page.hasAfter, page.resolvedAnchor
 			continue
 		}
 		for _, item := range missing {

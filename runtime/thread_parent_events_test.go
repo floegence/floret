@@ -665,3 +665,37 @@ func TestParentEventsHumanWaitRetainsEventUntilExplicitResponse(t *testing.T) {
 		t.Fatalf("event lost after response: %d %s", n, text)
 	}
 }
+
+func TestParentEventBackwardPublicPagesRetainForwardDefaults(t *testing.T) {
+	host, public, _ := parentEventHost(t, true, storage.SQLite(t.TempDir()+"/events.sqlite"))
+	created, err := public.Create(t.Context(), CreateThreadInput{RequestKey: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 7 {
+		child := parentEventChild(t, host, created.ThreadID, fmt.Sprint("child-", i))
+		parentEventFinish(t, host, child, sessiontree.TurnCompleted)
+	}
+	service := public.(ThreadParentEventService)
+	forward, err := service.ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: created.ThreadID, Limit: 100})
+	if err != nil || len(forward.Events) != 7 {
+		t.Fatalf("forward=%+v error=%v", forward, err)
+	}
+	tail, err := service.ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: created.ThreadID, Limit: 3, Latest: true})
+	if err != nil || len(tail.Events) != 3 || tail.Events[0].ID != forward.Events[4].ID || tail.PreviousBeforeEventID != forward.Events[4].ID || tail.NextAfterEventID != "" {
+		t.Fatalf("tail=%+v error=%v", tail, err)
+	}
+	prior, err := service.ReadParentEvents(t.Context(), ReadParentEventsInput{ThreadID: created.ThreadID, FirstEventID: tail.FirstEventID, LastEventID: tail.LastEventID, BeforeEventID: tail.PreviousBeforeEventID, Limit: 3})
+	if err != nil || len(prior.Events) != 3 || prior.Events[0].ID != forward.Events[1].ID || prior.Events[2].ID != forward.Events[3].ID || prior.NextAfterEventID != forward.Events[3].ID {
+		t.Fatalf("prior=%+v error=%v", prior, err)
+	}
+	first, err := service.ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: created.ThreadID, BeforeEventID: prior.PreviousBeforeEventID, Limit: 3})
+	if err != nil || len(first.Events) != 1 || first.Events[0].ID != forward.FirstEventID || first.PreviousBeforeEventID != "" {
+		t.Fatalf("first=%+v error=%v", first, err)
+	}
+	for _, input := range []ListParentEventsInput{{ThreadID: created.ThreadID, AfterEventID: forward.FirstEventID, Latest: true}, {ThreadID: created.ThreadID, AfterEventID: forward.FirstEventID, BeforeEventID: forward.LastEventID}} {
+		if _, err := service.ListParentEvents(t.Context(), input); err == nil {
+			t.Fatal("accepted conflicting directions")
+		}
+	}
+}

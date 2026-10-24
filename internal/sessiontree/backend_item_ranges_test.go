@@ -342,13 +342,19 @@ func TestItemRangeCompleteQueryReadBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = backend.Close() })
+			// Build with the canonical writer on the transactional fixture backend,
+			// then copy its exact records into SQLite. The measured reopened reader
+			// still performs every ancestry, source and range check on real SQLite;
+			// repeated race-instrumented SQL during fixture construction is unrelated
+			// to this query budget and previously exhausted the CI shard timeout.
+			fixture := newMigrationTestBackend()
 			var repo *BackendRepo
-			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+			if err := fixture.Update(t.Context(), func(tx spi.WriteTx) error {
 				if err := saveCompleteBackendDomain(tx, memory, backendDomainV32Format); err != nil {
 					return err
 				}
 				var err error
-				repo, _, err = NewCurrentBackendRepoInTransaction(t.Context(), backend, tx, time.Now, false)
+				repo, _, err = NewCurrentBackendRepoInTransaction(t.Context(), fixture, tx, time.Now, false)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -357,6 +363,31 @@ func TestItemRangeCompleteQueryReadBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := ItemMembershipRangeOptions{ThreadID: "thread", AnchorID: fmt.Sprint("tool:turn:", count/2), Kinds: []string{"tool", "thinking"}}
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				for namespace, records := range fixture.records {
+					batch := make([]spi.Record, 0, storagebridge.MaxRecordBatch)
+					for key, value := range records {
+						batch = append(batch, spi.Record{Key: []byte(key), Value: value})
+						if len(batch) == storagebridge.MaxRecordBatch {
+							if err := storagebridge.WriteRecords(tx, namespace, batch); err != nil {
+								return err
+							}
+							batch = batch[:0]
+						}
+					}
+					if len(batch) > 0 {
+						if err := storagebridge.WriteRecords(tx, namespace, batch); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// Query preparation uses SQLite's bounded transactions, not repeated
+			// whole-map copies in the rollback-oriented in-memory fixture backend.
+			repo.backend = backend
 			if _, err := repo.ItemMembershipRange(t.Context(), input); err != nil {
 				t.Fatal(err)
 			}

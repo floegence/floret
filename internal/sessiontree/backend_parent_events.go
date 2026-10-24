@@ -99,10 +99,17 @@ func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta Thread
 	if err != nil {
 		return nil, err
 	}
+	if err := resolveCanonicalParentInteractions(ctx, tx, projection.records); err != nil {
+		return nil, err
+	}
+	return projection.records, nil
+}
+
+func resolveCanonicalParentInteractions(ctx context.Context, tx spi.ReadTx, records []ParentEventRecord) error {
 	type sourceTurn struct{ threadID, turnID string }
 	pending := map[sourceTurn][]runtimePendingInteraction{}
-	for i := range projection.records {
-		event := &projection.records[i]
+	for i := range records {
+		event := &records[i]
 		if event.InteractionID == "" {
 			continue
 		}
@@ -112,11 +119,11 @@ func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta Thread
 			if _, err := readPublishedThreadMeta(tx, backendDomainV32Format, key.threadID); errors.Is(err, ErrThreadDeleted) {
 				interactions = nil
 			} else if err != nil {
-				return nil, err
+				return err
 			} else {
 				entries, err := canonicalRuntimeTurnEntries(ctx, tx, key.threadID, key.turnID)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				interactions = runtimePendingInteractionsIn(entries, key.turnID)
 			}
@@ -130,20 +137,30 @@ func canonicalParentEventRecords(ctx context.Context, tx spi.ReadTx, meta Thread
 			}
 		}
 	}
-	return projection.records, nil
+	return nil
 }
 
 func (repo *BackendRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
-	if err := repo.prepareSparseSources(ctx, query.ThreadID); err != nil {
+	for {
+		page, err := repo.parentEventPage(ctx, query)
+		var missing *parentInteractionPreparationRequired
+		if !errors.As(err, &missing) {
+			return page, err
+		}
+		if err := repo.prepareProjectionSources(ctx, missing.thread); err != nil {
+			return ParentEventPage{}, err
+		}
+	}
+}
+
+func (repo *BackendRepo) parentEventPage(ctx context.Context, query ParentEventQuery) (ParentEventPage, error) {
+	if err := repo.prepareProjectionSources(ctx, query.ThreadID); err != nil {
 		return ParentEventPage{}, err
 	}
 	var result ParentEventPage
 	err := repo.canonicalThreadView(ctx, query.ThreadID, func(tx spi.ReadTx, meta ThreadMeta) error {
-		records, err := canonicalParentEventRecords(ctx, tx, meta)
-		if err != nil {
-			return err
-		}
-		result, err = pageParentEvents(records, query)
+		var err error
+		result, err = readCanonicalParentEventPage(ctx, tx, meta, query)
 		return err
 	}, func(memory *MemoryRepo) error {
 		var err error

@@ -13,10 +13,11 @@ import (
 )
 
 // Only canonical source positions are stored, never transcript or lifecycle.
-// v6 excludes presentation-neutral savepoints from display dependencies and
+// v7 adds path-bound parent receipt and admission sources. It excludes
+// presentation-neutral savepoints from display dependencies and
 // retains bounded ordinary tool source selection. Earlier unreleased preparation
 // cannot certify those references and is deliberately not accepted here.
-const projectionSourcesNamespace = "floret.sessiontree.projection-sources.v6"
+const projectionSourcesNamespace = "floret.sessiontree.projection-sources.v7"
 
 type projectionSourceMember struct {
 	EntryID string `json:"entry_id"`
@@ -78,6 +79,7 @@ func putProjectionSourceBatch(ctx context.Context, tx spi.WriteTx, thread string
 	// The map is transaction-local; forks outside the batch use canonical
 	// predecessor metadata, and failures never advance durable coverage.
 	goals := make(map[string]goalSourceContext, len(entries))
+	parents := make(map[string]parentSourceContext, len(entries))
 	var records []spi.Record
 	for i, entry := range entries {
 		if entry.ThreadID != thread {
@@ -86,6 +88,19 @@ func putProjectionSourceBatch(ctx context.Context, tx spi.WriteTx, thread string
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		parent, found := parents[entry.ParentID]
+		if !found {
+			var err error
+			parent, err = readParentSourceContext(tx, thread, entry.ParentID)
+			if err != nil {
+				return err
+			}
+		}
+		parent, err := putParentSourceContext(ctx, tx, entry, parent)
+		if err != nil {
+			return err
+		}
+		parents[entry.ID] = parent
 		refs, found := goals[entry.ParentID]
 		if !found {
 			var err error
@@ -94,7 +109,7 @@ func putProjectionSourceBatch(ctx context.Context, tx spi.WriteTx, thread string
 				return err
 			}
 		}
-		refs, err := deriveGoalSourceContext(ctx, tx, entry, refs)
+		refs, err = deriveGoalSourceContext(ctx, tx, entry, refs)
 		if err != nil {
 			return err
 		}
@@ -257,6 +272,31 @@ func removeProjectionSources(tx spi.WriteTx, entry Entry, ordinal int) error {
 	}
 	if err := tx.Delete(projectionSourcesNamespace, goalSourceKey(entry.ThreadID, entry.ID)); err != nil {
 		return err
+	}
+	if err := tx.Delete(projectionSourcesNamespace, parentSourceKey(entry.ThreadID, entry.ID)); err != nil {
+		return err
+	}
+	if entry.Type == EntryParentEvent {
+		if err := tx.Delete(projectionSourcesNamespace, parentReceiptKey(entry.ThreadID, entry.ID)); err != nil {
+			return err
+		}
+	}
+	if entry.Type == EntryParentEventsAdmitted {
+		prefix := backendDomainKey(entry.ThreadID, "parent-admission", entry.ID)
+		for {
+			page, err := tx.Scan(spi.ScanRequest{Namespace: projectionSourcesNamespace, Start: prefix, End: backendKeyRangeEnd(prefix), Limit: 128})
+			if err != nil {
+				return err
+			}
+			for _, record := range page.Records {
+				if err := tx.Delete(projectionSourcesNamespace, record.Key); err != nil {
+					return err
+				}
+			}
+			if !page.HasMore {
+				break
+			}
+		}
 	}
 	return putProjectionCount(tx, projectionCoverageKey(entry.ThreadID), ordinal)
 }

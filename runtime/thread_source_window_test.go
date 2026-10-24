@@ -25,6 +25,19 @@ type failingActiveWindowPreparation struct {
 	entered, release chan struct{}
 	once             sync.Once
 	err              error
+	appendOnRead     func(context.Context) error
+	appendOnce       sync.Once
+}
+
+func (repo *failingActiveWindowPreparation) ReadWindowProjection(ctx context.Context, options sessiontree.ItemMembershipWindowOptions, fields func(sessiontree.PathMetadata, bool) []string) (sessiontree.WindowProjection, error) {
+	var err error
+	if options.LeafID != "" && repo.appendOnRead != nil {
+		repo.appendOnce.Do(func() { err = repo.appendOnRead(ctx) })
+	}
+	if err != nil {
+		return sessiontree.WindowProjection{}, err
+	}
+	return repo.BackendKernel.ReadWindowProjection(ctx, options, fields)
 }
 
 func (repo *failingActiveWindowPreparation) ScanPathProjection(ctx context.Context, _, _ string, _ func([]sessiontree.PathMetadata) error, _ func(sessiontree.PathMetadata) []string, _ func(sessiontree.PathProjectionPage) error) error {
@@ -87,6 +100,85 @@ func TestSourceWindowFailedPromotionRetainsAcceptedState(t *testing.T) {
 	after, _ := json.Marshal(actor.state.view)
 	if !errors.Is(err, errCanonicalRefreshDiscarded) || actor.sourceWindow != window || string(before) != string(after) {
 		t.Fatalf("failed promotion changed accepted window: %v", err)
+	}
+}
+
+func TestSourceWindowBrowsingDoesNotWaitForExecutionRecovery(t *testing.T) {
+	for _, appendDuringRead := range []bool{false, true} {
+		t.Run(fmt.Sprint("append=", appendDuringRead), func(t *testing.T) {
+			testSourceWindowBrowsingDuringRecovery(t, appendDuringRead)
+		})
+	}
+}
+
+func testSourceWindowBrowsingDuringRecovery(t *testing.T, appendDuringRead bool) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "recovery-browsing"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	entries := []sessiontree.Entry{{ID: "started", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted}}
+	for i := range 170 {
+		entries = append(entries, sessiontree.Entry{ID: fmt.Sprint("message-", i), Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: fmt.Sprint(i)}})
+	}
+	for _, entry := range entries {
+		entry.ThreadID, entry.TurnID, entry.RunID = id.String(), "turn", "run"
+		if _, err := host.store.repo.Append(t.Context(), entry, sessiontree.AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := &failingActiveWindowPreparation{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{}), err: errors.New("injected recovery failure")}
+	if appendDuringRead {
+		repo.appendOnRead = func(ctx context.Context) error {
+			_, err := repo.BackendKernel.Append(ctx, sessiontree.Entry{ID: "late-message", ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: "concurrent append"}}, sessiontree.AppendOptions{})
+			return err
+		}
+	}
+	host.store.repo = repo
+	defer close(repo.release)
+	if err := service.prepareThreadRead(t.Context(), id, service.runtime(id), true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-repo.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution recovery did not enter its blocked source read")
+	}
+	scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{id}}
+	sub, err := service.SubscribeWindowUpdates(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	for _, anchor := range []string{"", "message-40", "message-120", "message-40"} {
+		read, cancel := context.WithTimeout(t.Context(), time.Second)
+		input := ThreadWindowInput{ThreadID: id, AnchorID: anchor, Limit: 20, RequestID: "navigation:" + anchor}
+		if anchor != "" {
+			input.Direction = ThreadWindowAround
+		}
+		err := sub.SetWindow(read, scope, input)
+		if err != nil {
+			cancel()
+			t.Fatalf("browsing %q waited for execution recovery: %v", anchor, err)
+		}
+		update, err := sub.Next(read)
+		for err == nil && (update.Window == nil || update.Window.Value.RequestID != input.RequestID) {
+			update, err = sub.Next(read)
+		}
+		cancel()
+		if err != nil || update.Window == nil || len(update.Window.Value.Items) != 20 {
+			t.Fatalf("browsing %q did not publish a complete window: %+v, %v", anchor, update, err)
+		}
+		if anchor != "" {
+			found := false
+			for _, item := range update.Window.Value.Items {
+				found = found || item.ID == anchor
+			}
+			if !found {
+				t.Fatalf("window omitted requested anchor %q", anchor)
+			}
+		}
 	}
 }
 
@@ -376,5 +468,119 @@ func TestColdWindowSendAndForkPreserveHistoryAndLiveUpdates(t *testing.T) {
 	completed := waitThreadView(t, svc, fork.ThreadID, func(v ThreadView) bool { return v.Activity == ThreadActivityIdle && v.LastOutcome != nil })
 	if completed.Failure != nil {
 		t.Fatalf("fork continuation failed: %+v", completed.Failure)
+	}
+}
+
+func TestSourceWindowRefreshPromotesInFlightCompleteRead(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "promotion-browsing"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	appendMessage := func(entryID string) {
+		t.Helper()
+		if _, err := host.store.repo.Append(t.Context(), sessiontree.Entry{ID: entryID, ThreadID: id.String(), TurnID: "turn", RunID: "run", Type: sessiontree.EntryUserMessage, Message: session.Message{Role: session.User, Content: entryID}}, sessiontree.AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendMessage("first")
+	sub, baseline := coldWindowBaseline(t, public, id)
+	repo := &blockedPreparationRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{})}
+	host.store.repo = repo
+	var once sync.Once
+	release := func() { once.Do(func() { close(repo.release) }) }
+	defer release()
+	complete := make(chan error, 1)
+	go func() { complete <- service.prepareThreadView(t.Context(), id, service.runtime(id)) }()
+	select {
+	case <-repo.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("complete read did not start")
+	}
+	appendMessage("second")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	scope := threadquery.Scope{Authority: "reader", ThreadIDs: []identity.ThreadID{id}}
+	if err := sub.SetWindow(ctx, scope, ThreadWindowInput{ThreadID: id, RequestID: "refreshed", Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	var refreshed uint64
+	for {
+		update, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if update.Window != nil && update.Window.Value.RequestID == "refreshed" {
+			if len(update.Window.Value.Items) != 2 || update.ViewVersion != baseline.ViewVersion+1 {
+				t.Fatalf("wrong refreshed baseline: %+v", update)
+			}
+			refreshed = update.ViewVersion
+			break
+		}
+	}
+	release()
+	select {
+	case err := <-complete:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("complete read failed to promote after display refresh")
+	}
+	view, err := service.View(t.Context(), id)
+	if err != nil || len(view.Items) != 2 || view.ViewVersion != refreshed {
+		t.Fatalf("promotion changed accepted version or omitted append: %+v %v", view, err)
+	}
+}
+
+type blockedWindowAndCompleteRepo struct {
+	*blockedPreparationRepo
+	windowEntered chan struct{}
+	windowOnce    sync.Once
+}
+
+func (repo *blockedWindowAndCompleteRepo) ReadWindowProjection(ctx context.Context, _ sessiontree.ItemMembershipWindowOptions, _ func(sessiontree.PathMetadata, bool) []string) (sessiontree.WindowProjection, error) {
+	repo.windowOnce.Do(func() { close(repo.windowEntered) })
+	<-ctx.Done()
+	return sessiontree.WindowProjection{}, ctx.Err()
+}
+
+func TestShutdownJoinsDisplayAndCompletePreparation(t *testing.T) {
+	host, public := testThreadService(t, newBlockingThreadGateway())
+	service := public.(*threadRuntimeService)
+	const id identity.ThreadID = "parallel-preparation-shutdown"
+	if _, err := host.store.repo.CreateThread(t.Context(), sessiontree.ThreadMeta{ID: id.String()}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &blockedWindowAndCompleteRepo{blockedPreparationRepo: &blockedPreparationRepo{BackendKernel: host.store.repo.(*internalstorage.BackendKernel), entered: make(chan struct{}), release: make(chan struct{})}, windowEntered: make(chan struct{})}
+	host.store.repo = repo
+	done := make(chan error, 2)
+	go func() { done <- service.prepareThreadView(t.Context(), id, service.runtime(id)) }()
+	select {
+	case <-repo.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("complete read never entered")
+	}
+	go func() { done <- service.prepareThreadRead(t.Context(), id, service.runtime(id), true) }()
+	select {
+	case <-repo.windowEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("display read waited for complete history")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := host.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, ErrHostClosed) {
+				t.Fatalf("wrong shutdown result: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("shutdown left an owned preparation running")
+		}
 	}
 }

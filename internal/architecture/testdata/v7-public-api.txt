@@ -907,6 +907,8 @@ type ListParentEventsInput struct
 field ListParentEventsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field ListParentEventsInput.SourceThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
 field ListParentEventsInput.AfterEventID string
+field ListParentEventsInput.BeforeEventID string
+field ListParentEventsInput.Latest bool
 field ListParentEventsInput.Limit int
 field ListParentEventsInput.PendingOnly bool
 type LookupQueuedEditInput struct
@@ -1046,6 +1048,7 @@ field ParentEventPage.Events []github.com/floegence/floret/v7/runtime.ParentEven
 field ParentEventPage.FirstEventID string tag="json:\"first_event_id,omitempty\""
 field ParentEventPage.LastEventID string tag="json:\"last_event_id,omitempty\""
 field ParentEventPage.NextAfterEventID string tag="json:\"next_after_event_id,omitempty\""
+field ParentEventPage.PreviousBeforeEventID string tag="json:\"previous_before_event_id,omitempty\""
 type ParentEventReceipt struct
 field ParentEventReceipt.Accepted bool tag="json:\"accepted\""
 field ParentEventReceipt.EventID string tag="json:\"event_id\""
@@ -1111,6 +1114,8 @@ field ReadParentEventsInput.EventID string
 field ReadParentEventsInput.FirstEventID string
 field ReadParentEventsInput.LastEventID string
 field ReadParentEventsInput.AfterEventID string
+field ReadParentEventsInput.BeforeEventID string
+field ReadParentEventsInput.Latest bool
 field ReadParentEventsInput.Limit int
 type ReorderQueueInput struct
 field ReorderQueueInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""

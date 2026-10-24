@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+- 2026-10-24: Separate accepted display navigation from complete recovery;
+  document canonical parent receipt source paging and its qualification limits
+  in [history performance](workflows/history-performance.md).
+
 - 2026-10-24: Add explicit baseline summaries to avoid duplicated host reads
   and preserve read watermark ownership; see [thread updates](api/thread-updates.md).
 
@@ -1829,3 +1833,8 @@ Document optional Goal management, same-context reflection, request-bound update
 
 - Preserve prepared membership when only a window preview locator is missing;
   verify atomic failure rollback and eligibility without claiming first-open latency.
+
+- Extend parent receipt pages with optional backward/latest selection and retain
+  canonical ordering and fixed-range semantics. Add public and branch parity
+  tests. Separate display preparation capacity from complete recovery, and test
+  append conflicts, promotion, cancellation and shutdown ownership.

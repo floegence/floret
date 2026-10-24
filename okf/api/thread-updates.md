@@ -540,11 +540,26 @@ click-to-interactive performance gate.
 
 ### Window reads and concurrent execution
 
+Once a display leaf is accepted, navigation reads another finite interval at
+that leaf outside the actor. It does not join complete execution recovery or
+replace current facts. Publication rechecks the accepted source owner before
+installing the interest. A changed source discards the obsolete interval;
+complete promotion still belongs to the same actor. Only a current-facts source
+refresh freezes interest installation. The deterministic recovery regression
+holds the full-history read open while repeatedly navigating distinct windows.
+
 The first window prepares its exact requested interval, instead of preparing
 150 items before applying a smaller limit. The exact latest
 canonical preview source accompanies the interval independently of its selected
 items. Missing summary source metadata joins the canonical preparation owner;
-that initial preparation still counts toward first-open latency. Full-view consumers still promote the same actor.
+that initial preparation still counts toward first-open latency. Full-view consumers still promote the same actor. The actor owns independent
+bounded-display and complete-execution reads, each using a bounded service
+queue. A blocked execution recovery never occupies the display queue. Navigation
+at an accepted leaf reads only its interval; a concurrent append refreshes the
+same actor and accepted interests before installing that interval. Complete
+promotion catches up canonical append-only growth without incrementing an
+already accepted version twice. Shutdown and deletion cancel and join both
+owned reads; an individual reader still cancels only its own wait.
 
 SetWindow reserves request ownership before cold preparation. It captures
 requested item sources under the actor, reads omitted bodies outside the actor,
@@ -709,3 +724,17 @@ instead of preparing a one-item window and independently sampling `Summary`.
 Automatic replacements do not repeat it. Thread identity, title and creation
 metadata are obtained before freezing the actor snapshot; later title changes
 remain ordered by the existing title generation. No durable state is added.
+
+
+## Bidirectional Parent Receipts
+
+The public API decision extends the existing parent-event input/page types,
+rather than introducing another durable history or observer. Optional Latest
+and BeforeEventID select earlier pages; results remain in canonical order.
+PreviousBeforeEventID identifies the exclusive cursor before the first returned
+receipt. AfterEventID cannot combine with backward selection. Fixed interval
+reads retain their original first/last bounds; ListParentEvents may discover
+new receipts without rebuilding the entire history. Existing defaults remain
+forward reads. Hosts reauthorize each request and use ReadParentEvents with one
+EventID only when the report becomes visible. These options supply bounded
+navigation, not product-specific grouping or a click-to-interactive guarantee.

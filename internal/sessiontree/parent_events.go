@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -62,6 +63,8 @@ type ParentEventQuery struct {
 	FirstEventID    string
 	LastEventID     string
 	AfterEventID    string
+	BeforeEventID   string
+	Latest          bool
 	Limit           int
 	PendingOnly     bool
 }
@@ -76,10 +79,11 @@ type ParentEventRecord struct {
 }
 
 type ParentEventPage struct {
-	Events           []ParentEventRecord
-	FirstEventID     string
-	LastEventID      string
-	NextAfterEventID string
+	Events                []ParentEventRecord
+	FirstEventID          string
+	LastEventID           string
+	NextAfterEventID      string
+	PreviousBeforeEventID string
 }
 
 type ParentEventRepo interface {
@@ -337,6 +341,10 @@ func (r *MemoryRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (
 }
 
 func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (ParentEventPage, error) {
+	if query.AfterEventID != "" && (query.BeforeEventID != "" || query.Latest) {
+		return ParentEventPage{}, ErrRequestConflict
+	}
+	backward := query.BeforeEventID != "" || query.Latest
 	positions := map[string]int{}
 	for i, record := range records {
 		positions[record.ID] = i
@@ -368,6 +376,13 @@ func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (Pare
 		}
 		first = after + 1
 	}
+	if query.BeforeEventID != "" {
+		before, ok := positions[query.BeforeEventID]
+		if !ok || before < first || before > last {
+			return ParentEventPage{}, ErrEntryNotFound
+		}
+		last = before - 1
+	}
 	limit := query.Limit
 	if limit == 0 {
 		limit = 50
@@ -379,16 +394,32 @@ func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (Pare
 	for _, id := range query.SourceThreadIDs {
 		selected[id] = true
 	}
-	for i := first; i <= last; i++ {
+	start, end, step := first, last, 1
+	if backward {
+		start, end, step = last, first, -1
+	}
+	for i := start; step > 0 && i <= end || step < 0 && i >= end; i += step {
 		record := records[i]
 		if query.PendingOnly && record.Admitted || len(selected) > 0 && !selected[record.SourceThreadID] {
 			continue
 		}
 		if len(page.Events) == limit {
-			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
+			if backward {
+				page.PreviousBeforeEventID = page.Events[len(page.Events)-1].ID
+			} else {
+				page.NextAfterEventID = page.Events[len(page.Events)-1].ID
+			}
 			break
 		}
 		page.Events = append(page.Events, record)
+	}
+	if backward {
+		slices.Reverse(page.Events)
+		if query.BeforeEventID != "" && len(page.Events) > 0 {
+			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
+		}
+	} else if query.AfterEventID != "" && len(page.Events) > 0 {
+		page.PreviousBeforeEventID = page.Events[0].ID
 	}
 	return page, nil
 }

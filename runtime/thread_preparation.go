@@ -7,8 +7,9 @@ import (
 	"github.com/floegence/floret/v7/identity"
 )
 
-// The existing actor owns at most one cold preparation. HTTP cancellation only
-// releases a waiter; deletion and Host shutdown cancel and join the actual read.
+// The existing actor owns one complete preparation and one bounded display
+// preparation. Browsing never waits for executable history. HTTP cancellation
+// releases a waiter; deletion and Host shutdown cancel and join both reads.
 // No partial view is published and no preparation state is persisted.
 type threadReadPreparation struct {
 	done   chan struct{}
@@ -45,18 +46,22 @@ func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id i
 					return err
 				}
 				if meta.LeafID == actor.sourceWindow.leaf {
-					if len(requested) == 0 || sameWindowInterval(normalizeWindowInput(requested[0]), actor.sourceWindow.input) {
-						return nil
-					}
-					for _, frozen := range actor.sourceWindow.companions {
-						if sameWindowInterval(normalizeWindowInput(requested[0]), frozen.page.input) {
-							return nil
-						}
-					}
+					// Navigation reads another interval at the accepted leaf. It
+					// neither replaces current facts nor joins execution recovery.
+					return nil
 				}
 			}
 		}
 		pending = actor.preparation
+		if window {
+			pending = actor.windowPreparation
+		} else if display := actor.windowPreparation; display != nil {
+			select {
+			case <-display.done:
+			default:
+				pending = display
+			}
+		}
 		if pending != nil {
 			select {
 			case <-pending.done:
@@ -67,7 +72,11 @@ func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id i
 		if pending == nil {
 			work, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			pending = &threadReadPreparation{done: make(chan struct{}), cancel: cancel}
-			actor.preparation = pending
+			if window {
+				actor.windowPreparation = pending
+			} else {
+				actor.preparation = pending
+			}
 			go func(preparation *threadReadPreparation) {
 				defer cancel()
 				defer func() {
@@ -76,10 +85,17 @@ func (service *threadRuntimeService) prepareThreadRead(ctx context.Context, id i
 					}
 					close(preparation.done)
 				}()
-				service.preparationOnce.Do(func() { service.preparationSlots = make(chan struct{}, 2) })
+				service.preparationOnce.Do(func() {
+					service.preparationSlots = make(chan struct{}, 2)
+					service.windowPreparationSlots = make(chan struct{}, 2)
+				})
+				slots := service.preparationSlots
+				if window {
+					slots = service.windowPreparationSlots
+				}
 				select {
-				case service.preparationSlots <- struct{}{}:
-					defer func() { <-service.preparationSlots }()
+				case slots <- struct{}{}:
+					defer func() { <-slots }()
 				case <-work.Done():
 					preparation.err = work.Err()
 					return

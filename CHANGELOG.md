@@ -4,6 +4,17 @@
 
 ## v7.84.0 - 2026-10-24
 
+- Add optional latest/backward receipt selection and an earlier-page cursor to
+  existing parent-event contracts, retaining chronological results and default
+  forward semantics. Hosts can scroll bounded metadata and disclose one report.
+
+- Keep navigation over an accepted display leaf independent of complete execution
+  recovery. Read another bounded interval outside the actor and discard it if
+  publication advances before interest installation.
+- Resolve parent receipt pages through transactional path ranks and canonical
+  admission sources. Preserve disjoint admissions, retained branches, and exact
+  interaction semantics without scanning unrelated parent or child turns.
+
 - Add opt-in summaries on explicit window baselines. Freeze activity facts and
   preview with the accepted view, avoiding a second host preparation/read cycle.
 

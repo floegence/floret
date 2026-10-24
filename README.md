@@ -216,7 +216,12 @@ result may include a complete final report. This additive action serves Flower
 without changing existing inspection, waiting, or event-read contracts.
 
 `ListParentEvents` exposes metadata, filters and explicit pagination;
-`ReadParentEvents` reads full reports by event ID or a closed immutable range.
+ReadParentEvents reads full reports by event ID or a closed immutable range.
+Both inputs optionally accept Latest or BeforeEventID for backward navigation,
+returning chronological events and PreviousBeforeEventID as the earlier cursor.
+Do not combine these options with AfterEventID. Existing omitted options retain
+forward pagination. A presentation can retain a finite reading interval, fetch
+metadata on scroll, and fetch a single report only when its detail is visible.
 `ThreadView.ParentEvents` is a bounded paginated receipt view separate from
 streamed item ordinals. Successful event pages always encode events as an array,
 including an empty array for an empty page; disabled parent events remain absent. Its `Admitted` field means context placement, never

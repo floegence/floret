@@ -374,3 +374,27 @@ history and canonical tokenization remain outside the bounded repeated path.
 No user output cadence, history, tool permission or UI behavior is reduced.
 Published Redeven adoption and production-renderer interaction measurements are
 separate qualification gates; this benchmark cannot establish total app CPU.
+
+## Parent receipt pages
+
+Prepared parent reads use canonical path receipt ranks and a persistent tree of
+canonical admission interval sources. Metadata contains source references and
+positions, not report text or independently advancing lifecycle. Arbitrary
+released disjoint admissions, branch rollback and Fork retain the complete
+projector's semantics. Receipt, boundary, admission and interaction sources are
+validated before use; pending-only reads validate an admission before skipping
+its interval. Writes and deletion share the existing canonical transaction.
+
+Selected interaction resolution uses exact interaction and waiting-boundary
+sources in canonical journal order, including retained branches. It does not
+load the child's unrelated turn entries or tool bodies. Missing historical
+source metadata is prepared by the canonical owner before retrying the read.
+Complete execution/admission validation retains its complete canonical path.
+
+The regression with 1,000 unrelated parent turns uses 18 gets and no scans for
+an empty page. One approval among 1,000 unrelated child messages uses 46 gets
+while pending and 49 after resolution, with no scans. These are deterministic
+access counts, not product latency. Source-thread filters can still inspect
+unmatched receipts, selected canonical report records contain their report
+text, and historical preparation is not bounded by page size. Do not describe
+all parent-event browsing or first-upgrade reading as fully bounded.

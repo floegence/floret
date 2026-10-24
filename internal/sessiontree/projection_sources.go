@@ -65,9 +65,11 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 		}
 		if entry.Message.ControlSignal != nil {
 			add("interaction", entry.TurnID, entry.RunID, entry.Message.ControlSignal.CallID)
+			add("parent_interaction", entry.TurnID, "", strings.TrimSpace(entry.Message.ControlSignal.CallID))
 		}
 		if entry.Type == EntryToolResult && entry.Message.ToolResult != nil && entry.Message.ToolResult.InputRequired != nil {
 			add("interaction", entry.TurnID, entry.RunID, ToolInputInteractionID(entry.ID))
+			add("parent_interaction", entry.TurnID, "", ToolInputInteractionID(entry.ID))
 			add("input_batch", entry.TurnID, entry.RunID, entry.RunID)
 		}
 	case EntryCustom:
@@ -88,6 +90,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 		}
 		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnWaiting {
 			add("input_batch", entry.TurnID, entry.RunID, entry.RunID)
+			add("input_ready", entry.TurnID, entry.RunID, entry.RunID)
 		}
 		if entry.Metadata[GoalCompletedMetadataKey] != "" {
 			add("goal", "", "", "history")
@@ -120,6 +123,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 		}
 		add("steering", entry.TurnID, "", resolution.SteeringID)
 	case EntryInteractionAsked:
+		add("parent_interaction", entry.TurnID, "", strings.TrimPrefix(entry.ID, "interaction-requested:"))
 		var interaction struct {
 			ID         string `json:"id"`
 			ToolCallID string `json:"tool_call_id"`
@@ -131,6 +135,7 @@ func projectionSourceGroups(entry Entry) ([]projectionSourceGroup, error) {
 		add("tool", entry.TurnID, entry.RunID, interaction.ToolCallID)
 	case EntryInteractionDone:
 		id := strings.TrimPrefix(entry.ID, "interaction-resolved:")
+		add("parent_interaction", entry.TurnID, "", id)
 		if id != entry.ID {
 			add("interaction", entry.TurnID, entry.RunID, id)
 			add("tool", entry.TurnID, entry.RunID, id)
