@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -578,23 +579,74 @@ func legacyActiveSubAgentState(t *testing.T) (memoryState, SubAgentInputRecord, 
 	return state, input, lease
 }
 
-type migrationTestBackend struct{ records map[string]map[string][]byte }
+type migrationTestBackend struct {
+	writeMu sync.Mutex
+	mu      sync.RWMutex
+	records map[string]map[string][]byte
+}
 
 func newMigrationTestBackend() *migrationTestBackend {
 	return &migrationTestBackend{records: make(map[string]map[string][]byte)}
 }
 func (backend *migrationTestBackend) View(_ context.Context, read func(spi.ReadTx) error) error {
-	return read(&migrationTestTx{records: cloneMigrationRecords(backend.records), readOnly: true})
+	// Updates publish a new immutable map. Read transactions retain that map;
+	// Get and Scan already detach returned bytes. Copying the whole database
+	// for every locator read makes migration qualification quadratic.
+	backend.mu.RLock()
+	records := backend.records
+	backend.mu.RUnlock()
+	return read(&migrationTestTx{records: records, readOnly: true})
 }
 func (backend *migrationTestBackend) Update(_ context.Context, mutate func(spi.WriteTx) error) error {
+	backend.writeMu.Lock()
+	defer backend.writeMu.Unlock()
+	backend.mu.RLock()
 	clone := cloneMigrationRecords(backend.records)
+	backend.mu.RUnlock()
 	if err := mutate(&migrationTestTx{records: clone}); err != nil {
 		return err
 	}
+	backend.mu.Lock()
 	backend.records = clone
+	backend.mu.Unlock()
 	return nil
 }
 func (*migrationTestBackend) Close() error { return nil }
+
+func TestMigrationBackendReadSnapshotIsImmutable(t *testing.T) {
+	backend := newMigrationTestBackend()
+	put := func(value string) error {
+		return backend.Update(t.Context(), func(tx spi.WriteTx) error { return tx.Put("test", []byte("key"), []byte(value)) })
+	}
+	if err := put("before"); err != nil {
+		t.Fatal(err)
+	}
+	err := backend.View(t.Context(), func(tx spi.ReadTx) error {
+		value, err := tx.Get("test", []byte("key"))
+		if err != nil {
+			return err
+		}
+		value[0] = 'X'
+		// A concurrent publication must neither alter this snapshot nor wait
+		// for the read transaction to finish.
+		done := make(chan error, 1)
+		go func() { done <- put("after") }()
+		if err := <-done; err != nil {
+			return err
+		}
+		value, err = tx.Get("test", []byte("key"))
+		if err == nil && string(value) != "before" {
+			t.Fatalf("snapshot changed: %q", value)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationTestRecord(t, backend, "test", []byte("key")); string(got) != "after" {
+		t.Fatalf("publication=%q", got)
+	}
+}
 
 type migrationTestTx struct {
 	records  map[string]map[string][]byte
