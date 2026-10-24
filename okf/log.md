@@ -1785,3 +1785,5 @@ Document optional Goal management, same-context reflection, request-bound update
 - 2026-10-20: Qualify scoped display baselines, frozen canonical manifests, complete body hashes, authorization revocation and restart through the blank-module adoption gate.
 
 - 2026-10-20: Document optional facts-only observation through the existing actor publisher for host resource cleanup without presentation hydration.
+
+- 2026-10-23: Document model-only image preparation, independent wire-byte limits, and complete-exchange overflow recovery.

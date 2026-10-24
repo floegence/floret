@@ -147,7 +147,7 @@ func (gateway *officialGateway) Stream(ctx context.Context, request Request) (<-
 	stream, err := gateway.transport.Stream(ctx, internalRequest(request, gateway.identity))
 	if err != nil {
 		if errors.Is(err, internalprovider.ErrContextOverflow) {
-			return nil, ErrContextOverflow
+			return nil, errors.Join(ErrContextOverflow, publicRetryError(err))
 		}
 		return nil, publicRetryError(err)
 	}
@@ -370,7 +370,7 @@ func (p *officialPrepared) Stream(ctx context.Context) (<-chan Event, error) {
 	stream, err := p.prepared.Stream(ctx)
 	if err != nil {
 		if errors.Is(err, internalprovider.ErrContextOverflow) {
-			return nil, ErrContextOverflow
+			return nil, errors.Join(ErrContextOverflow, publicRetryError(err))
 		}
 		return nil, publicRetryError(err)
 	}

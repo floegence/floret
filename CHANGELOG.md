@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v7.82.0 - 2026-10-23
+
+- Add explicit model-only image preparation and exact rendered request byte
+  limits. Preserve original image identity, dimensions and transparent pixels;
+  retain smaller source encodings and freeze prepared bytes for retries.
+- Recover preparation-time capacity errors through the existing compaction
+  boundary. Count encoded media in summary batches, preserve ordered coverage,
+  and stop when an indivisible image cannot fit.
+- Preserve the original provider cause through overflow recovery and exhausted
+  retries. Never split the last complete tool exchange after a checkpoint.
+  Existing canonical histories and domain schema remain unchanged.
+
 ## v7.81.0 - 2026-10-23
 
 - Add optional canonical output start/end timestamps to runtime thread items.

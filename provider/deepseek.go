@@ -29,6 +29,8 @@ import (
 // this gateway; ResponseFormat accepts empty, text, or json_object.
 // Opaque response state belongs to Floret and must be passed back unchanged.
 type DeepSeekOptions struct {
+	// MaxRequestBytes bounds the final JSON body; zero disables the host limit.
+	MaxRequestBytes       int64
 	Model                 string
 	BaseURL               string
 	APIKey                string
@@ -45,6 +47,7 @@ type DeepSeekOptions struct {
 }
 
 type deepSeekGateway struct {
+	maxRequestBytes                  int64
 	identity                         Identity
 	capabilities                     Capabilities
 	endpoint, apiKey, responseFormat string
@@ -59,6 +62,9 @@ type deepSeekGateway struct {
 // is supported by Pro; Flash ignores hosted search and uses the independent Search API.
 // Image input is an optional per-model capability resolved by the host.
 func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
+	if options.MaxRequestBytes < 0 {
+		return nil, errors.New("request byte limit must not be negative")
+	}
 	model, ok := catalog.FindModel(catalog.ProviderDeepSeek, strings.TrimSpace(options.Model))
 	if !ok {
 		return nil, fmt.Errorf("unsupported DeepSeek model %q", options.Model)
@@ -93,7 +99,7 @@ func NewDeepSeek(options DeepSeekOptions) (Gateway, error) {
 	if options.ResolveAttachment != nil {
 		capabilities.AttachmentPayload = AttachmentExpanded
 	}
-	return &deepSeekGateway{resolveAttachment: options.ResolveAttachment, supportsImages: slices.Contains(model.Input, "image"), identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
+	return &deepSeekGateway{maxRequestBytes: options.MaxRequestBytes, resolveAttachment: options.ResolveAttachment, supportsImages: slices.Contains(model.Input, "image"), identity: identity, capabilities: capabilities, endpoint: baseURL + "/responses", apiKey: apiKey, client: client, temperature: clone(options.Temperature), topP: clone(options.TopP), responseFormat: options.ResponseFormat}, nil
 }
 func (g *deepSeekGateway) Identity() Identity { return g.identity }
 func (g *deepSeekGateway) Capabilities() Capabilities {
@@ -371,6 +377,9 @@ func (g *deepSeekGateway) render(ctx context.Context, req Request) ([]byte, deep
 		return nil, history, err
 	}
 	raw, err = OrderToolSchemas(RequestFormatOpenAIResponses, raw)
+	if err == nil {
+		err = CheckRequestBytes(raw, g.maxRequestBytes)
+	}
 	return raw, history, err
 }
 
@@ -383,6 +392,9 @@ func (g *deepSeekGateway) Stream(ctx context.Context, req Request) (<-chan Event
 }
 
 func (g *deepSeekGateway) streamRendered(ctx context.Context, body []byte, history deepSeekHistory, stateAllowed bool) (<-chan Event, error) {
+	if err := CheckRequestBytes(body, g.maxRequestBytes); err != nil {
+		return nil, err
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -696,7 +708,7 @@ func (g *deepSeekGateway) readStream(ctx context.Context, body io.Reader, histor
 			search(deepSeekOutput{ID: event.ItemID})
 		case "response.failed", "error":
 			if event.Response.Error != nil && event.Response.Error.Code == "context_length_exceeded" {
-				fail(ErrContextOverflow)
+				fail(errors.Join(&ProviderHTTPError{Provider: "DeepSeek", StatusCode: 200, Code: event.Response.Error.Code, Message: sanitizeProviderErrorText(event.Response.Error.Message)}, ErrContextOverflow))
 			} else {
 				fail(errors.New("DeepSeek response failed"))
 			}
@@ -1104,6 +1116,9 @@ func (p *deepSeekPrepared) WithMaxOutputTokens(ctx context.Context, limit int64)
 	envelope["max_output_tokens"], _ = json.Marshal(limit)
 	body, err := json.Marshal(envelope)
 	if err != nil {
+		return nil, err
+	}
+	if err := CheckRequestBytes(body, p.gateway.maxRequestBytes); err != nil {
 		return nil, err
 	}
 	return &deepSeekPrepared{gateway: p.gateway, body: body, history: p.history, stateAllowed: p.stateAllowed, fingerprint: fmt.Sprintf("sha256:%x", sha256.Sum256(body)), estimate: p.estimate}, nil

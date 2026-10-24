@@ -72,10 +72,13 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 			req.AttemptEpoch = details.Attempts + 1
 			req.AttemptID = fmt.Sprintf("%s:generation:0:attempt:%d", req.LogicalRequestID, req.AttemptEpoch)
 			prepared, inputTokens, err := g.prepareSummaryRequest(ctx, req)
-			if err != nil {
+			if err != nil && !errors.Is(err, provider.ErrContextOverflow) {
 				return "", details, err
 			}
-			if !summaryRequestFits(inputTokens, policy, cap) {
+			capacityErr := err
+			if err != nil {
+				details.OverflowRetries++
+			} else if !summaryRequestFits(inputTokens, policy, cap) {
 				if prepared != nil {
 					if err := prepared.Close(); err != nil {
 						return "", details, err
@@ -93,14 +96,19 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 					return "", details, err
 				}
 				details.OverflowRetries++
+				capacityErr = err
 			}
 			if batch.bytes <= 1 {
-				return "", details, errors.New("compaction summary indivisible image or fixed prefix exceeds provider capacity")
+				return "", details, errors.Join(capacityErr, errors.New("compaction summary indivisible image or fixed prefix exceeds provider capacity"))
 			}
-			batch, err = g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, batch.bytes/2)
-			if err != nil {
-				return "", details, err
+			smaller, selectErr := g.selectSummaryBatch(ctx, prep, messages, cursor, previous, policy, cap, batch.bytes/2)
+			if selectErr != nil {
+				return "", details, errors.Join(capacityErr, selectErr)
 			}
+			if smaller.next == batch.next {
+				return "", details, errors.Join(capacityErr, errors.New("compaction summary indivisible image or fixed prefix exceeds provider capacity"))
+			}
+			batch = smaller
 		}
 	}
 	if strings.TrimSpace(previous) == "" {
@@ -269,6 +277,13 @@ func (g ProviderSummaryGenerator) selectSummaryBatch(ctx context.Context, prep s
 		fragment := session.Message{Role: session.User}
 		size := 1
 		if part.Image != nil {
+			// Count encoded media separately from token estimates. A first atomic
+			// image may exceed this heuristic budget: actual prepared bytes decide.
+			source := min(max(part.Image.SizeBytes, 1), int64(^uint(0)>>1)/2)
+			size = int((source + 2) / 3 * 4)
+			if used > 0 && size > byteLimit-used {
+				break
+			}
 			fragment.Content = header + part.Text + "\n\n"
 			fragment.Attachments = []session.MessageAttachment{session.CloneMessageAttachment(*part.Image)}
 			ok, err := fits(fragment)

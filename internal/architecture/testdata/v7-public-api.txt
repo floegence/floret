@@ -268,6 +268,7 @@ field Capabilities.ReasoningCapability github.com/floegence/floret/v7/config.Rea
 field Capabilities.AttachmentPayload github.com/floegence/floret/v7/provider.AttachmentPayloadMode tag="json:\"attachment_payload\""
 field Capabilities.ReasoningHistory github.com/floegence/floret/v7/provider.ReasoningHistoryPolicy tag="json:\"reasoning_history,omitempty\""
 method Capabilities.Validate func() error
+func CheckRequestBytes func(payload []byte, limit int64) error
 type ContentAttributionPart struct
 field ContentAttributionPart.Category string tag="json:\"category,omitempty\""
 field ContentAttributionPart.Start int tag="json:\"start\""
@@ -278,6 +279,7 @@ field DeepSeekCapabilities.IndependentSearch bool
 field DeepSeekCapabilities.HostedWebSearchWireShape string
 func DeepSeekModelCapabilities func(model string) (github.com/floegence/floret/v7/provider.DeepSeekCapabilities, bool)
 type DeepSeekOptions struct
+field DeepSeekOptions.MaxRequestBytes int64
 field DeepSeekOptions.Model string
 field DeepSeekOptions.BaseURL string
 field DeepSeekOptions.APIKey string
@@ -350,6 +352,11 @@ field Identity.Provider string tag="json:\"provider\""
 field Identity.Model string tag="json:\"model\""
 field Identity.StateCompatibilityKey string tag="json:\"state_compatibility_key\""
 method Identity.Validate func() error
+type ImagePreparationOptions struct
+field ImagePreparationOptions.JPEGQuality int
+field ImagePreparationOptions.MinBytes int64
+field ImagePreparationOptions.MaxSourceBytes int64
+field ImagePreparationOptions.MaxPixels int64
 type Labels struct
 field Labels.Correlation map[string]string tag="json:\"correlation,omitempty\""
 field Labels.Host map[string]string tag="json:\"host,omitempty\""
@@ -393,6 +400,15 @@ field OutputPart.ItemID string tag="json:\"item_id\""
 field OutputPart.OutputIndex int tag="json:\"output_index\""
 field OutputPart.ContentIndex int tag="json:\"content_index\""
 func ParseOllamaReasoningCapability func(raw encoding/json.RawMessage, thinkingCapable bool) (github.com/floegence/floret/v7/config.ReasoningCapability, error)
+func PrepareImage func(ctx context.Context, source []byte, options github.com/floegence/floret/v7/provider.ImagePreparationOptions) (github.com/floegence/floret/v7/provider.PreparedImage, error)
+type PreparedImage struct
+field PreparedImage.Bytes []byte
+field PreparedImage.MIMEType string
+field PreparedImage.Width int
+field PreparedImage.Height int
+field PreparedImage.SourceBytes int64
+field PreparedImage.SourceSHA256 string
+field PreparedImage.SHA256 string
 type PreparedRequest interface interface{Close() error; RenderedPayloadFingerprint() string; Stream(context.Context) (<-chan github.com/floegence/floret/v7/provider.Event, error); TokenEstimate() github.com/floegence/floret/v7/provider.TokenEstimate}
 type PreparedRequestMeasurement interface interface{InputMeasurementPrefix() github.com/floegence/floret/v7/provider.MeasurementPrefix; MeasurementSuffix(github.com/floegence/floret/v7/provider.MeasurementPrefix) ([]byte, bool)}
 type PreparedRequestOutputLimiter interface interface{WithMaxOutputTokens(context.Context, int64) (github.com/floegence/floret/v7/provider.PreparedRequest, error)}
@@ -445,6 +461,11 @@ field Request.ReusePolicy *github.com/floegence/floret/v7/provider.RequestReuseP
 field Request.Labels github.com/floegence/floret/v7/provider.Labels tag="json:\"labels,omitempty\""
 method Request.MarshalJSON func() ([]byte, error)
 method Request.Validate func() error
+type RequestByteLimitError struct
+field RequestByteLimitError.ActualBytes int64
+field RequestByteLimitError.LimitBytes int64
+method *RequestByteLimitError.Error func() string
+method *RequestByteLimitError.Unwrap func() error
 type RequestFormat string
 const RequestFormatAnthropic github.com/floegence/floret/v7/provider.RequestFormat = "anthropic_messages"
 const RequestFormatJSON github.com/floegence/floret/v7/provider.RequestFormat = "input_json"

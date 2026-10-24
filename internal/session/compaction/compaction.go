@@ -254,9 +254,8 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if protectedAnchor >= 0 && start > protectedAnchor {
 		return Preparation{}, fmt.Errorf("%w: tool boundary crossed supplemental anchor", ErrInvalidReference)
 	}
-	if start <= 0 && len(history) > 1 {
-		start = 1
-	}
+	// A repaired zero boundary means the latest complete exchange spans
+	// the whole history. Never split its call from the retained result.
 	if start <= 0 || start >= len(history) {
 		return Preparation{}, ErrNoCutPoint
 	}

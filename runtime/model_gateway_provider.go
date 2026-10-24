@@ -86,7 +86,7 @@ func (adapter preparedModelGatewayProvider) PrepareRequest(ctx context.Context, 
 	}
 	prepared, err := preparer.PrepareModelRequest(ctx, projectedRequest)
 	if err != nil {
-		return nil, err
+		return nil, engineProviderError(err)
 	}
 	if prepared == nil {
 		return nil, errors.New("model gateway returned a nil prepared request")

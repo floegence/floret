@@ -255,6 +255,7 @@ func TestPreparedProviderRequestManualCompactContextDiscardsUnstreamedHandle(t *
 }
 
 type preparedBehavior struct {
+	prepareErr        error
 	estimate          provider.TokenEstimate
 	events            []provider.StreamEvent
 	stream            func() <-chan provider.StreamEvent
@@ -294,6 +295,10 @@ func (p *preparedLifecycleProvider) PrepareRequest(_ context.Context, _ provider
 	behavior := preparedBehavior{events: preparedDone("ok")}
 	if index < len(p.behaviors) {
 		behavior = p.behaviors[index]
+	}
+	if behavior.prepareErr != nil {
+		p.behaviors[index].prepareErr = nil
+		return nil, behavior.prepareErr
 	}
 	if behavior.estimate.Source == "" {
 		behavior.estimate = preparedEstimate(10)
@@ -406,3 +411,50 @@ var _ provider.Provider = (*preparedLifecycleProvider)(nil)
 var _ provider.RequestPreparer = (*preparedLifecycleProvider)(nil)
 var _ provider.PreparedRequest = (*preparedLifecycleHandle)(nil)
 var _ provider.PreparedInputTokenLimit = (*preparedLifecycleHandle)(nil)
+
+func TestOverflowPreservesOriginalProviderCause(t *testing.T) {
+	for _, noCut := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no_cut_%t", noCut), func(t *testing.T) {
+			cause := errors.New("HTTP 413 original request rejected")
+			overflow := errors.Join(cause, provider.ErrContextOverflow)
+			p := newPreparedLifecycleProvider(preparedBehavior{streamErr: overflow}, preparedBehavior{streamErr: overflow})
+			store := session.NewMemoryStore()
+			history := []session.Message{{Role: session.User, Content: "older", EntryID: "u1"}, {Role: session.User, Content: "newer", EntryID: "u2"}}
+			if noCut {
+				history = []session.Message{{Role: session.Assistant, ToolCallID: "call", ToolName: "capture", ToolArgs: "{}", EntryID: "a"}, {Role: session.Tool, ToolCallID: "call", ToolName: "capture", Content: "saved screenshot", EntryID: "b"}}
+			}
+			if err := store.AppendTranscript("run", history...); err != nil {
+				t.Fatal(err)
+			}
+			e := newTestEngine(p, &event.Recorder{})
+			e.Store = store
+			e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+			got := e.Run(t.Context(), "")
+			if got.Status != engine.Failed || !errors.Is(got.Err, cause) || got.FailureOrigin != engine.FailureOriginProvider {
+				t.Fatalf("status=%s origin=%s error=%v", got.Status, got.FailureOrigin, got.Err)
+			}
+			if noCut {
+				assertPreparedHandlesTerminated(t, p, []int{1})
+			} else {
+				assertPreparedHandlesTerminated(t, p, []int{1, 1})
+			}
+		})
+	}
+}
+
+func TestPreparedOverflowCompactsBeforeDispatch(t *testing.T) {
+	cause := errors.New("prepared wire byte capacity")
+	p := newPreparedLifecycleProvider(preparedBehavior{prepareErr: errors.Join(cause, provider.ErrContextOverflow), events: preparedDone("after compact")})
+	store := session.NewMemoryStore()
+	if err := store.AppendTranscript("run", session.Message{Role: session.User, Content: "older", EntryID: "u1"}, session.Message{Role: session.User, Content: "newer", EntryID: "u2"}); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, &event.Recorder{})
+	e.Store = store
+	e.Compactor = engine.LocalCompactionManager{Generator: boundedSummaryFixture{}}
+	got := e.Run(t.Context(), "")
+	if got.Status != engine.Completed || got.Metrics.Compactions != 1 || got.Output != "after compact" {
+		t.Fatalf("%+v", got)
+	}
+	assertPreparedHandlesTerminated(t, p, []int{1})
+}

@@ -12,6 +12,15 @@ diagnostics. It must not persist or rebuild a second queryable Agent lifecycle.
 Floret is not a graph workflow framework, a multi-agent orchestrator, or a
 product persistence layer.
 
+Hosts can explicitly opt into model-only PNG compression with
+`provider.PrepareImage`. It preserves dimensions and source identity, keeps
+transparency lossless, and only uses a smaller JPEG candidate. The zero quality
+policy preserves bytes. `provider.CheckRequestBytes` checks exact rendered
+JSON independently of tokens; `provider.RequestByteLimitError` retains the
+existing overflow classification. `provider.DeepSeekOptions.MaxRequestBytes`
+applies the same optional limit before preparation and dispatch. Canonical assets
+and historical records remain unchanged; transport retries reuse frozen bytes.
+
 ## Request output budgets
 
 Set ContextPolicy.ModelMaxOutputTokens to the model output capability to enable

@@ -401,3 +401,30 @@ Optional TransportObservation events describe protocol progress and a machine-co
 reason or next transport. They do not represent model output or retry permission.
 PreparedRequestReplay keeps immutable input while a fresh measurement prefix may
 bind a changed transport; Engine retries use the new handle's prefix.
+
+## Model image and byte preparation
+
+The additive v7.82 API decision serves Redeven's screenshot adapter through
+`PrepareImage`, `ImagePreparationOptions`, `PreparedImage`,
+`CheckRequestBytes` and `RequestByteLimitError`. Hosts authorize and resolve
+original bytes first, then opt into transient encoding before token estimation
+and request freezing. PNG/JPEG decoding is bounded by source bytes and pixel
+count. JPEG quality zero preserves bytes; opaque PNGs may use a smaller standard
+Go JPEG (4:2:0) candidate. Transparency, dimensions and originals are preserved.
+No resize, guessed coordinate mapping, persistent derivative cache, or schema
+migration is introduced. Explicit original reads stay a host policy decision.
+
+Exact UTF-8 JSON bytes, including base64 and framing, have an independent host
+limit. Zero disables it; negatives fail. DeepSeek applies its optional
+`MaxRequestBytes` at render, output refit and dispatch. The typed error carries
+only actual/limit counts and unwraps to the existing overflow sentinel.
+Preparation rejection invokes the same bounded compaction path as transport
+rejection. Summary batching weights source media by base64 size, permits one
+atomic image for actual preparation to assess, halves failed batches, and stops
+if the cursor cannot shrink. No image is skipped or replayed as a tool action.
+The final complete call/result is never split to manufacture a cut point.
+
+Evidence: [image preparation](../../provider/image_preparation.go),
+[exact request limits](../../provider/request_bytes.go),
+[summary coverage](../../internal/engine/compaction/media_budget_test.go), and
+[minimal exchange regression](../../internal/session/compaction/minimal_exchange_test.go).

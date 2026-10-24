@@ -341,3 +341,23 @@ func TestDeepSeekCurrentReasoningWire(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepSeekPreparedByteLimitBeforeDispatch(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; t.Error("oversized request dispatched") }))
+	defer server.Close()
+	gateway, err := provider.NewDeepSeek(provider.DeepSeekOptions{Model: "deepseek-flash", BaseURL: server.URL, APIKey: "test", StateCompatibilityKey: "budget-test", MaxRequestBytes: 128})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := provider.Request{RunID: "budget", PromptScopeID: "budget", Messages: []provider.Message{{Role: provider.RoleUser, Text: strings.Repeat("x", 1024)}}}
+	_, err = gateway.(provider.RequestPreparer).Prepare(t.Context(), req)
+	var limit *provider.RequestByteLimitError
+	if !errors.As(err, &limit) || limit.ActualBytes <= 128 || limit.LimitBytes != 128 || calls != 0 {
+		t.Fatalf("calls=%d error=%v", calls, err)
+	}
+	_, err = gateway.Stream(t.Context(), req)
+	if !errors.As(err, &limit) || calls != 0 {
+		t.Fatalf("calls=%d error=%v", calls, err)
+	}
+}

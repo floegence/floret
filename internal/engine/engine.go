@@ -2866,6 +2866,14 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
 	if err != nil {
+		if errors.Is(err, provider.ErrContextOverflow) {
+			pressure := tracker.Overflow(opts.ContextPolicy)
+			next, replacement, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, nil, metrics, failures)
+			if compactErr != nil {
+				return provider.Request{}, history, false, errors.Join(err, compactErr)
+			}
+			return replacement, next, true, nil
+		}
 		if contextLineageCompactionRequired(err) {
 			usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 			pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
@@ -2991,13 +2999,13 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	pressure := tracker.Overflow(opts.ContextPolicy)
 	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, compactionRequestSnapshot(req, tracker), metrics, failures)
 	if compactErr != nil {
-		return req, history, StepOutput{}, latency, false, compactErr
+		return req, history, StepOutput{}, latency, false, errors.Join(err, compactErr)
 	}
 	history = next
 	retryReq, stepOutput, retryLatency, overflow, err := e.sendProviderRequestWithRetry(ctx, opts, step, retryReq, metrics)
 	latency += retryLatency
 	if overflow {
-		return retryReq, history, stepOutput, latency, true, fmt.Errorf("provider context overflow retry exhausted: %w", provider.ErrContextOverflow)
+		return retryReq, history, stepOutput, latency, true, withFailureOrigin(fmt.Errorf("provider context overflow retry exhausted: %w", errors.Join(err, provider.ErrContextOverflow)), FailureOriginProvider)
 	}
 	return retryReq, history, stepOutput, latency, true, err
 }
@@ -3056,7 +3064,7 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
-		return StepOutput{}, latency, true, err
+		return StepOutput{}, latency, true, withFailureOrigin(err, FailureOriginProvider)
 	}
 	if err != nil {
 		return StepOutput{}, latency, false, withFailureOrigin(err, FailureOriginProvider)
@@ -3065,7 +3073,7 @@ func (e *Engine) sendPhysicalProviderAttempt(ctx context.Context, opts Options, 
 	err = attempt.Error(err)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
-		return out, latency, true, err
+		return out, latency, true, withFailureOrigin(err, FailureOriginProvider)
 	}
 	return out, latency, false, withFailureOrigin(err, FailureOriginProvider)
 }
