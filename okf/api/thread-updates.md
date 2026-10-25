@@ -738,3 +738,18 @@ new receipts without rebuilding the entire history. Existing defaults remain
 forward reads. Hosts reauthorize each request and use ReadParentEvents with one
 EventID only when the report becomes visible. These options supply bounded
 navigation, not product-specific grouping or a click-to-interactive guarantee.
+
+
+ListParentEventsInput.AfterOrdinal and BeforeOrdinal optionally seek an
+exclusive interval on the current canonical path. Zero omits a bound. A before
+bound selects its latest receipts; otherwise selection starts at the after bound.
+Both directions return chronological events. These fields exclude event-relative
+cursors and Latest; nonzero bounds must increase. Returned event cursors and
+first/last identities describe the full path, so subsequent scrolling can leave
+the initial ordinal interval. Positions are canonical entry ordinals, not item
+ranks or timestamps; callers must reselect after a path change. Exact report
+reads retain the existing event-ID and fixed-range contracts. An optional LeafID
+selects an ancestor still on the current path; append preserves that selection,
+while removal from the active path fails with ErrJournalInvariant. Every page
+returns its actual LeafID. Interaction resolution is current at the read
+transaction and does not claim to be the historical resolution at that leaf.

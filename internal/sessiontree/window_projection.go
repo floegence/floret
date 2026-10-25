@@ -73,7 +73,11 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 	if ctx == nil || strings.TrimSpace(options.ThreadID) == "" || options.Limit < 1 || options.Limit > 256 || fields == nil {
 		return WindowProjection{}, spi.ErrInvalidArgument
 	}
-	if err := repo.prepareWindowProjection(ctx, options.ThreadID); err != nil {
+	needs := windowPreparationNeeds{true, true, true, true}
+	if options.SummaryOnly {
+		needs = windowPreparationNeeds{window: true}
+	}
+	if err := repo.prepareWindowReadSources(ctx, options.ThreadID, needs); err != nil {
 		return WindowProjection{}, err
 	}
 	// Preparation may publish the deferred repository. Execute the complete
@@ -116,6 +120,9 @@ func (repo *BackendRepo) readWindowProjection(ctx context.Context, options ItemM
 func readWindowProjection(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, options ItemMembershipWindowOptions, fields func(PathMetadata, bool) []string, parentEvents bool) (WindowProjection, error) {
 	result := WindowProjection{Meta: meta}
 	tx = newProjectionSourceTx(tx)
+	if options.SummaryOnly {
+		return readSummaryProjection(ctx, tx, meta, fields)
+	}
 	var err error
 	result.Membership, err = readItemMembershipWindow(ctx, tx, meta, options)
 	if errors.Is(err, ErrEntryNotFound) && options.MissingAnchorTail && options.AnchorID != "" {
@@ -319,10 +326,11 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 			queue = append(queue, metadata.Entry)
 		}
 	}
-	if err == nil && repo.parentEvents {
+	if err == nil && repo.parentEvents && !options.SummaryOnly {
 		records, readErr := repo.parentEventRecordsLocked(options.ThreadID)
 		if readErr == nil {
 			page, pageErr := pageParentEvents(records, ParentEventQuery{ThreadID: options.ThreadID, Limit: 100})
+			page.LeafID = meta.LeafID
 			parents, readErr = &page, pageErr
 		}
 		err = readErr
@@ -330,6 +338,23 @@ func (repo *MemoryRepo) ReadWindowProjection(ctx context.Context, options ItemMe
 	repo.mu.Unlock()
 	if err != nil {
 		return WindowProjection{}, err
+	}
+	if options.SummaryOnly {
+		result := WindowProjection{Meta: meta, Membership: ItemMembershipWindow{LeafID: meta.LeafID}, Queue: queue}
+		if options.Summary {
+			result.Summary = &WindowSummary{}
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return WindowProjection{}, err
+			}
+			result.Entries = append(result.Entries, PathProjectionEntry{Entry: entry})
+			if options.Summary && summarySourceCandidate(entry) && strings.TrimSpace(entry.Message.Content) != "" {
+				text := []rune(strings.TrimSpace(entry.Message.Content))
+				result.Summary = &WindowSummary{Text: string(text[:min(160, len(text))]), CreatedAt: entry.CreatedAt}
+			}
+		}
+		return result, nil
 	}
 	var membership ItemMembership
 	var projection ThreadContextProjection

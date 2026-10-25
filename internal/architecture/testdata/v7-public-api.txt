@@ -855,6 +855,7 @@ method *Host.ThreadMediaInventory func(ctx context.Context, threadID github.com/
 method *Host.StorageMigrationStatus func(ctx context.Context) (github.com/floegence/floret/v7/runtime.StorageMigrationStatus, error)
 method *Host.Readiness func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) (github.com/floegence/floret/v7/runtime.ThreadReadiness, error)
 method *Host.PrepareThread func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) error
+method *Host.PrepareDisplayThread func(ctx context.Context, threadID github.com/floegence/floret/v7/identity.ThreadID) error
 method *Host.PrepareRestore func(ctx context.Context) (github.com/floegence/floret/v7/runtime.RestorePreparation, error)
 method *Host.ThreadService func(factory github.com/floegence/floret/v7/runtime.AgentFactory) (github.com/floegence/floret/v7/runtime.ThreadService, error)
 type IDSource interface interface{NewRunID() (github.com/floegence/floret/v7/identity.RunID, error); NewThreadID() (github.com/floegence/floret/v7/identity.ThreadID, error); NewTurnID() (github.com/floegence/floret/v7/identity.TurnID, error)}
@@ -904,9 +905,12 @@ field InteractionResolution.Approved *bool tag="json:\"approved,omitempty\""
 field InteractionResolution.Input map[string]string tag="json:\"input,omitempty\""
 field InteractionResolution.At time.Time tag="json:\"at\""
 type ListParentEventsInput struct
+field ListParentEventsInput.LeafID string
 field ListParentEventsInput.ThreadID github.com/floegence/floret/v7/identity.ThreadID
 field ListParentEventsInput.SourceThreadIDs []github.com/floegence/floret/v7/identity.ThreadID
 field ListParentEventsInput.AfterEventID string
+field ListParentEventsInput.AfterOrdinal uint64
+field ListParentEventsInput.BeforeOrdinal uint64
 field ListParentEventsInput.BeforeEventID string
 field ListParentEventsInput.Latest bool
 field ListParentEventsInput.Limit int
@@ -1043,6 +1047,7 @@ const ParentEventInputRequired github.com/floegence/floret/v7/runtime.ParentEven
 const ParentEventInterrupted github.com/floegence/floret/v7/runtime.ParentEventKind = "interrupted"
 type ParentEventKind string
 type ParentEventPage struct
+field ParentEventPage.LeafID string tag="json:\"leaf_id,omitempty\""
 field ParentEventPage.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ParentEventPage.Events []github.com/floegence/floret/v7/runtime.ParentEvent tag="json:\"events\""
 field ParentEventPage.FirstEventID string tag="json:\"first_event_id,omitempty\""
@@ -1652,6 +1657,8 @@ type ThreadQueueEditReader interface interface{LookupQueuedEdit(context.Context,
 type ThreadReadiness struct
 field ThreadReadiness.ThreadID github.com/floegence/floret/v7/identity.ThreadID tag="json:\"thread_id\""
 field ThreadReadiness.Ready bool tag="json:\"ready\""
+field ThreadReadiness.DisplayReady bool tag="json:\"display_ready\""
+field ThreadReadiness.DisplayError string tag="json:\"display_error,omitempty\""
 field ThreadReadiness.Storage github.com/floegence/floret/v7/runtime.StorageMigrationStatus tag="json:\"storage\""
 type ThreadRunPhase string
 const ThreadRunPhaseFinalizing github.com/floegence/floret/v7/runtime.ThreadRunPhase = "finalizing"

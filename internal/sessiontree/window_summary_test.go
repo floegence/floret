@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,6 +51,113 @@ func TestWindowSummarySourceSurvivesRestartPreparationAndPathChange(t *testing.T
 		t.Fatal(err)
 	}
 	read("")
+}
+
+func TestCurrentSummaryDoesNotPrepareContextOrModelSources(t *testing.T) {
+	backend, repo := projectionSourcesFixture(t, 8)
+	if err := repo.prepareWindowProjection(t.Context(), "thread"); err != nil {
+		t.Fatal(err)
+	}
+	keys := [][]byte{contextProjectionKey("thread"), modelContextSourcesKey("thread")}
+	if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+		for _, key := range keys {
+			if err := tx.Delete(itemMembershipNamespace, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := cloneMigrationRecords(backend.records)
+	window, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true, ActivityFields: true}, func(PathMetadata, bool) []string { return nil })
+	if err != nil || window.Summary == nil || window.Summary.Text != "preserved" {
+		t.Fatalf("summary=%+v err=%v", window.Summary, err)
+	}
+	if len(window.Membership.Members) != 0 || window.ParentEvents != nil || len(window.ModelContext.Messages) != 0 {
+		t.Fatal("summary hydrated unrequested components")
+	}
+	if !reflect.DeepEqual(before, backend.records) {
+		t.Fatal("summary prepared unrequested context/model sources")
+	}
+}
+
+func TestMemorySummaryOnlyOmitsUnrequestedComponents(t *testing.T) {
+	_, repo := projectionSourcesFixture(t, 8)
+	path, err := repo.Path(t.Context(), "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := newMemoryRepo(repo.now)
+	memory.threads["thread"] = ThreadMeta{ID: "thread", LeafID: path[len(path)-1].ID}
+	memory.entries["thread"] = path
+	window, err := memory.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true}, func(PathMetadata, bool) []string { return nil })
+	if err != nil || window.Summary == nil || window.Summary.Text != "preserved" {
+		t.Fatalf("summary=%+v err=%v", window.Summary, err)
+	}
+	if len(window.Membership.Members) != 0 || window.ParentEvents != nil || !reflect.DeepEqual(window.Context, ThreadContextSnapshot{}) || !reflect.DeepEqual(window.ModelContext, ModelContextSources{}) {
+		t.Fatal("summary hydrated unrequested components")
+	}
+}
+
+func TestCurrentSummaryReadsDoNotGrowWithUnrelatedHistory(t *testing.T) {
+	for _, count := range []int{128, 1280} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, count)
+			options := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true, ActivityFields: true}
+			fields := func(PathMetadata, bool) []string { return nil }
+			if _, err := repo.ReadWindowProjection(t.Context(), options, fields); err != nil {
+				t.Fatal(err)
+			}
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			counted := &parentPageReadBackend{Backend: backend}
+			repo.backend = counted
+			got, err := repo.ReadWindowProjection(t.Context(), options, fields)
+			if err != nil || got.Summary == nil || got.Summary.Text != "preserved" {
+				t.Fatalf("summary=%+v err=%v", got.Summary, err)
+			}
+			t.Logf("history=%d gets=%d scans=%d sources=%d", count, counted.gets, counted.scans, len(got.Entries))
+			if counted.gets > 160 || counted.scans > 12 || len(got.Entries) > 8 {
+				t.Fatal("summary exceeded current-source read budget")
+			}
+		})
+	}
+}
+
+func TestCurrentSummaryDoesNotReplayResolvedInteractionHistory(t *testing.T) {
+	for _, count := range []int{16, 160} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 0)
+			for i := range count {
+				id := fmt.Sprint("approval-", i)
+				for _, entry := range []Entry{
+					{ID: "interaction-requested:" + id, Type: EntryInteractionAsked, Payload: []byte(fmt.Sprintf(`{"id":%q,"kind":"approval","turn_id":"turn","run_id":"run"}`, id))},
+					{ID: "interaction-resolved:" + id, Type: EntryInteractionDone, Payload: []byte(`{"accepted":true}`)},
+				} {
+					entry.ThreadID, entry.TurnID, entry.RunID = "thread", "turn", "run"
+					if _, err := repo.Append(t.Context(), entry, AppendOptions{ID: entry.ID}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			options := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true, ActivityFields: true}
+			fields := func(PathMetadata, bool) []string { return nil }
+			if _, err := repo.ReadWindowProjection(t.Context(), options, fields); err != nil {
+				t.Fatal(err)
+			}
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			counted := &parentPageReadBackend{Backend: backend}
+			repo.backend = counted
+			got, err := repo.ReadWindowProjection(t.Context(), options, fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("resolved=%d gets=%d scans=%d sources=%d", count, counted.gets, counted.scans, len(got.Entries))
+			if counted.gets > 160 || counted.scans > 12 || len(got.Entries) > 8 {
+				t.Fatal("summary replayed resolved interaction history")
+			}
+		})
+	}
 }
 
 func TestWindowSummaryRejectsInvalidSourceWithoutMutation(t *testing.T) {
@@ -319,5 +427,91 @@ func TestSummaryOnlyPreparationSkipsWhitespaceAndControls(t *testing.T) {
 	page, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{Summary: true, ThreadID: "thread", Limit: 1}, func(PathMetadata, bool) []string { return nil })
 	if err != nil || page.Summary == nil || page.Summary.Text != "last readable" {
 		t.Fatalf("wrong latest eligible source: %+v %v", page.Summary, err)
+	}
+}
+
+func TestCurrentSummaryDoesNotReplayLifecycleHistory(t *testing.T) {
+	for _, count := range []int{16, 160} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 0)
+			for i := range count {
+				for _, entry := range []Entry{
+					{ID: fmt.Sprint("reason-", i), Type: EntryCustom, Metadata: map[string]string{"failure_reason": "kept", TurnFailureCodeMetadataKey: TurnFailureInterrupted}},
+					{ID: fmt.Sprint("savepoint-", i), Type: EntryTurnMarker, TurnStatus: TurnSavePoint, Metadata: map[string]string{"reason": "context_continue"}},
+				} {
+					entry.ThreadID, entry.TurnID, entry.RunID = "thread", "turn", "run"
+					if _, err := repo.Append(t.Context(), entry, AppendOptions{ID: entry.ID}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			options := ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, SummaryOnly: true, Summary: true, ActivityFields: true}
+			fields := func(PathMetadata, bool) []string { return nil }
+			if _, err := repo.ReadWindowProjection(t.Context(), options, fields); err != nil {
+				t.Fatal(err)
+			}
+			repo = reopenCurrentStartupRepo(t, backend, false)
+			counted := &parentPageReadBackend{Backend: backend}
+			repo.backend = counted
+			got, err := repo.ReadWindowProjection(t.Context(), options, fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("lifecycle=%d gets=%d scans=%d sources=%d", count, counted.gets, counted.scans, len(got.Entries))
+			if counted.gets > 160 || counted.scans > 12 || len(got.Entries) > 8 {
+				t.Fatal("summary replayed lifecycle history")
+			}
+		})
+	}
+}
+
+func TestCurrentSummaryRejectsWrongLifecycleSourceKinds(t *testing.T) {
+	for _, field := range []string{"status", "started", "terminal", "cancellation", "failure_reset", "failure", "failure_code", "timeout"} {
+		t.Run(field, func(t *testing.T) {
+			backend, repo := projectionSourcesFixture(t, 2)
+			if _, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, Summary: true, SummaryOnly: true}, func(PathMetadata, bool) []string { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.Update(t.Context(), func(tx spi.WriteTx) error {
+				var window storedWindowSources
+				if err := readItemJSON(tx, windowSourcesKey("thread"), &window); err != nil {
+					return err
+				}
+				if field == "status" {
+					window.StatusSource = "call"
+					return putItemJSON(tx, windowSourcesKey("thread"), window)
+				}
+				var turn storedWindowTurnSources
+				if err := readItemJSON(tx, windowTurnSourcesKey("thread", "turn"), &turn); err != nil {
+					return err
+				}
+				switch field {
+				case "started":
+					turn.Started = "call"
+				case "terminal":
+					turn.Terminal = "call"
+				case "cancellation":
+					turn.Cancellation = "call"
+				case "failure_reset":
+					turn.FailureReset = "call"
+				case "failure":
+					turn.Failure = "call"
+				case "failure_code":
+					turn.FailureCode = "call"
+				case "timeout":
+					turn.Timeout = "call"
+				}
+				return putItemJSON(tx, windowTurnSourcesKey("thread", "turn"), turn)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := cloneMigrationRecords(backend.records)
+			if _, err := repo.ReadWindowProjection(t.Context(), ItemMembershipWindowOptions{ThreadID: "thread", Limit: 1, Summary: true, SummaryOnly: true}, func(PathMetadata, bool) []string { return nil }); !errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("wrong %s accepted: %v", field, err)
+			}
+			if !equalMigrationRecords(before, backend.records) {
+				t.Fatal("invalid summary mutated source records")
+			}
+		})
 	}
 }

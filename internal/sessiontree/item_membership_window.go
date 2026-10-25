@@ -10,6 +10,9 @@ import (
 )
 
 type ItemMembershipWindowOptions struct {
+	// SummaryOnly reads current canonical sources and preview without item,
+	// context or receipt hydration. It is internal summary-reader selection.
+	SummaryOnly bool
 	// Summary explicitly requests a bounded canonical preview. Source-only
 	// consumers leave it false so dependency discovery never reads text bodies.
 	Summary      bool

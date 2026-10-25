@@ -269,7 +269,7 @@ func TestProjectionSourcesPreparationRollsBackAndResumes(t *testing.T) {
 
 type projectionPreparationBatchTx struct {
 	spi.WriteTx
-	goalReads, individualGoalWrites, batches int
+	goalReads, individualGoalWrites, individualParentWrites, batches int
 }
 
 func (tx *projectionPreparationBatchTx) Get(namespace string, key []byte) ([]byte, error) {
@@ -279,6 +279,9 @@ func (tx *projectionPreparationBatchTx) Get(namespace string, key []byte) ([]byt
 	return tx.WriteTx.Get(namespace, key)
 }
 func (tx *projectionPreparationBatchTx) Put(namespace string, key, value []byte) error {
+	if namespace == projectionSourcesNamespace && bytes.HasPrefix(key, backendDomainKey("thread", "parent-source")) {
+		tx.individualParentWrites++
+	}
 	if namespace == projectionSourcesNamespace && bytes.HasPrefix(key, backendDomainKey("thread", "goal-source")) {
 		tx.individualGoalWrites++
 	}
@@ -339,8 +342,8 @@ func TestProjectionPreparationCoalescesGoalSourcesWithinCanonicalBatch(t *testin
 		if err := putProjectionSourceBatch(t.Context(), counted, "thread", entries, 1); err != nil {
 			return err
 		}
-		if counted.goalReads > 1 || counted.individualGoalWrites != 0 {
-			t.Fatalf("per-entry Goal roundtrips remain: reads=%d writes=%d batches=%d", counted.goalReads, counted.individualGoalWrites, counted.batches)
+		if counted.goalReads > 1 || counted.individualGoalWrites != 0 || counted.individualParentWrites != 0 {
+			t.Fatalf("per-entry Goal roundtrips remain: reads=%d writes=%d parent_writes=%d batches=%d", counted.goalReads, counted.individualGoalWrites, counted.individualParentWrites, counted.batches)
 		}
 		for _, entry := range entries {
 			if _, err := readGoalSourceContext(tx, "thread", entry.ID); err != nil {

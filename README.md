@@ -222,6 +222,21 @@ returning chronological events and PreviousBeforeEventID as the earlier cursor.
 Do not combine these options with AfterEventID. Existing omitted options retain
 forward pagination. A presentation can retain a finite reading interval, fetch
 metadata on scroll, and fetch a single report only when its detail is visible.
+
+ListParentEventsInput.AfterOrdinal and BeforeOrdinal optionally seek an
+exclusive interval on the current canonical path. Zero omits a bound. A before
+bound selects its latest receipts; otherwise selection starts at the after bound.
+Both directions return chronological events. These fields exclude event-relative
+cursors and Latest; nonzero bounds must increase. Returned event cursors and
+first/last identities describe the full path, so subsequent scrolling can leave
+the initial ordinal interval. Positions are canonical entry ordinals, not item
+ranks or timestamps; callers must reselect after a path change. Exact report
+reads retain the existing event-ID and fixed-range contracts. An optional LeafID
+selects an ancestor still on the current path; append preserves that selection,
+while removal from the active path fails with ErrJournalInvariant. Every page
+returns its actual LeafID. Interaction resolution is current at the read
+transaction and does not claim to be the historical resolution at that leaf.
+
 `ThreadView.ParentEvents` is a bounded paginated receipt view separate from
 streamed item ordinals. Successful event pages always encode events as an array,
 including an empty array for an empty page; disabled parent events remain absent. Its `Admitted` field means context placement, never
@@ -1215,6 +1230,19 @@ staging and query metadata preparation release the backend between bounded
 batches; the complete validated thread publishes atomically. Foreground
 preparation takes priority over background history. Already published threads
 and new conversations remain usable if another historical thread fails.
+
+Historical browsing sources are prepared automatically by the same Host worker.
+This one-time upgrade work may read the complete retained journal, including
+branches, but stores only rebuildable source locators and field metadata.
+Subsequent startup checks bounded readiness anchors without rewriting history.
+`ThreadReadiness.DisplayReady` separately reports browsing preparation;
+`Ready` keeps its canonical runtime meaning. An optional browsing failure is
+reported in `DisplayError`, not as a new canonical readiness error. Global
+worker completion does not certify every optional presentation. Hosts may call
+`Host.PrepareDisplayThread` to prioritize a selected thread without activating
+execution. Cancelling that explicit operation stops its display work; automatic
+preparation can resume later. Shutdown cancels and joins the operation. Missing
+readiness is upgrade work, never evidence of a sub-second prepared open.
 
 Monolithic v2–v5 snapshots first scan immutable source bytes in resumable,
 bounded batches and reserve historical identities, including deleted identities

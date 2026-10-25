@@ -453,7 +453,7 @@ func putCanonicalStoredEntry(ctx context.Context, tx spi.WriteTx, format backend
 		if err != nil {
 			return err
 		}
-		if field == "content" || field == "reasoning" {
+		if field == "content" || field == "reasoning" || field == "error" {
 			if err := writeBodyTextFacts(tx, ref, value); err != nil {
 				return err
 			}

@@ -32,6 +32,16 @@ usable during background preparation. Monolithic v2–v5 sources gate canonical 
 source scan reserves historical identities, then publish threads independently. Host shutdown joins the active
 storage transaction before closing the backend.
 
+Browsing preparation shares the canonical migration owner and runs automatically
+once when source metadata is absent. It includes retained branches and resumes
+bounded field batches without changing journal bytes. `Readiness.DisplayReady`
+is an additive browsing status; `DisplayError` leaves `Readiness.Ready` and its
+canonical error behavior unchanged. `PrepareDisplayThread` prioritizes explicit
+browsing preparation without activating execution, honors caller cancellation,
+and joins Host shutdown. Global startup completion is not a certificate for
+optional presentation sources; hosts use the per-thread status. Prepared restart
+checks metadata anchors, not historical bodies.
+
 ## Thread goals
 
 Opt in with `runtime.WithAgentGoals()`. The optional
@@ -706,6 +716,21 @@ result reads and should reuse results already available for the same turn.
 inspection and waiting without adding durable read tracking or changing
 existing actions. Event reads remain available for explicit audit.
 
+
+ListParentEventsInput.AfterOrdinal and BeforeOrdinal optionally seek an
+exclusive interval on the current canonical path. Zero omits a bound. A before
+bound selects its latest receipts; otherwise selection starts at the after bound.
+Both directions return chronological events. These fields exclude event-relative
+cursors and Latest; nonzero bounds must increase. Returned event cursors and
+first/last identities describe the full path, so subsequent scrolling can leave
+the initial ordinal interval. Positions are canonical entry ordinals, not item
+ranks or timestamps; callers must reselect after a path change. Exact report
+reads retain the existing event-ID and fixed-range contracts. An optional LeafID
+selects an ancestor still on the current path; append preserves that selection,
+while removal from the active path fails with ErrJournalInvariant. Every page
+returns its actual LeafID. Interaction resolution is current at the read
+transaction and does not claim to be the historical resolution at that leaf.
+
 `ThreadView.ParentEvents` supplies bounded metadata and explicit pagination
 separately from streamed item ordinals. Successful pages preserve an allocated
 empty event array through public clones and JSON; disabled parent events remain absent. `Admitted` identifies canonical context
@@ -791,7 +816,8 @@ in source order. Active and derived Goal activity retain existing ownership.
 List and Summary read existing actors through the same accepted-state owner
 before any canonical path. Preview/time positions track explicit item changes;
 only reorder/removal boundaries rebuild them. Summary reads visit pending input
-controls rather than resolved historical interactions. Unloaded summaries remain
-canonical path reads and do not create actors; cold summary indexing is not yet
-complete. The fixed-history summary benchmark isolates this actor kernel and
-must not be presented as storage or UI qualification.
+controls rather than resolved historical interactions. Unloaded summaries use
+transactionally maintained lifecycle source references and the existing current
+queue sources without creating actors or replaying complete history. The original
+summary reducer retains semantic authority. Missing source metadata belongs to
+one-time preparation; a prepared summary budget is not product UI qualification.

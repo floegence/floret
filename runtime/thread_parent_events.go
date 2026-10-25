@@ -77,6 +77,9 @@ type ParentEvent struct {
 // ParentEventPage identifies the queried canonical thread path. Inherited events
 // retain their original ParentThreadID, which may differ from ThreadID.
 type ParentEventPage struct {
+	// LeafID identifies the canonical path frozen for this read. Interaction
+	// resolution is sampled in the same transaction and can change afterward.
+	LeafID                string            `json:"leaf_id,omitempty"`
 	ThreadID              identity.ThreadID `json:"thread_id"`
 	Events                []ParentEvent     `json:"events"`
 	FirstEventID          string            `json:"first_event_id,omitempty"`
@@ -86,9 +89,19 @@ type ParentEventPage struct {
 }
 
 type ListParentEventsInput struct {
+	// LeafID optionally freezes an ancestor of the current path. Ordinary
+	// append preserves it; a removed branch fails with ErrJournalInvariant.
+	LeafID          string
 	ThreadID        identity.ThreadID
 	SourceThreadIDs []identity.ThreadID
 	AfterEventID    string
+	// AfterOrdinal and BeforeOrdinal select an exclusive interval on the
+	// current canonical path. Zero omits that bound. BeforeOrdinal selects
+	// the last Limit receipts in the interval, otherwise the first Limit.
+	// They cannot be combined with event cursors or Latest. Returned event
+	// cursors navigate the full path, not just this initial ordinal interval.
+	AfterOrdinal  uint64
+	BeforeOrdinal uint64
 	// BeforeEventID selects earlier receipts, returned in canonical order.
 	BeforeEventID string
 	// Latest selects the latest bounded page, excluding AfterEventID.
@@ -155,7 +168,7 @@ func (service *threadRuntimeService) ListParentEvents(ctx context.Context, in Li
 	for i, id := range in.SourceThreadIDs {
 		sources[i] = id.String()
 	}
-	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{ThreadID: in.ThreadID.String(), SourceThreadIDs: sources, AfterEventID: in.AfterEventID, BeforeEventID: in.BeforeEventID, Latest: in.Latest, Limit: in.Limit, PendingOnly: in.PendingOnly})
+	page, err := repo.ParentEvents(ctx, sessiontree.ParentEventQuery{LeafID: in.LeafID, ThreadID: in.ThreadID.String(), SourceThreadIDs: sources, AfterEventID: in.AfterEventID, BeforeEventID: in.BeforeEventID, AfterOrdinal: in.AfterOrdinal, BeforeOrdinal: in.BeforeOrdinal, Latest: in.Latest, Limit: in.Limit, PendingOnly: in.PendingOnly})
 	if err != nil {
 		return ParentEventPage{}, runtimeHostError(err)
 	}
@@ -184,7 +197,7 @@ func (service *threadRuntimeService) ReadParentEvents(ctx context.Context, in Re
 }
 
 func publicParentEventPage(threadID identity.ThreadID, page sessiontree.ParentEventPage, full bool) ParentEventPage {
-	result := ParentEventPage{ThreadID: threadID, Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID, PreviousBeforeEventID: page.PreviousBeforeEventID}
+	result := ParentEventPage{LeafID: page.LeafID, ThreadID: threadID, Events: make([]ParentEvent, 0, len(page.Events)), FirstEventID: page.FirstEventID, LastEventID: page.LastEventID, NextAfterEventID: page.NextAfterEventID, PreviousBeforeEventID: page.PreviousBeforeEventID}
 	for _, event := range page.Events {
 		message := ""
 		if full {

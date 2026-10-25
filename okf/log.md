@@ -1,5 +1,8 @@
 # Floret OKF Update Log
 
+- 2026-10-25: Document automatic one-time browsing preparation, separate display
+  readiness and exact lifecycle summary sources in [runtime](api/runtime.md).
+
 - 2026-10-24: Separate accepted display navigation from complete recovery;
   document canonical parent receipt source paging and its qualification limits
   in [history performance](workflows/history-performance.md).
@@ -1838,3 +1841,7 @@ Document optional Goal management, same-context reflection, request-bound update
   canonical ordering and fixed-range semantics. Add public and branch parity
   tests. Separate display preparation capacity from complete recovery, and test
   append conflicts, promotion, cancellation and shutdown ownership.
+
+- 2026-10-24: Document additive canonical-position receipt seeks on the existing
+  parent-event service. Preserve ordinary event-relative navigation and test
+  empty intervals, branches, restart, and bounded metadata access.

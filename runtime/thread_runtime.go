@@ -1156,7 +1156,7 @@ func (service *threadRuntimeService) List(ctx context.Context, scope ThreadScope
 			out = append(out, summary)
 			continue
 		}
-		summary, err := service.coldThreadSummary(ctx, meta)
+		summary, err := service.currentThreadSummary(ctx, meta)
 		if err != nil {
 			return nil, err
 		}

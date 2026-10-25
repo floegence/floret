@@ -39,7 +39,7 @@ func (service *threadRuntimeService) Summary(ctx context.Context, id identity.Th
 	} else if found {
 		return summary, nil
 	}
-	return service.coldThreadSummary(ctx, meta)
+	return service.currentThreadSummary(ctx, meta)
 }
 
 // Summary positions are disposable indexes over the actor's accepted items.

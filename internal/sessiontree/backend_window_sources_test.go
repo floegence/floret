@@ -17,11 +17,15 @@ func TestWindowSourceAnchorsDoNotCopySourceHistory(t *testing.T) {
 	var turn storedWindowTurnSources
 	for i := range 1000 {
 		entry := Entry{ID: fmt.Sprintf("source-%04d", i), RawHash: "hash", PathDepth: int64(i + 1), TurnID: "turn", RunID: "run", Type: EntryTurnMarker, TurnStatus: TurnSavePoint}
-		observeWindowSources(&stored, &turn, entry)
+		if err := observeWindowSources(t.Context(), nil, &stored, &turn, entry); err != nil {
+			t.Fatal(err)
+		}
 		entry.Type = EntryUserMessage
 		entry.Message = session.Message{Role: session.User}
 		entry.Metadata = map[string]string{SubAgentUserMessageOriginMetadataKey: SubAgentUserMessageOriginDelegatedMission}
-		observeWindowSources(&stored, &turn, entry)
+		if err := observeWindowSources(t.Context(), nil, &stored, &turn, entry); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for name, value := range map[string]any{"thread": stored, "turn": turn} {
 		raw, err := json.Marshal(value)

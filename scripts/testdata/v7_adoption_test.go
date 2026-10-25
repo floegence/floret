@@ -1103,6 +1103,11 @@ func TestPublishedParentEventsAuthorizedReportAndPassiveDelivery(t *testing.T) {
 			t.Fatalf("late event owner=%s want=%s", event.ParentTurnID, initial.TurnID)
 		}
 	}
+	positioned, err := events.ListParentEvents(t.Context(), runtime.ListParentEventsInput{ThreadID: parentID,
+		LeafID: page.LeafID, BeforeOrdinal: page.Events[1].CanonicalOrdinal, Limit: 1})
+	if err != nil || page.LeafID == "" || positioned.LeafID != page.LeafID || len(positioned.Events) != 1 || positioned.Events[0].ID != page.Events[0].ID {
+		t.Fatalf("positioned receipt=%+v err=%v", positioned, err)
+	}
 	full, err := events.ReadParentEvents(t.Context(), runtime.ReadParentEventsInput{ThreadID: parentID, FirstEventID: page.FirstEventID, LastEventID: page.LastEventID})
 	if err != nil || full.ThreadID != parentID || len(full.Events) != 2 || full.Events[0].Message != "Important finding" {
 		t.Fatalf("full=%+v %v", full, err)
@@ -1652,5 +1657,33 @@ func TestPublishedAckGoalBeforeReadAndAfterRestart(t *testing.T) {
 	}
 	if _, err := json.Marshal(view); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishedDisplayPreparationDoesNotActivateExecution(t *testing.T) {
+	host, err := runtime.Open(t.Context(), runtime.Options{Storage: storage.SQLite(t.TempDir() + "/display.sqlite"), DeferExecution: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	service, err := host.ThreadService(runtime.AgentFactoryFunc(func(context.Context, runtime.AgentRequest) (*runtime.Agent, error) {
+		t.Error("display preparation requested an execution agent")
+		return nil, errors.New("not expected")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := service.Create(t.Context(), runtime.CreateThreadInput{HostProfileRef: "test", RequestKey: "display-ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := host.PrepareDisplayThread(t.Context(), thread.ThreadID); err != nil {
+			t.Fatal(err)
+		}
+		ready, err := host.Readiness(t.Context(), thread.ThreadID)
+		if err != nil || !ready.Ready || !ready.DisplayReady || ready.DisplayError != "" {
+			t.Fatalf("readiness=%+v err=%v", ready, err)
+		}
 	}
 }

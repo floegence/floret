@@ -207,6 +207,9 @@ func putEntryLocator(ctx context.Context, tx spi.WriteTx, threadID string, ordin
 	if err := appendProjectionSources(ctx, tx, entry, ordinal); err != nil {
 		return err
 	}
+	if err := appendDisplayCoverage(tx, entry, ordinal); err != nil {
+		return err
+	}
 	if err := putJournalCount(tx, threadID, ordinal+1); err != nil {
 		return err
 	}

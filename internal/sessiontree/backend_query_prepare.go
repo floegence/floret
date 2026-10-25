@@ -255,15 +255,18 @@ func (repo *BackendRepo) prepareNextQueryThread(ctx context.Context) (bool, erro
 		// The Host-owned worker prepares source metadata before a later click.
 		// Reopening a prepared store checks anchors only. Foreground reads
 		// cancel this work at its next bounded storage operation.
-		err = repo.prepareProjectionSources(ctx, record.ID)
-		if err == nil {
-			err = repo.prepareWindowProjectionSnapshot(ctx, record.ID)
-		}
+		err = repo.prepareDisplayThreadOwned(ctx, record.ID)
 		// Journal admission permits opaque interaction payloads. Optional
 		// presentation preparation cannot narrow that contract or invalidate
 		// an otherwise prepared query. Explicit window reads retain the error.
 		if errors.Is(err, errItemMembershipSource) {
 			err = nil
+		}
+		// Optional browsing metadata cannot create a canonical migration-failure
+		// record. Report the worker error while preserving published runtime
+		// readiness; the per-thread display status still exposes the failure.
+		if err != nil && !errors.Is(err, spi.ErrConflict) && !errors.Is(err, ErrThreadNotFound) && !errors.Is(err, ErrThreadDeleted) {
+			return false, err
 		}
 	}
 	if errors.Is(err, spi.ErrConflict) {

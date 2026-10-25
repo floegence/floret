@@ -48,10 +48,10 @@ func missingWindowPreparation(tx spi.ReadTx, meta ThreadMeta, wanted windowPrepa
 		*field.missing = errors.Is(err, spi.ErrNotFound) || field.leaf.ID != meta.LeafID
 	}
 	if wanted.window {
-		if window.SummaryVersion < 0 || window.SummaryVersion > 1 {
+		if window.SummaryVersion < 0 || window.SummaryVersion > 1 || window.LifecycleVersion < 0 || window.LifecycleVersion > 1 {
 			return needs, ErrAuthorityCorrupt
 		}
-		needs.window = needs.window || window.SummaryVersion == 0
+		needs.window = needs.window || window.SummaryVersion == 0 || window.LifecycleVersion == 0
 	}
 	return needs, nil
 }
@@ -141,7 +141,7 @@ func (repo *BackendRepo) prepareWindowReadSnapshot(ctx context.Context, thread s
 		var stored storedWindowSources
 		if err := readItemJSON(reader, windowSourcesKey(thread), &stored); err != nil && !errors.Is(err, spi.ErrNotFound) {
 			return err
-		} else if err == nil && stored.Leaf.ID == meta.LeafID && stored.SummaryVersion == 0 {
+		} else if err == nil && stored.Leaf.ID == meta.LeafID && stored.SummaryVersion == 0 && stored.LifecycleVersion == 1 {
 			if err := repo.prepareWindowSummarySource(ctx, reader, meta, stored); err != nil {
 				return err
 			}

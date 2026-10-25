@@ -34,9 +34,14 @@ type StorageMigrationStatus struct {
 // ThreadReadiness reports whether a thread may use the canonical runtime.
 // Reading this status never prepares a thread or waits for historical work.
 type ThreadReadiness struct {
-	ThreadID identity.ThreadID      `json:"thread_id"`
-	Ready    bool                   `json:"ready"`
-	Storage  StorageMigrationStatus `json:"storage"`
+	ThreadID identity.ThreadID `json:"thread_id"`
+	Ready    bool              `json:"ready"`
+	// DisplayReady certifies prepared browsing sources without changing Ready.
+	DisplayReady bool `json:"display_ready"`
+	// DisplayError reports an optional browsing-source failure. It never changes
+	// Ready or the existing canonical error result of Host.Readiness.
+	DisplayError string                 `json:"display_error,omitempty"`
+	Storage      StorageMigrationStatus `json:"storage"`
 }
 
 type storageReadiness struct {
@@ -253,6 +258,18 @@ func (host *Host) Readiness(ctx context.Context, threadID identity.ThreadID) (Th
 		ThreadPrepared(context.Context, string) (bool, error)
 	}); ok {
 		readiness.Ready, err = reader.ThreadPrepared(ctx, threadID.String())
+		if err == nil && readiness.Ready {
+			if display, ok := host.store.repo.(interface {
+				DisplayPrepared(context.Context, string) (bool, error)
+			}); ok {
+				var displayErr error
+				readiness.DisplayReady, displayErr = display.DisplayPrepared(ctx, threadID.String())
+				if displayErr != nil {
+					readiness.DisplayReady = false
+					readiness.DisplayError = runtimeHostError(displayErr).Error()
+				}
+			}
+		}
 		return readiness, runtimeHostError(err)
 	}
 	return readiness, nil
@@ -386,9 +403,32 @@ func (host *Host) prepareThread(ctx context.Context, threadID identity.ThreadID)
 	if preparer, ok := host.store.repo.(interface {
 		PrepareQueryThread(context.Context, string) error
 	}); ok {
-		return runtimeHostError(preparer.PrepareQueryThread(ctx, threadID.String()))
+		if err := preparer.PrepareQueryThread(ctx, threadID.String()); err != nil {
+			return runtimeHostError(err)
+		}
 	}
 	return nil
+}
+
+// PrepareDisplayThread prepares canonical browsing sources after ordinary thread
+// preparation. It does not activate execution. Cancellation stops this explicit
+// display wait/work; the automatic Host worker may continue it later. Existing
+// PrepareThread and Readiness.Ready retain their published runtime semantics.
+func (host *Host) PrepareDisplayThread(ctx context.Context, threadID identity.ThreadID) error {
+	if err := host.PrepareThread(ctx, threadID); err != nil {
+		return err
+	}
+	if preparer, ok := host.store.repo.(interface {
+		PrepareDisplayThread(context.Context, string) error
+	}); ok {
+		work, finish, err := host.store.beginOperationContext(ctx)
+		if err != nil {
+			return runtimeHostError(err)
+		}
+		defer finish()
+		return runtimeHostError(preparer.PrepareDisplayThread(work, threadID.String()))
+	}
+	return ErrUnsupportedStoreCapability
 }
 
 func (readiness *storageReadiness) isUsable() bool {

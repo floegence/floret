@@ -389,6 +389,12 @@ func (host *Host) startBackgroundThreadMigration() {
 			host.startup.finish(migrationErr)
 			host.startupStartMu.Unlock()
 		}()
+		work := sessiontree.WithStartupWork(host.startupWorker.ctx, func(phase sessiontree.StartupPhase, completed, total int64) {
+			host.startup.update(StartupPhase(phase), completed, total)
+			if observer := host.startupWorker.options.StartupWorkProgress; observer != nil {
+				observer.OnStartupWork(StartupWork{Phase: StartupPhase(phase), Completed: completed, Total: total})
+			}
+		})
 		failures := 0
 		for {
 			if err := host.startupWorker.ctx.Err(); err != nil {
@@ -398,7 +404,7 @@ func (host *Host) startBackgroundThreadMigration() {
 				migrationErr = err
 				return
 			}
-			migrated, err := migrator.MigrateNextThread(host.startupWorker.ctx)
+			migrated, err := migrator.MigrateNextThread(work)
 			if err != nil {
 				if !errors.Is(err, sessiontree.ErrAuthorityCorrupt) && !errors.Is(err, context.Canceled) && failures < 3 {
 					failures++

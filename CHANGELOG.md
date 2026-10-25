@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Automatically prepare missing browsing sources in the Host-owned upgrade
+  worker, including retained branches. Resume bounded metadata batches without
+  rewriting canonical history; prepared restart checks readiness anchors only.
+  Add separate `ThreadReadiness.DisplayReady` / `DisplayError` and cancellable
+  `Host.PrepareDisplayThread`, preserving published canonical readiness behavior
+  and joining explicit work during shutdown.
+- Read current summaries through exact transactional lifecycle source references
+  and current queues. Preserve failure fallback/reset, cancellation, timeout,
+  pending input and path semantics without replaying resolved controls.
+
+- Add exclusive canonical-position bounds to parent receipt listing. Seek by
+  existing path-bound receipt ranks, preserve event cursors and chronological
+  results, and reject conflicting position selectors. No domain schema or
+  report-body format changes. Optional leaf selection survives append, rejects
+  removed branches, and reports the exact selected path in every page.
+- Batch parent source references with the existing bounded projection write set
+  instead of issuing one extra storage write per canonical record.
+
 ## v7.84.0 - 2026-10-24
 
 - Add optional latest/backward receipt selection and an earlier-page cursor to

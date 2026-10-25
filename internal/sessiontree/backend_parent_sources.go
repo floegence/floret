@@ -299,7 +299,7 @@ func parentAdmissionAt(ctx context.Context, tx spi.ReadTx, thread, root string, 
 	}
 	return nil, nil
 }
-func putParentSourceContext(ctx context.Context, tx spi.WriteTx, entry Entry, state parentSourceContext) (parentSourceContext, error) {
+func deriveParentSourceContext(ctx context.Context, tx spi.WriteTx, entry Entry, state parentSourceContext) (parentSourceContext, error) {
 	ref := contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
 	switch entry.Type {
 	case EntryTurnMarker:
@@ -357,11 +357,7 @@ func putParentSourceContext(ctx context.Context, tx spi.WriteTx, entry Entry, st
 			return state, err
 		}
 	}
-	raw, err := encodeActivityMetadata("parent-sources-v1", state)
-	if err != nil {
-		return state, err
-	}
-	return state, tx.Put(projectionSourcesNamespace, parentSourceKey(entry.ThreadID, entry.ID), raw)
+	return state, nil
 }
 func parentSourceEntry(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, ref contextSourceRef) (Entry, error) {
 	entry, err := activeLocatedEntry(ctx, tx, meta, ref.ID)
@@ -372,10 +368,17 @@ func parentSourceEntry(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, ref 
 }
 
 func readCanonicalParentEventPage(ctx context.Context, tx spi.ReadTx, meta ThreadMeta, query ParentEventQuery) (ParentEventPage, error) {
-	if query.AfterEventID != "" && (query.BeforeEventID != "" || query.Latest) {
+	tx = newProjectionSourceTx(tx)
+	if err := validateParentEventPosition(query); err != nil {
 		return ParentEventPage{}, ErrRequestConflict
 	}
-	backward := query.BeforeEventID != "" || query.Latest
+	if query.LeafID != "" && query.LeafID != meta.LeafID {
+		if _, err := activeLocatedEntry(ctx, tx, meta, query.LeafID); err != nil {
+			return ParentEventPage{}, err
+		}
+		meta.LeafID = query.LeafID
+	}
+	backward := query.BeforeEventID != "" || query.Latest || query.BeforeOrdinal != 0
 	state, err := readParentSourceContext(tx, meta.ID, meta.LeafID)
 	if err != nil {
 		return ParentEventPage{}, err
@@ -386,7 +389,7 @@ func readCanonicalParentEventPage(ctx context.Context, tx spi.ReadTx, meta Threa
 	if (query.FirstEventID == "") != (query.LastEventID == "") {
 		return ParentEventPage{}, ErrRequestConflict
 	}
-	page := ParentEventPage{Events: []ParentEventRecord{}}
+	page := ParentEventPage{LeafID: meta.LeafID, Events: []ParentEventRecord{}}
 	rank := func(id string) (int, error) {
 		entry, err := activeLocatedEntry(ctx, tx, meta, id)
 		if err != nil {
@@ -453,6 +456,37 @@ func readCanonicalParentEventPage(ctx context.Context, tx spi.ReadTx, meta Threa
 			return page, ErrEntryNotFound
 		}
 		last = before - 1
+	}
+	// Binary-search receipt ranks by canonical position. Prefix source metadata
+	// avoids walking any intervening messages or hydrating receipt bodies.
+	position := func(ordinal uint64, inclusive bool) (int, error) {
+		lo, hi := 1, state.Count+1
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			node, err := parentReceiptAt(ctx, tx, meta.ID, state.Event, mid)
+			if err != nil {
+				return 0, err
+			}
+			if uint64(node.Source.Depth) < ordinal || inclusive && uint64(node.Source.Depth) == ordinal {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		return lo, nil
+	}
+	if query.AfterOrdinal != 0 {
+		first, err = position(query.AfterOrdinal, true)
+		if err != nil {
+			return page, err
+		}
+	}
+	if query.BeforeOrdinal != 0 {
+		last, err = position(query.BeforeOrdinal, false)
+		if err != nil {
+			return page, err
+		}
+		last--
 	}
 	limit := query.Limit
 	if limit == 0 {
@@ -526,11 +560,19 @@ func readCanonicalParentEventPage(ctx context.Context, tx spi.ReadTx, meta Threa
 	}
 	if backward {
 		slices.Reverse(page.Events)
-		if query.BeforeEventID != "" && len(page.Events) > 0 {
+		if (query.BeforeEventID != "" || query.BeforeOrdinal != 0) && len(page.Events) > 0 && page.Events[len(page.Events)-1].ID != page.LastEventID {
 			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
 		}
-	} else if query.AfterEventID != "" && len(page.Events) > 0 {
+	} else if (query.AfterEventID != "" || query.AfterOrdinal != 0) && len(page.Events) > 0 && page.Events[0].ID != page.FirstEventID {
 		page.PreviousBeforeEventID = page.Events[0].ID
+	}
+	if (query.AfterOrdinal != 0 || query.BeforeOrdinal != 0) && len(page.Events) > 0 {
+		if page.Events[0].ID != page.FirstEventID {
+			page.PreviousBeforeEventID = page.Events[0].ID
+		}
+		if page.Events[len(page.Events)-1].ID != page.LastEventID {
+			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
+		}
 	}
 	if err := resolveParentPageInteractions(ctx, tx, page.Events); err != nil {
 		return page, err

@@ -180,18 +180,21 @@ func (repo *BackendRepo) prepareActivityFields(ctx context.Context, thread, entr
 		return err
 	}
 	defer release()
-	return repo.prepareActivityFieldsOwned(work, thread, entryID)
+	return repo.prepareActivityFieldsOwned(work, thread, entryID, true)
 }
 
 // The caller owns migrationGate. Historical field preparation uses private
 // bounded staging and publishes readiness only after every source check.
-func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread, entryID string) error {
+func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread, entryID string, activeOnly bool) error {
 	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: work, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return err
 	}
-	source, err := activeLocatedEntry(work, reader, meta, entryID)
+	source, err := readCanonicalEntryMetadata(reader, thread, entryID)
+	if err == nil && activeOnly {
+		source, err = activeLocatedEntry(work, reader, meta, entryID)
+	}
 	if err != nil {
 		return reader.validationError(err)
 	}
@@ -219,7 +222,10 @@ func (repo *BackendRepo) prepareActivityFieldsOwned(work context.Context, thread
 			if err != nil {
 				return err
 			}
-			current, err := activeLocatedEntry(work, tx, meta, entryID)
+			current, err := readCanonicalEntryMetadata(tx, thread, entryID)
+			if err == nil && activeOnly {
+				current, err = activeLocatedEntry(work, tx, meta, entryID)
+			}
 			if err != nil {
 				return err
 			}

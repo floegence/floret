@@ -182,7 +182,7 @@ func initializeCanonicalThread(ctx context.Context, tx spi.WriteTx, meta ThreadM
 	if err := putItemJSON(tx, modelContextSourcesKey(meta.ID), storedModelContextSources{}); err != nil {
 		return nil, err
 	}
-	if err := putItemJSON(tx, windowSourcesKey(meta.ID), storedWindowSources{SummaryVersion: 1}); err != nil {
+	if err := putItemJSON(tx, windowSourcesKey(meta.ID), storedWindowSources{LifecycleVersion: 1, SummaryVersion: 1}); err != nil {
 		return nil, err
 	}
 	state := newQueryThread()

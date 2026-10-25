@@ -108,19 +108,22 @@ func (repo *BackendRepo) prepareWindowTextFacts(ctx context.Context, thread stri
 	}
 	defer release()
 	for _, source := range missing {
-		if err := repo.prepareBodyTextFactsOwned(work, thread, source); err != nil {
+		if err := repo.prepareBodyTextFactsOwned(work, thread, source, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-func (repo *BackendRepo) prepareBodyTextFactsOwned(work context.Context, thread string, missing missingBodyTextFacts) error {
+func (repo *BackendRepo) prepareBodyTextFactsOwned(work context.Context, thread string, missing missingBodyTextFacts, activeOnly bool) error {
 	reader := &canonicalSnapshotReader{migrationSourceReader: migrationSourceReader{ctx: work, backend: repo.backend}, format: backendDomainV32Format, metadata: map[string]migrationMetadataRead{}}
 	meta, err := readPublishedThreadMeta(reader, backendDomainV32Format, thread)
 	if err != nil {
 		return err
 	}
-	entry, err := activeLocatedEntry(work, reader, meta, missing.entry)
+	entry, err := readCanonicalEntryMetadata(reader, thread, missing.entry)
+	if err == nil && activeOnly {
+		entry, err = activeLocatedEntry(work, reader, meta, missing.entry)
+	}
 	if err != nil {
 		return reader.validationError(err)
 	}
@@ -143,7 +146,10 @@ func (repo *BackendRepo) prepareBodyTextFactsOwned(work context.Context, thread 
 		if err != nil {
 			return err
 		}
-		source, err := activeLocatedEntry(work, tx, current, entry.ID)
+		source, err := readCanonicalEntryMetadata(tx, thread, entry.ID)
+		if err == nil && activeOnly {
+			source, err = activeLocatedEntry(work, tx, current, entry.ID)
+		}
 		if err != nil {
 			return err
 		}

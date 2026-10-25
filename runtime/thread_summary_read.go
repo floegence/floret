@@ -9,6 +9,60 @@ import (
 	"github.com/floegence/floret/v7/internal/sessiontree"
 )
 
+// Current stores already retain exact latest lifecycle, pending-control and
+// preview sources. Reuse their transaction and the existing summary reducer;
+// do not construct an actor or scan hidden items to list a conversation.
+func (service *threadRuntimeService) currentThreadSummary(ctx context.Context, meta sessiontree.ThreadMeta) (ThreadSummary, error) {
+	reader, ok := service.host.store.repo.(sessiontree.WindowProjectionReader)
+	if !ok || meta.LeafID == "" {
+		// The released custom repository adapter has no source-window contract.
+		return service.coldThreadSummary(ctx, meta)
+	}
+	window, err := reader.ReadWindowProjection(ctx, sessiontree.ItemMembershipWindowOptions{
+		ThreadID: meta.ID, Limit: 1, SummaryOnly: true, Summary: true, ActivityFields: true,
+	}, func(source sessiontree.PathMetadata, _ bool) []string {
+		entry := source.Entry
+		if entry.Type == sessiontree.EntryRunFailure {
+			return []string{"error"}
+		}
+		if controlstate.Classify(entry.Message.ControlSignal) == controlstate.WaitingInput {
+			return []string{"control_output"}
+		}
+		return nil
+	})
+	if err != nil {
+		return ThreadSummary{}, runtimeHostError(err)
+	}
+	if window.Summary == nil {
+		return ThreadSummary{}, ErrAuthorityCorrupt
+	}
+	projection := newThreadSummaryProjection()
+	for _, source := range window.Entries {
+		if err := ctx.Err(); err != nil {
+			return ThreadSummary{}, err
+		}
+		if err := projection.observe(source.Entry); err != nil {
+			return ThreadSummary{}, err
+		}
+	}
+	if window.QueueSources == nil {
+		for _, source := range window.Queue {
+			if err := projection.queue.observe(source); err != nil {
+				return ThreadSummary{}, err
+			}
+		}
+	}
+	projection.lastItemPreview, projection.lastItemAt = window.Summary.Text, window.Summary.CreatedAt
+	summary, err := projection.snapshot(window.Meta)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	if window.QueueSources != nil {
+		summary.QueueCount = len(window.QueueSources.Pending)
+	}
+	return summary, ctx.Err()
+}
+
 // Cold summaries stream one frozen metadata interval. Only the final nonempty
 // message preview and lifecycle-required error/control fields read source bytes.
 // This removes complete body residency, not the remaining metadata scan.

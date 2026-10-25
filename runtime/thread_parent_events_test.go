@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -696,6 +697,40 @@ func TestParentEventBackwardPublicPagesRetainForwardDefaults(t *testing.T) {
 	for _, input := range []ListParentEventsInput{{ThreadID: created.ThreadID, AfterEventID: forward.FirstEventID, Latest: true}, {ThreadID: created.ThreadID, AfterEventID: forward.FirstEventID, BeforeEventID: forward.LastEventID}} {
 		if _, err := service.ListParentEvents(t.Context(), input); err == nil {
 			t.Fatal("accepted conflicting directions")
+		}
+	}
+}
+
+func TestParentEventPublicOrdinalSeekIsPathBound(t *testing.T) {
+	host, public, _ := parentEventHost(t, true, storage.SQLite(t.TempDir()+"/events.sqlite"))
+	parent, err := public.Create(t.Context(), CreateThreadInput{RequestKey: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 7 {
+		child := parentEventChild(t, host, parent.ThreadID, fmt.Sprint("seek-child-", i))
+		parentEventFinish(t, host, child, sessiontree.TurnCompleted)
+	}
+	service := public.(ThreadParentEventService)
+	all, err := service.ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: parent.ThreadID, Limit: 100})
+	if err != nil || len(all.Events) != 7 {
+		t.Fatalf("all=%+v err=%v", all, err)
+	}
+	page, err := service.ListParentEvents(t.Context(), ListParentEventsInput{ThreadID: parent.ThreadID,
+		LeafID: all.LeafID, AfterOrdinal: all.Events[1].CanonicalOrdinal, BeforeOrdinal: all.Events[5].CanonicalOrdinal, Limit: 2})
+	if err != nil || len(page.Events) != 2 || page.Events[0].ID != all.Events[3].ID || page.Events[1].ID != all.Events[4].ID {
+		t.Fatalf("ordinal page=%+v err=%v", page, err)
+	}
+	if page.LeafID == "" || page.LeafID != all.LeafID || page.FirstEventID != all.FirstEventID || page.LastEventID != all.LastEventID || page.PreviousBeforeEventID != page.Events[0].ID || page.NextAfterEventID != page.Events[1].ID {
+		t.Fatalf("missing canonical neighbor cursors: %+v", page)
+	}
+	for _, input := range []ListParentEventsInput{
+		{ThreadID: parent.ThreadID, AfterOrdinal: 1, Latest: true},
+		{ThreadID: parent.ThreadID, BeforeOrdinal: 2, AfterEventID: all.FirstEventID},
+		{ThreadID: parent.ThreadID, AfterOrdinal: 2, BeforeOrdinal: 2},
+	} {
+		if _, err := service.ListParentEvents(t.Context(), input); !errors.Is(err, ErrRequestConflict) {
+			t.Fatalf("invalid seek: %v", err)
 		}
 	}
 }

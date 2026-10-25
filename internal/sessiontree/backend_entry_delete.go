@@ -133,5 +133,14 @@ func removeTailEntryLocators(ctx context.Context, tx spi.WriteTx, threadID strin
 	if err := removeProjectionSources(tx, entry, ordinal); err != nil {
 		return err
 	}
+	through, err := projectionCount(tx, displayCoverageKey(threadID))
+	if err != nil {
+		return err
+	}
+	if through > ordinal {
+		if err := putProjectionCount(tx, displayCoverageKey(threadID), ordinal); err != nil {
+			return err
+		}
+	}
 	return putJournalCount(tx, threadID, ordinal)
 }

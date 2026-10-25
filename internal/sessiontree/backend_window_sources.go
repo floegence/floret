@@ -2,12 +2,14 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/floegence/floret/v7/internal/controlstate"
+	"github.com/floegence/floret/v7/internal/provider"
 	"github.com/floegence/floret/v7/internal/session"
 	"github.com/floegence/floret/v7/storage/spi"
 )
@@ -26,6 +28,8 @@ type WindowSources struct {
 	CompactionOrdinals map[string]uint64
 }
 type storedWindowSources struct {
+	LifecycleVersion   int                               `json:"lifecycle_version"`
+	StatusSource       string                            `json:"status_source,omitempty"`
 	SummaryVersion     int                               `json:"summary_version"`
 	SummarySource      contextSourceRef                  `json:"summary_source,omitempty"`
 	Leaf               contextSourceRef                  `json:"leaf"`
@@ -41,8 +45,15 @@ type windowCompactionSource struct {
 	Anchor *ItemMember      `json:"anchor,omitempty"`
 }
 type storedWindowTurnSources struct {
-	Identity   string            `json:"identity,omitempty"`
-	Boundaries map[string]string `json:"boundaries,omitempty"`
+	Started      string            `json:"started,omitempty"`
+	Terminal     string            `json:"terminal,omitempty"`
+	Cancellation string            `json:"cancellation,omitempty"`
+	FailureReset string            `json:"failure_reset,omitempty"`
+	Failure      string            `json:"failure,omitempty"`
+	FailureCode  string            `json:"failure_code,omitempty"`
+	Timeout      string            `json:"timeout,omitempty"`
+	Identity     string            `json:"identity,omitempty"`
+	Boundaries   map[string]string `json:"boundaries,omitempty"`
 }
 
 func windowSourcesKey(thread string) []byte { return backendDomainKey(thread, "window") }
@@ -93,11 +104,62 @@ func windowResponseBoundary(entry Entry) bool {
 func windowGoalSource(entry Entry) bool {
 	return entry.Type == EntryGoal || entry.Type == EntryTurnMarker && entry.Metadata[GoalCompletedMetadataKey] != "" || entry.Type == EntryUserMessage && entry.Metadata[SubAgentUserMessageOriginMetadataKey] == SubAgentUserMessageOriginDelegatedMission
 }
-func observeWindowSources(stored *storedWindowSources, turn *storedWindowTurnSources, entry Entry) {
+func observeWindowSources(ctx context.Context, tx spi.ReadTx, stored *storedWindowSources, turn *storedWindowTurnSources, entry Entry) error {
 	if entry.Type == EntryTurnMarker && entry.TurnStatus != "" {
 		stored.Latest = entry.ID
+		switch entry.TurnStatus {
+		case TurnStarted, TurnCompleted, TurnWaiting, TurnFailed, TurnAborted:
+			stored.StatusSource = entry.ID
+		}
 	}
 	if turn != nil {
+		if entry.Type == EntryTurnMarker {
+			if entry.TurnStatus == TurnStarted && turn.Started == "" {
+				turn.Started = entry.ID
+			}
+			switch entry.TurnStatus {
+			case TurnCompleted, TurnWaiting, TurnFailed, TurnAborted:
+				if turn.Terminal == "" {
+					turn.Terminal = entry.ID
+				}
+			}
+			if raw := entry.Metadata["provider_timeout"]; raw != "" {
+				var details provider.RequestTimeoutDetails
+				if json.Unmarshal([]byte(raw), &details) == nil && details.Validate() == nil {
+					turn.Timeout = entry.ID
+				}
+			}
+		}
+		if entry.Type == EntryCancelRequested && turn.Cancellation == "" {
+			turn.Cancellation = entry.ID
+		}
+		if entry.Type == EntryRunFailure {
+			turn.FailureReset, turn.Failure = entry.ID, ""
+			nonSpace := strings.TrimSpace(entry.Error) != ""
+			if ref := entry.bodyFields["error"]; ref.Bytes > 0 {
+				facts, err := readBodyTextFacts(tx, ref)
+				if errors.Is(err, spi.ErrNotFound) {
+					body, err := materializeCanonicalBody(ctx, tx, ref)
+					if err != nil {
+						return err
+					}
+					nonSpace = strings.TrimSpace(body) != ""
+				} else if err != nil {
+					return err
+				} else {
+					nonSpace = facts.NonSpace
+				}
+			}
+			if nonSpace {
+				turn.Failure = entry.ID
+			}
+		}
+		if turn.Failure == "" && strings.TrimSpace(entry.Metadata["failure_reason"]) != "" {
+			turn.Failure = entry.ID
+		}
+		if strings.TrimSpace(entry.Metadata[TurnFailureCodeMetadataKey]) != "" {
+			turn.FailureCode = entry.ID
+		}
 		if entry.Type != EntryCustom && strings.TrimSpace(entry.RunID) != "" {
 			turn.Identity = entry.ID
 		}
@@ -109,6 +171,7 @@ func observeWindowSources(stored *storedWindowSources, turn *storedWindowTurnSou
 		}
 	}
 	stored.Leaf = contextSourceRef{ID: entry.ID, Hash: entry.RawHash, Depth: entry.PathDepth}
+	return nil
 }
 func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, update *canonicalMembershipAppend) error {
 	var stored storedWindowSources
@@ -118,10 +181,10 @@ func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, updat
 		}
 		return err
 	}
-	if stored.SummaryVersion < 0 || stored.SummaryVersion > 1 {
+	if stored.SummaryVersion < 0 || stored.SummaryVersion > 1 || stored.LifecycleVersion < 0 || stored.LifecycleVersion > 1 {
 		return ErrAuthorityCorrupt
 	}
-	if stored.Leaf.ID != entry.ParentID || stored.SummaryVersion == 0 {
+	if stored.Leaf.ID != entry.ParentID || stored.SummaryVersion == 0 || stored.LifecycleVersion == 0 {
 		return deleteCanonicalOptionalRecord(tx, itemMembershipNamespace, windowSourcesKey(entry.ThreadID))
 	}
 	if err := observeWindowSummary(ctx, tx, &stored, entry); err != nil {
@@ -133,7 +196,9 @@ func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, updat
 			return err
 		}
 	}
-	observeWindowSources(&stored, &turn, entry)
+	if err := observeWindowSources(ctx, tx, &stored, &turn, entry); err != nil {
+		return err
+	}
 	if entry.TurnID != "" {
 		if err := putItemJSON(tx, windowTurnSourcesKey(entry.ThreadID, entry.TurnID), turn); err != nil {
 			return err
@@ -193,7 +258,7 @@ func appendWindowSources(ctx context.Context, tx spi.WriteTx, entry Entry, updat
 	return putItemJSON(tx, windowSourcesKey(entry.ThreadID), stored)
 }
 func projectWindowSources(ctx context.Context, tx spi.ReadTx, entries []Entry) (storedWindowSources, map[string]*storedWindowTurnSources, ItemMembership, error) {
-	stored := storedWindowSources{SummaryVersion: 1, Anchors: map[string]string{}, CompactionOrdinals: map[string]uint64{}, CompactionSources: map[string]windowCompactionSource{}}
+	stored := storedWindowSources{LifecycleVersion: 1, SummaryVersion: 1, Anchors: map[string]string{}, CompactionOrdinals: map[string]uint64{}, CompactionSources: map[string]windowCompactionSource{}}
 	turns := map[string]*storedWindowTurnSources{}
 	var membership ItemMembership
 	for _, entry := range entries {
@@ -205,7 +270,9 @@ func projectWindowSources(ctx context.Context, tx spi.ReadTx, entries []Entry) (
 			turn = &storedWindowTurnSources{}
 			turns[entry.TurnID] = turn
 		}
-		observeWindowSources(&stored, turn, entry)
+		if err := observeWindowSources(ctx, tx, &stored, turn, entry); err != nil {
+			return storedWindowSources{}, nil, ItemMembership{}, err
+		}
 		if err := observeWindowSummary(ctx, tx, &stored, entry); err != nil {
 			return storedWindowSources{}, nil, ItemMembership{}, err
 		}

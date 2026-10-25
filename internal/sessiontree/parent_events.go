@@ -57,6 +57,7 @@ type ParentReportRequest struct {
 }
 
 type ParentEventQuery struct {
+	LeafID          string
 	ThreadID        string
 	SourceThreadIDs []string
 	EventID         string
@@ -64,6 +65,8 @@ type ParentEventQuery struct {
 	LastEventID     string
 	AfterEventID    string
 	BeforeEventID   string
+	AfterOrdinal    uint64
+	BeforeOrdinal   uint64
 	Latest          bool
 	Limit           int
 	PendingOnly     bool
@@ -79,6 +82,7 @@ type ParentEventRecord struct {
 }
 
 type ParentEventPage struct {
+	LeafID                string
 	Events                []ParentEventRecord
 	FirstEventID          string
 	LastEventID           string
@@ -295,7 +299,7 @@ func (r *MemoryRepo) ReportToParent(ctx context.Context, req ParentReportRequest
 	return event, nil
 }
 
-func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRecord, error) {
+func (r *MemoryRepo) parentEventRecordsLocked(threadID string, selectedLeaf ...string) ([]ParentEventRecord, error) {
 	meta, ok := r.threads[threadID]
 	if !ok {
 		return nil, ErrThreadNotFound
@@ -303,6 +307,13 @@ func (r *MemoryRepo) parentEventRecordsLocked(threadID string) ([]ParentEventRec
 	path, err := r.canonicalMetadataPathLocked(threadID, meta.LeafID)
 	if err != nil {
 		return nil, err
+	}
+	if len(selectedLeaf) > 0 && selectedLeaf[0] != "" {
+		stop := slices.IndexFunc(path, func(entry Entry) bool { return entry.ID == selectedLeaf[0] })
+		if stop < 0 {
+			return nil, ErrEntryNotFound
+		}
+		path = path[:stop+1]
 	}
 	projection := parentEventProjectionState{positions: map[string]int{}}
 	for _, entry := range path {
@@ -333,18 +344,26 @@ func (r *MemoryRepo) ParentEvents(ctx context.Context, query ParentEventQuery) (
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	records, err := r.parentEventRecordsLocked(query.ThreadID)
+	records, err := r.parentEventRecordsLocked(query.ThreadID, query.LeafID)
 	if err != nil {
 		return ParentEventPage{}, err
 	}
-	return pageParentEvents(records, query)
+	page, err := pageParentEvents(records, query)
+	if err != nil {
+		return ParentEventPage{}, err
+	}
+	page.LeafID = query.LeafID
+	if page.LeafID == "" {
+		page.LeafID = r.threads[query.ThreadID].LeafID
+	}
+	return page, nil
 }
 
 func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (ParentEventPage, error) {
-	if query.AfterEventID != "" && (query.BeforeEventID != "" || query.Latest) {
+	if err := validateParentEventPosition(query); err != nil {
 		return ParentEventPage{}, ErrRequestConflict
 	}
-	backward := query.BeforeEventID != "" || query.Latest
+	backward := query.BeforeEventID != "" || query.Latest || query.BeforeOrdinal != 0
 	positions := map[string]int{}
 	for i, record := range records {
 		positions[record.ID] = i
@@ -383,6 +402,12 @@ func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (Pare
 		}
 		last = before - 1
 	}
+	for first <= last && query.AfterOrdinal != 0 && records[first].CanonicalOrdinal <= query.AfterOrdinal {
+		first++
+	}
+	for first <= last && query.BeforeOrdinal != 0 && records[last].CanonicalOrdinal >= query.BeforeOrdinal {
+		last--
+	}
 	limit := query.Limit
 	if limit == 0 {
 		limit = 50
@@ -415,11 +440,19 @@ func pageParentEvents(records []ParentEventRecord, query ParentEventQuery) (Pare
 	}
 	if backward {
 		slices.Reverse(page.Events)
-		if query.BeforeEventID != "" && len(page.Events) > 0 {
+		if (query.BeforeEventID != "" || query.BeforeOrdinal != 0) && len(page.Events) > 0 && page.Events[len(page.Events)-1].ID != page.LastEventID {
 			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
 		}
-	} else if query.AfterEventID != "" && len(page.Events) > 0 {
+	} else if (query.AfterEventID != "" || query.AfterOrdinal != 0) && len(page.Events) > 0 && page.Events[0].ID != page.FirstEventID {
 		page.PreviousBeforeEventID = page.Events[0].ID
+	}
+	if (query.AfterOrdinal != 0 || query.BeforeOrdinal != 0) && len(page.Events) > 0 {
+		if page.Events[0].ID != page.FirstEventID {
+			page.PreviousBeforeEventID = page.Events[0].ID
+		}
+		if page.Events[len(page.Events)-1].ID != page.LastEventID {
+			page.NextAfterEventID = page.Events[len(page.Events)-1].ID
+		}
 	}
 	return page, nil
 }
@@ -695,5 +728,20 @@ func (repo *BackendRepo) PrepareParentEventsInTransaction(ctx context.Context, t
 		return err
 	}
 	repo.domainMemory = next
+	return nil
+}
+
+// Ordinal seeks are relative to the current canonical path, never wall-clock time.
+// Event-relative and fixed-range queries retain their released behavior.
+func validateParentEventPosition(query ParentEventQuery) error {
+	if query.AfterEventID != "" && (query.BeforeEventID != "" || query.Latest) {
+		return ErrRequestConflict
+	}
+	if query.AfterOrdinal == 0 && query.BeforeOrdinal == 0 {
+		return nil
+	}
+	if query.AfterEventID != "" || query.BeforeEventID != "" || query.Latest || query.EventID != "" || query.FirstEventID != "" || query.LastEventID != "" || query.AfterOrdinal != 0 && query.BeforeOrdinal != 0 && query.AfterOrdinal >= query.BeforeOrdinal {
+		return ErrRequestConflict
+	}
 	return nil
 }

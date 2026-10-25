@@ -96,11 +96,16 @@ func putProjectionSourceBatch(ctx context.Context, tx spi.WriteTx, thread string
 				return err
 			}
 		}
-		parent, err := putParentSourceContext(ctx, tx, entry, parent)
+		parent, err := deriveParentSourceContext(ctx, tx, entry, parent)
 		if err != nil {
 			return err
 		}
 		parents[entry.ID] = parent
+		parentRaw, err := encodeActivityMetadata("parent-sources-v1", parent)
+		if err != nil {
+			return err
+		}
+		records = append(records, spi.Record{Key: parentSourceKey(thread, entry.ID), Value: parentRaw})
 		refs, found := goals[entry.ParentID]
 		if !found {
 			var err error
